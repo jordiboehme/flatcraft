@@ -1,5 +1,6 @@
-//! FlatCraft device crate: plotter and material profiles (more later).
+//! FlatCraft device crate: plotter and material profiles, GPGL emitter.
 
+pub mod gpgl;
 pub mod presets;
 pub mod profile;
 pub mod store;
