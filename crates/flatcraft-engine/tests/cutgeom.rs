@@ -693,6 +693,10 @@ fn fill_and_stroke_square_without_close_is_one_ring() {
     let subs = subpaths(&cut(&o));
     assert_eq!(subs.len(), 1, "{subs:?}");
     assert_size(subs[0].0.bounding_box(), 22.0, 22.0, 1e-6);
+    // The whole 22 x 22 area, not a 22 x 22 strip around the open path
+    // (whose area would be 160).
+    let area = subs[0].0.area().abs();
+    assert!((area - 484.0).abs() < 1e-3, "{area}");
 }
 
 #[test]
@@ -803,4 +807,67 @@ fn project_open_repairs_bad_cut_options() {
         state_cut(&mut s2, id),
         json!({ "mode": "object_outlines", "strokes": "auto", "auto_threshold_mm": 0.5 })
     );
+}
+
+#[test]
+fn cheap_bounds_match_the_cut_paths() {
+    use flatcraft_engine::cutgeom::cut_bounds;
+    let mut o_letter = letter_o();
+    o_letter.extend(pentagram(15.0));
+    let cases = [
+        object(
+            hline(),
+            line_paint(3.0, MITER, Cap::Round),
+            CutOptions::default(),
+        ),
+        object(
+            hline(),
+            line_paint(0.2, MITER, Cap::Butt),
+            CutOptions::default(),
+        ),
+        object(
+            ell(),
+            line_paint(2.0, MITER, Cap::Square),
+            CutOptions::default(),
+        ),
+        object(
+            pentagram(15.0),
+            line_paint(2.0, MITER, Cap::Butt),
+            CutOptions::default(),
+        ),
+        object(
+            kurbo::Circle::new((20.0, 20.0), 0.5).to_path(1e-6),
+            line_paint(2.0, Join::Round, Cap::Butt),
+            CutOptions::default(),
+        ),
+        object(
+            o_letter,
+            fill_stroke(FillRule::EvenOdd),
+            CutOptions::default(),
+        ),
+        object(
+            hline(),
+            line_paint(3.0, MITER, Cap::Butt),
+            CutOptions {
+                mode: CutMode::AllLines,
+                ..CutOptions::default()
+            },
+        ),
+    ];
+    for o in &cases {
+        let exact = cut(o)
+            .iter()
+            .map(Shape::bounding_box)
+            .reduce(|a, b| a.union(b))
+            .unwrap();
+        let cheap = cut_bounds(o).unwrap();
+        for (a, b) in [
+            (exact.x0, cheap.x0),
+            (exact.y0, cheap.y0),
+            (exact.x1, cheap.x1),
+            (exact.y1, cheap.y1),
+        ] {
+            assert!((a - b).abs() < 2.0 * TOL, "{exact:?} vs {cheap:?}");
+        }
+    }
 }

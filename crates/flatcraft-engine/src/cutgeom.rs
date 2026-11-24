@@ -34,8 +34,8 @@ const MIN_TOLERANCE_MM: f64 = 1e-4;
 /// tolerance), mm.
 pub const CLOSE_TOLERANCE_MM: f64 = 0.01;
 
-/// Tolerance for bounds of the cut geometry, mm (the default flatten
-/// tolerance).
+/// Stroker tolerance for bounds of the cut geometry, mm (the default
+/// flatten tolerance).
 pub const BOUNDS_TOLERANCE_MM: f64 = 0.01;
 
 type Contour = Vec<[f64; 2]>;
@@ -49,15 +49,45 @@ pub fn cut_paths(object: &Object, placed_affine: Affine, tolerance_mm: f64) -> V
         .collect()
 }
 
-/// Bounding box of the object's cut paths in mat mm, at
-/// `BOUNDS_TOLERANCE_MM`; `None` if nothing is cut.
+/// Bounding box of the object's cut paths in mat mm; `None` if the object
+/// has no paths. Cheap: the box of a union is the union of the boxes of
+/// its parts, so no booleans run. A fill-only path with no area (cut as
+/// nothing) still counts with its centre line.
 pub fn cut_bounds(object: &Object) -> Option<Rect> {
     let affine = object.transform.affine(object.local_bounds);
-    cut_paths(object, affine, BOUNDS_TOLERANCE_MM)
+    object
+        .geometry
         .iter()
-        .filter(|p| !p.elements().is_empty())
-        .map(Shape::bounding_box)
+        .filter_map(|p| path_bounds(p, &object.cut, affine))
         .reduce(|a, b| a.union(b))
+}
+
+fn path_bounds(path: &CutPath, options: &CutOptions, affine: Affine) -> Option<Rect> {
+    let placed = affine * &path.path;
+    if placed.elements().is_empty() {
+        return None;
+    }
+    let centre = placed.bounding_box();
+    let style = match options.mode {
+        CutMode::AllLines => None,
+        CutMode::ObjectOutlines => outline_style(path.paint, options, affine),
+    };
+    let Some(style) = style.filter(|_| is_finite(&placed)) else {
+        return Some(centre);
+    };
+    let closed = close_meeting_ends(&placed);
+    let outline = kurbo::stroke(
+        closed.iter(),
+        &style,
+        &StrokeOpts::default(),
+        BOUNDS_TOLERANCE_MM,
+    );
+    let stroke = outline.bounding_box();
+    Some(if path.paint.fill.is_some() {
+        stroke.union(centre)
+    } else {
+        stroke
+    })
 }
 
 /// The cut paths of one source path, in mat mm. One source path may give
