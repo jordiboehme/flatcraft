@@ -8,6 +8,8 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+flatcraft-core = { path = "../flatcraft-core" }
+thiserror.workspace = true
 kurbo.workspace = true
 usvg.workspace = true
 image = { workspace = true, features = ["png", "jpeg", "webp", "gif"] }

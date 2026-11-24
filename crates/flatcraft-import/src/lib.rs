@@ -1,9 +1,21 @@
-//! FlatCraft import crate (stub, filled by later tasks).
+//! FlatCraft import crate.
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn smoke() {
-        assert_eq!(2 + 2, 4);
-    }
+pub mod fonts;
+pub mod svg;
+
+/// Errors from importing a file.
+#[derive(Debug, thiserror::Error)]
+pub enum ImportError {
+    #[error("could not parse the file: {0}")]
+    Parse(String),
+    #[error("the file is larger than 50 MB")]
+    TooLarge,
+}
+
+/// Something the importer could not honour. The import still succeeds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImportWarning {
+    ClipOrMaskIgnored { count: usize },
+    ImagesSkipped { count: usize },
+    NoPaths,
 }
