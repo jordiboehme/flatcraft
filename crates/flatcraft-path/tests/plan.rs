@@ -365,6 +365,34 @@ fn bad_cutting_area_is_refused() {
     }
 }
 
+#[test]
+fn overcut_larger_than_the_ring_is_one_lap() {
+    // Found by closed_rings_stay_closed: a triangle whose requested overcut
+    // (2.49 x its first edge) exceeds its perimeter. The pipeline caps at one lap.
+    let pts = [
+        (150.0 + 24.63864338450413, 200.0),
+        (150.0 - 13.237620590007365, 200.0 + 22.93),
+        (150.0 - 2.5, 200.0 - 4.330127018922193),
+    ];
+    let mut path = BezPath::new();
+    path.move_to(pts[0]);
+    path.line_to(pts[1]);
+    path.line_to(pts[2]);
+    path.close_path();
+    let mut ring: Vec<Point> = pts.iter().map(|&p| p.into()).collect();
+    ring.push(ring[0]);
+    let perimeter = length(&ring);
+    let mut s = settings();
+    s.flatten_tolerance_mm = 0.001;
+    s.overcut_mm = 2.5 * ring[0].distance(ring[1]);
+    assert!(s.overcut_mm > perimeter);
+    let out = plan(&[placed(1, path)], &s).unwrap();
+    let t = &out.toolpaths[0];
+    assert!(t.closed);
+    assert!((length(&t.points) - 2.0 * perimeter).abs() < 1e-6);
+    assert!(t.points.last().unwrap().distance(ring[0]) < 1e-9);
+}
+
 proptest! {
     #[test]
     fn closed_rings_stay_closed(
@@ -404,7 +432,9 @@ proptest! {
         let t = &out.toolpaths[0];
         prop_assert!(t.closed);
         prop_assert_eq!(t.points[0], ring[0]);
-        prop_assert!(length(&t.points) >= perimeter + overcut - 1e-6);
+        // the overcut is capped at one lap of the ring, and the generator can
+        // ask for more than that on a small polygon
+        prop_assert!(length(&t.points) >= perimeter + overcut.min(perimeter) - 1e-6);
         let expect = point_at(&ring, overcut);
         prop_assert!(t.points.last().unwrap().distance(expect) < 1e-9);
         // against the unmerged source ring
