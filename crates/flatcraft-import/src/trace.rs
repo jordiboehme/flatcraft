@@ -32,7 +32,18 @@ pub struct TraceResult {
     pub size_mm: (f64, f64),
     /// Pixels darker than this were figure (before invert).
     pub threshold_used: u8,
+    /// Original size in px when the image was too big for the tracing budget
+    /// and was traced at a lower resolution. `size_mm` is still exact.
+    pub downscaled_from: Option<(u32, u32)>,
+    /// A declared resolution below 10 dpi that was ignored.
+    pub ignored_dpi: Option<f64>,
 }
+
+/// Images above this many pixels are scaled down before tracing, to keep
+/// memory and time in check.
+pub const MAX_TRACE_PIXELS: u64 = 16_000_000;
+/// Declared resolutions below this are taken as bogus.
+const MIN_PLAUSIBLE_DPI: f64 = 10.0;
 
 /// Otsu's threshold: dark pixels are those with a luma below the result. Ties
 /// resolve to the middle of the tied range, so two-tone images split halfway.
@@ -92,14 +103,25 @@ pub fn trace(
     s: &TraceSettings,
     blade_offset_mm: f64,
 ) -> Result<TraceResult, ImportError> {
-    let dpi = s
-        .dpi_override
-        .or_else(|| read_dpi(bytes))
-        .unwrap_or(DEFAULT_DPI);
+    let mut ignored_dpi = None;
+    let declared = if s.dpi_override.is_none() {
+        read_dpi(bytes).filter(|&d| {
+            let plausible = d >= MIN_PLAUSIBLE_DPI;
+            if !plausible {
+                ignored_dpi = Some(d);
+            }
+            plausible
+        })
+    } else {
+        None
+    };
+    let dpi = s.dpi_override.or(declared).unwrap_or(DEFAULT_DPI);
     if !(dpi.is_finite() && dpi > 0.0) {
         return Err(ImportError::Parse("dpi must be a positive number".into()));
     }
     let grey = decode(bytes)?;
+    let (orig_w, orig_h) = grey.dimensions();
+    let (grey, downscaled_from) = fit_budget(grey);
     let (w, h) = grey.dimensions();
     let threshold = s.threshold.unwrap_or_else(|| otsu(&grey));
 
@@ -111,9 +133,11 @@ pub fn trace(
     }
     drop(grey);
 
-    let mm_per_px = 25.4 / dpi;
+    // After a downscale a traced pixel covers more than one source pixel.
+    let mm_x = f64::from(orig_w) * 25.4 / dpi / f64::from(w);
+    let mm_y = f64::from(orig_h) * 25.4 / dpi / f64::from(h);
     let min_area_px = if s.despeckle_mm2.is_finite() && s.despeckle_mm2 > 0.0 {
-        s.despeckle_mm2 / (mm_per_px * mm_per_px)
+        s.despeckle_mm2 / (mm_x * mm_y)
     } else {
         0.0
     };
@@ -128,8 +152,15 @@ pub fn trace(
         if (cluster.size() as f64) < min_area_px {
             continue;
         }
-        for spline in splines(cluster, corner, segment_length) {
-            let Some(path) = to_cut_path(&spline, mm_per_px) else {
+        let found = splines(cluster, corner, segment_length);
+        if found.is_empty() {
+            // visioncortex drops outlines it cannot fit (a lone pixel).
+            dropped_small += 1;
+        }
+        for spline in found {
+            // A shape that collapses to fewer than three points counts as dropped.
+            let Some(path) = to_cut_path(&spline, mm_x, mm_y) else {
+                dropped_small += 1;
                 continue;
             };
             let b = kurbo::Shape::bounding_box(&path.path);
@@ -143,8 +174,13 @@ pub fn trace(
     Ok(TraceResult {
         paths,
         dropped_small,
-        size_mm: (f64::from(w) * mm_per_px, f64::from(h) * mm_per_px),
+        size_mm: (
+            f64::from(orig_w) * 25.4 / dpi,
+            f64::from(orig_h) * 25.4 / dpi,
+        ),
         threshold_used: threshold,
+        downscaled_from,
+        ignored_dpi,
     })
 }
 
@@ -161,14 +197,31 @@ fn splines(cluster: &Cluster, corner: f64, segment_length: f64) -> Vec<Spline> {
         .paths
         .into_iter()
         .filter_map(|el| match el {
-            CompoundPathElement::Spline(s) if !s.is_empty() => Some(s),
+            CompoundPathElement::Spline(s) => Some(s),
             _ => None,
         })
         .collect()
 }
 
-fn to_cut_path(spline: &Spline, mm_per_px: f64) -> Option<CutPath> {
-    let pt = |p: &visioncortex::PointF64| Point::new(p.x * mm_per_px, p.y * mm_per_px);
+/// Scales the image down to `MAX_TRACE_PIXELS`, keeping the aspect ratio.
+fn fit_budget(grey: GrayImage) -> (GrayImage, Option<(u32, u32)>) {
+    let (w, h) = grey.dimensions();
+    let pixels = u64::from(w) * u64::from(h);
+    if pixels <= MAX_TRACE_PIXELS {
+        return (grey, None);
+    }
+    let k = (MAX_TRACE_PIXELS as f64 / pixels as f64).sqrt();
+    let nw = ((f64::from(w) * k) as u32).max(1);
+    let nh = ((f64::from(h) * k) as u32).max(1);
+    let small = image::imageops::resize(&grey, nw, nh, image::imageops::FilterType::Triangle);
+    (small, Some((w, h)))
+}
+
+fn to_cut_path(spline: &Spline, mm_x: f64, mm_y: f64) -> Option<CutPath> {
+    if spline.is_empty() {
+        return None;
+    }
+    let pt = |p: &visioncortex::PointF64| Point::new(p.x * mm_x, p.y * mm_y);
     let mut bez = BezPath::new();
     bez.move_to(pt(&spline.points[0]));
     for c in spline.points[1..].as_chunks::<3>().0 {

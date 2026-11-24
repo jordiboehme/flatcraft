@@ -279,7 +279,7 @@ fn transparent_pixels_count_as_white() {
     assert_eq!(t.paths.len(), 1);
 }
 
-/// A PNG header that claims 30000 x 30000 pixels; no pixel data follows.
+/// A PNG header that claims 30000 x 30000 pixels; only a stub of pixel data follows.
 fn bomb() -> Vec<u8> {
     let mut ihdr = Vec::new();
     ihdr.extend_from_slice(&30000u32.to_be_bytes());
@@ -287,6 +287,7 @@ fn bomb() -> Vec<u8> {
     ihdr.extend_from_slice(&[1, 0, 0, 0, 0]); // 1 bit, grey
     let mut out = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
     out.extend(chunk(b"IHDR", &ihdr));
+    out.extend(chunk(b"IDAT", &[0x78, 0x9c, 0x63, 0x00]));
     out.extend(chunk(b"IEND", &[]));
     out
 }
@@ -295,10 +296,74 @@ fn bomb() -> Vec<u8> {
 fn decompression_bomb_is_refused() {
     let start = Instant::now();
     let bytes = bomb();
-    assert!(matches!(raster::decode(&bytes), Err(ImportError::TooLarge)));
+    let want = ImportError::ImageTooLarge {
+        width: 30000,
+        height: 30000,
+    };
     assert!(matches!(
-        trace(&bytes, &TraceSettings::default(), BLADE),
-        Err(ImportError::TooLarge)
+        raster::decode(&bytes),
+        Err(ImportError::ImageTooLarge {
+            width: 30000,
+            height: 30000
+        })
     ));
+    let e = trace(&bytes, &TraceSettings::default(), BLADE).unwrap_err();
+    assert!(matches!(e, ImportError::ImageTooLarge { .. }), "{e}");
+    assert_eq!(
+        e.to_string(),
+        "The image is too large to import (30000 x 30000 pixels, at most 16384 per side)."
+    );
+    assert_eq!(want.to_string(), e.to_string());
     assert!(start.elapsed() < Duration::from_secs(2));
+}
+
+#[test]
+fn big_images_are_downscaled_to_the_budget_with_exact_size() {
+    let mut img = white(6000, 4000);
+    fill(&mut img, 1000, 1000, 2000, 1000, 0);
+    let t = trace(&png(&img), &TraceSettings::default(), BLADE).unwrap();
+    assert_eq!(t.downscaled_from, Some((6000, 4000)));
+    assert!((t.size_mm.0 - 508.0).abs() < 1e-6, "{:?}", t.size_mm);
+    assert!((t.size_mm.1 - 338.6667).abs() < 1e-3, "{:?}", t.size_mm);
+    assert_eq!(t.paths.len(), 1);
+    let b = bounds(&t.paths).unwrap();
+    assert!((b.width() - 169.33).abs() < 0.6, "{b:?}");
+    assert!((b.height() - 84.67).abs() < 0.6, "{b:?}");
+    assert!(
+        (b.x0 - 84.67).abs() < 0.6 && (b.y0 - 84.67).abs() < 0.6,
+        "{b:?}"
+    );
+    // Small images are traced as they are.
+    let t = trace(&png(&square_img()), &TraceSettings::default(), BLADE).unwrap();
+    assert_eq!(t.downscaled_from, None);
+}
+
+#[test]
+fn tiny_declared_dpi_is_ignored() {
+    let bytes = with_phys(&png(&square_img()), 100, 1); // 2.54 dpi
+    let t = trace(&bytes, &TraceSettings::default(), BLADE).unwrap();
+    assert!((t.size_mm.0 - 25.4).abs() < 1e-9, "{:?}", t.size_mm);
+    assert!((t.ignored_dpi.unwrap() - 2.54).abs() < 0.01);
+    // An explicit override never looks at the file.
+    let s = TraceSettings {
+        dpi_override: Some(150.0),
+        ..TraceSettings::default()
+    };
+    let t = trace(&bytes, &s, BLADE).unwrap();
+    assert_eq!(t.ignored_dpi, None);
+    assert!((t.size_mm.0 - 50.8).abs() < 1e-9);
+}
+
+#[test]
+fn collapsed_shapes_are_counted_as_dropped() {
+    let mut img = white(100, 100);
+    img.put_pixel(50, 50, Luma([0]));
+    let s = TraceSettings {
+        despeckle_mm2: 0.0,
+        min_feature_mm: Some(0.0),
+        ..TraceSettings::default()
+    };
+    let t = trace(&png(&img), &s, BLADE).unwrap();
+    assert!(t.paths.is_empty());
+    assert_eq!(t.dropped_small, 1);
 }

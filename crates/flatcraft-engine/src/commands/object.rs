@@ -36,7 +36,10 @@ pub(crate) fn warning_text(w: &ImportWarning) -> String {
 }
 
 fn import_error(e: ImportError) -> CommandError {
-    CommandError::Failed(format!("cannot import the file: {e}"))
+    match e {
+        ImportError::ImageTooLarge { .. } => CommandError::Failed(e.to_string()),
+        other => CommandError::Failed(format!("cannot import the file: {other}")),
+    }
 }
 
 /// Blade offset of the active document's plotter, mm. 0.25 if the plotter
@@ -97,12 +100,23 @@ fn add_svg(s: &mut Session, name: String, bytes: Vec<u8>) -> Result<Value, Comma
 }
 
 /// Warnings and numbers that describe a trace, for people and agents.
-fn trace_report(t: &TraceResult) -> (Vec<String>, Value) {
+fn trace_report(t: &TraceResult, invert: bool) -> (Vec<String>, Value) {
     let mut warnings = Vec::new();
     if t.paths.is_empty() {
-        warnings.push(
-            "nothing was traced: no dark shape is big enough. Try another threshold, invert, or a smaller despeckle area".to_string(),
-        );
+        let shape = if invert { "light" } else { "dark" };
+        warnings.push(format!(
+            "nothing was traced: no {shape} shape is big enough. Try another threshold, invert, or a smaller despeckle area"
+        ));
+    }
+    if let Some((w, h)) = t.downscaled_from {
+        warnings.push(format!(
+            "The image was traced at a lower resolution ({w} x {h} px) to keep memory in check."
+        ));
+    }
+    if let Some(dpi) = t.ignored_dpi {
+        warnings.push(format!(
+            "The file declares {dpi:.1} dpi, which is not plausible. It was ignored and 300 dpi used; set dpi_override to change it."
+        ));
     }
     if t.dropped_small > 0 {
         warnings.push(format!(
@@ -114,6 +128,7 @@ fn trace_report(t: &TraceResult) -> (Vec<String>, Value) {
         "dropped_small": t.dropped_small,
         "threshold_used": t.threshold_used,
         "size_mm": [t.size_mm.0, t.size_mm.1],
+        "downscaled_from": t.downscaled_from.map(|(w, h)| [w, h]),
     });
     (warnings, numbers)
 }
@@ -122,7 +137,7 @@ fn trace_report(t: &TraceResult) -> (Vec<String>, Value) {
 fn add_raster(s: &mut Session, name: String, bytes: Vec<u8>) -> Result<Value, CommandError> {
     let settings = TraceSettings::default();
     let t = trace(&bytes, &settings, blade_offset_mm(s)).map_err(import_error)?;
-    let (warnings, numbers) = trace_report(&t);
+    let (warnings, numbers) = trace_report(&t, settings.invert);
     let id = add_object(
         s,
         name.clone(),
@@ -320,7 +335,6 @@ pub struct RetraceParams {
 
 fn run_retrace(s: &mut Session, p: RetraceParams, _: Origin) -> Result<Value, CommandError> {
     let id = ObjectId(p.id);
-    super::check_exists(&s.doc().document, id)?;
     let settings = p.settings.into_trace()?;
     let blade = blade_offset_mm(s);
     let o = s
@@ -335,13 +349,18 @@ fn run_retrace(s: &mut Session, p: RetraceParams, _: Origin) -> Result<Value, Co
         )));
     };
     let t = trace(bytes, &settings, blade).map_err(import_error)?;
-    let (warnings, numbers) = trace_report(&t);
+    let invert = settings.invert;
+    let (warnings, numbers) = trace_report(&t, invert);
     let o = object_mut(&mut s.doc_mut().document, id)?;
     if let Source::Raster { trace, .. } = &mut o.source {
         *trace = settings;
     }
-    // The transform stays as it was.
+    // Keep the image frame in place, not the geometry centre: the placement
+    // is relative to the centre of the local bounds, which the new trace
+    // changes. Map the new bounds centre through the old placement.
+    let old_placement = o.transform.affine(o.local_bounds);
     o.set_geometry(t.paths);
+    o.transform.center_mm = old_placement * o.local_bounds.center();
     let mut out = json!({ "id": id.0, "bounds_mm": bounds_json(s, id), "warnings": warnings });
     merge(&mut out, numbers);
     Ok(out)
@@ -768,3 +787,16 @@ command!(
     run: run_mirror,
     description: "Mirrors each object along a screen axis through its own centre. horizontal flips left and right, vertical flips top and bottom. Use horizontal for iron-on vinyl, which is cut from the back. An empty ids list means the current selection. Returns {ids}.",
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_retrace_settings_are_the_trace_defaults() {
+        let s = RetraceSettings::default().into_trace().unwrap();
+        assert_eq!(s, TraceSettings::default());
+        let from_empty: RetraceSettings = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(from_empty.into_trace().unwrap(), TraceSettings::default());
+    }
+}

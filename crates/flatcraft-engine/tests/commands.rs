@@ -921,7 +921,7 @@ fn retrace_keeps_transform() {
     assert_eq!(r["dropped_small"], 0);
     assert!(r["threshold_used"].is_u64(), "{r}");
     let o = s.doc().document.get(ObjectId(id)).unwrap();
-    assert_eq!(o.transform, before);
+    assert_transform_close(&o.transform, &before);
     // Inverted: the white frame, two paths instead of one.
     assert_eq!(o.geometry.len(), 2);
     match &o.source {
@@ -975,4 +975,146 @@ fn project_open_retraces_rasters() {
     assert_eq!(r["warnings"].as_array().map(Vec::len), Some(0), "{r}");
     let b = placed_bounds(&s, id);
     assert!((b.width() - 16.93).abs() < 0.1, "{b:?}");
+}
+
+fn assert_transform_close(
+    a: &flatcraft_core::transform::Transform,
+    b: &flatcraft_core::transform::Transform,
+) {
+    assert!((a.center_mm - b.center_mm).hypot() < 1e-9, "{a:?} vs {b:?}");
+    assert_eq!(
+        (a.scale_x, a.scale_y, a.rotation_deg, a.mirror),
+        (b.scale_x, b.scale_y, b.rotation_deg, b.mirror)
+    );
+}
+
+#[test]
+fn retrace_keeps_the_image_frame_when_bounds_change_asymmetrically() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    // A big square plus a 30 px dot at the top-left; the dot is 2.5 mm.
+    let mut img = image::GrayImage::from_pixel(300, 300, image::Luma([255]));
+    for (x0, y0, size) in [(100u32, 100u32, 150u32), (10, 10, 30)] {
+        for y in y0..y0 + size {
+            for x in x0..x0 + size {
+                img.put_pixel(x, y, image::Luma([0]));
+            }
+        }
+    }
+    let path = dir.path().join("two.png");
+    img.save(&path).unwrap();
+    let id = run(&mut s, "object.import", json!({ "path": path }))["id"]
+        .as_u64()
+        .unwrap();
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [id], "degrees": 30.0 }),
+    );
+    let square_before = {
+        let o = s.doc().document.get(ObjectId(id)).unwrap();
+        assert_eq!(o.geometry.len(), 2);
+        let p = o.placed_paths();
+        // The big square is the larger of the two.
+        p.iter()
+            .map(|c| kurbo::Shape::bounding_box(&c.path))
+            .max_by(|a, b| a.area().total_cmp(&b.area()))
+            .unwrap()
+    };
+    run(
+        &mut s,
+        "object.retrace",
+        json!({ "id": id, "settings": { "min_feature_mm": 5.0 } }),
+    );
+    let o = s.doc().document.get(ObjectId(id)).unwrap();
+    assert_eq!(o.geometry.len(), 1);
+    let after = kurbo::Shape::bounding_box(&o.placed_paths()[0].path);
+    assert!(
+        (after.x0 - square_before.x0).abs() < 1e-6,
+        "{after:?} {square_before:?}"
+    );
+    assert!(
+        (after.y0 - square_before.y0).abs() < 1e-6,
+        "{after:?} {square_before:?}"
+    );
+    assert!((after.x1 - square_before.x1).abs() < 1e-6);
+}
+
+#[test]
+fn big_raster_reports_the_downscale_and_wording_follows_invert() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let mut img = image::GrayImage::from_pixel(6000, 4000, image::Luma([255]));
+    for y in 1000..2000 {
+        for x in 1000..3000 {
+            img.put_pixel(x, y, image::Luma([0]));
+        }
+    }
+    let path = dir.path().join("big.png");
+    img.save(&path).unwrap();
+    let r = run(&mut s, "object.import", json!({ "path": path }));
+    assert_eq!(r["downscaled_from"], json!([6000, 4000]));
+    let w = r["warnings"].to_string();
+    assert!(
+        w.contains("traced at a lower resolution (6000 x 4000 px)"),
+        "{w}"
+    );
+    let id = r["id"].as_u64().unwrap();
+    let b = placed_bounds(&s, id);
+    assert!((b.width() - 169.33).abs() < 0.6, "{b:?}");
+
+    // An all-white image traces to nothing; inverted, an all-black one does.
+    let blank = dir.path().join("blank.png");
+    image::GrayImage::from_pixel(50, 50, image::Luma([255]))
+        .save(&blank)
+        .unwrap();
+    let r = run(&mut s, "object.import", json!({ "path": blank }));
+    assert!(r["warnings"].to_string().contains("no dark shape"), "{r}");
+    let black = dir.path().join("black.png");
+    image::GrayImage::from_pixel(50, 50, image::Luma([0]))
+        .save(&black)
+        .unwrap();
+    let r = run(&mut s, "object.import", json!({ "path": black }));
+    let id = r["id"].as_u64().unwrap();
+    let r = run(
+        &mut s,
+        "object.retrace",
+        json!({ "id": id, "settings": { "invert": true } }),
+    );
+    assert!(r["warnings"].to_string().contains("no light shape"), "{r}");
+}
+
+#[test]
+fn oversized_image_error_names_the_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    // IHDR claims 30000 x 30000; a stub IDAT follows.
+    let mut png: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    let chunk = |kind: &[u8; 4], data: &[u8]| {
+        let mut c = flate2::Crc::new();
+        c.update(kind);
+        c.update(data);
+        let mut v = (data.len() as u32).to_be_bytes().to_vec();
+        v.extend_from_slice(kind);
+        v.extend_from_slice(data);
+        v.extend_from_slice(&c.sum().to_be_bytes());
+        v
+    };
+    let mut ihdr = 30000u32.to_be_bytes().to_vec();
+    ihdr.extend_from_slice(&30000u32.to_be_bytes());
+    ihdr.extend_from_slice(&[1, 0, 0, 0, 0]);
+    png.extend(chunk(b"IHDR", &ihdr));
+    png.extend(chunk(b"IDAT", &[0x78, 0x9c, 0x63, 0x00]));
+    png.extend(chunk(b"IEND", &[]));
+    let path = dir.path().join("bomb.png");
+    std::fs::write(&path, png).unwrap();
+    let e = s
+        .execute("object.import", json!({ "path": path }), Origin::User)
+        .unwrap_err();
+    let text = e.to_string();
+    assert!(
+        text.contains("30000 x 30000 pixels, at most 16384 per side"),
+        "{text}"
+    );
+    assert!(!text.contains("50 MB"), "{text}");
 }
