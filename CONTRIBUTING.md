@@ -17,7 +17,7 @@ CI runs the same checks on macOS, Linux and Windows. A pull request needs a gree
 
 ## The clean-room rule
 
-All existing drivers for Silhouette plotters are GPL or LGPL. FlatCraft is MPL-2.0, so it can't take code from them.
+Most open-source plotter drivers are GPL or LGPL. FlatCraft is MPL-2.0, so it can't take code from them.
 
 - Protocol facts are fine from any source: command names, argument order, units, USB IDs, status codes, captured bytes.
 - Facts go into [docs/protocol/gpgl.md](docs/protocol/gpgl.md) first, in your own words, with their source and a confidence mark.
