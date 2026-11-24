@@ -169,7 +169,7 @@ fn send_empty_document_is_refused_and_writes_nothing() {
     let e = s.execute("job.send", json!({}), Origin::User).unwrap_err();
     assert_eq!(
         e,
-        CommandError::Refused("Nothing to cut: the document has no visible objects.".into())
+        CommandError::Refused("Nothing to cut: no visible object has cut paths.".into())
     );
     assert!(files(d.out.path()).is_empty());
     assert!(s.byte_log.is_empty());
@@ -182,7 +182,13 @@ fn send_empty_document_is_refused_and_writes_nothing() {
         json!({ "ids": [id], "visible": false }),
     );
     let e = s.execute("job.send", json!({}), Origin::User).unwrap_err();
-    assert!(matches!(e, CommandError::Refused(_)), "{e}");
+    assert_eq!(
+        e,
+        CommandError::Refused(
+            "Nothing to cut: no visible object has cut paths. 'square' is hidden and will not be cut."
+                .into()
+        )
+    );
     assert!(files(d.out.path()).is_empty());
 }
 
@@ -479,7 +485,7 @@ fn agent_headless_usb_send_is_refused_by_the_gate() {
         panic!("{e}")
     };
     assert!(msg.contains("headless"), "{msg}");
-    assert!(s.pending_send.is_none());
+    assert!(s.pending_send().is_none());
 }
 
 #[test]
@@ -499,7 +505,7 @@ fn agent_with_pref_reaches_the_usb_transport() {
         e,
         CommandError::Refused("USB cutting arrives in milestone 3.".into())
     );
-    assert!(s.pending_send.is_none());
+    assert!(s.pending_send().is_none());
 }
 
 #[test]
@@ -517,7 +523,7 @@ fn agent_cannot_self_confirm() {
         .unwrap_err();
     assert!(matches!(e, CommandError::InvalidParams(_)), "{e}");
     assert!(e.to_string().contains("confirmed"), "{e}");
-    assert!(s.pending_send.is_none());
+    assert!(s.pending_send().is_none());
     assert!(s.byte_log.is_empty());
     assert!(files(d.out.path()).is_empty());
 
@@ -529,7 +535,7 @@ fn agent_cannot_self_confirm() {
         e,
         CommandError::Refused("Waiting for confirmation in the FlatCraft window.".into())
     );
-    let pending = s.pending_send.clone().unwrap();
+    let pending = s.pending_send().cloned().unwrap();
     assert_eq!(pending.name, "wait");
     assert!(s.byte_log.is_empty());
     assert!(files(d.out.path()).is_empty());
@@ -537,7 +543,7 @@ fn agent_cannot_self_confirm() {
     // Sending again replaces the pending request; it never sends.
     s.execute("job.send", json!({ "name": "again" }), Origin::Agent)
         .unwrap_err();
-    let newer = s.pending_send.clone().unwrap();
+    let newer = s.pending_send().cloned().unwrap();
     assert_ne!(newer.id, pending.id);
     assert_eq!(newer.name, "again");
 
@@ -547,7 +553,7 @@ fn agent_cannot_self_confirm() {
     // A wrong id changes nothing.
     let e = s.confirm_pending(pending.id).unwrap_err();
     assert!(matches!(e, CommandError::NotFound(_)), "{e}");
-    assert_eq!(s.pending_send.as_ref(), Some(&newer));
+    assert_eq!(s.pending_send(), Some(&newer));
 
     // The GUI confirms: it runs as the user and reaches the USB transport.
     let e = s.confirm_pending(newer.id).unwrap_err();
@@ -555,7 +561,7 @@ fn agent_cannot_self_confirm() {
         e,
         CommandError::Refused("USB cutting arrives in milestone 3.".into())
     );
-    assert!(s.pending_send.is_none());
+    assert!(s.pending_send().is_none());
     let e = s.confirm_pending(newer.id).unwrap_err();
     assert!(matches!(e, CommandError::NotFound(_)), "{e}");
 }
@@ -588,4 +594,181 @@ fn preferences_output_dir_roundtrips() {
     let none = Preferences::default();
     none.save(d.config.path()).unwrap();
     assert_eq!(Preferences::load(d.config.path()).output_dir, None);
+}
+
+// ---------------------------------------------------------------- confirmation snapshot (R10)
+
+fn bytes_have(bytes: &[u8], needle: &[u8]) -> bool {
+    bytes.windows(needle.len()).any(|w| w == needle)
+}
+
+/// A session with a window, the USB plotter, a square and speed 3, force 20.
+fn usb_ui_session(d: &Dirs) -> Session {
+    let mut s = session_with(d, prefs(d), true);
+    import_square(&mut s, "square");
+    run(
+        &mut s,
+        "job.set_plotter",
+        json!({ "id": "silhouette-cameo-2" }),
+    );
+    run(
+        &mut s,
+        "job.set_overrides",
+        json!({ "speed": 3, "force": 20 }),
+    );
+    s
+}
+
+fn request(s: &mut Session) -> u64 {
+    let e = s
+        .execute("job.send", json!({ "name": "snap" }), Origin::Agent)
+        .unwrap_err();
+    assert_eq!(
+        e,
+        CommandError::Refused("Waiting for confirmation in the FlatCraft window.".into())
+    );
+    s.pending_send().unwrap().id
+}
+
+#[test]
+fn confirm_sends_the_snapshot_not_the_current_document() {
+    let d = dirs();
+    let mut s = usb_ui_session(&d);
+    let id = request(&mut s);
+    let snapshot = s.pending_send().cloned().unwrap();
+    assert!(bytes_have(&snapshot.job.bytes, b"!3\x03"));
+    assert!(bytes_have(&snapshot.job.bytes, b"FX20\x03"));
+    check_safe(&snapshot.job.bytes).unwrap();
+    assert_eq!(snapshot.plotter_id, "silhouette-cameo-2");
+    assert!(matches!(snapshot.transport, TransportSpec::Usb { .. }));
+    assert_eq!(snapshot.doc, s.doc().id);
+    assert_eq!(snapshot.summary.toolpaths, 1);
+    assert_eq!((snapshot.summary.speed, snapshot.summary.force), (3, 20));
+    assert_eq!(snapshot.summary.passes, 1);
+    assert!(snapshot.summary.cut_mm > 119.0);
+
+    // The agent raises the force and empties the document after asking.
+    run(&mut s, "job.set_overrides", json!({ "force": 30 }));
+    let ids: Vec<u64> = s.doc().document.objects.iter().map(|o| o.id.0).collect();
+    run(&mut s, "object.delete", json!({ "ids": ids }));
+    assert!(s.doc().document.objects.is_empty());
+    assert_eq!(s.pending_send().unwrap().job.bytes, snapshot.job.bytes);
+
+    // Confirming sends the snapshot: it reaches the USB transport and never rebuilds.
+    let e = s.confirm_pending(id).unwrap_err();
+    assert_eq!(
+        e,
+        CommandError::Refused("USB cutting arrives in milestone 3.".into())
+    );
+    assert!(s.pending_send().is_none());
+    assert!(files(d.out.path()).is_empty());
+}
+
+#[test]
+fn build_errors_go_straight_back_to_the_agent() {
+    let d = dirs();
+    let mut s = session_with(&d, prefs(&d), true);
+    run(
+        &mut s,
+        "job.set_plotter",
+        json!({ "id": "silhouette-cameo-2" }),
+    );
+    let e = s.execute("job.send", json!({}), Origin::Agent).unwrap_err();
+    assert_eq!(
+        e,
+        CommandError::Refused("Nothing to cut: no visible object has cut paths.".into())
+    );
+    assert!(s.pending_send().is_none());
+}
+
+#[test]
+fn closing_the_requesting_document_drops_the_pending_send() {
+    let d = dirs();
+    let mut s = usb_ui_session(&d);
+    request(&mut s);
+    run(&mut s, "document.new", json!({}));
+    assert!(s.pending_send().is_some());
+    run(
+        &mut s,
+        "document.close",
+        json!({ "index": 0, "discard_changes": true }),
+    );
+    assert!(s.pending_send().is_none());
+}
+
+#[test]
+fn switching_documents_keeps_the_snapshot() {
+    let d = dirs();
+    let mut s = usb_ui_session(&d);
+    let id = request(&mut s);
+    let bytes = s.pending_send().unwrap().job.bytes.clone();
+    run(&mut s, "document.new", json!({}));
+    assert_eq!(s.active, 1);
+    assert!(s.doc().document.objects.is_empty());
+    assert_eq!(s.pending_send().unwrap().job.bytes, bytes);
+    let e = s.confirm_pending(id).unwrap_err();
+    assert_eq!(
+        e,
+        CommandError::Refused("USB cutting arrives in milestone 3.".into())
+    );
+}
+
+#[test]
+fn documents_have_stable_unique_ids() {
+    let d = dirs();
+    let mut s = session(&d);
+    let first = s.doc().id;
+    run(&mut s, "document.new", json!({}));
+    let second = s.doc().id;
+    assert!(second > first);
+    run(&mut s, "document.switch", json!({ "index": 0 }));
+    assert_eq!(s.doc().id, first);
+    import_square(&mut s, "square");
+    assert_eq!(s.doc().id, first);
+}
+
+// ---------------------------------------------------------------- profile problems
+
+fn user_plotter(config: &Path, body: &str) {
+    let plotters = config.join("plotters");
+    std::fs::create_dir_all(&plotters).unwrap();
+    std::fs::write(
+        plotters.join("custom.toml"),
+        format!(
+            "id = \"custom\"\nname = \"Custom\"\ninherits = \"file-output-gpgl-cameo2\"\n{body}"
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn relative_output_directory_is_refused() {
+    let d = dirs();
+    user_plotter(
+        d.config.path(),
+        "transport = { File = { directory = \"relative/out\", extension = \"gpgl\" } }\n",
+    );
+    let mut s = session(&d);
+    import_square(&mut s, "square");
+    run(&mut s, "job.set_plotter", json!({ "id": "custom" }));
+    let e = s.execute("job.send", json!({}), Origin::User).unwrap_err();
+    let CommandError::Refused(msg) = &e else {
+        panic!("{e}")
+    };
+    assert!(msg.contains("relative/out"), "{msg}");
+    assert!(msg.contains("absolute"), "{msg}");
+    assert!(!Path::new("relative").exists());
+}
+
+#[test]
+fn invalid_pipeline_settings_are_refused() {
+    let d = dirs();
+    user_plotter(d.config.path(), "flatten_tolerance_mm = 0.0\n");
+    let mut s = session(&d);
+    import_square(&mut s, "square");
+    run(&mut s, "job.set_plotter", json!({ "id": "custom" }));
+    let e = s
+        .execute("job.preview", json!({}), Origin::User)
+        .unwrap_err();
+    assert!(matches!(e, CommandError::Refused(_)), "{e}");
 }

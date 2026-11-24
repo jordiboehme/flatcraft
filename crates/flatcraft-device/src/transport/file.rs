@@ -55,8 +55,9 @@ impl FileTransport {
             let targets = self.targets(&stem);
             let mut taken = false;
             for t in &targets {
-                // symlink_metadata also sees dangling links, which a rename would replace.
-                taken |= t.symlink_metadata().is_ok();
+                // symlink_metadata also sees dangling links, which a rename would
+                // replace. A leftover temp file of the same name counts as taken too.
+                taken |= t.symlink_metadata().is_ok() || tmp_path(t).symlink_metadata().is_ok();
             }
             if !taken {
                 return Ok(targets);
@@ -90,30 +91,39 @@ fn tmp_path(target: &Path) -> PathBuf {
     target.with_file_name(format!(".{name}.tmp"))
 }
 
-fn write_tmp(path: &Path, data: &[u8]) -> Result<(), TransportError> {
-    let mut f = std::fs::File::create(path).map_err(|e| io_error("create", path, e))?;
+/// Writes a new temp file. It never opens a file that exists already.
+fn write_tmp(path: &Path, data: &[u8]) -> Result<std::fs::File, TransportError> {
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| io_error("create", path, e))?;
     f.write_all(data).map_err(|e| io_error("write", path, e))?;
-    f.sync_all().map_err(|e| io_error("write", path, e))
+    f.sync_all().map_err(|e| io_error("write", path, e))?;
+    Ok(f)
 }
 
 /// Writes every `(target, data)` pair through a temp file and renames them in
-/// order. On any error, every temp file and every file already renamed is
-/// removed again, so a failed job leaves nothing behind.
+/// order. On any error it removes the temp files it created and the files it
+/// already renamed, so a failed job leaves nothing behind and never deletes a
+/// file it did not write.
 fn write_all_atomic(files: &[(&Path, &[u8])]) -> Result<(), TransportError> {
-    let tmps: Vec<PathBuf> = files.iter().map(|(t, _)| tmp_path(t)).collect();
+    let mut created: Vec<PathBuf> = Vec::new();
     let mut renamed: Vec<&Path> = Vec::new();
     let result = (|| {
-        for ((_, data), tmp) in files.iter().zip(&tmps) {
-            write_tmp(tmp, data)?;
+        for (target, data) in files {
+            let tmp = tmp_path(target);
+            write_tmp(&tmp, data)?;
+            created.push(tmp);
         }
-        for ((target, _), tmp) in files.iter().zip(&tmps) {
+        for ((target, _), tmp) in files.iter().zip(&created) {
             std::fs::rename(tmp, target).map_err(|e| io_error("write", target, e))?;
             renamed.push(target);
         }
         Ok(())
     })();
     if result.is_err() {
-        for tmp in &tmps {
+        for tmp in created.iter().skip(renamed.len()) {
             let _ = std::fs::remove_file(tmp);
         }
         for target in renamed {

@@ -2,11 +2,13 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use flatcraft_core::document::{Document, JobSettings, ObjectId};
 use flatcraft_core::undo::UndoStack;
-use flatcraft_device::{ByteLog, ProfileStore};
+use flatcraft_device::gpgl::EmittedJob;
+use flatcraft_device::{ByteLog, ProfileStore, TransportSpec};
 use thiserror::Error;
 
 use crate::prefs::Preferences;
@@ -36,13 +38,33 @@ pub enum CommandError {
 
 pub use crate::job::JobResult;
 
+/// What a job will do, for the confirmation dialog.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JobSummary {
+    pub toolpaths: usize,
+    pub cut_mm: f64,
+    pub travel_mm: f64,
+    pub warnings: Vec<String>,
+    pub speed: u8,
+    pub force: u8,
+    pub passes: u32,
+}
+
 /// An agent's USB send that waits for the person at the FlatCraft window.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// It is a snapshot: confirming sends exactly these bytes through this
+/// transport, whatever happened to the document since.
+#[derive(Debug, Clone, PartialEq)]
 pub struct PendingSend {
     pub id: u64,
     /// The sanitised job name.
     pub name: String,
     pub requested_at: Instant,
+    /// `DocState::id` of the document the job was built from.
+    pub doc: u64,
+    pub plotter_id: String,
+    pub transport: TransportSpec,
+    pub job: EmittedJob,
+    pub summary: JobSummary,
 }
 
 /// Media used by new documents.
@@ -51,6 +73,9 @@ pub const DEFAULT_MEDIA: &str = "mat-12x12";
 /// One open document with its selection and undo history.
 #[derive(Debug, Clone)]
 pub struct DocState {
+    /// Stable id, unique for the life of the process. A replaced document
+    /// gets a new id.
+    pub id: u64,
     pub document: Document,
     pub selection: BTreeSet<ObjectId>,
     pub undo: UndoStack<Document>,
@@ -61,7 +86,9 @@ pub struct DocState {
 
 impl DocState {
     pub fn new(document: Document) -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
         Self {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             document,
             selection: BTreeSet::new(),
             undo: UndoStack::default(),
@@ -92,7 +119,7 @@ pub struct Session {
     /// Bytes sent to and read from plotters in this session.
     pub byte_log: ByteLog,
     /// A send that waits for confirmation in the GUI (see `confirm_pending`).
-    pub pending_send: Option<PendingSend>,
+    pub(crate) pending_send: Option<PendingSend>,
     next_pending_id: u64,
 }
 
@@ -141,37 +168,75 @@ impl Session {
         &mut self.docs[self.active]
     }
 
+    /// The send that waits for confirmation in the GUI, if any.
+    pub fn pending_send(&self) -> Option<&PendingSend> {
+        self.pending_send.as_ref()
+    }
+
     /// Stores a send that waits for confirmation in the GUI and returns its
     /// id. It replaces an older pending send.
-    pub(crate) fn request_confirmation(&mut self, name: String) -> u64 {
+    pub(crate) fn request_confirmation(
+        &mut self,
+        name: String,
+        plotter_id: String,
+        transport: TransportSpec,
+        job: EmittedJob,
+        summary: JobSummary,
+    ) -> u64 {
         let id = self.next_pending_id;
         self.next_pending_id += 1;
         self.pending_send = Some(PendingSend {
             id,
             name,
             requested_at: Instant::now(),
+            doc: self.doc().id,
+            plotter_id,
+            transport,
+            job,
+            summary,
         });
         id
     }
 
+    /// Drops the pending send when its document is no longer open (closed,
+    /// or replaced by another document in its slot).
+    fn prune_pending(&mut self) {
+        if let Some(p) = &self.pending_send
+            && !self.docs.iter().any(|d| d.id == p.doc)
+        {
+            self.pending_send = None;
+        }
+    }
+
     /// Sends the pending job after the person confirmed it in the GUI. It
-    /// runs as `Origin::User`. This is not a registry command, so agents
+    /// runs as `Origin::User` and sends exactly the snapshot taken when the
+    /// agent asked: the same bytes through the same transport. The document
+    /// is not looked at again. This is not a registry command, so agents
     /// cannot reach it. A wrong id leaves the pending send in place.
     pub fn confirm_pending(&mut self, id: u64) -> Result<serde_json::Value, CommandError> {
-        match &self.pending_send {
-            Some(p) if p.id == id => {}
+        self.prune_pending();
+        let pending = match &self.pending_send {
+            Some(p) if p.id == id => p,
             _ => {
                 return Err(CommandError::NotFound(format!(
                     "no send with id {id} is waiting for confirmation"
                 )));
             }
+        };
+        if !matches!(pending.transport, TransportSpec::Usb { .. }) {
+            return Err(CommandError::Refused(
+                "only USB sends wait for confirmation".into(),
+            ));
         }
         let pending = self.pending_send.take().expect("checked above");
-        let plotter = self
-            .profiles
-            .plotter(&self.doc().document.job.plotter_id)
-            .map_err(crate::commands::profile_error)?;
-        crate::job::deliver(self, &plotter, &pending.name, Origin::User)
+        let report = crate::job::deliver_built(
+            self,
+            &pending.transport,
+            &pending.job,
+            &pending.name,
+            Origin::User,
+        )?;
+        Ok(crate::job::sent_json(&report, &pending.summary))
     }
 
     /// Runs a registry command. Commands that change the document record an
@@ -188,6 +253,17 @@ impl Session {
         }
         let command =
             registry::get(id).ok_or_else(|| CommandError::UnknownCommand(id.to_string()))?;
+        let result = self.run_command(command, params, origin);
+        self.prune_pending();
+        result
+    }
+
+    fn run_command(
+        &mut self,
+        command: &dyn registry::Command,
+        params: serde_json::Value,
+        origin: Origin,
+    ) -> Result<serde_json::Value, CommandError> {
         if !command.mutates_document() {
             return command.run(self, params, origin);
         }

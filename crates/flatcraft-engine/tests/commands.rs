@@ -13,12 +13,12 @@ const EPS: f64 = 1e-9;
 
 fn session(dir: &tempfile::TempDir) -> Session {
     let profiles = ProfileStore::load(dir.path()).unwrap();
-    Session::new(
-        profiles,
-        Preferences::default(),
-        false,
-        dir.path().to_path_buf(),
-    )
+    // Never the real Documents folder.
+    let prefs = Preferences {
+        output_dir: Some(dir.path().join("output")),
+        ..Preferences::default()
+    };
+    Session::new(profiles, prefs, false, dir.path().to_path_buf())
 }
 
 fn rect_svg(w: f64, h: f64) -> String {

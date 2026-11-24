@@ -11,4 +11,4 @@ pub mod session;
 pub use job::JobResult;
 pub use prefs::Preferences;
 pub use registry::Command;
-pub use session::{CommandError, DocState, Origin, PendingSend, Session};
+pub use session::{CommandError, DocState, JobSummary, Origin, PendingSend, Session};

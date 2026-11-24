@@ -200,3 +200,16 @@ fn byte_log_jsonl_format_and_ring() {
     assert_eq!(log.entries().next().unwrap().bytes, vec![0u8]);
     assert_eq!(log.entries().next().unwrap().dir, Dir::Out);
 }
+
+#[test]
+fn leftover_temp_files_are_skipped_and_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let stale = dir.path().join(".job.gpgl.tmp");
+    std::fs::write(&stale, "someone else's").unwrap();
+    let mut log = ByteLog::new();
+    let mut t = FileTransport::new(dir.path().to_path_buf(), "gpgl".into());
+    let r = t.send_job(&square_job(), "job", &mut log).unwrap();
+    assert_eq!(r.files[0], dir.path().join("job-2.gpgl"));
+    assert_eq!(std::fs::read_to_string(&stale).unwrap(), "someone else's");
+    assert!(!dir.path().join("job.gpgl").exists());
+}

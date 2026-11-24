@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use crate::commands::profile_error;
 use crate::commands::project::{inside, lexical, resolved};
 use crate::gate::{self, GateDecision};
-use crate::session::{CommandError, Origin, Session};
+use crate::session::{CommandError, JobSummary, Origin, Session};
 
 /// Join tolerance of the pipeline (spec default).
 pub const JOIN_TOLERANCE_MM: f64 = 0.01;
@@ -63,8 +63,20 @@ fn note(id: ObjectId, name: &str, path: usize, label: Option<&str>, pass: u32) -
     )
 }
 
+/// Problems the person can fix (settings, placement, media) are refusals;
+/// broken profiles and internal errors are failures.
 fn emit_error(e: EmitError) -> CommandError {
-    CommandError::Failed(format!("cannot build the GPGL job: {e}"))
+    let text = format!("cannot build the GPGL job: {e}");
+    match e {
+        EmitError::OutOfRange { .. }
+        | EmitError::CoordinateOutOfRange { .. }
+        | EmitError::UnknownMedia { .. }
+        | EmitError::EmptyJob => CommandError::Refused(text),
+        EmitError::HostCompensationNotYet
+        | EmitError::DialectNotSupported
+        | EmitError::EmptyDraw
+        | EmitError::InvalidProfile { .. } => CommandError::Failed(text),
+    }
 }
 
 /// Builds the job of the active document: the visible objects' paths, the
@@ -131,7 +143,12 @@ pub fn build(session: &Session) -> Result<JobResult, CommandError> {
     };
     let cut_plan = plan(&placed, &pipeline).map_err(|e| match e {
         PlanError::Empty => {
-            CommandError::Refused("Nothing to cut: the document has no visible objects.".into())
+            let mut text = String::from("Nothing to cut: no visible object has cut paths.");
+            for w in &warnings {
+                text.push(' ');
+                text.push_str(w);
+            }
+            CommandError::Refused(text)
         }
         PlanError::OutOfArea { objects } => {
             let names: Vec<String> = objects
@@ -146,7 +163,7 @@ pub fn build(session: &Session) -> Result<JobResult, CommandError> {
                 names.join(", ")
             ))
         }
-        other @ PlanError::InvalidSettings { .. } => CommandError::Failed(other.to_string()),
+        other @ PlanError::InvalidSettings { .. } => CommandError::Refused(other.to_string()),
     })?;
 
     let paths: Vec<EmitPath> = cut_plan
@@ -255,7 +272,40 @@ fn plotter(s: &Session) -> Result<PlotterProfile, CommandError> {
         .map_err(profile_error)
 }
 
-/// Runs the gate and sends the active document's job.
+/// The dialog summary of a built job.
+pub(crate) fn summary(result: &JobResult) -> JobSummary {
+    JobSummary {
+        toolpaths: result.plan.toolpaths.len(),
+        cut_mm: result.plan.cut_mm,
+        travel_mm: result.plan.travel_mm,
+        warnings: result.warnings.clone(),
+        speed: result.settings.speed,
+        force: result.settings.force,
+        passes: result
+            .plan
+            .toolpaths
+            .iter()
+            .map(|t| t.pass)
+            .max()
+            .unwrap_or(0),
+    }
+}
+
+/// The reply of a successful send.
+pub(crate) fn sent_json(report: &SendReport, summary: &JobSummary) -> Value {
+    json!({
+        "files": report.files,
+        "bytes_sent": report.bytes_sent,
+        "toolpaths": summary.toolpaths,
+        "cut_mm": summary.cut_mm,
+        "travel_mm": summary.travel_mm,
+        "warnings": summary.warnings,
+    })
+}
+
+/// Runs the gate, builds the active document's job and sends it. When the
+/// person has to confirm, the built job is stored as the pending send and
+/// nothing is sent; build errors come back right away.
 pub(crate) fn send(
     s: &mut Session,
     name: Option<String>,
@@ -264,28 +314,57 @@ pub(crate) fn send(
     let plotter = plotter(s)?;
     let name = job_name(s, name);
     match gate::check_send(origin, &plotter.transport, &s.prefs, s.has_ui) {
-        GateDecision::Allow => deliver(s, &plotter, &name, origin),
+        GateDecision::Refuse(reason) => Err(CommandError::Refused(reason)),
         GateDecision::NeedsConfirmation => {
-            s.request_confirmation(name);
+            let result = build(s)?;
+            let summary = summary(&result);
+            s.request_confirmation(
+                name,
+                plotter.id.clone(),
+                plotter.transport.clone(),
+                result.job,
+                summary,
+            );
             Err(CommandError::Refused(WAITING.into()))
         }
-        GateDecision::Refuse(reason) => Err(CommandError::Refused(reason)),
+        GateDecision::Allow => {
+            let mut result = build(s)?;
+            let report = deliver_built(s, &plotter.transport, &result.job, &name, origin)?;
+            let value = sent_json(&report, &summary(&result));
+            result.sent = Some(report);
+            s.doc_mut().last_job = Some(result);
+            Ok(value)
+        }
     }
 }
 
-/// Sends a job the gate allowed. `confirm_pending` calls this as the user.
-pub(crate) fn deliver(
+/// Sends an already built job through `transport`. The gate must have
+/// allowed it, or the person confirmed it (`confirm_pending`).
+pub(crate) fn deliver_built(
     s: &mut Session,
-    plotter: &PlotterProfile,
+    transport: &TransportSpec,
+    job: &EmittedJob,
     name: &str,
     origin: Origin,
-) -> Result<Value, CommandError> {
-    let mut result = build(s)?;
-    let report = match &plotter.transport {
+) -> Result<SendReport, CommandError> {
+    match transport {
         TransportSpec::File {
             directory,
             extension,
         } => {
+            for (what, dir) in [
+                ("The plotter profile's output folder", directory.as_deref()),
+                ("The output folder in the preferences", s.prefs.output_dir.as_deref()),
+            ] {
+                if let Some(dir) = dir
+                    && !dir.is_absolute()
+                {
+                    return Err(CommandError::Refused(format!(
+                        "{what} '{}' is not an absolute path. Set a full path, like /Users/me/Cuts or C:\\Cuts.",
+                        dir.display()
+                    )));
+                }
+            }
             let dir = output_dir(
                 directory.as_deref(),
                 s.prefs.output_dir.as_deref(),
@@ -298,30 +377,65 @@ pub(crate) fn deliver(
                     s.config_dir.display()
                 )));
             }
-            FileTransport::new(dir, extension.clone()).send_job(&result.job, name, &mut s.byte_log)
+            FileTransport::new(dir, extension.clone()).send_job(job, name, &mut s.byte_log)
         }
         TransportSpec::Usb { .. } => Err(TransportError::NotAvailable(USB_NOT_AVAILABLE.into())),
     }
-    .map_err(transport_error)?;
-    let value = json!({
-        "files": report.files,
-        "bytes_sent": report.bytes_sent,
-        "toolpaths": result.plan.toolpaths.len(),
-        "cut_mm": result.plan.cut_mm,
-        "travel_mm": result.plan.travel_mm,
-        "warnings": result.warnings,
-    });
-    result.sent = Some(report);
-    s.doc_mut().last_job = Some(result);
-    Ok(value)
+    .map_err(transport_error)
 }
 
 fn transport_error(e: TransportError) -> CommandError {
     match e {
         TransportError::NotAvailable(msg) => CommandError::Refused(msg),
-        TransportError::Unsafe(e) => CommandError::Failed(format!(
-            "the job failed the safety check, so nothing was sent: {e}"
-        )),
+        e @ TransportError::Unsafe(_) => CommandError::Failed(e.to_string()),
         TransportError::Io(msg) => CommandError::Failed(msg),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_fixable_emit_errors_are_refusals() {
+        let refused = [
+            EmitError::OutOfRange {
+                field: "speed",
+                value: 0,
+                min: 1,
+                max: 10,
+            },
+            EmitError::CoordinateOutOfRange {
+                note: "n".into(),
+                axis: "x",
+                mm: -1.0,
+                max_mm: 300.0,
+                value: -20.0,
+                max: 6000,
+            },
+            EmitError::UnknownMedia { id: "m".into() },
+            EmitError::EmptyJob,
+        ];
+        for e in refused {
+            assert!(matches!(emit_error(e), CommandError::Refused(_)));
+        }
+        let failed = [
+            EmitError::HostCompensationNotYet,
+            EmitError::DialectNotSupported,
+            EmitError::EmptyDraw,
+            EmitError::InvalidProfile { reason: "r".into() },
+        ];
+        for e in failed {
+            assert!(matches!(emit_error(e), CommandError::Failed(_)));
+        }
+    }
+
+    #[test]
+    fn unsafe_bytes_keep_the_transport_text() {
+        let e = TransportError::Unsafe(flatcraft_device::gpgl::SafetyError::NotTerminated);
+        assert_eq!(
+            transport_error(e.clone()),
+            CommandError::Failed(e.to_string())
+        );
     }
 }
