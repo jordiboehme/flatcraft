@@ -69,21 +69,27 @@ fn media_units(mm: f64, units_per_mm: f64, what: &str) -> Result<i32, EmitError>
     Ok(u as i32)
 }
 
-fn check_coordinate(
+/// One axis of one point: the device value, its limit, and the mm values for the message.
+struct Axis {
+    name: &'static str,
     value: f64,
     max: i32,
-    axis: &'static str,
-    note: &str,
-) -> Result<i32, EmitError> {
-    if !value.is_finite() || value < 0.0 || value > f64::from(max) {
+    mm: f64,
+    max_mm: f64,
+}
+
+fn check_coordinate(a: Axis, note: &str) -> Result<i32, EmitError> {
+    if !a.value.is_finite() || a.value < 0.0 || a.value > f64::from(a.max) {
         return Err(EmitError::CoordinateOutOfRange {
             note: note.to_string(),
-            axis,
-            value,
-            max: max.into(),
+            axis: a.name,
+            mm: a.mm,
+            max_mm: a.max_mm,
+            value: a.value,
+            max: a.max.into(),
         });
     }
-    Ok(value as i32)
+    Ok(a.value as i32)
 }
 
 fn quantize_path(
@@ -97,9 +103,23 @@ fn quantize_path(
         .iter()
         .map(|p| {
             let (y, x) = to_device_f64(*p, plotter, media);
+            let y = Axis {
+                name: "y",
+                value: y,
+                max: height,
+                mm: p.y,
+                max_mm: media.height_mm,
+            };
+            let x = Axis {
+                name: "x",
+                value: x,
+                max: width,
+                mm: p.x,
+                max_mm: media.width_mm,
+            };
             Ok(DevPoint {
-                y: check_coordinate(y, height, "y", &path.note)?,
-                x: check_coordinate(x, width, "x", &path.note)?,
+                y: check_coordinate(y, &path.note)?,
+                x: check_coordinate(x, &path.note)?,
             })
         })
         .collect()

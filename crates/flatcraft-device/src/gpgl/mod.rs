@@ -5,6 +5,7 @@
 pub mod command;
 pub mod decode;
 pub mod emit;
+mod meaning;
 pub mod quantize;
 pub mod safety;
 

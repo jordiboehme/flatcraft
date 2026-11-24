@@ -206,6 +206,10 @@ fn tall_mat_keeps_y_and_x_apart() {
         matches!(err, EmitError::CoordinateOutOfRange { axis: "x", .. }),
         "{err:?}"
     );
+    let msg = err.to_string();
+    assert!(msg.contains("x = 400 mm"), "{msg}");
+    assert!(msg.contains("304.8 mm"), "{msg}");
+    assert!(msg.contains("device units 8000"), "{msg}");
 }
 
 #[test]
@@ -462,6 +466,37 @@ fn check_safe_rejects_fb_and_tb72() {
     }
 }
 
+// Review fix round 1: inputs a blocklist let through. Each one must be rejected.
+const BYPASSES: &[&[u8]] = &[
+    b"TB072,1\x03H\x03",
+    b"TB 72,1\x03H\x03",
+    b"TB+72,1\x03H\x03",
+    b"L0FB1\x03H\x03",
+    b"M1,1FB1\x03H\x03",
+    b"F\x00B1\x03H\x03",
+    b"F B1\x03H\x03",
+    b"F\x1b\x15B1\x03H\x03",
+    b"F\x1bB1\x03H\x03",
+    b"\x7fFB1\x03H\x03",
+    b"\x80FB1\x03H\x03",
+    b"\xc6\xc21\x03H\x03",
+    b"H\x1b\x05\x03",
+    b"H\x03\x1b\x05",
+    b"M1,1\x03H\x03\x1b\x15",
+    b"\x1b\x1bFB1\x03H\x03",
+    b"\xff\xfe\x00\x03H\x03",
+];
+
+#[test]
+fn check_safe_rejects_review_bypasses() {
+    let accepted: Vec<String> = BYPASSES
+        .iter()
+        .filter(|bad| check_safe(bad).is_ok())
+        .map(|bad| bad.escape_ascii().to_string())
+        .collect();
+    assert!(accepted.is_empty(), "accepted: {accepted:#?}");
+}
+
 #[test]
 fn check_safe_accepts_tb50() {
     assert_eq!(check_safe(b"\x1b\x04TB50,0\x03TB50,1\x03H\x03"), Ok(()));
@@ -471,8 +506,12 @@ fn check_safe_accepts_tb50() {
 fn check_safe_requires_home() {
     assert_eq!(check_safe(b""), Err(SafetyError::NotTerminated));
     assert_eq!(check_safe(b"M1,1\x03"), Err(SafetyError::NotTerminated));
-    assert_eq!(check_safe(b"H\x03M1,1"), Err(SafetyError::NotTerminated));
-    assert_eq!(check_safe(b"H"), Err(SafetyError::NotTerminated));
+    assert!(check_safe(b"H\x03M1,1").is_err());
+    assert!(check_safe(b"H").is_err());
+    assert_eq!(
+        check_safe(b"H\x03\x1b\x05"),
+        Err(SafetyError::NotTerminated)
+    );
     assert_eq!(check_safe(b"M1,1\x03H\x03"), Ok(()));
     assert_eq!(check_safe_fragment(b"\x1b\x05"), Ok(()));
     assert_eq!(check_safe_fragment(b"M1,1\x03"), Ok(()));
@@ -512,6 +551,12 @@ fn decode_marks_unknown_and_forbidden() {
     assert_eq!(d[0].meaning, "unknown");
     assert!(d[1].meaning.contains("FORBIDDEN"));
     assert!(d[2].meaning.contains("FORBIDDEN"));
+    for raw in [&b"TB072,1\x03"[..], b"TB 72,1\x03", b"TB+72,1\x03"] {
+        assert!(
+            decode::decode(raw)[0].meaning.contains("FORBIDDEN"),
+            "{raw:?}"
+        );
+    }
 }
 
 fn arb_paths() -> impl Strategy<Value = Vec<Vec<(f64, f64)>>> {

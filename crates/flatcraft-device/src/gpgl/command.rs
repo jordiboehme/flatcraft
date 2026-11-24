@@ -3,6 +3,7 @@
 //! There is deliberately no raw or string variant and no variant for the calibration writes
 //! `FB` and `TB72` (gpgl.md section 6), so no code path can build them.
 
+use super::meaning;
 use crate::profile::GpglDialect;
 
 /// Cutting speed limits for the Cameo 2 (gpgl.md section 3).
@@ -81,12 +82,18 @@ pub enum EmitError {
         max: i64,
     },
     #[error(
-        "{axis} coordinate {value} (device units) in {note} is outside the media, allowed is 0 to {max}"
+        "{axis} = {mm} mm in {note} lies outside the media (0 to {max_mm} mm) after mirror and scale (device units {value}, allowed 0 to {max})"
     )]
     CoordinateOutOfRange {
         note: String,
         axis: &'static str,
+        /// The point's coordinate on this axis as given, in mm.
+        mm: f64,
+        /// The media size on this axis in mm.
+        max_mm: f64,
+        /// The rounded device value after mirror and scale.
         value: f64,
+        /// The media size on this axis in device units.
         max: i64,
     },
     #[error("host knife compensation is not supported yet, use firmware compensation (FC) or none")]
@@ -210,33 +217,30 @@ impl GpglCommand {
         Ok(out)
     }
 
-    /// A short meaning for the job listing.
+    /// A short meaning for the job listing. The texts are shared with the decoder.
     pub fn describe(&self) -> String {
         match self {
-            GpglCommand::Init => "init".into(),
-            GpglCommand::StatusQuery => "status query".into(),
-            GpglCommand::FirmwareQuery => "firmware version query".into(),
-            GpglCommand::Speed(s) => format!("speed {s}"),
-            GpglCommand::Force(f) => format!("force {f}"),
-            GpglCommand::BladeOffset(0) => "blade offset 0 (no firmware compensation)".into(),
-            GpglCommand::BladeOffset(fc) => format!("blade offset {fc} (firmware compensation)"),
-            GpglCommand::TrackEnhancing(true) => "track enhancing on".into(),
-            GpglCommand::TrackEnhancing(false) => "track enhancing off".into(),
-            GpglCommand::OrientationPortrait => "orientation portrait".into(),
-            GpglCommand::Tb50(Tb50Mode::Portrait) => "orientation portrait (TB50)".into(),
-            GpglCommand::Tb50(Tb50Mode::Landscape) => "orientation landscape (TB50)".into(),
+            GpglCommand::Init => meaning::INIT.into(),
+            GpglCommand::StatusQuery => meaning::STATUS_QUERY.into(),
+            GpglCommand::FirmwareQuery => meaning::FIRMWARE_QUERY.into(),
+            GpglCommand::Speed(s) => meaning::speed((*s).into()),
+            GpglCommand::Force(f) => meaning::force((*f).into()),
+            GpglCommand::BladeOffset(fc) => meaning::blade_offset((*fc).into()),
+            GpglCommand::TrackEnhancing(on) => meaning::track_enhancing(*on).into(),
+            GpglCommand::OrientationPortrait => meaning::ORIENTATION_PORTRAIT.into(),
+            GpglCommand::Tb50(mode) => meaning::tb50(*mode == Tb50Mode::Landscape).into(),
             GpglCommand::WorkAreaUpperLeft(p) => {
-                format!("work area upper-left y={}, x={}", p.y, p.x)
+                meaning::work_area_upper_left(p.y.into(), p.x.into())
             }
             GpglCommand::WorkAreaLowerRight(p) => {
-                format!("work area lower-right y={}, x={}", p.y, p.x)
+                meaning::work_area_lower_right(p.y.into(), p.x.into())
             }
-            GpglCommand::LineTypeSolid => "line type solid".into(),
-            GpglCommand::LiftBetweenPaths => "lift setting 0,0".into(),
-            GpglCommand::CornerDefault => "corner sharpening 0,0,0".into(),
-            GpglCommand::Move(p) => format!("move to y={}, x={}", p.y, p.x),
-            GpglCommand::Draw(points) => format!("draw through {} points", points.len()),
-            GpglCommand::Home => "home".into(),
+            GpglCommand::LineTypeSolid => meaning::LINE_SOLID.into(),
+            GpglCommand::LiftBetweenPaths => meaning::lift(&[0, 0]),
+            GpglCommand::CornerDefault => meaning::corner(0, 0, 0),
+            GpglCommand::Move(p) => meaning::move_to(p.y.into(), p.x.into()),
+            GpglCommand::Draw(points) => meaning::draw(points.len()),
+            GpglCommand::Home => meaning::HOME.into(),
         }
     }
 }

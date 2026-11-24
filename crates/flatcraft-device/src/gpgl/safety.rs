@@ -1,144 +1,336 @@
-//! The last line of defence before any transport (gpgl.md sections 6 and 7).
+//! The last line of defence before any transport (gpgl.md sections 1, 3, 6 and 7).
 //!
-//! It works on raw bytes only and does not trust the emitter. It rejects the calibration
-//! writes `FB` and `TB72`, and a job whose last command is not `H`.
+//! This is an allowlist, not a blocklist. It works on raw bytes only and does not trust the
+//! emitter. A byte string is accepted only when it parses completely, from the first to the
+//! last byte, as a sequence of these tokens:
+//!
+//! - `ESC 0x04` (init) or `ESC 0x05` (status query). Any other byte after ESC, or a lone ESC,
+//!   is rejected.
+//! - One of the commands FlatCraft emits, closed by ETX (`0x03`), with nothing else in it:
+//!   `!<n>` (speed 1-10), `FX<n>` (force 1-33), `FC<n>` (blade offset 0-100), `FY0`, `FY1`,
+//!   `FN0`, `TB50,0`, `TB50,1`, `\<n>,<n>`, `Z<n>,<n>`, `L0`, `FE0,0`, `FF0,0,0`, `M<n>,<n>`,
+//!   `D<n>,<n>` with more `,<n>,<n>` pairs, `H` and `FG`.
+//!
+//! `<n>` is one or more ASCII digits with no sign, no spaces and no leading zeros ("0" itself
+//! is fine), at most `i32::MAX`. Bytes after the last ETX are rejected.
+//!
+//! A rejected token that starts with `FB`, or with `TB` followed by a number that reads as 72
+//! (signs, spaces and leading zeros ignored), is reported as [`SafetyError::Forbidden`].
+//! Every other rejection is [`SafetyError::Unrecognised`].
+//!
+//! [`check_safe`] also requires the raw bytes to end with exactly `H` + ETX.
+//! [`check_safe_fragment`] uses the same allowlist without that rule.
 
-use super::decode::render_raw;
+use super::command::{FC_RANGE, FORCE_RANGE, SPEED_RANGE};
+use super::decode::{render_raw, tb_code};
 
 const ESC: u8 = 0x1b;
 const ETX: u8 = 0x03;
+/// At most this many bytes of a rejected token are shown in the error.
+const SHOW_MAX: usize = 40;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SafetyError {
     #[error("forbidden command '{command}': it writes the device calibration permanently")]
     Forbidden { command: String },
+    #[error(
+        "unrecognised bytes '{bytes}' at offset {offset}: only commands FlatCraft emits itself may be sent"
+    )]
+    Unrecognised { offset: usize, bytes: String },
     #[error("the job does not end with the home command H")]
     NotTerminated,
 }
 
-/// Removes every `ESC 0x04` and `ESC 0x05` pair. Removing them everywhere (not only at a
-/// command start) is the cautious side: it can only bring a hidden `FB` or `TB72` to light.
-fn strip_esc_pairs(bytes: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == ESC && matches!(bytes.get(i + 1), Some(0x04 | 0x05)) {
-            i += 2;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
+/// One allowlisted token, borrowed from the input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Token<'a> {
+    /// `ESC` and its second byte (0x04 or 0x05).
+    Esc(u8),
+    /// A command without its closing ETX.
+    Command(&'a [u8]),
+}
+
+/// `<n>`: digits only, no leading zero except "0", at most `i32::MAX`.
+fn number(b: &[u8]) -> Option<u64> {
+    if b.is_empty() || b.len() > 10 || !b.iter().all(u8::is_ascii_digit) {
+        return None;
     }
-    out
+    if b.len() > 1 && b[0] == b'0' {
+        return None;
+    }
+    let n = b.iter().fold(0u64, |n, d| n * 10 + u64::from(d - b'0'));
+    (n <= i32::MAX as u64).then_some(n)
 }
 
-fn is_forbidden(segment: &[u8]) -> bool {
-    // Look at every line of the segment too and ignore leading spaces and control bytes, so
-    // `FB` cannot hide behind a line break or a space. Compare without case, to be safe.
-    segment.split(|b| *b == b'\n' || *b == b'\r').any(|part| {
-        let start = part.iter().position(|b| *b > b' ').unwrap_or(part.len());
-        let cmd = &part[start..];
-        cmd.get(..2).is_some_and(|p| p.eq_ignore_ascii_case(b"FB"))
-            || cmd
-                .get(..4)
-                .is_some_and(|p| p.eq_ignore_ascii_case(b"TB72"))
-    })
+fn number_in(b: &[u8], min: u64, max: u64) -> bool {
+    number(b).is_some_and(|n| (min..=max).contains(&n))
 }
 
-/// Splits into ETX-terminated commands plus the unterminated tail (maybe empty).
-fn scan(bytes: &[u8]) -> Result<(Vec<Vec<u8>>, Vec<u8>), SafetyError> {
-    let clean = strip_esc_pairs(bytes);
-    let mut parts: Vec<Vec<u8>> = clean.split(|b| *b == ETX).map(<[u8]>::to_vec).collect();
-    // `split` always yields at least one part: the bytes after the last ETX.
-    let tail = parts.pop().unwrap_or_default();
-    // Second view: ESC commands are two bytes (gpgl.md section 1), so any ESC pair also ends
-    // the command before it. A job is rejected when either view shows a forbidden command.
-    let esc_view = split_at_esc_pairs(bytes);
-    for seg in parts
-        .iter()
-        .chain(std::iter::once(&tail))
-        .chain(esc_view.iter())
+/// `<n>,<n>` repeated: true when there are `pairs` pairs (`None` = one or more).
+fn coordinates(b: &[u8], pairs: Option<usize>) -> bool {
+    let mut count = 0usize;
+    for part in b.split(|c| *c == b',') {
+        if number(part).is_none() {
+            return false;
+        }
+        count += 1;
+    }
+    count.is_multiple_of(2) && count >= 2 && pairs.is_none_or(|p| count == p * 2)
+}
+
+/// Whether `cmd` (without ETX) is exactly one of the allowlisted commands.
+fn allowed(cmd: &[u8]) -> bool {
+    const FIXED: &[&[u8]] = &[
+        b"FY0", b"FY1", b"FN0", b"TB50,0", b"TB50,1", b"L0", b"FE0,0", b"FF0,0,0", b"H", b"FG",
+    ];
+    if FIXED.contains(&cmd) {
+        return true;
+    }
+    if let Some(r) = cmd.strip_prefix(b"!") {
+        return number_in(r, SPEED_RANGE[0].into(), SPEED_RANGE[1].into());
+    }
+    if let Some(r) = cmd.strip_prefix(b"FX") {
+        return number_in(r, FORCE_RANGE[0].into(), FORCE_RANGE[1].into());
+    }
+    if let Some(r) = cmd.strip_prefix(b"FC") {
+        return number_in(r, FC_RANGE[0].into(), FC_RANGE[1].into());
+    }
+    if let Some(r) = cmd
+        .strip_prefix(b"\\")
+        .or_else(|| cmd.strip_prefix(b"Z"))
+        .or_else(|| cmd.strip_prefix(b"M"))
     {
-        if is_forbidden(seg) {
-            return Err(SafetyError::Forbidden {
-                command: render_raw(seg),
-            });
-        }
+        return coordinates(r, Some(1));
     }
-    Ok((parts, tail))
+    if let Some(r) = cmd.strip_prefix(b"D") {
+        return coordinates(r, None);
+    }
+    false
 }
 
-/// Splits at ETX and at every ESC pair (any second byte). The ESC pairs themselves are
-/// dropped. A lone ESC at the end is dropped as well.
-fn split_at_esc_pairs(bytes: &[u8]) -> Vec<Vec<u8>> {
+fn reject(offset: usize, token: &[u8]) -> SafetyError {
+    let forbidden = token.starts_with(b"FB")
+        || token
+            .strip_prefix(b"TB")
+            .is_some_and(|after| tb_code(after) == Some(72));
+    let mut shown = render_raw(&token[..token.len().min(SHOW_MAX)]);
+    if token.len() > SHOW_MAX {
+        shown.push_str("...");
+    }
+    if forbidden {
+        SafetyError::Forbidden { command: shown }
+    } else {
+        SafetyError::Unrecognised {
+            offset,
+            bytes: shown,
+        }
+    }
+}
+
+/// Parses all of `bytes` into allowlisted tokens, or names the first token that is not.
+fn tokenize(bytes: &[u8]) -> Result<Vec<Token<'_>>, SafetyError> {
     let mut out = Vec::new();
-    let mut cur = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
-        match bytes[i] {
-            ESC => {
-                out.push(std::mem::take(&mut cur));
-                i += 2;
+        if bytes[i] == ESC {
+            match bytes.get(i + 1) {
+                Some(&code @ (0x04 | 0x05)) => {
+                    out.push(Token::Esc(code));
+                    i += 2;
+                }
+                _ => return Err(reject(i, &bytes[i..bytes.len().min(i + 2)])),
             }
-            ETX => {
-                out.push(std::mem::take(&mut cur));
-                i += 1;
-            }
-            b => {
-                cur.push(b);
-                i += 1;
-            }
+            continue;
         }
+        let Some(len) = bytes[i..].iter().position(|b| *b == ETX) else {
+            // Bytes after the last ETX: never complete, never sent.
+            return Err(reject(i, &bytes[i..]));
+        };
+        let cmd = &bytes[i..i + len];
+        if !allowed(cmd) {
+            return Err(reject(i, cmd));
+        }
+        out.push(Token::Command(cmd));
+        i += len + 1;
     }
-    out.push(cur);
-    out
+    Ok(out)
 }
 
-/// Checks a complete job: no forbidden command, and the last command is exactly `H` followed
-/// by ETX, with nothing after it.
+/// Checks a complete job: every byte belongs to an allowlisted token, and the raw bytes end
+/// with exactly `H` + ETX.
 pub fn check_safe(bytes: &[u8]) -> Result<(), SafetyError> {
-    let (commands, tail) = scan(bytes)?;
-    if !tail.is_empty() {
+    let tokens = tokenize(bytes)?;
+    if !bytes.ends_with(b"H\x03") || tokens.last() != Some(&Token::Command(b"H")) {
         return Err(SafetyError::NotTerminated);
     }
-    match commands.last() {
-        Some(last) if last.as_slice() == b"H" => Ok(()),
-        _ => Err(SafetyError::NotTerminated),
-    }
+    Ok(())
 }
 
 /// Like [`check_safe`] but without the `H` rule, for short sequences such as a status query.
 pub fn check_safe_fragment(bytes: &[u8]) -> Result<(), SafetyError> {
-    scan(bytes).map(|_| ())
+    tokenize(bytes).map(|_| ())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    fn encode(tokens: &[Token<'_>]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for t in tokens {
+            match t {
+                Token::Esc(c) => out.extend_from_slice(&[ESC, *c]),
+                Token::Command(c) => {
+                    out.extend_from_slice(c);
+                    out.push(ETX);
+                }
+            }
+        }
+        out
+    }
 
     #[test]
-    fn forbidden_commands_cannot_hide() {
+    fn forbidden_commands_are_named() {
         for bad in [
-            &b"fb1\x03H\x03"[..],
-            b" FB1\x03H\x03",
-            b"L0\nFB1\x03H\x03",
-            b"F\x1b\x04B1\x03H\x03",
+            &b"FB1\x03H\x03"[..],
+            b"TB72,1\x03H\x03",
+            b"TB072,1\x03H\x03",
+            b"TB 72,1\x03H\x03",
+            b"TB+72,1\x03H\x03",
+            b"\x1b\x04FB1\x03H\x03",
+            b"M1,1\x03FB1",
             b"TB72",
-            b"\x1b\x15FB1\x03H\x03",
-            b"M1,1\x1b\x04FB1\x03H\x03",
-            b"M1\x1b\x03FB1\x03H\x03",
-            b"\x01FB1\x03H\x03",
-            b"\tTB72,1\x03H\x03",
         ] {
             assert!(
-                matches!(check_safe_fragment(bad), Err(SafetyError::Forbidden { .. })),
+                matches!(check_safe(bad), Err(SafetyError::Forbidden { .. })),
                 "{bad:?}"
             );
         }
     }
 
     #[test]
-    fn harmless_commands_pass() {
-        assert_eq!(check_safe(b"TB71\x03FA\x03TB50,1\x03FX5\x03H\x03"), Ok(()));
+    fn anything_else_is_unrecognised() {
+        for bad in [
+            &b"fb1\x03H\x03"[..],
+            b" FB1\x03H\x03",
+            b"L0\nFB1\x03H\x03",
+            b"F\x1b\x04B1\x03H\x03",
+            b"\x1b\x15FB1\x03H\x03",
+            b"M1,1\x1b\x04FB1\x03H\x03",
+            b"M1\x1b\x03FB1\x03H\x03",
+            b"\x01FB1\x03H\x03",
+            b"TB71\x03H\x03",
+            b"FA\x03H\x03",
+            b"SO0\x03H\x03",
+            b"!0\x03H\x03",
+            b"!11\x03H\x03",
+            b"!05\x03H\x03",
+            b"FX34\x03H\x03",
+            b"FC101\x03H\x03",
+            b"M-1,0\x03H\x03",
+            b"M+1,0\x03H\x03",
+            b"M 1,0\x03H\x03",
+            b"M01,0\x03H\x03",
+            b"M1,2,3\x03H\x03",
+            b"M2147483648,0\x03H\x03",
+            b"D1,2,3\x03H\x03",
+            b"D\x03H\x03",
+            b"D1,,2\x03H\x03",
+            b"\x1b",
+            b"H\x1b\x05\x03",
+        ] {
+            assert!(
+                matches!(check_safe(bad), Err(SafetyError::Unrecognised { .. })),
+                "{bad:?}: {:?}",
+                check_safe(bad)
+            );
+        }
+    }
+
+    #[test]
+    fn allowlisted_tokens_pass() {
+        assert_eq!(
+            check_safe(
+                b"\x1b\x04\x1b\x05FG\x03!10\x03FX33\x03FC0\x03FC100\x03FY0\x03FY1\x03FN0\x03TB50,0\x03TB50,1\x03\\0,0\x03Z12192,6096\x03L0\x03FE0,0\x03FF0,0,0\x03M0,2147483647\x03D1,2,3,4\x03H\x03"
+            ),
+            Ok(())
+        );
+        assert_eq!(check_safe_fragment(b""), Ok(()));
+        assert_eq!(check_safe_fragment(b"\x1b\x05"), Ok(()));
+    }
+
+    #[test]
+    fn job_must_end_with_home() {
+        assert_eq!(check_safe(b""), Err(SafetyError::NotTerminated));
+        assert_eq!(check_safe(b"M1,1\x03"), Err(SafetyError::NotTerminated));
+        assert_eq!(
+            check_safe(b"H\x03\x1b\x05"),
+            Err(SafetyError::NotTerminated)
+        );
+        assert_eq!(
+            check_safe(b"H\x03\x1b\x04"),
+            Err(SafetyError::NotTerminated)
+        );
+    }
+
+    fn fragments() -> impl Strategy<Value = Vec<u8>> {
+        prop::collection::vec(
+            prop_oneof![
+                prop::sample::select(vec![
+                    &b"\x1b"[..],
+                    b"\x04",
+                    b"\x05",
+                    b"\x15",
+                    b"\x03",
+                    b"FB1",
+                    b"TB72",
+                    b"TB50,0",
+                    b"H",
+                    b"M1,1",
+                    b"D1,2,3,4",
+                    b"!5",
+                    b"FX10",
+                    b"FC18",
+                    b"0",
+                    b",",
+                    b" ",
+                    b"\n",
+                    b"FY1",
+                    b"L0",
+                ])
+                .prop_map(<[u8]>::to_vec),
+                any::<u8>().prop_map(|b| vec![b]),
+            ],
+            0..24,
+        )
+        .prop_map(|v| v.concat())
+    }
+
+    fn only_allowlisted(tokens: &[Token<'_>]) -> bool {
+        tokens.iter().all(|t| match t {
+            Token::Esc(c) => *c == 0x04 || *c == 0x05,
+            Token::Command(c) => allowed(c) && !c.starts_with(b"FB") && !c.starts_with(b"TB72"),
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn accepted_bytes_are_only_allowlisted_tokens(
+            bytes in prop::collection::vec(any::<u8>(), 0..64)
+        ) {
+            if let Ok(tokens) = tokenize(&bytes) {
+                prop_assert_eq!(encode(&tokens), bytes.clone());
+                prop_assert!(only_allowlisted(&tokens));
+            }
+        }
+
+        #[test]
+        fn accepted_fragments_are_only_allowlisted_tokens(bytes in fragments()) {
+            if let Ok(tokens) = tokenize(&bytes) {
+                prop_assert_eq!(encode(&tokens), bytes.clone());
+                prop_assert!(only_allowlisted(&tokens));
+            }
+        }
     }
 }

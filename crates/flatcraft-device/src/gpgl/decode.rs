@@ -2,6 +2,8 @@
 //!
 //! It works on any bytes and never panics.
 
+use super::meaning;
+
 const ESC: u8 = 0x1b;
 const ETX: u8 = 0x03;
 
@@ -36,26 +38,49 @@ fn args(rest: &str) -> Option<Vec<i64>> {
 
 fn esc_meaning(code: u8) -> String {
     match code {
-        0x04 => "init".into(),
-        0x05 => "status query".into(),
+        0x04 => meaning::INIT.into(),
+        0x05 => meaning::STATUS_QUERY.into(),
         0x15 => "tool setup (Cameo 3 and later only)".into(),
-        _ => "unknown".into(),
+        _ => meaning::UNKNOWN.into(),
     }
 }
 
-fn text_meaning(cmd: &[u8]) -> Option<String> {
-    let s = std::str::from_utf8(cmd).ok()?;
-    if s.starts_with("FB") {
-        return Some("FORBIDDEN: calibration write (FB), never send".into());
+/// The number after `TB`, read loosely: spaces, signs and leading zeros are skipped, so
+/// `TB072`, `TB 72` and `TB+72` all give 72. Used by the decoder and by the safety check to
+/// name the forbidden calibration write. `None` when no digits follow.
+pub(crate) fn tb_code(after_tb: &[u8]) -> Option<u64> {
+    let mut it = after_tb
+        .iter()
+        .copied()
+        .skip_while(|b| matches!(b, b' ' | b'+' | b'-'))
+        .peekable();
+    if !it.peek().is_some_and(|b| b.is_ascii_digit()) {
+        return None;
     }
+    // Fold the digits, saturating: a huge number is never 72.
+    Some(it.take_while(u8::is_ascii_digit).fold(0u64, |n, d| {
+        n.saturating_mul(10).saturating_add(u64::from(d - b'0'))
+    }))
+}
+
+fn text_meaning(cmd: &[u8]) -> Option<String> {
+    if cmd.starts_with(b"FB") {
+        return Some(meaning::forbidden("FB"));
+    }
+    if cmd
+        .strip_prefix(b"TB")
+        .is_some_and(|after| tb_code(after) == Some(72))
+    {
+        return Some(meaning::forbidden("TB72"));
+    }
+    let s = std::str::from_utf8(cmd).ok()?;
     if let Some(rest) = s.strip_prefix("TB") {
         let (code, rest) = rest.split_once(',').unwrap_or((rest, ""));
         return match code {
-            "72" => Some("FORBIDDEN: calibration write (TB72), never send".into()),
             "71" => Some("calibration read".into()),
             "50" => match args(rest)?.as_slice() {
-                [0] => Some("orientation portrait (TB50)".into()),
-                [1] => Some("orientation landscape (TB50)".into()),
+                [0] => Some(meaning::tb50(false).into()),
+                [1] => Some(meaning::tb50(true).into()),
                 _ => None,
             },
             "99" | "52" | "51" | "53" | "55" => {
@@ -72,50 +97,32 @@ fn text_meaning(cmd: &[u8]) -> Option<String> {
             _ => None,
         }
     };
-    if s == "FG" {
-        return Some("firmware version query".into());
-    }
-    if s == "FA" {
-        return Some("calibration read".into());
-    }
-    if s == "SO0" {
-        return Some("set origin here".into());
-    }
-    if s == "H" {
-        return Some("home".into());
-    }
-    if s == "[" {
-        return Some("query upper-left limit".into());
-    }
-    if s == "U" {
-        return Some("query lower-right limit".into());
-    }
-    if s == "FN0" {
-        return Some("orientation portrait".into());
-    }
-    if s == "FY0" {
-        return Some("track enhancing on".into());
-    }
-    if s == "FY1" {
-        return Some("track enhancing off".into());
-    }
-    if s == "L0" {
-        return Some("line type solid".into());
+    match s {
+        "FG" => return Some(meaning::FIRMWARE_QUERY.into()),
+        "FA" => return Some("calibration read".into()),
+        "SO0" => return Some("set origin here".into()),
+        "H" => return Some(meaning::HOME.into()),
+        "[" => return Some("query upper-left limit".into()),
+        "U" => return Some("query lower-right limit".into()),
+        "FN0" => return Some(meaning::ORIENTATION_PORTRAIT.into()),
+        "FY0" => return Some(meaning::track_enhancing(true).into()),
+        "FY1" => return Some(meaning::track_enhancing(false).into()),
+        "L0" => return Some(meaning::LINE_SOLID.into()),
+        _ => {}
     }
     if let Some(rest) = s.strip_prefix("FW") {
         return Some(format!("media preset {}", one(rest)?));
     }
     if let Some(rest) = s.strip_prefix("FX") {
         return match args(rest)?.as_slice() {
-            [f] => Some(format!("force {f}")),
+            [f] => Some(meaning::force(*f)),
             [f, t] => Some(format!("force {f}, tool {t} (Cameo 3 and later form)")),
             _ => None,
         };
     }
     if let Some(rest) = s.strip_prefix("FC") {
         return match args(rest)?.as_slice() {
-            [0] => Some("blade offset 0 (no firmware compensation)".into()),
-            [p] => Some(format!("blade offset {p} (firmware compensation)")),
+            [p] => Some(meaning::blade_offset(*p)),
             [p, q, t] => Some(format!(
                 "blade offset {p},{q}, tool {t} (Cameo 3 and later form)"
             )),
@@ -127,18 +134,17 @@ fn text_meaning(cmd: &[u8]) -> Option<String> {
         if a.is_empty() {
             return None;
         }
-        let list: Vec<String> = a.iter().map(i64::to_string).collect();
-        return Some(format!("lift setting {}", list.join(",")));
+        return Some(meaning::lift(&a));
     }
     if let Some(rest) = s.strip_prefix("FF") {
         return match args(rest)?.as_slice() {
-            [st, e, t] => Some(format!("corner sharpening {st},{e},{t}")),
+            [st, e, t] => Some(meaning::corner(*st, *e, *t)),
             _ => None,
         };
     }
     if let Some(rest) = s.strip_prefix('!') {
         return match args(rest)?.as_slice() {
-            [v] => Some(format!("speed {v}")),
+            [v] => Some(meaning::speed(*v)),
             [v, t] => Some(format!("speed {v}, tool {t} (Cameo 3 and later form)")),
             _ => None,
         };
@@ -151,22 +157,22 @@ fn text_meaning(cmd: &[u8]) -> Option<String> {
     };
     if let Some(rest) = s.strip_prefix('\\') {
         let (y, x) = point(rest)?;
-        return Some(format!("work area upper-left y={y}, x={x}"));
+        return Some(meaning::work_area_upper_left(y, x));
     }
     if let Some(rest) = s.strip_prefix('Z') {
         let (y, x) = point(rest)?;
-        return Some(format!("work area lower-right y={y}, x={x}"));
+        return Some(meaning::work_area_lower_right(y, x));
     }
     if let Some(rest) = s.strip_prefix('M') {
         let (y, x) = point(rest)?;
-        return Some(format!("move to y={y}, x={x}"));
+        return Some(meaning::move_to(y, x));
     }
     if let Some(rest) = s.strip_prefix('D') {
         let a = args(rest)?;
         if a.is_empty() || a.len() % 2 != 0 {
             return None;
         }
-        return Some(format!("draw through {} points", a.len() / 2));
+        return Some(meaning::draw(a.len() / 2));
     }
     if let Some(rest) = s.strip_prefix('L') {
         return Some(format!("line type {}", one(rest)?));
@@ -222,7 +228,7 @@ pub fn decode(bytes: &[u8]) -> Vec<DecodedCommand> {
         let mut meaning = if cmd.is_empty() {
             "empty command".to_string()
         } else {
-            text_meaning(cmd).unwrap_or_else(|| "unknown".into())
+            text_meaning(cmd).unwrap_or_else(|| meaning::UNKNOWN.into())
         };
         if end.is_none() {
             meaning.push_str(" (no ETX, not complete)");
