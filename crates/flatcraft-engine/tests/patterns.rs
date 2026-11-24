@@ -185,12 +185,14 @@ fn star_has_eight_tips() {
             .unwrap();
         apexes_x.push(apex.x);
     }
-    for w in apexes_x.windows(2) {
-        assert!(
-            (w[1] - w[0] - 25.0).abs() < 1e-3,
-            "apex pitch {}",
-            w[1] - w[0]
-        );
+    for row in apexes_x.chunks(4) {
+        for w in row.windows(2) {
+            assert!(
+                (w[1] - w[0] - 50.0).abs() < 1e-3,
+                "apex pitch {}",
+                w[1] - w[0]
+            );
+        }
     }
 }
 
@@ -479,4 +481,25 @@ fn test_patterns_needs_something_to_do() {
         )
         .unwrap_err();
     assert!(matches!(e, CommandError::InvalidParams(_)));
+}
+
+#[test]
+fn test_sheet_has_no_overlapping_patterns() {
+    let paths = sheet_paths();
+    let mut labels: Vec<String> = paths.iter().filter_map(|p| p.label.clone()).collect();
+    labels.sort();
+    labels.dedup();
+    // Every labelled group, with each star tip on its own.
+    assert_eq!(labels.len(), 8 + 8);
+    let rects: Vec<(String, Rect)> = labels
+        .iter()
+        .map(|l| (l.clone(), bounds_of(&labelled(&paths, l))))
+        .collect();
+    for (i, (an, a)) in rects.iter().enumerate() {
+        for (bn, b) in &rects[i + 1..] {
+            let dx = (a.x0 - b.x1).max(b.x0 - a.x1);
+            let dy = (a.y0 - b.y1).max(b.y0 - a.y1);
+            assert!(dx.max(dy) >= 5.0, "{an} and {bn} are closer than 5 mm");
+        }
+    }
 }

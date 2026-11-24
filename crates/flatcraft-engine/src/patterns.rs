@@ -19,8 +19,12 @@ pub const STAR_ANGLES: [u32; 8] = [15, 30, 45, 60, 90, 120, 150, 170];
 
 /// Leg length of a star tip, mm.
 const STAR_LEG_MM: f64 = 20.0;
-/// Distance between the apexes of neighbouring tips, mm.
-const STAR_PITCH_MM: f64 = 25.0;
+/// Distance between the apexes of neighbouring tips in a row, mm. The widest
+/// neighbours (150 and 170 deg, base widths 38.6 and 39.7 mm) need more than 45
+/// to stay 10 mm apart.
+const STAR_PITCH_MM: f64 = 50.0;
+/// Apex y of the two rows of four tips, mm.
+const STAR_ROW_Y_MM: [f64; 2] = [150.0, 190.0];
 /// Circle radii, mm.
 const CIRCLE_RADII: [f64; 6] = [0.5, 1.0, 2.0, 5.0, 10.0, 25.0];
 
@@ -35,8 +39,9 @@ fn group(out: &mut String, id: &str, body: &str) {
 ///   10 mm hole centred; `open-line` 130..170 at y 25; `s-curve` 190..260 x 10..40.
 /// - `circles` along y 105 from x 10 to 147 with 10 mm between them;
 ///   `f-glyph` 170..184 x 85..105; `ruler-y` at x 260 from y 70 to 170.
-/// - `star` tips with apexes at y 150, x 25, 50, ... 200.
-/// - `ruler-x` at y 215 from x 10 to 110.
+/// - `star` tips in two rows of four, apex pitch 50 mm at x 25, 75, 125, 175:
+///   15, 30, 45, 60 deg with apexes at y 150; 90, 120, 150, 170 deg at y 190.
+/// - `ruler-x` at y 250 from x 10 to 110.
 ///
 /// The F is asymmetric on purpose: stem on the left (x 170..174), a 14 mm top
 /// arm and a 11 mm middle arm pointing right (+x). A mirrored or rotated
@@ -57,8 +62,8 @@ pub fn sheet_svg() -> String {
     // Eight separate closed V tips, apex up (-y).
     for (i, angle) in STAR_ANGLES.iter().enumerate() {
         let half = f64::from(*angle).to_radians() / 2.0;
-        let ax = 25.0 + STAR_PITCH_MM * i as f64;
-        let ay = 150.0;
+        let ax = 25.0 + STAR_PITCH_MM * (i % 4) as f64;
+        let ay = STAR_ROW_Y_MM[i / 4];
         let dx = STAR_LEG_MM * half.sin();
         let dy = STAR_LEG_MM * half.cos();
         group(
@@ -101,9 +106,9 @@ pub fn sheet_svg() -> String {
     );
 
     // Rulers: a 100 mm line with a 5 mm tick every 10 mm.
-    let mut rx = String::from("M10 215 H110");
+    let mut rx = String::from("M10 250 H110");
     for i in 0..=10 {
-        let _ = write!(rx, " M{} 215 V210", 10 + 10 * i);
+        let _ = write!(rx, " M{} 250 V245", 10 + 10 * i);
     }
     group(&mut s, "ruler-x", &format!(r#"<path d="{rx}"/>"#));
     let mut ry = String::from("M260 70 V170");
