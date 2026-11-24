@@ -8,18 +8,23 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+flatcraft-engine = { path = "../flatcraft-engine" }
+flatcraft-device = { path = "../flatcraft-device" }
+flatcraft-mcp = { path = "../flatcraft-mcp" }
 eframe = { workspace = true, features = ["glow", "accesskit", "x11", "wayland"] }
 egui.workspace = true
 resvg.workspace = true
 usvg.workspace = true
 tiny-skia.workspace = true
 rfd.workspace = true
-clap.workspace = true
+clap = { workspace = true, features = ["derive"] }
 anyhow.workspace = true
+serde_json.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda.workspace = true
 
 [dev-dependencies]
+flatcraft-core = { path = "../flatcraft-core" }
 egui_kittest.workspace = true
 tempfile.workspace = true
