@@ -1,0 +1,44 @@
+name: Bug report
+description: Something does not work as described.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. For a security problem, read [SECURITY.md](https://github.com/jordiboehme/flatcraft/blob/main/SECURITY.md) instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you do, what did you expect and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The steps, and the design file if you can share it.
+  - type: input
+    id: version
+    attributes:
+      label: FlatCraft version
+      description: The output of `flatcraft --version`, or the commit you built.
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: System
+      description: For example macOS 27 on Apple silicon or Ubuntu 24.04 on x86_64.
+    validations:
+      required: true
+  - type: input
+    id: plotter
+    attributes:
+      label: Plotter and profile
+      description: For example Silhouette Cameo 2 or File Output, and the material profile.
+  - type: textarea
+    id: output
+    attributes:
+      label: Job files
+      description: If the cut looks wrong, attach the `.gpgl.txt` listing from File Output.

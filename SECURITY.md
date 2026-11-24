@@ -18,9 +18,10 @@ Only the latest release gets security fixes. Please check that the problem still
 
 FlatCraft opens files from unknown sources and talks to a machine with a sharp blade, so it is careful on both ends:
 
-- FlatCraft never runs code from an imported file. SVG scripts and external references are ignored.
-- File Output is the default device. Nothing goes to a USB cutter until you pick it and confirm the cut in the app.
-- FlatCraft never sends commands that write calibration or firmware settings to a device.
-- The MCP server lets an agent prepare and preview a job. An agent cannot confirm its own cut over USB.
+- FlatCraft never runs code from an imported file. SVG scripts and external references are ignored, and imports have size limits.
+- File Output is the default device. Nothing goes to a USB cutter until you pick it.
+- FlatCraft never sends commands that write calibration or firmware settings to a device. A last check refuses every byte it doesn't know.
+- The MCP server only listens on localhost and needs a token. It checks where a request comes from, so a web page can't talk to it.
+- An agent can prepare and preview a job. A USB cut started by an agent needs your confirmation in the app, unless you turned on "Allow agents to start cuts" yourself.
 
 A way around one of these rules is a security problem. Please report it as described above.
