@@ -120,7 +120,7 @@ Super massive stability stuff, as Felix Schelhasse would say. Here's FlatCraft's
 
 ## Inspired by software I love
 
-- [PrusaSlicer](https://github.com/prusa3d/PrusaSlicer)
+- [PrusaSlicer](https://github.com/prusa3d/PrusaSlicer), built on [Slic3r](https://github.com/slic3r/Slic3r) by Alessandro Ranellucci
 - [SolidCraft](https://github.com/tangency-labs/solidcraft)
 - [ZigZag](https://github.com/simpsoka/zigzag)
 
