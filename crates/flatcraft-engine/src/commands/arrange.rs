@@ -14,6 +14,15 @@ use crate::session::{CommandError, Origin, Session};
 /// Slack for float noise when testing whether something fits.
 const FIT_EPS: f64 = 1e-9;
 
+/// True if `r` lies inside `area`, with a little slack for float noise.
+fn inside(r: Rect, area: Rect) -> bool {
+    const SLACK: f64 = 1e-6;
+    r.x0 >= area.x0 - SLACK
+        && r.y0 >= area.y0 - SLACK
+        && r.x1 <= area.x1 + SLACK
+        && r.y1 <= area.y1 + SLACK
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AlignMode {
@@ -128,7 +137,8 @@ fn run_auto(s: &mut Session, p: AutoParams, _: Origin) -> Result<Value, CommandE
             did_not_fit.push(id);
             continue;
         }
-        if x + w > area.x1 + FIT_EPS && row_h > 0.0 {
+        // Wrap when the row already holds something, even zero-height lines.
+        if x + w > area.x1 + FIT_EPS && x > area.x0 {
             y += row_h + p.spacing_mm;
             x = area.x0;
             row_h = 0.0;
@@ -137,10 +147,15 @@ fn run_auto(s: &mut Session, p: AutoParams, _: Origin) -> Result<Value, CommandE
             did_not_fit.push(id);
             continue;
         }
-        translate(
-            object_mut(doc, id)?,
-            Point::new(x, y) - Point::new(b.x0, b.y0),
-        );
+        let o = object_mut(doc, id)?;
+        let d = Point::new(x, y) - Point::new(b.x0, b.y0);
+        translate(o, d);
+        // Never report an object as placed unless it really is inside.
+        if !placed_bounds(o).is_some_and(|nb| inside(nb, area)) {
+            translate(o, -d);
+            did_not_fit.push(id);
+            continue;
+        }
         placed.push(id);
         x += w + p.spacing_mm;
         row_h = row_h.max(h);
@@ -155,5 +170,5 @@ command!(
     mutates: true,
     params: AutoParams,
     run: run_auto,
-    description: "Packs all visible objects into the cutting area in rows (shelf packing), keeping rotation and size. Objects are sorted by bounding box height, tallest first, and placed left to right from the top-left of the cutting area, with spacing_mm (default 5) between them. Objects that do not fit, or have no cut geometry yet, stay where they are and are listed in did_not_fit. Origin top-left of the media, y down, units mm. Returns {placed: [id], did_not_fit: [id]}.",
+    description: "Packs all visible objects into the cutting area in rows (shelf packing), keeping rotation and size. Objects are sorted by bounding box height, tallest first, and placed left to right from the top-left of the cutting area, with spacing_mm (default 5) between them. Objects that do not fit, or have no cut geometry yet, keep their position and are listed in did_not_fit; they may overlap the packed objects. Origin top-left of the media, y down, units mm. Returns {placed: [id], did_not_fit: [id]}.",
 );

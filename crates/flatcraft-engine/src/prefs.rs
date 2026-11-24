@@ -89,5 +89,12 @@ pub fn config_dir() -> PathBuf {
     }
     directories::ProjectDirs::from("io.github", "jordiboehme", "FlatCraft")
         .map(|d| d.config_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from(".flatcraft"))
+        .unwrap_or_else(|| {
+            let fallback = PathBuf::from(".flatcraft");
+            eprintln!(
+                "warning: no home directory found, so the config dir is {} (relative to the working directory). Set FLATCRAFT_CONFIG_DIR to choose one.",
+                fallback.display()
+            );
+            fallback
+        })
 }

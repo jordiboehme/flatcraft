@@ -164,6 +164,17 @@ fn move_scale_rotate_mirror_update_bounds() {
     assert!(close(t.rotation_deg, 270.0), "{t:?}");
 }
 
+fn pts(els: &[PathEl]) -> Vec<Point> {
+    els.iter()
+        .flat_map(|e| match *e {
+            PathEl::MoveTo(p) | PathEl::LineTo(p) => vec![p],
+            PathEl::QuadTo(a, b) => vec![a, b],
+            PathEl::CurveTo(a, b, d) => vec![a, b, d],
+            PathEl::ClosePath => vec![],
+        })
+        .collect()
+}
+
 #[test]
 fn mirror_at_30_degrees() {
     let dir = tempfile::tempdir().unwrap();
@@ -189,16 +200,6 @@ fn mirror_at_30_degrees() {
     let after = obj2.placed_paths();
 
     let reflect = |p: Point| Point::new(2.0 * c.x - p.x, p.y);
-    let pts = |els: &[PathEl]| -> Vec<Point> {
-        els.iter()
-            .flat_map(|e| match *e {
-                PathEl::MoveTo(p) | PathEl::LineTo(p) => vec![p],
-                PathEl::QuadTo(a, b) => vec![a, b],
-                PathEl::CurveTo(a, b, d) => vec![a, b, d],
-                PathEl::ClosePath => vec![],
-            })
-            .collect()
-    };
     assert_eq!(before.len(), after.len());
     for (b, a) in before.iter().zip(&after) {
         let pb = pts(b.path.elements());
@@ -218,10 +219,187 @@ fn mirror_at_30_degrees() {
         "object.mirror",
         json!({ "ids": [id], "axis": "vertical" }),
     );
-    let t = s.doc().document.get(ObjectId(id)).unwrap().transform;
+    let obj3 = s.doc().document.get(ObjectId(id)).unwrap();
+    let t = obj3.transform;
     // 180 - 330 = -150 -> 210.
     assert!((t.rotation_deg - 210.0).abs() < EPS, "{t:?}");
     assert_eq!(t.mirror, obj.transform.mirror);
+    // Vertical: the outline is the previous one reflected across the
+    // horizontal line through the centre.
+    let c2 = obj3.transform.center_mm;
+    let flipped = obj3.placed_paths();
+    assert_eq!(after.len(), flipped.len());
+    for (b, a) in after.iter().zip(&flipped) {
+        let pb = pts(b.path.elements());
+        let pa = pts(a.path.elements());
+        assert_eq!(pb.len(), pa.len());
+        for (p, q) in pb.iter().zip(&pa) {
+            let r = Point::new(p.x, 2.0 * c2.y - p.y);
+            assert!(
+                (r.x - q.x).abs() < EPS && (r.y - q.y).abs() < EPS,
+                "{r:?} vs {q:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn scale_swaps_axes_at_90_and_refuses_shear() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 20.0, 10.0);
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [id], "degrees": 90.0 }),
+    );
+    // Placed box is 10 wide, 20 high. Make it 40 wide, keep the height.
+    run(
+        &mut s,
+        "object.scale",
+        json!({ "ids": [id], "width_mm": 40.0, "keep_aspect": false }),
+    );
+    let b = placed_bounds(&s, id);
+    assert!(close(b.width(), 40.0) && close(b.height(), 20.0), "{b:?}");
+    let t = s.doc().document.get(ObjectId(id)).unwrap().transform;
+    assert!(close(t.scale_x, 1.0) && close(t.scale_y, 4.0), "{t:?}");
+
+    let other = import(&mut s, 20.0, 10.0);
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [other], "degrees": 30.0 }),
+    );
+    let before = s.doc().document.get(ObjectId(other)).unwrap().transform;
+    let e = s
+        .execute(
+            "object.scale",
+            json!({ "ids": [other], "width_mm": 40.0, "keep_aspect": false }),
+            Origin::User,
+        )
+        .unwrap_err();
+    assert!(matches!(e, CommandError::InvalidParams(_)), "{e}");
+    assert_eq!(
+        s.doc().document.get(ObjectId(other)).unwrap().transform,
+        before
+    );
+}
+
+#[test]
+fn job_arrange_and_visibility_are_undoable() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 20.0, 20.0);
+    s.doc_mut().dirty = false;
+
+    run(&mut s, "job.set_material", json!({ "id": "vinyl" }));
+    assert!(s.doc().dirty);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc().document.job.material_id, "copy-paper");
+
+    s.doc_mut().dirty = false;
+    let before = placed_bounds(&s, id);
+    run(
+        &mut s,
+        "arrange.align",
+        json!({ "ids": [id], "mode": "right", "relative_to": "cutting_area" }),
+    );
+    assert!(s.doc().dirty);
+    assert!(close(placed_bounds(&s, id).x1, 299.8));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(placed_bounds(&s, id), before);
+
+    s.doc_mut().dirty = false;
+    run(
+        &mut s,
+        "object.set_visible",
+        json!({ "ids": [id], "visible": false }),
+    );
+    assert!(s.doc().dirty);
+    run(&mut s, "edit.undo", json!({}));
+    assert!(s.doc().document.get(ObjectId(id)).unwrap().visible);
+}
+
+#[test]
+fn import_svgz_file() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/svg/mm.svg");
+    let plain = std::fs::read(fixture).unwrap();
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(&plain).unwrap();
+    let path = dir.path().join("mm.SVGZ");
+    std::fs::write(&path, gz.finish().unwrap()).unwrap();
+    let r = run(&mut s, "object.import", json!({ "path": path }));
+    let id = r["id"].as_u64().unwrap();
+    let b = placed_bounds(&s, id);
+    assert!(close(b.width(), 50.0) && close(b.height(), 20.0), "{b:?}");
+    assert_eq!(s.doc().document.get(ObjectId(id)).unwrap().name, "mm");
+}
+
+#[test]
+fn error_texts_have_no_em_dash() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 20.0, 10.0);
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [id], "degrees": 30.0 }),
+    );
+    run(&mut s, "object.select", json!({ "ids": [] }));
+    let png = dir.path().join("a.png");
+    let cases = [
+        ("object.teleport", json!({})),
+        ("document.state", json!({ "x": 1 })),
+        ("object.move", json!({ "ids": [999], "dx_mm": 1.0 })),
+        ("object.move", json!({ "ids": [id] })),
+        (
+            "object.move",
+            json!({ "ids": [id], "dx_mm": 1.0, "center_mm": [0.0, 0.0] }),
+        ),
+        ("object.delete", json!({ "ids": [] })),
+        ("object.scale", json!({ "ids": [id] })),
+        ("object.scale", json!({ "ids": [id], "factor": -1.0 })),
+        (
+            "object.scale",
+            json!({ "ids": [id], "height_mm": 5.0, "keep_aspect": false }),
+        ),
+        ("object.import", json!({ "path": png })),
+        (
+            "object.import",
+            json!({ "path": dir.path().join("missing.svg") }),
+        ),
+        ("object.import_svg", json!({ "svg": "<svg", "name": "x" })),
+        ("document.switch", json!({ "index": 9 })),
+        ("document.close", json!({ "index": 0 })),
+        ("project.save", json!({})),
+        (
+            "project.save",
+            json!({ "path": dir.path().join("a.flatcraft") }),
+        ),
+        (
+            "project.open",
+            json!({ "path": dir.path().join("nope.flatcraft") }),
+        ),
+        ("edit.redo", json!({})),
+        ("profiles.get", json!({ "id": "nope" })),
+        ("job.set_media", json!({ "id": "a4" })),
+        ("job.set_overrides", json!({ "speed": 11 })),
+        ("job.set_overrides", json!({ "force": 0 })),
+        ("job.set_overrides", json!({ "passes": 0 })),
+        ("arrange.auto", json!({ "spacing_mm": -1.0 })),
+    ];
+    for (cmd, params) in cases {
+        let e = s
+            .execute(cmd, params.clone(), Origin::Agent)
+            .expect_err(&format!("{cmd} {params} should fail"));
+        let text = e.to_string();
+        assert!(!text.contains('\u{2014}'), "em-dash in {cmd}: {text}");
+        assert!(!text.trim().is_empty());
+    }
 }
 
 #[test]
@@ -620,6 +798,12 @@ fn every_command_has_schema_and_description() {
             c.id()
         );
         let schema = serde_json::to_value(c.params_schema()).unwrap();
+        let text = serde_json::to_string(&schema).unwrap();
+        assert!(
+            !text.contains('\u{2014}'),
+            "em-dash in schema of {}",
+            c.id()
+        );
         assert!(schema.is_object(), "{}", c.id());
         assert_eq!(schema["type"], "object", "{}: {schema}", c.id());
         assert!(registry::get(c.id()).is_some());
@@ -641,4 +825,36 @@ fn preferences_roundtrip_and_fallback() {
     assert_eq!(Preferences::load(dir.path()), q);
     std::fs::write(dir.path().join("preferences.toml"), "mcp_port = 'nope").unwrap();
     assert_eq!(Preferences::load(dir.path()), Preferences::default());
+}
+
+fn hline(s: &mut Session, len: f64) -> u64 {
+    let svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="200mm" viewBox="0 0 200 200"><path d="M20 20 h{len}" stroke="black" fill="none"/></svg>"#
+    );
+    let r = run(
+        s,
+        "object.import_svg",
+        json!({ "svg": svg, "name": "line" }),
+    );
+    r["id"].as_u64().unwrap()
+}
+
+#[test]
+fn auto_arrange_wraps_zero_height_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let ids: Vec<u64> = (0..3).map(|_| hline(&mut s, 150.0)).collect();
+    for &i in &ids {
+        assert!(close(placed_bounds(&s, i).height(), 0.0));
+    }
+    let r = run(&mut s, "arrange.auto", json!({}));
+    assert_eq!(r["placed"].as_array().unwrap().len(), 3, "{r}");
+    let area = Rect::new(5.0, 5.0, 299.8, 299.8);
+    for &i in &ids {
+        let b = placed_bounds(&s, i);
+        assert!(
+            b.x0 >= area.x0 - 1e-6 && b.x1 <= area.x1 + 1e-6 && b.y1 <= area.y1 + 1e-6,
+            "{b:?} outside the cutting area"
+        );
+    }
 }

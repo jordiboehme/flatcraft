@@ -1492,6 +1492,7 @@ dependencies = [
  "flatcraft-core",
  "flatcraft-device",
  "flatcraft-import",
+ "flate2",
  "kurbo",
  "resvg",
  "schemars",
