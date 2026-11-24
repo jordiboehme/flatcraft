@@ -8,6 +8,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+flatcraft-core = { path = "../flatcraft-core" }
 kurbo.workspace = true
 thiserror.workspace = true
 

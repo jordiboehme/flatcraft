@@ -1,9 +1,15 @@
-//! FlatCraft path crate (stub, filled by later tasks).
+//! FlatCraft path crate: turns placed vector paths into ordered toolpaths.
+//!
+//! The pipeline is a chain of small pure functions, one per module, in
+//! pipeline order: `flatten`, `clean`, `order`, `overcut`, `passes`. `plan`
+//! wires them together.
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn smoke() {
-        assert_eq!(2 + 2, 4);
-    }
-}
+pub mod clean;
+pub mod flatten;
+pub mod order;
+pub mod overcut;
+pub mod passes;
+pub mod plan;
+
+pub use clean::Polyline;
+pub use plan::{CutPlan, PathRef, PipelineSettings, PlacedPath, PlanError, Toolpath, plan};
