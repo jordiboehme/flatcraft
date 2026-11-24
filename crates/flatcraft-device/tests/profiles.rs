@@ -88,6 +88,12 @@ fn old_profile_with_margins_still_loads() {
     // margins are ignored: the uncalibrated mat keeps the 5 mm safety band
     let r = p.cutting_area("mat-12x12").unwrap();
     assert!((r.x0 - 5.0).abs() < 1e-9 && (r.x1 - 299.8).abs() < 1e-9);
+    // the legacy key is gone, not a ghost modified field
+    assert!(
+        s.modified_fields("old").is_empty(),
+        "{:?}",
+        s.modified_fields("old")
+    );
 }
 
 #[test]
@@ -101,7 +107,8 @@ fn old_media_without_grid_loads_with_defaults() {
          media = [{ id = \"a4\", name = \"A4\", width_mm = 210.0, height_mm = 297.0 }]\n",
     );
     let s = ProfileStore::load(d.path()).unwrap();
-    let m = &s.plotter("oldmedia").unwrap().media[0];
+    let p = s.plotter("oldmedia").unwrap();
+    let m = p.media.iter().find(|m| m.id == "a4").unwrap();
     assert_eq!(m.kind, MediaKind::Mat);
     assert!(!m.calibrated);
     assert_eq!(
@@ -281,7 +288,7 @@ fn save_writes_only_differences_and_round_trips() {
     s.save_user_plotter(&p, "silhouette-cameo-2").unwrap();
     assert_eq!(
         s.modified_fields("tuned"),
-        vec!["knife_compensation", "media", "scale_x"]
+        vec!["knife_compensation", "media.mat-12x12", "scale_x"]
     );
     let text = fs::read_to_string(d.path().join("plotters/tuned.toml")).unwrap();
     assert!(text.contains("inherits = \"silhouette-cameo-2\""));
@@ -424,4 +431,193 @@ fn material_cycle_is_an_error() {
         s.material("a"),
         Err(ProfileError::Inheritance { .. })
     ));
+}
+
+fn mat(id: &str) -> Media {
+    Media {
+        id: id.into(),
+        name: id.into(),
+        kind: MediaKind::Mat,
+        width_mm: 300.0,
+        height_mm: 300.0,
+        grid: Grid {
+            origin_x_mm: 0.0,
+            origin_y_mm: 0.0,
+            width_mm: 300.0,
+            height_mm: 300.0,
+        },
+        calibrated: false,
+        color: DEFAULT_MAT_COLOR,
+    }
+}
+
+#[test]
+fn media_validate_refuses_bad_values() {
+    assert!(mat("a").validate().is_ok());
+    type Case = (&'static str, Box<dyn Fn(&mut Media)>);
+    let cases: Vec<Case> = vec![
+        ("nan width", Box::new(|m| m.width_mm = f64::NAN)),
+        ("inf height", Box::new(|m| m.height_mm = f64::INFINITY)),
+        ("zero width", Box::new(|m| m.width_mm = 0.0)),
+        ("negative height", Box::new(|m| m.height_mm = -1.0)),
+        ("nan origin", Box::new(|m| m.grid.origin_x_mm = f64::NAN)),
+        ("negative origin x", Box::new(|m| m.grid.origin_x_mm = -0.1)),
+        ("negative origin y", Box::new(|m| m.grid.origin_y_mm = -0.1)),
+        ("zero grid width", Box::new(|m| m.grid.width_mm = 0.0)),
+        ("zero grid height", Box::new(|m| m.grid.height_mm = 0.0)),
+        ("inf grid", Box::new(|m| m.grid.width_mm = f64::INFINITY)),
+        (
+            "grid sticks out right",
+            Box::new(|m| m.grid.origin_x_mm = 10.0),
+        ),
+        (
+            "grid sticks out bottom",
+            Box::new(|m| m.grid.origin_y_mm = 0.5),
+        ),
+    ];
+    for (name, f) in cases {
+        let mut m = mat("a");
+        f(&mut m);
+        assert!(m.validate().is_err(), "{name} should be refused");
+    }
+}
+
+#[test]
+fn invalid_media_is_refused_on_load_and_save() {
+    let d = tempdir().unwrap();
+    write(
+        d.path(),
+        "plotters",
+        "bad",
+        "id = \"bad\"\nname = \"B\"\ninherits = \"silhouette-cameo-2\"\n\
+         media = [{ id = \"m\", name = \"M\", width_mm = 100.0, height_mm = 100.0, \
+         grid = { origin_x_mm = 60.0, origin_y_mm = 0.0, width_mm = 50.0, height_mm = 50.0 } }]\n",
+    );
+    let s = ProfileStore::load(d.path()).unwrap();
+    assert!(matches!(
+        s.plotter("bad"),
+        Err(ProfileError::Invalid { .. })
+    ));
+
+    let (_d, mut s) = store();
+    let mut p = s.plotter("silhouette-cameo-2").unwrap();
+    p.id = "mine".into();
+    p.media[0].grid.width_mm = 0.0;
+    assert!(matches!(
+        s.save_user_plotter(&p, "silhouette-cameo-2"),
+        Err(ProfileError::Invalid { .. })
+    ));
+}
+
+#[test]
+fn user_media_merge_by_id() {
+    let d = tempdir().unwrap();
+    write(
+        d.path(),
+        "plotters",
+        "mine",
+        "id = \"mine\"\nname = \"M\"\ninherits = \"silhouette-cameo-2\"\n\
+         media = [\n\
+         { id = \"mat-12x12\", name = \"My mat\", width_mm = 304.8, height_mm = 330.2, calibrated = true, \
+         grid = { origin_x_mm = 3.0, origin_y_mm = 4.0, width_mm = 300.0, height_mm = 300.0 } },\n\
+         { id = \"mat-12x24\", hidden = true },\n\
+         { id = \"a4\", name = \"A4\", width_mm = 210.0, height_mm = 297.0 },\n\
+         ]\n",
+    );
+    let s = ProfileStore::load(d.path()).unwrap();
+    let p = s.plotter("mine").unwrap();
+    let ids: Vec<&str> = p.media.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, vec!["mat-12x12", "no-mat", "a4"]);
+    assert_eq!(p.media[0].name, "My mat");
+    assert!(p.media[0].calibrated);
+    assert_eq!(p.media[1].name, "No mat");
+    assert_eq!(
+        s.modified_fields("mine"),
+        vec!["media.a4", "media.mat-12x12", "media.mat-12x24"]
+    );
+    // the parent is untouched
+    assert_eq!(s.plotter("silhouette-cameo-2").unwrap().media.len(), 3);
+}
+
+#[test]
+fn save_writes_only_changed_and_new_mats() {
+    let (d, mut s) = store();
+    let mut p = s.plotter("silhouette-cameo-2").unwrap();
+    p.id = "tuned".into();
+    p.name = "Tuned".into();
+    p.media[0].calibrated = true;
+    p.media.remove(1); // hide the 12x24
+    p.media.push(mat("extra"));
+    s.save_user_plotter(&p, "silhouette-cameo-2").unwrap();
+    assert_eq!(
+        s.modified_fields("tuned"),
+        vec!["media.extra", "media.mat-12x12", "media.mat-12x24"]
+    );
+    let text = fs::read_to_string(d.path().join("plotters/tuned.toml")).unwrap();
+    assert!(!text.contains("no-mat"), "{text}");
+    assert!(text.contains("hidden = true"), "{text}");
+    let s2 = ProfileStore::load(d.path()).unwrap();
+    let q = s2.plotter("tuned").unwrap();
+    let ids: Vec<&str> = q.media.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, vec!["mat-12x12", "no-mat", "extra"]);
+    assert!(q.media[0].calibrated);
+}
+
+#[test]
+fn mat_color_defaults_roundtrips_and_validates() {
+    let (_d, s) = store();
+    let p = s.plotter("silhouette-cameo-2").unwrap();
+    assert_eq!(p.media[0].color, [0x8F, 0xA8, 0xB8]);
+    assert_eq!(p.media[2].color, [0xF4, 0xF1, 0xEA]);
+
+    // old files without color get the default of their kind
+    let d = tempdir().unwrap();
+    write(
+        d.path(),
+        "plotters",
+        "oldmedia",
+        "id = \"oldmedia\"\nname = \"O\"\ninherits = \"silhouette-cameo-2\"\n\
+         media = [{ id = \"a\", name = \"A\", width_mm = 10.0, height_mm = 10.0 },\n\
+         { id = \"b\", name = \"B\", kind = \"NoMat\", width_mm = 10.0, height_mm = 10.0 }]\n",
+    );
+    let s = ProfileStore::load(d.path()).unwrap();
+    let o = s.plotter("oldmedia").unwrap();
+    let get = |id: &str| o.media.iter().find(|m| m.id == id).unwrap().color;
+    assert_eq!(get("a"), DEFAULT_MAT_COLOR);
+    assert_eq!(get("b"), DEFAULT_NO_MAT_COLOR);
+
+    // save writes a changed colour as #RRGGBB and it comes back
+    let (d, mut s) = store();
+    let mut p = s.plotter("silhouette-cameo-2").unwrap();
+    p.id = "tuned".into();
+    p.media[0].color = [0x12, 0xAB, 0xEF];
+    s.save_user_plotter(&p, "silhouette-cameo-2").unwrap();
+    let text = fs::read_to_string(d.path().join("plotters/tuned.toml")).unwrap();
+    assert!(text.contains("#12ABEF"), "{text}");
+    let s2 = ProfileStore::load(d.path()).unwrap();
+    assert_eq!(
+        s2.plotter("tuned").unwrap().media[0].color,
+        [0x12, 0xAB, 0xEF]
+    );
+}
+
+#[test]
+fn invalid_mat_color_is_refused() {
+    for bad in ["red", "#12345", "#GGGGGG", "123456"] {
+        let d = tempdir().unwrap();
+        write(
+            d.path(),
+            "plotters",
+            "bad",
+            &format!(
+                "id = \"bad\"\nname = \"B\"\ninherits = \"silhouette-cameo-2\"\n\
+                 media = [{{ id = \"a\", name = \"A\", width_mm = 10.0, height_mm = 10.0, color = \"{bad}\" }}]\n"
+            ),
+        );
+        let s = ProfileStore::load(d.path()).unwrap();
+        assert!(
+            matches!(s.plotter("bad"), Err(ProfileError::Invalid { .. })),
+            "{bad}"
+        );
+    }
 }

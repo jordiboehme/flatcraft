@@ -10,9 +10,9 @@ pub mod transport;
 
 pub use bytelog::{ByteLog, Dir, LogEntry};
 pub use profile::{
-    AxisMapping, Capabilities, GpglDialect, Grid, KnifeCompensation, MaterialOverride,
-    MaterialProfile, Media, MediaKind, PlotterProfile, Protocol, TransportSpec,
-    UNCALIBRATED_MARGIN_MM,
+    AxisMapping, Capabilities, DEFAULT_MAT_COLOR, DEFAULT_NO_MAT_COLOR, GpglDialect, Grid,
+    KnifeCompensation, MaterialOverride, MaterialProfile, Media, MediaKind, PlotterProfile,
+    Protocol, TransportSpec, UNCALIBRATED_MARGIN_MM,
 };
 pub use store::{PresetInfo, ProfileError, ProfileStore};
 pub use transport::{FileTransport, SendReport, Transport, TransportError};

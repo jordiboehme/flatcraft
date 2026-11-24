@@ -10,7 +10,7 @@ use super::quantize::to_device_f64;
 use super::{DevPoint, EmitError, GpglCommand, Tb50Mode};
 use crate::profile::{GpglDialect, KnifeCompensation, Media, PlotterProfile, Protocol};
 
-/// One path to cut, in media millimetres (origin top-left).
+/// One path to cut, in app millimetres (origin = the 0,0 of the grid printed on the mat).
 #[derive(Debug, Clone, PartialEq)]
 pub struct EmitPath {
     pub points: Vec<Point>,
@@ -75,6 +75,7 @@ struct Axis {
     value: f64,
     max: i32,
     mm: f64,
+    origin_mm: f64,
     max_mm: f64,
 }
 
@@ -84,6 +85,7 @@ fn check_coordinate(a: Axis, note: &str) -> Result<i32, EmitError> {
             note: note.to_string(),
             axis: a.name,
             mm: a.mm,
+            origin_mm: a.origin_mm,
             max_mm: a.max_mm,
             value: a.value,
             max: a.max.into(),
@@ -108,6 +110,7 @@ fn quantize_path(
                 value: y,
                 max: height,
                 mm: p.y,
+                origin_mm: media.grid.origin_y_mm,
                 max_mm: media.height_mm,
             };
             let x = Axis {
@@ -115,6 +118,7 @@ fn quantize_path(
                 value: x,
                 max: width,
                 mm: p.x,
+                origin_mm: media.grid.origin_x_mm,
                 max_mm: media.width_mm,
             };
             Ok(DevPoint {

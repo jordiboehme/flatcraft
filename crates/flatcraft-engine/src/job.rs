@@ -438,6 +438,7 @@ mod tests {
                 note: "n".into(),
                 axis: "x",
                 mm: -1.0,
+                origin_mm: 0.0,
                 max_mm: 300.0,
                 value: -20.0,
                 max: 6000,

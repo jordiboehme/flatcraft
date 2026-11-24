@@ -15,10 +15,11 @@ const PLOTTER_REPLACE_KEYS: &[&str] = &[
     "protocol",
     "transport",
     "knife_compensation",
-    "media",
     "speed_range",
     "force_range",
 ];
+/// Keys of older versions that no longer exist; dropped when a user preset is loaded.
+const LEGACY_PLOTTER_KEYS: &[&str] = &["margins"];
 const MATERIAL_REPLACE_KEYS: &[&str] = &[];
 const META_KEYS: &[&str] = &["id", "name", "inherits"];
 
@@ -124,6 +125,63 @@ fn find_removed(
     None
 }
 
+fn media_id(v: &Value) -> Option<&str> {
+    v.as_table()?.get("id")?.as_str()
+}
+
+/// Merges two `media` lists by mat id: an entry of `own` replaces the parent mat with the same
+/// id (in place), a new id is appended, and `hidden = true` removes the parent mat from the list.
+fn merge_media(parent: &[Value], own: &[Value]) -> Vec<Value> {
+    let mut out: Vec<Value> = parent.to_vec();
+    for e in own {
+        let Some(id) = media_id(e) else {
+            out.push(e.clone());
+            continue;
+        };
+        let hidden = e.get("hidden").and_then(Value::as_bool).unwrap_or(false);
+        let at = out.iter().position(|m| media_id(m) == Some(id));
+        match (at, hidden) {
+            (Some(i), true) => {
+                out.remove(i);
+            }
+            (None, true) => {}
+            (Some(i), false) => out[i] = e.clone(),
+            (None, false) => out.push(e.clone()),
+        }
+    }
+    out
+}
+
+/// The `media` entries a user preset must store: mats that differ from the parent or are new,
+/// and `{ id, hidden = true }` for parent mats the profile no longer lists.
+fn diff_media(parent: &[Value], own: &[Value]) -> Vec<Value> {
+    let mut out: Vec<Value> = own
+        .iter()
+        .filter(|m| !parent.contains(m))
+        .cloned()
+        .collect();
+    for p in parent {
+        let Some(id) = media_id(p) else { continue };
+        if !own.iter().any(|m| media_id(m) == Some(id)) {
+            let mut t = Table::new();
+            t.insert("id".into(), Value::String(id.to_string()));
+            t.insert("hidden".into(), Value::Boolean(true));
+            out.push(Value::Table(t));
+        }
+    }
+    out
+}
+
+fn validate_media(id: &str, p: &PlotterProfile) -> Result<(), ProfileError> {
+    for m in &p.media {
+        m.validate().map_err(|reason| ProfileError::Invalid {
+            id: id.to_string(),
+            reason,
+        })?;
+    }
+    Ok(())
+}
+
 /// Ids are kebab-case: `^[a-z0-9]+(-[a-z0-9]+)*$`.
 fn validate_id(id: &str) -> Result<(), ProfileError> {
     let ok = !id.is_empty()
@@ -157,6 +215,13 @@ fn flatten_keys(prefix: &str, t: &Table, replace_keys: &[&str], out: &mut Vec<St
         match v {
             Value::Table(sub) if !replace_keys.contains(&k.as_str()) => {
                 flatten_keys(&key, sub, replace_keys, out)
+            }
+            Value::Array(mats) if prefix.is_empty() && k == "media" => {
+                out.extend(
+                    mats.iter()
+                        .filter_map(media_id)
+                        .map(|id| format!("media.{id}")),
+                );
             }
             _ => out.push(key),
         }
@@ -277,6 +342,12 @@ impl ProfileStore {
                 path: path.clone(),
                 source,
             })?;
+            let mut table = table;
+            if kind == Kind::Plotter {
+                for k in LEGACY_PLOTTER_KEYS {
+                    table.remove(*k);
+                }
+            }
             let id = id_of(&table)
                 .ok_or_else(|| ProfileError::MissingId { path: path.clone() })?
                 .to_string();
@@ -374,6 +445,11 @@ impl ProfileStore {
         let parent = self.resolve_table(kind, parent_id, stack)?;
         stack.pop();
         let mut merged = merge_tables(&parent, own, kind.replace_keys());
+        if let (Some(Value::Array(p)), Some(Value::Array(o))) =
+            (parent.get("media"), own.get("media"))
+        {
+            merged.insert("media".into(), Value::Array(merge_media(p, o)));
+        }
         merged.insert("id".into(), Value::String(id.to_string()));
         let name = own
             .get("name")
@@ -395,7 +471,9 @@ impl ProfileStore {
     }
 
     pub fn plotter(&self, id: &str) -> Result<PlotterProfile, ProfileError> {
-        self.resolve(Kind::Plotter, id)
+        let p: PlotterProfile = self.resolve(Kind::Plotter, id)?;
+        validate_media(id, &p)?;
+        Ok(p)
     }
 
     pub fn material(&self, id: &str) -> Result<MaterialProfile, ProfileError> {
@@ -483,11 +561,21 @@ impl ProfileStore {
                 ),
             });
         }
+        let mut diff = diff_tables(&parent_ser, &own_ser, kind.replace_keys());
+        if let (Some(Value::Array(p)), Some(Value::Array(o))) =
+            (parent_ser.get("media"), own_ser.get("media"))
+        {
+            diff.remove("media");
+            let changed = diff_media(p, o);
+            if !changed.is_empty() {
+                diff.insert("media".into(), Value::Array(changed));
+            }
+        }
         let mut table = Table::new();
         table.insert("id".into(), Value::String(id.to_string()));
         table.insert("name".into(), Value::String(name.to_string()));
         table.insert("inherits".into(), Value::String(parent.to_string()));
-        for (k, v) in diff_tables(&parent_ser, &own_ser, kind.replace_keys()) {
+        for (k, v) in diff {
             table.insert(k, v);
         }
         let text = toml::to_string_pretty(&table)?;
@@ -514,6 +602,7 @@ impl ProfileStore {
         profile: &PlotterProfile,
         parent: &str,
     ) -> Result<(), ProfileError> {
+        validate_media(&profile.id, profile)?;
         self.save(Kind::Plotter, profile, &profile.id, &profile.name, parent)
     }
 

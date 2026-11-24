@@ -176,20 +176,40 @@ pub fn render_png(s: &Session, kind: PreviewKind, max_px: u32) -> Result<Vec<u8>
     let mat = Transform::from_scale(sc, sc).pre_translate(ox, oy);
     let px = |n: f32| f64::from(n / sc); // pixel length in mm
 
-    pm.fill(color(0xdd, 0xdf, 0xe3));
-    if let Some(p) = rect_path(area) {
-        pm.fill_path(
-            &p,
-            &paint(color(255, 255, 255)),
-            FillRule::Winding,
-            mat,
-            None,
-        );
+    // The physical mat in its own colour; the printed grid in a contrast colour on top.
+    let [r, g, b] = media.color;
+    pm.fill(color(r, g, b));
+    let luminance = 0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b);
+    let line = if luminance > 128.0 { 0 } else { 255 };
+    let mut grid_lines = PathBuilder::new();
+    let (gw, gh) = (media.grid.width_mm as f32, media.grid.height_mm as f32);
+    let mut at = 0.0f32;
+    while at <= gw {
+        grid_lines.move_to(at, 0.0);
+        grid_lines.line_to(at, gh);
+        at += 10.0;
+    }
+    at = 0.0;
+    while at <= gh {
+        grid_lines.move_to(0.0, at);
+        grid_lines.line_to(gw, at);
+        at += 10.0;
+    }
+    if let Some(p) = grid_lines.finish() {
         let stroke = Stroke {
             width: px(1.0) as f32,
             ..Stroke::default()
         };
-        pm.stroke_path(&p, &paint(color(0x9a, 0xa0, 0xaa)), &stroke, mat, None);
+        let faint = paint(Color::from_rgba8(line, line, line, 60));
+        pm.stroke_path(&p, &faint, &stroke, mat, None);
+    }
+    if let Some(p) = rect_path(area) {
+        let stroke = Stroke {
+            width: px(1.0) as f32,
+            ..Stroke::default()
+        };
+        let edge = paint(Color::from_rgba8(line, line, line, 160));
+        pm.stroke_path(&p, &edge, &stroke, mat, None);
     }
 
     match kind {

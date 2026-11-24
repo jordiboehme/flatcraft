@@ -12,7 +12,7 @@ pub struct PathRef {
     pub path_index: usize,
 }
 
-/// A vector path placed on the mat, in mat millimetres (origin top-left, y down).
+/// A vector path placed on the mat, in app millimetres (origin = the 0,0 of the grid printed on the mat, y down).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlacedPath {
     pub path: BezPath,

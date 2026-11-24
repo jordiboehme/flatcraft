@@ -66,7 +66,8 @@ pub enum MediaKind {
     NoMat,
 }
 
-/// The grid printed on a mat. Its origin is measured from the plotter's zero, in mm.
+/// The grid printed on a mat. Its origin is measured in mm from the mat's top-left corner in
+/// the unmirrored physical frame (before any axis mirror).
 /// FlatCraft's 0,0 is the grid's 0,0, and the grid is the area you can cut in.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Grid {
@@ -76,9 +77,48 @@ pub struct Grid {
     pub height_mm: f64,
 }
 
+impl Media {
+    /// Checks the sizes: all finite, physical size above 0, grid origin from 0, grid size above
+    /// 0, and the grid inside the physical mat.
+    pub fn validate(&self) -> Result<(), String> {
+        let g = &self.grid;
+        let all = [
+            self.width_mm,
+            self.height_mm,
+            g.origin_x_mm,
+            g.origin_y_mm,
+            g.width_mm,
+            g.height_mm,
+        ];
+        let id = &self.id;
+        if all.iter().any(|v| !v.is_finite()) {
+            return Err(format!(
+                "mat '{id}': every size and origin must be a finite number"
+            ));
+        }
+        if self.width_mm <= 0.0 || self.height_mm <= 0.0 {
+            return Err(format!("mat '{id}': the physical size must be above 0"));
+        }
+        if g.origin_x_mm < 0.0 || g.origin_y_mm < 0.0 {
+            return Err(format!("mat '{id}': the grid origin must not be negative"));
+        }
+        if g.width_mm <= 0.0 || g.height_mm <= 0.0 {
+            return Err(format!("mat '{id}': the grid size must be above 0"));
+        }
+        if g.origin_x_mm + g.width_mm > self.width_mm
+            || g.origin_y_mm + g.height_mm > self.height_mm
+        {
+            return Err(format!(
+                "mat '{id}': the grid (origin plus size) must lie inside the physical mat"
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// A mat (or "no mat") of a plotter. `width_mm` and `height_mm` are the physical size.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(from = "MediaFile")]
+#[serde(try_from = "MediaFile")]
 pub struct Media {
     pub id: String,
     pub name: String,
@@ -88,6 +128,33 @@ pub struct Media {
     pub grid: Grid,
     /// True once the grid origin was measured on the real mat.
     pub calibrated: bool,
+    /// The colour of the mat on the canvas, `#RRGGBB` in files.
+    #[serde(serialize_with = "hex_color::serialize")]
+    pub color: [u8; 3],
+}
+
+/// Default mat colour on the canvas.
+pub const DEFAULT_MAT_COLOR: [u8; 3] = [0x8F, 0xA8, 0xB8];
+/// Default colour of "No mat" on the canvas.
+pub const DEFAULT_NO_MAT_COLOR: [u8; 3] = [0xF4, 0xF1, 0xEA];
+
+/// Colours as `#RRGGBB` strings.
+mod hex_color {
+    use serde::Serializer;
+
+    pub fn parse(s: &str) -> Result<[u8; 3], String> {
+        let bad = || format!("'{s}' is not a colour, use #RRGGBB");
+        let hex = s.strip_prefix('#').ok_or_else(bad)?;
+        if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(bad());
+        }
+        let v = u32::from_str_radix(hex, 16).map_err(|_| bad())?;
+        Ok([(v >> 16) as u8, (v >> 8) as u8, v as u8])
+    }
+
+    pub fn serialize<S: Serializer>(c: &[u8; 3], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2]))
+    }
 }
 
 /// The file form of [`Media`]: `kind`, `grid` and `calibrated` are optional, so older
@@ -104,17 +171,26 @@ struct MediaFile {
     grid: Option<Grid>,
     #[serde(default)]
     calibrated: bool,
+    #[serde(default)]
+    color: Option<String>,
 }
 
-impl From<MediaFile> for Media {
-    fn from(f: MediaFile) -> Self {
+impl TryFrom<MediaFile> for Media {
+    type Error = String;
+
+    fn try_from(f: MediaFile) -> Result<Self, String> {
+        let color = match &f.color {
+            Some(c) => hex_color::parse(c)?,
+            None if f.kind == MediaKind::NoMat => DEFAULT_NO_MAT_COLOR,
+            None => DEFAULT_MAT_COLOR,
+        };
         let grid = f.grid.unwrap_or(Grid {
             origin_x_mm: 0.0,
             origin_y_mm: 0.0,
             width_mm: f.width_mm,
             height_mm: f.height_mm,
         });
-        Media {
+        Ok(Media {
             id: f.id,
             name: f.name,
             kind: f.kind,
@@ -122,7 +198,8 @@ impl From<MediaFile> for Media {
             height_mm: f.height_mm,
             grid,
             calibrated: f.calibrated,
-        }
+            color,
+        })
     }
 }
 

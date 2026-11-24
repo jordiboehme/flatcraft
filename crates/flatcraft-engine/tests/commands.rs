@@ -620,8 +620,9 @@ fn job_adds_the_grid_origin() {
     );
     let built = flatcraft_engine::job::build(&s).unwrap();
     let text = String::from_utf8_lossy(&built.job.bytes).into_owned();
-    // app (0,0) = device y 12 mm, x 10 mm = 240,200 units (y first); Z is the physical mat
-    assert!(text.contains("240,200"), "{text}");
+    // the 20 mm square's corner app (0,0) = device y 12 mm, x 10 mm = D240,200 units (y first),
+    // reached from the overcut start M640,200; Z is the physical mat
+    assert!(text.contains("M640,200\x03D240,200,240,600,"), "{text}");
     assert!(text.contains("Z6604,6096"), "{text}");
 }
 
@@ -637,6 +638,7 @@ fn document_state_reports_mat() {
     assert_eq!(m["width_mm"].as_f64(), Some(304.8));
     assert_eq!(m["height_mm"].as_f64(), Some(330.2));
     assert_eq!(m["calibrated"], false);
+    assert_eq!(m["color"], "#8FA8B8");
     assert_eq!(m["grid"]["origin_x_mm"].as_f64(), Some(0.0));
     assert_eq!(m["grid"]["origin_y_mm"].as_f64(), Some(0.0));
     assert_eq!(m["grid"]["width_mm"].as_f64(), Some(304.8));
@@ -1302,4 +1304,21 @@ fn undo_and_redo_by_doc_id() {
         e,
         CommandError::NotFound("That document is no longer open.".into())
     );
+}
+
+#[test]
+fn preview_fills_the_mat_with_its_color() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let png = flatcraft_engine::preview::render_png(
+        &s,
+        flatcraft_engine::preview::PreviewKind::Canvas,
+        512,
+    )
+    .unwrap();
+    let img = image::load_from_memory(&png).unwrap().to_rgba8();
+    // a corner of the physical mat, outside the grid
+    let (w, h) = img.dimensions();
+    let px = img.get_pixel(w / 2, h - 3);
+    assert_eq!(&px.0[..3], &[0x8F, 0xA8, 0xB8]);
 }

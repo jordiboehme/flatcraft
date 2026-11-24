@@ -78,7 +78,7 @@ way FlatCraft uses it is our choice.
 | FlatCraft number format | Integers only, no sign for zero, no leading zeros, no spaces | FlatCraft choice (provisional) | - |
 | FlatCraft rounding | Convert every absolute point from mm with `round(mm * 20.0)`. Never add up rounded deltas, so errors do not build up. | FlatCraft choice (provisional) | - |
 | FlatCraft rounding ties | A tie (`.5`) rounds half away from zero, as Rust `f64::round` does. Example: 10.025 mm * 20.0 = 200.5, sent as `201`. | FlatCraft choice (provisional) | - |
-| FlatCraft grid origin | Device coordinates = app coordinates + the grid origin of the mat (x and y in mm, measured from the plotter's zero). This is the first step, before mirror, scale, units and rounding. App 0,0 is the 0,0 of the grid printed on the mat. | FlatCraft rule | - |
+| FlatCraft grid origin | Device coordinates = app coordinates + the grid origin of the mat (x and y in mm, measured from the mat's top-left corner in the unmirrored physical frame, before any mirror). This is the first step, before mirror, scale, units and rounding. App 0,0 is the 0,0 of the grid printed on the mat. | FlatCraft rule | - |
 | FlatCraft coordinate range | After grid origin, mirror, scale and rounding, every coordinate must lie in 0..media height (y) and 0..media width (x) of the physical mat, in units, both ends included. A point outside is an error before anything is emitted, like an out-of-range speed, force or FC. Negative numbers are never emitted. | FlatCraft rule | - |
 | FlatCraft origin | Physical media top-left = device `0,0`, because the job sets `\0,0` as the work area upper-left. The grid origin of the mat shifts app coordinates inside it (see above). | FlatCraft choice (provisional) | - |
 

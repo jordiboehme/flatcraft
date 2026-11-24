@@ -190,6 +190,15 @@ fn grid_origin_is_part_of_the_range_check() {
         matches!(err, EmitError::CoordinateOutOfRange { axis: "x", .. }),
         "{err:?}"
     );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("x = 305 mm (295 mm on the grid + 10 mm grid origin)"),
+        "{msg}"
+    );
+    assert!(
+        msg.contains("lies outside the mat (0 to 304.8 mm)"),
+        "{msg}"
+    );
 }
 
 #[test]

@@ -82,14 +82,17 @@ pub enum EmitError {
         max: i64,
     },
     #[error(
-        "{axis} = {mm} mm in {note} lies outside the media (0 to {max_mm} mm) after mirror and scale (device units {value}, allowed 0 to {max})"
+        "{axis} = {} mm ({mm} mm on the grid + {origin_mm} mm grid origin) in {note} lies outside the mat (0 to {max_mm} mm) after mirror and scale (device units {value}, allowed 0 to {max})",
+        .mm + .origin_mm
     )]
     CoordinateOutOfRange {
         note: String,
         axis: &'static str,
-        /// The point's coordinate on this axis as given, in mm.
+        /// The point's coordinate on this axis as given (on the grid), in mm.
         mm: f64,
-        /// The media size on this axis in mm.
+        /// The grid origin of the mat on this axis, in mm.
+        origin_mm: f64,
+        /// The physical mat size on this axis in mm.
         max_mm: f64,
         /// The rounded device value after mirror and scale.
         value: f64,
