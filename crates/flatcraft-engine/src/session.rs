@@ -157,6 +157,9 @@ pub struct Session {
     /// A send that waits for confirmation in the GUI (see `confirm_pending`).
     pub(crate) pending_send: Option<PendingSend>,
     next_pending_id: u64,
+    /// Set by a mutating command that ended up changing nothing the user
+    /// would undo (see `mark_no_user_change`). Reset before every command.
+    no_user_change: bool,
 }
 
 impl Session {
@@ -179,6 +182,7 @@ impl Session {
             byte_log: ByteLog::new(),
             pending_send: None,
             next_pending_id: 1,
+            no_user_change: false,
         };
         s.docs.push(s.new_doc_state());
         s
@@ -302,6 +306,14 @@ impl Session {
         result
     }
 
+    /// Called by a mutating command whose run changed nothing the user would
+    /// undo (only `object.reload` when no file changed). Small bookkeeping it
+    /// did, like a refreshed modification time, stays in the document, but
+    /// no undo step is recorded and the document is not marked as changed.
+    pub(crate) fn mark_no_user_change(&mut self) {
+        self.no_user_change = true;
+    }
+
     fn run_command(
         &mut self,
         command: &dyn registry::Command,
@@ -313,9 +325,15 @@ impl Session {
         }
         let index = self.active;
         let before = self.docs[index].document.clone();
+        self.no_user_change = false;
         let result = command.run(self, params, origin);
+        let no_user_change = std::mem::take(&mut self.no_user_change);
         let state = &mut self.docs[index];
         match result {
+            Ok(value) if no_user_change => {
+                state.prune_selection();
+                Ok(value)
+            }
             Ok(value) => {
                 state.undo.record(before);
                 state.dirty = true;

@@ -467,9 +467,8 @@ fn unlink_keeps_the_object() {
     );
     assert_eq!(obj(&s, id).geometry.len(), 1);
 
-    run(&mut s, "edit.undo", json!({})); // the reload
-    run(&mut s, "edit.undo", json!({})); // the reload of all
-    run(&mut s, "edit.undo", json!({})); // the unlink
+    // The two reloads changed nothing, so the next undo is the unlink.
+    run(&mut s, "edit.undo", json!({}));
     assert!(obj(&s, id).link.is_some());
 }
 
@@ -679,4 +678,337 @@ fn reload_refuses_unknown_ids() {
         .execute("object.reload", json!({ "ids": [42] }), Origin::Agent)
         .unwrap_err();
     assert!(matches!(e, CommandError::NotFound(_)), "{e}");
+}
+
+// ---------------------------------------------------------------- review fixes
+
+#[test]
+fn save_as_then_undo_never_picks_a_decoy() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a");
+    let b = dir.path().join("b");
+    let mut s = session(dir.path());
+    std::fs::create_dir_all(&a).unwrap();
+    run(
+        &mut s,
+        "project.save",
+        json!({ "path": a.join("p.flatcraft") }),
+    );
+    write(&a.join("art").join("x.svg"), svg(false));
+    let id = import(&mut s, &a.join("art").join("x.svg"));
+    run(&mut s, "object.move", json!({ "ids": [id], "dx_mm": 1.0 }));
+    // A decoy with the same relative path next to the new project file.
+    write(&b.join("art").join("x.svg"), svg(true));
+    bump_mtime(&b.join("art").join("x.svg"));
+    run(
+        &mut s,
+        "project.save",
+        json!({ "path": b.join("p.flatcraft") }),
+    );
+    // Undo the move: the snapshot holds the link made against a/.
+    run(&mut s, "edit.undo", json!({}));
+    let r = run(&mut s, "document.check_sources", json!({}));
+    assert_eq!(ids(&r["changed"]), Vec::<u64>::new(), "{r}");
+    assert_eq!(ids(&r["missing"]), Vec::<u64>::new(), "{r}");
+    let r = run(&mut s, "object.reload", json!({ "ids": [] }));
+    assert_eq!(ids(&r["reloaded"]), Vec::<u64>::new(), "{r}");
+    assert_eq!(obj(&s, id).geometry.len(), 1, "never the decoy");
+    let link = obj(&s, id).link.clone().unwrap();
+    assert_eq!(link.path, a.join("art").join("x.svg"));
+
+    // Without the original the link reports missing, never the decoy.
+    std::fs::remove_file(a.join("art").join("x.svg")).unwrap();
+    let r = run(&mut s, "document.check_sources", json!({}));
+    assert_eq!(ids(&r["missing"]), vec![id], "{r}");
+    let r = run(&mut s, "object.reload", json!({ "ids": [] }));
+    assert_eq!(ids(&r["missing"]), vec![id], "{r}");
+    assert_eq!(obj(&s, id).geometry.len(), 1);
+}
+
+#[test]
+fn check_sources_reports_unreadable_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(dir.path());
+    let huge = dir.path().join("huge.svg");
+    let gone = dir.path().join("dir.svg");
+    write(&huge, svg(false));
+    write(&gone, svg(false));
+    let ih = import(&mut s, &huge);
+    let id = import(&mut s, &gone);
+    std::fs::File::options()
+        .write(true)
+        .open(&huge)
+        .unwrap()
+        .set_len(51 * 1024 * 1024)
+        .unwrap();
+    bump_mtime(&huge);
+    std::fs::remove_file(&gone).unwrap();
+    std::fs::create_dir(&gone).unwrap(); // not a regular file
+    let r = run(&mut s, "document.check_sources", json!({}));
+    assert_eq!(ids(&r["unreadable"]), vec![ih, id], "{r}");
+    assert_eq!(ids(&r["changed"]), Vec::<u64>::new(), "{r}");
+    assert_eq!(ids(&r["missing"]), Vec::<u64>::new(), "{r}");
+}
+
+/// Saves, then opens the project in a fresh session: no undo history, clean.
+fn reopened(dir: &Path, s: &mut Session) -> Session {
+    let project = dir.join("p.flatcraft");
+    run(s, "project.save", json!({ "path": project }));
+    let mut s = session(dir);
+    run(&mut s, "project.open", json!({ "path": project }));
+    assert!(!s.doc().undo.can_undo() && !s.doc().dirty);
+    s
+}
+
+#[test]
+fn reload_without_changes_records_no_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(dir.path());
+    let [missing, broken, same] =
+        ["missing", "broken", "same"].map(|n| dir.path().join(format!("{n}.svg")));
+    for f in [&missing, &broken, &same] {
+        write(f, svg(false));
+    }
+    let [im, ib, is] = [&missing, &broken, &same].map(|f| import(&mut s, f));
+    let mut s = reopened(dir.path(), &mut s);
+    std::fs::remove_file(&missing).unwrap();
+    change(&broken, "not an svg");
+    bump_mtime(&same);
+
+    let r = run(&mut s, "object.reload", json!({ "ids": [im, ib] }));
+    assert_eq!(ids(&r["missing"]), vec![im], "{r}");
+    assert_eq!(ids(&r["failed"]), vec![ib], "{r}");
+    assert!(!s.doc().undo.can_undo(), "nothing changed, no undo step");
+    assert!(!s.doc().dirty);
+
+    let old = obj(&s, is).link.clone().unwrap();
+    let r = run(&mut s, "object.reload", json!({ "ids": [is] }));
+    assert_eq!(ids(&r["unchanged"]), vec![is], "{r}");
+    assert!(
+        !s.doc().undo.can_undo(),
+        "an mtime refresh is no user change"
+    );
+    assert!(!s.doc().dirty);
+    let new = obj(&s, is).link.clone().unwrap();
+    assert_ne!(new.modified, old.modified, "the mtime is refreshed");
+    assert_eq!((new.path, new.sha256), (old.path, old.sha256));
+}
+
+#[test]
+fn a_link_to_another_file_type_is_never_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(dir.path());
+    let file = dir.path().join("a.svg");
+    write(&file, svg(false));
+    let id = import(&mut s, &file);
+    let project = dir.path().join("p.flatcraft");
+    run(&mut s, "project.save", json!({ "path": project }));
+    // A crafted project points the link at a file that is no SVG or image.
+    let secret = dir.path().join("secret.txt");
+    write(&secret, svg(true));
+    let text = std::fs::read_to_string(&project).unwrap();
+    let mut v: Value = serde_json::from_str(&text).unwrap();
+    v["objects"][0]["link"]["path"] = json!(secret);
+    v["objects"][0]["link"]
+        .as_object_mut()
+        .unwrap()
+        .remove("relative");
+    std::fs::write(&project, v.to_string()).unwrap();
+
+    let mut s = session(dir.path());
+    run(&mut s, "project.open", json!({ "path": project }));
+    let r = run(&mut s, "document.check_sources", json!({}));
+    assert_eq!(ids(&r["missing"]), vec![id], "{r}");
+    let r = run(&mut s, "object.reload", json!({ "ids": [] }));
+    assert_eq!(ids(&r["missing"]), vec![id], "{r}");
+    assert_eq!(bytes_of(obj(&s, id)), svg(false).as_bytes());
+}
+
+#[test]
+fn a_relative_link_path_resolves_against_the_project_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(dir.path());
+    let file = dir.path().join("only-here.svg");
+    write(&file, svg(false));
+    let id = import(&mut s, &file);
+    let project = dir.path().join("p.flatcraft");
+    run(&mut s, "project.save", json!({ "path": project }));
+    let text = std::fs::read_to_string(&project).unwrap();
+    let mut v: Value = serde_json::from_str(&text).unwrap();
+    v["objects"][0]["link"]["path"] = json!("only-here.svg");
+    v["objects"][0]["link"]
+        .as_object_mut()
+        .unwrap()
+        .remove("relative");
+    std::fs::write(&project, v.to_string()).unwrap();
+    change(&file, svg(true));
+
+    let mut s = session(dir.path());
+    run(&mut s, "project.open", json!({ "path": project }));
+    let r = run(&mut s, "object.reload", json!({ "ids": [] }));
+    assert_eq!(ids(&r["reloaded"]), vec![id], "{r}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_fifo_never_blocks() {
+    let dir = tempfile::tempdir().unwrap();
+    let fifo = dir.path().join("pipe.svg");
+    let ok = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+    let mut s = session(dir.path());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let r = s.execute("object.import", json!({ "path": fifo }), Origin::Agent);
+        let _ = tx.send(r.map_err(|e| e.to_string()));
+    });
+    let r = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("importing a FIFO blocked");
+    assert!(r.is_err(), "{r:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn reload_and_check_of_a_fifo_never_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(dir.path());
+    let file = dir.path().join("pipe.svg");
+    write(&file, svg(false));
+    let id = import(&mut s, &file);
+    std::fs::remove_file(&file).unwrap();
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&file)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let check = run(&mut s, "document.check_sources", json!({}));
+        let reload = run(&mut s, "object.reload", json!({ "ids": [] }));
+        let _ = tx.send((check, reload));
+    });
+    let (check, reload) = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a FIFO blocked");
+    assert_eq!(ids(&check["unreadable"]), vec![id], "{check}");
+    assert_eq!(ids(&reload["failed"]), vec![id], "{reload}");
+}
+
+#[test]
+fn reload_with_a_new_image_size_keeps_scale_and_frame() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(dir.path());
+    let file = dir.path().join("pic.png");
+    png(&file, &[(30, 30, 100)]);
+    let id = import(&mut s, &file);
+    run(
+        &mut s,
+        "object.scale",
+        json!({ "ids": [id], "factor": 1.5 }),
+    );
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [id], "degrees": 90.0 }),
+    );
+    let before = obj(&s, id).clone();
+    let square = |o: &Object| first_path_points(o);
+    let corner = |o: &Object| o.transform.affine(o.local_bounds) * o.anchor_frame().origin();
+
+    // Twice the pixels; the square keeps its pixel position.
+    let mut img = image::GrayImage::from_pixel(600, 400, image::Luma([255]));
+    for y in 30..130 {
+        for x in 30..130 {
+            img.put_pixel(x, y, image::Luma([0]));
+        }
+    }
+    img.save(&file).unwrap();
+    bump_mtime(&file);
+    let r = run(&mut s, "object.reload", json!({ "ids": [id] }));
+    assert_eq!(ids(&r["reloaded"]), vec![id], "{r}");
+    let o = obj(&s, id);
+    assert!((o.anchor_frame().width() - 2.0 * before.anchor_frame().width()).abs() < 1e-6);
+    assert_eq!(
+        (o.transform.scale_x, o.transform.rotation_deg),
+        (before.transform.scale_x, before.transform.rotation_deg)
+    );
+    assert!((corner(o) - corner(&before)).hypot() < 1e-6);
+    let (a, b) = (square(o), square(&before));
+    let bbox = |p: &[Point]| {
+        p.iter()
+            .fold(kurbo::Rect::from_points(p[0], p[0]), |r, q| r.union_pt(*q))
+    };
+    let (a, b) = (bbox(&a), bbox(&b));
+    assert!(
+        (a.x0 - b.x0).abs() < 1e-6 && (a.y0 - b.y0).abs() < 1e-6,
+        "{a:?} {b:?}"
+    );
+}
+
+#[test]
+fn reload_with_a_new_svg_page_size_keeps_the_page_corner() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(dir.path());
+    let file = dir.path().join("a.svg");
+    write(&file, svg(false));
+    let id = import(&mut s, &file);
+    run(
+        &mut s,
+        "object.scale",
+        json!({ "ids": [id], "factor": 0.5 }),
+    );
+    run(
+        &mut s,
+        "object.mirror",
+        json!({ "ids": [id], "axis": "vertical" }),
+    );
+    let before = obj(&s, id).clone();
+    change(
+        &file,
+        svg(true).replace(
+            r#"width="200mm" height="200mm" viewBox="0 0 200 200""#,
+            r#"width="300mm" height="250mm" viewBox="0 0 300 250""#,
+        ),
+    );
+    let r = run(&mut s, "object.reload", json!({ "ids": [id] }));
+    assert_eq!(ids(&r["reloaded"]), vec![id], "{r}");
+    let o = obj(&s, id);
+    assert!((o.anchor_frame().width() - 300.0).abs() < 1e-3);
+    assert_eq!(o.transform.scale_x, before.transform.scale_x);
+    assert_eq!(o.transform.mirror, before.transform.mirror);
+    assert_points_close(&first_path_points(o), &first_path_points(&before));
+}
+
+#[test]
+fn relink_to_a_broken_file_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(dir.path());
+    let r = run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": svg(false), "name": "text" }),
+    );
+    let id = r["id"].as_u64().unwrap();
+    let before = obj(&s, id).clone();
+    let broken = dir.path().join("broken.svg");
+    write(&broken, "not an svg");
+    let e = s
+        .execute(
+            "object.relink",
+            json!({ "id": id, "path": broken }),
+            Origin::User,
+        )
+        .unwrap_err();
+    assert!(matches!(e, CommandError::Failed(_)), "{e}");
+    let o = obj(&s, id);
+    assert!(o.link.is_none(), "still unlinked");
+    assert_eq!(o.geometry, before.geometry);
+    assert_eq!(bytes_of(o), bytes_of(&before));
 }

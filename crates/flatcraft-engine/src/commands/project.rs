@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::object::{blade_offset_for, warning_text};
-use super::sources::{relink_for_save, restore_links};
+use super::sources::{project_dir, relink_for_save, restore_links};
 use super::{NoParams, command, cutting_area, ids_json, placed_bounds, point_arr, rect_json};
 use crate::session::{CommandError, DocState, Origin, Session};
 
@@ -351,6 +351,11 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
                 }
             }
         }
+    }
+    // A relative path in a project file is relative to that file.
+    let anchor = project_dir(Some(&p.path));
+    for link in document.objects.iter_mut().filter_map(|o| o.link.as_mut()) {
+        link.anchor_dir = anchor.clone();
     }
     let objects = document.objects.len();
     let mut st = DocState::new(document);

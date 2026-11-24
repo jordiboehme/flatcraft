@@ -31,6 +31,8 @@ pub(crate) const MAX_SOURCE_BYTES: u64 = 50 * 1024 * 1024;
 #[derive(Debug)]
 pub(crate) enum ReadError {
     NotFound,
+    /// A folder, FIFO, device or socket: never opened, a FIFO would block.
+    NotAFile,
     TooLarge,
     Io(std::io::Error),
 }
@@ -40,8 +42,9 @@ impl ReadError {
     pub(crate) fn text(&self) -> String {
         match self {
             ReadError::NotFound => "the file was not found".into(),
+            ReadError::NotAFile => "it is not a regular file".into(),
             ReadError::TooLarge => "the file is larger than 50 MB".into(),
-            ReadError::Io(e) => format!("the file cannot be read: {e}"),
+            ReadError::Io(e) => clip(format!("the file cannot be read: {e}")),
         }
     }
 }
@@ -53,18 +56,23 @@ pub(crate) struct SourceFile {
 }
 
 /// Reads at most 50 MB; a larger file is refused without reading it all.
+/// Only regular files are opened (checked before opening, so a FIFO never
+/// blocks the session).
 pub(crate) fn read_capped(path: &Path) -> Result<SourceFile, ReadError> {
-    let file = std::fs::File::open(path).map_err(|e| match e.kind() {
+    let meta = std::fs::metadata(path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => ReadError::NotFound,
         _ => ReadError::Io(e),
     })?;
-    let meta = file.metadata().map_err(ReadError::Io)?;
     if !meta.is_file() {
-        return Err(ReadError::NotFound);
+        return Err(ReadError::NotAFile);
     }
     if meta.len() > MAX_SOURCE_BYTES {
         return Err(ReadError::TooLarge);
     }
+    let file = std::fs::File::open(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => ReadError::NotFound,
+        _ => ReadError::Io(e),
+    })?;
     let mut bytes = Vec::new();
     file.take(MAX_SOURCE_BYTES + 1)
         .read_to_end(&mut bytes)
@@ -78,6 +86,17 @@ pub(crate) fn read_capped(path: &Path) -> Result<SourceFile, ReadError> {
     })
 }
 
+/// Longest error text from a parser that goes into a warning, in chars.
+const MAX_DETAIL_CHARS: usize = 200;
+
+/// Cuts a text to `MAX_DETAIL_CHARS`, so a parser cannot flood the result.
+pub(crate) fn clip(text: String) -> String {
+    match text.char_indices().nth(MAX_DETAIL_CHARS) {
+        Some((cut, _)) => format!("{}...", &text[..cut]),
+        None => text,
+    }
+}
+
 /// The kind of object a file becomes, by its extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FileKind {
@@ -86,6 +105,14 @@ pub(crate) enum FileKind {
 }
 
 pub(crate) const SUPPORTED_TYPES: &str = ".svg, .svgz, .png, .jpg, .jpeg, .webp, .gif";
+
+/// The kind of file an object is rebuilt from.
+pub(crate) fn source_kind(source: &Source) -> FileKind {
+    match source {
+        Source::Svg { .. } => FileKind::Svg,
+        Source::Raster { .. } => FileKind::Raster,
+    }
+}
 
 /// The file kind by extension (case does not matter).
 pub(crate) fn file_kind(path: &Path) -> Result<FileKind, CommandError> {
@@ -116,6 +143,26 @@ pub(crate) fn absolute(path: &Path) -> PathBuf {
     lexical(&std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()))
 }
 
+/// True if two path parts are the same. Windows drive letters and
+/// prefixes compare without case (`C:` is `c:`).
+fn same_part(a: &Component, b: &Component) -> bool {
+    match (a, b) {
+        (Component::Prefix(x), Component::Prefix(y)) => {
+            x.as_os_str().eq_ignore_ascii_case(y.as_os_str())
+        }
+        _ => a == b,
+    }
+}
+
+/// True if two absolute folders are the same (lexically).
+fn same_dir(a: &Path, b: &Path) -> bool {
+    let (a, b) = (lexical(a), lexical(b));
+    a.components().count() == b.components().count()
+        && a.components()
+            .zip(b.components())
+            .all(|(x, y)| same_part(&x, &y))
+}
+
 /// `file` relative to the folder `dir`, both absolute. `None` when they
 /// have no common root (another drive on Windows) or a part is not UTF-8.
 /// The parts are joined with `/` on every platform, so a project folder
@@ -123,7 +170,11 @@ pub(crate) fn absolute(path: &Path) -> PathBuf {
 pub(crate) fn relative_to(file: &Path, dir: &Path) -> Option<PathBuf> {
     let file: Vec<Component> = file.components().collect();
     let dir: Vec<Component> = dir.components().collect();
-    let common = file.iter().zip(&dir).take_while(|(a, b)| a == b).count();
+    let common = file
+        .iter()
+        .zip(&dir)
+        .take_while(|(a, b)| same_part(a, b))
+        .count();
     if common == 0 {
         return None;
     }
@@ -135,22 +186,45 @@ pub(crate) fn relative_to(file: &Path, dir: &Path) -> Option<PathBuf> {
 }
 
 /// The folder of a project file, absolute.
-fn project_dir(project: Option<&Path>) -> Option<PathBuf> {
+pub(crate) fn project_dir(project: Option<&Path>) -> Option<PathBuf> {
     project.and_then(|p| absolute(p).parent().map(Path::to_path_buf))
 }
 
-/// Where a linked file is now: relative to the project file first (so a
-/// project folder can move as a whole), then the absolute path.
-pub(crate) fn locate(link: &SourceLink, project: Option<&Path>) -> Option<PathBuf> {
-    let relative = link
-        .relative
-        .as_ref()
-        .zip(project_dir(project))
-        .map(|(rel, dir)| lexical(&dir.join(rel)));
-    relative
+/// The relative path of a link resolved against `dir`, but only when it was
+/// made for that folder (`anchor_dir`).
+fn anchored_relative(link: &SourceLink, dir: Option<&Path>) -> Option<PathBuf> {
+    match (&link.relative, &link.anchor_dir, dir) {
+        (Some(rel), Some(anchor), Some(dir)) if same_dir(anchor, dir) => {
+            Some(lexical(&dir.join(rel)))
+        }
+        _ => None,
+    }
+}
+
+/// The link's absolute path. A relative one (a hand-edited project) is
+/// taken against the project folder, never the working directory.
+fn absolute_path(link: &SourceLink, dir: Option<&Path>) -> Option<PathBuf> {
+    if link.path.is_absolute() {
+        Some(lexical(&link.path))
+    } else {
+        dir.map(|d| lexical(&d.join(&link.path)))
+    }
+}
+
+/// Where a linked file is now, or `None` when nothing of the object's kind
+/// exists there. The path relative to the project file comes first, but
+/// only while the project file is in the folder that path was made for
+/// (`anchor_dir`); then the absolute path. Only names with an extension of
+/// `kind` count, so a crafted project cannot make FlatCraft read any other
+/// file. The result may be a folder or a FIFO with a matching name; reading
+/// checks that.
+pub(crate) fn locate(link: &SourceLink, project: Option<&Path>, kind: FileKind) -> Option<PathBuf> {
+    let dir = project_dir(project);
+    anchored_relative(link, dir.as_deref())
         .into_iter()
-        .chain(std::iter::once(link.path.clone()))
-        .find(|p| p.is_file())
+        .chain(absolute_path(link, dir.as_deref()))
+        .filter(|p| file_kind(p).ok() == Some(kind))
+        .find(|p| std::fs::metadata(p).is_ok())
 }
 
 /// A link to `file` (absolute). `None` for a path that is not UTF-8, which
@@ -162,6 +236,7 @@ pub(crate) fn new_link(file: &Path, project: Option<&Path>, f: &SourceFile) -> O
         relative: project_dir(project).and_then(|dir| relative_to(file, &dir)),
         sha256: sha256_hex(&f.bytes),
         modified: f.modified.clone(),
+        anchor_dir: project_dir(project),
     })
 }
 
@@ -177,6 +252,8 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
 
 /// sha256 of a file, read in chunks (no size cap, little memory).
 fn sha256_file(path: &Path) -> std::io::Result<String> {
+    #[cfg(test)]
+    tests::HASHED.with(|n| n.set(n.get() + 1));
     let mut file = std::fs::File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 64 * 1024];
@@ -270,7 +347,9 @@ fn embedded_bytes(source: &Source) -> &[u8] {
 /// What reloading one object did.
 enum Outcome {
     Reloaded,
-    Unchanged,
+    /// Same content. `true` when the link moved (a real change); a fresh
+    /// modification time alone is `false`.
+    Unchanged(bool),
     Missing,
     Failed,
     NoLink,
@@ -295,7 +374,8 @@ fn reload_one(
         warnings.push(format!("{who} has no linked file, so it was not reloaded"));
         return Outcome::NoLink;
     };
-    let Some(path) = path.or_else(|| locate(link, project.as_deref())) else {
+    let kind = source_kind(&o.source);
+    let Some(path) = path.or_else(|| locate(link, project.as_deref(), kind)) else {
         return Outcome::Missing;
     };
     let file = match read_capped(&path) {
@@ -318,17 +398,23 @@ fn reload_one(
         return Outcome::Failed;
     };
     if link.sha256 == sha256_hex(embedded_bytes(&o.source)) {
+        let moved = o
+            .link
+            .as_ref()
+            .map(|l| (&l.path, &l.relative, &l.anchor_dir))
+            != Some((&link.path, &link.relative, &link.anchor_dir));
         if let Some(o) = s.doc_mut().document.get_mut(id) {
             o.link = Some(link);
         }
-        return Outcome::Unchanged;
+        return Outcome::Unchanged(moved);
     }
     let rebuilt = match rebuild(&o.source, &file.bytes, blade) {
         Ok(r) => r,
         Err(e) => {
             warnings.push(format!(
-                "{who}: cannot read the new version of {} ({e}), so the object was kept as it was",
-                path.display()
+                "{who}: cannot read the new version of {} ({}), so the object was kept as it was",
+                path.display(),
+                clip(e.to_string())
             ));
             return Outcome::Failed;
         }
@@ -376,14 +462,23 @@ fn run_reload(s: &mut Session, p: ReloadParams, _: Origin) -> Result<Value, Comm
     };
     let (mut reloaded, mut unchanged, mut missing, mut failed) = (vec![], vec![], vec![], vec![]);
     let mut warnings = Vec::new();
+    let mut moved_any = false;
     for id in ids {
         match reload_one(s, id, None, &mut warnings) {
             Outcome::Reloaded => reloaded.push(id),
-            Outcome::Unchanged => unchanged.push(id),
+            Outcome::Unchanged(moved) => {
+                moved_any |= moved;
+                unchanged.push(id);
+            }
             Outcome::Missing => missing.push(id),
             Outcome::Failed => failed.push(id),
             Outcome::NoLink => {}
         }
+    }
+    if reloaded.is_empty() && !moved_any {
+        // Nothing the user would undo. A refreshed modification time stays
+        // and is saved with the next real change.
+        s.mark_no_user_change();
     }
     Ok(json!({
         "reloaded": ids_json(&reloaded),
@@ -401,7 +496,7 @@ command!(
     mutates: true,
     params: ReloadParams,
     run: run_reload,
-    description: "Reads linked files again after they were changed in another app and rebuilds the objects (SVG import, or a trace with the object's stored trace settings). Position, scale, rotation, mirror, cut options, name and visibility stay; the object stays anchored to the file's page (SVG page, image frame), so unchanged shapes keep their place on the mat. A file is looked for relative to the project file first, then at its absolute path. ids: objects to reload; empty (default) means every linked object. One undo step for the whole call. The call never fails because of a file: a file that is gone is listed in missing, a file that cannot be read or is broken is listed in failed with a warning, and those objects keep their embedded copy unchanged. Returns {reloaded: [id], unchanged: [id] (same content), missing: [id], failed: [id], warnings: [text]}.",
+    description: "Reads linked files again after they were changed in another app and rebuilds the objects (SVG import, or a trace with the object's stored trace settings). Position, scale, rotation, mirror, cut options, name and visibility stay; the object stays anchored to the file's page (SVG page, image frame), so unchanged shapes keep their place on the mat. A file is looked for relative to the project file first (while the project is in the folder that path was made for), then at its absolute path; only files of the object's type (.svg/.svgz or an image type) count. ids: objects to reload; empty (default) means every linked object. One undo step for the whole call; a call that changed nothing (all unchanged, missing or failed) records no undo step and does not mark the document as changed. The call never fails because of a file: a file that is gone is listed in missing, a file that cannot be read or is broken is listed in failed with a warning, and those objects keep their embedded copy unchanged. Returns {reloaded: [id], unchanged: [id] (same content), missing: [id], failed: [id], warnings: [text]}.",
 );
 
 // ---------------------------------------------------------------- relink
@@ -447,13 +542,14 @@ fn run_relink(s: &mut Session, p: RelinkParams, _: Origin) -> Result<Value, Comm
             relative: None,
             sha256: String::new(),
             modified: None,
+            anchor_dir: None,
         });
     }
     let mut warnings = Vec::new();
     let (mut reloaded, mut unchanged) = (vec![], vec![]);
     match reload_one(s, id, Some(path.clone()), &mut warnings) {
         Outcome::Reloaded => reloaded.push(id),
-        Outcome::Unchanged => unchanged.push(id),
+        Outcome::Unchanged(_) => unchanged.push(id),
         Outcome::Missing => {
             return Err(CommandError::NotFound(format!("file {}", path.display())));
         }
@@ -484,12 +580,12 @@ fn siblings(s: &Session, except: ObjectId, path: &Path) -> Vec<Value> {
         .filter(|o| o.id != except)
         .filter_map(|o| {
             let link = o.link.as_ref()?;
-            if locate(link, project).is_some() {
+            let kind = source_kind(&o.source);
+            if locate(link, project, kind).is_some() {
                 return None;
             }
             let candidate = folder.join(link.path.file_name()?);
-            candidate
-                .is_file()
+            (file_kind(&candidate).ok() == Some(kind) && candidate.is_file())
                 .then(|| json!({ "id": o.id.0, "path": candidate }))
         })
         .collect()
@@ -538,31 +634,65 @@ command!(
 
 // ---------------------------------------------------------------- check
 
+/// What the change check found for one linked object.
+#[derive(Debug, PartialEq, Eq)]
+enum Check {
+    Same,
+    Changed,
+    Missing,
+    Unreadable,
+}
+
+/// Checks one link without reading more than needed: the modification time
+/// first, then the size, and only for an equal size the sha256. Files that
+/// are too large or not regular files are never read.
+fn check_one(link: &SourceLink, source: &Source, project: Option<&Path>) -> Check {
+    let Some(path) = locate(link, project, source_kind(source)) else {
+        return Check::Missing;
+    };
+    let meta = match std::fs::metadata(&path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Check::Missing,
+        Err(_) => return Check::Unreadable,
+    };
+    if !meta.is_file() || meta.len() > MAX_SOURCE_BYTES {
+        return Check::Unreadable;
+    }
+    let modified = meta.modified().ok().and_then(rfc3339);
+    if modified.is_some() && modified == link.modified {
+        return Check::Same;
+    }
+    let embedded = embedded_bytes(source);
+    if meta.len() != embedded.len() as u64 {
+        return Check::Changed;
+    }
+    match sha256_file(&path) {
+        Ok(sha) if sha == sha256_hex(embedded) => Check::Same,
+        Ok(_) => Check::Changed,
+        Err(_) => Check::Unreadable,
+    }
+}
+
+/// The change check. Only `changed` is meant for an automatic reload
+/// (`Preferences::auto_reload`): `missing` and `unreadable` would fail again
+/// on every check and must wait for the user.
 fn run_check(s: &mut Session, _: NoParams, _: Origin) -> Result<Value, CommandError> {
     let project = s.doc().path.as_deref();
-    let (mut changed, mut missing) = (Vec::new(), Vec::new());
+    let (mut changed, mut missing, mut unreadable) = (Vec::new(), Vec::new(), Vec::new());
     for o in &s.doc().document.objects {
         let Some(link) = &o.link else { continue };
-        let Some(path) = locate(link, project) else {
-            missing.push(o.id);
-            continue;
-        };
-        let modified = std::fs::metadata(&path)
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(rfc3339);
-        if modified.is_some() && modified == link.modified {
-            continue;
-        }
-        // The time changed: compare the content with the embedded copy. A
-        // file that exists but cannot be read counts as changed; reloading
-        // it then says why.
-        let same = sha256_file(&path).is_ok_and(|sha| sha == sha256_hex(embedded_bytes(&o.source)));
-        if !same {
-            changed.push(o.id);
+        match check_one(link, &o.source, project) {
+            Check::Same => {}
+            Check::Changed => changed.push(o.id),
+            Check::Missing => missing.push(o.id),
+            Check::Unreadable => unreadable.push(o.id),
         }
     }
-    Ok(json!({ "changed": ids_json(&changed), "missing": ids_json(&missing) }))
+    Ok(json!({
+        "changed": ids_json(&changed),
+        "missing": ids_json(&missing),
+        "unreadable": ids_json(&unreadable),
+    }))
 }
 
 command!(
@@ -572,7 +702,7 @@ command!(
     mutates: false,
     params: NoParams,
     run: run_check,
-    description: "Checks the files the objects of the active document were imported from, without changing anything. A file is looked for relative to the project file first, then at its absolute path. Compares the modification time first and the content (sha256) only when the time changed. Returns {changed: [id] (reload them with object.reload), missing: [id] (point them to the new place with object.relink)}.",
+    description: "Checks the files the objects of the active document were imported from, without changing anything. A file is looked for relative to the project file first, then at its absolute path; only files of the object's type count. Compares the modification time first, then the size, and the content (sha256) only when the size is the same. Returns {changed: [id] (the content differs; only these are meant for an automatic object.reload), missing: [id] (point them to the new place with object.relink), unreadable: [id] (the file exists but is larger than 50 MB, not a regular file or cannot be read; reloading it would fail)}.",
 );
 
 // ---------------------------------------------------------------- save
@@ -595,18 +725,18 @@ pub(crate) fn relink_for_save(
     for o in &mut doc.objects {
         let Some(link) = &o.link else { continue };
         let mut next = link.clone();
-        if let Some(found) = locate(link, old_project) {
+        if let Some(found) = locate(link, old_project, source_kind(&o.source)) {
             next.relative = relative_to(&found, &new_dir);
             next.path = found;
         } else {
-            let candidate = link
-                .relative
-                .as_ref()
-                .zip(old_dir.as_ref())
-                .map(|(rel, dir)| lexical(&dir.join(rel)))
+            // Missing: carry the relative path over when it was made for
+            // the old folder, else use the last known absolute path.
+            let candidate = anchored_relative(link, old_dir.as_deref())
+                .or_else(|| absolute_path(link, old_dir.as_deref()))
                 .unwrap_or_else(|| link.path.clone());
             next.relative = relative_to(&candidate, &new_dir);
         }
+        next.anchor_dir = Some(new_dir.clone());
         if &next != link {
             previous.push((o.id, o.link.replace(next)));
         }
@@ -626,7 +756,94 @@ pub(crate) fn restore_links(doc: &mut Document, previous: Vec<(ObjectId, Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::time::Duration;
+
+    thread_local! {
+        /// How many files `sha256_file` hashed on this thread.
+        pub(super) static HASHED: Cell<usize> = const { Cell::new(0) };
+    }
+
+    fn session(dir: &Path) -> Session {
+        let profiles = flatcraft_device::ProfileStore::load(dir).unwrap();
+        let prefs = crate::prefs::Preferences {
+            output_dir: Some(dir.join("output")),
+            ..Default::default()
+        };
+        Session::new(profiles, prefs, false, dir.to_path_buf())
+    }
+
+    fn check(s: &mut Session) -> Value {
+        s.execute("document.check_sources", json!({}), Origin::User)
+            .unwrap()
+    }
+
+    const SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20mm" height="20mm" viewBox="0 0 20 20"><rect x="2" y="2" width="5" height="5"/></svg>"#;
+
+    fn later(path: &Path) {
+        let f = std::fs::File::options().write(true).open(path).unwrap();
+        f.set_modified(SystemTime::now() + Duration::from_secs(60))
+            .unwrap();
+    }
+
+    #[test]
+    fn check_hashes_only_files_of_the_same_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = session(dir.path());
+        let files = ["huge", "longer", "same"].map(|n| dir.path().join(format!("{n}.svg")));
+        let mut ids = Vec::new();
+        for f in &files {
+            std::fs::write(f, SVG).unwrap();
+            let r = s
+                .execute("object.import", json!({ "path": f }), Origin::User)
+                .unwrap();
+            ids.push(r["id"].as_u64().unwrap());
+        }
+        // Sparse, far over the cap: never read.
+        std::fs::File::options()
+            .write(true)
+            .open(&files[0])
+            .unwrap()
+            .set_len(4 * MAX_SOURCE_BYTES)
+            .unwrap();
+        std::fs::write(&files[1], format!("{SVG}\n")).unwrap();
+        for f in &files {
+            later(f);
+        }
+        HASHED.with(|n| n.set(0));
+        let r = check(&mut s);
+        assert_eq!(r["unreadable"], json!([ids[0]]), "{r}");
+        assert_eq!(r["changed"], json!([ids[1]]), "{r}");
+        assert_eq!(
+            HASHED.with(Cell::get),
+            1,
+            "only the same-size file is hashed"
+        );
+
+        // Same size, other content: hashed and changed.
+        std::fs::write(&files[2], SVG.replace("x=\"2\"", "x=\"3\"")).unwrap();
+        later(&files[2]);
+        HASHED.with(|n| n.set(0));
+        let r = check(&mut s);
+        assert_eq!(r["changed"], json!([ids[1], ids[2]]), "{r}");
+        assert_eq!(HASHED.with(Cell::get), 1);
+    }
+
+    #[test]
+    fn clip_caps_parser_text() {
+        assert_eq!(clip("short".into()), "short");
+        let c = clip("\u{e9}".repeat(300));
+        assert_eq!(c.chars().count(), MAX_DETAIL_CHARS + 3);
+        assert!(c.ends_with("..."));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn drive_letters_compare_without_case() {
+        let rel = relative_to(Path::new(r"C:\a\x.svg"), Path::new(r"c:\a\b")).unwrap();
+        assert_eq!(rel.to_str(), Some("../x.svg"));
+        assert!(same_dir(Path::new(r"C:\a"), Path::new(r"c:\a")));
+    }
 
     #[test]
     fn rfc3339_of_known_times() {

@@ -198,7 +198,9 @@ fn run_import(s: &mut Session, p: ImportParams, _: Origin) -> Result<Value, Comm
         .to_string();
     let file = read_capped(&p.path).map_err(|e| match e {
         ReadError::NotFound => CommandError::NotFound(format!("file {}", p.path.display())),
-        ReadError::TooLarge => CommandError::InvalidParams(e.text()),
+        ReadError::TooLarge | ReadError::NotAFile => {
+            CommandError::InvalidParams(format!("cannot import {}: {}", p.path.display(), e.text()))
+        }
         ReadError::Io(io) => {
             CommandError::Failed(format!("cannot read {}: {io}", p.path.display()))
         }

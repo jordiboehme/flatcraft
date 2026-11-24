@@ -240,6 +240,7 @@ fn link_roundtrips_and_a_broken_link_loads_as_none() {
         relative: Some("art/one.svg".into()),
         sha256: "ab".repeat(32),
         modified: Some("2026-11-24T10:00:00.000000000Z".into()),
+        anchor_dir: None,
     };
     doc.get_mut(id).unwrap().link = Some(link.clone());
     let dir = tempfile::tempdir().unwrap();

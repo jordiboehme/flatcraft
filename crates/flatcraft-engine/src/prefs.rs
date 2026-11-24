@@ -29,7 +29,9 @@ pub struct Preferences {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_dir: Option<PathBuf>,
     /// Reload changed linked files without asking (the GUI checks on project
-    /// open and when the window gets focus). Off by default.
+    /// open and when the window gets focus). Only the `changed` ids of
+    /// `document.check_sources` are reloaded, never `missing` or
+    /// `unreadable`. Off by default.
     pub auto_reload: bool,
 }
 

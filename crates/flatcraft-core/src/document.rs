@@ -91,6 +91,14 @@ pub struct SourceLink {
     /// Modification time of the file when it was last read, RFC 3339 UTC.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modified: Option<String>,
+    /// The folder `relative` was made against. `relative` is only used
+    /// while the project file is in this folder; elsewhere (for example
+    /// after "save as" and an undo) the absolute path is used, so a file
+    /// with the same name next to the new project is never taken by
+    /// mistake. Not stored: a relative path in a project file is relative
+    /// to that file, so opening a project sets it to the project's folder.
+    #[serde(skip)]
+    pub anchor_dir: Option<PathBuf>,
 }
 
 /// A broken link loads as no link, so it never stops a project from opening.
