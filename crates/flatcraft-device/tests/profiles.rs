@@ -621,3 +621,46 @@ fn invalid_mat_color_is_refused() {
         );
     }
 }
+
+#[test]
+fn duplicate_mat_ids_are_refused() {
+    let (_d, mut s) = store();
+    let mut p = s.plotter("silhouette-cameo-2").unwrap();
+    p.id = "dup".into();
+    p.media.push(p.media[0].clone());
+    let err = s.save_user_plotter(&p, "silhouette-cameo-2").unwrap_err();
+    assert!(err.to_string().contains("mat-12x12"), "{err}");
+    assert!(matches!(err, ProfileError::Invalid { .. }));
+}
+
+#[test]
+fn mat_sizes_have_an_upper_bound() {
+    let mut m = mat("a");
+    m.width_mm = 10_001.0;
+    m.grid.width_mm = 10_001.0;
+    assert!(m.validate().is_err());
+    let mut m = mat("a");
+    m.width_mm = 10_000.0;
+    m.grid.width_mm = 10_000.0;
+    assert!(m.validate().is_ok());
+}
+
+#[test]
+fn hiding_a_mat_that_does_not_exist_is_a_clear_error() {
+    let d = tempdir().unwrap();
+    write(
+        d.path(),
+        "plotters",
+        "ghost",
+        "id = \"ghost\"\nname = \"G\"\ninherits = \"silhouette-cameo-2\"\n\
+         media = [{ id = \"nope\", hidden = true }]\n",
+    );
+    let s = ProfileStore::load(d.path()).unwrap();
+    let err = s.plotter("ghost").unwrap_err();
+    assert!(matches!(err, ProfileError::Invalid { .. }), "{err:?}");
+    assert!(
+        err.to_string()
+            .contains("Mat 'nope' is hidden, but there is no built-in mat with that id to hide."),
+        "{err}"
+    );
+}

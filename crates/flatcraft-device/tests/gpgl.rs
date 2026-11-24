@@ -202,6 +202,24 @@ fn grid_origin_is_part_of_the_range_check() {
 }
 
 #[test]
+fn range_error_rounds_millimetres() {
+    let mut p = real_file_output();
+    p.media[0].grid.origin_x_mm = 0.1;
+    let err = emit_job(
+        &[path(&[(10., 10.), (304.8, 10.)])],
+        &p,
+        "mat-12x12",
+        &settings(),
+    )
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("x = 304.9 mm (304.8 mm on the grid + 0.1 mm grid origin)"),
+        "{msg}"
+    );
+}
+
+#[test]
 fn work_area_uses_the_physical_size() {
     let p = real_file_output();
     let job = emit_job(

@@ -72,6 +72,11 @@ pub enum GpglCommand {
     Home,
 }
 
+/// Rounds a length to 0.01 mm for messages.
+fn mm2(v: f64) -> f64 {
+    (v * 100.0).round() / 100.0
+}
+
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum EmitError {
     #[error("{field} {value} is out of range, allowed is {min} to {max}")]
@@ -82,8 +87,8 @@ pub enum EmitError {
         max: i64,
     },
     #[error(
-        "{axis} = {} mm ({mm} mm on the grid + {origin_mm} mm grid origin) in {note} lies outside the mat (0 to {max_mm} mm) after mirror and scale (device units {value}, allowed 0 to {max})",
-        .mm + .origin_mm
+        "{axis} = {} mm ({} mm on the grid + {} mm grid origin) in {note} lies outside the mat (0 to {} mm) after mirror and scale (device units {value}, allowed 0 to {max})",
+        mm2(.mm + .origin_mm), mm2(*.mm), mm2(*.origin_mm), mm2(*.max_mm)
     )]
     CoordinateOutOfRange {
         note: String,

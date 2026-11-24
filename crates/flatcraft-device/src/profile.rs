@@ -54,6 +54,9 @@ impl KnifeCompensation {
     }
 }
 
+/// Largest physical or grid size of a mat, in mm.
+pub const MAX_SIZE_MM: f64 = 10_000.0;
+
 /// Distance kept free inside the grid of a mat that is not calibrated yet.
 pub const UNCALIBRATED_MARGIN_MM: f64 = 5.0;
 
@@ -91,6 +94,14 @@ impl Media {
             g.height_mm,
         ];
         let id = &self.id;
+        if [self.width_mm, self.height_mm, g.width_mm, g.height_mm]
+            .iter()
+            .any(|v| *v > MAX_SIZE_MM)
+        {
+            return Err(format!(
+                "mat '{id}': sizes above {MAX_SIZE_MM} mm are not supported"
+            ));
+        }
         if all.iter().any(|v| !v.is_finite()) {
             return Err(format!(
                 "mat '{id}': every size and origin must be a finite number"
@@ -117,6 +128,9 @@ impl Media {
 }
 
 /// A mat (or "no mat") of a plotter. `width_mm` and `height_mm` are the physical size.
+///
+/// In a user preset an entry with the same id as an inherited mat replaces that mat as a
+/// whole, so it must be a complete mat (all fields, not just the changed ones).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "MediaFile")]
 pub struct Media {
@@ -158,7 +172,8 @@ mod hex_color {
 }
 
 /// The file form of [`Media`]: `kind`, `grid` and `calibrated` are optional, so older
-/// files load. A missing grid is the whole physical size from the plotter's zero.
+/// files load. A missing grid is the whole physical size from the mat's top-left corner
+/// (unmirrored physical frame, before any axis mirror).
 #[derive(Deserialize)]
 struct MediaFile {
     id: String,

@@ -131,25 +131,32 @@ fn media_id(v: &Value) -> Option<&str> {
 
 /// Merges two `media` lists by mat id: an entry of `own` replaces the parent mat with the same
 /// id (in place), a new id is appended, and `hidden = true` removes the parent mat from the list.
-fn merge_media(parent: &[Value], own: &[Value]) -> Vec<Value> {
+fn merge_media(preset: &str, parent: &[Value], own: &[Value]) -> Result<Vec<Value>, ProfileError> {
     let mut out: Vec<Value> = parent.to_vec();
     for e in own {
-        let Some(id) = media_id(e) else {
+        let Some(mat) = media_id(e) else {
             out.push(e.clone());
             continue;
         };
         let hidden = e.get("hidden").and_then(Value::as_bool).unwrap_or(false);
-        let at = out.iter().position(|m| media_id(m) == Some(id));
+        let at = out.iter().position(|m| media_id(m) == Some(mat));
         match (at, hidden) {
             (Some(i), true) => {
                 out.remove(i);
             }
-            (None, true) => {}
+            (None, true) => {
+                return Err(ProfileError::Invalid {
+                    id: preset.to_string(),
+                    reason: format!(
+                        "Mat '{mat}' is hidden, but there is no built-in mat with that id to hide."
+                    ),
+                });
+            }
             (Some(i), false) => out[i] = e.clone(),
             (None, false) => out.push(e.clone()),
         }
     }
-    out
+    Ok(out)
 }
 
 /// The `media` entries a user preset must store: mats that differ from the parent or are new,
@@ -173,7 +180,13 @@ fn diff_media(parent: &[Value], own: &[Value]) -> Vec<Value> {
 }
 
 fn validate_media(id: &str, p: &PlotterProfile) -> Result<(), ProfileError> {
-    for m in &p.media {
+    for (i, m) in p.media.iter().enumerate() {
+        if p.media[..i].iter().any(|o| o.id == m.id) {
+            return Err(ProfileError::Invalid {
+                id: id.to_string(),
+                reason: format!("mat id '{}' is used twice", m.id),
+            });
+        }
         m.validate().map_err(|reason| ProfileError::Invalid {
             id: id.to_string(),
             reason,
@@ -448,7 +461,7 @@ impl ProfileStore {
         if let (Some(Value::Array(p)), Some(Value::Array(o))) =
             (parent.get("media"), own.get("media"))
         {
-            merged.insert("media".into(), Value::Array(merge_media(p, o)));
+            merged.insert("media".into(), Value::Array(merge_media(id, p, o)?));
         }
         merged.insert("id".into(), Value::String(id.to_string()));
         let name = own
