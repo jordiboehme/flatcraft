@@ -114,6 +114,9 @@ pub enum Action {
     /// Open this project file.
     Open(PathBuf),
     SetWorkspace(Workspace),
+    /// Home's New: reuse the active document if it is empty and untouched,
+    /// else open a new one; then go to Prepare.
+    NewProject,
     ShowProfiles,
     Help,
     Quit,
@@ -233,6 +236,20 @@ impl FlatCraftApp {
                 }
             }
             Action::SetWorkspace(w) => self.ui.workspace = w,
+            Action::NewProject => {
+                let pristine = {
+                    let s = lock(&self.session);
+                    let d = s.doc();
+                    d.document.objects.is_empty()
+                        && !d.dirty
+                        && d.path.is_none()
+                        && !d.undo.can_undo()
+                        && !d.undo.can_redo()
+                };
+                if pristine || self.execute("document.new", json!({})).is_some() {
+                    self.ui.workspace = Workspace::Prepare;
+                }
+            }
             Action::ShowProfiles => self.ui.show_profiles = true,
             Action::Help => ctx.open_url(egui::OpenUrl::new_tab(HELP_URL)),
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),

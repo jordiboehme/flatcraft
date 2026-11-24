@@ -164,3 +164,22 @@ fn home_shows_new_open_and_recent_projects() {
     h.run();
     assert_eq!(app(&h).ui.toasts.len(), 1);
 }
+
+#[test]
+fn home_new_reuses_the_empty_start_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, s.clone(), false);
+    h.get_by_role_and_label(Role::Button, "New").click();
+    h.run();
+    assert_eq!(s.lock().unwrap().docs.len(), 1);
+    assert_eq!(app(&h).ui.workspace, Workspace::Prepare);
+
+    // A document with content stays; New opens a second one.
+    h.get_by_role_and_label(Role::Button, "Home").click();
+    h.run();
+    s.lock().unwrap().doc_mut().dirty = true;
+    h.get_by_role_and_label(Role::Button, "New").click();
+    h.run();
+    assert_eq!(s.lock().unwrap().docs.len(), 2);
+}

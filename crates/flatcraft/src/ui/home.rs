@@ -1,9 +1,7 @@
 //! Home: start a new project, open one, or pick a recent one.
 
+use super::{Action, FlatCraftApp, display_name, fonts, lock};
 use egui::{RichText, Ui};
-use serde_json::json;
-
-use super::{Action, FlatCraftApp, Workspace, display_name, fonts, lock};
 
 pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
     let t = app.tokens;
@@ -25,8 +23,7 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                 .on_hover_text("Start an empty project on the 12x12 inch mat")
                 .clicked()
             {
-                actions.push(Action::Execute("document.new", json!({})));
-                actions.push(Action::SetWorkspace(Workspace::Prepare));
+                actions.push(Action::NewProject);
             }
             if ui
                 .add(egui::Button::new(
