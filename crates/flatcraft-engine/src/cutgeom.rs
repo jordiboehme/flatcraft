@@ -168,10 +168,30 @@ fn object_outlines(
         // A fill, with no stroke or a centre-line stroke: the edge of the
         // fill under its own rule. The thin stroke lies on that edge,
         // except along the implicit closing edge of an open subpath, which
-        // must be cut to free the fill.
+        // must be cut to free the fill. A subpath without area (a line,
+        // often drawn with the default fill) is visible only through its
+        // stroke, so with a stroke its centre line is cut as well. Known
+        // gap until the milestone 2 booleans: a stroked spur inside a
+        // subpath that does enclose area (a closed shape with a tail drawn
+        // in the same subpath) is lost; only the fill edge is cut.
         (Some(rule), None) => {
             let fill = contours(placed.iter(), tolerance / 2.0);
-            boolean(&fill, &[], fill_rule(rule), tolerance)
+            let edges = boolean(&fill, &[], fill_rule(rule), tolerance);
+            let mut out: Vec<BezPath> = edges
+                .iter()
+                .flatten()
+                .filter(|c| c.len() >= 3)
+                .map(|c| ring(c))
+                .collect();
+            if paint.stroke.is_some() {
+                let min_area = tolerance * tolerance;
+                out.extend(
+                    split_subpaths(&placed)
+                        .into_iter()
+                        .filter(|sub| contour_area(sub, tolerance / 2.0) < min_area),
+                );
+            }
+            return out;
         }
         (fill, Some(style)) => {
             let closed = close_meeting_ends(&placed);
@@ -252,6 +272,62 @@ fn bands(path: &BezPath, half: f64, tolerance: f64) -> Vec<Contour> {
         _ => {}
     });
     out
+}
+
+/// The subpaths of `path`, each starting with a move. Drawing on after a
+/// close starts again at the closed subpath's start, as in SVG.
+fn split_subpaths(path: &BezPath) -> Vec<BezPath> {
+    let mut out = Vec::new();
+    let mut cur = BezPath::new();
+    let mut start = Point::ORIGIN;
+    for el in path.elements() {
+        match el {
+            PathEl::MoveTo(p) => {
+                if cur.elements().len() > 1 {
+                    out.push(std::mem::take(&mut cur));
+                }
+                cur = BezPath::new();
+                start = *p;
+                cur.push(*el);
+            }
+            PathEl::ClosePath => {
+                cur.push(*el);
+                if cur.elements().len() > 2 {
+                    out.push(std::mem::take(&mut cur));
+                }
+                cur = BezPath::new();
+            }
+            _ => {
+                if cur.elements().is_empty() {
+                    cur.move_to(start);
+                }
+                cur.push(*el);
+            }
+        }
+    }
+    if cur.elements().len() > 1 {
+        out.push(cur);
+    }
+    out
+}
+
+/// Absolute shoelace area of a subpath's flattened contour (closed
+/// implicitly, as a fill does).
+fn contour_area(sub: &BezPath, tolerance: f64) -> f64 {
+    contours(sub.iter(), tolerance)
+        .iter()
+        .map(|c| {
+            let n = c.len();
+            ((0..n)
+                .map(|i| {
+                    let (a, b) = (c[i], c[(i + 1) % n]);
+                    a[0] * b[1] - b[0] * a[1]
+                })
+                .sum::<f64>()
+                / 2.0)
+                .abs()
+        })
+        .sum()
 }
 
 fn fill_rule(rule: FillRule) -> OverlayFill {

@@ -919,3 +919,67 @@ fn job_counts_fills_without_area() {
         "{warnings}"
     );
 }
+
+// ---------------------------------------------------------------- thin lines on default fills (fix round 3)
+
+/// Toolpaths of the job for one imported SVG, as (closed, length) pairs.
+fn job_toolpaths(svg: &str) -> Vec<(bool, f64)> {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": svg, "name": "t" }),
+    );
+    run(&mut s, "job.preview", json!({}));
+    let plan = &s.doc().last_job.as_ref().unwrap().plan;
+    let mut out: Vec<(bool, f64)> = plan
+        .toolpaths
+        .iter()
+        .map(|t| {
+            let len: f64 = t.points.windows(2).map(|w| w[0].distance(w[1])).sum();
+            (t.closed, len)
+        })
+        .collect();
+    out.sort_by(|a, b| a.1.total_cmp(&b.1));
+    out
+}
+
+fn svg200(body: &str) -> String {
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="200mm" viewBox="0 0 200 200">{body}</svg>"#
+    )
+}
+
+#[test]
+fn thin_line_with_default_fill_is_cut() {
+    let t = job_toolpaths(&svg200(
+        r#"<path d="M50 50 H100" stroke="black" stroke-width="0.2"/>"#,
+    ));
+    assert_eq!(t.len(), 1, "{t:?}");
+    assert!(!t[0].0 && (t[0].1 - 50.0).abs() < 1e-3, "{t:?}");
+}
+
+#[test]
+fn thin_t_with_default_fill_is_two_lines() {
+    let t = job_toolpaths(&svg200(
+        r#"<path d="M50 50 H100 M75 50 V90" stroke="black" stroke-width="0.2"/>"#,
+    ));
+    assert_eq!(t.len(), 2, "{t:?}");
+    assert!(t.iter().all(|(closed, _)| !closed), "{t:?}");
+    assert!(
+        (t[0].1 - 40.0).abs() < 1e-3 && (t[1].1 - 50.0).abs() < 1e-3,
+        "{t:?}"
+    );
+}
+
+#[test]
+fn square_and_thin_line_subpath_are_both_cut() {
+    let t = job_toolpaths(&svg200(
+        r#"<path d="M50 50 H70 V70 H50 Z M80 50 H120" stroke="black" stroke-width="0.2"/>"#,
+    ));
+    assert_eq!(t.len(), 2, "{t:?}");
+    assert!(!t[0].0 && (t[0].1 - 40.0).abs() < 1e-3, "{t:?}");
+    // The closed square, 80 mm plus the overcut.
+    assert!(t[1].0 && (t[1].1 - 80.0).abs() < 1.0, "{t:?}");
+}

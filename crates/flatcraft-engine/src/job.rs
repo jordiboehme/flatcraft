@@ -123,8 +123,8 @@ pub fn build(session: &Session) -> Result<JobResult, CommandError> {
                 labels.insert((o.id, i), label.clone());
             }
             let cut = cutgeom::cut_path(p, &o.cut, affine, plotter.flatten_tolerance_mm);
-            if cut.is_empty() && !p.path.elements().is_empty() {
-                // Only a fill without area (and no outline stroke) gives
+            if cut.is_empty() && p.paint.stroke.is_none() && !p.path.elements().is_empty() {
+                // A stroke-less fill without area is not visible and gives
                 // nothing to cut.
                 no_area += 1;
             }
