@@ -46,6 +46,7 @@ https://raw.githubusercontent.com/lucide-icons/lucide/1.79.0/icons/<name>.svg, u
 | Objects panel | panel-left |
 | Settings panel | panel-right |
 | Rotate left | rotate-ccw |
+| Zoom 100% | percent |
 
 The SVGs draw with currentColor. The app replaces it with the theme's text colour before
 resvg renders them.

@@ -47,6 +47,7 @@ pub enum Icon {
     PanelLeft,
     PanelRight,
     RotateLeft,
+    ZoomActual,
 }
 
 macro_rules! svg {
@@ -56,7 +57,7 @@ macro_rules! svg {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 38] = [
+    pub const ALL: [Icon; 39] = [
         Icon::Import,
         Icon::Trace,
         Icon::Duplicate,
@@ -95,6 +96,7 @@ impl Icon {
         Icon::PanelLeft,
         Icon::PanelRight,
         Icon::RotateLeft,
+        Icon::ZoomActual,
     ];
 
     /// The vendored Lucide SVG source.
@@ -138,6 +140,7 @@ impl Icon {
             Icon::PanelLeft => svg!("panel-left"),
             Icon::PanelRight => svg!("panel-right"),
             Icon::RotateLeft => svg!("rotate-ccw"),
+            Icon::ZoomActual => svg!("percent"),
         }
     }
 }

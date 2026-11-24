@@ -155,7 +155,29 @@ pub fn search(query: &str, doc_id: u64) -> Vec<(&'static str, &'static str)> {
 }
 
 /// What picking a search hit does.
+/// The ids Reload sends: the selection's linked objects, or every linked
+/// object (an empty list) when nothing is selected. `None` when there is
+/// nothing to reload.
+pub fn reload_ids(snap: &Snapshot) -> Option<Vec<u64>> {
+    if snap.selection.is_empty() {
+        return snap.objects.iter().any(|o| o.link.is_some()).then(Vec::new);
+    }
+    let ids: Vec<u64> = snap
+        .selected()
+        .filter(|o| o.link.is_some())
+        .map(|o| o.id)
+        .collect();
+    (!ids.is_empty()).then_some(ids)
+}
+
 fn pick(id: &'static str, snap: &Snapshot, st: &mut PrepareState, actions: &mut Vec<Action>) {
+    if id == "object.reload" {
+        // Like the ribbon button.
+        if let Some(ids) = reload_ids(snap) {
+            actions.push(Action::run(snap.doc_id, id, json!({ "ids": ids })));
+        }
+        return;
+    }
     match search_target(id, snap.doc_id) {
         Some(SearchTarget::Run) => actions.push(Action::run(snap.doc_id, id, json!({}))),
         Some(SearchTarget::Tab(tab)) => st.tab = tab,
@@ -285,22 +307,15 @@ pub fn show(
                         if tool(ui, Icon::Delete, "Delete", any, "Delete the selection") {
                             run(actions, "object.delete", json!({ "ids": selected }));
                         }
-                        let linked = snap.objects.iter().any(|o| o.link.is_some());
-                        let ids: Vec<u64> = snap
-                            .selected()
-                            .filter(|o| o.link.is_some())
-                            .map(|o| o.id)
-                            .collect();
-                        // The selection's linked objects, or all when nothing
-                        // is selected.
-                        let enabled = if any { !ids.is_empty() } else { linked };
+                        let ids = reload_ids(snap);
                         if tool(
                             ui,
                             Icon::Reload,
                             "Reload",
-                            enabled,
+                            ids.is_some(),
                             "Read the linked files again (the selection, or all)",
-                        ) {
+                        ) && let Some(ids) = ids
+                        {
                             run(actions, "object.reload", json!({ "ids": ids }));
                         }
                     }
@@ -311,7 +326,7 @@ pub fn show(
                         }
                         if tool(
                             ui,
-                            Icon::Search,
+                            Icon::ZoomActual,
                             "Zoom 100%",
                             true,
                             "About real size on a typical screen",
@@ -393,7 +408,13 @@ fn arrange(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Ve
             );
         }
     }
-    ui.add_enabled(any, egui::Checkbox::new(&mut f.keep_aspect, "Keep aspect"));
+    if ids.len() > 1 {
+        let mut on = true;
+        ui.add_enabled(false, egui::Checkbox::new(&mut on, "Keep aspect"))
+            .on_disabled_hover_text("Several objects scale together, keeping their shape.");
+    } else {
+        ui.add_enabled(any, egui::Checkbox::new(&mut f.keep_aspect, "Keep aspect"));
+    }
     if let Some(p) = number_field(
         ui,
         "scale-percent",
