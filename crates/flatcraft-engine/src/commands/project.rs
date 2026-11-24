@@ -7,10 +7,12 @@ use flatcraft_core::project::{self, ProjectError};
 use flatcraft_device::MediaKind;
 use flatcraft_import::fonts;
 use flatcraft_import::svg::import_svg;
+use kurbo::Rect;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::object::{blade_offset_for, warning_text};
+use super::sources::{relink_for_save, restore_links};
 use super::{NoParams, command, cutting_area, ids_json, placed_bounds, point_arr, rect_json};
 use crate::session::{CommandError, DocState, Origin, Session};
 
@@ -36,6 +38,7 @@ fn object_json(o: &Object) -> Value {
             "mirror": t.mirror,
         },
         "cut": super::object::cut_json(&o.cut),
+        "link": o.link.as_ref().map(|l| json!({ "path": l.path, "relative": l.relative })),
     })
 }
 
@@ -105,7 +108,7 @@ command!(
     mutates: false,
     params: NoParams,
     run: run_state,
-    description: "Describes the active document. All lengths are mm; the origin is the 0,0 of the grid printed on the mat, x right, y down; rotation is degrees clockwise. Returns {index, documents, doc_id (stable id of the active document), doc_ids (stable ids of all open documents, in index order), objects: [{id, name, kind: svg|raster, visible, bounds_mm: {x0,y0,x1,y1} of what is cut (the cut geometry per the cut options, stroke outlines included), transform: {center_mm: [x,y], scale_x, scale_y, rotation_deg, mirror}, cut: {mode: all_lines|object_outlines, strokes: auto|centre_line|outline, auto_threshold_mm} (see object.set_cut_options)}], selection: [id], job: {plotter_id, material_id, media_id, speed, force, passes} (null overrides mean the material value), mat: {id, name, kind: mat|no_mat, width_mm, height_mm (physical), grid: {origin_x_mm, origin_y_mm, width_mm, height_mm}, calibrated, color: \"#RRGGBB\"} (null when unknown), cutting_area_mm: {x0,y0,x1,y1} (the grid, minus a 5 mm safety margin while the mat is not calibrated; objects must stay inside it), dirty, path, can_undo, can_redo}.",
+    description: "Describes the active document. All lengths are mm; the origin is the 0,0 of the grid printed on the mat, x right, y down; rotation is degrees clockwise. Returns {index, documents, doc_id (stable id of the active document), doc_ids (stable ids of all open documents, in index order), objects: [{id, name, kind: svg|raster, visible, bounds_mm: {x0,y0,x1,y1} of what is cut (the cut geometry per the cut options, stroke outlines included), transform: {center_mm: [x,y], scale_x, scale_y, rotation_deg, mirror}, cut: {mode: all_lines|object_outlines, strokes: auto|centre_line|outline, auto_threshold_mm} (see object.set_cut_options), link: {path (last known absolute path of the imported file), relative (to the project file, or null)} or null when the object has no linked file}], selection: [id], job: {plotter_id, material_id, media_id, speed, force, passes} (null overrides mean the material value), mat: {id, name, kind: mat|no_mat, width_mm, height_mm (physical), grid: {origin_x_mm, origin_y_mm, width_mm, height_mm}, calibrated, color: \"#RRGGBB\"} (null when unknown), cutting_area_mm: {x0,y0,x1,y1} (the grid, minus a 5 mm safety margin while the mat is not calibrated; objects must stay inside it), dirty, path, can_undo, can_redo}.",
 );
 
 // ---------------------------------------------------------------- document.new / switch / close
@@ -280,9 +283,14 @@ fn run_save(s: &mut Session, p: SaveParams, origin: Origin) -> Result<Value, Com
             s.config_dir.display()
         )));
     }
-    project::save(&s.docs[index].document, &path)
-        .map_err(|e| CommandError::Failed(e.to_string()))?;
+    // Linked files: refresh their paths for the new place of the project.
+    // Only metadata, so it is not an undo step; a failed save puts it back.
     let st = &mut s.docs[index];
+    let previous = relink_for_save(&mut st.document, st.path.as_deref(), &path);
+    if let Err(e) = project::save(&st.document, &path) {
+        restore_links(&mut st.document, previous);
+        return Err(CommandError::Failed(e.to_string()));
+    }
     st.path = Some(path.clone());
     st.dirty = false;
     Ok(json!({ "path": path }))
@@ -295,7 +303,7 @@ command!(
     mutates: false,
     params: SaveParams,
     run: run_save,
-    description: "Saves an open document (the active one, or the one with doc_id) as a project file (JSON with the original SVG sources embedded). Without path it uses the document's current path; a document that was never saved needs a path. Agents may not write inside the FlatCraft config directory. Returns {path}.",
+    description: "Saves an open document (the active one, or the one with doc_id) as a project file (JSON with the original SVG sources embedded). Without path it uses the document's current path; a document that was never saved needs a path. Linked files (see object.reload) keep pointing at the same files; their paths relative to the project file are updated. Agents may not write inside the FlatCraft config directory. Returns {path}.",
 );
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -328,13 +336,17 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
                         warnings.push(format!("{}: {}", o.name, warning_text(w)));
                     }
                     o.set_geometry(import.paths);
+                    o.frame = import.page_frame_mm;
                 }
                 Err(e) => warnings.push(format!("{}: cannot rebuild the shape: {e}", o.name)),
             },
             Source::Raster { bytes, trace, .. } => {
                 let blade = blade_offset_for(s, &document.job.plotter_id);
                 match flatcraft_import::trace::trace(bytes, trace, blade) {
-                    Ok(t) => o.set_geometry(t.paths),
+                    Ok(t) => {
+                        o.set_geometry(t.paths);
+                        o.frame = Rect::new(0.0, 0.0, t.size_mm.0, t.size_mm.1);
+                    }
                     Err(e) => warnings.push(format!("{}: cannot trace the image: {e}", o.name)),
                 }
             }
@@ -364,5 +376,5 @@ command!(
     mutates: false,
     params: OpenParams,
     run: run_open,
-    description: "Opens a project file and makes it the active document. It replaces the active document only if that one is empty and untouched; otherwise it opens as an extra document. The cut shapes are rebuilt from the embedded sources. Returns {index, path, objects (count), warnings: [text]}.",
+    description: "Opens a project file and makes it the active document. It replaces the active document only if that one is empty and untouched; otherwise it opens as an extra document. The cut shapes are rebuilt from the embedded sources, so a project opens even when the imported files are gone; use document.check_sources to see which linked files changed or are missing. Returns {index, path, objects (count), warnings: [text]}.",
 );

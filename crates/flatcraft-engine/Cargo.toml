@@ -24,6 +24,7 @@ schemars.workspace = true
 tiny-skia.workspace = true
 resvg.workspace = true
 usvg.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 image = { workspace = true, features = ["png"] }

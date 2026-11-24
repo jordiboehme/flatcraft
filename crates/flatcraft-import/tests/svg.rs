@@ -273,3 +273,32 @@ fn dashes_warn() {
         r.warnings
     );
 }
+
+// ---------------------------------------------------------------- page frame
+
+#[test]
+fn page_frame_is_the_svg_page_in_mm() {
+    let r = import_text(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="100mm" viewBox="10 10 100 50"><rect x="10" y="10" width="20" height="10"/></svg>"#,
+    );
+    let f = r.page_frame_mm;
+    assert!(f.x0.abs() < 1e-4 && f.y0.abs() < 1e-4, "{f:?}");
+    assert!(
+        (f.width() - 200.0).abs() < 1e-3 && (f.height() - 100.0).abs() < 1e-3,
+        "{f:?}"
+    );
+    // The viewBox is already applied: the rect sits at the page's top-left.
+    assert_bounds(&r.paths, (0.0, 0.0, 40.0, 20.0));
+}
+
+#[test]
+fn page_frame_of_a_pixel_svg() {
+    let r = import_text(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="96" height="48"><rect x="0" y="0" width="10" height="10"/></svg>"#,
+    );
+    let f = r.page_frame_mm;
+    assert!(
+        (f.width() - 25.4).abs() < 1e-4 && (f.height() - 12.7).abs() < 1e-4,
+        "{f:?}"
+    );
+}

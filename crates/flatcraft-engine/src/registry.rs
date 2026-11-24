@@ -1,6 +1,6 @@
 //! Command registry. The GUI, the MCP server and tests call the same commands.
 
-use crate::commands::{arrange, edit, job, object, profiles, project, tools};
+use crate::commands::{arrange, edit, job, object, profiles, project, sources, tools};
 use crate::session::{CommandError, Origin, Session};
 
 /// One registry command.
@@ -30,9 +30,13 @@ static ALL: &[&dyn Command] = &[
     &project::DocumentClose,
     &project::ProjectSave,
     &project::ProjectOpen,
+    &sources::DocumentCheckSources,
     &object::ObjectImport,
     &object::ObjectImportSvg,
     &object::ObjectRetrace,
+    &sources::ObjectReload,
+    &sources::ObjectRelink,
+    &sources::ObjectUnlink,
     &object::ObjectSelect,
     &object::ObjectSetVisible,
     &object::ObjectDelete,

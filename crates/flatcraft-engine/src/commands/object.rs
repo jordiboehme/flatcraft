@@ -1,7 +1,6 @@
 //! Object commands: import, select, show, delete, duplicate, transform and
 //! cut options.
 
-use std::io::Read;
 use std::path::PathBuf;
 
 use flatcraft_core::document::{CutMode, CutOptions, ObjectId, Source, StrokeMode, TraceSettings};
@@ -13,15 +12,13 @@ use kurbo::{Point, Rect, Vec2};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::sources::{FileKind, ReadError, absolute, file_kind, new_link, read_capped};
 use super::{
     command, cutting_area, ids_json, object_mut, placed_bounds, placed_bounds_or_center, rect_json,
     resolve_ids, translate,
 };
 use crate::commands::normalize_deg;
 use crate::session::{CommandError, Origin, Session};
-
-/// Largest file `object.import` reads.
-const MAX_IMPORT_BYTES: u64 = 50 * 1024 * 1024;
 
 /// Text for an import warning, for people and agents.
 pub(crate) fn warning_text(w: &ImportWarning) -> String {
@@ -63,16 +60,19 @@ pub(crate) fn blade_offset_for(s: &Session, plotter_id: &str) -> f64 {
 /// Adds an object to the active document and selects it. It keeps its
 /// position from the source page if it lies inside the cutting area;
 /// otherwise its top-left corner goes to the top-left of the cutting area.
+/// `frame` is the source's page frame in local mm.
 fn add_object(
     s: &mut Session,
     name: String,
     source: Source,
     paths: Vec<CutPath>,
+    frame: Rect,
 ) -> Result<ObjectId, CommandError> {
     let area = cutting_area(s).ok();
     let doc = &mut s.doc_mut().document;
     let id = doc.add(name, source, paths);
     let o = object_mut(doc, id)?;
+    o.frame = frame;
     o.transform.center_mm = o.local_bounds.center();
     if let (Some(area), Some(b)) = (area, placed_bounds(o)) {
         let inside = b.x0 >= area.x0 && b.y0 >= area.y0 && b.x1 <= area.x1 && b.y1 <= area.y1;
@@ -100,15 +100,22 @@ pub(crate) fn add_svg(
     s: &mut Session,
     name: String,
     bytes: Vec<u8>,
-) -> Result<Value, CommandError> {
+) -> Result<(ObjectId, Value), CommandError> {
     let import = import_svg(&bytes, fonts::system_fonts()).map_err(import_error)?;
     let warnings: Vec<String> = import.warnings.iter().map(warning_text).collect();
-    let id = add_object(s, name.clone(), Source::Svg { name, bytes }, import.paths)?;
-    Ok(json!({ "id": id.0, "bounds_mm": bounds_json(s, id), "warnings": warnings }))
+    let id = add_object(
+        s,
+        name.clone(),
+        Source::Svg { name, bytes },
+        import.paths,
+        import.page_frame_mm,
+    )?;
+    let out = json!({ "id": id.0, "bounds_mm": bounds_json(s, id), "warnings": warnings });
+    Ok((id, out))
 }
 
 /// Warnings and numbers that describe a trace, for people and agents.
-fn trace_report(t: &TraceResult, invert: bool) -> (Vec<String>, Value) {
+pub(crate) fn trace_report(t: &TraceResult, invert: bool) -> (Vec<String>, Value) {
     let mut warnings = Vec::new();
     if t.paths.is_empty() {
         let shape = if invert { "light" } else { "dark" };
@@ -142,7 +149,11 @@ fn trace_report(t: &TraceResult, invert: bool) -> (Vec<String>, Value) {
 }
 
 /// Adds a traced raster object to the active document and selects it.
-fn add_raster(s: &mut Session, name: String, bytes: Vec<u8>) -> Result<Value, CommandError> {
+fn add_raster(
+    s: &mut Session,
+    name: String,
+    bytes: Vec<u8>,
+) -> Result<(ObjectId, Value), CommandError> {
     let settings = TraceSettings::default();
     let t = trace(&bytes, &settings, blade_offset_mm(s)).map_err(import_error)?;
     let (warnings, numbers) = trace_report(&t, settings.invert);
@@ -155,10 +166,11 @@ fn add_raster(s: &mut Session, name: String, bytes: Vec<u8>) -> Result<Value, Co
             trace: settings,
         },
         t.paths,
+        Rect::new(0.0, 0.0, t.size_mm.0, t.size_mm.1),
     )?;
     let mut out = json!({ "id": id.0, "bounds_mm": bounds_json(s, id), "warnings": warnings });
     merge(&mut out, numbers);
-    Ok(out)
+    Ok((id, out))
 }
 
 fn merge(into: &mut Value, from: Value) {
@@ -177,50 +189,28 @@ pub struct ImportParams {
 }
 
 fn run_import(s: &mut Session, p: ImportParams, _: Origin) -> Result<Value, CommandError> {
-    let ext = p
-        .path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_ascii_lowercase)
-        .unwrap_or_default();
-    let raster = matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif");
-    if !raster && ext != "svg" && ext != "svgz" {
-        let shown = if ext.is_empty() {
-            "no extension".to_string()
-        } else {
-            format!("'.{ext}'")
-        };
-        return Err(CommandError::InvalidParams(format!(
-            "unsupported file type ({shown}). Supported types: .svg, .svgz, .png, .jpg, .jpeg, .webp, .gif"
-        )));
-    }
+    let kind = file_kind(&p.path)?;
     let name = p
         .path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("Imported")
         .to_string();
-    let file = std::fs::File::open(&p.path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            CommandError::NotFound(format!("file {}", p.path.display()))
-        } else {
-            CommandError::Failed(format!("cannot read {}: {e}", p.path.display()))
+    let file = read_capped(&p.path).map_err(|e| match e {
+        ReadError::NotFound => CommandError::NotFound(format!("file {}", p.path.display())),
+        ReadError::TooLarge => CommandError::InvalidParams(e.text()),
+        ReadError::Io(io) => {
+            CommandError::Failed(format!("cannot read {}: {io}", p.path.display()))
         }
     })?;
-    let mut bytes = Vec::new();
-    file.take(MAX_IMPORT_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| CommandError::Failed(format!("cannot read {}: {e}", p.path.display())))?;
-    if bytes.len() as u64 > MAX_IMPORT_BYTES {
-        return Err(CommandError::InvalidParams(
-            "the file is larger than 50 MB".into(),
-        ));
-    }
-    if raster {
-        add_raster(s, name, bytes)
-    } else {
-        add_svg(s, name, bytes)
-    }
+    let path = absolute(&p.path);
+    let link = new_link(&path, s.doc().path.as_deref(), &file);
+    let (id, out) = match kind {
+        FileKind::Raster => add_raster(s, name, file.bytes)?,
+        FileKind::Svg => add_svg(s, name, file.bytes)?,
+    };
+    object_mut(&mut s.doc_mut().document, id)?.link = link;
+    Ok(out)
 }
 
 command!(
@@ -230,7 +220,7 @@ command!(
     mutates: true,
     params: ImportParams,
     run: run_import,
-    description: "Imports a vector file from disk as a new object and selects it. Supported: .svg and .svgz, and the raster types .png, .jpg, .jpeg, .webp and .gif (by extension). The object name is the file name without extension. SVG sizes come from the SVG in mm. A raster image is traced into cut outlines with the default trace settings (automatic threshold, dark pixels are cut) at the dpi stored in the file, or 300 dpi; use object.retrace to change the settings. Images over 16384 x 16384 px are refused. The object keeps its position from the SVG page if that lies inside the cutting area, otherwise its top-left corner moves to the top-left of the cutting area. Coordinates are mm, origin the 0,0 of the grid printed on the mat, y down. Returns {id, bounds_mm: {x0,y0,x1,y1}, warnings: [text]}; raster imports also return dropped_small (shapes below the minimum feature size that were dropped), threshold_used (0-255) and size_mm [width, height] of the whole image.",
+    description: "Imports a vector file from disk as a new object and selects it. Supported: .svg and .svgz, and the raster types .png, .jpg, .jpeg, .webp and .gif (by extension). The object name is the file name without extension. The object keeps an embedded copy and remembers the file, so after the file is changed in another app object.reload picks up the changes. SVG sizes come from the SVG in mm. A raster image is traced into cut outlines with the default trace settings (automatic threshold, dark pixels are cut) at the dpi stored in the file, or 300 dpi; use object.retrace to change the settings. Images over 16384 x 16384 px are refused. The object keeps its position from the SVG page if that lies inside the cutting area, otherwise its top-left corner moves to the top-left of the cutting area. Coordinates are mm, origin the 0,0 of the grid printed on the mat, y down. Returns {id, bounds_mm: {x0,y0,x1,y1}, warnings: [text]}; raster imports also return dropped_small (shapes below the minimum feature size that were dropped), threshold_used (0-255) and size_mm [width, height] of the whole image.",
 );
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -243,7 +233,7 @@ pub struct ImportSvgParams {
 }
 
 fn run_import_svg(s: &mut Session, p: ImportSvgParams, _: Origin) -> Result<Value, CommandError> {
-    add_svg(s, p.name, p.svg.into_bytes())
+    add_svg(s, p.name, p.svg.into_bytes()).map(|(_, out)| out)
 }
 
 command!(
@@ -365,10 +355,8 @@ fn run_retrace(s: &mut Session, p: RetraceParams, _: Origin) -> Result<Value, Co
     }
     // Keep the image frame in place, not the geometry centre: the placement
     // is relative to the centre of the local bounds, which the new trace
-    // changes. Map the new bounds centre through the old placement.
-    let old_placement = o.transform.affine(o.local_bounds);
-    o.set_geometry(t.paths);
-    o.transform.center_mm = old_placement * o.local_bounds.center();
+    // changes.
+    o.set_geometry_anchored(t.paths, Rect::new(0.0, 0.0, t.size_mm.0, t.size_mm.1));
     let mut out = json!({ "id": id.0, "bounds_mm": bounds_json(s, id), "warnings": warnings });
     merge(&mut out, numbers);
     Ok(out)

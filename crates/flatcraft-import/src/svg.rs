@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use flatcraft_core::geometry::{Cap, CutPath, FillRule, Join, Paint, StrokeInfo};
 use flatcraft_core::units::px_to_mm;
-use kurbo::{BezPath, Point};
+use kurbo::{BezPath, Point, Rect};
 use usvg::tiny_skia_path::{PathSegment, Transform};
 
 use crate::{ImportError, ImportWarning};
@@ -18,6 +18,9 @@ pub struct SvgImport {
     pub paths: Vec<CutPath>,
     /// `ClipOrMaskIgnored` counts groups with a clip path or mask, not shapes.
     pub warnings: Vec<ImportWarning>,
+    /// The SVG page (its width and height) in the same mm coordinates as
+    /// `paths`. The viewBox is already applied, so it starts at (0, 0).
+    pub page_frame_mm: Rect,
 }
 
 /// Returns the plain SVG bytes. Gzip input is decompressed here with a hard
@@ -91,9 +94,17 @@ pub(crate) fn import_svg_capped(
     if walk.paths.is_empty() {
         warnings.push(ImportWarning::NoPaths);
     }
+    let size = tree.size();
+    let page_frame_mm = Rect::new(
+        0.0,
+        0.0,
+        px_to_mm(f64::from(size.width())),
+        px_to_mm(f64::from(size.height())),
+    );
     Ok(SvgImport {
         paths: walk.paths,
         warnings,
+        page_frame_mm,
     })
 }
 

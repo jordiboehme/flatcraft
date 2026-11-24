@@ -199,3 +199,95 @@ fn old_project_without_cut_options_loads_defaults() {
     assert_eq!(cut.strokes, flatcraft_core::document::StrokeMode::Auto);
     assert_eq!(cut.auto_threshold_mm, 0.5);
 }
+
+// ---------------------------------------------------------------- source links
+
+const OLD_OBJECT: &str = r#"{"id":1,"name":"x","source":{"Svg":{"name":"x.svg","bytes":""}},"transform":{"center_mm":{"x":10.0,"y":20.0},"scale_x":1.0,"scale_y":1.0,"rotation_deg":0.0,"mirror":false},"visible":true}"#;
+
+fn project_with(object: &str) -> String {
+    format!(
+        r#"{{"format_version":1,"objects":[{object}],"job":{{"plotter_id":"cameo2","material_id":"cardstock","media_id":"a4","speed":null,"force":null,"passes":null}},"next_id":2}}"#
+    )
+}
+
+#[test]
+fn old_projects_without_link_still_load() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.flatcraft");
+    std::fs::write(&path, project_with(OLD_OBJECT)).unwrap();
+    let doc = project::load(&path).unwrap();
+    assert_eq!(doc.objects[0].link, None);
+    assert_eq!(doc.format_version, 1);
+    // Saving an unlinked object writes no link field.
+    project::save(&doc, &path).unwrap();
+    assert!(!std::fs::read_to_string(&path).unwrap().contains("\"link\""));
+}
+
+#[test]
+fn link_roundtrips_and_a_broken_link_loads_as_none() {
+    use flatcraft_core::document::SourceLink;
+    let mut doc = Document::new(job());
+    let id = doc.add(
+        "one".into(),
+        Source::Svg {
+            name: "one".into(),
+            bytes: b"<svg/>".to_vec(),
+        },
+        vec![square(10.0)],
+    );
+    let link = SourceLink {
+        path: "/tmp/art/one.svg".into(),
+        relative: Some("art/one.svg".into()),
+        sha256: "ab".repeat(32),
+        modified: Some("2026-11-24T10:00:00.000000000Z".into()),
+    };
+    doc.get_mut(id).unwrap().link = Some(link.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("p.flatcraft");
+    project::save(&doc, &path).unwrap();
+    assert_eq!(project::load(&path).unwrap().objects[0].link, Some(link));
+
+    // A link of the wrong shape never stops the project from opening.
+    let broken = OLD_OBJECT.replace(r#""visible":true"#, r#""visible":true,"link":{"path":7}"#);
+    std::fs::write(&path, project_with(&broken)).unwrap();
+    let doc = project::load(&path).unwrap();
+    assert_eq!(doc.objects[0].link, None);
+}
+
+#[test]
+fn anchored_geometry_keeps_the_frame_on_the_mat() {
+    let mut doc = Document::new(job());
+    let id = doc.add(
+        "sq".into(),
+        Source::Svg {
+            name: "sq".into(),
+            bytes: vec![],
+        },
+        vec![square(10.0)],
+    );
+    let o = doc.get_mut(id).unwrap();
+    o.frame = Rect::new(0.0, 0.0, 100.0, 100.0);
+    o.transform.center_mm = Point::new(80.0, 60.0);
+    o.transform.rotation_deg = 30.0;
+    o.transform.scale_x = 1.5;
+    o.transform.mirror = true;
+    let before = o.transform.affine(o.local_bounds) * Point::new(10.0, 10.0);
+    // The same square plus a new shape far away: the local bounds change.
+    let mut far = square(5.0);
+    far.path
+        .apply_affine(kurbo::Affine::translate((90.0, 90.0)));
+    o.set_geometry_anchored(vec![square(10.0), far], Rect::new(0.0, 0.0, 100.0, 100.0));
+    let after = o.transform.affine(o.local_bounds) * Point::new(10.0, 10.0);
+    assert!((after - before).hypot() < 1e-9, "{before:?} {after:?}");
+    assert_eq!(
+        (
+            o.transform.scale_x,
+            o.transform.rotation_deg,
+            o.transform.mirror
+        ),
+        (1.5, 30.0, true)
+    );
+    assert_eq!(o.anchor_frame(), Rect::new(0.0, 0.0, 100.0, 100.0));
+    o.frame = Rect::ZERO;
+    assert_eq!(o.anchor_frame(), o.local_bounds);
+}

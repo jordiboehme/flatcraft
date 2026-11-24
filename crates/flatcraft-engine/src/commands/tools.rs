@@ -74,8 +74,7 @@ fn run_test_patterns(
         out.insert("svg_path".into(), json!(path));
     }
     if p.add_to_document {
-        let added = add_svg(s, SHEET_NAME.to_string(), svg.clone().into_bytes())?;
-        let id = ObjectId(added["id"].as_u64().unwrap_or_default());
+        let (id, _) = add_svg(s, SHEET_NAME.to_string(), svg.clone().into_bytes())?;
         centre_sheet(s, id)?;
         out.insert("id".into(), id.0.into());
     }

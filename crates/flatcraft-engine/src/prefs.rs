@@ -28,6 +28,9 @@ pub struct Preferences {
     /// `None` means `<Documents>/FlatCraft Output`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_dir: Option<PathBuf>,
+    /// Reload changed linked files without asking (the GUI checks on project
+    /// open and when the window gets focus). Off by default.
+    pub auto_reload: bool,
 }
 
 impl Default for Preferences {
@@ -39,6 +42,7 @@ impl Default for Preferences {
             theme: Theme::Dark,
             recent_projects: Vec::new(),
             output_dir: None,
+            auto_reload: false,
         }
     }
 }
