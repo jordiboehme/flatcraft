@@ -163,7 +163,7 @@ fn user_preset_cannot_shadow_system() {
     write(
         d.path(),
         "plotters",
-        "x",
+        "silhouette-cameo-2",
         "id = \"silhouette-cameo-2\"\nname = \"X\"\ninherits = \"file-output-gpgl-cameo2\"\n",
     );
     assert!(matches!(
@@ -250,4 +250,111 @@ fn missing_user_dir_is_fine() {
     let d = tempdir().unwrap();
     let s = ProfileStore::load(&d.path().join("nope")).unwrap();
     assert_eq!(s.plotters().len(), 2);
+}
+
+#[test]
+fn save_rejects_path_like_id() {
+    let (d, mut s) = store();
+    for bad in ["../x", "a/b", "A b", "x.y", "", "-a", "a--b"] {
+        let mut p = s.plotter("silhouette-cameo-2").unwrap();
+        p.id = bad.into();
+        let err = s.save_user_plotter(&p, "silhouette-cameo-2").unwrap_err();
+        assert!(matches!(err, ProfileError::Invalid { .. }), "{bad}");
+    }
+    assert!(!d.path().join("plotters").exists());
+}
+
+#[test]
+fn load_rejects_stem_id_mismatch() {
+    let d = tempdir().unwrap();
+    write(
+        d.path(),
+        "plotters",
+        "file-name",
+        "id = \"other\"\nname = \"A\"\n",
+    );
+    assert!(matches!(
+        ProfileStore::load(d.path()),
+        Err(ProfileError::Invalid { .. })
+    ));
+    let d = tempdir().unwrap();
+    write(
+        d.path(),
+        "plotters",
+        "Bad Id",
+        "id = \"Bad Id\"\nname = \"A\"\n",
+    );
+    assert!(matches!(
+        ProfileStore::load(d.path()),
+        Err(ProfileError::Invalid { .. })
+    ));
+}
+
+#[test]
+fn save_refuses_clearing_inherited_value() {
+    let (d, mut s) = store();
+    let mut m = s.material("vinyl").unwrap();
+    m.id = "my-vinyl".into();
+    m.blade_depth_hint = None;
+    let err = s.save_user_material(&m, "vinyl").unwrap_err();
+    assert!(err.to_string().contains(
+        "Clearing the inherited value 'blade_depth_hint' is not supported yet. Set a value instead."
+    ));
+    assert!(!d.path().join("materials/my-vinyl.toml").exists());
+    // a removed per-plotter override entry
+    let mut a = s.material("vinyl").unwrap();
+    a.id = "a-vinyl".into();
+    a.overrides.insert(
+        "silhouette-cameo-2".into(),
+        MaterialOverride {
+            force: Some(9),
+            ..Default::default()
+        },
+    );
+    s.save_user_material(&a, "vinyl").unwrap();
+    let mut b = s.material("a-vinyl").unwrap();
+    b.id = "b-vinyl".into();
+    b.overrides.clear();
+    let err = s.save_user_material(&b, "a-vinyl").unwrap_err();
+    assert!(err.to_string().contains("'overrides'"));
+    assert!(!d.path().join("materials/b-vinyl.toml").exists());
+}
+
+#[test]
+fn save_refuses_parent_cycle() {
+    let (_d, mut s) = store();
+    let mut a = s.plotter("silhouette-cameo-2").unwrap();
+    a.id = "a".into();
+    s.save_user_plotter(&a, "silhouette-cameo-2").unwrap();
+    let mut b = a.clone();
+    b.id = "b".into();
+    s.save_user_plotter(&b, "a").unwrap();
+    let mut a2 = a.clone();
+    a2.scale_x = 1.5;
+    assert!(matches!(
+        s.save_user_plotter(&a2, "b"),
+        Err(ProfileError::Inheritance { .. })
+    ));
+}
+
+#[test]
+fn material_cycle_is_an_error() {
+    let d = tempdir().unwrap();
+    write(
+        d.path(),
+        "materials",
+        "a",
+        "id = \"a\"\nname = \"A\"\ninherits = \"b\"\n",
+    );
+    write(
+        d.path(),
+        "materials",
+        "b",
+        "id = \"b\"\nname = \"B\"\ninherits = \"a\"\n",
+    );
+    let s = ProfileStore::load(d.path()).unwrap();
+    assert!(matches!(
+        s.material("a"),
+        Err(ProfileError::Inheritance { .. })
+    ));
 }

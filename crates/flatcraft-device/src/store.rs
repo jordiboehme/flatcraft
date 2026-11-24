@@ -95,6 +95,55 @@ fn diff_tables(parent: &Table, profile: &Table, replace_keys: &[&str]) -> Table 
     out
 }
 
+/// First dotted key the parent has that the child lacks (a removal).
+fn find_removed(
+    prefix: &str,
+    parent: &Table,
+    child: &Table,
+    replace_keys: &[&str],
+) -> Option<String> {
+    for (k, pv) in parent {
+        if prefix.is_empty() && META_KEYS.contains(&k.as_str()) {
+            continue;
+        }
+        let key = if prefix.is_empty() {
+            k.clone()
+        } else {
+            format!("{prefix}.{k}")
+        };
+        match (child.get(k), pv) {
+            (None, _) => return Some(key),
+            (Some(Value::Table(c)), Value::Table(p)) if !replace_keys.contains(&k.as_str()) => {
+                if let Some(r) = find_removed(&key, p, c, replace_keys) {
+                    return Some(r);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Ids are kebab-case: `^[a-z0-9]+(-[a-z0-9]+)*$`.
+fn validate_id(id: &str) -> Result<(), ProfileError> {
+    let ok = !id.is_empty()
+        && id.split('-').all(|seg| {
+            !seg.is_empty()
+                && seg
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        });
+    if ok {
+        Ok(())
+    } else {
+        Err(ProfileError::Invalid {
+            id: id.to_string(),
+            reason: "ids use lowercase letters, digits and single hyphens, like 'my-cutter-2'"
+                .into(),
+        })
+    }
+}
+
 fn flatten_keys(prefix: &str, t: &Table, replace_keys: &[&str], out: &mut Vec<String>) {
     for (k, v) in t {
         if prefix.is_empty() && META_KEYS.contains(&k.as_str()) {
@@ -221,6 +270,7 @@ impl ProfileStore {
             }
         }
         files.sort();
+        let mut seen: BTreeMap<String, PathBuf> = BTreeMap::new();
         for path in files {
             let text = fs::read_to_string(&path).map_err(|e| io(&path, e))?;
             let table = text.parse::<Table>().map_err(|source| ProfileError::Toml {
@@ -230,9 +280,27 @@ impl ProfileStore {
             let id = id_of(&table)
                 .ok_or_else(|| ProfileError::MissingId { path: path.clone() })?
                 .to_string();
+            validate_id(&id)?;
+            if path.file_stem().and_then(|s| s.to_str()) != Some(id.as_str()) {
+                return Err(ProfileError::Invalid {
+                    id,
+                    reason: format!("the file name of {} must match the id", path.display()),
+                });
+            }
             if self.map(kind).get(&id).is_some_and(|e| e.system) {
                 return Err(ProfileError::ShadowsSystem { id });
             }
+            if let Some(first) = seen.get(&id) {
+                return Err(ProfileError::Invalid {
+                    id,
+                    reason: format!(
+                        "defined twice, in {} and {}",
+                        first.display(),
+                        path.display()
+                    ),
+                });
+            }
+            seen.insert(id.clone(), path.clone());
             self.map_mut(kind).insert(
                 id,
                 Entry {
@@ -303,15 +371,7 @@ impl ProfileStore {
                 reason: format!("unknown parent '{parent_id}'"),
             });
         }
-        let parent = self
-            .resolve_table(kind, parent_id, stack)
-            .map_err(|e| match e {
-                ProfileError::UnknownPreset { id: missing } => ProfileError::Inheritance {
-                    id: id.to_string(),
-                    reason: format!("unknown parent '{missing}'"),
-                },
-                other => other,
-            })?;
+        let parent = self.resolve_table(kind, parent_id, stack)?;
         stack.pop();
         let mut merged = merge_tables(&parent, own, kind.replace_keys());
         merged.insert("id".into(), Value::String(id.to_string()));
@@ -343,7 +403,8 @@ impl ProfileStore {
     }
 
     /// Sorted dotted keys the user preset sets itself. Empty for system presets
-    /// and unknown ids.
+    /// and unknown ids. Plotters are searched first, then materials, so an id
+    /// used by both kinds reports the plotter.
     pub fn modified_fields(&self, id: &str) -> Vec<String> {
         for kind in [Kind::Plotter, Kind::Material] {
             if let Some(e) = self.map(kind).get(id) {
@@ -366,8 +427,27 @@ impl ProfileStore {
         name: &str,
         parent: &str,
     ) -> Result<(), ProfileError> {
+        validate_id(id)?;
         if self.map(kind).get(id).is_some_and(|e| e.system) {
             return Err(ProfileError::ShadowsSystem { id: id.to_string() });
+        }
+        // Walk the parent chain: it must not lead back to this id.
+        let mut cur = Some(parent.to_string());
+        let mut hops = 0;
+        while let Some(c) = cur {
+            if c == id || hops > 1000 {
+                return Err(ProfileError::Inheritance {
+                    id: id.to_string(),
+                    reason: format!("parent '{parent}' would create a cycle"),
+                });
+            }
+            hops += 1;
+            cur = self
+                .map(kind)
+                .get(&c)
+                .and_then(|e| e.table.get("inherits"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
         }
         if id == parent {
             return Err(ProfileError::Inheritance {
@@ -395,6 +475,14 @@ impl ProfileStore {
                 })?;
         let parent_ser = Table::try_from(&parent_profile)?;
         let own_ser = Table::try_from(profile)?;
+        if let Some(key) = find_removed("", &parent_ser, &own_ser, kind.replace_keys()) {
+            return Err(ProfileError::Invalid {
+                id: id.to_string(),
+                reason: format!(
+                    "Clearing the inherited value '{key}' is not supported yet. Set a value instead."
+                ),
+            });
+        }
         let mut table = Table::new();
         table.insert("id".into(), Value::String(id.to_string()));
         table.insert("name".into(), Value::String(name.to_string()));
