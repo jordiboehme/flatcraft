@@ -816,14 +816,17 @@ fn preferences_roundtrip_and_fallback() {
     let dir = tempfile::tempdir().unwrap();
     let p = Preferences::load(dir.path());
     assert_eq!(p, Preferences::default());
-    assert_eq!(p.mcp_port, 27891);
-    assert!(p.mcp_enabled && !p.allow_agent_cuts);
+    assert!(!p.allow_agent_cuts);
     let mut q = p.clone();
-    q.mcp_port = 4000;
+    q.allow_agent_cuts = true;
     q.recent_projects.push(dir.path().join("x.flatcraft"));
     q.save(dir.path()).unwrap();
     assert_eq!(Preferences::load(dir.path()), q);
-    std::fs::write(dir.path().join("preferences.toml"), "mcp_port = 'nope").unwrap();
+    std::fs::write(
+        dir.path().join("preferences.toml"),
+        "allow_agent_cuts = 'nope",
+    )
+    .unwrap();
     assert_eq!(Preferences::load(dir.path()), Preferences::default());
 }
 

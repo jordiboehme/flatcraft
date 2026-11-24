@@ -1,0 +1,306 @@
+//! The MCP tools on top of the command registry.
+
+use std::sync::Arc;
+
+use flatcraft_engine::registry;
+use flatcraft_engine::session::{CommandError, Origin, Session};
+use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
+use rmcp::{ServerHandler, tool, tool_handler, tool_router};
+use schemars::JsonSchema;
+use serde::Deserialize;
+use serde_json::{Value, json};
+
+use crate::{OnChange, SharedSession};
+
+/// What the server tells a connecting agent.
+pub const INSTRUCTIONS: &str = "FlatCraft prepares and sends cutting plotter jobs. \
+Every length is in millimetres. The origin is the top-left corner of the media, x runs right and y runs down. \
+Use list_commands to find commands, describe_command for the parameters of one, execute to run it, \
+document to read the state and preview to see the result as a PNG. \
+Sending to File Output is safe: it only writes files. USB cuts are gated: in a headless session they are refused \
+unless the person turned on 'Allow agents to start cuts' in the preferences; with a window open the person \
+confirms the cut in the window, and an agent cannot confirm it.";
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListArgs {
+    /// Only commands whose id, title or description contains this text (case-insensitive).
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DescribeArgs {
+    /// Command id, like `object.move`.
+    pub id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ExecuteArgs {
+    /// Command id, like `object.move`.
+    pub command: String,
+    /// The command's parameters as an object (see describe_command). Omit for none.
+    #[serde(default)]
+    pub params: Option<Value>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PreviewArgs {
+    /// "canvas": media, cutting area and objects. "path": planned toolpaths in cut order.
+    pub kind: String,
+    /// Larger image side in px, 64 to 4096 (default 1024).
+    #[serde(default)]
+    pub max_px: Option<u32>,
+}
+
+/// The MCP server. Cheap to clone.
+#[derive(Clone)]
+pub struct FlatcraftMcp {
+    session: SharedSession,
+    on_change: OnChange,
+    tool_router: ToolRouter<Self>,
+}
+
+fn text_ok(value: &Value) -> CallToolResult {
+    CallToolResult::success(vec![ContentBlock::text(value.to_string())])
+}
+
+fn text_err(message: impl Into<String>) -> CallToolResult {
+    CallToolResult::error(vec![ContentBlock::text(message)])
+}
+
+fn error_result(e: &CommandError) -> CallToolResult {
+    text_err(e.to_string())
+}
+
+#[tool_router]
+impl FlatcraftMcp {
+    pub fn new(session: SharedSession, on_change: OnChange) -> Self {
+        Self {
+            session,
+            on_change,
+            tool_router: Self::tool_router(),
+        }
+    }
+
+    /// Runs `f` on the session on tokio's blocking pool. The lock is never held
+    /// across an await. Marks the agent activity and tells the GUI afterwards.
+    async fn with_session<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut Session) -> T + Send + 'static,
+    ) -> Result<T, CallToolResult> {
+        let session = Arc::clone(&self.session);
+        let on_change = Arc::clone(&self.on_change);
+        tokio::task::spawn_blocking(move || {
+            let mut s = session.lock().unwrap_or_else(|p| p.into_inner());
+            s.last_agent_activity = Some(std::time::Instant::now());
+            let out = f(&mut s);
+            drop(s);
+            on_change();
+            out
+        })
+        .await
+        .map_err(|_| text_err("The call stopped with an internal error"))
+    }
+
+    #[tool(
+        description = "App version, the active plotter and material, and whether a FlatCraft window is open. No input."
+    )]
+    async fn version(&self) -> CallToolResult {
+        match self
+            .with_session(|s| {
+                let job = &s.doc().document.job;
+                json!({
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "plotter": job.plotter_id,
+                    "material": job.material_id,
+                    "window_open": s.has_ui,
+                })
+            })
+            .await
+        {
+            Ok(v) => text_ok(&v),
+            Err(e) => e,
+        }
+    }
+
+    #[tool(
+        description = "List the commands: id, title and a one-line description. Optional filter: text that the id, title or description contains."
+    )]
+    async fn list_commands(&self, Parameters(args): Parameters<ListArgs>) -> CallToolResult {
+        let filter = args
+            .filter
+            .map(|f| f.to_lowercase())
+            .filter(|f| !f.is_empty());
+        let list: Vec<Value> = registry::all()
+            .iter()
+            .filter(|c| {
+                filter.as_ref().is_none_or(|f| {
+                    [c.id(), c.title(), c.description()]
+                        .iter()
+                        .any(|t| t.to_lowercase().contains(f.as_str()))
+                })
+            })
+            .map(|c| {
+                json!({
+                    "id": c.id(),
+                    "title": c.title(),
+                    "description": first_sentence(c.description()),
+                })
+            })
+            .collect();
+        // Not a session call, but still agent activity.
+        let _ = self.with_session(|_| ()).await;
+        text_ok(&Value::Array(list))
+    }
+
+    #[tool(
+        description = "The full description and the JSON schema of one command's parameters. Input: id. The schema has its definitions inlined (no $ref)."
+    )]
+    async fn describe_command(&self, Parameters(args): Parameters<DescribeArgs>) -> CallToolResult {
+        let _ = self.with_session(|_| ()).await;
+        let Some(c) = registry::get(&args.id) else {
+            return error_result(&CommandError::UnknownCommand(args.id));
+        };
+        let schema = serde_json::to_value(c.params_schema()).unwrap_or(Value::Null);
+        text_ok(&json!({
+            "id": c.id(),
+            "title": c.title(),
+            "description": c.description(),
+            "mutates_document": c.mutates_document(),
+            "schema": inline_defs(schema),
+        }))
+    }
+
+    #[tool(
+        description = "Run a command (see list_commands and describe_command) as an agent. Input: command, params (an object). Returns the command's JSON; a failure is a tool error with the reason."
+    )]
+    async fn execute(&self, Parameters(args): Parameters<ExecuteArgs>) -> CallToolResult {
+        let params = args.params.unwrap_or_else(|| json!({}));
+        let params = if params.is_null() { json!({}) } else { params };
+        let command = args.command;
+        match self
+            .with_session(move |s| s.execute(&command, params, Origin::Agent))
+            .await
+        {
+            Ok(Ok(v)) => text_ok(&v),
+            Ok(Err(e)) => error_result(&e),
+            Err(e) => e,
+        }
+    }
+
+    #[tool(description = "The state of the active document (document.state). No input.")]
+    async fn document(&self) -> CallToolResult {
+        match self
+            .with_session(|s| s.execute("document.state", json!({}), Origin::Agent))
+            .await
+        {
+            Ok(Ok(v)) => text_ok(&v),
+            Ok(Err(e)) => error_result(&e),
+            Err(e) => e,
+        }
+    }
+
+    #[tool(
+        description = "Draw the active document as a PNG image. Input: kind ('canvas' or 'path'), optional max_px (64 to 4096, default 1024)."
+    )]
+    async fn preview(&self, Parameters(args): Parameters<PreviewArgs>) -> CallToolResult {
+        let mut params = json!({ "kind": args.kind });
+        if let Some(px) = args.max_px {
+            params["max_px"] = json!(px);
+        }
+        let r = match self
+            .with_session(move |s| s.execute("document.preview", params, Origin::Agent))
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => return e,
+        };
+        match r {
+            Ok(v) => {
+                let Some(png) = v["png_base64"].as_str() else {
+                    return text_err("The preview has no image");
+                };
+                CallToolResult::success(vec![
+                    ContentBlock::image(png, "image/png"),
+                    ContentBlock::text(
+                        json!({ "width": v["width"], "height": v["height"] }).to_string(),
+                    ),
+                ])
+            }
+            Err(e) => error_result(&e),
+        }
+    }
+}
+
+#[tool_handler(router = self.tool_router)]
+impl ServerHandler for FlatcraftMcp {
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("flatcraft", env!("CARGO_PKG_VERSION")))
+            .with_instructions(INSTRUCTIONS)
+    }
+}
+
+/// The first sentence of a description, for lists.
+fn first_sentence(text: &str) -> &str {
+    match text.find(". ") {
+        Some(i) => &text[..=i],
+        None => text,
+    }
+}
+
+/// Replaces every `{"$ref": "#/$defs/X"}` by the definition and drops `$defs`.
+/// Some MCP clients cannot follow `$ref`, so the schema stands alone. A cyclic
+/// definition keeps its `$ref` (and the `$defs` stay) after a few levels.
+fn inline_defs(mut schema: Value) -> Value {
+    let defs = schema
+        .as_object_mut()
+        .and_then(|o| o.remove("$defs"))
+        .unwrap_or(Value::Null);
+    let mut out = resolve(schema, &defs, 0);
+    if contains_ref(&out)
+        && let (Some(o), Value::Object(_)) = (out.as_object_mut(), &defs)
+    {
+        o.insert("$defs".into(), defs);
+    }
+    out
+}
+
+fn contains_ref(v: &Value) -> bool {
+    match v {
+        Value::Object(o) => o.contains_key("$ref") || o.values().any(contains_ref),
+        Value::Array(a) => a.iter().any(contains_ref),
+        _ => false,
+    }
+}
+
+fn resolve(v: Value, defs: &Value, depth: u32) -> Value {
+    match v {
+        Value::Object(mut o) => {
+            if depth < 8
+                && let Some(Value::String(r)) = o.get("$ref")
+                && let Some(name) = r.strip_prefix("#/$defs/")
+                && let Some(def) = defs.get(name)
+            {
+                let mut target = resolve(def.clone(), defs, depth + 1);
+                // Keep sibling keywords such as a description next to the $ref.
+                if let Value::Object(t) = &mut target {
+                    o.remove("$ref");
+                    for (k, val) in o {
+                        t.insert(k, resolve(val, defs, depth + 1));
+                    }
+                }
+                return target;
+            }
+            Value::Object(
+                o.into_iter()
+                    .map(|(k, val)| (k, resolve(val, defs, depth)))
+                    .collect(),
+            )
+        }
+        Value::Array(a) => Value::Array(a.into_iter().map(|x| resolve(x, defs, depth)).collect()),
+        other => other,
+    }
+}

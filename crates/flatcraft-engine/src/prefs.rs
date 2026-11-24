@@ -16,10 +16,9 @@ pub enum Theme {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Old files may still hold `mcp_enabled` and `mcp_port` (MCP is stdio only now); unknown keys are ignored.
 #[serde(default)]
 pub struct Preferences {
-    pub mcp_enabled: bool,
-    pub mcp_port: u16,
     pub allow_agent_cuts: bool,
     pub default_plotter: String,
     pub default_material: String,
@@ -34,8 +33,6 @@ pub struct Preferences {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
-            mcp_enabled: true,
-            mcp_port: 27891,
             allow_agent_cuts: false,
             default_plotter: "file-output-gpgl-cameo2".into(),
             default_material: "copy-paper".into(),
