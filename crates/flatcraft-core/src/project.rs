@@ -48,5 +48,9 @@ pub fn load(path: &Path) -> Result<Document, ProjectError> {
             supported: FORMAT_VERSION,
         });
     }
-    Ok(serde_json::from_value(value)?)
+    let mut doc: Document = serde_json::from_value(value)?;
+    let min_next = doc.objects.iter().map(|o| o.id.0 + 1).max().unwrap_or(1);
+    doc.next_id = doc.next_id.max(min_next);
+    doc.format_version = FORMAT_VERSION;
+    Ok(doc)
 }

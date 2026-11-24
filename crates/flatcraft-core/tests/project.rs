@@ -146,3 +146,40 @@ fn placed_paths_apply_transform() {
     assert_eq!(bounds(&placed), Some(Rect::new(45.0, 45.0, 55.0, 55.0)));
     assert_eq!(placed[0].label.as_deref(), Some("sq"));
 }
+
+#[test]
+fn load_clamps_next_id() {
+    let mut doc = Document::new(job());
+    let svg = || Source::Svg {
+        name: "x.svg".into(),
+        bytes: vec![],
+    };
+    doc.add("a".into(), svg(), vec![]);
+    doc.add("b".into(), svg(), vec![]);
+    doc.objects[0].id = flatcraft_core::document::ObjectId(5);
+    doc.objects[1].id = flatcraft_core::document::ObjectId(7);
+    doc.next_id = 1;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("p.flatcraft");
+    project::save(&doc, &path).unwrap();
+    let mut loaded = project::load(&path).unwrap();
+    assert_eq!(loaded.format_version, project::FORMAT_VERSION);
+    assert_eq!(
+        loaded.add("c".into(), svg(), vec![]),
+        flatcraft_core::document::ObjectId(8)
+    );
+}
+
+#[test]
+fn ids_stay_unique_after_remove() {
+    let mut doc = Document::new(job());
+    let svg = || Source::Svg {
+        name: "x.svg".into(),
+        bytes: vec![],
+    };
+    doc.add("a".into(), svg(), vec![]);
+    let second = doc.add("b".into(), svg(), vec![]);
+    doc.remove(second);
+    let third = doc.add("c".into(), svg(), vec![]);
+    assert_eq!(third, flatcraft_core::document::ObjectId(3));
+}
