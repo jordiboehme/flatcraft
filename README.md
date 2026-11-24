@@ -118,11 +118,11 @@ Super massive stability stuff, as Felix Schelhasse would say. Here's FlatCraft's
 - **Clean licenses:** FlatCraft uses only libraries with permissive or MPL licenses.
 - **Honest output:** when something can't be cut, FlatCraft says what and why.
 
-## Inspired by
+## Inspired by software I love
 
-- **[PrusaSlicer](https://github.com/prusa3d/PrusaSlicer):** profiles for machines and materials, with your own presets on top. FlatCraft does the same for plotters.
-- **[SolidCraft](https://github.com/tangency-labs/solidcraft):** workspaces, a ribbon and "everything is a command", so the window and agents use the same commands. FlatCraft's look is its own.
-- **[ZigZag](https://github.com/simpsoka/zigzag):** a Rust desktop app for a hobby machine with MCP built in. It showed that this mix works.
+- [PrusaSlicer](https://github.com/prusa3d/PrusaSlicer)
+- [SolidCraft](https://github.com/tangency-labs/solidcraft)
+- [ZigZag](https://github.com/simpsoka/zigzag)
 
 ## Contributing
 
