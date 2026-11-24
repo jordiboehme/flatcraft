@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use flatcraft_core::geometry::CutPath;
+use flatcraft_core::geometry::{Cap, CutPath, FillRule, Join, Paint, StrokeInfo};
 use flatcraft_core::units::px_to_mm;
 use kurbo::{BezPath, Point};
 use usvg::tiny_skia_path::{PathSegment, Transform};
@@ -49,7 +49,8 @@ struct Walk {
 }
 
 /// Imports an SVG. Every visible path (fill and stroke alike) becomes a
-/// `CutPath` in millimetres, in document order. Text is used as outlines, so
+/// `CutPath` in millimetres, in document order, with its fill rule and
+/// stroke in `paint`. Paths with neither fill nor stroke are skipped. Text is used as outlines, so
 /// `fonts` must hold the fonts the document needs.
 pub fn import_svg(
     bytes: &[u8],
@@ -114,12 +115,17 @@ fn walk_group(group: &usvg::Group, label: Option<&str>, walk: &mut Walk) {
                     (None, Some(usvg::Paint::Color(c))) => Some([c.red, c.green, c.blue]),
                     _ => None,
                 };
+                let paint = paint(p);
+                if paint.fill.is_none() && paint.stroke.is_none() {
+                    continue;
+                }
                 let path = to_bez(p.data(), p.abs_transform());
                 if !path.elements().is_empty() {
                     walk.paths.push(CutPath {
                         path,
                         color,
                         label: label.map(str::to_owned),
+                        paint,
                     });
                 }
             }
@@ -127,6 +133,37 @@ fn walk_group(group: &usvg::Group, label: Option<&str>, walk: &mut Walk) {
             usvg::Node::Image(_) => walk.images += 1,
         }
     }
+}
+
+/// Fill rule and stroke of a usvg path. The stroke width is converted to
+/// mm in the path's final coordinates (scaled by `sqrt(|det|)` of its
+/// absolute transform).
+fn paint(p: &usvg::Path) -> Paint {
+    let fill = p.fill().map(|f| match f.rule() {
+        usvg::FillRule::NonZero => FillRule::NonZero,
+        usvg::FillRule::EvenOdd => FillRule::EvenOdd,
+    });
+    let stroke = p.stroke().map(|s| {
+        let ts = p.abs_transform();
+        let det = f64::from(ts.sx) * f64::from(ts.sy) - f64::from(ts.kx) * f64::from(ts.ky);
+        let width_px = f64::from(s.width().get()) * det.abs().sqrt();
+        let limit = f64::from(s.miterlimit().get());
+        StrokeInfo {
+            width_mm: px_to_mm(width_px),
+            join: match s.linejoin() {
+                // kurbo has no clipped miter; the plain miter is closest.
+                usvg::LineJoin::Miter | usvg::LineJoin::MiterClip => Join::Miter { limit },
+                usvg::LineJoin::Round => Join::Round,
+                usvg::LineJoin::Bevel => Join::Bevel,
+            },
+            cap: match s.linecap() {
+                usvg::LineCap::Butt => Cap::Butt,
+                usvg::LineCap::Round => Cap::Round,
+                usvg::LineCap::Square => Cap::Square,
+            },
+        }
+    });
+    Paint { fill, stroke }
 }
 
 fn to_bez(path: &usvg::tiny_skia_path::Path, ts: Transform) -> BezPath {

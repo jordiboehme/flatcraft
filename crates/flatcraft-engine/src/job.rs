@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 
 use crate::commands::profile_error;
 use crate::commands::project::{inside, lexical, resolved};
+use crate::cutgeom;
 use crate::gate::{self, GateDecision};
 use crate::session::{CommandError, JobSummary, Origin, Session};
 
@@ -79,8 +80,9 @@ fn emit_error(e: EmitError) -> CommandError {
     }
 }
 
-/// Builds the job of the active document: the visible objects' paths, the
-/// material values for this plotter, then the job overrides.
+/// Builds the job of the active document: the visible objects' cut paths
+/// (per their cut options, see `cutgeom`), the material values for this
+/// plotter, then the job overrides.
 pub fn build(session: &Session) -> Result<JobResult, CommandError> {
     let doc = &session.doc().document;
     let job = &doc.job;
@@ -111,24 +113,29 @@ pub fn build(session: &Session) -> Result<JobResult, CommandError> {
             ));
             continue;
         }
-        let paths = o.placed_paths();
-        if paths.is_empty() {
+        // One source path may give several cut paths (stroke outline
+        // rings); they all keep the source path's index.
+        let affine = o.transform.affine(o.local_bounds);
+        let before = placed.len();
+        for (i, p) in o.geometry.iter().enumerate() {
+            if let Some(label) = &p.label {
+                labels.insert((o.id, i), label.clone());
+            }
+            for path in cutgeom::cut_path(p, &o.cut, affine, plotter.flatten_tolerance_mm) {
+                placed.push(PlacedPath {
+                    path,
+                    source: PathRef {
+                        object: o.id,
+                        path_index: i,
+                    },
+                });
+            }
+        }
+        if placed.len() == before {
             warnings.push(format!(
                 "'{}' has no cut paths, so nothing of it is cut.",
                 one_line(&o.name)
             ));
-        }
-        for (i, p) in paths.into_iter().enumerate() {
-            if let Some(label) = p.label {
-                labels.insert((o.id, i), label);
-            }
-            placed.push(PlacedPath {
-                path: p.path,
-                source: PathRef {
-                    object: o.id,
-                    path_index: i,
-                },
-            });
         }
     }
 

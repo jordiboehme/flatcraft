@@ -34,6 +34,7 @@ fn object_json(o: &Object) -> Value {
             "rotation_deg": t.rotation_deg,
             "mirror": t.mirror,
         },
+        "cut": super::object::cut_json(&o.cut),
     })
 }
 
@@ -72,7 +73,7 @@ command!(
     mutates: false,
     params: NoParams,
     run: run_state,
-    description: "Describes the active document. All lengths are mm; the origin is the top-left of the media, x right, y down; rotation is degrees clockwise. Returns {index, documents, doc_id (stable id of the active document), doc_ids (stable ids of all open documents, in index order), objects: [{id, name, kind: svg|raster, visible, bounds_mm: {x0,y0,x1,y1} of the placed geometry, transform: {center_mm: [x,y], scale_x, scale_y, rotation_deg, mirror}}], selection: [id], job: {plotter_id, material_id, media_id, speed, force, passes} (null overrides mean the material value), cutting_area_mm: {x0,y0,x1,y1} (objects must stay inside it), dirty, path, can_undo, can_redo}.",
+    description: "Describes the active document. All lengths are mm; the origin is the top-left of the media, x right, y down; rotation is degrees clockwise. Returns {index, documents, doc_id (stable id of the active document), doc_ids (stable ids of all open documents, in index order), objects: [{id, name, kind: svg|raster, visible, bounds_mm: {x0,y0,x1,y1} of the placed geometry, transform: {center_mm: [x,y], scale_x, scale_y, rotation_deg, mirror}, cut: {mode: all_lines|object_outlines, strokes: auto|centre_line|outline, auto_threshold_mm} (see object.set_cut_options)}], selection: [id], job: {plotter_id, material_id, media_id, speed, force, passes} (null overrides mean the material value), cutting_area_mm: {x0,y0,x1,y1} (objects must stay inside it), dirty, path, can_undo, can_redo}.",
 );
 
 // ---------------------------------------------------------------- document.new / switch / close

@@ -2,6 +2,7 @@
 //! GUI, the MCP server and tests share.
 
 pub mod commands;
+pub mod cutgeom;
 pub mod gate;
 pub mod job;
 pub mod patterns;

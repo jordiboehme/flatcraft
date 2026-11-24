@@ -41,6 +41,7 @@ static ALL: &[&dyn Command] = &[
     &object::ObjectScale,
     &object::ObjectRotate,
     &object::ObjectMirror,
+    &object::ObjectSetCutOptions,
     &arrange::ArrangeAlign,
     &arrange::ArrangeAuto,
     &edit::EditUndo,

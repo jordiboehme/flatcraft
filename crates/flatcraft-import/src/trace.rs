@@ -1,7 +1,7 @@
 //! Tracing a raster image into cut outlines in millimetres.
 
 use flatcraft_core::document::TraceSettings;
-use flatcraft_core::geometry::CutPath;
+use flatcraft_core::geometry::{CutPath, Paint};
 use flatcraft_path::flatten::{flatten, merge_collinear};
 use image::GrayImage;
 use kurbo::{BezPath, PathEl, Point};
@@ -259,5 +259,7 @@ fn to_cut_path(spline: &Spline, mm_x: f64, mm_y: f64) -> Option<CutPath> {
         path,
         color: None,
         label: None,
+        // Traced shapes are fills, so cut modes change nothing for them.
+        paint: Paint::default(),
     })
 }

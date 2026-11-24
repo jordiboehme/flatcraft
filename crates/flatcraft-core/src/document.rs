@@ -73,6 +73,50 @@ pub enum Source {
     },
 }
 
+/// What of an object is cut. Milestone 2 adds `MergedOutline` and
+/// `VisibleOutline` (they need polygon booleans).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CutMode {
+    /// Every path as drawn (centre lines), whatever its fill or stroke.
+    AllLines,
+    /// The outline of every visible shape: fills plus strokes as set by
+    /// `StrokeMode`.
+    #[default]
+    ObjectOutlines,
+}
+
+/// How strokes are cut in `CutMode::ObjectOutlines`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StrokeMode {
+    /// Outline when the placed stroke is at least `auto_threshold_mm` wide,
+    /// else centre line.
+    #[default]
+    Auto,
+    CentreLine,
+    Outline,
+}
+
+/// Per-object cut settings.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CutOptions {
+    pub mode: CutMode,
+    pub strokes: StrokeMode,
+    pub auto_threshold_mm: f64,
+}
+
+impl Default for CutOptions {
+    fn default() -> Self {
+        Self {
+            mode: CutMode::ObjectOutlines,
+            strokes: StrokeMode::Auto,
+            auto_threshold_mm: 0.5,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Object {
     pub id: ObjectId,
@@ -80,6 +124,9 @@ pub struct Object {
     pub source: Source,
     pub transform: Transform,
     pub visible: bool,
+    /// Projects from before cut options load with the defaults.
+    #[serde(default)]
+    pub cut: CutOptions,
     #[serde(skip)]
     pub geometry: Arc<Vec<CutPath>>,
     #[serde(skip)]
@@ -103,6 +150,7 @@ impl Object {
                 path: affine * &p.path,
                 color: p.color,
                 label: p.label.clone(),
+                paint: p.paint,
             })
             .collect()
     }
@@ -146,6 +194,7 @@ impl Document {
             source,
             transform: Transform::default(),
             visible: true,
+            cut: CutOptions::default(),
             geometry: Arc::default(),
             local_bounds: Rect::ZERO,
         };

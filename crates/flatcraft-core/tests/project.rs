@@ -1,5 +1,5 @@
 use flatcraft_core::document::{Document, JobSettings, Source, TraceSettings};
-use flatcraft_core::geometry::{CutPath, bounds};
+use flatcraft_core::geometry::{CutPath, Paint, bounds};
 use flatcraft_core::project::{self, ProjectError};
 use flatcraft_core::undo::UndoStack;
 use kurbo::{BezPath, Point, Rect};
@@ -15,6 +15,7 @@ fn square(s: f64) -> CutPath {
         path,
         color: None,
         label: Some("sq".into()),
+        paint: Paint::default(),
     }
 }
 
@@ -182,4 +183,19 @@ fn ids_stay_unique_after_remove() {
     doc.remove(second);
     let third = doc.add("c".into(), svg(), vec![]);
     assert_eq!(third, flatcraft_core::document::ObjectId(3));
+}
+
+#[test]
+fn old_project_without_cut_options_loads_defaults() {
+    // A format 1 project written before cut options existed.
+    let text = r#"{"format_version":1,"objects":[{"id":1,"name":"x","source":{"Svg":{"name":"x.svg","bytes":""}},"transform":{"center_mm":{"x":10.0,"y":20.0},"scale_x":1.0,"scale_y":1.0,"rotation_deg":0.0,"mirror":false},"visible":true}],"job":{"plotter_id":"cameo2","material_id":"cardstock","media_id":"a4","speed":null,"force":null,"passes":null},"next_id":2}"#;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.flatcraft");
+    std::fs::write(&path, text).unwrap();
+    let doc = project::load(&path).unwrap();
+    let cut = doc.objects[0].cut;
+    assert_eq!(cut, flatcraft_core::document::CutOptions::default());
+    assert_eq!(cut.mode, flatcraft_core::document::CutMode::ObjectOutlines);
+    assert_eq!(cut.strokes, flatcraft_core::document::StrokeMode::Auto);
+    assert_eq!(cut.auto_threshold_mm, 0.5);
 }

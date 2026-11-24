@@ -3,6 +3,65 @@
 use kurbo::{BezPath, Rect, Shape};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+/// Fill rule of a filled path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FillRule {
+    #[default]
+    NonZero,
+    EvenOdd,
+}
+
+/// Corner style of a stroke.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Join {
+    /// Sharp corner, cut off as a bevel where the miter would be longer
+    /// than `limit` times the stroke width.
+    Miter {
+        limit: f64,
+    },
+    Round,
+    Bevel,
+}
+
+/// End style of an open stroke.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Cap {
+    Butt,
+    Round,
+    Square,
+}
+
+/// Stroke of a path.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct StrokeInfo {
+    /// Width in the path's own mm units, before the object transform.
+    pub width_mm: f64,
+    pub join: Join,
+    pub cap: Cap,
+}
+
+/// How a path is painted. The default (fill with the non-zero rule, no
+/// stroke) is what traced raster paths and old projects get.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Paint {
+    /// `None` = not filled.
+    pub fill: Option<FillRule>,
+    /// `None` = not stroked.
+    pub stroke: Option<StrokeInfo>,
+}
+
+impl Default for Paint {
+    fn default() -> Self {
+        Self {
+            fill: Some(FillRule::NonZero),
+            stroke: None,
+        }
+    }
+}
+
 /// One cuttable path in millimetres.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CutPath {
@@ -11,6 +70,8 @@ pub struct CutPath {
     pub color: Option<[u8; 3]>,
     /// Id of the nearest enclosing SVG `<g id>`.
     pub label: Option<String>,
+    #[serde(default)]
+    pub paint: Paint,
 }
 
 mod svg_path {
@@ -51,7 +112,16 @@ mod tests {
             path,
             color: None,
             label: None,
+            paint: Paint::default(),
         }
+    }
+
+    #[test]
+    fn paint_defaults_to_a_plain_fill() {
+        let json = r#"{"path":"M0 0L1 0","color":null,"label":null}"#;
+        let cp: CutPath = serde_json::from_str(json).unwrap();
+        assert_eq!(cp.paint.fill, Some(FillRule::NonZero));
+        assert_eq!(cp.paint.stroke, None);
     }
 
     #[test]

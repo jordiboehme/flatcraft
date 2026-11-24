@@ -205,3 +205,57 @@ fn external_image_file_is_not_read() {
     let r = load("external.svg");
     assert!(r.paths.is_empty());
 }
+
+// ---------------------------------------------------------------- paint
+
+fn import_text(svg: &str) -> SvgImport {
+    import_svg(svg.as_bytes(), Arc::new(usvg::fontdb::Database::new())).unwrap()
+}
+
+#[test]
+fn stroke_info_is_read() {
+    use flatcraft_core::geometry::{Cap, Join};
+    let r = import_text(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><path d="M10 10 H90" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"/></svg>"#,
+    );
+    assert_eq!(r.paths.len(), 1);
+    let paint = r.paths[0].paint;
+    assert_eq!(paint.fill, None);
+    let s = paint.stroke.expect("stroke");
+    assert!((s.width_mm - 0.5292).abs() < 1e-4, "{}", s.width_mm);
+    assert_eq!(s.join, Join::Miter { limit: 4.0 });
+    assert_eq!(s.cap, Cap::Round);
+}
+
+#[test]
+fn fill_rule_is_read() {
+    use flatcraft_core::geometry::FillRule;
+    let r = import_text(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><path d="M0 0 H30 V30 H0 Z M10 10 H20 V20 H10 Z" fill-rule="evenodd"/></svg>"#,
+    );
+    assert_eq!(r.paths.len(), 1);
+    assert_eq!(r.paths[0].paint.fill, Some(FillRule::EvenOdd));
+    assert_eq!(r.paths[0].paint.stroke, None);
+    let plain = import_text(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="10" height="10"/></svg>"#,
+    );
+    assert_eq!(plain.paths[0].paint.fill, Some(FillRule::NonZero));
+}
+
+#[test]
+fn scaled_group_scales_stroke_width() {
+    let r = import_text(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="200mm" viewBox="0 0 200 200"><g transform="scale(2)"><path d="M10 10 H50" fill="none" stroke="black" stroke-width="1.5" stroke-linejoin="bevel"/></g></svg>"#,
+    );
+    let s = r.paths[0].paint.stroke.expect("stroke");
+    assert!((s.width_mm - 3.0).abs() < 1e-4, "{}", s.width_mm);
+    assert_eq!(s.join, flatcraft_core::geometry::Join::Bevel);
+}
+
+#[test]
+fn path_without_fill_and_stroke_is_skipped() {
+    let r = import_text(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><path d="M0 0 H30" fill="none" stroke="none"/><rect width="10" height="10"/></svg>"#,
+    );
+    assert_eq!(r.paths.len(), 1);
+}

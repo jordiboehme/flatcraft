@@ -1,9 +1,10 @@
-//! Object commands: import, select, show, delete, duplicate and transform.
+//! Object commands: import, select, show, delete, duplicate, transform and
+//! cut options.
 
 use std::io::Read;
 use std::path::PathBuf;
 
-use flatcraft_core::document::{ObjectId, Source, TraceSettings};
+use flatcraft_core::document::{CutMode, CutOptions, ObjectId, Source, StrokeMode, TraceSettings};
 use flatcraft_core::geometry::CutPath;
 use flatcraft_import::svg::import_svg;
 use flatcraft_import::trace::{TraceResult, trace};
@@ -790,6 +791,124 @@ command!(
     params: MirrorParams,
     run: run_mirror,
     description: "Mirrors each object along a screen axis through its own centre. horizontal flips left and right, vertical flips top and bottom. Use horizontal for iron-on vinyl, which is cut from the back. An empty ids list means the current selection. Returns {ids}.",
+);
+
+// ---------------------------------------------------------------- cut options
+
+/// Smallest and largest auto threshold, mm.
+const AUTO_THRESHOLD_RANGE: std::ops::RangeInclusive<f64> = 0.05..=10.0;
+
+#[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CutModeParam {
+    /// Every path as drawn (centre lines), whatever its fill or stroke.
+    AllLines,
+    /// The outline of every visible shape: fills, plus strokes as set by strokes.
+    ObjectOutlines,
+}
+
+impl From<CutModeParam> for CutMode {
+    fn from(m: CutModeParam) -> Self {
+        match m {
+            CutModeParam::AllLines => CutMode::AllLines,
+            CutModeParam::ObjectOutlines => CutMode::ObjectOutlines,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StrokeModeParam {
+    /// Outline for strokes at least auto_threshold_mm wide (after scaling), centre line for thinner ones.
+    Auto,
+    /// Cut the path itself.
+    CentreLine,
+    /// Cut around the visible stroke shape, with its corner and end style.
+    Outline,
+}
+
+impl From<StrokeModeParam> for StrokeMode {
+    fn from(m: StrokeModeParam) -> Self {
+        match m {
+            StrokeModeParam::Auto => StrokeMode::Auto,
+            StrokeModeParam::CentreLine => StrokeMode::CentreLine,
+            StrokeModeParam::Outline => StrokeMode::Outline,
+        }
+    }
+}
+
+/// Cut options as `document.state` and `object.set_cut_options` report them.
+pub(crate) fn cut_json(c: &CutOptions) -> Value {
+    let mode = match c.mode {
+        CutMode::AllLines => "all_lines",
+        CutMode::ObjectOutlines => "object_outlines",
+    };
+    let strokes = match c.strokes {
+        StrokeMode::Auto => "auto",
+        StrokeMode::CentreLine => "centre_line",
+        StrokeMode::Outline => "outline",
+    };
+    json!({ "mode": mode, "strokes": strokes, "auto_threshold_mm": c.auto_threshold_mm })
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetCutOptionsParams {
+    /// Object ids; empty means the current selection.
+    #[serde(default)]
+    pub ids: Vec<u64>,
+    /// What is cut: all_lines or object_outlines. Omit to keep the current value.
+    pub mode: Option<CutModeParam>,
+    /// How strokes are cut in object_outlines: auto, centre_line or outline. Omit to keep the current value.
+    pub strokes: Option<StrokeModeParam>,
+    /// Strokes at least this wide in mm (after scaling) are cut as outline in auto, 0.05 to 10. Omit to keep the current value.
+    pub auto_threshold_mm: Option<f64>,
+}
+
+fn run_set_cut_options(
+    s: &mut Session,
+    p: SetCutOptionsParams,
+    _: Origin,
+) -> Result<Value, CommandError> {
+    if p.mode.is_none() && p.strokes.is_none() && p.auto_threshold_mm.is_none() {
+        return Err(CommandError::InvalidParams(
+            "give at least one of mode, strokes and auto_threshold_mm".into(),
+        ));
+    }
+    if let Some(t) = p.auto_threshold_mm
+        && !(t.is_finite() && AUTO_THRESHOLD_RANGE.contains(&t))
+    {
+        return Err(CommandError::InvalidParams(
+            "auto_threshold_mm must be between 0.05 and 10".into(),
+        ));
+    }
+    let ids = resolve_ids(s, &p.ids)?;
+    let doc = &mut s.doc_mut().document;
+    let mut out = Vec::new();
+    for id in &ids {
+        let c = &mut object_mut(doc, *id)?.cut;
+        if let Some(m) = p.mode {
+            c.mode = m.into();
+        }
+        if let Some(m) = p.strokes {
+            c.strokes = m.into();
+        }
+        if let Some(t) = p.auto_threshold_mm {
+            c.auto_threshold_mm = t;
+        }
+        out.push(json!({ "id": id.0, "cut": cut_json(c) }));
+    }
+    Ok(json!({ "objects": out }))
+}
+
+command!(
+    ObjectSetCutOptions,
+    id: "object.set_cut_options",
+    title: "Cut options",
+    mutates: true,
+    params: SetCutOptionsParams,
+    run: run_set_cut_options,
+    description: "Sets what is cut of each object (one undo step). mode: all_lines cuts every path as drawn (its centre line), whatever its fill or stroke; object_outlines (default) cuts the outline of every visible shape: fills, plus strokes as set by strokes. strokes: auto (default) cuts strokes at least auto_threshold_mm wide (default 0.5, range 0.05 to 10; measured after scaling) around their outline and thinner ones as centre line; centre_line cuts the path itself; outline cuts around the visible stroke shape with its corner and end style (sharp miter corners stay sharp). A path with a fill and an outline stroke is cut along the outer edge of its stroke only (holes along their inner edge). Overlapping shapes are each cut completely. Fields you omit keep their value; give at least one. Traced raster objects are plain fills, so these options change nothing for them. An empty ids list means the current selection. Returns {objects: [{id, cut: {mode, strokes, auto_threshold_mm}}]}.",
 );
 
 #[cfg(test)]
