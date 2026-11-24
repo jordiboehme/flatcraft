@@ -12,10 +12,17 @@
 //! milestone 2.
 //!
 //! Error budget per cut path (tolerance `t`, the plotter's flatten
-//! tolerance): stroker `t/4` plus flattening `t/4`, or flattening `t/2` for
-//! fills, so the result is within `t/2` of the exact shape. The booleans
-//! work on a fixed-point grid far below that (about 1e-7 mm for 100 mm).
-//! The pipeline then flattens straight lines without further error.
+//! tolerance, default 0.01 mm): stroker `t/4` plus flattening `t/4`, or
+//! flattening `t/2` for fills, so the shape is within `t/2` before the
+//! booleans. The booleans work on a fixed-point grid far below that (about
+//! 1e-7 mm for 100 mm). The pipeline then flattens the straight lines
+//! without error, but its cleaning merges nearly collinear points within
+//! up to `t`. Worst case about `1.5 t` (0.015 mm by default), below the
+//! 0.05 mm device step.
+//!
+//! Traced raster images are fills, so in object outlines they go through
+//! the fill boolean too; for their simple outlines this only normalises
+//! direction and start point.
 
 use flatcraft_core::document::{CutMode, CutOptions, Object, StrokeMode};
 use flatcraft_core::geometry::{Cap, CutPath, FillRule, Join, Paint};
@@ -155,10 +162,13 @@ fn object_outlines(
     }
     let style = outline_style(paint, options, affine);
     let shapes = match (paint.fill, style) {
-        // Centre-line strokes (with or without fill) and unpainted paths:
-        // the path itself, once.
+        // Stroke-only paths with a centre-line stroke and unpainted paths:
+        // the path itself.
         (None, None) => return vec![placed],
-        (Some(_), None) if paint.stroke.is_some() => return vec![placed],
+        // A fill, with no stroke or a centre-line stroke: the edge of the
+        // fill under its own rule. The thin stroke lies on that edge,
+        // except along the implicit closing edge of an open subpath, which
+        // must be cut to free the fill.
         (Some(rule), None) => {
             let fill = contours(placed.iter(), tolerance / 2.0);
             boolean(&fill, &[], fill_rule(rule), tolerance)

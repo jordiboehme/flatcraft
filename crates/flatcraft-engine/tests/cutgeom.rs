@@ -871,3 +871,51 @@ fn cheap_bounds_match_the_cut_paths() {
         }
     }
 }
+
+// ---------------------------------------------------------------- fill with a thin stroke (fix round 2)
+
+fn fill_thin_stroke() -> Paint {
+    Paint {
+        fill: Some(FillRule::NonZero),
+        stroke: stroke(0.2, MITER, Cap::Butt),
+    }
+}
+
+#[test]
+fn open_filled_triangle_with_thin_stroke_frees_the_fill() {
+    let tri = polyline(&[(10.0, 10.0), (30.0, 10.0), (20.0, 30.0)], false);
+    let o = object(tri, fill_thin_stroke(), CutOptions::default());
+    let subs = subpaths(&cut(&o));
+    assert_eq!(subs.len(), 1, "{subs:?}");
+    assert!(subs[0].1, "the ring must be closed");
+    assert!((subs[0].0.area().abs() - 200.0).abs() < 1e-3);
+}
+
+#[test]
+fn nested_nonzero_same_direction_with_thin_stroke_is_one_ring() {
+    let mut p = square(0.0, 30.0, false);
+    p.extend(square(10.0, 10.0, false));
+    let o = object(p, fill_thin_stroke(), CutOptions::default());
+    let subs = subpaths(&cut(&o));
+    assert_eq!(subs.len(), 1, "{subs:?}");
+    assert_size(subs[0].0.bounding_box(), 30.0, 30.0, 1e-6);
+}
+
+#[test]
+fn job_counts_fills_without_area() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="200mm" viewBox="0 0 200 200"><path d="M50 50 H100"/><rect x="50" y="60" width="10" height="10"/></svg>"#;
+    run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": svg, "name": "mixed" }),
+    );
+    let r = run(&mut s, "job.preview", json!({}));
+    assert_eq!(r["toolpaths"], 1, "{r}");
+    let warnings = r["warnings"].to_string();
+    assert!(
+        warnings.contains("1 filled paths have no area"),
+        "{warnings}"
+    );
+}

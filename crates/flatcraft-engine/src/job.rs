@@ -117,11 +117,18 @@ pub fn build(session: &Session) -> Result<JobResult, CommandError> {
         // rings); they all keep the source path's index.
         let affine = o.transform.affine(o.local_bounds);
         let before = placed.len();
+        let mut no_area = 0;
         for (i, p) in o.geometry.iter().enumerate() {
             if let Some(label) = &p.label {
                 labels.insert((o.id, i), label.clone());
             }
-            for path in cutgeom::cut_path(p, &o.cut, affine, plotter.flatten_tolerance_mm) {
+            let cut = cutgeom::cut_path(p, &o.cut, affine, plotter.flatten_tolerance_mm);
+            if cut.is_empty() && !p.path.elements().is_empty() {
+                // Only a fill without area (and no outline stroke) gives
+                // nothing to cut.
+                no_area += 1;
+            }
+            for path in cut {
                 placed.push(PlacedPath {
                     path,
                     source: PathRef {
@@ -130,6 +137,12 @@ pub fn build(session: &Session) -> Result<JobResult, CommandError> {
                     },
                 });
             }
+        }
+        if no_area > 0 {
+            warnings.push(format!(
+                "'{}': {no_area} filled paths have no area (no visible shape) and are not cut.",
+                one_line(&o.name)
+            ));
         }
         if placed.len() == before {
             warnings.push(format!(
