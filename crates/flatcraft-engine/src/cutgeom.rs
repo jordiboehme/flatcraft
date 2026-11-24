@@ -501,7 +501,7 @@ fn spine(ring: &[[f64; 2]]) -> Option<BezPath> {
         // runs along it. If not (the ends were picked at the apex of a
         // narrow "V", so each side is one arm), cutting it would leave
         // the other part uncut: the ring is cut as drawn.
-        if !all_near(&ring, &side.points, 2.0 * HAIRLINE_MM) {
+        if !all_near(&ring_samples(&ring), &side.points, 2.0 * HAIRLINE_MM) {
             return None;
         }
         points = side.points.iter().map(|p| Point::new(p[0], p[1])).collect();
@@ -512,6 +512,24 @@ fn spine(ring: &[[f64; 2]]) -> Option<BezPath> {
         path.line_to(*p);
     }
     Some(path)
+}
+
+/// The vertices of the closed `ring` and points along each of its edges,
+/// the closing edge too, at most `HAIRLINE_MM` apart. A long edge between
+/// two vertices must be covered as well as the vertices.
+fn ring_samples(ring: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    let n = ring.len();
+    let mut out = Vec::with_capacity(n);
+    for k in 0..n {
+        let (a, b) = (ring[k], ring[(k + 1) % n]);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let parts = (dx.hypot(dy) / HAIRLINE_MM).ceil().max(1.0) as usize;
+        out.extend((0..parts).map(|m| {
+            let t = m as f64 / parts as f64;
+            [a[0] + dx * t, a[1] + dy * t]
+        }));
+    }
+    out
 }
 
 /// Whether every one of `points` lies within `reach` of the polyline
@@ -878,6 +896,31 @@ mod tests {
     }
 
     #[test]
+    fn a_side_that_misses_a_long_ring_edge_is_not_cut_alone() {
+        // Two ends, one side over an apex 5 mm up, the other side one
+        // straight 50 mm edge. The longer side passes through all three
+        // vertices, but the straight edge is up to 5 mm away from it.
+        let ring = [[0.0, 0.0], [25.0, 5.0], [50.0, 0.0]];
+        assert_eq!(hairline_ends(&ring), Some((0, 2)));
+        assert!(spine(&ring).is_none(), "{:?}", spine(&ring));
+    }
+
+    #[test]
+    fn ring_samples_are_at_most_a_hairline_apart() {
+        let ring = [[0.0, 0.0], [50.0, 0.0], [50.0, 0.05], [10.0, 0.25]];
+        let samples = ring_samples(&ring);
+        assert!(ring.iter().all(|v| samples.contains(v)));
+        let n = samples.len();
+        for k in 0..n {
+            let (a, b) = (samples[k], samples[(k + 1) % n]);
+            let d = (b[0] - a[0]).hypot(b[1] - a[1]);
+            assert!(d <= HAIRLINE_MM + 1e-12, "{a:?} {b:?}");
+        }
+        // About one sample per 0.1 mm of ring, not more.
+        assert!(n < 1100, "{n}");
+    }
+
+    #[test]
     fn a_loop_without_tips_has_no_ends() {
         let circle: Vec<[f64; 2]> = (0..48)
             .map(|k| {
@@ -891,8 +934,28 @@ mod tests {
 
     #[test]
     fn sides_that_do_not_run_alike_give_one_side() {
-        // Out along a straight line, back with a 3 mm detour: the middle
-        // would leave the hairline, so the longer side is cut as it is.
+        // Out along a straight line, back with a small zigzag near one
+        // end. The zigzag makes that side longer, so points at the same
+        // share of the two sides drift more than 1 mm apart and the
+        // middle is not trusted. The zigzag side still runs within
+        // 0.2 mm of the whole ring, so it is cut alone.
+        let mut ring = vec![[0.0, 0.0], [50.0, 0.0]];
+        for k in 0..=20 {
+            let y = if k % 2 == 0 { 0.02 } else { 0.17 };
+            ring.push([10.0 - 0.1 * f64::from(k), y]);
+        }
+        let s = spine(&ring).unwrap();
+        let pts: Vec<Point> = s.elements().iter().filter_map(|e| e.end_point()).collect();
+        let mut side: Vec<Point> = ring[1..].iter().map(|p| Point::new(p[0], p[1])).collect();
+        side.push(Point::new(0.0, 0.0));
+        side.reverse();
+        assert_eq!(pts, side);
+    }
+
+    #[test]
+    fn a_side_with_a_detour_does_not_stand_for_the_ring() {
+        // Back with a 3 mm detour: the longer side leaves the straight
+        // side uncut under the detour, so neither is cut alone.
         let ring = [
             [0.0, 0.0],
             [50.0, 0.0],
@@ -900,13 +963,7 @@ mod tests {
             [25.0, 3.0],
             [20.0, 0.02],
         ];
-        let s = spine(&ring).unwrap();
-        let pts: Vec<Point> = s.elements().iter().filter_map(|e| e.end_point()).collect();
-        let side: Vec<Point> = [0, 4, 3, 2, 1]
-            .iter()
-            .map(|&k| Point::new(ring[k][0], ring[k][1]))
-            .collect();
-        assert_eq!(pts, side);
+        assert!(spine(&ring).is_none(), "{:?}", spine(&ring));
     }
 
     #[test]
