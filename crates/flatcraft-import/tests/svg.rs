@@ -259,3 +259,17 @@ fn path_without_fill_and_stroke_is_skipped() {
     );
     assert_eq!(r.paths.len(), 1);
 }
+
+#[test]
+fn dashes_warn() {
+    let r = import_text(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><path d="M10 10 H90" fill="none" stroke="black" stroke-width="2" stroke-dasharray="4 2"/><path d="M10 20 H90" fill="none" stroke="black"/></svg>"#,
+    );
+    assert_eq!(r.paths.len(), 2);
+    assert!(
+        r.warnings
+            .contains(&ImportWarning::DashesIgnored { count: 1 }),
+        "{:?}",
+        r.warnings
+    );
+}

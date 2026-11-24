@@ -46,6 +46,7 @@ struct Walk {
     paths: Vec<CutPath>,
     clips: usize,
     images: usize,
+    dashes: usize,
 }
 
 /// Imports an SVG. Every visible path (fill and stroke alike) becomes a
@@ -84,6 +85,9 @@ pub(crate) fn import_svg_capped(
     if walk.images > 0 {
         warnings.push(ImportWarning::ImagesSkipped { count: walk.images });
     }
+    if walk.dashes > 0 {
+        warnings.push(ImportWarning::DashesIgnored { count: walk.dashes });
+    }
     if walk.paths.is_empty() {
         warnings.push(ImportWarning::NoPaths);
     }
@@ -118,6 +122,9 @@ fn walk_group(group: &usvg::Group, label: Option<&str>, walk: &mut Walk) {
                 let paint = paint(p);
                 if paint.fill.is_none() && paint.stroke.is_none() {
                     continue;
+                }
+                if p.stroke().is_some_and(|s| s.dasharray().is_some()) {
+                    walk.dashes += 1;
                 }
                 let path = to_bez(p.data(), p.abs_transform());
                 if !path.elements().is_empty() {

@@ -6,7 +6,7 @@ use flatcraft_device::ProfileStore;
 use flatcraft_engine::cutgeom::cut_paths;
 use flatcraft_engine::prefs::Preferences;
 use flatcraft_engine::session::{Origin, Session};
-use kurbo::{BezPath, ParamCurveArclen, PathEl, Point, Rect, Shape};
+use kurbo::{BezPath, ParamCurveArclen, ParamCurveNearest, PathEl, Point, Rect, Shape};
 use serde_json::{Value, json};
 
 const TOL: f64 = 0.01;
@@ -558,4 +558,249 @@ fn curves_and_zigzags_give_clean_rings() {
             vertices(&subs[0].0)
         );
     }
+}
+
+// ---------------------------------------------------------------- booleans (fix round 1)
+
+/// Distance from `q` to the nearest point of `path`.
+fn dist(path: &BezPath, q: Point) -> f64 {
+    path.segments()
+        .map(|s| s.nearest(q, 1e-7).distance_sq.sqrt())
+        .fold(f64::MAX, f64::min)
+}
+
+/// Number of cut samples that lie inside the stroke paint (closer than
+/// w/2 - 0.02 to the centre line). Butt caps cross the ends of an open
+/// centre line, so samples near its ends do not count.
+fn cuts_inside_stroke(out: &[BezPath], centre: &BezPath, w: f64) -> usize {
+    let ends: Vec<Point> = match centre.elements().last() {
+        Some(PathEl::ClosePath) => Vec::new(),
+        _ => vec![vertices(centre)[0], *vertices(centre).last().unwrap()],
+    };
+    let mut count = 0;
+    for r in out {
+        let mut pts = Vec::new();
+        kurbo::flatten(r.iter(), 1e-4, |e| {
+            if let Some(p) = e.end_point() {
+                pts.push(p);
+            }
+        });
+        let n = pts.len();
+        for i in 0..n {
+            for k in 0..8 {
+                let q = pts[i].lerp(pts[(i + 1) % n], f64::from(k) / 8.0);
+                let near_end = ends.iter().any(|e| e.distance(q) <= w / 2.0 + 1e-6);
+                if dist(centre, q) < w / 2.0 - 0.02 && !near_end {
+                    count += 1;
+                }
+            }
+        }
+    }
+    count
+}
+
+fn pentagram(rad: f64) -> BezPath {
+    let mut p = BezPath::new();
+    for k in 0..5 {
+        let a = -std::f64::consts::FRAC_PI_2 + f64::from(k) * 4.0 * std::f64::consts::PI / 5.0;
+        let q = (20.0 + rad * a.cos(), 20.0 + rad * a.sin());
+        if k == 0 {
+            p.move_to(q);
+        } else {
+            p.line_to(q);
+        }
+    }
+    p.close_path();
+    p
+}
+
+#[test]
+fn stroked_pentagram_keeps_all_counters() {
+    let star = pentagram(15.0);
+    let o = object(
+        star.clone(),
+        line_paint(2.0, MITER, Cap::Butt),
+        CutOptions::default(),
+    );
+    let out = cut(&o);
+    // The outer edge, the centre pentagon and the five point triangles.
+    assert_eq!(subpaths(&out).len(), 7, "{out:?}");
+    assert_eq!(cuts_inside_stroke(&out, &star, 2.0), 0);
+}
+
+#[test]
+fn x_eye_polyline_keeps_eye_and_tip() {
+    for short in [10.0, 6.0] {
+        let p = polyline(
+            &[(0.0, 0.0), (30.0, 20.0), (30.0, 20.0 - short), (0.0, 30.0)],
+            false,
+        );
+        let o = object(
+            p.clone(),
+            line_paint(1.0, MITER, Cap::Butt),
+            CutOptions::default(),
+        );
+        let out = cut(&o);
+        assert_eq!(subpaths(&out).len(), 2, "short edge {short}: {out:?}");
+        assert_eq!(cuts_inside_stroke(&out, &p, 1.0), 0, "short edge {short}");
+        let b = out
+            .iter()
+            .map(Shape::bounding_box)
+            .reduce(|a, b| a.union(b))
+            .unwrap();
+        assert!(b.x1 > 30.4, "short edge {short}: tip not cut, {b:?}");
+    }
+}
+
+#[test]
+fn small_dot_is_one_ring() {
+    let dot = kurbo::Circle::new((20.0, 20.0), 0.5).to_path(1e-6);
+    let o = object(
+        dot,
+        line_paint(2.0, Join::Round, Cap::Butt),
+        CutOptions::default(),
+    );
+    let out = cut(&o);
+    let subs = subpaths(&out);
+    assert_eq!(subs.len(), 1, "{subs:?}");
+    assert_size(subs[0].0.bounding_box(), 3.0, 3.0, 0.02);
+}
+
+fn fill_stroke(rule: FillRule) -> Paint {
+    Paint {
+        fill: Some(rule),
+        stroke: stroke(2.0, MITER, Cap::Butt),
+    }
+}
+
+#[test]
+fn fill_and_stroke_square_without_close_is_one_ring() {
+    let square = polyline(
+        &[
+            (10.0, 10.0),
+            (30.0, 10.0),
+            (30.0, 30.0),
+            (10.0, 30.0),
+            (10.0, 10.0),
+        ],
+        false,
+    );
+    let o = object(
+        square,
+        fill_stroke(FillRule::NonZero),
+        CutOptions::default(),
+    );
+    let subs = subpaths(&cut(&o));
+    assert_eq!(subs.len(), 1, "{subs:?}");
+    assert_size(subs[0].0.bounding_box(), 22.0, 22.0, 1e-6);
+}
+
+#[test]
+fn open_filled_triangle_with_stroke_frees_the_fill() {
+    let tri = polyline(&[(10.0, 10.0), (30.0, 10.0), (20.0, 30.0)], false);
+    let o = object(tri, fill_stroke(FillRule::NonZero), CutOptions::default());
+    let out = cut(&o);
+    let subs = subpaths(&out);
+    assert_eq!(subs.len(), 1, "{subs:?}");
+    assert!(subs[0].1);
+    // The ring goes around the fill, not just around the stroke.
+    assert_ne!(subs[0].0.winding(Point::new(20.0, 16.0)), 0);
+}
+
+fn square(x: f64, s: f64, reverse: bool) -> BezPath {
+    let mut pts = vec![(x, x), (x + s, x), (x + s, x + s), (x, x + s)];
+    if reverse {
+        pts.reverse();
+    }
+    polyline(&pts, true)
+}
+
+#[test]
+fn nested_nonzero_same_direction_is_one_ring() {
+    let mut p = square(0.0, 30.0, false);
+    p.extend(square(10.0, 10.0, false));
+    let o = object(p, fill_stroke(FillRule::NonZero), CutOptions::default());
+    let subs = subpaths(&cut(&o));
+    assert_eq!(subs.len(), 1, "{subs:?}");
+    assert_size(subs[0].0.bounding_box(), 32.0, 32.0, 1e-6);
+}
+
+#[test]
+fn nonzero_o_with_opposite_inner_keeps_its_hole() {
+    let mut p = square(0.0, 30.0, false);
+    p.extend(square(10.0, 10.0, true));
+    let o = object(p, fill_stroke(FillRule::NonZero), CutOptions::default());
+    let subs = subpaths(&cut(&o));
+    assert_eq!(subs.len(), 2, "{subs:?}");
+    let mut sizes: Vec<f64> = subs.iter().map(|(p, _)| p.bounding_box().width()).collect();
+    sizes.sort_by(f64::total_cmp);
+    assert!(
+        (sizes[0] - 8.0).abs() < 1e-6 && (sizes[1] - 32.0).abs() < 1e-6,
+        "{sizes:?}"
+    );
+}
+
+#[test]
+fn square_caps_extend_the_strip() {
+    let o = object(
+        hline(),
+        line_paint(3.0, MITER, Cap::Square),
+        CutOptions::default(),
+    );
+    let subs = subpaths(&cut(&o));
+    assert_eq!(subs.len(), 1);
+    assert_size(subs[0].0.bounding_box(), 53.0, 3.0, 1e-6);
+}
+
+#[test]
+fn state_bounds_follow_the_cut_geometry() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import_line(&mut s);
+    let st = run(&mut s, "document.state", json!({}));
+    let b = &st["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["id"] == id)
+        .unwrap()["bounds_mm"];
+    let h = b["y1"].as_f64().unwrap() - b["y0"].as_f64().unwrap();
+    let w = b["x1"].as_f64().unwrap() - b["x0"].as_f64().unwrap();
+    assert!((w - 50.0).abs() < 1e-3 && (h - 3.0).abs() < 1e-3, "{b}");
+}
+
+#[test]
+fn set_cut_options_schema_has_threshold_range() {
+    let c = flatcraft_engine::registry::get("object.set_cut_options").unwrap();
+    let schema = serde_json::to_value(c.params_schema()).unwrap();
+    let text = schema.to_string();
+    assert!(text.contains("\"minimum\":0.05"), "{text}");
+    assert!(text.contains("\"maximum\":10.0"), "{text}");
+}
+
+#[test]
+fn project_open_repairs_bad_cut_options() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import_line(&mut s);
+    let path = dir.path().join("p.flatcraft");
+    run(&mut s, "project.save", json!({ "path": path }));
+    let text = std::fs::read_to_string(&path).unwrap();
+    let mut v: Value = serde_json::from_str(&text).unwrap();
+    v["objects"][0]["cut"]["auto_threshold_mm"] = json!(99.0);
+    std::fs::write(&path, v.to_string()).unwrap();
+    let mut s2 = session(&dir);
+    let r = run(&mut s2, "project.open", json!({ "path": path }));
+    assert!(
+        r["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("cut options")),
+        "{r}"
+    );
+    assert_eq!(
+        state_cut(&mut s2, id),
+        json!({ "mode": "object_outlines", "strokes": "auto", "auto_threshold_mm": 0.5 })
+    );
 }

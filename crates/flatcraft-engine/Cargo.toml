@@ -13,6 +13,7 @@ flatcraft-device = { path = "../flatcraft-device" }
 flatcraft-import = { path = "../flatcraft-import" }
 flatcraft-path = { path = "../flatcraft-path" }
 kurbo.workspace = true
+i_overlay.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 toml.workspace = true

@@ -104,7 +104,24 @@ pub enum StrokeMode {
 pub struct CutOptions {
     pub mode: CutMode,
     pub strokes: StrokeMode,
+    /// A broken value (null, as JSON writes NaN) loads as NaN, so
+    /// `is_valid` catches it instead of the whole project failing.
+    #[serde(deserialize_with = "lenient_f64")]
     pub auto_threshold_mm: f64,
+}
+
+fn lenient_f64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+    Ok(Option::<f64>::deserialize(d)?.unwrap_or(f64::NAN))
+}
+
+impl CutOptions {
+    /// Allowed `auto_threshold_mm`, mm.
+    pub const AUTO_THRESHOLD_MM: std::ops::RangeInclusive<f64> = 0.05..=10.0;
+
+    /// True if the threshold is a number in `AUTO_THRESHOLD_MM`.
+    pub fn is_valid(&self) -> bool {
+        Self::AUTO_THRESHOLD_MM.contains(&self.auto_threshold_mm)
+    }
 }
 
 impl Default for CutOptions {

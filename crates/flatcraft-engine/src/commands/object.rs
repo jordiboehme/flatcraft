@@ -33,6 +33,9 @@ pub(crate) fn warning_text(w: &ImportWarning) -> String {
             format!("{count} embedded images were skipped; only vector paths are cut")
         }
         ImportWarning::NoPaths => "the file has no visible paths, so nothing will be cut".into(),
+        ImportWarning::DashesIgnored { count } => {
+            format!("{count} strokes are dashed; dashes are cut as a solid line")
+        }
     }
 }
 
@@ -250,7 +253,7 @@ command!(
     mutates: true,
     params: ImportSvgParams,
     run: run_import_svg,
-    description: "Imports SVG markup given as text as a new object and selects it. Give the SVG a width and height in mm (for example width=\"50mm\") so the size is exact; plain numbers are CSS pixels (96 per inch). Every visible path, fill or stroke, becomes a cut line; text is cut as outlines. Placement as in object.import. Coordinates are mm, origin top-left of the media, y down. Returns {id, bounds_mm: {x0,y0,x1,y1}, warnings: [text]}.",
+    description: "Imports SVG markup given as text as a new object and selects it. Give the SVG a width and height in mm (for example width=\"50mm\") so the size is exact; plain numbers are CSS pixels (96 per inch). Every visible path, fill or stroke, is cut as set by object.set_cut_options (default: the outline of fills and of strokes 0.5 mm or wider); text is cut as outlines. Placement as in object.import. Coordinates are mm, origin top-left of the media, y down. Returns {id, bounds_mm: {x0,y0,x1,y1}, warnings: [text]}.",
 );
 
 // ---------------------------------------------------------------- retrace
@@ -795,9 +798,6 @@ command!(
 
 // ---------------------------------------------------------------- cut options
 
-/// Smallest and largest auto threshold, mm.
-const AUTO_THRESHOLD_RANGE: std::ops::RangeInclusive<f64> = 0.05..=10.0;
-
 #[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CutModeParam {
@@ -862,6 +862,7 @@ pub struct SetCutOptionsParams {
     /// How strokes are cut in object_outlines: auto, centre_line or outline. Omit to keep the current value.
     pub strokes: Option<StrokeModeParam>,
     /// Strokes at least this wide in mm (after scaling) are cut as outline in auto, 0.05 to 10. Omit to keep the current value.
+    #[schemars(range(min = 0.05, max = 10.0))]
     pub auto_threshold_mm: Option<f64>,
 }
 
@@ -876,7 +877,7 @@ fn run_set_cut_options(
         ));
     }
     if let Some(t) = p.auto_threshold_mm
-        && !(t.is_finite() && AUTO_THRESHOLD_RANGE.contains(&t))
+        && !CutOptions::AUTO_THRESHOLD_MM.contains(&t)
     {
         return Err(CommandError::InvalidParams(
             "auto_threshold_mm must be between 0.05 and 10".into(),
@@ -908,7 +909,7 @@ command!(
     mutates: true,
     params: SetCutOptionsParams,
     run: run_set_cut_options,
-    description: "Sets what is cut of each object (one undo step). mode: all_lines cuts every path as drawn (its centre line), whatever its fill or stroke; object_outlines (default) cuts the outline of every visible shape: fills, plus strokes as set by strokes. strokes: auto (default) cuts strokes at least auto_threshold_mm wide (default 0.5, range 0.05 to 10; measured after scaling) around their outline and thinner ones as centre line; centre_line cuts the path itself; outline cuts around the visible stroke shape with its corner and end style (sharp miter corners stay sharp). A path with a fill and an outline stroke is cut along the outer edge of its stroke only (holes along their inner edge). Overlapping shapes are each cut completely. Fields you omit keep their value; give at least one. Traced raster objects are plain fills, so these options change nothing for them. An empty ids list means the current selection. Returns {objects: [{id, cut: {mode, strokes, auto_threshold_mm}}]}.",
+    description: "Sets what is cut of each object (one undo step). mode: all_lines cuts every path as drawn (its centre line), whatever its fill or stroke; object_outlines (default) cuts the outline of every visible shape: fills, plus strokes as set by strokes. strokes: auto (default) cuts strokes at least auto_threshold_mm wide (default 0.5, range 0.05 to 10; measured after scaling) around their outline and thinner ones as centre line; centre_line cuts the path itself; outline cuts around the visible stroke shape with its corner and end style (sharp miter corners stay sharp). A path with a fill and an outline stroke is cut along the edge of fill and stroke together; holes stay holes. Different paths that overlap are each cut completely. Fields you omit keep their value; give at least one. Traced raster objects are plain fills, so these options change nothing for them. An empty ids list means the current selection. Returns {objects: [{id, cut: {mode, strokes, auto_threshold_mm}}]}.",
 );
 
 #[cfg(test)]

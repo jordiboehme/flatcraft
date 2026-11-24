@@ -113,10 +113,11 @@ pub(crate) fn object_mut(doc: &mut Document, id: ObjectId) -> Result<&mut Object
         .ok_or_else(|| CommandError::NotFound(format!("no object with id {}", id.0)))
 }
 
-/// Bounding box of the placed geometry in mat mm, `None` if the object has
-/// no geometry.
+/// Bounding box of what is cut of the object (its cut geometry per its cut
+/// options, so stroke outlines count), in mat mm. Falls back to the centre
+/// lines when nothing is cut; `None` if the object has no geometry.
 pub(crate) fn placed_bounds(o: &Object) -> Option<Rect> {
-    bounds(&o.placed_paths())
+    crate::cutgeom::cut_bounds(o).or_else(|| bounds(&o.placed_paths()))
 }
 
 /// Bounding box of the placed geometry, or the transform centre as a point

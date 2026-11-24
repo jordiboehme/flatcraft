@@ -1,29 +1,44 @@
-//! Cut geometry of an object per cut mode (spec 7.1): centre lines, fills
-//! and stroke outlines, in mat millimetres.
+//! Cut geometry of an object per cut mode (spec 7.1): centre lines, fill
+//! edges and stroke outlines, in mat millimetres.
 //!
 //! Stroke outlines come from kurbo's stroker, run on the placed path with
 //! the placed width, so the width scales with the object. kurbo's outline
-//! is meant for non-zero filling: at every inner corner it runs through the
-//! corner of the centre line and leaves a small loop. A knife would cut that
-//! loop out of the strip, so the outline is flattened and short loops are
-//! removed. Without polygon booleans (milestone 2), a path with a fill and
-//! an outline stroke is cut along one ring of the stroke outline per closed
-//! subpath: the outer ring, or the inner ring when the subpath is the edge
-//! of a hole.
+//! is meant for non-zero filling: it overlaps itself at inner corners and
+//! where a path crosses itself. So the outline is flattened and united with
+//! itself (i_overlay, non-zero rule); what is left are the real edges of the
+//! painted area, with real counters kept as holes. A filled path with an
+//! outline stroke is cut along the edge of fill united with stroke. All
+//! booleans stay inside one path of one object; merging across objects is
+//! milestone 2.
+//!
+//! Error budget per cut path (tolerance `t`, the plotter's flatten
+//! tolerance): stroker `t/4` plus flattening `t/4`, or flattening `t/2` for
+//! fills, so the result is within `t/2` of the exact shape. The booleans
+//! work on a fixed-point grid far below that (about 1e-7 mm for 100 mm).
+//! The pipeline then flattens straight lines without further error.
 
 use flatcraft_core::document::{CutMode, CutOptions, Object, StrokeMode};
 use flatcraft_core::geometry::{Cap, CutPath, FillRule, Join, Paint};
-use kurbo::{Affine, BezPath, PathEl, Point, Shape, Stroke, StrokeOpts};
+use i_overlay::core::fill_rule::FillRule as OverlayFill;
+use i_overlay::core::overlay_rule::OverlayRule;
+use i_overlay::core::solver::Solver;
+use i_overlay::float::overlay::{FloatOverlay, OverlayOptions};
+use kurbo::{Affine, BezPath, PathEl, Point, Rect, Shape, Stroke, StrokeOpts};
 
 /// Smallest tolerance used for stroking and flattening, mm. Guards the
 /// stroker against a zero or broken profile value; the pipeline refuses
 /// such a profile anyway.
 const MIN_TOLERANCE_MM: f64 = 1e-4;
 
-/// Loops of a stroke outline up to this many stroke widths long are
-/// removed. Inner corner loops are about one width long plus twice the
-/// overshoot of the inner edge, which grows for very sharp corners.
-const MAX_LOOP_WIDTHS: f64 = 12.0;
+/// Subpath ends closer than this count as closed (the pipeline's join
+/// tolerance), mm.
+pub const CLOSE_TOLERANCE_MM: f64 = 0.01;
+
+/// Tolerance for bounds of the cut geometry, mm (the default flatten
+/// tolerance).
+pub const BOUNDS_TOLERANCE_MM: f64 = 0.01;
+
+type Contour = Vec<[f64; 2]>;
 
 /// The cut paths of `object` placed with `placed_affine`, in mat mm.
 pub fn cut_paths(object: &Object, placed_affine: Affine, tolerance_mm: f64) -> Vec<BezPath> {
@@ -34,8 +49,19 @@ pub fn cut_paths(object: &Object, placed_affine: Affine, tolerance_mm: f64) -> V
         .collect()
 }
 
+/// Bounding box of the object's cut paths in mat mm, at
+/// `BOUNDS_TOLERANCE_MM`; `None` if nothing is cut.
+pub fn cut_bounds(object: &Object) -> Option<Rect> {
+    let affine = object.transform.affine(object.local_bounds);
+    cut_paths(object, affine, BOUNDS_TOLERANCE_MM)
+        .iter()
+        .filter(|p| !p.elements().is_empty())
+        .map(Shape::bounding_box)
+        .reduce(|a, b| a.union(b))
+}
+
 /// The cut paths of one source path, in mat mm. One source path may give
-/// several cut paths (the rings of a stroke outline).
+/// several cut paths (the edges of its painted area).
 pub fn cut_path(
     path: &CutPath,
     options: &CutOptions,
@@ -51,7 +77,7 @@ pub fn cut_path(
             } else {
                 MIN_TOLERANCE_MM
             };
-            object_outlines(&placed, path.paint, options, placed_affine, tolerance)
+            object_outlines(placed, path.paint, options, placed_affine, tolerance)
         }
     }
 }
@@ -87,203 +113,250 @@ fn outline_style(paint: Paint, options: &CutOptions, affine: Affine) -> Option<S
 }
 
 fn object_outlines(
-    placed: &BezPath,
+    placed: BezPath,
     paint: Paint,
     options: &CutOptions,
     affine: Affine,
     tolerance: f64,
 ) -> Vec<BezPath> {
-    let Some(style) = outline_style(paint, options, affine) else {
-        // Fill only, centre-line stroke (with or without fill, cut once),
-        // or nothing painted: the path itself.
-        return vec![placed.clone()];
-    };
-    let mut out = Vec::new();
-    for (sub, closed) in subpaths(placed) {
-        let rings = stroke_rings(&sub, &style, tolerance);
-        match paint.fill {
-            Some(rule) if closed && !rings.is_empty() => {
-                out.push(fill_edge_ring(rings, placed, rule));
-            }
-            _ => out.extend(rings),
-        }
+    if !is_finite(&placed) {
+        // Booleans need finite coordinates; the pipeline refuses the rest.
+        return vec![placed];
     }
-    out.into_iter().map(|r| polyline(&r)).collect()
+    let style = outline_style(paint, options, affine);
+    let shapes = match (paint.fill, style) {
+        // Centre-line strokes (with or without fill) and unpainted paths:
+        // the path itself, once.
+        (None, None) => return vec![placed],
+        (Some(_), None) if paint.stroke.is_some() => return vec![placed],
+        (Some(rule), None) => {
+            let fill = contours(placed.iter(), tolerance / 2.0);
+            boolean(&fill, &[], fill_rule(rule), tolerance)
+        }
+        (fill, Some(style)) => {
+            let closed = close_meeting_ends(&placed);
+            let outline = kurbo::stroke(
+                closed.iter(),
+                &style,
+                &StrokeOpts::default(),
+                tolerance / 4.0,
+            );
+            let outline = contours(outline.iter(), tolerance / 4.0);
+            let outline = boolean(&outline, &[], OverlayFill::NonZero, tolerance);
+            let outline: Vec<Contour> = outline.into_iter().flatten().collect();
+            let bands = bands(&closed, style.width / 2.0, tolerance / 2.0);
+            let stroke = boolean(&outline, &bands, OverlayFill::NonZero, tolerance);
+            let stroke: Vec<Contour> = stroke.into_iter().flatten().collect();
+            match fill {
+                // Fill first, as its own rule, then united with the stroke.
+                Some(rule) => {
+                    let fill = contours(placed.iter(), tolerance / 2.0);
+                    let fill = boolean(&fill, &[], fill_rule(rule), tolerance);
+                    let fill: Vec<Contour> = fill.into_iter().flatten().collect();
+                    boolean(&fill, &stroke, OverlayFill::NonZero, tolerance)
+                }
+                None => stroke.into_iter().map(|c| vec![c]).collect(),
+            }
+        }
+    };
+    shapes
+        .iter()
+        .flatten()
+        .filter(|c| c.len() >= 3)
+        .map(|c| ring(c))
+        .collect()
 }
 
-/// The subpaths of `path`, each starting with a move, and whether each is
-/// closed.
-fn subpaths(path: &BezPath) -> Vec<(BezPath, bool)> {
-    let mut out: Vec<(BezPath, bool)> = Vec::new();
-    let mut cur = BezPath::new();
-    let mut start = Point::ORIGIN;
-    for el in path.elements() {
-        match el {
-            PathEl::MoveTo(p) => {
-                if !cur.elements().is_empty() {
-                    out.push((std::mem::take(&mut cur), false));
-                }
-                start = *p;
-                cur.push(*el);
-            }
-            PathEl::ClosePath => {
-                if !cur.elements().is_empty() {
-                    cur.push(*el);
-                    out.push((std::mem::take(&mut cur), true));
-                }
-            }
-            _ => {
-                if cur.elements().is_empty() {
-                    // Drawing on after a close starts at the closed
-                    // subpath's start.
-                    cur.move_to(start);
-                }
-                cur.push(*el);
-            }
+/// One rectangle per flattened segment of `path`, `half` to each side, all
+/// wound the same way. kurbo's outline follows parallel curves and has no
+/// joins between smooth segments, so where the stroke is wider than a
+/// curve's radius (a small dot) it leaves a hole that the paint covers.
+/// The bands fill exactly that: everything within `half` of a segment is
+/// paint. Joins and caps still come from kurbo.
+fn bands(path: &BezPath, half: f64, tolerance: f64) -> Vec<Contour> {
+    let mut out = Vec::new();
+    let mut last: Option<Point> = None;
+    let mut start: Option<Point> = None;
+    let mut band = |a: Point, b: Point| {
+        let d = b - a;
+        let len = d.hypot();
+        if len <= 0.0 {
+            return;
         }
-    }
-    if !cur.elements().is_empty() {
-        out.push((cur, false));
-    }
-    out.retain(|(p, _)| p.elements().len() > 1);
+        let n = kurbo::Vec2::new(-d.y, d.x) * (half / len);
+        // Counter-clockwise in the shoelace sense for every segment.
+        out.push(vec![
+            [(a - n).x, (a - n).y],
+            [(b - n).x, (b - n).y],
+            [(b + n).x, (b + n).y],
+            [(a + n).x, (a + n).y],
+        ]);
+    };
+    kurbo::flatten(path.iter(), tolerance, |el| match el {
+        PathEl::MoveTo(p) => {
+            last = Some(p);
+            start = Some(p);
+        }
+        PathEl::LineTo(p) => {
+            if let Some(a) = last {
+                band(a, p);
+            }
+            last = Some(p);
+        }
+        PathEl::ClosePath => {
+            if let (Some(a), Some(s)) = (last, start) {
+                band(a, s);
+            }
+            last = start;
+        }
+        _ => {}
+    });
     out
 }
 
-/// The stroke outline of one subpath as clean closed rings of points:
-/// open subpaths give one ring, closed ones two.
-fn stroke_rings(sub: &BezPath, style: &Stroke, tolerance: f64) -> Vec<Vec<Point>> {
-    let outline = kurbo::stroke(sub.iter(), style, &StrokeOpts::default(), tolerance / 2.0);
-    let max_loop = MAX_LOOP_WIDTHS * style.width;
-    let mut rings = Vec::new();
-    let mut ring: Vec<Point> = Vec::new();
-    let mut finish = |ring: &mut Vec<Point>| {
-        let mut pts = std::mem::take(ring);
-        dedup(&mut pts);
-        let pts = remove_loops(pts, max_loop);
-        if pts.len() >= 3 && signed_area(&pts).abs() > 0.0 {
-            rings.push(pts);
+fn fill_rule(rule: FillRule) -> OverlayFill {
+    match rule {
+        FillRule::NonZero => OverlayFill::NonZero,
+        FillRule::EvenOdd => OverlayFill::EvenOdd,
+    }
+}
+
+/// `subj` (and `clip`, if any) united, each under `rule`. The result's
+/// contours are oriented (outer edges one way, holes the other), so a
+/// second boolean may read them with the non-zero rule.
+fn boolean(
+    subj: &[Contour],
+    clip: &[Contour],
+    rule: OverlayFill,
+    tolerance: f64,
+) -> Vec<Vec<Contour>> {
+    if subj.is_empty() && clip.is_empty() {
+        return Vec::new();
+    }
+    let mut options = OverlayOptions::<f64>::default();
+    // Drops slivers that no knife can cut.
+    options.min_output_area = tolerance * tolerance;
+    let overlay_rule = if clip.is_empty() {
+        OverlayRule::Subject
+    } else {
+        OverlayRule::Union
+    };
+    let subj = subj.to_vec();
+    let clip = clip.to_vec();
+    FloatOverlay::with_subj_and_clip_custom(&subj, &clip, options, Solver::default())
+        .overlay(overlay_rule, rule)
+}
+
+fn is_finite(path: &BezPath) -> bool {
+    path.elements().iter().all(|el| match el {
+        PathEl::MoveTo(p) | PathEl::LineTo(p) => p.is_finite(),
+        PathEl::QuadTo(a, b) => a.is_finite() && b.is_finite(),
+        PathEl::CurveTo(a, b, c) => a.is_finite() && b.is_finite() && c.is_finite(),
+        PathEl::ClosePath => true,
+    })
+}
+
+/// `path` with every subpath whose ends meet within `CLOSE_TOLERANCE_MM`
+/// closed, its last point moved onto its start, so the stroker joins the
+/// ends instead of capping them.
+fn close_meeting_ends(path: &BezPath) -> BezPath {
+    let els = path.elements();
+    let mut out = BezPath::new();
+    let mut start: Option<Point> = None;
+    let mut drawn = false;
+    let finish = |out: &mut BezPath, start: Option<Point>, drawn: bool| {
+        let Some(s) = start else { return };
+        if !drawn {
+            return;
+        }
+        let last = out.elements().len() - 1;
+        let end = out.elements()[last].end_point();
+        if let Some(e) = end
+            && e.distance(s) < CLOSE_TOLERANCE_MM
+        {
+            let el = match out.elements()[last] {
+                PathEl::LineTo(_) => PathEl::LineTo(s),
+                PathEl::QuadTo(a, _) => PathEl::QuadTo(a, s),
+                PathEl::CurveTo(a, b, _) => PathEl::CurveTo(a, b, s),
+                other => other,
+            };
+            let mut els = out.elements().to_vec();
+            els[last] = el;
+            *out = BezPath::from_vec(els);
+            out.close_path();
         }
     };
-    kurbo::flatten(outline.iter(), tolerance / 2.0, |el| match el {
-        PathEl::MoveTo(p) => {
-            finish(&mut ring);
-            ring.push(p);
+    for el in els {
+        match el {
+            PathEl::MoveTo(p) => {
+                finish(&mut out, start, drawn);
+                start = Some(*p);
+                drawn = false;
+                out.push(*el);
+            }
+            PathEl::ClosePath => {
+                out.push(*el);
+                start = None;
+                drawn = false;
+            }
+            _ => {
+                if start.is_none() {
+                    // Drawing on after a close: SVG starts again at the
+                    // closed subpath's start.
+                    let s = out
+                        .elements()
+                        .iter()
+                        .rev()
+                        .find_map(|e| match e {
+                            PathEl::MoveTo(p) => Some(*p),
+                            _ => None,
+                        })
+                        .unwrap_or(Point::ORIGIN);
+                    out.move_to(s);
+                    start = Some(s);
+                }
+                out.push(*el);
+                drawn = true;
+            }
         }
-        PathEl::LineTo(p) => ring.push(p),
-        PathEl::ClosePath => finish(&mut ring),
+    }
+    finish(&mut out, start, drawn);
+    out
+}
+
+/// Flattened closed contours of a path; open subpaths are closed
+/// implicitly, as a fill does.
+fn contours(path: impl IntoIterator<Item = PathEl>, tolerance: f64) -> Vec<Contour> {
+    let mut out = Vec::new();
+    let mut cur: Contour = Vec::new();
+    let push = |out: &mut Vec<Contour>, cur: &mut Contour| {
+        let c = std::mem::take(cur);
+        if c.len() >= 3 {
+            out.push(c);
+        }
+    };
+    kurbo::flatten(path, tolerance, |el| match el {
+        PathEl::MoveTo(p) => {
+            push(&mut out, &mut cur);
+            cur.push([p.x, p.y]);
+        }
+        PathEl::LineTo(p) => cur.push([p.x, p.y]),
+        PathEl::ClosePath => push(&mut out, &mut cur),
         // `flatten` only emits moves, lines and closes.
         _ => {}
     });
-    finish(&mut ring);
-    rings
+    push(&mut out, &mut cur);
+    out
 }
 
-/// The ring of a closed subpath's stroke outline that is the edge between
-/// paint and empty: the ring with the largest area, unless that ring lies
-/// inside the fill (the subpath is the edge of a hole), then the smallest.
-fn fill_edge_ring(mut rings: Vec<Vec<Point>>, placed: &BezPath, rule: FillRule) -> Vec<Point> {
-    rings.sort_by(|a, b| signed_area(a).abs().total_cmp(&signed_area(b).abs()));
-    let largest = rings.pop().expect("at least one ring");
-    if rings.is_empty() || !inside_fill(placed, rule, sample_point(&largest)) {
-        return largest;
-    }
-    rings.swap_remove(0)
-}
-
-fn inside_fill(path: &BezPath, rule: FillRule, p: Point) -> bool {
-    let w = path.winding(p);
-    match rule {
-        FillRule::NonZero => w != 0,
-        FillRule::EvenOdd => w % 2 != 0,
-    }
-}
-
-/// The middle of the ring's longest edge: on the ring, away from corners.
-fn sample_point(ring: &[Point]) -> Point {
-    let n = ring.len();
-    (0..n)
-        .map(|i| (ring[i], ring[(i + 1) % n]))
-        .max_by(|a, b| a.0.distance(a.1).total_cmp(&b.0.distance(b.1)))
-        .map(|(a, b)| a.midpoint(b))
-        .unwrap_or(ring[0])
-}
-
-fn polyline(ring: &[Point]) -> BezPath {
+fn ring(c: &[[f64; 2]]) -> BezPath {
     let mut p = BezPath::new();
-    p.move_to(ring[0]);
-    for q in &ring[1..] {
-        p.line_to(*q);
+    p.move_to(Point::new(c[0][0], c[0][1]));
+    for q in &c[1..] {
+        p.line_to(Point::new(q[0], q[1]));
     }
     p.close_path();
     p
-}
-
-/// Removes repeated points and a last point equal to the first.
-fn dedup(pts: &mut Vec<Point>) {
-    const EPS: f64 = 1e-9;
-    pts.dedup_by(|a, b| a.distance(*b) < EPS);
-    while pts.len() > 1 && pts[0].distance(pts[pts.len() - 1]) < EPS {
-        pts.pop();
-    }
-}
-
-/// Shoelace area; the sign gives the orientation.
-fn signed_area(pts: &[Point]) -> f64 {
-    let n = pts.len();
-    (0..n)
-        .map(|i| pts[i].to_vec2().cross(pts[(i + 1) % n].to_vec2()))
-        .sum::<f64>()
-        / 2.0
-}
-
-/// The point where segments `a0-a1` and `b0-b1` cross, if they cross
-/// properly (not just touch or overlap).
-fn crossing(a0: Point, a1: Point, b0: Point, b1: Point) -> Option<Point> {
-    let da = a1 - a0;
-    let db = b1 - b0;
-    let d1 = da.cross(b0 - a0);
-    let d2 = da.cross(b1 - a0);
-    let d3 = db.cross(a0 - b0);
-    let d4 = db.cross(a1 - b0);
-    if d1 * d2 < 0.0 && d3 * d4 < 0.0 {
-        Some(b0 + db * (d1 / (d1 - d2)))
-    } else {
-        None
-    }
-}
-
-/// Cuts self-crossing loops out of a closed ring: where two edges cross,
-/// the shorter part between them is dropped, if it is at most `max_len`
-/// long and shorter than the rest of the ring.
-fn remove_loops(mut pts: Vec<Point>, max_len: f64) -> Vec<Point> {
-    'outer: loop {
-        let n = pts.len();
-        if n < 4 {
-            return pts;
-        }
-        let perimeter: f64 = (0..n).map(|i| pts[i].distance(pts[(i + 1) % n])).sum();
-        let limit = max_len.min(perimeter / 2.0);
-        for i in 0..n {
-            let (a0, a1) = (pts[i], pts[(i + 1) % n]);
-            let mut len = 0.0;
-            // Edge i + k, for k from 2 up to the edge before edge i.
-            for k in 2..n - 1 {
-                let j = (i + k) % n;
-                len += pts[(j + n - 1) % n].distance(pts[j]);
-                if len > limit {
-                    break;
-                }
-                if let Some(x) = crossing(a0, a1, pts[j], pts[(j + 1) % n]) {
-                    pts.rotate_left(i);
-                    let mut kept = vec![pts[0], x];
-                    kept.extend_from_slice(&pts[k + 1..]);
-                    pts = kept;
-                    continue 'outer;
-                }
-            }
-        }
-        return pts;
-    }
 }
 
 #[cfg(test)]
@@ -291,59 +364,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn crossing_finds_the_point() {
-        let x = crossing(
-            Point::new(0.0, 0.0),
-            Point::new(2.0, 2.0),
-            Point::new(0.0, 2.0),
-            Point::new(2.0, 0.0),
-        );
-        assert_eq!(x, Some(Point::new(1.0, 1.0)));
-        assert_eq!(
-            crossing(
-                Point::new(0.0, 0.0),
-                Point::new(1.0, 0.0),
-                Point::new(0.0, 1.0),
-                Point::new(1.0, 1.0)
-            ),
-            None
-        );
+    fn meeting_ends_are_closed() {
+        let mut p = BezPath::new();
+        p.move_to((0.0, 0.0));
+        p.line_to((10.0, 0.0));
+        p.line_to((10.0, 10.0));
+        p.line_to((0.005, 0.0));
+        let c = close_meeting_ends(&p);
+        assert_eq!(c.elements().last(), Some(&PathEl::ClosePath));
+        assert_eq!(c.elements()[3], PathEl::LineTo(Point::new(0.0, 0.0)));
+        let mut open = BezPath::new();
+        open.move_to((0.0, 0.0));
+        open.line_to((10.0, 0.0));
+        assert_eq!(close_meeting_ends(&open), open);
     }
 
     #[test]
-    fn bow_tie_loop_is_removed() {
-        // A square whose top edge overshoots and comes back through a small
-        // loop at the top-right corner.
-        let pts = vec![
-            Point::new(0.0, 0.0),
-            Point::new(11.0, 0.0),
-            Point::new(11.0, -1.0),
-            Point::new(10.0, -1.0),
-            Point::new(10.0, 10.0),
-            Point::new(0.0, 10.0),
-        ];
-        let clean = remove_loops(pts, 5.0);
-        assert_eq!(
-            clean,
-            vec![
-                Point::new(0.0, 0.0),
-                Point::new(10.0, 0.0),
-                Point::new(10.0, 10.0),
-                Point::new(0.0, 10.0),
-            ]
-        );
-    }
-
-    #[test]
-    fn long_loops_stay() {
-        let pts = vec![
-            Point::new(0.0, 0.0),
-            Point::new(11.0, 0.0),
-            Point::new(11.0, -1.0),
-            Point::new(10.0, -1.0),
-            Point::new(10.0, 10.0),
-            Point::new(0.0, 10.0),
-        ];
-        assert_eq!(remove_loops(pts.clone(), 1.5).len(), pts.len());
+    fn open_subpaths_close_for_fills() {
+        let mut p = BezPath::new();
+        p.move_to((0.0, 0.0));
+        p.line_to((10.0, 0.0));
+        p.line_to((10.0, 10.0));
+        assert_eq!(contours(p.iter(), 0.01).len(), 1);
     }
 }

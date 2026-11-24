@@ -2,7 +2,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use flatcraft_core::document::{Object, Source};
+use flatcraft_core::document::{CutOptions, Object, Source};
 use flatcraft_core::project::{self, ProjectError};
 use flatcraft_import::fonts;
 use flatcraft_import::svg::import_svg;
@@ -282,6 +282,13 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
     })?;
     let mut warnings = Vec::new();
     for o in &mut document.objects {
+        if !o.cut.is_valid() {
+            o.cut = CutOptions::default();
+            warnings.push(format!(
+                "{}: the cut options were broken and are back to the defaults",
+                o.name
+            ));
+        }
         match &o.source {
             Source::Svg { bytes, .. } => match import_svg(bytes, fonts::system_fonts()) {
                 Ok(import) => {

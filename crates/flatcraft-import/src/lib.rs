@@ -20,9 +20,17 @@ pub enum ImportError {
 /// Something the importer could not honour. The import still succeeds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImportWarning {
-    ClipOrMaskIgnored { count: usize },
-    ImagesSkipped { count: usize },
+    ClipOrMaskIgnored {
+        count: usize,
+    },
+    ImagesSkipped {
+        count: usize,
+    },
     NoPaths,
+    /// Dashed strokes; the dashes are cut as a solid line.
+    DashesIgnored {
+        count: usize,
+    },
 }
 
 fn image_too_large_text(width: u32, height: u32) -> String {
