@@ -178,21 +178,27 @@ fn object_outlines(
         // of the fill: its slivers would be cut as tiny loops or as a
         // second cut next to the first. "Hidden" compares the mean width
         // of the fill (`mean_width`) with the stroke width, at least the
-        // tolerance. Without a stroke a fill thinner than the tolerance is
-        // not visible and no knife can cut it, so it is dropped.
+        // tolerance. An open subpath has no stroke along its implicit
+        // closing chord, so there the bound is half the stroke width. A
+        // line is cut without its close: a close would run back along the
+        // line and cut it twice. Without a stroke a fill thinner than the
+        // tolerance is not visible and no knife can cut it, so it is
+        // dropped.
         //
         // Known gaps until the milestone 2 booleans: a stroked spur inside
         // a subpath that does enclose area (a closed shape with a tail
         // drawn in the same subpath) is lost; only the fill edge is cut.
         // A stroked subpath without area that lies inside a filled area of
-        // the same path is cut into the piece.
+        // the same path is cut into the piece. Fill-only hairline slivers
+        // wider than the tolerance but below the knife's smallest feature
+        // are still cut as tiny loops; milestone 2 ties a smallest feature
+        // size to the blade offset.
         (Some(rule), None) => {
             let rule = fill_rule(rule);
-            let line_below = paint
+            let stroke_width = paint
                 .stroke
                 .map(|s| placed_width(s.width_mm, affine))
-                .filter(|w| w.is_finite())
-                .map_or(tolerance, |w| w.max(tolerance));
+                .filter(|w| w.is_finite());
             let subs = subpaths(placed.iter());
             let mut fill: Vec<Contour> = Vec::new();
             let mut lines: Vec<BezPath> = Vec::new();
@@ -205,9 +211,14 @@ fn object_outlines(
                     Some(c) => boolean(std::slice::from_ref(c), &[], rule, tolerance),
                     None => Vec::new(),
                 };
-                if mean_width(&own) < line_below {
+                let hidden_below = match stroke_width {
+                    Some(w) if sub.ends_meet() => w,
+                    Some(w) => w / 2.0,
+                    None => 0.0,
+                };
+                if mean_width(&own) < hidden_below.max(tolerance) {
                     if paint.stroke.is_some() && !sub.segments.is_empty() {
-                        lines.push(sub.to_path());
+                        lines.push(sub.open_path());
                     }
                 } else if let Some(c) = contour {
                     fill.push(c);
@@ -332,8 +343,21 @@ impl Subpath {
             .chain(self.closed.then_some(PathEl::ClosePath))
     }
 
-    fn to_path(&self) -> BezPath {
-        self.elements().collect()
+    /// The subpath as drawn, without its close.
+    fn open_path(&self) -> BezPath {
+        std::iter::once(PathEl::MoveTo(self.start))
+            .chain(self.segments.iter().copied())
+            .collect()
+    }
+
+    /// Closed, or drawn back to its start within `CLOSE_TOLERANCE_MM`.
+    fn ends_meet(&self) -> bool {
+        self.closed
+            || self
+                .segments
+                .last()
+                .and_then(PathEl::end_point)
+                .is_some_and(|end| end.distance(self.start) < CLOSE_TOLERANCE_MM)
     }
 
     /// The flattened contour, closed implicitly as a fill does; `None`

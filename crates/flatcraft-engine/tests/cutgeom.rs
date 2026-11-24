@@ -1043,3 +1043,52 @@ fn fill_only_sliver_below_tolerance_is_dropped() {
         "{warnings}"
     );
 }
+
+#[test]
+fn closed_hairline_is_cut_once() {
+    // The same kinked line, ended with Z: the close runs back along the
+    // line, so cut as drawn the knife would pass twice.
+    let t = job_toolpaths(&svg200(
+        r#"<path d="M50 50 L75 50.05 L100 50 Z" stroke="black" stroke-width="0.2"/>"#,
+    ));
+    assert_eq!(t.len(), 1, "{t:?}");
+    assert!(!t[0].0, "the line must be open: {t:?}");
+    assert!((t[0].1 - 50.0).abs() < 0.01, "{t:?}");
+}
+
+/// An open arc over a 30 mm chord with the given sagitta, filled, with a
+/// 3 mm stroke forced to a centre line.
+fn open_arc(sagitta: f64) -> Object {
+    let mut arc = BezPath::new();
+    arc.move_to((10.0, 50.0));
+    arc.quad_to((25.0, 50.0 - 2.0 * sagitta), (40.0, 50.0));
+    let cut = CutOptions {
+        strokes: flatcraft_core::document::StrokeMode::CentreLine,
+        ..CutOptions::default()
+    };
+    let paint = Paint {
+        fill: Some(FillRule::NonZero),
+        stroke: stroke(3.0, MITER, Cap::Butt),
+    };
+    object(arc, paint, cut)
+}
+
+#[test]
+fn open_filled_arc_with_wide_centre_line_stroke_frees_the_fill() {
+    // The implicit closing chord of an open subpath has no stroke, so the
+    // fill counts as hidden only below half the stroke width. Mean width
+    // here is about 2 mm: between 1.5 and 3.
+    let subs = subpaths(&cut(&open_arc(3.0)));
+    assert_eq!(subs.len(), 1, "{subs:?}");
+    assert!(subs[0].1, "the ring must be closed: {subs:?}");
+    assert!((subs[0].0.area().abs() - 60.0).abs() < 0.2, "{subs:?}");
+}
+
+#[test]
+fn open_filled_arc_thinner_than_half_the_stroke_stays_a_line() {
+    // Sagitta 2 mm: mean width about 1.3 mm, below half of the 3 mm
+    // stroke, so the fill is hidden and the arc is cut as drawn.
+    let subs = subpaths(&cut(&open_arc(2.0)));
+    assert_eq!(subs.len(), 1, "{subs:?}");
+    assert!(!subs[0].1, "{subs:?}");
+}
