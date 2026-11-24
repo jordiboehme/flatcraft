@@ -9,13 +9,36 @@ use usvg::tiny_skia_path::{PathSegment, Transform};
 
 use crate::{ImportError, ImportWarning};
 
-const MAX_INPUT_BYTES: usize = 50 * 1024 * 1024;
+/// Largest accepted input, compressed or decompressed.
+pub(crate) const MAX_INPUT_BYTES: usize = 50 * 1024 * 1024;
 
 /// Result of an SVG import.
 #[derive(Debug, Clone)]
 pub struct SvgImport {
     pub paths: Vec<CutPath>,
+    /// `ClipOrMaskIgnored` counts groups with a clip path or mask, not shapes.
     pub warnings: Vec<ImportWarning>,
+}
+
+/// Returns the plain SVG bytes. Gzip input is decompressed here with a hard
+/// cap, because usvg would read it unbounded.
+fn plain_bytes(bytes: &[u8], cap: usize) -> Result<std::borrow::Cow<'_, [u8]>, ImportError> {
+    use std::io::Read;
+    if bytes.len() > cap {
+        return Err(ImportError::TooLarge);
+    }
+    if !bytes.starts_with(&[0x1f, 0x8b]) {
+        return Ok(bytes.into());
+    }
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(bytes)
+        .take(cap as u64 + 1)
+        .read_to_end(&mut out)
+        .map_err(|e| ImportError::Parse(format!("invalid gzip data: {e}")))?;
+    if out.len() > cap {
+        return Err(ImportError::TooLarge);
+    }
+    Ok(out.into())
 }
 
 #[derive(Default)]
@@ -32,14 +55,23 @@ pub fn import_svg(
     bytes: &[u8],
     fonts: Arc<usvg::fontdb::Database>,
 ) -> Result<SvgImport, ImportError> {
-    if bytes.len() > MAX_INPUT_BYTES {
-        return Err(ImportError::TooLarge);
-    }
-    let opt = usvg::Options {
+    import_svg_capped(bytes, fonts, MAX_INPUT_BYTES)
+}
+
+pub(crate) fn import_svg_capped(
+    bytes: &[u8],
+    fonts: Arc<usvg::fontdb::Database>,
+    cap: usize,
+) -> Result<SvgImport, ImportError> {
+    let bytes = plain_bytes(bytes, cap)?;
+    let mut opt = usvg::Options {
         fontdb: fonts,
         ..usvg::Options::default()
     };
-    let tree = usvg::Tree::from_data(bytes, &opt).map_err(|e| ImportError::Parse(e.to_string()))?;
+    // Never read files named by `<image href>`.
+    opt.image_href_resolver.resolve_string = Box::new(|_, _| None);
+    let tree =
+        usvg::Tree::from_data(&bytes, &opt).map_err(|e| ImportError::Parse(e.to_string()))?;
 
     let mut walk = Walk::default();
     walk_group(tree.root(), None, &mut walk);
@@ -60,6 +92,7 @@ pub fn import_svg(
     })
 }
 
+/// Recursion depth is bounded by usvg's `max_depth`.
 fn walk_group(group: &usvg::Group, label: Option<&str>, walk: &mut Walk) {
     if group.clip_path().is_some() || group.mask().is_some() {
         walk.clips += 1;
@@ -113,4 +146,21 @@ fn to_bez(path: &usvg::tiny_skia_path::Path, ts: Transform) -> BezPath {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn svgz_bomb_is_refused() {
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        e.write_all(&vec![b' '; 3 * 1024 * 1024]).unwrap();
+        let gz = e.finish().unwrap();
+        let start = std::time::Instant::now();
+        let r = import_svg_capped(&gz, Arc::new(usvg::fontdb::Database::new()), 1024 * 1024);
+        assert!(matches!(r, Err(ImportError::TooLarge)));
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    }
 }

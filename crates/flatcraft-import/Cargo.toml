@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 flatcraft-core = { path = "../flatcraft-core" }
 thiserror.workspace = true
+flate2.workspace = true
 kurbo.workspace = true
 usvg.workspace = true
 image = { workspace = true, features = ["png", "jpeg", "webp", "gif"] }

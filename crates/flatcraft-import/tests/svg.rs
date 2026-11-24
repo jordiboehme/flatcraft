@@ -128,3 +128,80 @@ fn too_large_is_rejected() {
     let r = import_svg(&big, Arc::new(usvg::fontdb::Database::new()));
     assert!(matches!(r, Err(ImportError::TooLarge)));
 }
+
+fn gzip(data: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    e.write_all(data).unwrap();
+    e.finish().unwrap()
+}
+
+#[test]
+fn svgz_is_decompressed() {
+    let r = import_svg(
+        &gzip(&fixture("mm.svg")),
+        Arc::new(usvg::fontdb::Database::new()),
+    )
+    .unwrap();
+    assert_bounds(&r.paths, (0.0, 0.0, 50.0, 20.0));
+}
+
+#[test]
+fn entity_expansion_is_refused_or_bounded() {
+    let start = std::time::Instant::now();
+    let r = import_svg(
+        &fixture("entities.svg"),
+        Arc::new(usvg::fontdb::Database::new()),
+    );
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    assert!(matches!(r, Err(ImportError::Parse(_))), "{r:?}");
+}
+
+#[test]
+fn nested_group_transform_in_scaled_viewbox() {
+    let r = load("nested.svg");
+    assert_bounds(&r.paths[..1], (30.0, 0.0, 50.0, 20.0));
+}
+
+#[test]
+fn inner_group_id_wins() {
+    let r = load("nested.svg");
+    assert_eq!(r.paths[0].label.as_deref(), Some("inner"));
+    assert_eq!(r.paths[1].label.as_deref(), Some("outer"));
+}
+
+#[test]
+fn stroke_only_path_bounds_are_the_centerline() {
+    let r = load("stroke.svg");
+    assert_bounds(&r.paths, (10.0, 10.0, 40.0, 30.0));
+}
+
+#[test]
+fn text_bounds_follow_group_transform() {
+    let fonts = system_fonts();
+    if fonts.is_empty() {
+        eprintln!("skipping: no system fonts");
+        return;
+    }
+    let a = bounds(
+        &import_svg(&fixture("text.svg"), fonts.clone())
+            .unwrap()
+            .paths,
+    )
+    .unwrap();
+    let b = bounds(
+        &import_svg(&fixture("text-shifted.svg"), fonts)
+            .unwrap()
+            .paths,
+    )
+    .unwrap();
+    let dx = 48.0 * 25.4 / 96.0;
+    assert!((b.x0 - a.x0 - dx).abs() < 1e-4 && (b.x1 - a.x1 - dx).abs() < 1e-4);
+    assert!((b.y0 - a.y0).abs() < 1e-4 && (b.y1 - a.y1).abs() < 1e-4);
+}
+
+#[test]
+fn external_image_file_is_not_read() {
+    let r = load("external.svg");
+    assert!(r.paths.is_empty());
+}
