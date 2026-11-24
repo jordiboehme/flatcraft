@@ -16,6 +16,8 @@ Status: provisional. Nothing here has been checked against our own USB captures 
 - `[C]`: confirmed by our own USB capture or test cut. No fact has this mark yet.
 - FlatCraft choice (provisional): not a device fact. FlatCraft decides this. It may change after
   captures.
+- FlatCraft rule: not a device fact. A hard rule from the FlatCraft design spec or the global
+  constraints. Captures do not change it.
 
 Every fact below carries one of the marks above and a source key. A row with both a mark and
 "FlatCraft choice (provisional)" means: the command itself is known (mark), the value or the
@@ -48,12 +50,12 @@ way FlatCraft uses it is our choice.
 |---|---|---|---|
 | USB vendor ID | `0x0b4d` (Graphtec America) | [M] | R |
 | Cameo 2 product ID | `0x112b` | [1] | R, U (inkscape-silhouette device list only) |
-| Related product IDs | Cameo `0x1121`, Cameo 3 `0x112f`, Portrait `0x1123`, Portrait 2 `0x1132` | [M] | R |
+| Related product IDs | Cameo `0x1121`, Cameo 3 `0x112f`, Portrait `0x1123`, Portrait 2 `0x1132` | [M] (mostly; not each ID has several sources) | R |
 | USB interface class | 7 (Printer) | [M] | R |
 | Interface number | 0 | [M] | R |
 | Bulk OUT endpoint | `0x01` | [M] (no Cameo 2 descriptor dump seen) | R, U |
 | Bulk IN endpoint | `0x82` | [M] (no Cameo 2 descriptor dump seen) | R, U |
-| wMaxPacketSize | unknown. Read it from the descriptors at runtime. | [1] | R |
+| wMaxPacketSize | Value unknown. FlatCraft reads it from the descriptors at runtime. | FlatCraft choice (provisional) | R |
 | Command framing | Every text command ends with `ETX` (`0x03`). | [M] | R, U |
 | ESC commands | `ESC 0x04` and `ESC 0x05` are two bytes. They have no `ETX`. | [M] | R, U |
 | Reply framing | Replies are ASCII text ended by `ETX`. Buffer the input and split at `ETX`. | [M] | R, U |
@@ -74,7 +76,9 @@ way FlatCraft uses it is our choice.
 | Coordinates | `M` and `D` take absolute coordinates | [M] | R |
 | Decimals | Decimal coordinates have been seen in other senders | [1] | R |
 | FlatCraft number format | Integers only, no sign for zero, no leading zeros, no spaces | FlatCraft choice (provisional) | - |
-| FlatCraft rounding | Convert every absolute point from mm with `round(mm * 20)`. Never add up rounded deltas, so errors do not build up. | FlatCraft choice (provisional) | - |
+| FlatCraft rounding | Convert every absolute point from mm with `round(mm * 20.0)`. Never add up rounded deltas, so errors do not build up. | FlatCraft choice (provisional) | - |
+| FlatCraft rounding ties | A tie (`.5`) rounds half away from zero, as Rust `f64::round` does. Example: 10.025 mm * 20.0 = 200.5, sent as `201`. | FlatCraft choice (provisional) | - |
+| FlatCraft coordinate range | After mirror, scale and rounding, every coordinate must lie in 0..media height (y) and 0..media width (x), in units, both ends included. A point outside is an error before anything is emitted, like an out-of-range speed, force or FC. Negative numbers are never emitted. | FlatCraft rule | - |
 | FlatCraft origin | Media top-left = device `0,0`, because the job sets `\0,0` as the work area upper-left | FlatCraft choice (provisional) | - |
 
 Example: the mat point x = 10.5 mm, y = 10 mm is sent as `200,210`.
@@ -144,6 +148,19 @@ All replies end with `ETX`. Read until `ETX`, then strip it.
 - Only `0` (one character, no spaces) means ready. [M] R
 - A registration mark search takes 20 to 40 s before the reply comes. [M] R
 
+### Pre-send check (FlatCraft rule)
+
+Used by the USB transport (M3). File Output has no device and does no check.
+
+| Step / reply | Action | Conf. | Source |
+|---|---|---|---|
+| 1 | Send `ESC 0x05` (`\x1b\x05`). Read until `ETX`. | FlatCraft rule; command [M] | R, U |
+| `0` exactly | Ready. Start the job. | FlatCraft rule; meaning [M] | R, U |
+| `2` | No media. Send nothing. Tell the user to load media. | FlatCraft rule; meaning [M] | R, U |
+| `1`, `3`, `4` or anything else | Not ready. Send nothing. Tell the user the device is not ready and to check that the head is parked on the left. | FlatCraft rule; meanings [M] / [1] | R |
+
+There is no command to check the head position. The not-ready message covers it (section 7). [1] R
+
 ## 5. Typical job sequence
 
 The job shape other senders use for a Cameo 2, in order: [M] R
@@ -172,16 +189,16 @@ Whether Silhouette Studio itself sends them is open question 5.
 
 FlatCraft M1 uses this shape with three differences, all FlatCraft choice (provisional):
 no `FG` inside the job bytes (a firmware query belongs to the connection, not to the job file),
-no `FW`, and always `H` at the end. Section 9 has the exact bytes.
+no `FW`, and `H` at the end of every completely sent job (FlatCraft rule). Section 9 has the exact bytes.
 
 ## 6. Forbidden commands
 
 | Command | Why | Conf. | Source |
 |---|---|---|---|
-| `FB...` | Writes calibration values into the device permanently. A wrong value spoils every later cut, also in Silhouette Studio. | [M] | R |
+| `FB...` | Changes the device calibration permanently. | [M] | R |
 | `TB72...` | Writes calibration permanently, like `FB`. | [M] | R |
 
-Rules for FlatCraft (FlatCraft choice (provisional), but not up for change in v1):
+Rules for FlatCraft. Hard rule (FlatCraft global constraint), not provisional:
 
 - The emitter has no way to build `FB` or `TB72`.
 - The safety check rejects any job that contains a command starting with `FB` or `TB72`.
@@ -192,9 +209,10 @@ Rules for FlatCraft (FlatCraft choice (provisional), but not up for change in v1
 
 | Quirk | What to do | Conf. | Source |
 |---|---|---|---|
-| One command of look-ahead | The device holds back the last command until the next one arrives (it needs it for the blade offset). The last `D` of a job is not cut until another command follows. End every job with `H` (or a move). | [M] | R |
-| Never resend | After a timeout or a partial write, part of the data may already be in the device. Sending it again cuts twice. Stop and send nothing more. | [M] | R |
-| Head parked left | A Cameo 2 does not start a job unless the head is parked on the left. | [1] | R |
+| One command of look-ahead | The device holds back the last command until the next one arrives (it needs it for the blade offset). The last `D` of a job is not cut until another command follows. Every job that was sent completely ends with `H` (FlatCraft rule). | [M] | R |
+| Never resend | After a timeout or a partial write, part of the data may already be in the device. Sending it again cuts twice. | [M] | R |
+| Failure stop | After a write timeout, a partial write or a user cancel, FlatCraft sends nothing more on that connection: no `H`, no retry, no status poll (`ESC 0x05`). This lasts until the user has reset the machine with its own button and reconnects (a new transport session). Reason: a half-sent command plus any new bytes can merge into a different command. | FlatCraft rule (design spec section 11), based on never resend [M] | R |
+| Head parked left | A Cameo 2 does not start a job unless the head is parked on the left. There is no command to check it. When the pre-send check (section 4) says not ready, the message tells the user to check that the head is parked left. | [1] | R |
 | Never USB-reset | Do not reset the USB device by default. It broke usbip setups (#10). | [M] | R, #10 |
 | Status 3 and 4 | Paused and after-cancel are not ready. Do not send a job then. | [M] | R |
 | Regmark area offset | The regmark area is about 10 mm off to the left on a Cameo 2 (#205). Not used in M1. | [1] | R, #205 |
@@ -220,6 +238,7 @@ normalized to (direction, endpoint, hex) lines for replay tests. [1] U
 | 10 | Which byte sequence does a track enhancing on / off change in Studio? | Confirms `FY0` / `FY1` | [1] | R |
 | 11 | Do bidirectional reads work through `usbprint.sys` on a Cameo 2? | Windows transport | [1] | R |
 | 12 | Is the status `4` real on a Cameo 2? | Status decoding | [1] | R |
+| 13 | What does `FE` mean exactly? The research says lift between paths, the knife note says lift at sharp corners. | Decoder text, cut quality | [1] | R, K |
 
 ## 9. M1 job sequence, exact bytes
 
@@ -269,7 +288,7 @@ Points in device units (`y,x`, `round(mm * 20)`):
 | 12 | `FF0,0,0\x03` | Corner setting 0. FlatCraft choice (provisional). | [M] | R |
 | 13 | `M200,200\x03` | Move to the first point | [M] | R |
 | 14 | `D200,400,400,400,400,200,200,200,200,210\x03` | Cut the other 5 points. At most 16 points per `D`: FlatCraft choice (provisional). | [M] | R |
-| 15 | `H\x03` | Home. Also flushes the look-ahead (section 7). Trailing `H`: FlatCraft choice (provisional). | [M] | R |
+| 15 | `H\x03` | Home. Also flushes the look-ahead (section 7). Trailing `H` on a completely sent job: FlatCraft rule. | [M] | R |
 
 The complete job as one byte string:
 
@@ -289,7 +308,9 @@ Command 8 (`\\0,0`) is a single backslash `0x5c` followed by `0,0`. The job has 
 | No `FW` media preset. FlatCraft sets the work area with `\` and `Z` instead. | FlatCraft choice (provisional) | - |
 | Work area is `\0,0` and `Z<media height units>,<media width units>`, so media coordinates go to the device without an offset. | FlatCraft choice (provisional) | - |
 | `L0`, `FE0,0`, `FF0,0,0` are sent with these fixed values. | FlatCraft choice (provisional) | - |
+| `FY1` is sent when track enhancing is off, `FY0` when it is on. It is always sent. `FN0` and `TB50,0` are always sent. The FY on/off meaning is from one source. | FlatCraft choice (provisional); FY meaning [1] | R |
+| A path with fewer than 2 points is skipped: nothing is emitted for it. A job with no paths left is an error, never an empty job. | FlatCraft rule | - |
 | Each path is one `M` to its first point, then `D` commands with the remaining points, at most 16 points per `D`. A 40-point path gives `M` plus `D` commands with 16, 16 and 7 points. | FlatCraft choice (provisional) | - |
-| Every job ends with `H`. | FlatCraft choice (provisional), based on the look-ahead quirk [M] | R |
-| Valid ranges checked before emitting: speed 1-10, force 1-33, FC 0-100. Out of range is an error, not a clamp. | speed, force [M]; FC: FlatCraft choice (provisional) | R |
+| Every job that is sent completely ends with `H`. After a failed or partial write or a cancel, nothing more is sent, not even `H` (section 7, failure stop). | FlatCraft rule, based on the look-ahead quirk [M] | R |
+| Valid ranges checked before emitting: speed 1-10, force 1-33, FC 0-100, coordinates 0..media (section 2). Out of range is an error, not a clamp. | speed, force [M]; FC: FlatCraft choice (provisional) | R |
 | Firmware compensation sends `FC<fc>`. Host compensation and "none" send `FC0`. | [M] | R, K |
