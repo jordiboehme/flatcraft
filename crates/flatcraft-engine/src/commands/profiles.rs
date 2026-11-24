@@ -63,7 +63,7 @@ command!(
     mutates: false,
     params: IdParams,
     run: run_get,
-    description: "Returns one plotter or material preset with inheritance resolved, as JSON with an extra field kind (plotter or material). Plotters list their media (mm), margins (mm), speed_range and force_range; materials list speed, force, passes, overcut_mm and per-plotter overrides.",
+    description: "Returns one plotter or material preset with inheritance resolved, as JSON with an extra field kind (plotter or material). Plotters list their media (mm; each with kind, physical size, printed grid origin and size, calibrated), speed_range and force_range; materials list speed, force, passes, overcut_mm and per-plotter overrides.",
 );
 
 fn run_set_plotter(s: &mut Session, p: IdParams, _: Origin) -> Result<Value, CommandError> {
@@ -148,7 +148,7 @@ command!(
     mutates: true,
     params: IdParams,
     run: run_set_media,
-    description: "Sets the media (mat or sheet size) of the active document. The id must be one of the plotter's media (see profiles.get on the plotter). Returns {media_id, width_mm, height_mm, cutting_area_mm: {x0,y0,x1,y1}}; the origin is the top-left of the media, y down.",
+    description: "Sets the media (mat or sheet size) of the active document. The id must be one of the plotter's media (see profiles.get on the plotter). Returns {media_id, width_mm, height_mm, cutting_area_mm: {x0,y0,x1,y1}}; the origin is the 0,0 of the grid printed on the mat, y down. cutting_area_mm is the grid, minus a 5 mm safety margin while the mat is not calibrated.",
 );
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]

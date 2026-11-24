@@ -40,7 +40,7 @@ pub enum AlignTarget {
     /// The common bounding box of the given objects.
     #[default]
     Selection,
-    /// The cutting area (media minus the plotter margins).
+    /// The cutting area (the mat's grid, minus a safety margin while the mat is not calibrated).
     CuttingArea,
 }
 
@@ -94,7 +94,7 @@ command!(
     mutates: true,
     params: AlignParams,
     run: run_align,
-    description: "Aligns the bounding boxes of objects. mode: left, hcenter, right, top, vcenter or bottom. relative_to: selection (the common bounding box of the objects, default) or cutting_area (the media minus the plotter margins; left puts objects at the left margin). Origin top-left of the media, y down, units mm. An empty ids list means the current selection. Returns {ids}.",
+    description: "Aligns the bounding boxes of objects. mode: left, hcenter, right, top, vcenter or bottom. relative_to: selection (the common bounding box of the objects, default) or cutting_area (the mat's grid, minus a 5 mm safety margin while the mat is not calibrated; left puts objects at the left edge of that area). Origin the 0,0 of the grid printed on the mat, y down, units mm. An empty ids list means the current selection. Returns {ids}.",
 );
 
 fn default_spacing() -> f64 {
@@ -170,5 +170,5 @@ command!(
     mutates: true,
     params: AutoParams,
     run: run_auto,
-    description: "Packs all visible objects into the cutting area in rows (shelf packing), keeping rotation and size. Objects are sorted by bounding box height, tallest first, and placed left to right from the top-left of the cutting area, with spacing_mm (default 5) between them. Objects that do not fit, or have no cut geometry yet, keep their position and are listed in did_not_fit; they may overlap the packed objects. Origin top-left of the media, y down, units mm. Returns {placed: [id], did_not_fit: [id]}.",
+    description: "Packs all visible objects into the cutting area in rows (shelf packing), keeping rotation and size. Objects are sorted by bounding box height, tallest first, and placed left to right from the top-left of the cutting area, with spacing_mm (default 5) between them. Objects that do not fit, or have no cut geometry yet, keep their position and are listed in did_not_fit; they may overlap the packed objects. Origin the 0,0 of the grid printed on the mat, y down, units mm. Returns {placed: [id], did_not_fit: [id]}.",
 );

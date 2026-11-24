@@ -230,7 +230,7 @@ command!(
     mutates: true,
     params: ImportParams,
     run: run_import,
-    description: "Imports a vector file from disk as a new object and selects it. Supported: .svg and .svgz, and the raster types .png, .jpg, .jpeg, .webp and .gif (by extension). The object name is the file name without extension. SVG sizes come from the SVG in mm. A raster image is traced into cut outlines with the default trace settings (automatic threshold, dark pixels are cut) at the dpi stored in the file, or 300 dpi; use object.retrace to change the settings. Images over 16384 x 16384 px are refused. The object keeps its position from the SVG page if that lies inside the cutting area, otherwise its top-left corner moves to the top-left of the cutting area. Coordinates are mm, origin top-left of the media, y down. Returns {id, bounds_mm: {x0,y0,x1,y1}, warnings: [text]}; raster imports also return dropped_small (shapes below the minimum feature size that were dropped), threshold_used (0-255) and size_mm [width, height] of the whole image.",
+    description: "Imports a vector file from disk as a new object and selects it. Supported: .svg and .svgz, and the raster types .png, .jpg, .jpeg, .webp and .gif (by extension). The object name is the file name without extension. SVG sizes come from the SVG in mm. A raster image is traced into cut outlines with the default trace settings (automatic threshold, dark pixels are cut) at the dpi stored in the file, or 300 dpi; use object.retrace to change the settings. Images over 16384 x 16384 px are refused. The object keeps its position from the SVG page if that lies inside the cutting area, otherwise its top-left corner moves to the top-left of the cutting area. Coordinates are mm, origin the 0,0 of the grid printed on the mat, y down. Returns {id, bounds_mm: {x0,y0,x1,y1}, warnings: [text]}; raster imports also return dropped_small (shapes below the minimum feature size that were dropped), threshold_used (0-255) and size_mm [width, height] of the whole image.",
 );
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -253,7 +253,7 @@ command!(
     mutates: true,
     params: ImportSvgParams,
     run: run_import_svg,
-    description: "Imports SVG markup given as text as a new object and selects it. Give the SVG a width and height in mm (for example width=\"50mm\") so the size is exact; plain numbers are CSS pixels (96 per inch). Every visible path, fill or stroke, is cut as set by object.set_cut_options (default: the outline of fills and of strokes 0.5 mm or wider); text is cut as outlines. Placement as in object.import. Coordinates are mm, origin top-left of the media, y down. Returns {id, bounds_mm: {x0,y0,x1,y1}, warnings: [text]}.",
+    description: "Imports SVG markup given as text as a new object and selects it. Give the SVG a width and height in mm (for example width=\"50mm\") so the size is exact; plain numbers are CSS pixels (96 per inch). Every visible path, fill or stroke, is cut as set by object.set_cut_options (default: the outline of fills and of strokes 0.5 mm or wider); text is cut as outlines. Placement as in object.import. Coordinates are mm, origin the 0,0 of the grid printed on the mat, y down. Returns {id, bounds_mm: {x0,y0,x1,y1}, warnings: [text]}.",
 );
 
 // ---------------------------------------------------------------- retrace
@@ -574,7 +574,7 @@ command!(
     mutates: true,
     params: MoveParams,
     run: run_move,
-    description: "Moves objects. Either relative with dx_mm and dy_mm (a missing one is 0), or absolute with center_mm [x, y], which puts the centre of the objects' common bounding box there. Units mm, origin top-left of the media, x right, y down. An empty ids list means the current selection. Returns {ids, moved_by_mm: [dx, dy]}.",
+    description: "Moves objects. Either relative with dx_mm and dy_mm (a missing one is 0), or absolute with center_mm [x, y], which puts the centre of the objects' common bounding box there. Units mm, origin the 0,0 of the grid printed on the mat, x right, y down. An empty ids list means the current selection. Returns {ids, moved_by_mm: [dx, dy]}.",
 );
 
 // ---------------------------------------------------------------- scale

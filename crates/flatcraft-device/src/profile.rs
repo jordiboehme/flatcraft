@@ -54,20 +54,76 @@ impl KnifeCompensation {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Media {
-    pub id: String,
-    pub name: String,
+/// Distance kept free inside the grid of a mat that is not calibrated yet.
+pub const UNCALIBRATED_MARGIN_MM: f64 = 5.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum MediaKind {
+    /// A sticky cutting mat with a printed grid.
+    #[default]
+    Mat,
+    /// Material fed without a mat.
+    NoMat,
+}
+
+/// The grid printed on a mat. Its origin is measured from the plotter's zero, in mm.
+/// FlatCraft's 0,0 is the grid's 0,0, and the grid is the area you can cut in.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Grid {
+    pub origin_x_mm: f64,
+    pub origin_y_mm: f64,
     pub width_mm: f64,
     pub height_mm: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct Margins {
-    pub top: f64,
-    pub right: f64,
-    pub bottom: f64,
-    pub left: f64,
+/// A mat (or "no mat") of a plotter. `width_mm` and `height_mm` are the physical size.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "MediaFile")]
+pub struct Media {
+    pub id: String,
+    pub name: String,
+    pub kind: MediaKind,
+    pub width_mm: f64,
+    pub height_mm: f64,
+    pub grid: Grid,
+    /// True once the grid origin was measured on the real mat.
+    pub calibrated: bool,
+}
+
+/// The file form of [`Media`]: `kind`, `grid` and `calibrated` are optional, so older
+/// files load. A missing grid is the whole physical size from the plotter's zero.
+#[derive(Deserialize)]
+struct MediaFile {
+    id: String,
+    name: String,
+    #[serde(default)]
+    kind: MediaKind,
+    width_mm: f64,
+    height_mm: f64,
+    #[serde(default)]
+    grid: Option<Grid>,
+    #[serde(default)]
+    calibrated: bool,
+}
+
+impl From<MediaFile> for Media {
+    fn from(f: MediaFile) -> Self {
+        let grid = f.grid.unwrap_or(Grid {
+            origin_x_mm: 0.0,
+            origin_y_mm: 0.0,
+            width_mm: f.width_mm,
+            height_mm: f.height_mm,
+        });
+        Media {
+            id: f.id,
+            name: f.name,
+            kind: f.kind,
+            width_mm: f.width_mm,
+            height_mm: f.height_mm,
+            grid,
+            calibrated: f.calibrated,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,7 +150,6 @@ pub struct PlotterProfile {
     pub protocol: Protocol,
     pub transport: TransportSpec,
     pub media: Vec<Media>,
-    pub margins: Margins,
     pub units_per_mm: f64,
     pub axis: AxisMapping,
     pub scale_x: f64,
@@ -108,14 +163,21 @@ pub struct PlotterProfile {
 }
 
 impl PlotterProfile {
-    /// The media rectangle minus the margins, origin top-left of the media.
+    /// The area objects may use, in app coordinates (origin = the grid's 0,0): the whole
+    /// grid for a calibrated mat, the grid minus [`UNCALIBRATED_MARGIN_MM`] on every side
+    /// otherwise.
     pub fn cutting_area(&self, media_id: &str) -> Option<Rect> {
         let m = self.media.iter().find(|m| m.id == media_id)?;
+        let inset = if m.calibrated {
+            0.0
+        } else {
+            UNCALIBRATED_MARGIN_MM
+        };
         Some(Rect::new(
-            self.margins.left,
-            self.margins.top,
-            m.width_mm - self.margins.right,
-            m.height_mm - self.margins.bottom,
+            inset,
+            inset,
+            m.grid.width_mm - inset,
+            m.grid.height_mm - inset,
         ))
     }
 }

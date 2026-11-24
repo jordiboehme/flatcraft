@@ -65,13 +65,72 @@ fn nested_table_merges_key_by_key() {
         d.path(),
         "plotters",
         "mine",
-        "id = \"mine\"\nname = \"M\"\ninherits = \"silhouette-cameo-2\"\n[margins]\ntop = 9.0\n",
+        "id = \"mine\"\nname = \"M\"\ninherits = \"silhouette-cameo-2\"\n[axis]\nmirror_x = true\n",
     );
     let s = ProfileStore::load(d.path()).unwrap();
     let p = s.plotter("mine").unwrap();
-    assert_eq!(p.margins.top, 9.0);
-    assert_eq!(p.margins.left, 5.0);
-    assert_eq!(s.modified_fields("mine"), vec!["margins.top"]);
+    assert!(p.axis.mirror_x);
+    assert!(!p.axis.mirror_y);
+    assert_eq!(s.modified_fields("mine"), vec!["axis.mirror_x"]);
+}
+
+#[test]
+fn old_profile_with_margins_still_loads() {
+    let d = tempdir().unwrap();
+    write(
+        d.path(),
+        "plotters",
+        "old",
+        "id = \"old\"\nname = \"Old\"\ninherits = \"silhouette-cameo-2\"\n[margins]\ntop = 9.0\nright = 9.0\nbottom = 9.0\nleft = 9.0\n",
+    );
+    let s = ProfileStore::load(d.path()).unwrap();
+    let p = s.plotter("old").unwrap();
+    // margins are ignored: the uncalibrated mat keeps the 5 mm safety band
+    let r = p.cutting_area("mat-12x12").unwrap();
+    assert!((r.x0 - 5.0).abs() < 1e-9 && (r.x1 - 299.8).abs() < 1e-9);
+}
+
+#[test]
+fn old_media_without_grid_loads_with_defaults() {
+    let d = tempdir().unwrap();
+    write(
+        d.path(),
+        "plotters",
+        "oldmedia",
+        "id = \"oldmedia\"\nname = \"O\"\ninherits = \"silhouette-cameo-2\"\n\
+         media = [{ id = \"a4\", name = \"A4\", width_mm = 210.0, height_mm = 297.0 }]\n",
+    );
+    let s = ProfileStore::load(d.path()).unwrap();
+    let m = &s.plotter("oldmedia").unwrap().media[0];
+    assert_eq!(m.kind, MediaKind::Mat);
+    assert!(!m.calibrated);
+    assert_eq!(
+        m.grid,
+        Grid {
+            origin_x_mm: 0.0,
+            origin_y_mm: 0.0,
+            width_mm: 210.0,
+            height_mm: 297.0
+        }
+    );
+}
+
+#[test]
+fn builtin_mats_match_the_brief() {
+    let (_d, s) = store();
+    let p = s.plotter("silhouette-cameo-2").unwrap();
+    let get = |id: &str| p.media.iter().find(|m| m.id == id).unwrap().clone();
+    let m = get("mat-12x12");
+    assert_eq!((m.width_mm, m.height_mm), (304.8, 330.2));
+    assert_eq!((m.grid.width_mm, m.grid.height_mm), (304.8, 304.8));
+    let m = get("mat-12x24");
+    assert_eq!((m.width_mm, m.height_mm), (304.8, 635.0));
+    assert_eq!((m.grid.width_mm, m.grid.height_mm), (304.8, 609.6));
+    let m = get("no-mat");
+    assert_eq!(m.kind, MediaKind::NoMat);
+    assert_eq!((m.width_mm, m.height_mm), (304.8, 3000.0));
+    assert_eq!((m.grid.width_mm, m.grid.height_mm), (304.8, 3000.0));
+    assert!(p.media.iter().all(|m| !m.calibrated));
 }
 
 #[test]
@@ -173,7 +232,7 @@ fn user_preset_cannot_shadow_system() {
 }
 
 #[test]
-fn cutting_area_subtracts_margins() {
+fn uncalibrated_mat_keeps_safety_margin() {
     let (_d, s) = store();
     let p = s.plotter("silhouette-cameo-2").unwrap();
     let r = p.cutting_area("mat-12x12").unwrap();
@@ -181,6 +240,15 @@ fn cutting_area_subtracts_margins() {
     assert!((r.x0 - want.x0).abs() < 1e-9 && (r.y0 - want.y0).abs() < 1e-9);
     assert!((r.x1 - want.x1).abs() < 1e-9 && (r.y1 - want.y1).abs() < 1e-9);
     assert!(p.cutting_area("nope").is_none());
+}
+
+#[test]
+fn calibrated_mat_uses_full_grid() {
+    let (_d, s) = store();
+    let mut p = s.plotter("silhouette-cameo-2").unwrap();
+    p.media[0].calibrated = true;
+    let r = p.cutting_area("mat-12x12").unwrap();
+    assert_eq!((r.x0, r.y0, r.x1, r.y1), (0.0, 0.0, 304.8, 304.8));
 }
 
 #[test]
@@ -208,12 +276,12 @@ fn save_writes_only_differences_and_round_trips() {
     p.id = "tuned".into();
     p.name = "Tuned".into();
     p.scale_x = 1.002;
-    p.margins.top = 7.0;
+    p.media[0].calibrated = true;
     p.knife_compensation = KnifeCompensation::None;
     s.save_user_plotter(&p, "silhouette-cameo-2").unwrap();
     assert_eq!(
         s.modified_fields("tuned"),
-        vec!["knife_compensation", "margins.top", "scale_x"]
+        vec!["knife_compensation", "media", "scale_x"]
     );
     let text = fs::read_to_string(d.path().join("plotters/tuned.toml")).unwrap();
     assert!(text.contains("inherits = \"silhouette-cameo-2\""));
@@ -221,8 +289,7 @@ fn save_writes_only_differences_and_round_trips() {
     let s2 = ProfileStore::load(d.path()).unwrap();
     let q = s2.plotter("tuned").unwrap();
     assert_eq!(q.scale_x, 1.002);
-    assert_eq!(q.margins.top, 7.0);
-    assert_eq!(q.margins.left, 5.0);
+    assert!(q.media[0].calibrated);
     assert_eq!(q.knife_compensation, KnifeCompensation::None);
     assert_eq!(q.inherits.as_deref(), Some("silhouette-cameo-2"));
 }

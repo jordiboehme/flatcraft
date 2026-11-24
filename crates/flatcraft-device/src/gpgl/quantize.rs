@@ -9,11 +9,12 @@ use crate::profile::{Media, PlotterProfile};
 
 /// The rounded device coordinates as `(y, x)` before any range check.
 ///
-/// Mirror inside the media rect, multiply by the profile scale, multiply by units per mm,
+/// Add the grid origin of the mat (app coordinates become device coordinates), mirror inside
+/// the physical media rect, multiply by the profile scale, multiply by units per mm,
 /// round half away from zero (`f64::round`).
 pub(crate) fn to_device_f64(p: Point, plotter: &PlotterProfile, media: &Media) -> (f64, f64) {
-    let mut x = p.x;
-    let mut y = p.y;
+    let mut x = p.x + media.grid.origin_x_mm;
+    let mut y = p.y + media.grid.origin_y_mm;
     if plotter.axis.mirror_x {
         x = media.width_mm - x;
     }
@@ -28,7 +29,7 @@ pub(crate) fn to_device_f64(p: Point, plotter: &PlotterProfile, media: &Media) -
     )
 }
 
-/// Converts a media point (mm, origin top-left) to device units.
+/// Converts an app point (mm, origin = the mat's grid 0,0) to device units.
 ///
 /// This does no range check: values outside `i32` saturate and NaN becomes 0. The emitter
 /// checks every coordinate against the media before it builds any command, so use

@@ -563,6 +563,89 @@ fn align_left_to_cutting_area() {
     assert!(close(placed_bounds(&s, a).x1, placed_bounds(&s, b).x1));
 }
 
+/// A user plotter whose 12x12 mat is calibrated: grid origin 10/12, grid 200 x 150 mm.
+fn calibrated_session(dir: &tempfile::TempDir) -> Session {
+    let d = dir.path().join("plotters");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(
+        d.join("grid.toml"),
+        "id = \"grid\"\nname = \"Grid\"\ninherits = \"file-output-gpgl-cameo2\"\n\
+         media = [{ id = \"mat-12x12\", name = \"My mat\", kind = \"Mat\", width_mm = 304.8, \
+         height_mm = 330.2, calibrated = true, \
+         grid = { origin_x_mm = 10.0, origin_y_mm = 12.0, width_mm = 200.0, height_mm = 150.0 } }]\n",
+    )
+    .unwrap();
+    let mut s = session(dir);
+    run(&mut s, "job.set_plotter", json!({ "id": "grid" }));
+    s
+}
+
+#[test]
+fn align_left_uses_grid_area() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = calibrated_session(&dir);
+    let a = import(&mut s, 20.0, 20.0);
+    run(&mut s, "object.move", json!({ "ids": [a], "dx_mm": 60.0 }));
+    run(
+        &mut s,
+        "arrange.align",
+        json!({ "ids": [a], "mode": "left", "relative_to": "cutting_area" }),
+    );
+    // calibrated: the grid's 0,0 is the left edge, no safety margin
+    assert!(close(placed_bounds(&s, a).x0, 0.0));
+    run(
+        &mut s,
+        "arrange.align",
+        json!({ "ids": [a], "mode": "right", "relative_to": "cutting_area" }),
+    );
+    assert!(close(placed_bounds(&s, a).x1, 200.0));
+    let state = run(&mut s, "document.state", json!({}));
+    assert_eq!(state["cutting_area_mm"]["y1"].as_f64(), Some(150.0));
+}
+
+#[test]
+fn job_adds_the_grid_origin() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = calibrated_session(&dir);
+    let a = import(&mut s, 20.0, 20.0);
+    run(
+        &mut s,
+        "arrange.align",
+        json!({ "ids": [a], "mode": "left", "relative_to": "cutting_area" }),
+    );
+    run(
+        &mut s,
+        "arrange.align",
+        json!({ "ids": [a], "mode": "top", "relative_to": "cutting_area" }),
+    );
+    let built = flatcraft_engine::job::build(&s).unwrap();
+    let text = String::from_utf8_lossy(&built.job.bytes).into_owned();
+    // app (0,0) = device y 12 mm, x 10 mm = 240,200 units (y first); Z is the physical mat
+    assert!(text.contains("240,200"), "{text}");
+    assert!(text.contains("Z6604,6096"), "{text}");
+}
+
+#[test]
+fn document_state_reports_mat() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let state = run(&mut s, "document.state", json!({}));
+    let m = &state["mat"];
+    assert_eq!(m["id"], "mat-12x12");
+    assert_eq!(m["name"], "Mat 12x12");
+    assert_eq!(m["kind"], "mat");
+    assert_eq!(m["width_mm"].as_f64(), Some(304.8));
+    assert_eq!(m["height_mm"].as_f64(), Some(330.2));
+    assert_eq!(m["calibrated"], false);
+    assert_eq!(m["grid"]["origin_x_mm"].as_f64(), Some(0.0));
+    assert_eq!(m["grid"]["origin_y_mm"].as_f64(), Some(0.0));
+    assert_eq!(m["grid"]["width_mm"].as_f64(), Some(304.8));
+    assert_eq!(m["grid"]["height_mm"].as_f64(), Some(304.8));
+    run(&mut s, "job.set_media", json!({ "id": "no-mat" }));
+    let state = run(&mut s, "document.state", json!({}));
+    assert_eq!(state["mat"]["kind"], "no_mat");
+}
+
 #[test]
 fn auto_arrange_packs_without_overlap() {
     let dir = tempfile::tempdir().unwrap();

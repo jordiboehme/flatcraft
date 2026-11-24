@@ -3,7 +3,17 @@ use flatcraft_device::*;
 use kurbo::Point;
 use proptest::prelude::*;
 
+/// The built-in file output profile, with the physical mats of the gpgl.md section 9 test
+/// input (304.8 x 304.8 and 304.8 x 609.6 mm), so the golden bytes stay the reference.
 fn file_output() -> PlotterProfile {
+    let mut p = real_file_output();
+    p.media[0].height_mm = 304.8;
+    p.media[1].height_mm = 609.6;
+    p
+}
+
+/// The built-in file output profile as shipped.
+fn real_file_output() -> PlotterProfile {
     let d = tempfile::tempdir().unwrap();
     let s = ProfileStore::load(d.path()).unwrap();
     s.plotter("file-output-gpgl-cameo2").unwrap()
@@ -140,6 +150,63 @@ fn draw_is_chunked_at_16_points() {
         .collect();
     assert_eq!(counts, vec![16, 16, 7]);
     assert_eq!(cmds.last().unwrap().command, "H");
+}
+
+#[test]
+fn grid_origin_shifts_device_coordinates() {
+    let p = real_file_output();
+    let mut m = p.media[0].clone();
+    m.grid.origin_x_mm = 10.0;
+    m.grid.origin_y_mm = 12.0;
+    assert_eq!(
+        quantize::to_device(Point::new(0.0, 0.0), &p, &m),
+        DevPoint { y: 240, x: 200 }
+    );
+}
+
+#[test]
+fn grid_origin_is_added_before_mirror() {
+    let mut p = real_file_output();
+    p.axis.mirror_x = true;
+    let mut m = p.media[0].clone();
+    m.grid.origin_x_mm = 10.0;
+    // (width - (x + origin)) * 20 = (304.8 - 15) * 20
+    assert_eq!(quantize::to_device(Point::new(5.0, 0.0), &p, &m).x, 5796);
+}
+
+#[test]
+fn grid_origin_is_part_of_the_range_check() {
+    let mut p = real_file_output();
+    p.media[0].grid.origin_x_mm = 10.0;
+    // x = 295 + 10 = 305 > 304.8 physical
+    let err = emit_job(
+        &[path(&[(10., 10.), (295., 10.)])],
+        &p,
+        "mat-12x12",
+        &settings(),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, EmitError::CoordinateOutOfRange { axis: "x", .. }),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn work_area_uses_the_physical_size() {
+    let p = real_file_output();
+    let job = emit_job(
+        &[path(&[(10., 10.), (20., 10.)])],
+        &p,
+        "mat-12x12",
+        &settings(),
+    )
+    .unwrap();
+    assert!(
+        job.bytes
+            .windows(b"Z6604,6096\x03".len())
+            .any(|w| w == b"Z6604,6096\x03")
+    );
 }
 
 #[test]

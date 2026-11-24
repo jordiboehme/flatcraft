@@ -4,6 +4,7 @@ use std::path::{Component, Path, PathBuf};
 
 use flatcraft_core::document::{CutOptions, Object, Source};
 use flatcraft_core::project::{self, ProjectError};
+use flatcraft_device::MediaKind;
 use flatcraft_import::fonts;
 use flatcraft_import::svg::import_svg;
 use serde::Deserialize;
@@ -38,7 +39,36 @@ fn object_json(o: &Object) -> Value {
     })
 }
 
+/// The active mat of the document, or null when the plotter no longer lists it.
+fn mat_json(s: &Session) -> Value {
+    let job = &s.doc().document.job;
+    let Ok(plotter) = s.profiles.plotter(&job.plotter_id) else {
+        return Value::Null;
+    };
+    let Some(m) = plotter.media.iter().find(|m| m.id == job.media_id) else {
+        return Value::Null;
+    };
+    json!({
+        "id": m.id,
+        "name": m.name,
+        "kind": match m.kind {
+            MediaKind::Mat => "mat",
+            MediaKind::NoMat => "no_mat",
+        },
+        "width_mm": m.width_mm,
+        "height_mm": m.height_mm,
+        "grid": {
+            "origin_x_mm": m.grid.origin_x_mm,
+            "origin_y_mm": m.grid.origin_y_mm,
+            "width_mm": m.grid.width_mm,
+            "height_mm": m.grid.height_mm,
+        },
+        "calibrated": m.calibrated,
+    })
+}
+
 fn run_state(s: &mut Session, _: NoParams, _: Origin) -> Result<Value, CommandError> {
+    let mat = mat_json(s);
     let area = cutting_area(s).ok().map(rect_json).unwrap_or(Value::Null);
     let st = s.doc();
     let job = &st.document.job;
@@ -58,6 +88,7 @@ fn run_state(s: &mut Session, _: NoParams, _: Origin) -> Result<Value, CommandEr
             "force": job.force,
             "passes": job.passes,
         },
+        "mat": mat,
         "cutting_area_mm": area,
         "dirty": st.dirty,
         "path": st.path,
@@ -73,7 +104,7 @@ command!(
     mutates: false,
     params: NoParams,
     run: run_state,
-    description: "Describes the active document. All lengths are mm; the origin is the top-left of the media, x right, y down; rotation is degrees clockwise. Returns {index, documents, doc_id (stable id of the active document), doc_ids (stable ids of all open documents, in index order), objects: [{id, name, kind: svg|raster, visible, bounds_mm: {x0,y0,x1,y1} of what is cut (the cut geometry per the cut options, stroke outlines included), transform: {center_mm: [x,y], scale_x, scale_y, rotation_deg, mirror}, cut: {mode: all_lines|object_outlines, strokes: auto|centre_line|outline, auto_threshold_mm} (see object.set_cut_options)}], selection: [id], job: {plotter_id, material_id, media_id, speed, force, passes} (null overrides mean the material value), cutting_area_mm: {x0,y0,x1,y1} (objects must stay inside it), dirty, path, can_undo, can_redo}.",
+    description: "Describes the active document. All lengths are mm; the origin is the 0,0 of the grid printed on the mat, x right, y down; rotation is degrees clockwise. Returns {index, documents, doc_id (stable id of the active document), doc_ids (stable ids of all open documents, in index order), objects: [{id, name, kind: svg|raster, visible, bounds_mm: {x0,y0,x1,y1} of what is cut (the cut geometry per the cut options, stroke outlines included), transform: {center_mm: [x,y], scale_x, scale_y, rotation_deg, mirror}, cut: {mode: all_lines|object_outlines, strokes: auto|centre_line|outline, auto_threshold_mm} (see object.set_cut_options)}], selection: [id], job: {plotter_id, material_id, media_id, speed, force, passes} (null overrides mean the material value), mat: {id, name, kind: mat|no_mat, width_mm, height_mm (physical), grid: {origin_x_mm, origin_y_mm, width_mm, height_mm}, calibrated} (null when unknown), cutting_area_mm: {x0,y0,x1,y1} (the grid, minus a 5 mm safety margin while the mat is not calibrated; objects must stay inside it), dirty, path, can_undo, can_redo}.",
 );
 
 // ---------------------------------------------------------------- document.new / switch / close

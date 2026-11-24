@@ -22,7 +22,7 @@ pub const MAX_PX: u32 = 4096;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum PreviewKind {
-    /// Media, cutting area and the objects in their colours.
+    /// The physical mat, cutting area and the objects in their colours.
     Canvas,
     /// The toolpaths in cut order with travel moves and start points.
     Path,
@@ -171,7 +171,9 @@ pub fn render_png(s: &Session, kind: PreviewKind, max_px: u32) -> Result<Vec<u8>
     };
     let mut pm = Pixmap::new(w, h).ok_or_else(|| failed("the image is too large"))?;
     let sc = scale as f32;
-    let mat = Transform::from_scale(sc, sc);
+    // App coordinates start at the grid's 0,0, which lies at the grid origin on the mat.
+    let (ox, oy) = (media.grid.origin_x_mm as f32, media.grid.origin_y_mm as f32);
+    let mat = Transform::from_scale(sc, sc).pre_translate(ox, oy);
     let px = |n: f32| f64::from(n / sc); // pixel length in mm
 
     pm.fill(color(0xdd, 0xdf, 0xe3));
@@ -236,7 +238,7 @@ pub fn render_png(s: &Session, kind: PreviewKind, max_px: u32) -> Result<Vec<u8>
                     pm.stroke_path(&p, &cut, &cut_stroke, mat, None);
                 }
                 at = *t.points.last().unwrap_or(first);
-                let (sx, sy) = (first.x as f32 * sc, first.y as f32 * sc);
+                let (sx, sy) = ((first.x as f32 + ox) * sc, (first.y as f32 + oy) * sc);
                 dot(&mut pm, sx, sy, 2.5 * cell, &start);
                 draw_number(
                     &mut pm,
