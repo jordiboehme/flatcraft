@@ -189,3 +189,106 @@ async fn old_prefs_with_mcp_keys_still_load() {
     let p = Preferences::load(dir.path());
     assert!(p.allow_agent_cuts, "the file must load, not fall back");
 }
+
+#[tokio::test]
+async fn preview_kind_is_an_enum_in_the_schema() {
+    let f = connect().await;
+    let tools = f.client.list_all_tools().await.unwrap();
+    let t = tools.iter().find(|t| t.name == "preview").unwrap();
+    let schema = serde_json::to_string(&*t.input_schema).unwrap();
+    assert!(
+        schema.contains("canvas") && schema.contains("path"),
+        "{schema}"
+    );
+    assert!(!schema.contains("$ref"), "{schema}");
+}
+
+#[tokio::test]
+async fn huge_max_px_is_a_tool_error() {
+    let f = connect().await;
+    let r = call(&f, "preview", json!({ "kind": "canvas", "max_px": 100000 })).await;
+    assert_eq!(r.is_error, Some(true), "{}", text(&r));
+}
+
+#[tokio::test]
+async fn a_panic_under_the_lock_does_not_stop_the_server() {
+    let f = connect().await;
+    let s = f.session.clone();
+    let _ = std::thread::spawn(move || {
+        let _g = s.lock().unwrap();
+        panic!("boom");
+    })
+    .join();
+    assert!(f.session.is_poisoned());
+    let r = call(&f, "version", json!({})).await;
+    assert_ne!(r.is_error, Some(true), "{}", text(&r));
+}
+
+#[tokio::test]
+async fn read_only_tools_do_not_fire_on_change() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let f = connect().await;
+    let n = Arc::new(AtomicUsize::new(0));
+    let n2 = n.clone();
+    let server = FlatcraftMcp::new(
+        f.session.clone(),
+        Arc::new(move || {
+            n2.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
+    let (sio, cio) = tokio::io::duplex(1 << 20);
+    tokio::spawn(async move {
+        let r = server.serve(sio).await.unwrap();
+        let _ = r.waiting().await;
+    });
+    let client = ().serve(cio).await.unwrap();
+    for (tool, args) in [
+        ("version", json!({})),
+        ("list_commands", json!({})),
+        ("describe_command", json!({ "id": "job.send" })),
+        ("document", json!({})),
+        ("preview", json!({ "kind": "canvas" })),
+    ] {
+        let p = CallToolRequestParams::new(tool.to_string())
+            .with_arguments(args.as_object().unwrap().clone());
+        client.call_tool(p).await.unwrap();
+    }
+    assert_eq!(n.load(Ordering::SeqCst), 0);
+    let p = CallToolRequestParams::new("execute".to_string()).with_arguments(
+        json!({ "command": "document.state" })
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    client.call_tool(p).await.unwrap();
+    assert_eq!(n.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn inline_defs_handles_nesting_repeats_siblings_and_cycles() {
+    use flatcraft_mcp::server::inline_defs;
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "a": { "$ref": "#/$defs/Outer" },
+            "b": { "$ref": "#/$defs/Outer", "description": "second use" }
+        },
+        "$defs": {
+            "Outer": { "type": "object", "properties": { "i": { "$ref": "#/$defs/Inner" } } },
+            "Inner": { "type": "integer" }
+        }
+    });
+    let out = inline_defs(schema);
+    assert!(!out.to_string().contains("$ref") && out.get("$defs").is_none());
+    assert_eq!(out["properties"]["a"]["properties"]["i"]["type"], "integer");
+    assert_eq!(out["properties"]["b"]["properties"]["i"]["type"], "integer");
+    assert_eq!(out["properties"]["b"]["description"], "second use");
+
+    let cyclic = json!({
+        "$ref": "#/$defs/Node",
+        "$defs": { "Node": { "type": "object", "properties": { "next": { "$ref": "#/$defs/Node" } } } }
+    });
+    let out = inline_defs(cyclic);
+    assert!(out.get("$defs").is_some(), "cycle keeps its defs: {out}");
+    assert_eq!(out["type"], "object");
+}

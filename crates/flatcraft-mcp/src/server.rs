@@ -19,9 +19,8 @@ pub const INSTRUCTIONS: &str = "FlatCraft prepares and sends cutting plotter job
 Every length is in millimetres. The origin is the top-left corner of the media, x runs right and y runs down. \
 Use list_commands to find commands, describe_command for the parameters of one, execute to run it, \
 document to read the state and preview to see the result as a PNG. \
-Sending to File Output is safe: it only writes files. USB cuts are gated: in a headless session they are refused \
-unless the person turned on 'Allow agents to start cuts' in the preferences; with a window open the person \
-confirms the cut in the window, and an agent cannot confirm it.";
+A USB cut started by an agent goes ahead only if the person turned on 'Allow agents to start cuts'. \
+Otherwise, with a window open the person confirms it; without a window it is refused. File Output is always allowed.";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListArgs {
@@ -45,10 +44,18 @@ pub struct ExecuteArgs {
     pub params: Option<Value>,
 }
 
+/// What to draw. "canvas": media, cutting area and objects. "path": planned toolpaths in cut order.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+#[schemars(inline)]
+pub enum PreviewKind {
+    Canvas,
+    Path,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PreviewArgs {
-    /// "canvas": media, cutting area and objects. "path": planned toolpaths in cut order.
-    pub kind: String,
+    pub kind: PreviewKind,
     /// Larger image side in px, 64 to 4096 (default 1024).
     #[serde(default)]
     pub max_px: Option<u32>,
@@ -85,9 +92,10 @@ impl FlatcraftMcp {
     }
 
     /// Runs `f` on the session on tokio's blocking pool. The lock is never held
-    /// across an await. Marks the agent activity and tells the GUI afterwards.
+    /// across an await. Marks the agent activity; tells the GUI afterwards only if `notify`.
     async fn with_session<T: Send + 'static>(
         &self,
+        notify: bool,
         f: impl FnOnce(&mut Session) -> T + Send + 'static,
     ) -> Result<T, CallToolResult> {
         let session = Arc::clone(&self.session);
@@ -97,7 +105,9 @@ impl FlatcraftMcp {
             s.last_agent_activity = Some(std::time::Instant::now());
             let out = f(&mut s);
             drop(s);
-            on_change();
+            if notify {
+                on_change();
+            }
             out
         })
         .await
@@ -109,7 +119,7 @@ impl FlatcraftMcp {
     )]
     async fn version(&self) -> CallToolResult {
         match self
-            .with_session(|s| {
+            .with_session(false, |s| {
                 let job = &s.doc().document.job;
                 json!({
                     "version": env!("CARGO_PKG_VERSION"),
@@ -151,7 +161,7 @@ impl FlatcraftMcp {
             })
             .collect();
         // Not a session call, but still agent activity.
-        let _ = self.with_session(|_| ()).await;
+        let _ = self.with_session(false, |_| ()).await;
         text_ok(&Value::Array(list))
     }
 
@@ -159,7 +169,7 @@ impl FlatcraftMcp {
         description = "The full description and the JSON schema of one command's parameters. Input: id. The schema has its definitions inlined (no $ref)."
     )]
     async fn describe_command(&self, Parameters(args): Parameters<DescribeArgs>) -> CallToolResult {
-        let _ = self.with_session(|_| ()).await;
+        let _ = self.with_session(false, |_| ()).await;
         let Some(c) = registry::get(&args.id) else {
             return error_result(&CommandError::UnknownCommand(args.id));
         };
@@ -181,7 +191,7 @@ impl FlatcraftMcp {
         let params = if params.is_null() { json!({}) } else { params };
         let command = args.command;
         match self
-            .with_session(move |s| s.execute(&command, params, Origin::Agent))
+            .with_session(true, move |s| s.execute(&command, params, Origin::Agent))
             .await
         {
             Ok(Ok(v)) => text_ok(&v),
@@ -193,7 +203,9 @@ impl FlatcraftMcp {
     #[tool(description = "The state of the active document (document.state). No input.")]
     async fn document(&self) -> CallToolResult {
         match self
-            .with_session(|s| s.execute("document.state", json!({}), Origin::Agent))
+            .with_session(false, |s| {
+                s.execute("document.state", json!({}), Origin::Agent)
+            })
             .await
         {
             Ok(Ok(v)) => text_ok(&v),
@@ -206,12 +218,14 @@ impl FlatcraftMcp {
         description = "Draw the active document as a PNG image. Input: kind ('canvas' or 'path'), optional max_px (64 to 4096, default 1024)."
     )]
     async fn preview(&self, Parameters(args): Parameters<PreviewArgs>) -> CallToolResult {
-        let mut params = json!({ "kind": args.kind });
+        let mut params = json!({ "kind": match args.kind { PreviewKind::Canvas => "canvas", PreviewKind::Path => "path" } });
         if let Some(px) = args.max_px {
             params["max_px"] = json!(px);
         }
         let r = match self
-            .with_session(move |s| s.execute("document.preview", params, Origin::Agent))
+            .with_session(false, move |s| {
+                s.execute("document.preview", params, Origin::Agent)
+            })
             .await
         {
             Ok(r) => r,
@@ -254,7 +268,7 @@ fn first_sentence(text: &str) -> &str {
 /// Replaces every `{"$ref": "#/$defs/X"}` by the definition and drops `$defs`.
 /// Some MCP clients cannot follow `$ref`, so the schema stands alone. A cyclic
 /// definition keeps its `$ref` (and the `$defs` stay) after a few levels.
-fn inline_defs(mut schema: Value) -> Value {
+pub fn inline_defs(mut schema: Value) -> Value {
     let defs = schema
         .as_object_mut()
         .and_then(|o| o.remove("$defs"))

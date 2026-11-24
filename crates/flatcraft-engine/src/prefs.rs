@@ -15,8 +15,8 @@ pub enum Theme {
     Light,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 /// Old files may still hold `mcp_enabled` and `mcp_port` (MCP is stdio only now); unknown keys are ignored.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
     pub allow_agent_cuts: bool,
