@@ -1,9 +1,10 @@
 //! Object placement transform.
 
 use kurbo::{Affine, Point, Rect};
+use serde::{Deserialize, Serialize};
 
 /// Placement of an object on the mat, in millimetres and degrees.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Transform {
     pub center_mm: Point,
     pub scale_x: f64,
