@@ -211,19 +211,34 @@ fn absolute_path(link: &SourceLink, dir: Option<&Path>) -> Option<PathBuf> {
     }
 }
 
-/// Where a linked file is now, or `None` when nothing of the object's kind
-/// exists there. The path relative to the project file comes first, but
-/// only while the project file is in the folder that path was made for
-/// (`anchor_dir`); then the absolute path. Only names with an extension of
-/// `kind` count, so a crafted project cannot make FlatCraft read any other
-/// file. The result may be a folder or a FIFO with a matching name; reading
-/// checks that.
-pub(crate) fn locate(link: &SourceLink, project: Option<&Path>, kind: FileKind) -> Option<PathBuf> {
+/// The places a linked file may be, in order: the path relative to the
+/// project file, but only while the project file is in the folder that
+/// path was made for (`anchor_dir`); then the absolute path. Only names
+/// with an extension of `kind` count, so a crafted project cannot make
+/// FlatCraft read any other file.
+fn candidates(link: &SourceLink, project: Option<&Path>, kind: FileKind) -> Vec<PathBuf> {
     let dir = project_dir(project);
     anchored_relative(link, dir.as_deref())
         .into_iter()
         .chain(absolute_path(link, dir.as_deref()))
         .filter(|p| file_kind(p).ok() == Some(kind))
+        .collect()
+}
+
+/// Where a linked file is now: the first candidate that is a regular file,
+/// so a folder or FIFO with the file's name is never taken for it.
+pub(crate) fn locate(link: &SourceLink, project: Option<&Path>, kind: FileKind) -> Option<PathBuf> {
+    candidates(link, project, kind)
+        .into_iter()
+        .find(|p| std::fs::metadata(p).is_ok_and(|m| m.is_file()))
+}
+
+/// For a link `locate` did not find: the first candidate that exists but is
+/// no regular file (a folder or FIFO), to report it as unreadable instead
+/// of missing. Never opened.
+fn locate_other(link: &SourceLink, project: Option<&Path>, kind: FileKind) -> Option<PathBuf> {
+    candidates(link, project, kind)
+        .into_iter()
         .find(|p| std::fs::metadata(p).is_ok())
 }
 
@@ -375,7 +390,10 @@ fn reload_one(
         return Outcome::NoLink;
     };
     let kind = source_kind(&o.source);
-    let Some(path) = path.or_else(|| locate(link, project.as_deref(), kind)) else {
+    let Some(path) = path
+        .or_else(|| locate(link, project.as_deref(), kind))
+        .or_else(|| locate_other(link, project.as_deref(), kind))
+    else {
         return Outcome::Missing;
     };
     let file = match read_capped(&path) {
@@ -647,8 +665,12 @@ enum Check {
 /// first, then the size, and only for an equal size the sha256. Files that
 /// are too large or not regular files are never read.
 fn check_one(link: &SourceLink, source: &Source, project: Option<&Path>) -> Check {
-    let Some(path) = locate(link, project, source_kind(source)) else {
-        return Check::Missing;
+    let kind = source_kind(source);
+    let Some(path) = locate(link, project, kind) else {
+        return match locate_other(link, project, kind) {
+            Some(_) => Check::Unreadable,
+            None => Check::Missing,
+        };
     };
     let meta = match std::fs::metadata(&path) {
         Ok(m) => m,

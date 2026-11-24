@@ -141,6 +141,24 @@ impl DocState {
     }
 }
 
+/// True if two documents differ at most in the objects' source links.
+fn same_except_links(a: &Document, b: &Document) -> bool {
+    a.job == b.job
+        && a.next_id == b.next_id
+        && a.objects.len() == b.objects.len()
+        && a.objects.iter().zip(&b.objects).all(|(x, y)| {
+            x.id == y.id
+                && x.name == y.name
+                && x.visible == y.visible
+                && x.transform == y.transform
+                && x.cut == y.cut
+                && x.source == y.source
+                && x.frame == y.frame
+                && x.local_bounds == y.local_bounds
+                && (std::sync::Arc::ptr_eq(&x.geometry, &y.geometry) || x.geometry == y.geometry)
+        })
+}
+
 /// The engine state shared by the GUI, the MCP server and tests.
 #[derive(Debug)]
 pub struct Session {
@@ -310,6 +328,8 @@ impl Session {
     /// undo (only `object.reload` when no file changed). Small bookkeeping it
     /// did, like a refreshed modification time, stays in the document, but
     /// no undo step is recorded and the document is not marked as changed.
+    /// Only link fields may differ from the state before the command; debug
+    /// builds check that (`same_except_links`).
     pub(crate) fn mark_no_user_change(&mut self) {
         self.no_user_change = true;
     }
@@ -331,6 +351,10 @@ impl Session {
         let state = &mut self.docs[index];
         match result {
             Ok(value) if no_user_change => {
+                debug_assert!(
+                    same_except_links(&before, &state.document),
+                    "a command marked as no user change changed the document"
+                );
                 state.prune_selection();
                 Ok(value)
             }

@@ -12,7 +12,7 @@ use kurbo::{Point, Rect, Vec2};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::sources::{FileKind, ReadError, absolute, file_kind, new_link, read_capped};
+use super::sources::{FileKind, ReadError, absolute, clip, file_kind, new_link, read_capped};
 use super::{
     command, cutting_area, ids_json, object_mut, placed_bounds, placed_bounds_or_center, rect_json,
     resolve_ids, translate,
@@ -39,7 +39,10 @@ pub(crate) fn warning_text(w: &ImportWarning) -> String {
 fn import_error(e: ImportError) -> CommandError {
     match e {
         ImportError::ImageTooLarge { .. } => CommandError::Failed(e.to_string()),
-        other => CommandError::Failed(format!("cannot import the file: {other}")),
+        other => CommandError::Failed(format!(
+            "cannot import the file: {}",
+            clip(other.to_string())
+        )),
     }
 }
 
@@ -905,6 +908,14 @@ command!(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn import_errors_are_clipped() {
+        let e = import_error(ImportError::Parse("x".repeat(500)));
+        let text = e.to_string();
+        assert!(text.len() < 260, "{text}");
+        assert!(text.ends_with("..."), "{text}");
+    }
 
     #[test]
     fn default_retrace_settings_are_the_trace_defaults() {

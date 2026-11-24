@@ -1012,3 +1012,40 @@ fn relink_to_a_broken_file_changes_nothing() {
     assert_eq!(o.geometry, before.geometry);
     assert_eq!(bytes_of(o), bytes_of(&before));
 }
+
+#[test]
+fn a_folder_with_the_file_name_is_never_taken_for_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("p");
+    let q = dir.path().join("q");
+    let mut s = session(dir.path());
+    std::fs::create_dir_all(&p).unwrap();
+    run(
+        &mut s,
+        "project.save",
+        json!({ "path": p.join("p.flatcraft") }),
+    );
+    write(&p.join("art").join("x.svg"), svg(false));
+    let id = import(&mut s, &p.join("art").join("x.svg"));
+    run(&mut s, "project.save", json!({}));
+    // A copy of the project whose art/x.svg is a folder.
+    std::fs::create_dir_all(q.join("art").join("x.svg")).unwrap();
+    std::fs::copy(p.join("p.flatcraft"), q.join("p.flatcraft")).unwrap();
+
+    let mut s = session(dir.path());
+    run(
+        &mut s,
+        "project.open",
+        json!({ "path": q.join("p.flatcraft") }),
+    );
+    let r = run(&mut s, "document.check_sources", json!({}));
+    assert_eq!(ids(&r["unreadable"]), Vec::<u64>::new(), "{r}");
+    assert_eq!(ids(&r["missing"]), Vec::<u64>::new(), "{r}");
+    run(
+        &mut s,
+        "project.save",
+        json!({ "path": dir.path().join("p2.flatcraft") }),
+    );
+    let link = obj(&s, id).link.clone().unwrap();
+    assert_eq!(link.path, p.join("art").join("x.svg"), "the real file");
+}
