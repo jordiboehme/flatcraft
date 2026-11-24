@@ -1,12 +1,28 @@
 //! Undo and redo.
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{NoParams, command};
-use crate::session::{CommandError, Origin, Session};
+use super::command;
+use crate::session::{CommandError, DocState, Origin, Session};
 
-fn run_undo(s: &mut Session, _: NoParams, _: Origin) -> Result<Value, CommandError> {
-    let st = s.doc_mut();
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HistoryParams {
+    /// Stable id of the open document (see document.state). Default: the active document.
+    pub doc_id: Option<u64>,
+}
+
+fn history_target(s: &mut Session, doc_id: Option<u64>) -> Result<&mut DocState, CommandError> {
+    let index = match doc_id {
+        Some(id) => s.doc_index(id)?,
+        None => s.active,
+    };
+    Ok(&mut s.docs[index])
+}
+
+fn run_undo(s: &mut Session, p: HistoryParams, _: Origin) -> Result<Value, CommandError> {
+    let st = history_target(s, p.doc_id)?;
     let current = st.document.clone();
     let previous = st
         .undo
@@ -23,13 +39,13 @@ command!(
     id: "edit.undo",
     title: "Undo",
     mutates: false,
-    params: NoParams,
+    params: HistoryParams,
     run: run_undo,
-    description: "Undoes the last change to the active document (every object, arrange and job command is one step). Refused when there is nothing to undo. Returns {can_undo, can_redo}.",
+    description: "Undoes the last change to the active document, or to the one with doc_id (every object, arrange and job command is one step). Refused when there is nothing to undo. Returns {can_undo, can_redo}.",
 );
 
-fn run_redo(s: &mut Session, _: NoParams, _: Origin) -> Result<Value, CommandError> {
-    let st = s.doc_mut();
+fn run_redo(s: &mut Session, p: HistoryParams, _: Origin) -> Result<Value, CommandError> {
+    let st = history_target(s, p.doc_id)?;
     let current = st.document.clone();
     let next = st
         .undo
@@ -46,7 +62,7 @@ command!(
     id: "edit.redo",
     title: "Redo",
     mutates: false,
-    params: NoParams,
+    params: HistoryParams,
     run: run_redo,
-    description: "Redoes the last undone change of the active document. Refused when there is nothing to redo. Returns {can_undo, can_redo}.",
+    description: "Redoes the last undone change of the active document, or of the one with doc_id. Refused when there is nothing to redo. Returns {can_undo, can_redo}.",
 );

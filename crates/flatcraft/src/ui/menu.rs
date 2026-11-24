@@ -4,7 +4,6 @@ use std::sync::mpsc;
 
 use muda::accelerator::{Accelerator, Code, Modifiers};
 use muda::{AboutMetadata, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
-use serde_json::json;
 
 use super::Action;
 
@@ -83,15 +82,16 @@ impl AppMenu {
         })
     }
 
-    /// The actions of the menu clicks since the last call.
-    pub fn actions(&self) -> Vec<Action> {
+    /// The actions of the menu clicks since the last call. Undo and Redo
+    /// act on `active`, the document active when the click is handled.
+    pub fn actions(&self, active: u64) -> Vec<Action> {
         self.events
             .try_iter()
             .filter_map(|e| match e.id().as_ref() {
                 PREFERENCES => Some(Action::ShowProfiles),
                 QUIT => Some(Action::Quit),
-                UNDO => Some(Action::Execute("edit.undo", json!({}))),
-                REDO => Some(Action::Execute("edit.redo", json!({}))),
+                UNDO => Some(Action::Undo(active)),
+                REDO => Some(Action::Redo(active)),
                 _ => None,
             })
             .collect()

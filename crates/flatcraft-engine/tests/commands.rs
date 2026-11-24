@@ -1199,3 +1199,24 @@ fn pristine_document() {
     run(&mut s, "edit.undo", json!({}));
     assert!(!s.doc().is_pristine(), "it has a redo step");
 }
+
+#[test]
+fn undo_and_redo_by_doc_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 10.0, 10.0);
+    let first = s.doc().id();
+    run(&mut s, "document.new", json!({}));
+    run(&mut s, "edit.undo", json!({ "doc_id": first }));
+    assert_eq!(s.active, 1, "undo does not switch documents");
+    assert!(s.docs[0].document.get(ObjectId(id)).is_none());
+    run(&mut s, "edit.redo", json!({ "doc_id": first }));
+    assert!(s.docs[0].document.get(ObjectId(id)).is_some());
+    let e = s
+        .execute("edit.undo", json!({ "doc_id": 999_999 }), Origin::User)
+        .unwrap_err();
+    assert_eq!(
+        e,
+        CommandError::NotFound("That document is no longer open.".into())
+    );
+}

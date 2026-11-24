@@ -15,7 +15,15 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                 .color(t.text_dim),
         );
         ui.add_space(t.spacing * 2.0);
-        ui.horizontal(|ui| {
+        // A horizontal row starts at the left edge. Centre it with the
+        // width it had last frame; a changed width redraws the frame.
+        let width_id = ui.scope_id().with("home-actions-width");
+        let last_width: Option<f32> = ui.data(|d| d.get_temp(width_id));
+        let row = ui.horizontal(|ui| {
+            if let Some(w) = last_width {
+                ui.add_space(((ui.available_width() - w) / 2.0).max(0.0));
+            }
+            let start = ui.cursor().left();
             if ui
                 .add(egui::Button::new(
                     RichText::new("New").font(fonts::medium(15.0)),
@@ -34,7 +42,13 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
             {
                 actions.push(Action::OpenDialog);
             }
+            ui.min_rect().right() - start
         });
+        let width = row.inner;
+        if last_width.is_none_or(|w| (w - width).abs() > 0.5) {
+            ui.data_mut(|d| d.insert_temp(width_id, width));
+            ui.ctx().request_discard("centre the Home actions");
+        }
         ui.add_space(t.spacing * 3.0);
         ui.label(RichText::new("Recent projects").font(fonts::medium(15.0)));
         ui.add_space(t.spacing / 2.0);

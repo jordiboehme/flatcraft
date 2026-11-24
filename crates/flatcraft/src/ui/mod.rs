@@ -148,6 +148,10 @@ pub enum Action {
     Switch(u64),
     /// Close this document.
     Close(u64),
+    /// Undo the last change of this document.
+    Undo(u64),
+    /// Redo the last undone change of this document.
+    Redo(u64),
     SetWorkspace(Workspace),
     ShowProfiles,
     Help,
@@ -245,14 +249,14 @@ impl FlatCraftApp {
             Action::SaveAs { doc_id } => {
                 // The dialog blocks without the lock; an agent may change the
                 // active document meanwhile, so the save names `doc_id`.
-                let name = match self.ui.untitled.get(&doc_id) {
-                    Some(n) => format!("Untitled {n}.{PROJECT_EXTENSION}"),
-                    None => format!("Untitled.{PROJECT_EXTENSION}"),
-                };
-                let file = rfd::FileDialog::new()
+                let (name, dir) = self.save_as_suggestion(doc_id);
+                let mut dialog = rfd::FileDialog::new()
                     .add_filter("FlatCraft project", &[PROJECT_EXTENSION])
-                    .set_file_name(name)
-                    .save_file();
+                    .set_file_name(name);
+                if let Some(dir) = dir {
+                    dialog = dialog.set_directory(dir);
+                }
+                let file = dialog.save_file();
                 if let Some(path) = file {
                     self.apply_one(ctx, Action::SaveTo { doc_id, path });
                 }
@@ -319,10 +323,32 @@ impl FlatCraftApp {
                     Err(e) => self.toast(Toast::error(person_text(&e))),
                 }
             }
+            Action::Undo(doc_id) => {
+                self.execute("edit.undo", json!({ "doc_id": doc_id }));
+            }
+            Action::Redo(doc_id) => {
+                self.execute("edit.redo", json!({ "doc_id": doc_id }));
+            }
             Action::SetWorkspace(w) => self.ui.workspace = w,
             Action::ShowProfiles => self.ui.show_profiles = true,
             Action::Help => ctx.open_url(egui::OpenUrl::new_tab(HELP_URL)),
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+        }
+    }
+
+    /// The file name and folder the Save As dialog suggests: the
+    /// document's own file if it has one, else "Untitled N.flatcraft".
+    pub fn save_as_suggestion(&self, doc_id: u64) -> (String, Option<PathBuf>) {
+        let current = {
+            let s = lock(&self.session);
+            s.doc_index(doc_id)
+                .ok()
+                .and_then(|i| s.docs[i].path.clone())
+        };
+        match (current, self.ui.untitled.get(&doc_id)) {
+            (Some(path), _) => (display_name(&path), path.parent().map(Path::to_path_buf)),
+            (None, Some(n)) => (format!("Untitled {n}.{PROJECT_EXTENSION}"), None),
+            (None, None) => (format!("Untitled.{PROJECT_EXTENSION}"), None),
         }
     }
 
@@ -423,10 +449,10 @@ fn shortcuts(ctx: &egui::Context, active: u64, actions: &mut Vec<Action>) {
         }
         if !cfg!(target_os = "macos") {
             if i.consume_shortcut(&cmd_shift(Key::Z)) || i.consume_shortcut(&cmd(Key::Y)) {
-                actions.push(Action::Execute("edit.redo", json!({})));
+                actions.push(Action::Redo(active));
             }
             if i.consume_shortcut(&cmd(Key::Z)) {
-                actions.push(Action::Execute("edit.undo", json!({})));
+                actions.push(Action::Undo(active));
             }
         }
     });
@@ -480,7 +506,8 @@ fn workspace_placeholder(ui: &mut egui::Ui, app: &FlatCraftApp, w: Workspace) {
 impl eframe::App for FlatCraftApp {
     #[cfg(target_os = "macos")]
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let actions = self.menu.as_ref().map(menu::AppMenu::actions);
+        let active = lock(&self.session).doc().id();
+        let actions = self.menu.as_ref().map(|m| m.actions(active));
         if let Some(actions) = actions {
             self.apply(ctx, actions);
         }

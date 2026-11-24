@@ -4,7 +4,6 @@
 use std::time::Instant;
 
 use egui::{RichText, Ui};
-use serde_json::json;
 
 use super::icons::Icon;
 use super::{Action, FlatCraftApp, Workspace, display_name, fonts, icon_button, lock};
@@ -75,10 +74,10 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                         actions.push(Action::Save { doc_id: active });
                     }
                     if icon_button(ui, Icon::Undo, "Undo", can_undo).clicked() {
-                        actions.push(Action::Execute("edit.undo", json!({})));
+                        actions.push(Action::Undo(active));
                     }
                     if icon_button(ui, Icon::Redo, "Redo", can_redo).clicked() {
-                        actions.push(Action::Execute("edit.redo", json!({})));
+                        actions.push(Action::Redo(active));
                     }
                     ui.separator();
                     for tab in &tabs {

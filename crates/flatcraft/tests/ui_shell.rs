@@ -317,3 +317,61 @@ fn cmd_n_and_home_new_reuse_the_empty_start_document() {
     h.run();
     assert_eq!(s.lock().unwrap().docs.len(), 2);
 }
+
+#[test]
+fn undo_targets_the_document_clicked() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    let chosen = s.lock().unwrap().doc().id();
+    // Between the click and the apply, an agent opens another document.
+    s.lock()
+        .unwrap()
+        .execute("document.new", json!({}), Origin::Agent)
+        .unwrap();
+    let ctx = h.ctx.clone();
+    app_mut(&mut h).apply(&ctx, vec![Action::Undo(chosen)]);
+    let st = s.lock().unwrap();
+    assert!(
+        st.docs[0].document.objects.is_empty(),
+        "the import was undone"
+    );
+    assert!(app(&h).ui.toasts.is_empty(), "{:?}", app(&h).ui.toasts);
+}
+
+#[test]
+fn home_actions_are_centred() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = harness(&dir, session(&dir), false);
+    let new = h.get_by_role_and_label(Role::Button, "New").rect();
+    let open = h.get_by_role_and_label(Role::Button, "Open").rect();
+    let row_centre = (new.left() + open.right()) / 2.0;
+    let heading = h.get_by_label("Welcome to FlatCraft").rect();
+    assert!(
+        (row_centre - heading.center().x).abs() < 2.0,
+        "row centre {row_centre}, heading centre {}",
+        heading.center().x
+    );
+}
+
+#[test]
+fn save_as_suggests_the_current_file_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let h = harness(&dir, s.clone(), false);
+    let id = s.lock().unwrap().doc().id();
+    assert_eq!(
+        app(&h).save_as_suggestion(id),
+        ("Untitled 1.flatcraft".to_string(), None)
+    );
+    let path = dir.path().join("coasters.flatcraft");
+    s.lock().unwrap().doc_mut().path = Some(path);
+    assert_eq!(
+        app(&h).save_as_suggestion(id),
+        (
+            "coasters.flatcraft".to_string(),
+            Some(dir.path().to_path_buf())
+        )
+    );
+}
