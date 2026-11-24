@@ -2,11 +2,17 @@
 //! the drawing do not depend on eframe, so tests drive [`shell`] directly.
 
 pub mod app_bar;
+pub mod canvas;
+pub mod files;
 pub mod fonts;
 pub mod home;
 pub mod icons;
 #[cfg(target_os = "macos")]
 pub mod menu;
+pub mod objects;
+pub mod prepare;
+pub mod ribbon;
+pub mod settings;
 pub mod switcher;
 pub mod theme;
 pub mod toasts;
@@ -71,24 +77,6 @@ impl Workspace {
     }
 }
 
-/// Pan and zoom of the mat canvas. The Prepare workspace uses it.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CanvasView {
-    /// Screen points per millimetre.
-    pub zoom: f32,
-    /// Offset of the media origin from the canvas centre, in points.
-    pub pan: egui::Vec2,
-}
-
-impl Default for CanvasView {
-    fn default() -> Self {
-        Self {
-            zoom: 2.0,
-            pan: egui::Vec2::ZERO,
-        }
-    }
-}
-
 /// Everything the window shows that is not part of the engine session.
 #[derive(Debug, Clone, Default)]
 pub struct UiState {
@@ -96,7 +84,7 @@ pub struct UiState {
     pub toasts: Vec<Toast>,
     pub show_debug: bool,
     pub show_profiles: bool,
-    pub canvas_view: CanvasView,
+    pub prepare: prepare::PrepareState,
     /// The number of each untitled document's name, by stable document id,
     /// so "Untitled 3" keeps its name when "Untitled 2" closes.
     pub untitled: BTreeMap<u64, usize>,
@@ -120,8 +108,30 @@ impl UiState {
 /// lock is never held while a widget draws.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
-    /// A registry command on the active document, as `Origin::User`.
-    Execute(&'static str, Value),
+    /// A registry command, as `Origin::User`, on the document it was made
+    /// for. If another document became active meanwhile (an agent opened
+    /// one), it is not run.
+    Run {
+        doc_id: u64,
+        command: &'static str,
+        params: Value,
+    },
+    /// Ask for a file and import it into this document.
+    Import {
+        doc_id: u64,
+    },
+    /// Ask where an object's linked file went, then `object.relink`.
+    Reconnect {
+        doc_id: u64,
+        id: u64,
+    },
+    /// Relink these objects to these files (`also_found` of a relink).
+    ReconnectAll {
+        doc_id: u64,
+        items: Vec<(u64, PathBuf)>,
+    },
+    /// Check the linked files of the active document soon.
+    CheckSources,
     /// Save this document; asks for a path if it has none.
     Save {
         doc_id: u64,
@@ -158,6 +168,17 @@ pub enum Action {
     Quit,
 }
 
+impl Action {
+    /// A registry command on the document `doc_id`.
+    pub fn run(doc_id: u64, command: &'static str, params: Value) -> Self {
+        Action::Run {
+            doc_id,
+            command,
+            params,
+        }
+    }
+}
+
 /// The FlatCraft window.
 pub struct FlatCraftApp {
     pub session: SharedSession,
@@ -166,6 +187,8 @@ pub struct FlatCraftApp {
     pub tokens: Tokens,
     /// True for a window started by `flatcraft mcp --window`.
     pub agent: bool,
+    /// File dialogs; tests replace them.
+    pub files: Box<dyn files::FilePicker>,
     /// The macOS menu bar; it must live as long as the app.
     #[cfg(target_os = "macos")]
     menu: Option<menu::AppMenu>,
@@ -184,6 +207,7 @@ impl FlatCraftApp {
             ui: UiState::default(),
             tokens,
             agent: false,
+            files: Box::new(files::NativePicker),
             #[cfg(target_os = "macos")]
             menu: None,
         }
@@ -192,6 +216,12 @@ impl FlatCraftApp {
     /// Marks a window started by `flatcraft mcp --window`.
     pub fn with_agent(mut self) -> Self {
         self.agent = true;
+        self
+    }
+
+    /// Uses these file dialogs instead of the platform ones.
+    pub fn with_file_picker(mut self, picker: impl files::FilePicker + 'static) -> Self {
+        self.files = Box::new(picker);
         self
     }
 
@@ -226,11 +256,148 @@ impl FlatCraftApp {
         }
     }
 
+    /// Runs a command on the document `doc_id`, under one lock, only while
+    /// it is still the active document. Errors become toasts.
+    fn run_on(&mut self, doc_id: u64, command: &'static str, params: Value) -> Option<Value> {
+        let result = {
+            let mut s = lock(&self.session);
+            if s.doc().id() != doc_id {
+                None
+            } else {
+                Some(s.execute(command, params.clone(), Origin::User))
+            }
+        };
+        match result {
+            None => {
+                self.toast(Toast::warning(
+                    "Another document became active, so nothing was changed.",
+                ));
+                None
+            }
+            Some(Err(e)) => {
+                self.toast(Toast::error(person_text(&e)));
+                None
+            }
+            Some(Ok(v)) => {
+                self.after_command(command, &params, &v);
+                Some(v)
+            }
+        }
+    }
+
+    /// Updates what Prepare shows after a command ran.
+    fn after_command(&mut self, command: &str, params: &Value, result: &Value) {
+        let ids = |v: &Value| -> Vec<u64> {
+            v.as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_u64)
+                .collect()
+        };
+        let warnings: Vec<String> = result["warnings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|w| w.as_str().map(str::to_string))
+            .collect();
+        let p = &mut self.ui.prepare;
+        match command {
+            "object.import" => p.notices = warnings,
+            "object.reload" => {
+                let done: Vec<u64> = [&result["reloaded"], &result["unchanged"]]
+                    .into_iter()
+                    .flat_map(ids)
+                    .collect();
+                p.sources.changed.retain(|i| !done.contains(i));
+                for id in ids(&result["missing"]) {
+                    p.sources.changed.retain(|i| *i != id);
+                    if !p.sources.missing.contains(&id) {
+                        p.sources.missing.push(id);
+                    }
+                }
+                for w in warnings {
+                    self.toast(Toast::warning(w));
+                }
+            }
+            "object.relink" => {
+                if let Some(id) = params["id"].as_u64() {
+                    p.sources.forget(&[id]);
+                }
+                p.sources.also_found = result["also_found"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|f| Some((f["id"].as_u64()?, PathBuf::from(f["path"].as_str()?))))
+                    .collect();
+                for w in warnings {
+                    self.toast(Toast::warning(w));
+                }
+            }
+            "object.unlink" => p.sources.forget(&ids(&result["ids"])),
+            "object.delete" => p.sources.forget(&ids(&result["deleted"])),
+            _ => {}
+        }
+    }
+
     fn apply_one(&mut self, ctx: &egui::Context, action: Action) {
         match action {
-            Action::Execute(id, params) => {
-                self.execute(id, params);
+            Action::Run {
+                doc_id,
+                command,
+                params,
+            } => {
+                self.run_on(doc_id, command, params);
             }
+            Action::Import { doc_id } => {
+                let req = files::FileRequest {
+                    title: "Import".into(),
+                    filters: vec![files::filter(
+                        "SVG or image",
+                        &["svg", "svgz", "png", "jpg", "jpeg", "webp", "gif"],
+                    )],
+                    ..Default::default()
+                };
+                if let Some(path) = self.files.pick_file(&req) {
+                    self.run_on(doc_id, "object.import", json!({ "path": path }));
+                }
+            }
+            Action::Reconnect { doc_id, id } => {
+                let raster = {
+                    let s = lock(&self.session);
+                    s.doc_index(doc_id).ok().and_then(|i| {
+                        s.docs[i]
+                            .document
+                            .get(flatcraft_core::document::ObjectId(id))
+                            .map(|o| {
+                                matches!(o.source, flatcraft_core::document::Source::Raster { .. })
+                            })
+                    })
+                };
+                let Some(raster) = raster else {
+                    self.toast(Toast::error("That object is gone."));
+                    return;
+                };
+                let filter = if raster {
+                    files::filter("Image", &["png", "jpg", "jpeg", "webp", "gif"])
+                } else {
+                    files::filter("SVG", &["svg", "svgz"])
+                };
+                let req = files::FileRequest {
+                    title: "Reconnect file".into(),
+                    filters: vec![filter],
+                    ..Default::default()
+                };
+                if let Some(path) = self.files.pick_file(&req) {
+                    self.run_on(doc_id, "object.relink", json!({ "id": id, "path": path }));
+                }
+            }
+            Action::ReconnectAll { doc_id, items } => {
+                for (id, path) in items {
+                    self.run_on(doc_id, "object.relink", json!({ "id": id, "path": path }));
+                }
+                self.ui.prepare.sources.also_found.clear();
+            }
+            Action::CheckSources => self.ui.prepare.sources.check_pending = true,
             Action::Save { doc_id } => {
                 let path = {
                     let s = lock(&self.session);
@@ -250,14 +417,13 @@ impl FlatCraftApp {
                 // The dialog blocks without the lock; an agent may change the
                 // active document meanwhile, so the save names `doc_id`.
                 let (name, dir) = self.save_as_suggestion(doc_id);
-                let mut dialog = rfd::FileDialog::new()
-                    .add_filter("FlatCraft project", &[PROJECT_EXTENSION])
-                    .set_file_name(name);
-                if let Some(dir) = dir {
-                    dialog = dialog.set_directory(dir);
-                }
-                let file = dialog.save_file();
-                if let Some(path) = file {
+                let req = files::FileRequest {
+                    title: "Save As".into(),
+                    filters: vec![files::filter("FlatCraft project", &[PROJECT_EXTENSION])],
+                    file_name: Some(name),
+                    directory: dir,
+                };
+                if let Some(path) = self.files.save_file(&req) {
                     self.apply_one(ctx, Action::SaveTo { doc_id, path });
                 }
             }
@@ -269,10 +435,12 @@ impl FlatCraftApp {
                 }
             }
             Action::OpenDialog => {
-                let file = rfd::FileDialog::new()
-                    .add_filter("FlatCraft project", &[PROJECT_EXTENSION])
-                    .pick_file();
-                if let Some(path) = file {
+                let req = files::FileRequest {
+                    title: "Open".into(),
+                    filters: vec![files::filter("FlatCraft project", &[PROJECT_EXTENSION])],
+                    ..Default::default()
+                };
+                if let Some(path) = self.files.pick_file(&req) {
                     self.apply_one(ctx, Action::Open(path));
                 }
             }
@@ -285,6 +453,7 @@ impl FlatCraftApp {
                         }
                     }
                     self.ui.workspace = Workspace::Prepare;
+                    self.ui.prepare.sources.check_pending = true;
                 }
             }
             Action::NewDocument => {
@@ -469,19 +638,38 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     };
     app.ui.number_documents(&open);
     shortcuts(&ctx, active, &mut actions);
+    let focused = ctx.input(|i| {
+        i.raw
+            .events
+            .iter()
+            .any(|e| matches!(e, egui::Event::WindowFocused(true)))
+    });
+    if focused {
+        app.ui.prepare.sources.check_pending = true;
+    }
 
+    let snap = (app.ui.workspace == Workspace::Prepare).then(|| prepare::snapshot(app));
     app_bar::show(ui, app, &mut actions);
-    switcher::ribbon(ui, app, &mut actions);
-    egui::CentralPanel::default()
-        .frame(egui::Frame::new().fill(app.tokens.bg))
-        .show(ui, |ui| match app.ui.workspace {
-            Workspace::Home => home::show(ui, app, &mut actions),
-            w @ (Workspace::Prepare | Workspace::Cut) => workspace_placeholder(ui, app, w),
-        });
+    switcher::ribbon(ui, app, snap.as_ref(), &mut actions);
+    match (&snap, app.ui.workspace) {
+        (Some(snap), _) => {
+            prepare_keys(&ctx, snap, &mut actions);
+            prepare::show(ui, app, snap, &mut actions);
+        }
+        (None, w) => {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().fill(app.tokens.bg))
+                .show(ui, |ui| match w {
+                    Workspace::Home => home::show(ui, app, &mut actions),
+                    w => workspace_placeholder(ui, app, w),
+                });
+        }
+    }
 
     app.apply(&ctx, actions);
 
     let now = Instant::now();
+    app.check_sources(&ctx, now);
     if let Some(next) = toasts::prune(&mut app.ui.toasts, now) {
         ctx.request_repaint_after(next);
     }
@@ -489,6 +677,35 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     if app.agent {
         // Keeps the agent pill current.
         ctx.request_repaint_after(Duration::from_secs(1));
+    }
+}
+
+/// Delete removes the selection and Escape clears it, unless a text field
+/// has the keyboard.
+fn prepare_keys(ctx: &egui::Context, snap: &prepare::Snapshot, actions: &mut Vec<Action>) {
+    if ctx.egui_wants_keyboard_input() || snap.selection.is_empty() {
+        return;
+    }
+    let (delete, escape) = ctx.input_mut(|i| {
+        (
+            i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
+        )
+    });
+    let ids: Vec<u64> = snap.selection.iter().copied().collect();
+    if delete {
+        actions.push(Action::run(
+            snap.doc_id,
+            "object.delete",
+            json!({ "ids": ids }),
+        ));
+    } else if escape {
+        actions.push(Action::run(
+            snap.doc_id,
+            "object.select",
+            json!({ "ids": [] }),
+        ));
     }
 }
 

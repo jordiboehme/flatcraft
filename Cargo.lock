@@ -1401,6 +1401,7 @@ dependencies = [
  "flatcraft-device",
  "flatcraft-engine",
  "flatcraft-mcp",
+ "kurbo",
  "muda",
  "resvg",
  "rfd",

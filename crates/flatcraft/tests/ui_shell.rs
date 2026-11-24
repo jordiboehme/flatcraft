@@ -1,62 +1,15 @@
 //! The app shell, driven through egui_kittest.
 
-use std::sync::{Arc, Mutex};
+mod common;
 
+use common::{app, app_mut, harness, import_square, session};
 use egui::accesskit::Role;
-use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
-use flatcraft::ui::{self, Action, FlatCraftApp, Workspace, fonts};
+use flatcraft::ui::{Action, Workspace};
 use flatcraft_core::document::ObjectId;
-use flatcraft_device::ProfileStore;
 use flatcraft_engine::prefs::Preferences;
-use flatcraft_engine::session::{Origin, Session};
-use flatcraft_mcp::SharedSession;
+use flatcraft_engine::session::Origin;
 use serde_json::json;
-
-fn session(dir: &tempfile::TempDir) -> SharedSession {
-    let profiles = ProfileStore::load(&dir.path().join("profiles")).unwrap();
-    // Never the real Documents folder.
-    let prefs = Preferences {
-        output_dir: Some(dir.path().join("output")),
-        ..Preferences::default()
-    };
-    Arc::new(Mutex::new(Session::new(
-        profiles,
-        prefs,
-        true,
-        dir.path().to_path_buf(),
-    )))
-}
-
-/// A harness around `ui::shell`. The app is built with the harness context
-/// after the fonts are in, as `main` does with eframe's context.
-fn harness(
-    dir: &tempfile::TempDir,
-    s: SharedSession,
-    agent: bool,
-) -> Harness<'static, Option<FlatCraftApp>> {
-    let mut h = Harness::builder()
-        .with_size([1400.0, 900.0])
-        .with_context_setup(fonts::install)
-        .build_ui_state(
-            |ui, app: &mut Option<FlatCraftApp>| {
-                if let Some(app) = app {
-                    ui::shell(ui, app);
-                }
-            },
-            None,
-        );
-    let ctx = h.ctx.clone();
-    fonts::install(&ctx);
-    let app = FlatCraftApp::new(&ctx, s, dir.path().to_path_buf());
-    *h.state_mut() = Some(if agent { app.with_agent() } else { app });
-    h.run();
-    h
-}
-
-fn app<'a>(h: &'a Harness<'_, Option<FlatCraftApp>>) -> &'a FlatCraftApp {
-    h.state().as_ref().unwrap()
-}
 
 #[test]
 fn switcher_changes_workspace() {
@@ -182,22 +135,6 @@ fn home_new_reuses_the_empty_start_document() {
     h.get_by_role_and_label(Role::Button, "New").click();
     h.run();
     assert_eq!(s.lock().unwrap().docs.len(), 2);
-}
-
-fn app_mut<'a>(h: &'a mut Harness<'_, Option<FlatCraftApp>>) -> &'a mut FlatCraftApp {
-    h.state_mut().as_mut().unwrap()
-}
-
-fn import_square(s: &SharedSession) {
-    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="200mm" viewBox="0 0 200 200"><rect x="20" y="20" width="50" height="50"/></svg>"#;
-    s.lock()
-        .unwrap()
-        .execute(
-            "object.import_svg",
-            json!({ "svg": svg, "name": "square" }),
-            Origin::User,
-        )
-        .unwrap();
 }
 
 #[test]

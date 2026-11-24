@@ -11,6 +11,8 @@ publish = false
 flatcraft-engine = { path = "../flatcraft-engine" }
 flatcraft-device = { path = "../flatcraft-device" }
 flatcraft-mcp = { path = "../flatcraft-mcp" }
+flatcraft-core = { path = "../flatcraft-core" }
+kurbo.workspace = true
 eframe = { workspace = true, features = ["glow", "accesskit", "x11", "wayland"] }
 egui.workspace = true
 resvg.workspace = true
@@ -25,6 +27,5 @@ serde_json.workspace = true
 muda.workspace = true
 
 [dev-dependencies]
-flatcraft-core = { path = "../flatcraft-core" }
 egui_kittest.workspace = true
 tempfile.workspace = true

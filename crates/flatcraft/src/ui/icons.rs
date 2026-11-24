@@ -34,6 +34,19 @@ pub enum Icon {
     EyeOff,
     Plus,
     Close,
+    BrokenLink,
+    Reload,
+    SvgFile,
+    ImageFile,
+    Grid,
+    Ruler,
+    Debug,
+    ZoomFit,
+    MirrorVertical,
+    TestPatterns,
+    PanelLeft,
+    PanelRight,
+    RotateLeft,
 }
 
 macro_rules! svg {
@@ -43,7 +56,7 @@ macro_rules! svg {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 25] = [
+    pub const ALL: [Icon; 38] = [
         Icon::Import,
         Icon::Trace,
         Icon::Duplicate,
@@ -69,6 +82,19 @@ impl Icon {
         Icon::EyeOff,
         Icon::Plus,
         Icon::Close,
+        Icon::BrokenLink,
+        Icon::Reload,
+        Icon::SvgFile,
+        Icon::ImageFile,
+        Icon::Grid,
+        Icon::Ruler,
+        Icon::Debug,
+        Icon::ZoomFit,
+        Icon::MirrorVertical,
+        Icon::TestPatterns,
+        Icon::PanelLeft,
+        Icon::PanelRight,
+        Icon::RotateLeft,
     ];
 
     /// The vendored Lucide SVG source.
@@ -99,6 +125,19 @@ impl Icon {
             Icon::EyeOff => svg!("eye-off"),
             Icon::Plus => svg!("plus"),
             Icon::Close => svg!("x"),
+            Icon::BrokenLink => svg!("link-2-off"),
+            Icon::Reload => svg!("refresh-cw"),
+            Icon::SvgFile => svg!("file"),
+            Icon::ImageFile => svg!("image"),
+            Icon::Grid => svg!("grid-3x3"),
+            Icon::Ruler => svg!("ruler"),
+            Icon::Debug => svg!("bug"),
+            Icon::ZoomFit => svg!("maximize"),
+            Icon::MirrorVertical => svg!("square-axis-dashed-horizontal"),
+            Icon::TestPatterns => svg!("flask-conical"),
+            Icon::PanelLeft => svg!("panel-left"),
+            Icon::PanelRight => svg!("panel-right"),
+            Icon::RotateLeft => svg!("rotate-ccw"),
         }
     }
 }

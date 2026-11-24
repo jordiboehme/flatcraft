@@ -14,8 +14,13 @@ pub const CHOICES: [(Workspace, &str); 2] = [
     (Workspace::Cut, "plotter, path, send"),
 ];
 
-/// The ribbon row: the switcher, then the workspace's tools (later tasks).
-pub fn ribbon(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
+/// The ribbon row: the switcher, then the workspace's tools.
+pub fn ribbon(
+    ui: &mut Ui,
+    app: &mut FlatCraftApp,
+    snap: Option<&super::prepare::Snapshot>,
+    actions: &mut Vec<Action>,
+) {
     let t = app.tokens;
     egui::Panel::top("flatcraft-ribbon")
         .frame(
@@ -26,6 +31,16 @@ pub fn ribbon(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 switcher(ui, app, actions);
+                if let Some(snap) = snap {
+                    ui.separator();
+                    super::ribbon::show(
+                        ui,
+                        &mut app.ui.prepare,
+                        snap,
+                        &mut app.ui.show_debug,
+                        actions,
+                    );
+                }
             });
         });
 }

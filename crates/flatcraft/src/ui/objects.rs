@@ -1,0 +1,154 @@
+//! The Objects panel: one row per object with its kind, name, file status
+//! and an eye to show or hide it. Below the list, the details of a single
+//! selected object with its linked file.
+
+use egui::{RichText, Ui};
+use serde_json::json;
+
+use super::icons::{self, Icon};
+use super::prepare::{ObjView, PrepareState, Snapshot};
+use super::theme::Tokens;
+use super::{Action, ICON_SIZE, fonts, icon_button};
+
+/// A small icon with an accessible name.
+fn badge(ui: &mut Ui, icon: Icon, name: &str, colour: egui::Color32) {
+    let tex = icons::texture_colored(ui.ctx(), icon, ICON_SIZE * 0.8, colour);
+    ui.add(
+        egui::Image::from_texture(egui::load::SizedTexture::new(
+            tex.id(),
+            egui::Vec2::splat(ICON_SIZE * 0.8),
+        ))
+        .alt_text(name),
+    )
+    .on_hover_text(name);
+}
+
+pub fn show(
+    ui: &mut Ui,
+    st: &PrepareState,
+    snap: &Snapshot,
+    t: &Tokens,
+    actions: &mut Vec<Action>,
+) {
+    let doc_id = snap.doc_id;
+    let src = &st.sources;
+    ui.label(RichText::new("Objects").font(fonts::semibold(14.0)));
+    ui.add_space(t.spacing / 2.0);
+    if snap.objects.is_empty() {
+        ui.label(
+            RichText::new("Nothing here yet. Import a design to get started.").color(t.text_dim),
+        );
+    }
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, true])
+        .max_height(ui.available_height() * 0.6)
+        .show(ui, |ui| {
+            for o in &snap.objects {
+                ui.horizontal(|ui| {
+                    let (icon, kind) = if o.raster {
+                        (Icon::ImageFile, "Traced image")
+                    } else {
+                        (Icon::SvgFile, "SVG")
+                    };
+                    badge(ui, icon, kind, t.text_dim);
+                    let selected = snap.selection.contains(&o.id);
+                    let name = if o.visible {
+                        RichText::new(&o.name)
+                    } else {
+                        RichText::new(&o.name).color(t.text_dim)
+                    };
+                    let row = ui.add(egui::Button::selectable(selected, name));
+                    if row.clicked() {
+                        let shift = ui.input(|i| i.modifiers.shift);
+                        let ids: Vec<u64> = if shift {
+                            let mut ids: Vec<u64> = snap.selection.iter().copied().collect();
+                            if !ids.contains(&o.id) {
+                                ids.push(o.id);
+                            }
+                            ids
+                        } else {
+                            vec![o.id]
+                        };
+                        actions.push(Action::run(doc_id, "object.select", json!({ "ids": ids })));
+                    }
+                    if src.changed.contains(&o.id) {
+                        badge(ui, Icon::Reload, "Source file changed", t.accent_prepare);
+                    } else if src.missing.contains(&o.id) {
+                        badge(ui, Icon::BrokenLink, "Source file not found", t.danger);
+                    } else if src.unreadable.contains(&o.id) {
+                        badge(ui, Icon::BrokenLink, "Source file can't be read", t.danger);
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let (icon, name) = if o.visible {
+                            (Icon::Eye, format!("Hide {}", o.name))
+                        } else {
+                            (Icon::EyeOff, format!("Show {}", o.name))
+                        };
+                        if icon_button(ui, icon, &name, true).clicked() {
+                            actions.push(Action::run(
+                                doc_id,
+                                "object.set_visible",
+                                json!({ "ids": [o.id], "visible": !o.visible }),
+                            ));
+                        }
+                    });
+                });
+            }
+        });
+
+    let mut selected = snap.selected();
+    if let (Some(o), None) = (selected.next(), selected.next()) {
+        ui.separator();
+        details(ui, o, st, t, doc_id, actions);
+    }
+}
+
+/// Name, kind and linked file of one object.
+fn details(
+    ui: &mut Ui,
+    o: &ObjView,
+    st: &PrepareState,
+    t: &Tokens,
+    doc_id: u64,
+    actions: &mut Vec<Action>,
+) {
+    let src = &st.sources;
+    ui.label(RichText::new(&o.name).font(fonts::medium(14.0)));
+    if let Some(b) = o.bounds() {
+        ui.label(
+            RichText::new(format!("{:.1} x {:.1} mm", b.width(), b.height())).color(t.text_dim),
+        );
+    }
+    let Some(path) = &o.link else {
+        ui.label(RichText::new("Not linked to a file").color(t.text_dim));
+        return;
+    };
+    ui.label(RichText::new("Linked file").color(t.text_dim));
+    ui.add(egui::Label::new(path.display().to_string()).wrap());
+    if src.missing.contains(&o.id) {
+        ui.colored_label(
+            t.danger,
+            "The file is gone. The project keeps its own copy.",
+        );
+    } else if src.unreadable.contains(&o.id) {
+        ui.colored_label(t.danger, "File can't be read");
+    } else if src.changed.contains(&o.id) {
+        ui.colored_label(t.accent_prepare, "The file has changed since the import.");
+    }
+    ui.horizontal(|ui| {
+        if src.broken(o.id) && ui.button("Reconnect file...").clicked() {
+            actions.push(Action::Reconnect { doc_id, id: o.id });
+        }
+        if ui
+            .button("Unlink")
+            .on_hover_text("Forget the file. The object stays as it is.")
+            .clicked()
+        {
+            actions.push(Action::run(
+                doc_id,
+                "object.unlink",
+                json!({ "ids": [o.id] }),
+            ));
+        }
+    });
+}

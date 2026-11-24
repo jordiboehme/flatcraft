@@ -33,6 +33,19 @@ https://raw.githubusercontent.com/lucide-icons/lucide/1.79.0/icons/<name>.svg, u
 | EyeOff | eye-off |
 | Plus | plus |
 | Close | x |
+| Broken link | link-2-off |
+| Reload | refresh-cw |
+| SVG file | file |
+| Image file | image |
+| Grid | grid-3x3 |
+| Rulers | ruler |
+| Debug | bug |
+| Zoom to fit | maximize |
+| Mirror vertical | square-axis-dashed-horizontal |
+| Test patterns | flask-conical |
+| Objects panel | panel-left |
+| Settings panel | panel-right |
+| Rotate left | rotate-ccw |
 
 The SVGs draw with currentColor. The app replaces it with the theme's text colour before
 resvg renders them.
