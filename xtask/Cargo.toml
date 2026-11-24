@@ -8,9 +8,9 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-clap.workspace = true
-serde_json.workspace = true
+clap = { workspace = true, features = ["derive", "std", "help", "usage", "error-context"] }
 anyhow.workspace = true
+flatcraft-device = { path = "../crates/flatcraft-device" }
 
 [dev-dependencies]
 tempfile.workspace = true

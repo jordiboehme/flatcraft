@@ -2,6 +2,7 @@
 //! byte log and transports.
 
 pub mod bytelog;
+pub mod capture;
 pub mod gpgl;
 pub mod presets;
 pub mod profile;
