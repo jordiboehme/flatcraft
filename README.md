@@ -111,6 +111,8 @@ So FlatCraft is long-life software for the plotters we already own. It's in the 
 
 ## Principles
 
+Super massive stability stuff, as Felix Schelhasse would say. Here's FlatCraft's version:
+
 - **Local only:** no cloud services, no telemetry. Your designs stay on your machine.
 - **Measured, not guessed:** cut quality is tested with a simulator and with a ruler on real paper.
 - **Clean licenses:** FlatCraft uses only libraries with permissive or MPL licenses.
