@@ -8,11 +8,12 @@
 //! sends one `object.retrace` to the object's document.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Ui, vec2};
 use flatcraft_core::document::TraceSettings;
-use flatcraft_engine::commands::sources::file_kind;
+use flatcraft_engine::commands::sources::{FileKind, IMPORT_TYPES, is_importable};
 use flatcraft_import::ImportError;
 use flatcraft_import::trace::TraceResult;
 use serde_json::json;
@@ -37,21 +38,26 @@ pub type Tracer =
 
 // ---------------------------------------------------------------- import
 
+/// File dialog filters for the import types of `kind` (all when `None`):
+/// one filter with all of them, then one per type.
+pub fn import_filters(all_name: &str, kind: Option<FileKind>) -> Vec<(String, Vec<String>)> {
+    let types: Vec<_> = IMPORT_TYPES
+        .iter()
+        .filter(|t| kind.is_none_or(|k| t.kind == k))
+        .collect();
+    let all: Vec<&str> = types.iter().flat_map(|t| t.extensions).copied().collect();
+    let mut filters = vec![filter(all_name, &all)];
+    if types.len() > 1 {
+        filters.extend(types.iter().map(|t| filter(t.name, t.extensions)));
+    }
+    filters
+}
+
 /// The Import file dialog: everything FlatCraft imports, then each type.
 pub fn import_request() -> FileRequest {
     FileRequest {
         title: "Import".into(),
-        filters: vec![
-            filter(
-                "SVG or image",
-                &["svg", "svgz", "png", "jpg", "jpeg", "webp", "gif"],
-            ),
-            filter("SVG", &["svg", "svgz"]),
-            filter("PNG", &["png"]),
-            filter("JPEG", &["jpg", "jpeg"]),
-            filter("WebP", &["webp"]),
-            filter("GIF", &["gif"]),
-        ],
+        filters: import_filters("SVG or image", None),
         ..Default::default()
     }
 }
@@ -74,7 +80,7 @@ pub fn drop_kind(path: &Path) -> DropKind {
         .is_some_and(|e| e.eq_ignore_ascii_case(PROJECT_EXTENSION));
     if project {
         DropKind::Project
-    } else if file_kind(path).is_ok() {
+    } else if is_importable(path) {
         DropKind::Import
     } else {
         DropKind::Unsupported
@@ -83,8 +89,13 @@ pub fn drop_kind(path: &Path) -> DropKind {
 
 /// The toast for a dropped file FlatCraft cannot use.
 pub fn unsupported_text(path: &Path) -> String {
+    let names: Vec<&str> = IMPORT_TYPES.iter().map(|t| t.name).collect();
+    let types = match names.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
+        _ => names.join(""),
+    };
     format!(
-        "Cannot import {}. Drop an SVG, PNG, JPEG, WebP or GIF file, or a .flatcraft project.",
+        "Cannot import {}. Drop an {types} file, or a .flatcraft project.",
         super::display_name(path)
     )
 }
@@ -102,6 +113,8 @@ pub struct Preview {
     /// The threshold was picked by Otsu's method.
     pub auto_threshold: bool,
     pub dropped_small: usize,
+    /// Specks removed by despeckle.
+    pub despeckled: usize,
     /// Width and height of the whole image, mm.
     pub size_mm: (f64, f64),
 }
@@ -142,6 +155,7 @@ fn preview_of(generation: u64, auto_threshold: bool, t: TraceResult) -> Preview 
         threshold_used: t.threshold_used,
         auto_threshold,
         dropped_small: t.dropped_small,
+        despeckled: t.despeckled,
         size_mm: t.size_mm,
     }
 }
@@ -161,25 +175,35 @@ fn thumbnail(bytes: &[u8]) -> Option<egui::ColorImage> {
     Some(egui::ColorImage::from_gray_iter([tw, th], pixels))
 }
 
-/// Runs preview jobs until the dialog drops its sender. Only the newest
-/// waiting job is traced; the others are already stale.
-fn worker(
+/// What the worker needs besides its channels.
+struct WorkerInput {
     bytes: Arc<Vec<u8>>,
     blade_offset_mm: f64,
     tracer: Tracer,
-    jobs: mpsc::Receiver<Job>,
-    replies: mpsc::Sender<Reply>,
+    /// Set when the dialog closes: nothing more is decoded or traced.
+    cancel: Arc<AtomicBool>,
     ctx: egui::Context,
-) {
-    if let Some(image) = thumbnail(&bytes) {
-        if replies.send(Reply::Thumbnail(image)).is_err() {
-            return;
-        }
-        ctx.request_repaint();
-    }
+}
+
+/// Runs preview jobs until the dialog closes. Only the newest waiting job
+/// is traced; the others are already stale. The thumbnail is decoded after
+/// the first trace, so the first outline is not kept waiting.
+fn worker(input: WorkerInput, jobs: mpsc::Receiver<Job>, replies: mpsc::Sender<Reply>) {
+    let WorkerInput {
+        bytes,
+        blade_offset_mm,
+        tracer,
+        cancel,
+        ctx,
+    } = input;
+    let cancelled = || cancel.load(Ordering::Relaxed);
+    let mut thumbnail_sent = false;
     while let Ok(mut job) = jobs.recv() {
         while let Ok(newer) = jobs.try_recv() {
             job = newer;
+        }
+        if cancelled() {
+            return;
         }
         let auto = job.settings.threshold.is_none();
         let result = tracer(&bytes, &job.settings, blade_offset_mm)
@@ -192,7 +216,59 @@ fn worker(
         if replies.send(reply).is_err() {
             return;
         }
+        if !thumbnail_sent && !cancelled() {
+            thumbnail_sent = true;
+            if let Some(image) = thumbnail(&bytes)
+                && replies.send(Reply::Thumbnail(image)).is_err()
+            {
+                return;
+            }
+        }
         ctx.request_repaint();
+    }
+}
+
+/// What identifies the image and settings a dialog was opened for. The
+/// bytes are hashed once; a later check hashes again only when the buffer
+/// moved (an undo can restore an equal copy).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceRev {
+    ptr: usize,
+    len: usize,
+    hash: u64,
+    settings: TraceSettings,
+}
+
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    h.finish()
+}
+
+impl SourceRev {
+    pub fn of(bytes: &[u8], settings: &TraceSettings) -> Self {
+        Self {
+            ptr: bytes.as_ptr() as usize,
+            len: bytes.len(),
+            hash: hash_bytes(bytes),
+            settings: settings.clone(),
+        }
+    }
+
+    /// True if these are not the bytes and settings of the revision.
+    pub fn changed(&mut self, bytes: &[u8], settings: &TraceSettings) -> bool {
+        if *settings != self.settings || bytes.len() != self.len {
+            return true;
+        }
+        let ptr = bytes.as_ptr() as usize;
+        if ptr != self.ptr {
+            if hash_bytes(bytes) != self.hash {
+                return true;
+            }
+            self.ptr = ptr;
+        }
+        false
     }
 }
 
@@ -206,6 +282,8 @@ pub struct TraceSource {
     pub bytes: Vec<u8>,
     pub settings: TraceSettings,
     pub blade_offset_mm: f64,
+    /// Taken from the object's own bytes, not the copy.
+    pub rev: SourceRev,
 }
 
 /// The open Trace dialog for one raster object.
@@ -231,8 +309,17 @@ pub struct TraceDialog {
     /// When (egui time) the settings last changed, until that change is sent.
     changed_at: Option<f64>,
     thumbnail: Option<egui::TextureHandle>,
+    /// The object's source when the dialog opened.
+    pub rev: SourceRev,
     jobs: mpsc::Sender<Job>,
     replies: mpsc::Receiver<Reply>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Drop for TraceDialog {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
 }
 
 impl std::fmt::Debug for TraceDialog {
@@ -253,12 +340,17 @@ impl TraceDialog {
     pub fn open(ctx: &egui::Context, src: TraceSource, tracer: Tracer) -> Self {
         let (jobs, job_rx) = mpsc::channel();
         let (reply_tx, replies) = mpsc::channel();
-        let bytes = Arc::new(src.bytes);
-        let worker_ctx = ctx.clone();
-        let blade = src.blade_offset_mm;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let input = WorkerInput {
+            bytes: Arc::new(src.bytes),
+            blade_offset_mm: src.blade_offset_mm,
+            tracer,
+            cancel: cancel.clone(),
+            ctx: ctx.clone(),
+        };
         let spawned = std::thread::Builder::new()
             .name("trace-preview".into())
-            .spawn(move || worker(bytes, blade, tracer, job_rx, reply_tx, worker_ctx));
+            .spawn(move || worker(input, job_rx, reply_tx));
         let error = spawned
             .err()
             .map(|e| format!("Cannot start the preview: {e}"));
@@ -281,8 +373,10 @@ impl TraceDialog {
             done: 0,
             changed_at: None,
             thumbnail: None,
+            rev: src.rev,
             jobs,
             replies,
+            cancel,
         };
         d.generation = 1;
         d.send();
@@ -309,11 +403,19 @@ impl TraceDialog {
             return "Tracing... reticulating splines.".into();
         };
         let how = if p.auto_threshold { " (Otsu)" } else { "" };
+        let specks = match p.despeckled {
+            1 => "1 speck removed".to_string(),
+            n => format!("{n} specks removed"),
+        };
         let dropped = match p.dropped_small {
             1 => "1 small shape dropped".to_string(),
             n => format!("{n} small shapes dropped"),
         };
-        format!("Threshold {}{how}, {dropped}", p.threshold_used)
+        let updating = if self.busy() { " (updating...)" } else { "" };
+        format!(
+            "Threshold {}{how}, {specks}, {dropped}{updating}",
+            p.threshold_used
+        )
     }
 
     /// The params of the `object.retrace` that Apply sends. Fields the
@@ -357,6 +459,11 @@ impl TraceDialog {
                     self.done = generation;
                     match result {
                         Ok(p) => {
+                            // The greyed slider shows what Otsu picked, and
+                            // unchecking Auto starts from it.
+                            if self.settings.threshold.is_none() {
+                                self.manual_threshold = p.threshold_used;
+                            }
                             self.preview = Some(p);
                             self.error = None;
                         }
@@ -401,6 +508,10 @@ pub fn show(
     if !snap.object(d.id).is_some_and(|o| o.raster) {
         *dialog = None;
         return Some("The Trace dialog closed because its image is gone.");
+    }
+    if snap.trace_source_changed {
+        *dialog = None;
+        return Some("The image changed, open Trace again.");
     }
     let now = ctx.input(|i| i.time);
     d.poll(ctx, now);
@@ -637,6 +748,7 @@ mod tests {
             bytes: Vec::new(),
             settings: TraceSettings::default(),
             blade_offset_mm: 0.25,
+            rev: SourceRev::of(&[], &TraceSettings::default()),
         };
         let mut d = TraceDialog::open(&ctx, src, tracer);
         // The first preview goes out at once.
@@ -648,5 +760,40 @@ mod tests {
         d.poll(&ctx, 10.2);
         assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(true));
         assert!(d.busy());
+    }
+
+    #[test]
+    fn a_closed_dialog_traces_nothing_more() {
+        let (started_tx, started_rx) = mpsc::channel::<bool>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let started_tx = std::sync::Mutex::new(started_tx);
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let tracer: Tracer = Arc::new(move |_, s, _| {
+            let _ = started_tx.lock().unwrap().send(s.invert);
+            let _ = release_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5));
+            Err(ImportError::Parse("not traced in this test".into()))
+        });
+        let ctx = egui::Context::default();
+        let src = TraceSource {
+            doc_id: 1,
+            id: 1,
+            name: "x".into(),
+            bytes: Vec::new(),
+            settings: TraceSettings::default(),
+            blade_offset_mm: 0.25,
+            rev: SourceRev::of(&[], &TraceSettings::default()),
+        };
+        let mut d = TraceDialog::open(&ctx, src, tracer);
+        assert_eq!(started_rx.recv_timeout(Duration::from_secs(5)), Ok(false));
+        // A change is queued, then the dialog closes before it is traced.
+        d.settings.invert = true;
+        d.changed(0.0);
+        d.poll(&ctx, 1.0);
+        drop(d);
+        release_tx.send(()).unwrap();
+        assert!(started_rx.recv_timeout(Duration::from_millis(300)).is_err());
     }
 }

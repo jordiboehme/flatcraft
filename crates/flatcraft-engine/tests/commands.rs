@@ -970,6 +970,7 @@ fn raster_import_traces_and_reports() {
     let r = run(&mut s, "object.import", json!({ "path": path }));
     let id = r["id"].as_u64().unwrap();
     assert_eq!(r["dropped_small"], 0);
+    assert_eq!(r["despeckled"], 0);
     assert!(r["threshold_used"].as_u64().unwrap() > 0, "{r}");
     let o = s.doc().document.get(ObjectId(id)).unwrap();
     assert_eq!(o.name, "Square");
@@ -1007,6 +1008,7 @@ fn retrace_keeps_transform() {
         json!({ "id": id, "settings": { "invert": true } }),
     );
     assert_eq!(r["dropped_small"], 0);
+    assert_eq!(r["despeckled"], 0);
     assert!(r["threshold_used"].is_u64(), "{r}");
     let o = s.doc().document.get(ObjectId(id)).unwrap();
     assert_transform_close(&o.transform, &before);

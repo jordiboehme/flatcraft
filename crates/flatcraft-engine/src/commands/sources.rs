@@ -104,7 +104,45 @@ pub enum FileKind {
     Raster,
 }
 
-pub(crate) const SUPPORTED_TYPES: &str = ".svg, .svgz, .png, .jpg, .jpeg, .webp, .gif";
+/// One file type `object.import` takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImportType {
+    /// Name for people, as in file dialog filters.
+    pub name: &'static str,
+    /// Extensions without the dot, lowercase.
+    pub extensions: &'static [&'static str],
+    pub kind: FileKind,
+}
+
+/// Every file type `object.import` takes. The app builds its file dialog
+/// filters and drop messages from this list.
+pub const IMPORT_TYPES: &[ImportType] = &[
+    ImportType {
+        name: "SVG",
+        extensions: &["svg", "svgz"],
+        kind: FileKind::Svg,
+    },
+    ImportType {
+        name: "PNG",
+        extensions: &["png"],
+        kind: FileKind::Raster,
+    },
+    ImportType {
+        name: "JPEG",
+        extensions: &["jpg", "jpeg"],
+        kind: FileKind::Raster,
+    },
+    ImportType {
+        name: "WebP",
+        extensions: &["webp"],
+        kind: FileKind::Raster,
+    },
+    ImportType {
+        name: "GIF",
+        extensions: &["gif"],
+        kind: FileKind::Raster,
+    },
+];
 
 /// The kind of file an object is rebuilt from.
 pub(crate) fn source_kind(source: &Source) -> FileKind {
@@ -114,27 +152,47 @@ pub(crate) fn source_kind(source: &Source) -> FileKind {
     }
 }
 
-/// The file kind by extension (case does not matter).
-pub fn file_kind(path: &Path) -> Result<FileKind, CommandError> {
-    let ext = path
-        .extension()
+/// The lowercase extension of `path`, or "".
+fn extension(path: &Path) -> String {
+    path.extension()
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase)
-        .unwrap_or_default();
-    match ext.as_str() {
-        "svg" | "svgz" => Ok(FileKind::Svg),
-        "png" | "jpg" | "jpeg" | "webp" | "gif" => Ok(FileKind::Raster),
-        _ => {
-            let shown = if ext.is_empty() {
-                "no extension".to_string()
-            } else {
-                format!("'.{ext}'")
-            };
-            Err(CommandError::InvalidParams(format!(
-                "unsupported file type ({shown}). Supported types: {SUPPORTED_TYPES}"
-            )))
-        }
+        .unwrap_or_default()
+}
+
+/// The import type of `path` by its extension (case does not matter).
+fn import_type(path: &Path) -> Option<&'static ImportType> {
+    let ext = extension(path);
+    IMPORT_TYPES
+        .iter()
+        .find(|t| t.extensions.contains(&ext.as_str()))
+}
+
+/// True if `object.import` takes this file, by its extension.
+pub fn is_importable(path: &Path) -> bool {
+    import_type(path).is_some()
+}
+
+/// The file kind by extension (case does not matter).
+pub(crate) fn file_kind(path: &Path) -> Result<FileKind, CommandError> {
+    if let Some(t) = import_type(path) {
+        return Ok(t.kind);
     }
+    let ext = extension(path);
+    let shown = if ext.is_empty() {
+        "no extension".to_string()
+    } else {
+        format!("'.{ext}'")
+    };
+    let supported: Vec<String> = IMPORT_TYPES
+        .iter()
+        .flat_map(|t| t.extensions)
+        .map(|e| format!(".{e}"))
+        .collect();
+    Err(CommandError::InvalidParams(format!(
+        "unsupported file type ({shown}). Supported types: {}",
+        supported.join(", ")
+    )))
 }
 
 /// An absolute path without `.` and `..`, without touching the file system

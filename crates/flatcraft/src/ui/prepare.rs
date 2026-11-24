@@ -347,6 +347,9 @@ pub struct Snapshot {
     /// The cutting area, in mm.
     pub area: Option<kurbo::Rect>,
     pub auto_reload: bool,
+    /// The image or the trace settings of the Trace dialog's object
+    /// changed since the dialog opened (an agent retraced or reloaded it).
+    pub trace_source_changed: bool,
 }
 
 impl Snapshot {
@@ -400,6 +403,7 @@ impl Snapshot {
 /// shapes that changed are rebuilt after it is released.
 pub fn snapshot(app: &mut FlatCraftApp) -> Snapshot {
     let cache = &mut app.ui.prepare.cache;
+    let trace = &mut app.ui.trace;
     let mut misses: Vec<(usize, Object)> = Vec::new();
     let mut snap = {
         let s = lock(&app.session);
@@ -419,6 +423,16 @@ pub fn snapshot(app: &mut FlatCraftApp) -> Snapshot {
             .as_ref()
             .and_then(|p| p.media.iter().find(|m| m.id == job.media_id).cloned());
         let area = plotter.as_ref().and_then(|p| p.cutting_area(&job.media_id));
+        let trace_source_changed = trace.as_mut().is_some_and(|d| {
+            d.doc_id == st.id()
+                && match st.document.get(flatcraft_core::document::ObjectId(d.id)) {
+                    Some(Object {
+                        source: Source::Raster { bytes, trace, .. },
+                        ..
+                    }) => d.rev.changed(bytes, trace),
+                    _ => false,
+                }
+        });
         let mut objects = Vec::with_capacity(st.document.objects.len());
         for (i, o) in st.document.objects.iter().enumerate() {
             let key = ShapeKey::of(o);
@@ -452,6 +466,7 @@ pub fn snapshot(app: &mut FlatCraftApp) -> Snapshot {
             mat,
             area,
             auto_reload: s.prefs.auto_reload,
+            trace_source_changed,
         }
     };
     for (i, o) in misses {

@@ -238,7 +238,10 @@ fn trace_preview_shows_threshold_and_dropped() {
     let status = d.status();
     assert!(status.contains("(Otsu)"), "{status}");
     assert!(status.contains(&p.threshold_used.to_string()), "{status}");
-    assert!(status.contains("0 small shapes dropped"), "{status}");
+    assert!(
+        status.contains("0 specks removed, 0 small shapes dropped"),
+        "{status}"
+    );
     h.get_by_label(&status);
 }
 
@@ -463,4 +466,119 @@ fn trace_dialog_is_accessible() {
     to_prepare(&mut h);
     open_trace(&mut h);
     h.check_accessibility();
+}
+
+/// The ring with `n` black 2 x 2 px dots along the top edge.
+fn write_ring_with_specks(path: &Path, n: u32) {
+    write_ring(path);
+    let mut px = tiny_skia::Pixmap::load_png(path).unwrap();
+    let mut paint = tiny_skia::Paint::default();
+    paint.set_color(tiny_skia::Color::BLACK);
+    for i in 0..n {
+        let r = tiny_skia::Rect::from_xywh(10.0 + i as f32 * 30.0, 4.0, 2.0, 2.0).unwrap();
+        px.fill_rect(r, &paint, tiny_skia::Transform::identity(), None);
+    }
+    px.save_png(path).unwrap();
+}
+
+#[test]
+fn trace_status_counts_removed_specks() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let png = dir.path().join("specks.png");
+    write_ring_with_specks(&png, 3);
+    s.lock()
+        .unwrap()
+        .execute("object.import", json!({ "path": png }), Origin::User)
+        .unwrap();
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    open_trace(&mut h);
+    let status = app(&h).ui.trace.as_ref().unwrap().status();
+    assert!(status.contains("3 specks removed"), "{status}");
+}
+
+#[test]
+fn unchecking_auto_starts_from_the_otsu_threshold() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_ring(&dir, &s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    open_trace(&mut h);
+    let used = {
+        let d = app(&h).ui.trace.as_ref().unwrap();
+        assert_eq!(d.settings.threshold, None);
+        d.preview.as_ref().unwrap().threshold_used
+    };
+    assert_eq!(app(&h).ui.trace.as_ref().unwrap().manual_threshold, used);
+    h.get_by_label("Automatic threshold").click();
+    h.run();
+    assert_eq!(
+        app(&h).ui.trace.as_ref().unwrap().settings.threshold,
+        Some(used)
+    );
+}
+
+#[test]
+fn trace_status_says_when_a_newer_preview_is_coming() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_ring(&dir, &s);
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let release_rx = Mutex::new(release_rx);
+    let calls = Arc::new(Mutex::new(0usize));
+    let counter = calls.clone();
+    let mut h = harness_with(&dir, s.clone(), move |a| {
+        a.with_tracer(move |bytes, settings, blade| {
+            let n = {
+                let mut c = counter.lock().unwrap();
+                *c += 1;
+                *c
+            };
+            if n > 1 {
+                let _ = release_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10));
+            }
+            flatcraft_import::trace::trace(bytes, settings, blade)
+        })
+    });
+    to_prepare(&mut h);
+    open_trace(&mut h);
+    h.get_by_label("Invert").click();
+    h.run();
+    h.step(); // past the 200 ms debounce
+    let status = app(&h).ui.trace.as_ref().unwrap().status();
+    assert!(status.ends_with(" (updating...)"), "{status}");
+    release_tx.send(()).unwrap();
+    step_until(&mut h, "second preview", has_preview);
+    let status = app(&h).ui.trace.as_ref().unwrap().status();
+    assert!(!status.contains("updating"), "{status}");
+}
+
+#[test]
+fn trace_dialog_closes_when_the_image_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let id = import_ring(&dir, &s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    open_trace(&mut h);
+    // An agent retraces the image while the dialog is open.
+    s.lock()
+        .unwrap()
+        .execute(
+            "object.retrace",
+            json!({ "id": id, "settings": { "smoothing": 1 } }),
+            Origin::Agent,
+        )
+        .unwrap();
+    let undo = undo_len(&s);
+    h.run();
+    assert!(app(&h).ui.trace.is_none());
+    let toasts: Vec<&str> = app(&h).ui.toasts.iter().map(|t| t.text.as_str()).collect();
+    assert_eq!(toasts, ["The image changed, open Trace again."]);
+    assert_eq!(undo_len(&s), undo);
 }

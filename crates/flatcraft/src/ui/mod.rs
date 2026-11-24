@@ -422,14 +422,15 @@ impl FlatCraftApp {
                     self.toast(Toast::error("That object is gone."));
                     return;
                 };
-                let filter = if raster {
-                    files::filter("Image", &["png", "jpg", "jpeg", "webp", "gif"])
+                use flatcraft_engine::commands::sources::FileKind;
+                let filters = if raster {
+                    import_dialog::import_filters("Image", Some(FileKind::Raster))
                 } else {
-                    files::filter("SVG", &["svg", "svgz"])
+                    import_dialog::import_filters("SVG", Some(FileKind::Svg))
                 };
                 let req = files::FileRequest {
                     title: "Reconnect file".into(),
-                    filters: vec![filter],
+                    filters,
                     ..Default::default()
                 };
                 if let Some(path) = self.files.pick_file(&req) {
@@ -568,6 +569,7 @@ impl FlatCraftApp {
                                 name: o.name.clone(),
                                 bytes: bytes.clone(),
                                 settings: trace.clone(),
+                                rev: import_dialog::SourceRev::of(bytes, trace),
                                 blade_offset_mm:
                                     flatcraft_engine::commands::object::blade_offset_mm(&s),
                             })

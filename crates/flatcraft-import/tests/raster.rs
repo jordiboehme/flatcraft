@@ -367,3 +367,17 @@ fn collapsed_shapes_are_counted_as_dropped() {
     assert!(t.paths.is_empty());
     assert_eq!(t.dropped_small, 1);
 }
+
+#[test]
+fn despeckle_counts_the_specks_it_removes() {
+    // 300 dpi: a 2 x 2 px dot is about 0.03 mm2, below the 0.5 mm2 default.
+    let mut img = white(300, 300);
+    for i in 0..5 {
+        fill(&mut img, 20 + i * 50, 20, 2, 2, 0);
+    }
+    fill(&mut img, 100, 120, 100, 100, 0);
+    let t = trace(&png(&img), &TraceSettings::default(), BLADE).unwrap();
+    assert_eq!(t.despeckled, 5);
+    assert_eq!(t.dropped_small, 0);
+    assert_eq!(t.paths.len(), 1);
+}

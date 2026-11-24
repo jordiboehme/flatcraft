@@ -28,6 +28,8 @@ pub struct TraceResult {
     pub paths: Vec<CutPath>,
     /// Closed paths dropped because they are thinner than the minimum feature.
     pub dropped_small: usize,
+    /// Specks removed because their area is below `despeckle_mm2`.
+    pub despeckled: usize,
     /// Width and height of the whole image in mm.
     pub size_mm: (f64, f64),
     /// Pixels darker than this were figure (before invert).
@@ -93,7 +95,8 @@ pub fn otsu(image: &GrayImage) -> u8 {
 /// 1. Grey, then figure = luma below the threshold (Otsu when `None`),
 ///    swapped by `invert`.
 /// 2. visioncortex clusters the figure and fits splines to each outline and
-///    hole. Clusters smaller than `despeckle_mm2` are speckles and vanish.
+///    hole. Clusters smaller than `despeckle_mm2` are speckles and vanish;
+///    they are counted in `despeckled`.
 /// 3. px become mm at `dpi_override`, else the file's dpi, else 300.
 /// 4. Paths are flattened at 0.01 mm and simplified. Closed paths with a
 ///    bounding-box side below the minimum feature (`min_feature_mm`, else
@@ -148,8 +151,10 @@ pub fn trace(
 
     let mut paths = Vec::new();
     let mut dropped_small = 0;
+    let mut despeckled = 0;
     for cluster in figure.to_clusters(false).iter() {
         if (cluster.size() as f64) < min_area_px {
+            despeckled += 1;
             continue;
         }
         let found = splines(cluster, corner, segment_length);
@@ -174,6 +179,7 @@ pub fn trace(
     Ok(TraceResult {
         paths,
         dropped_small,
+        despeckled,
         size_mm: (
             f64::from(orig_w) * 25.4 / dpi,
             f64::from(orig_h) * 25.4 / dpi,
