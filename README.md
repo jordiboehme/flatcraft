@@ -35,7 +35,7 @@
 
 You have a cutting plotter. It works fine. The software that drives it is about to stop working on your computer. That's how good machines end up in landfill: not broken, just abandoned.
 
-FlatCraft is the way out. It works like a slicer for 3D printers: one profile per plotter, one per material, your own presets on top. Josef Prusa showed how good that feels for printers. FlatCraft brings it to flat things.
+FlatCraft is the way out. It works like a slicer for 3D printers: one profile per plotter, one per material, your own presets on top. Josef Průša showed how good that feels for printers. FlatCraft brings it to flat things.
 
 One Rust app. No account, no cloud, no subscription. Where we're going, we don't need logins.
 
@@ -107,7 +107,7 @@ There's a Cameo 2 on my desk. It's years old and it still cuts fine. The vendor 
 
 Adam Savage likes to say that failure is always an option. Giving up on a working machine shouldn't be.
 
-So FlatCraft is long-life software for the plotters we already own. It's in the spirit of the makers who share how they work: Adam Savage, Josef Prusa, Laura Kampf and Felix Schelhasse. Build it, fix it, keep it running.
+So FlatCraft is long-life software for the plotters we already own. It's in the spirit of the makers who share how they work: Adam Savage, Josef Průša, Laura Kampf and Felix Schelhasse. Build it, fix it, keep it running.
 
 ## Principles
 
