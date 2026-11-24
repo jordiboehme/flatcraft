@@ -1,0 +1,21 @@
+name: Plotter support
+description: A cutting plotter FlatCraft should support.
+labels: [plotter]
+body:
+  - type: input
+    id: model
+    attributes:
+      label: Plotter model
+      description: Vendor and model, for example Silhouette Portrait 2.
+    validations:
+      required: true
+  - type: input
+    id: usb
+    attributes:
+      label: USB vendor and product ID
+      description: On a Mac run `system_profiler SPUSBHostDataType`, on Linux `lsusb`.
+  - type: textarea
+    id: details
+    attributes:
+      label: What you know
+      description: The protocol it speaks, links to public documentation, or a USB capture of a simple cut. Please don't paste code from other drivers.
