@@ -1299,3 +1299,46 @@ fn arc_spine_does_not_depend_on_start() {
         }
     }
 }
+
+// ---------------------------------------------------------------- hairline arms are never left uncut (R25)
+
+#[test]
+fn narrow_v_hairline_is_fully_covered() {
+    // A closed V sliver: two 20 mm arms that meet at 8 degrees, 0.05 mm
+    // wide, butt ends. Its apex turns as sharply as an end.
+    let half = 4.0_f64.to_radians();
+    let (c, s) = (half.cos(), half.sin());
+    let g = 0.025;
+    let k = g / s;
+    let tip1 = (50.0 - 20.0 * c, 50.0 - 20.0 * s);
+    let tip2 = (50.0 - 20.0 * c, 50.0 + 20.0 * s);
+    let ring = [
+        (tip1.0 - g * s, tip1.1 + g * c),
+        (tip1.0 + g * s, tip1.1 - g * c),
+        (50.0 + k, 50.0),
+        (tip2.0 + g * s, tip2.1 + g * c),
+        (tip2.0 - g * s, tip2.1 - g * c),
+        (50.0 - k, 50.0),
+    ];
+    for start in 0..ring.len() {
+        let mut pts = ring.to_vec();
+        pts.rotate_left(start);
+        let out = cut(&object(
+            polyline(&pts, true),
+            fill_thin_stroke(),
+            CutOptions::default(),
+        ));
+        assert!(!out.is_empty(), "start {start}");
+        for tip in [tip1, tip2] {
+            for i in 0..=200 {
+                let t = f64::from(i) / 200.0;
+                let p = Point::new(50.0 + (tip.0 - 50.0) * t, 50.0 + (tip.1 - 50.0) * t);
+                let d = out.iter().map(|r| dist(r, p)).fold(f64::MAX, f64::min);
+                assert!(
+                    d < 0.05,
+                    "start {start}: arm point {p:?} is {d} mm from a cut: {out:?}"
+                );
+            }
+        }
+    }
+}

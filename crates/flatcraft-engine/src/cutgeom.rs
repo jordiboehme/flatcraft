@@ -243,7 +243,10 @@ fn object_outlines(
 /// the same path is cut into the piece. Fill-only hairline slivers
 /// wider than the tolerance but below the knife's smallest feature
 /// are still cut as tiny loops; milestone 2 ties a smallest feature
-/// size to the blade offset.
+/// size to the blade offset. The ends of a closed hairline are looked
+/// for over a reach of 0.2 mm, which can pick the apex of a narrow "V"
+/// instead of an end; such a ring is then cut as drawn, with both sides.
+/// Milestone 2 improves the end detection together with the medial axis.
 fn fill_edges(
     placed: &BezPath,
     rule: OverlayFill,
@@ -434,8 +437,9 @@ fn subpaths(path: impl IntoIterator<Item = PathEl>) -> Vec<Subpath> {
 /// ring, so it is never more than the hairline's width off and never a
 /// second cut.
 ///
-/// `None` if the ring has no two clear ends (a loop without tips); it is
-/// then cut as drawn.
+/// `None` if the ring has no two clear ends (a loop without tips), or if
+/// neither the spine nor one side covers the whole ring; it is then cut
+/// as drawn, which leaves nothing uncut.
 fn spine(ring: &[[f64; 2]]) -> Option<BezPath> {
     let mut ring = ring.to_vec();
     ring.dedup();
@@ -493,6 +497,13 @@ fn spine(ring: &[[f64; 2]]) -> Option<BezPath> {
             })
             .is_ge();
         let side = if pick_a { a } else { b };
+        // One side stands for the whole ring only if the rest of the ring
+        // runs along it. If not (the ends were picked at the apex of a
+        // narrow "V", so each side is one arm), cutting it would leave
+        // the other part uncut: the ring is cut as drawn.
+        if !all_near(&ring, &side.points, 2.0 * HAIRLINE_MM) {
+            return None;
+        }
         points = side.points.iter().map(|p| Point::new(p[0], p[1])).collect();
     }
     let mut path = BezPath::new();
@@ -501,6 +512,52 @@ fn spine(ring: &[[f64; 2]]) -> Option<BezPath> {
         path.line_to(*p);
     }
     Some(path)
+}
+
+/// Whether every one of `points` lies within `reach` of the polyline
+/// `line`. The line's segments are sorted into a grid of cells two
+/// `reach` wide, so each point is compared only with the segments near it.
+fn all_near(points: &[[f64; 2]], line: &[[f64; 2]], reach: f64) -> bool {
+    let cell = 2.0 * reach;
+    let key = |x: f64, y: f64| ((x / cell).floor() as i64, (y / cell).floor() as i64);
+    let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> =
+        std::collections::HashMap::new();
+    for (k, w) in line.windows(2).enumerate() {
+        let (dx, dy) = (w[1][0] - w[0][0], w[1][1] - w[0][1]);
+        // A mark every half cell: the nearest mark to any point of the
+        // segment is a quarter cell away, so a point within `reach` of
+        // the segment finds it in its own cell or a neighbour.
+        let marks = (dx.hypot(dy) / (cell / 2.0)).ceil().max(1.0) as usize;
+        for m in 0..=marks {
+            let t = m as f64 / marks as f64;
+            let cells = grid
+                .entry(key(w[0][0] + dx * t, w[0][1] + dy * t))
+                .or_default();
+            if cells.last() != Some(&k) {
+                cells.push(k);
+            }
+        }
+    }
+    let distance = |p: &[f64; 2], k: usize| {
+        let (a, b) = (line[k], line[k + 1]);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len2 = dx * dx + dy * dy;
+        let t = if len2 > 0.0 {
+            (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (p[0] - a[0] - dx * t).hypot(p[1] - a[1] - dy * t)
+    };
+    points.iter().all(|p| {
+        let (cx, cy) = key(p[0], p[1]);
+        (-1..=1).any(|ox| {
+            (-1..=1).any(|oy| {
+                grid.get(&(cx + ox, cy + oy))
+                    .is_some_and(|near| near.iter().any(|&k| distance(p, k) <= reach))
+            })
+        })
+    })
 }
 
 /// Indices of the two ends of a closed hairline: the two vertices where
@@ -808,6 +865,16 @@ mod tests {
         // From a corner to a corner, with the long run on the middle.
         assert!(pts[1].distance(Point::new(0.04, 0.04)) < 1e-3, "{pts:?}");
         assert!(pts[2].distance(Point::new(49.96, 0.04)) < 1e-3, "{pts:?}");
+    }
+
+    #[test]
+    fn all_near_finds_far_points_along_long_segments() {
+        let line = [[0.0, 0.0], [30.0, 40.0], [30.0, 40.1]];
+        // On the long diagonal, off it by 0.15 and by 0.25.
+        assert!(all_near(&[[15.0, 20.0], [15.12, 19.91]], &line, 0.2));
+        assert!(!all_near(&[[15.0, 20.0], [15.2, 19.85]], &line, 0.2));
+        assert!(!all_near(&[[30.0, 40.4]], &line, 0.2));
+        assert!(all_near(&[], &line, 0.2));
     }
 
     #[test]
