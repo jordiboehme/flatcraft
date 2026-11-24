@@ -554,3 +554,69 @@ fn commands_skip_a_document_that_is_no_longer_active() {
     drop(st);
     assert_eq!(app(&h).ui.toasts.len(), 1);
 }
+
+#[test]
+fn typed_speed_is_one_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let before = undo_len(&s);
+    h.get_by_role_and_label(Role::SpinButton, "Speed").click();
+    h.run();
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+    h.run();
+    for c in ["1", "0"] {
+        h.event(Event::Text(c.into()));
+        h.run();
+    }
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert_eq!(s.lock().unwrap().doc().document.job.speed, Some(10));
+    assert_eq!(undo_len(&s), before + 1);
+}
+
+#[test]
+fn clicking_a_search_hit_runs_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    h.get_by_label("Search commands").click();
+    h.run();
+    h.get_by_label("Search commands").type_text("dupl");
+    h.run();
+    let before = s.lock().unwrap().doc().document.objects.len();
+    h.get_by_role_and_label(Role::Button, "Duplicate (search)")
+        .click();
+    h.run();
+    assert_eq!(s.lock().unwrap().doc().document.objects.len(), before + 1);
+}
+
+#[test]
+fn trace_button_retraces_the_selected_image() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut px = tiny_skia::Pixmap::new(200, 200).unwrap();
+    px.fill(tiny_skia::Color::WHITE);
+    let mut paint = tiny_skia::Paint::default();
+    paint.set_color(tiny_skia::Color::BLACK);
+    px.fill_rect(
+        tiny_skia::Rect::from_xywh(50.0, 50.0, 100.0, 100.0).unwrap(),
+        &paint,
+        tiny_skia::Transform::identity(),
+        None,
+    );
+    let png = dir.path().join("block.png");
+    px.save_png(&png).unwrap();
+    import_file(&s, &png);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let before = undo_len(&s);
+    h.get_by_role_and_label(Role::Button, "Trace").click();
+    h.run();
+    assert!(app(&h).ui.toasts.is_empty(), "{:?}", app(&h).ui.toasts);
+    assert_eq!(undo_len(&s), before + 1);
+}

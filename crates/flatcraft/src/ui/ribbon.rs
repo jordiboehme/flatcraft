@@ -182,19 +182,28 @@ fn search_box(ui: &mut Ui, snap: &Snapshot, st: &mut PrepareState, actions: &mut
         st.fields.search.clear();
         return;
     }
-    if !hits.is_empty() && resp.has_focus() {
+    // A press on a hit takes the focus from the field before the click
+    // lands, so the list stays open while the pointer is over it.
+    let open = !hits.is_empty() && (resp.has_focus() || st.search_open);
+    st.search_open = false;
+    if open {
         let mut chosen = None;
-        egui::Popup::from_response(&resp).open(true).show(|ui| {
+        let popup = egui::Popup::from_response(&resp).open(true).show(|ui| {
             ui.set_min_width(200.0);
             for (id, title) in hits.iter().take(8) {
-                if ui.selectable_label(false, *title).clicked() {
+                let r = ui.selectable_label(false, *title);
+                set_name(ui, &r, &format!("{title} (search)"));
+                if r.clicked() {
                     chosen = Some(*id);
                 }
             }
         });
+        let hovered = popup.is_some_and(|p| p.response.contains_pointer());
+        st.search_open = resp.has_focus() || hovered;
         if let Some(id) = chosen {
             pick(id, snap, st, actions);
             st.fields.search.clear();
+            st.search_open = false;
         }
     }
 }
@@ -255,7 +264,11 @@ pub fn show(
                             "Trace the selected image again",
                         ) && let Some(id) = raster
                         {
-                            run(actions, "object.retrace", json!({ "id": id }));
+                            run(
+                                actions,
+                                "object.retrace",
+                                json!({ "id": id, "settings": {} }),
+                            );
                         }
                         if tool(
                             ui,
@@ -278,11 +291,14 @@ pub fn show(
                             .filter(|o| o.link.is_some())
                             .map(|o| o.id)
                             .collect();
+                        // The selection's linked objects, or all when nothing
+                        // is selected.
+                        let enabled = if any { !ids.is_empty() } else { linked };
                         if tool(
                             ui,
                             Icon::Reload,
                             "Reload",
-                            linked,
+                            enabled,
                             "Read the linked files again (the selection, or all)",
                         ) {
                             run(actions, "object.reload", json!({ "ids": ids }));

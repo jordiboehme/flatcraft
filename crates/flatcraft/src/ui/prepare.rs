@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use egui::{Rect, RichText, Ui};
 use flatcraft_core::document::{CutOptions, JobSettings, Object, Source};
+use flatcraft_core::geometry::CutPath;
 use flatcraft_core::transform::Transform;
 use flatcraft_device::{MaterialProfile, Media, MediaKind, PlotterProfile, PresetInfo};
 use flatcraft_engine::commands::placed_bounds;
@@ -151,6 +152,8 @@ pub struct PrepareState {
     pub show_grid: bool,
     pub show_rulers: bool,
     pub fields: Fields,
+    /// The search hits stay open (see `ribbon::search_box`).
+    pub search_open: bool,
     pub drag: Option<Drag>,
     /// A drag value being dragged, and its value so far.
     pub live_override: Option<(Override, f64)>,
@@ -173,6 +176,7 @@ impl Default for PrepareState {
             show_grid: true,
             show_rulers: true,
             fields: Fields::default(),
+            search_open: false,
             drag: None,
             live_override: None,
             notices: Vec::new(),
@@ -228,11 +232,16 @@ impl ShapeKey {
     }
 }
 
+/// A cached shape, its key and the geometry the key points to.
+type CacheEntry = (ShapeKey, Arc<Vec<CutPath>>, Arc<Shape>);
+
 /// Shapes of the active document by object id.
 #[derive(Debug, Clone, Default)]
 pub struct ShapeCache {
     doc_id: u64,
-    shapes: HashMap<u64, (ShapeKey, Arc<Shape>)>,
+    /// The geometry `Arc` is kept so its address cannot be reused by
+    /// other geometry while the key names it.
+    shapes: HashMap<u64, CacheEntry>,
 }
 
 /// The shape of an object, built from the engine's placed paths and bounds
@@ -407,7 +416,7 @@ pub fn snapshot(app: &mut FlatCraftApp) -> Snapshot {
         for (i, o) in st.document.objects.iter().enumerate() {
             let key = ShapeKey::of(o);
             let shape = match cache.shapes.get(&o.id.0) {
-                Some((k, shape)) if *k == key => shape.clone(),
+                Some((k, _, shape)) if *k == key => shape.clone(),
                 _ => {
                     misses.push((i, o.clone()));
                     Arc::new(Shape::default())
@@ -441,8 +450,9 @@ pub fn snapshot(app: &mut FlatCraftApp) -> Snapshot {
     for (i, o) in misses {
         let key = ShapeKey::of(&o);
         let id = o.id.0;
+        let geometry = o.geometry.clone();
         let shape = Arc::new(build_shape(o));
-        cache.shapes.insert(id, (key, shape.clone()));
+        cache.shapes.insert(id, (key, geometry, shape.clone()));
         snap.objects[i].shape = shape;
     }
     let ids: BTreeSet<u64> = snap.objects.iter().map(|o| o.id).collect();

@@ -681,9 +681,10 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
 }
 
 /// Delete removes the selection and Escape clears it, unless a text field
-/// has the keyboard.
+/// has the keyboard or a menu is open (Escape closes that first).
 fn prepare_keys(ctx: &egui::Context, snap: &prepare::Snapshot, actions: &mut Vec<Action>) {
-    if ctx.egui_wants_keyboard_input() || snap.selection.is_empty() {
+    if ctx.egui_wants_keyboard_input() || egui::Popup::is_any_open(ctx) || snap.selection.is_empty()
+    {
         return;
     }
     let (delete, escape) = ctx.input_mut(|i| {

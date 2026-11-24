@@ -250,7 +250,8 @@ pub fn show(
                     egui::DragValue::new(&mut v)
                         .range(f64::from(range[0])..=f64::from(range[1]))
                         .speed(0.1)
-                        .max_decimals(0),
+                        .max_decimals(0)
+                        .update_while_editing(false),
                 );
                 let name = if modified {
                     format!("{label} (modified)")
