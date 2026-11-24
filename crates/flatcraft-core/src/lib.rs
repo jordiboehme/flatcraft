@@ -1,9 +1,5 @@
-//! FlatCraft core crate (stub, filled by later tasks).
+//! FlatCraft core crate.
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn smoke() {
-        assert_eq!(2 + 2, 4);
-    }
-}
+pub mod geometry;
+pub mod transform;
+pub mod units;
