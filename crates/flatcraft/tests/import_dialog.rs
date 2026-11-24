@@ -495,7 +495,7 @@ fn trace_status_counts_removed_specks() {
     to_prepare(&mut h);
     open_trace(&mut h);
     let status = app(&h).ui.trace.as_ref().unwrap().status();
-    assert!(status.contains("3 specks removed"), "{status}");
+    assert!(status.contains(", 3 specks removed,"), "{status}");
 }
 
 #[test]

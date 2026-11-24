@@ -1324,3 +1324,21 @@ fn preview_fills_the_mat_with_its_color() {
     let px = img.get_pixel(w / 2, h - 3);
     assert_eq!(&px.0[..3], &[0x8F, 0xA8, 0xB8]);
 }
+
+#[test]
+fn raster_import_reports_removed_specks() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let path = square_png(&dir);
+    let mut img = image::open(&path).unwrap().into_luma8();
+    // Three 2 x 2 px dots, far below the 0.5 mm2 despeckle default.
+    for i in 0..3 {
+        for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+            img.put_pixel(10 + i * 40 + dx, 10 + dy, image::Luma([0]));
+        }
+    }
+    img.save(&path).unwrap();
+    let r = run(&mut s, "object.import", json!({ "path": path }));
+    assert_eq!(r["despeckled"], 3, "{r}");
+    assert_eq!(r["dropped_small"], 0, "{r}");
+}

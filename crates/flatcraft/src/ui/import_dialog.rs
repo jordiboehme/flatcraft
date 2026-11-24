@@ -13,6 +13,7 @@ use std::sync::{Arc, mpsc};
 
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Ui, vec2};
 use flatcraft_core::document::TraceSettings;
+use flatcraft_core::geometry::CutPath;
 use flatcraft_engine::commands::sources::{FileKind, IMPORT_TYPES, is_importable};
 use flatcraft_import::ImportError;
 use flatcraft_import::trace::TraceResult;
@@ -216,24 +217,34 @@ fn worker(input: WorkerInput, jobs: mpsc::Receiver<Job>, replies: mpsc::Sender<R
         if replies.send(reply).is_err() {
             return;
         }
+        // The outline shows now, before the thumbnail decode below ends.
+        ctx.request_repaint();
         if !thumbnail_sent && !cancelled() {
             thumbnail_sent = true;
-            if let Some(image) = thumbnail(&bytes)
-                && replies.send(Reply::Thumbnail(image)).is_err()
-            {
-                return;
+            if let Some(image) = thumbnail(&bytes) {
+                if replies.send(Reply::Thumbnail(image)).is_err() {
+                    return;
+                }
+                ctx.request_repaint();
             }
         }
-        ctx.request_repaint();
     }
 }
 
-/// What identifies the image and settings a dialog was opened for. The
-/// bytes are hashed once; a later check hashes again only when the buffer
-/// moved (an undo can restore an equal copy).
-#[derive(Debug, Clone, PartialEq)]
+/// What identifies the image and settings a dialog was opened for.
+///
+/// The engine has no revision counter, so this is checked every frame
+/// (under the snapshot's lock) as cheaply as possible:
+/// - settings and byte length are compared every frame (a few words);
+/// - the object's geometry `Arc` is held, so its address cannot be reused.
+///   Every retrace, reload and relink replaces it, and an undo restores
+///   another one. While it is the same `Arc`, the bytes are the same;
+/// - only when it changed and the length matches are the bytes hashed
+///   again (once per change, about 30 ms for a 50 MB image). Equal bytes
+///   (an undo of something else) keep the dialog open.
+#[derive(Debug, Clone)]
 pub struct SourceRev {
-    ptr: usize,
+    geometry: Arc<Vec<CutPath>>,
     len: usize,
     hash: u64,
     settings: TraceSettings,
@@ -247,9 +258,9 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
 }
 
 impl SourceRev {
-    pub fn of(bytes: &[u8], settings: &TraceSettings) -> Self {
+    pub fn of(bytes: &[u8], settings: &TraceSettings, geometry: &Arc<Vec<CutPath>>) -> Self {
         Self {
-            ptr: bytes.as_ptr() as usize,
+            geometry: geometry.clone(),
             len: bytes.len(),
             hash: hash_bytes(bytes),
             settings: settings.clone(),
@@ -257,16 +268,20 @@ impl SourceRev {
     }
 
     /// True if these are not the bytes and settings of the revision.
-    pub fn changed(&mut self, bytes: &[u8], settings: &TraceSettings) -> bool {
+    pub fn changed(
+        &mut self,
+        bytes: &[u8],
+        settings: &TraceSettings,
+        geometry: &Arc<Vec<CutPath>>,
+    ) -> bool {
         if *settings != self.settings || bytes.len() != self.len {
             return true;
         }
-        let ptr = bytes.as_ptr() as usize;
-        if ptr != self.ptr {
+        if !Arc::ptr_eq(geometry, &self.geometry) {
             if hash_bytes(bytes) != self.hash {
                 return true;
             }
-            self.ptr = ptr;
+            self.geometry = geometry.clone();
         }
         false
     }
@@ -748,7 +763,7 @@ mod tests {
             bytes: Vec::new(),
             settings: TraceSettings::default(),
             blade_offset_mm: 0.25,
-            rev: SourceRev::of(&[], &TraceSettings::default()),
+            rev: SourceRev::of(&[], &TraceSettings::default(), &Arc::default()),
         };
         let mut d = TraceDialog::open(&ctx, src, tracer);
         // The first preview goes out at once.
@@ -784,7 +799,7 @@ mod tests {
             bytes: Vec::new(),
             settings: TraceSettings::default(),
             blade_offset_mm: 0.25,
-            rev: SourceRev::of(&[], &TraceSettings::default()),
+            rev: SourceRev::of(&[], &TraceSettings::default(), &Arc::default()),
         };
         let mut d = TraceDialog::open(&ctx, src, tracer);
         assert_eq!(started_rx.recv_timeout(Duration::from_secs(5)), Ok(false));
@@ -795,5 +810,35 @@ mod tests {
         drop(d);
         release_tx.send(()).unwrap();
         assert!(started_rx.recv_timeout(Duration::from_millis(300)).is_err());
+    }
+
+    fn geometry() -> Arc<Vec<flatcraft_core::geometry::CutPath>> {
+        Arc::new(Vec::new())
+    }
+
+    #[test]
+    fn changed_bytes_of_the_same_length_close_the_dialog() {
+        let s = TraceSettings::default();
+        let g = geometry();
+        let mut rev = SourceRev::of(&[1, 2, 3], &s, &g);
+        assert!(!rev.changed(&[1, 2, 3], &s, &g));
+        // A reload with other bytes of the same length: new geometry too.
+        assert!(rev.changed(&[1, 2, 4], &s, &geometry()));
+        let other = TraceSettings {
+            invert: true,
+            ..TraceSettings::default()
+        };
+        assert!(rev.changed(&[1, 2, 3], &other, &g));
+    }
+
+    #[test]
+    fn the_same_image_in_a_new_place_keeps_the_dialog() {
+        let s = TraceSettings::default();
+        let mut rev = SourceRev::of(&[1, 2, 3], &s, &geometry());
+        // An undo restores an equal copy: new buffers, same content.
+        let copy = vec![1u8, 2, 3];
+        let g = geometry();
+        assert!(!rev.changed(&copy, &s, &g));
+        assert!(!rev.changed(&copy, &s, &g));
     }
 }

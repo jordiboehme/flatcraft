@@ -426,10 +426,12 @@ pub fn snapshot(app: &mut FlatCraftApp) -> Snapshot {
         let trace_source_changed = trace.as_mut().is_some_and(|d| {
             d.doc_id == st.id()
                 && match st.document.get(flatcraft_core::document::ObjectId(d.id)) {
-                    Some(Object {
-                        source: Source::Raster { bytes, trace, .. },
-                        ..
-                    }) => d.rev.changed(bytes, trace),
+                    Some(
+                        o @ Object {
+                            source: Source::Raster { bytes, trace, .. },
+                            ..
+                        },
+                    ) => d.rev.changed(bytes, trace, &o.geometry),
                     _ => false,
                 }
         });

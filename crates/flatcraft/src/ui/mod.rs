@@ -569,7 +569,7 @@ impl FlatCraftApp {
                                 name: o.name.clone(),
                                 bytes: bytes.clone(),
                                 settings: trace.clone(),
-                                rev: import_dialog::SourceRev::of(bytes, trace),
+                                rev: import_dialog::SourceRev::of(bytes, trace, &o.geometry),
                                 blade_offset_mm:
                                     flatcraft_engine::commands::object::blade_offset_mm(&s),
                             })
