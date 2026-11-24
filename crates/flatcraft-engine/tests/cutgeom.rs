@@ -1092,3 +1092,59 @@ fn open_filled_arc_thinner_than_half_the_stroke_stays_a_line() {
     assert_eq!(subs.len(), 1, "{subs:?}");
     assert!(!subs[0].1, "{subs:?}");
 }
+
+// ---------------------------------------------------------------- closed hairlines and thin slots (R23)
+
+#[test]
+fn thin_closed_slot_stays_a_ring() {
+    // 20 x 0.3 mm under a 0.4 mm stroke: hidden under the stroke, but
+    // wide enough to be a real slot, so both sides are cut. Started on a
+    // short side, so the close is a long side.
+    let slot = polyline(
+        &[(10.0, 10.3), (10.0, 10.0), (30.0, 10.0), (30.0, 10.3)],
+        true,
+    );
+    let paint = Paint {
+        fill: Some(FillRule::NonZero),
+        stroke: stroke(0.4, MITER, Cap::Butt),
+    };
+    let subs = subpaths(&cut(&object(slot, paint, CutOptions::default())));
+    assert_eq!(subs.len(), 1, "{subs:?}");
+    assert!(subs[0].1, "the slot must stay closed: {subs:?}");
+    assert!((length(&subs[0].0) - 40.6).abs() < 1e-6, "{subs:?}");
+}
+
+#[test]
+fn hairline_spine_does_not_depend_on_start() {
+    // A closed hairline, at most 0.07 mm wide.
+    let ring = [
+        (10.0, 10.0),
+        (35.0, 10.05),
+        (60.0, 10.0),
+        (40.0, 9.98),
+        (20.0, 9.98),
+    ];
+    let spine = |start: usize| {
+        let mut pts = ring.to_vec();
+        pts.rotate_left(start);
+        let subs = subpaths(&cut(&object(
+            polyline(&pts, true),
+            fill_thin_stroke(),
+            CutOptions::default(),
+        )));
+        assert_eq!(subs.len(), 1, "start {start}: {subs:?}");
+        assert!(!subs[0].1, "start {start}: the spine must be open");
+        vertices(&subs[0].0)
+    };
+    let first = spine(0);
+    assert_eq!(first.first(), Some(&Point::new(10.0, 10.0)));
+    assert_eq!(first.last(), Some(&Point::new(60.0, 10.0)));
+    assert_eq!(first.len(), 4, "the side with more vertices: {first:?}");
+    for start in 1..ring.len() {
+        let other = spine(start);
+        assert_eq!(other.len(), first.len(), "start {start}: {other:?}");
+        for (a, b) in first.iter().zip(&other) {
+            assert!(a.distance(*b) < TOL, "start {start}: {other:?}");
+        }
+    }
+}

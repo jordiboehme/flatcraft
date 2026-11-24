@@ -42,6 +42,12 @@ const MIN_TOLERANCE_MM: f64 = 1e-4;
 /// tolerance), mm.
 pub const CLOSE_TOLERANCE_MM: f64 = 0.01;
 
+/// A closed line whose fill is on average narrower than this is cut once,
+/// along its spine, mm. Two device steps of 0.05 mm: two cuts that close
+/// together tear the material. Wider ones are real slots and keep both
+/// sides.
+pub const HAIRLINE_MM: f64 = 0.1;
+
 /// Stroker tolerance for bounds of the cut geometry, mm (the default
 /// flatten tolerance).
 pub const BOUNDS_TOLERANCE_MM: f64 = 0.01;
@@ -222,10 +228,12 @@ fn object_outlines(
 /// second cut next to the first. "Hidden" compares the mean width
 /// of the fill (`mean_width`) with the stroke width, at least the
 /// tolerance. An open subpath has no stroke along its implicit
-/// closing chord, so there the bound is half the stroke width. A
-/// line is cut without its close: a close would run back along the
-/// line and cut it twice. Without a stroke a fill thinner than the
-/// tolerance is not visible and no knife can cut it, so it is
+/// closing chord, so there the bound is half the stroke width; it is
+/// cut as drawn. A closed line is a thin slot: with a mean width of
+/// `HAIRLINE_MM` or more it is cut as drawn, a ring with both sides.
+/// Below that it is a hairline that runs back along itself, and it is
+/// cut once, along its `spine`. Without a stroke a fill thinner than
+/// the tolerance is not visible and no knife can cut it, so it is
 /// dropped.
 ///
 /// Known gaps until the milestone 2 booleans: a stroked spur inside
@@ -258,9 +266,16 @@ fn fill_edges(
             Some(w) => w / 2.0,
             None => 0.0,
         };
-        if mean_width(&own) < hidden_below.max(tolerance) {
+        let width = mean_width(&own);
+        if width < hidden_below.max(tolerance) {
             if stroke_width.is_some() && !sub.segments.is_empty() {
-                lines.push(sub.open_path());
+                let hairline = sub.ends_meet() && width < HAIRLINE_MM.max(tolerance);
+                lines.push(
+                    match hairline.then(|| spine(&sub.points(tolerance / 2.0))) {
+                        Some(Some(spine)) => spine,
+                        _ => sub.elements().collect(),
+                    },
+                );
             }
         } else if let Some(c) = contour {
             fill.push(c);
@@ -342,13 +357,6 @@ impl Subpath {
             .chain(self.closed.then_some(PathEl::ClosePath))
     }
 
-    /// The subpath as drawn, without its close.
-    fn open_path(&self) -> BezPath {
-        std::iter::once(PathEl::MoveTo(self.start))
-            .chain(self.segments.iter().copied())
-            .collect()
-    }
-
     /// Closed, or drawn back to its start within `CLOSE_TOLERANCE_MM`.
     fn ends_meet(&self) -> bool {
         self.closed
@@ -406,6 +414,88 @@ fn subpaths(path: impl IntoIterator<Item = PathEl>) -> Vec<Subpath> {
     }
     out.extend(cur.filter(|c| !c.segments.is_empty()));
     out
+}
+
+/// The spine of a closed hairline with the flattened vertices `ring`: the
+/// open line between its two vertices that are farthest apart, along one
+/// of the two sides between them. The side with more vertices wins, then
+/// the longer one. Every choice, the direction too, is made from the
+/// coordinates alone, so the spine does not depend on where the ring
+/// starts. `None` if the ring has fewer than two different vertices.
+fn spine(ring: &[[f64; 2]]) -> Option<BezPath> {
+    let mut ring = ring.to_vec();
+    ring.dedup();
+    if ring.len() > 1 && ring.first() == ring.last() {
+        ring.pop();
+    }
+    let n = ring.len();
+    let order = |a: &[f64; 2], b: &[f64; 2]| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1]));
+    // A pair of vertices as (distance squared, lower end, upper end).
+    let pair = |i: usize, j: usize| {
+        let (a, b) = (ring[i], ring[j]);
+        let d = (b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2);
+        if order(&a, &b).is_le() {
+            (d, a, b)
+        } else {
+            (d, b, a)
+        }
+    };
+    // The farthest pair; ties go to the pair that sorts higher.
+    let mut ends: Option<(usize, usize)> = None;
+    for i in 0..n {
+        for j in i + 1..n {
+            let better = ends.is_none_or(|(bi, bj)| {
+                let ((d, lo, hi), (bd, blo, bhi)) = (pair(i, j), pair(bi, bj));
+                d.total_cmp(&bd)
+                    .then(order(&lo, &blo))
+                    .then(order(&hi, &bhi))
+                    .is_gt()
+            });
+            if better {
+                ends = Some((i, j));
+            }
+        }
+    }
+    let (i, j) = ends?;
+    let (d, lo, _) = pair(i, j);
+    if d <= 0.0 {
+        return None;
+    }
+    // Both sides, from the lower end to the upper end.
+    let mut sides = [
+        ring[i..=j].to_vec(),
+        ring[j..].iter().chain(&ring[..=i]).copied().collect(),
+    ];
+    for side in &mut sides {
+        if side[0] != lo {
+            side.reverse();
+        }
+    }
+    let length = |side: &Contour| -> f64 {
+        side.windows(2)
+            .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+            .sum()
+    };
+    let [a, b] = sides;
+    let first = a
+        .len()
+        .cmp(&b.len())
+        .then(length(&a).total_cmp(&length(&b)))
+        .then_with(|| {
+            a.iter()
+                .zip(&b)
+                .map(|(p, q)| order(p, q))
+                .find(|o| o.is_ne())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .is_ge();
+    let side = if first { a } else { b };
+    let mut path = BezPath::new();
+    path.move_to(Point::new(side[0][0], side[0][1]));
+    for p in &side[1..] {
+        path.line_to(Point::new(p[0], p[1]));
+    }
+    Some(path)
 }
 
 /// Mean width of boolean result shapes: twice their area over the length
@@ -550,6 +640,17 @@ mod tests {
         assert!(subs[0].closed && !subs[1].closed);
         assert_eq!(subs[1].start, Point::new(1.0, 2.0));
         assert_eq!(subs[1].segments, vec![PathEl::LineTo(Point::new(1.0, 9.0))]);
+    }
+
+    #[test]
+    fn spine_of_a_there_and_back_line_is_the_line() {
+        let s = spine(&[[0.0, 0.0], [50.0, 0.0], [0.0, 0.0]]).unwrap();
+        let line = [
+            PathEl::MoveTo(Point::new(0.0, 0.0)),
+            PathEl::LineTo(Point::new(50.0, 0.0)),
+        ];
+        assert_eq!(s.elements(), line.as_slice());
+        assert!(spine(&[[1.0, 1.0], [1.0, 1.0]]).is_none());
     }
 
     #[test]
