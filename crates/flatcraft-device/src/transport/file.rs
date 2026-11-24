@@ -91,16 +91,25 @@ fn tmp_path(target: &Path) -> PathBuf {
     target.with_file_name(format!(".{name}.tmp"))
 }
 
-/// Writes a new temp file. It never opens a file that exists already.
-fn write_tmp(path: &Path, data: &[u8]) -> Result<std::fs::File, TransportError> {
+/// Writes a new temp file. It never opens a file that exists already, and
+/// removes the file again when writing it fails.
+fn write_tmp(path: &Path, data: &[u8]) -> Result<(), TransportError> {
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
         .map_err(|e| io_error("create", path, e))?;
-    f.write_all(data).map_err(|e| io_error("write", path, e))?;
-    f.sync_all().map_err(|e| io_error("write", path, e))?;
-    Ok(f)
+    let written = f.write_all(data).and_then(|()| f.sync_all());
+    remove_on_error(written, path)
+}
+
+/// Maps a failed write of the file we just created at `path` to an error
+/// and removes that file.
+fn remove_on_error(result: std::io::Result<()>, path: &Path) -> Result<(), TransportError> {
+    result.map_err(|e| {
+        let _ = std::fs::remove_file(path);
+        io_error("write", path, e)
+    })
 }
 
 /// Writes every `(target, data)` pair through a temp file and renames them in
@@ -183,5 +192,36 @@ impl Transport for FileTransport {
             files: vec![bytes_path, txt_path, log_path],
             bytes_sent: job.bytes.len(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_write_removes_its_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".job.gpgl.tmp");
+        std::fs::write(&path, "half").unwrap();
+        let e = remove_on_error(Err(std::io::Error::other("disk full")), &path).unwrap_err();
+        assert!(matches!(e, TransportError::Io(_)), "{e:?}");
+        assert!(!path.exists());
+        remove_on_error(Ok(()), &path).unwrap();
+    }
+
+    #[test]
+    fn a_failed_later_file_removes_the_earlier_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.txt");
+        let b = dir.path().join("b.txt");
+        // The temp path of b is taken by a directory, so creating it fails.
+        std::fs::create_dir(tmp_path(&b)).unwrap();
+        let e = write_all_atomic(&[(&a, b"1"), (&b, b"2")]).unwrap_err();
+        assert!(matches!(e, TransportError::Io(_)), "{e:?}");
+        assert!(!a.exists());
+        assert!(!tmp_path(&a).exists());
+        // What it did not create stays.
+        assert!(tmp_path(&b).is_dir());
     }
 }

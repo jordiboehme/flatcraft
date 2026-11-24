@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use flatcraft_core::document::ObjectId;
-use flatcraft_device::gpgl::{CutSettings, EmitError, EmitPath, EmittedJob, emit_job};
+use flatcraft_device::gpgl::{CutSettings, EmitError, EmitPath, EmittedJob, check_safe, emit_job};
 use flatcraft_device::{
     FileTransport, PlotterProfile, SendReport, Transport, TransportError, TransportSpec,
 };
@@ -317,6 +317,7 @@ pub(crate) fn send(
         GateDecision::Refuse(reason) => Err(CommandError::Refused(reason)),
         GateDecision::NeedsConfirmation => {
             let result = build(s)?;
+            check_before_waiting(&result.job)?;
             let summary = summary(&result);
             s.request_confirmation(
                 name,
@@ -338,6 +339,12 @@ pub(crate) fn send(
     }
 }
 
+/// Only bytes that pass the safety check may wait for confirmation, so an
+/// unsafe job is refused to the agent at once.
+fn check_before_waiting(job: &EmittedJob) -> Result<(), CommandError> {
+    check_safe(&job.bytes).map_err(|e| CommandError::Failed(TransportError::Unsafe(e).to_string()))
+}
+
 /// Sends an already built job through `transport`. The gate must have
 /// allowed it, or the person confirmed it (`confirm_pending`).
 pub(crate) fn deliver_built(
@@ -352,18 +359,19 @@ pub(crate) fn deliver_built(
             directory,
             extension,
         } => {
-            for (what, dir) in [
-                ("The plotter profile's output folder", directory.as_deref()),
-                ("The output folder in the preferences", s.prefs.output_dir.as_deref()),
-            ] {
-                if let Some(dir) = dir
-                    && !dir.is_absolute()
-                {
-                    return Err(CommandError::Refused(format!(
-                        "{what} '{}' is not an absolute path. Set a full path, like /Users/me/Cuts or C:\\Cuts.",
-                        dir.display()
-                    )));
-                }
+            // Only the folder that is actually used must be absolute.
+            let picked = match (directory.as_deref(), s.prefs.output_dir.as_deref()) {
+                (Some(d), _) => Some(("The plotter profile's output folder", d)),
+                (None, Some(d)) => Some(("The output folder in the preferences", d)),
+                (None, None) => None,
+            };
+            if let Some((what, dir)) = picked
+                && !dir.is_absolute()
+            {
+                return Err(CommandError::Refused(format!(
+                    "{what} '{}' is not an absolute path. Set a full path, like /Users/me/Cuts or C:\\Cuts.",
+                    dir.display()
+                )));
             }
             let dir = output_dir(
                 directory.as_deref(),
@@ -428,6 +436,27 @@ mod tests {
         for e in failed {
             assert!(matches!(emit_error(e), CommandError::Failed(_)));
         }
+    }
+
+    #[test]
+    fn unsafe_bytes_never_wait_for_confirmation() {
+        let bad = EmittedJob {
+            bytes: b"FB1\x03H\x03".to_vec(),
+            listing: vec![],
+        };
+        let e = check_before_waiting(&bad).unwrap_err();
+        assert!(matches!(e, CommandError::Failed(_)), "{e}");
+        assert!(e.to_string().contains("safety check"), "{e}");
+        let unterminated = EmittedJob {
+            bytes: b"\x1b\x04".to_vec(),
+            listing: vec![],
+        };
+        assert!(check_before_waiting(&unterminated).is_err());
+        let good = EmittedJob {
+            bytes: b"\x1b\x04H\x03".to_vec(),
+            listing: vec![],
+        };
+        check_before_waiting(&good).unwrap();
     }
 
     #[test]

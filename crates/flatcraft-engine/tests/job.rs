@@ -641,7 +641,7 @@ fn confirm_sends_the_snapshot_not_the_current_document() {
     check_safe(&snapshot.job.bytes).unwrap();
     assert_eq!(snapshot.plotter_id, "silhouette-cameo-2");
     assert!(matches!(snapshot.transport, TransportSpec::Usb { .. }));
-    assert_eq!(snapshot.doc, s.doc().id);
+    assert_eq!(snapshot.doc, s.doc().id());
     assert_eq!(snapshot.summary.toolpaths, 1);
     assert_eq!((snapshot.summary.speed, snapshot.summary.force), (3, 20));
     assert_eq!(snapshot.summary.passes, 1);
@@ -717,14 +717,14 @@ fn switching_documents_keeps_the_snapshot() {
 fn documents_have_stable_unique_ids() {
     let d = dirs();
     let mut s = session(&d);
-    let first = s.doc().id;
+    let first = s.doc().id();
     run(&mut s, "document.new", json!({}));
-    let second = s.doc().id;
+    let second = s.doc().id();
     assert!(second > first);
     run(&mut s, "document.switch", json!({ "index": 0 }));
-    assert_eq!(s.doc().id, first);
+    assert_eq!(s.doc().id(), first);
     import_square(&mut s, "square");
-    assert_eq!(s.doc().id, first);
+    assert_eq!(s.doc().id(), first);
 }
 
 // ---------------------------------------------------------------- profile problems
@@ -771,4 +771,51 @@ fn invalid_pipeline_settings_are_refused() {
         .execute("job.preview", json!({}), Origin::User)
         .unwrap_err();
     assert!(matches!(e, CommandError::Refused(_)), "{e}");
+}
+
+#[test]
+fn only_the_picked_output_folder_must_be_absolute() {
+    let d = dirs();
+    let profile_out = d.out.path().join("from-profile");
+    user_plotter(
+        d.config.path(),
+        &format!(
+            "transport = {{ File = {{ directory = {:?}, extension = \"gpgl\" }} }}\n",
+            profile_out.to_str().unwrap()
+        ),
+    );
+    let mut p = prefs(&d);
+    p.output_dir = Some(PathBuf::from("relative/prefs"));
+    let mut s = session_with(&d, p, false);
+    import_square(&mut s, "square");
+
+    // The default plotter uses the relative preference: refused.
+    let e = s.execute("job.send", json!({}), Origin::User).unwrap_err();
+    let CommandError::Refused(msg) = &e else {
+        panic!("{e}")
+    };
+    assert!(
+        msg.contains("relative/prefs") && msg.contains("preferences"),
+        "{msg}"
+    );
+
+    // An absolute profile folder wins over the relative preference.
+    run(&mut s, "job.set_plotter", json!({ "id": "custom" }));
+    let r = run(&mut s, "job.send", json!({ "name": "ok" }));
+    assert_eq!(sent_paths(&r)[0], profile_out.join("ok.gpgl"));
+    assert!(!Path::new("relative").exists());
+}
+
+#[test]
+fn a_cloned_document_gets_a_new_id_and_drops_the_pending_send() {
+    let d = dirs();
+    let mut s = usb_ui_session(&d);
+    request(&mut s);
+    let original = s.doc().id();
+    let copy = s.doc().clone();
+    assert_ne!(copy.id(), original);
+    // Replacing the document with its clone ends the pending send.
+    s.docs[0] = copy;
+    run(&mut s, "document.state", json!({}));
+    assert!(s.pending_send().is_none());
 }

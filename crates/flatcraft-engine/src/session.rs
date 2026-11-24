@@ -71,11 +71,11 @@ pub struct PendingSend {
 pub const DEFAULT_MEDIA: &str = "mat-12x12";
 
 /// One open document with its selection and undo history.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DocState {
     /// Stable id, unique for the life of the process. A replaced document
-    /// gets a new id.
-    pub id: u64,
+    /// and a clone get a new id.
+    id: u64,
     pub document: Document,
     pub selection: BTreeSet<ObjectId>,
     pub undo: UndoStack<Document>,
@@ -84,11 +84,36 @@ pub struct DocState {
     pub last_job: Option<JobResult>,
 }
 
-impl DocState {
-    pub fn new(document: Document) -> Self {
-        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+fn next_doc_id() -> u64 {
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// A clone is a new document: it gets its own id, so it never keeps a
+/// pending send of the original alive.
+impl Clone for DocState {
+    fn clone(&self) -> Self {
         Self {
-            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            id: next_doc_id(),
+            document: self.document.clone(),
+            selection: self.selection.clone(),
+            undo: self.undo.clone(),
+            path: self.path.clone(),
+            dirty: self.dirty,
+            last_job: self.last_job.clone(),
+        }
+    }
+}
+
+impl DocState {
+    /// Stable id of this open document.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub fn new(document: Document) -> Self {
+        Self {
+            id: next_doc_id(),
             document,
             selection: BTreeSet::new(),
             undo: UndoStack::default(),
@@ -189,7 +214,7 @@ impl Session {
             id,
             name,
             requested_at: Instant::now(),
-            doc: self.doc().id,
+            doc: self.doc().id(),
             plotter_id,
             transport,
             job,
@@ -202,7 +227,7 @@ impl Session {
     /// or replaced by another document in its slot).
     fn prune_pending(&mut self) {
         if let Some(p) = &self.pending_send
-            && !self.docs.iter().any(|d| d.id == p.doc)
+            && !self.docs.iter().any(|d| d.id() == p.doc)
         {
             self.pending_send = None;
         }
