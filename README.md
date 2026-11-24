@@ -35,7 +35,7 @@
 
 You have a cutting plotter. It works fine. The software that drives it is about to stop working on your computer. That's how good machines end up in landfill: not broken, just abandoned.
 
-FlatCraft is the way out. It works like a slicer for 3D printers: one profile per plotter, one per material, your own presets on top. Alessandro Ranellucci with Slic3r and Josef Průša with PrusaSlicer showed how good that feels for printers. FlatCraft brings it to flat things.
+FlatCraft is the way out. It works like a slicer for 3D printers: one profile per plotter, one per material, your own presets on top. Alessandro Ranellucci with Slic3r and Josef Průša with PrusaSlicer showed how good that feels for 3D printers. FlatCraft brings it to flat things.
 
 One Rust app. No account, no cloud, no subscription. Where we're going, we don't need logins.
 
