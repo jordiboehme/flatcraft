@@ -5,6 +5,7 @@ use crate::plan::Toolpath;
 /// Repeat each toolpath `passes` times, in a row. Passes are numbered from 1.
 /// With `reverse_alternate`, even passes run in reverse.
 pub fn expand(paths: Vec<Toolpath>, passes: u32, reverse_alternate: bool) -> Vec<Toolpath> {
+    debug_assert!(passes >= 1, "plan validates passes >= 1");
     let mut out = Vec::with_capacity(paths.len() * passes.max(1) as usize);
     for t in paths {
         for pass in 1..=passes.max(1) {
@@ -63,6 +64,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "passes >= 1")]
+    fn zero_passes_is_a_bug_in_debug() {
+        expand(vec![tp(1)], 0, true);
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
     fn zero_passes_counts_as_one() {
         assert_eq!(expand(vec![tp(1)], 0, true).len(), 1);
     }

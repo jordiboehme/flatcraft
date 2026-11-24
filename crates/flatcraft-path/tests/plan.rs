@@ -230,14 +230,58 @@ fn close_right_after_move_is_dropped() {
 }
 
 #[test]
-fn collapsed_ring_is_dropped() {
-    // closed ring whose points all sit on one line collapses after merging
+fn flat_ring_becomes_open_cut() {
+    // a "ring" along one line collapses to [a, c, a]: the 20 mm line is still cut, once
     let mut p = BezPath::new();
     p.move_to((10.0, 10.0));
     p.line_to((20.0, 10.0));
     p.line_to((30.0, 10.0));
     p.close_path();
+    let mut s = settings();
+    s.overcut_mm = 0.5;
+    let out = plan(&[placed(1, p)], &s).unwrap();
+    assert_eq!(out.toolpaths.len(), 1);
+    let t = &out.toolpaths[0];
+    assert!(!t.closed);
+    assert_eq!(
+        t.points,
+        vec![Point::new(10.0, 10.0), Point::new(30.0, 10.0)]
+    );
+    assert!((out.cut_mm - 20.0).abs() < 1e-9);
+}
+
+#[test]
+fn zero_length_ring_is_dropped() {
+    // a ring far below the flatten tolerance collapses to [a, a]
+    let mut p = BezPath::new();
+    p.move_to((10.0, 10.0));
+    p.line_to((10.0005, 10.0));
+    p.line_to((10.0, 10.0005));
+    p.close_path();
     assert_eq!(plan(&[placed(1, p)], &settings()), Err(PlanError::Empty));
+}
+
+#[test]
+fn invalid_settings_message_is_readable() {
+    let msg = PlanError::InvalidSettings {
+        field: "flatten_tolerance_mm",
+        value: f64::NAN,
+    }
+    .to_string();
+    assert_eq!(
+        msg,
+        "The flatten tolerance must be a number of at least 0.001 mm (got NaN)."
+    );
+    for (field, label) in [
+        ("join_tolerance_mm", "join tolerance"),
+        ("overcut_mm", "overcut"),
+        ("passes", "passes"),
+        ("cutting_area", "cutting area"),
+    ] {
+        let msg = PlanError::InvalidSettings { field, value: -1.0 }.to_string();
+        assert!(msg.starts_with(&format!("The {label} must")), "{msg}");
+        assert!(!msg.contains('\u{2014}') && !msg.contains('_'), "{msg}");
+    }
 }
 
 fn invalid(s: PipelineSettings, field: &str) {
@@ -324,8 +368,8 @@ fn bad_cutting_area_is_refused() {
 proptest! {
     #[test]
     fn closed_rings_stay_closed(
-        radii in proptest::collection::vec(5.0f64..40.0, 3..16),
-        overcut in 0.0f64..1.0,
+        radii in proptest::collection::vec(5.0f64..40.0, 3..64),
+        overcut_factor in 0.0f64..1.5,
     ) {
         // star-shaped polygon: increasing angles, so it is simple
         let n = radii.len();
@@ -345,6 +389,10 @@ proptest! {
         path.close_path();
         let mut ring = pts.clone();
         ring.push(pts[0]);
+        let unmerged = ring.clone();
+        // overcut up to 1.5x the shortest edge, so it sometimes passes a corner
+        let shortest = ring.windows(2).map(|w| w[0].distance(w[1])).fold(f64::MAX, f64::min);
+        let overcut = overcut_factor * shortest;
         // the plan merges collinear points with the same tolerance
         let ring = flatcraft_path::flatten::merge_collinear(&ring, 0.001);
         let perimeter = length(&ring);
@@ -360,6 +408,10 @@ proptest! {
         prop_assert!(length(&t.points) >= perimeter + overcut - 1e-6);
         let expect = point_at(&ring, overcut);
         prop_assert!(t.points.last().unwrap().distance(expect) < 1e-9);
+        // against the unmerged source ring
+        prop_assert_eq!(t.points[0], pts[0]);
+        let expect_src = point_at(&unmerged, overcut);
+        prop_assert!(t.points.last().unwrap().distance(expect_src) <= 0.001 + 1e-9);
     }
 
     #[test]

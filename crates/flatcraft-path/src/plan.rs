@@ -52,11 +52,14 @@ pub struct CutPlan {
 pub enum PlanError {
     #[error("there is nothing to cut")]
     Empty,
-    #[error("invalid setting {field}: {value}")]
+    #[error("{}", invalid_settings_message(.field, *.value))]
     InvalidSettings { field: &'static str, value: f64 },
     #[error("{} object(s) reach outside the cutting area: {}", .objects.len(), format_ids(.objects))]
     OutOfArea { objects: Vec<ObjectId> },
 }
+
+/// Anything shorter than this has no length.
+const ZERO_LEN_MM: f64 = 1e-9;
 
 /// Smallest tolerance accepted; below it kurbo's flattening takes ages.
 const MIN_TOLERANCE_MM: f64 = 0.001;
@@ -104,6 +107,25 @@ fn inside_area(flat: &BezPath, area: Rect) -> bool {
     })
 }
 
+fn invalid_settings_message(field: &str, value: f64) -> String {
+    match field {
+        "flatten_tolerance_mm" | "join_tolerance_mm" => {
+            let label = field.trim_end_matches("_tolerance_mm");
+            format!(
+                "The {label} tolerance must be a number of at least {MIN_TOLERANCE_MM} mm (got {value})."
+            )
+        }
+        "overcut_mm" => {
+            format!("The overcut must be a number of at least 0 mm (got {value}).")
+        }
+        "passes" => format!("The passes must be at least 1 (got {value})."),
+        "cutting_area" => format!(
+            "The cutting area must have finite coordinates and a positive width and height (got {value})."
+        ),
+        other => format!("The setting {other} is not valid (got {value})."),
+    }
+}
+
 fn format_ids(ids: &[ObjectId]) -> String {
     ids.iter()
         .map(|id| id.0.to_string())
@@ -135,15 +157,22 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
     let mut toolpaths = Vec::new();
     for (placed, f) in input.iter().zip(&flat) {
         for line in clean::clean(f, s.join_tolerance_mm) {
-            let points = flatten::merge_collinear(&line.points, s.flatten_tolerance_mm);
-            // a ring that collapsed (fewer than 3 distinct vertices) would plunge
-            // the blade without moving
-            if line.closed && points.len() < 4 {
-                continue;
+            let mut points = flatten::merge_collinear(&line.points, s.flatten_tolerance_mm);
+            let mut closed = line.closed;
+            if closed && points.len() < 4 {
+                // The ring collapsed to fewer than 3 distinct vertices. With no
+                // length it would plunge the blade without moving: drop it.
+                // Otherwise [a, b, a] is a line, cut once as an open path
+                // (same as clean does for a two-point ring).
+                if clean::length(&points) < ZERO_LEN_MM {
+                    continue;
+                }
+                points.truncate(2);
+                closed = false;
             }
             toolpaths.push(Toolpath {
                 points,
-                closed: line.closed,
+                closed,
                 source: placed.source,
                 pass: 1,
             });
