@@ -620,3 +620,389 @@ fn trace_button_retraces_the_selected_image() {
     assert!(app(&h).ui.toasts.is_empty(), "{:?}", app(&h).ui.toasts);
     assert_eq!(undo_len(&s), before + 1);
 }
+
+// ---------------------------------------------------------------- review round 1
+
+fn object_centre(s: &SharedSession, id: u64) -> kurbo::Point {
+    s.lock()
+        .unwrap()
+        .doc()
+        .document
+        .get(ObjectId(id))
+        .unwrap()
+        .transform
+        .center_mm
+}
+
+#[test]
+fn drag_is_cancelled_when_the_document_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let id = import_square(&s);
+    let start = object_centre(&s, id);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let view = known_view(&mut h, start);
+    let before_undo = undo_len(&s);
+    let from = view.mm_to_screen(start);
+    h.hover_at(from);
+    h.run();
+    h.drag_at(from);
+    h.run();
+    h.hover_at(from + Vec2::new(10.0, 0.0));
+    h.run();
+    // Mid-drag an agent opens a document with an object of the same id.
+    let b_id = {
+        s.lock()
+            .unwrap()
+            .execute("document.new", json!({}), Origin::Agent)
+            .unwrap();
+        import_square(&s)
+    };
+    assert_eq!(b_id, id, "the same object id in the new document");
+    let b_start = object_centre(&s, b_id);
+    let b_undo = undo_len(&s);
+    for t in [20.0, 40.0] {
+        h.hover_at(from + Vec2::new(t, 20.0));
+        h.run();
+    }
+    h.drop_at(from + Vec2::new(40.0, 20.0));
+    h.run();
+    assert_eq!(object_centre(&s, b_id), b_start, "the new document moved");
+    assert_eq!(undo_len(&s), b_undo);
+    let st = s.lock().unwrap();
+    let a = &st.docs[0];
+    assert_eq!(
+        a.document.get(ObjectId(id)).unwrap().transform.center_mm,
+        start
+    );
+    assert_eq!(a.undo.undo_len(), before_undo);
+}
+
+#[test]
+fn switching_back_restores_link_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let file = dir.path().join("gone.svg");
+    write_square(&file, 20.0);
+    import_file(&s, &file);
+    std::fs::remove_file(&file).unwrap();
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    focus_window(&mut h);
+    h.get_by_label("1 source file not found");
+    h.get_by_role_and_label(Role::Button, "New document")
+        .click();
+    h.run();
+    assert!(h.query_by_label("1 source file not found").is_none());
+    h.get_by_role_and_label(Role::Button, "Untitled 1 *")
+        .click();
+    h.run();
+    h.run();
+    h.get_by_label("1 source file not found");
+    h.get_by_label("Source file not found");
+}
+
+#[test]
+fn pills_stay_clear_of_the_cutting_area_corner() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let a = &state(&s)["cutting_area_mm"];
+    let (x0, y0) = (a["x0"].as_f64().unwrap(), a["y0"].as_f64().unwrap());
+    let corner =
+        app(&h)
+            .ui
+            .prepare
+            .view
+            .rect_to_screen(kurbo::Rect::new(x0, y0, x0 + 50.0, y0 + 50.0));
+    let pill = h.get_by_label("This mat is not calibrated yet").rect();
+    assert!(!pill.intersects(corner), "{pill:?} covers {corner:?}");
+    let canvas = app(&h).ui.prepare.canvas_rect;
+    assert!(canvas.contains_rect(pill));
+    // Stacked from the bottom-left.
+    assert!(pill.min.y > canvas.center().y, "{pill:?} in {canvas:?}");
+    assert!(pill.min.x < canvas.center().x, "{pill:?} in {canvas:?}");
+}
+
+fn wheel(unit: egui::MouseWheelUnit, source: egui::MouseWheelSource, delta: Vec2) -> Event {
+    Event::MouseWheel {
+        unit,
+        delta,
+        phase: egui::TouchPhase::Move,
+        source,
+        modifiers: Modifiers::NONE,
+    }
+}
+
+#[test]
+fn trackpad_scroll_pans_and_wheel_zooms() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let view = known_view(&mut h, kurbo::Point::new(100.0, 100.0));
+    let at = app(&h).ui.prepare.canvas_rect.center() + Vec2::new(30.0, 40.0);
+    h.hover_at(at);
+    h.run();
+    // Two fingers on a trackpad: pan, no zoom.
+    h.event(wheel(
+        egui::MouseWheelUnit::Point,
+        egui::MouseWheelSource::Trackpad,
+        Vec2::new(30.0, -12.0),
+    ));
+    h.run();
+    let v = app(&h).ui.prepare.view;
+    assert_eq!(v.px_per_mm, view.px_per_mm);
+    assert!((v.offset - view.offset - Vec2::new(30.0, -12.0)).length() < 1e-3);
+    // A mouse wheel notch: zoom around the pointer.
+    let mm = v.screen_to_mm(at);
+    h.event(wheel(
+        egui::MouseWheelUnit::Line,
+        egui::MouseWheelSource::Wheel,
+        Vec2::new(0.0, 1.0),
+    ));
+    h.run();
+    let w = app(&h).ui.prepare.view;
+    assert!(w.px_per_mm > v.px_per_mm, "{w:?}");
+    assert!((w.screen_to_mm(at) - mm).hypot() < 1e-3);
+}
+
+#[test]
+fn pinch_and_cmd_scroll_zoom_around_the_pointer() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let view = known_view(&mut h, kurbo::Point::new(100.0, 100.0));
+    let at = app(&h).ui.prepare.canvas_rect.center() + Vec2::new(-20.0, 10.0);
+    h.hover_at(at);
+    h.run();
+    let mm = view.screen_to_mm(at);
+    h.event(Event::Zoom(1.5));
+    h.run();
+    let v = app(&h).ui.prepare.view;
+    assert!((v.px_per_mm - view.px_per_mm * 1.5).abs() < 1e-4, "{v:?}");
+    assert!((v.screen_to_mm(at) - mm).hypot() < 1e-3);
+    h.event_modifiers(
+        Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: Vec2::new(0.0, 40.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Trackpad,
+            modifiers: Modifiers::COMMAND,
+        },
+        Modifiers::COMMAND,
+    );
+    for _ in 0..5 {
+        h.run();
+    }
+    let w = app(&h).ui.prepare.view;
+    assert!(w.px_per_mm > v.px_per_mm, "{w:?}");
+    assert!((w.screen_to_mm(at) - mm).hypot() < 1e-2);
+}
+
+#[test]
+fn search_reload_uses_the_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let fa = dir.path().join("a.svg");
+    let fb = dir.path().join("b.svg");
+    write_square(&fa, 20.0);
+    write_square(&fb, 20.0);
+    let a = import_file(&s, &fa);
+    let b = import_file(&s, &fb);
+    s.lock()
+        .unwrap()
+        .execute("object.select", json!({ "ids": [a] }), Origin::User)
+        .unwrap();
+    write_square(&fa, 30.0);
+    write_square(&fb, 30.0);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    h.get_by_label("Search commands").click();
+    h.run();
+    h.get_by_label("Search commands").type_text("Reload");
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!((width(&s, a) - 30.0).abs() < 1e-4);
+    assert!((width(&s, b) - 20.0).abs() < 1e-4, "b was reloaded too");
+}
+
+#[test]
+fn keep_aspect_is_fixed_for_several_objects() {
+    use egui_kittest::kittest::NodeT as _;
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let b = import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.run();
+    app_mut(&mut h).ui.prepare.fields.keep_aspect = false;
+    s.lock()
+        .unwrap()
+        .execute("object.select", json!({ "ids": [a, b] }), Origin::User)
+        .unwrap();
+    h.run();
+    let node = h.get_by_role_and_label(Role::CheckBox, "Keep aspect");
+    let n = node.accesskit_node();
+    assert!(n.is_disabled());
+    assert_eq!(n.toggled(), Some(egui::accesskit::Toggled::True));
+}
+
+fn object_paths(h: &AppHarness, screen: egui::Rect) -> Vec<egui::epaint::PathShape> {
+    painted(h)
+        .into_iter()
+        .filter_map(|s| match s {
+            Shape::Path(p) => Some(p),
+            _ => None,
+        })
+        .filter(|p| {
+            let r = egui::Rect::from_points(&p.points);
+            (r.min - screen.min).length() < 2.0 && (r.max - screen.max).length() < 2.0
+        })
+        .collect()
+}
+
+fn screen_bounds(h: &AppHarness, s: &SharedSession, id: u64) -> egui::Rect {
+    let b = bounds(s, id);
+    let r = kurbo::Rect::new(
+        b["x0"].as_f64().unwrap(),
+        b["y0"].as_f64().unwrap(),
+        b["x1"].as_f64().unwrap(),
+        b["y1"].as_f64().unwrap(),
+    );
+    app(h).ui.prepare.view.rect_to_screen(r)
+}
+
+#[test]
+fn hidden_objects_are_not_drawn() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let id = import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let r = screen_bounds(&h, &s, id);
+    assert_eq!(object_paths(&h, r).len(), 1);
+    s.lock()
+        .unwrap()
+        .execute(
+            "object.set_visible",
+            json!({ "ids": [id], "visible": false }),
+            Origin::User,
+        )
+        .unwrap();
+    h.run();
+    assert!(object_paths(&h, r).is_empty());
+}
+
+/// A plotter "test" with a calibrated dark mat whose grid starts 10,20 mm
+/// into the physical mat.
+fn dark_mat_session(dir: &tempfile::TempDir) -> SharedSession {
+    let plotters = dir.path().join("profiles").join("plotters");
+    std::fs::create_dir_all(&plotters).unwrap();
+    std::fs::write(
+        plotters.join("test.toml"),
+        r##"id = "test"
+name = "Test"
+inherits = "file-output-gpgl-cameo2"
+media = [
+  { id = "dark", name = "Dark", kind = "Mat", color = "#202020", width_mm = 320.0, height_mm = 340.0, calibrated = true, grid = { origin_x_mm = 10.0, origin_y_mm = 20.0, width_mm = 300.0, height_mm = 300.0 } },
+]
+"##,
+    )
+    .unwrap();
+    let s = session(dir);
+    {
+        let mut st = s.lock().unwrap();
+        st.execute("job.set_plotter", json!({ "id": "test" }), Origin::User)
+            .unwrap();
+        st.execute("job.set_media", json!({ "id": "dark" }), Origin::User)
+            .unwrap();
+    }
+    s
+}
+
+#[test]
+fn rulers_start_at_the_grid_origin() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = dark_mat_session(&dir);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let view = app(&h).ui.prepare.view;
+    let rect = app(&h).ui.prepare.canvas_rect;
+    let zero = view.mm_to_screen(kurbo::Point::ORIGIN);
+    let mat_left = view.mm_to_screen(kurbo::Point::new(-10.0, -20.0));
+    assert!((zero.x - mat_left.x).abs() > 5.0);
+    let texts: Vec<_> = painted(&h)
+        .into_iter()
+        .filter_map(|s| match s {
+            Shape::Text(t) => Some(t),
+            _ => None,
+        })
+        .collect();
+    let top_zero = texts.iter().any(|t| {
+        t.galley.text() == "0"
+            && (t.pos.x - (zero.x + 2.0)).abs() < 0.5
+            && t.pos.y < rect.min.y + 18.0
+    });
+    let left_zero = texts.iter().any(|t| {
+        t.galley.text() == "0"
+            && (t.pos.y - (zero.y + 2.0)).abs() < 0.5
+            && t.pos.x < rect.min.x + 18.0
+    });
+    assert!(top_zero && left_zero, "no 0 label at the grid origin");
+}
+
+#[test]
+fn objects_contrast_with_a_dark_mat() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = dark_mat_session(&dir);
+    let id = import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let r = screen_bounds(&h, &s, id);
+    let paths = object_paths(&h, r);
+    assert_eq!(paths.len(), 1);
+    let egui::epaint::ColorMode::Solid(c) = paths[0].stroke.color else {
+        panic!("not a solid stroke");
+    };
+    let mat = [0x20, 0x20, 0x20];
+    assert_ne!([c.r(), c.g(), c.b()], mat);
+    assert!(flatcraft::ui::canvas::contrast_ratio([c.r(), c.g(), c.b()], mat) >= 3.0);
+}
+
+#[test]
+fn no_source_check_during_a_drag() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let file = dir.path().join("gone.svg");
+    write_square(&file, 20.0);
+    let id = import_file(&s, &file);
+    std::fs::remove_file(&file).unwrap();
+    let start = object_centre(&s, id);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let view = known_view(&mut h, start);
+    let from = view.mm_to_screen(start);
+    h.hover_at(from);
+    h.run();
+    h.drag_at(from);
+    h.run();
+    h.hover_at(from + Vec2::new(20.0, 0.0));
+    h.run();
+    h.event(Event::WindowFocused(true));
+    h.hover_at(from + Vec2::new(30.0, 0.0));
+    h.run();
+    assert!(app(&h).ui.prepare.drag.is_some(), "the drag is still on");
+    assert!(app(&h).ui.prepare.sources.missing.is_empty());
+    assert!(app(&h).ui.prepare.sources.check_pending);
+    h.drop_at(from + Vec2::new(30.0, 0.0));
+    h.run();
+    h.run();
+    assert_eq!(app(&h).ui.prepare.sources.missing, [id]);
+}

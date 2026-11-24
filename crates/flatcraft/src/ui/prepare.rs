@@ -48,17 +48,20 @@ impl RibbonTab {
     }
 }
 
-/// A drag on the canvas. Nothing is sent until it ends.
+/// A drag on the canvas. Nothing is sent until it ends, and then only to
+/// the document it started in; a document switch cancels it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Drag {
     Pan,
     Move {
+        doc_id: u64,
         ids: Vec<u64>,
         start: kurbo::Point,
         current: kurbo::Point,
     },
     /// A corner handle of a single selected object.
     Scale {
+        doc_id: u64,
         id: u64,
         /// 0 top-left, 1 top-right, 2 bottom-right, 3 bottom-left.
         corner_index: usize,
@@ -82,7 +85,11 @@ pub struct SourceStatus {
     /// A check was asked for (project open, window focus) and waits for the
     /// debounce or the end of a drag.
     pub check_pending: bool,
+    /// The pending check skips the debounce (a document switch).
+    pub check_now: bool,
     pub last_check: Option<Instant>,
+    /// Kinds of check errors already shown, so each kind toasts once.
+    pub reported: Vec<String>,
     /// Objects whose file `object.relink` also found in the new folder.
     pub also_found: Vec<(u64, PathBuf)>,
 }
@@ -460,12 +467,16 @@ pub fn snapshot(app: &mut FlatCraftApp) -> Snapshot {
 
     let src = &mut app.ui.prepare.sources;
     if src.doc_id != snap.doc_id {
-        let pending = src.check_pending;
-        let last = src.last_check;
+        // The lists belong to the old document. Check the new one at once
+        // (not the very first document: a new window has nothing linked,
+        // and opening a project asks for its own check).
+        let switched = src.doc_id != 0;
         *src = SourceStatus {
             doc_id: snap.doc_id,
-            check_pending: pending,
-            last_check: last,
+            check_pending: src.check_pending || switched,
+            check_now: switched,
+            last_check: src.last_check,
+            reported: std::mem::take(&mut src.reported),
             ..SourceStatus::default()
         };
     }
@@ -482,6 +493,18 @@ pub fn snapshot(app: &mut FlatCraftApp) -> Snapshot {
 
 // ---------------------------------------------------------------- sources
 
+/// A short name for the kind of a command error.
+fn error_kind(e: &flatcraft_engine::CommandError) -> &'static str {
+    use flatcraft_engine::CommandError as E;
+    match e {
+        E::UnknownCommand(_) => "unknown",
+        E::InvalidParams(_) => "invalid",
+        E::NotFound(_) => "not found",
+        E::Refused(_) => "refused",
+        E::Failed(_) => "failed",
+    }
+}
+
 impl FlatCraftApp {
     /// Runs a pending check of linked files unless a drag is in progress or
     /// the last check was less than [`CHECK_INTERVAL`] ago. With the
@@ -492,7 +515,9 @@ impl FlatCraftApp {
         if !p.sources.check_pending || p.drag.is_some() {
             return;
         }
-        if let Some(last) = p.sources.last_check {
+        if !p.sources.check_now
+            && let Some(last) = p.sources.last_check
+        {
             let since = now.saturating_duration_since(last);
             if since < CHECK_INTERVAL {
                 ctx.request_repaint_after(CHECK_INTERVAL - since);
@@ -500,6 +525,7 @@ impl FlatCraftApp {
             }
         }
         p.sources.check_pending = false;
+        p.sources.check_now = false;
         p.sources.last_check = Some(now);
         let (doc_id, result, auto) = {
             let mut s = lock(&self.session);
@@ -512,8 +538,20 @@ impl FlatCraftApp {
             );
             (doc_id, r, auto)
         };
-        let Ok(v) = result else {
-            return;
+        let v = match result {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("warning: cannot check the linked files: {e}");
+                let kind = error_kind(&e).to_string();
+                if !self.ui.prepare.sources.reported.contains(&kind) {
+                    self.ui.prepare.sources.reported.push(kind);
+                    self.toast(super::Toast::warning(format!(
+                        "Cannot check the linked files: {}",
+                        super::person_text(&e)
+                    )));
+                }
+                return;
+            }
         };
         let ids = |k: &str| -> Vec<u64> {
             v[k].as_array()
@@ -584,7 +622,8 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     }
 }
 
-/// The messages at the top-left of the canvas, under the rulers.
+/// The messages at the bottom-left of the canvas, stacked upwards, so
+/// they never cover the top-left of the cutting area where imports land.
 fn pills(
     ui: &mut Ui,
     rect: Rect,
@@ -602,7 +641,7 @@ fn pills(
     ui.scope_builder(
         egui::UiBuilder::new()
             .max_rect(area)
-            .layout(egui::Layout::top_down(egui::Align::Min)),
+            .layout(egui::Layout::bottom_up(egui::Align::Min)),
         |ui| {
             let pill = |ui: &mut Ui, colour: egui::Color32, add: &mut dyn FnMut(&mut Ui)| {
                 egui::Frame::new()

@@ -210,6 +210,7 @@ fn drag_preview(drag: Option<&Drag>, id: u64) -> Option<kurbo::Affine> {
             ids,
             start,
             current,
+            ..
         } if ids.contains(&id) => Some(kurbo::Affine::translate(*current - *start)),
         Drag::Scale {
             id: d,
@@ -242,6 +243,8 @@ pub fn show(
     if st.view_doc != Some(snap.doc_id) {
         st.view_doc = Some(snap.doc_id);
         st.fit_pending = true;
+        // A drag belongs to the document it started in.
+        st.drag = None;
     }
     if st.fit_pending {
         if let Some(m) = &snap.mat {
@@ -492,6 +495,38 @@ fn draw_rulers(painter: &egui::Painter, rect: Rect, view: &CanvasView, t: &Token
 
 // ---------------------------------------------------------------- pointer
 
+/// Zoom factor per mouse wheel line.
+const WHEEL_ZOOM_PER_LINE: f32 = 1.15;
+
+/// What one scroll event does to the canvas.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Wheel {
+    Pan(Vec2),
+    Zoom(f32),
+}
+
+/// Scroll events without the zoom modifier: smooth (point) scrolling pans,
+/// line and page steps of a mouse wheel zoom. Events with Cmd or Ctrl are
+/// left to egui's `zoom_delta`.
+fn wheel_events(events: &[egui::Event]) -> Vec<Wheel> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            egui::Event::MouseWheel {
+                unit,
+                delta,
+                modifiers,
+                ..
+            } if !modifiers.command && !modifiers.ctrl => Some(match unit {
+                egui::MouseWheelUnit::Point => Wheel::Pan(*delta),
+                egui::MouseWheelUnit::Line => Wheel::Zoom(WHEEL_ZOOM_PER_LINE.powf(delta.y)),
+                egui::MouseWheelUnit::Page => Wheel::Zoom(WHEEL_ZOOM_PER_LINE.powf(delta.y * 10.0)),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 fn pointer(
     ui: &Ui,
     resp: &egui::Response,
@@ -499,23 +534,31 @@ fn pointer(
     st: &mut PrepareState,
     actions: &mut Vec<Action>,
 ) {
-    let (space, shift, scroll, zoom, hover) = ui.input(|i| {
+    let (space, shift, wheels, zoom, hover) = ui.input(|i| {
         (
             i.key_down(egui::Key::Space),
             i.modifiers.shift,
-            i.smooth_scroll_delta,
+            wheel_events(&i.raw.events),
             i.zoom_delta(),
             i.pointer.hover_pos(),
         )
     });
     let space = space && !ui.ctx().egui_wants_keyboard_input();
 
-    // Wheel and pinch zoom around the pointer.
+    // Ruling R29: trackpad scrolling pans; a mouse wheel, Cmd/Ctrl+scroll
+    // and pinch zoom around the pointer. egui turns Cmd/Ctrl+scroll and
+    // pinch into `zoom_delta`.
     if resp.hovered()
         && let Some(at) = hover
     {
-        let factor = zoom * (scroll.y / 200.0).exp();
-        if (factor - 1.0).abs() > 1e-4 {
+        let mut factor = zoom;
+        for w in wheels {
+            match w {
+                Wheel::Pan(d) => st.view.offset += d,
+                Wheel::Zoom(f) => factor *= f,
+            }
+        }
+        if (factor - 1.0).abs() > 1e-6 {
             st.view.zoom_about(at, factor);
         }
     }
@@ -547,6 +590,7 @@ fn pointer(
                 let b = selection_box(snap).expect("a handle needs a selection");
                 let c = corners(b);
                 Some(Drag::Scale {
+                    doc_id,
                     id: *snap.selection.iter().next().expect("one selected"),
                     corner_index: i,
                     corner: c[i],
@@ -562,6 +606,7 @@ fn pointer(
                     vec![id]
                 };
                 Some(Drag::Move {
+                    doc_id,
                     ids,
                     start: mm,
                     current: mm,
@@ -579,6 +624,7 @@ fn pointer(
     if resp.drag_stopped() {
         match st.drag.take() {
             Some(Drag::Move {
+                doc_id,
                 ids,
                 start,
                 current,
@@ -593,6 +639,7 @@ fn pointer(
                 }
             }
             Some(Drag::Scale {
+                doc_id,
                 id,
                 corner_index,
                 corner,
