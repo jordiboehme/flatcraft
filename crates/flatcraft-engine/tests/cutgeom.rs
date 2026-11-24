@@ -1217,3 +1217,85 @@ fn long_hairline_spine_is_fast() {
     assert!(!subs[0].1);
     assert!(took.as_millis() < 250, "{took:?}");
 }
+
+// ---------------------------------------------------------------- hairline ends at turning points (R24)
+
+/// A closed there-and-back arc around (50, 50): out along radius 10, back
+/// along radius 10 - `gap`, starting `start` vertices into the ring. Also
+/// the arc itself, finely drawn.
+fn there_and_back_arc(degrees: f64, gap: f64, start: usize) -> (BezPath, BezPath) {
+    let n = 120;
+    let at = |r: f64, k: usize| {
+        let a = degrees.to_radians() * k as f64 / n as f64;
+        (50.0 + r * a.cos(), 50.0 + r * a.sin())
+    };
+    let mut pts: Vec<(f64, f64)> = (0..=n).map(|k| at(10.0, k)).collect();
+    pts.extend((0..n).rev().map(|k| at(10.0 - gap, k)));
+    if gap == 0.0 {
+        // The last point is the first one again.
+        pts.pop();
+    }
+    pts.rotate_left(start);
+    let arc: Vec<(f64, f64)> = (0..=8 * n)
+        .map(|k| {
+            let a = degrees.to_radians() * k as f64 / (8 * n) as f64;
+            (50.0 + 10.0 * a.cos(), 50.0 + 10.0 * a.sin())
+        })
+        .collect();
+    (polyline(&pts, true), polyline(&arc, false))
+}
+
+#[test]
+fn there_and_back_arcs_are_cut_once_along_the_arc() {
+    // Single-stroke letters ("C", "O", "S") saved as outlines that return
+    // along themselves. The cut must follow the arc, never a chord.
+    for (degrees, gap) in [(300.0, 0.0), (300.0, 0.05), (200.0, 0.0), (200.0, 0.05)] {
+        let (ring, arc) = there_and_back_arc(degrees, gap, 0);
+        let subs = subpaths(&cut(&object(
+            ring,
+            fill_thin_stroke(),
+            CutOptions::default(),
+        )));
+        let case = format!("{degrees} deg, gap {gap}");
+        assert_eq!(subs.len(), 1, "{case}: {subs:?}");
+        assert!(!subs[0].1, "{case}: one open cut");
+        let spine = &subs[0].0;
+        let pts = vertices(spine);
+        let worst = pts
+            .windows(2)
+            .flat_map(|w| [w[0], w[0].midpoint(w[1]), w[1]])
+            .map(|p| dist(&arc, p))
+            .fold(0.0, f64::max);
+        assert!(worst < 0.05, "{case}: {worst} mm off the arc");
+        let true_length = 10.0 * degrees.to_radians();
+        assert!(
+            (length(spine) - true_length).abs() < 0.3,
+            "{case}: {} instead of {true_length}",
+            length(spine)
+        );
+    }
+}
+
+#[test]
+fn arc_spine_does_not_depend_on_start() {
+    for gap in [0.0, 0.05] {
+        let spine = |start: usize| {
+            let (ring, _) = there_and_back_arc(300.0, gap, start);
+            let subs = subpaths(&cut(&object(
+                ring,
+                fill_thin_stroke(),
+                CutOptions::default(),
+            )));
+            assert_eq!(subs.len(), 1, "gap {gap}, start {start}");
+            vertices(&subs[0].0)
+        };
+        let first = spine(0);
+        for start in [1, 37, 120, 121, 200] {
+            let other = spine(start);
+            assert_eq!(other.len(), first.len(), "gap {gap}, start {start}");
+            for (a, b) in first.iter().zip(&other) {
+                assert!(a.distance(*b) < TOL, "gap {gap}, start {start}");
+            }
+        }
+    }
+}

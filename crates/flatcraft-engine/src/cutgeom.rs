@@ -416,22 +416,33 @@ fn subpaths(path: impl IntoIterator<Item = PathEl>) -> Vec<Subpath> {
     out
 }
 
-/// The spine of a closed hairline with the flattened vertices `ring`: the
-/// open line through its middle, between its two vertices that are
-/// farthest apart. Those two split the ring into two sides; the spine
-/// joins the midpoints of the points at the same share of each side's
-/// length. The ends and the direction are chosen from the coordinates
-/// alone and the midpoints treat both sides alike, so the spine does not
-/// depend on where the ring starts. A blunt end (a thin rectangle) starts
-/// at one of its corners, half a width off the middle. `None` if the ring
-/// has fewer than two different vertices.
+/// The single cut of a closed hairline with the flattened vertices `ring`.
+///
+/// A hairline runs out and back along itself, so it has two ends where it
+/// turns around (`hairline_ends`). They split the ring into two sides. The
+/// cut is the spine through the middle: the midpoints of the two sides at
+/// the same share of each side's length. Every choice is made from the
+/// coordinates and from each vertex's own surroundings, and the midpoints
+/// treat both sides alike, so the cut does not depend on where the ring
+/// starts. A blunt end (a thin rectangle) starts at one of its corners,
+/// half a width off the middle.
+///
+/// The spine is used only if it is proven to lie on the hairline: the two
+/// sides are never more than two hairline widths apart at the same share,
+/// and the spine is about half the ring long. Otherwise the two sides do
+/// not run alike, and the longer side is cut instead: it is part of the
+/// ring, so it is never more than the hairline's width off and never a
+/// second cut.
+///
+/// `None` if the ring has no two clear ends (a loop without tips); it is
+/// then cut as drawn.
 fn spine(ring: &[[f64; 2]]) -> Option<BezPath> {
     let mut ring = ring.to_vec();
     ring.dedup();
     if ring.len() > 1 && ring.first() == ring.last() {
         ring.pop();
     }
-    let (i, j) = farthest_pair(&ring)?;
+    let (i, j) = hairline_ends(&ring)?;
     let (i, j) = (i.min(j), i.max(j));
     // Both sides, from the lower end to the upper end.
     let lo = if point_order(&ring[i], &ring[j]).is_le() {
@@ -453,8 +464,37 @@ fn spine(ring: &[[f64; 2]]) -> Option<BezPath> {
     let mut shares: Vec<f64> = a.shares.iter().chain(&b.shares).copied().collect();
     shares.sort_by(f64::total_cmp);
     shares.dedup_by(|x, y| (*x - *y).abs() < 1e-12);
-    let mut points: Vec<Point> = shares.iter().map(|&u| a.at(u).midpoint(b.at(u))).collect();
+    let mut together = true;
+    let mut points: Vec<Point> = shares
+        .iter()
+        .map(|&u| {
+            let (p, q) = (a.at(u), b.at(u));
+            // The midpoint is at most half this far from the ring.
+            together &= p.distance(q) <= 2.0 * HAIRLINE_MM;
+            p.midpoint(q)
+        })
+        .collect();
     points.dedup();
+    let length: f64 = points.windows(2).map(|w| w[0].distance(w[1])).sum();
+    let half_ring = (a.length + b.length) / 2.0;
+    let slack = (4.0 * HAIRLINE_MM).max(0.02 * half_ring);
+    if !together || (length - half_ring).abs() > slack {
+        // The longer side; equal sides go by their coordinates.
+        let pick_a = a
+            .length
+            .total_cmp(&b.length)
+            .then_with(|| {
+                a.points
+                    .iter()
+                    .zip(&b.points)
+                    .map(|(p, q)| point_order(p, q))
+                    .find(|o| o.is_ne())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .is_ge();
+        let side = if pick_a { a } else { b };
+        points = side.points.iter().map(|p| Point::new(p[0], p[1])).collect();
+    }
     let mut path = BezPath::new();
     path.move_to(*points.first()?);
     for p in &points[1..] {
@@ -463,11 +503,102 @@ fn spine(ring: &[[f64; 2]]) -> Option<BezPath> {
     Some(path)
 }
 
+/// Indices of the two ends of a closed hairline: the two vertices where
+/// the ring turns around most sharply. The farthest two vertices would be
+/// wrong for a hairline bent by more than half a turn (a "C").
+///
+/// The turn at a vertex is measured between the two points a short way
+/// (two hairline widths, at most a quarter of the ring) along the ring to
+/// either side, so a blunt or rounded end counts like a pointed one and
+/// jitter does not. The first end is the sharpest turn; the second is the
+/// sharpest one at least a quarter of the ring away from it. Equal turns
+/// go by coordinates. Each turn is measured by walking from its own
+/// vertex, so the answer does not depend on where the ring starts.
+///
+/// `None` if either end turns by less than 120 degrees: the ring has no
+/// two clear ends.
+fn hairline_ends(ring: &[[f64; 2]]) -> Option<(usize, usize)> {
+    /// Cosine of the angle between the two arms at an end that turns by
+    /// 120 degrees.
+    const CLEAR_END: f64 = 0.5;
+    let n = ring.len();
+    if n < 2 {
+        return None;
+    }
+    let step = |k: usize| {
+        let (p, q) = (ring[k], ring[(k + 1) % n]);
+        (q[0] - p[0]).hypot(q[1] - p[1])
+    };
+    // Length along the ring from vertex 0 to every vertex.
+    let mut along = Vec::with_capacity(n);
+    let mut total = 0.0;
+    for k in 0..n {
+        along.push(total);
+        total += step(k);
+    }
+    let reach = (2.0 * HAIRLINE_MM).min(total / 4.0);
+    if reach <= 0.0 {
+        return None;
+    }
+    // The point `reach` along the ring from vertex `k`, forwards or back,
+    // relative to the vertex.
+    let arm = |k: usize, forwards: bool| {
+        let mut left = reach;
+        let mut at = k;
+        loop {
+            let next = if forwards {
+                (at + 1) % n
+            } else {
+                (at + n - 1) % n
+            };
+            let len = step(if forwards { at } else { next });
+            if len >= left && len > 0.0 {
+                let t = left / len;
+                let (p, q) = (ring[at], ring[next]);
+                return [
+                    p[0] + (q[0] - p[0]) * t - ring[k][0],
+                    p[1] + (q[1] - p[1]) * t - ring[k][1],
+                ];
+            }
+            left -= len;
+            at = next;
+        }
+    };
+    // How sharply the ring turns around at every vertex: the cosine of
+    // the angle between its two arms, 1 where it folds back onto itself.
+    let sharp: Vec<f64> = (0..n)
+        .map(|k| {
+            let (f, b) = (arm(k, true), arm(k, false));
+            let norm = f[0].hypot(f[1]) * b[0].hypot(b[1]);
+            if norm > 0.0 {
+                (f[0] * b[0] + f[1] * b[1]) / norm
+            } else {
+                // Both arms end on the vertex: no direction, no end.
+                -1.0
+            }
+        })
+        .collect();
+    let sharpest = |allowed: &dyn Fn(usize) -> bool| {
+        (0..n).filter(|&k| allowed(k)).max_by(|&a, &b| {
+            sharp[a]
+                .total_cmp(&sharp[b])
+                .then(point_order(&ring[a], &ring[b]))
+        })
+    };
+    let first = sharpest(&|_| true)?;
+    let second = sharpest(&|k| {
+        let d = (along[k] - along[first]).abs();
+        d.min(total - d) >= total / 4.0
+    })?;
+    (sharp[first] >= CLEAR_END && sharp[second] >= CLEAR_END).then_some((first, second))
+}
+
 /// One side of a hairline with, for every vertex, its share of the side's
 /// length (0 at the first vertex, 1 at the last).
 struct Side {
     points: Contour,
     shares: Vec<f64>,
+    length: f64,
 }
 
 impl Side {
@@ -486,7 +617,11 @@ impl Side {
         if let Some(last) = shares.last_mut().filter(|_| length > 0.0) {
             *last = 1.0;
         }
-        Self { points, shares }
+        Self {
+            points,
+            shares,
+            length,
+        }
     }
 
     /// The point at share `u` of the side's length.
@@ -508,78 +643,6 @@ impl Side {
 
 fn point_order(a: &[f64; 2], b: &[f64; 2]) -> std::cmp::Ordering {
     a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1]))
-}
-
-/// Indices of the two points that are farthest apart; `None` if all
-/// points are the same. Exact, in `O(n log n)`: the two lie on the convex
-/// hull (monotone chain), and rotating calipers walk the hull's opposite
-/// pairs once. The hull is built from the sorted points, and equal
-/// distances go to the pair that sorts higher, so the answer does not
-/// depend on the order of `points`.
-fn farthest_pair(points: &[[f64; 2]]) -> Option<(usize, usize)> {
-    let mut sorted: Vec<usize> = (0..points.len()).collect();
-    sorted.sort_by(|&a, &b| point_order(&points[a], &points[b]).then(a.cmp(&b)));
-    sorted.dedup_by(|a, b| points[*a] == points[*b]);
-    let cross = |o: usize, a: usize, b: usize| {
-        let (o, a, b) = (points[o], points[a], points[b]);
-        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
-    };
-    // Lower chain, then upper chain; points on a hull edge are left out.
-    let mut hull: Vec<usize> = Vec::new();
-    for &p in &sorted {
-        while hull.len() >= 2 && cross(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0 {
-            hull.pop();
-        }
-        hull.push(p);
-    }
-    let lower = hull.len() + 1;
-    for &p in sorted.iter().rev().skip(1) {
-        while hull.len() >= lower && cross(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0 {
-            hull.pop();
-        }
-        hull.push(p);
-    }
-    // The last point is the first one again.
-    hull.pop();
-    let h = hull.len();
-    if h < 2 {
-        return None;
-    }
-    // A pair as (distance squared, lower end, upper end).
-    let key = |a: usize, b: usize| {
-        let (p, q) = (points[a], points[b]);
-        let d = (q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2);
-        if point_order(&p, &q).is_le() {
-            (d, p, q)
-        } else {
-            (d, q, p)
-        }
-    };
-    let mut best = (hull[0], hull[1]);
-    let mut consider = |a: usize, b: usize| {
-        let ((d, lo, hi), (bd, blo, bhi)) = (key(a, b), key(best.0, best.1));
-        if d.total_cmp(&bd)
-            .then(point_order(&lo, &blo))
-            .then(point_order(&hi, &bhi))
-            .is_gt()
-        {
-            best = (a, b);
-        }
-    };
-    let mut j = 1;
-    for i in 0..h {
-        let next = (i + 1) % h;
-        // The hull vertex farthest from the edge i -> next.
-        while cross(hull[i], hull[next], hull[(j + 1) % h]) > cross(hull[i], hull[next], hull[j]) {
-            j = (j + 1) % h;
-        }
-        // With a parallel opposite edge the vertex after `j` is as far.
-        for far in [j, (j + 1) % h] {
-            consider(hull[i], hull[far]);
-            consider(hull[next], hull[far]);
-        }
-    }
-    Some(best)
 }
 
 /// Mean width of boolean result shapes: twice their area over the length
@@ -737,69 +800,46 @@ mod tests {
         assert!(spine(&[[1.0, 1.0], [1.0, 1.0]]).is_none());
     }
 
-    /// The farthest pair by comparing every pair.
-    fn farthest_distance(points: &[[f64; 2]]) -> f64 {
-        let mut best: f64 = 0.0;
-        for a in points {
-            for b in points {
-                best = best.max((a[0] - b[0]).hypot(a[1] - b[1]));
-            }
-        }
-        best
-    }
-
-    #[test]
-    fn farthest_pair_matches_every_pair_compared() {
-        // Deterministic scattered points, a circle (all on the hull), a
-        // rectangle (parallel edges), collinear points and duplicates.
-        let mut seed: u64 = 42;
-        let mut next = || {
-            seed = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            (seed >> 11) as f64 / (1u64 << 53) as f64
-        };
-        let mut sets: Vec<Vec<[f64; 2]>> = (3..40)
-            .map(|n| (0..n).map(|_| [next() * 50.0, next() * 3.0]).collect())
-            .collect();
-        sets.push(
-            (0..97)
-                .map(|k| {
-                    let a = f64::from(k) * 0.0648;
-                    [10.0 * a.cos(), 10.0 * a.sin()]
-                })
-                .collect(),
-        );
-        sets.push(vec![[0.0, 0.0], [50.0, 0.0], [50.0, 0.08], [0.0, 0.08]]);
-        sets.push(vec![[0.0, 0.0], [10.0, 0.0], [30.0, 0.0], [20.0, 0.0]]);
-        sets.push(vec![[1.0, 1.0], [4.0, 5.0], [1.0, 1.0], [4.0, 5.0]]);
-        sets.push(vec![[1.0, 1.0], [4.0, 5.0]]);
-        for set in &sets {
-            let (i, j) = farthest_pair(set).unwrap();
-            let d = (set[i][0] - set[j][0]).hypot(set[i][1] - set[j][1]);
-            assert!((d - farthest_distance(set)).abs() < 1e-12, "{set:?}");
-            // The same pair of points when the order changes.
-            let mut turned = set.clone();
-            turned.rotate_left(set.len() / 2);
-            let (a, b) = farthest_pair(&turned).unwrap();
-            let mut first = [set[i], set[j]];
-            let mut second = [turned[a], turned[b]];
-            first.sort_by(point_order);
-            second.sort_by(point_order);
-            assert_eq!(first, second, "{set:?}");
-        }
-        assert_eq!(farthest_pair(&[[1.0, 1.0], [1.0, 1.0]]), None);
-        assert_eq!(farthest_pair(&[]), None);
-    }
-
     #[test]
     fn spine_of_a_thin_rectangle_runs_through_its_middle() {
         let s = spine(&[[0.0, 0.0], [50.0, 0.0], [50.0, 0.08], [0.0, 0.08]]).unwrap();
         let pts: Vec<Point> = s.elements().iter().filter_map(|e| e.end_point()).collect();
         assert_eq!(pts.len(), 4, "{pts:?}");
-        // Corner to corner, with the long run on the middle.
-        assert!(pts[1].distance(Point::new(0.04, 0.04)) < 1e-9, "{pts:?}");
-        assert!(pts[2].distance(Point::new(49.96, 0.04)) < 1e-9, "{pts:?}");
+        // From a corner to a corner, with the long run on the middle.
+        assert!(pts[1].distance(Point::new(0.04, 0.04)) < 1e-3, "{pts:?}");
+        assert!(pts[2].distance(Point::new(49.96, 0.04)) < 1e-3, "{pts:?}");
+    }
+
+    #[test]
+    fn a_loop_without_tips_has_no_ends() {
+        let circle: Vec<[f64; 2]> = (0..48)
+            .map(|k| {
+                let a = f64::from(k) * std::f64::consts::TAU / 48.0;
+                [0.05 * a.cos(), 0.05 * a.sin()]
+            })
+            .collect();
+        assert_eq!(hairline_ends(&circle), None);
+        assert!(spine(&circle).is_none());
+    }
+
+    #[test]
+    fn sides_that_do_not_run_alike_give_one_side() {
+        // Out along a straight line, back with a 3 mm detour: the middle
+        // would leave the hairline, so the longer side is cut as it is.
+        let ring = [
+            [0.0, 0.0],
+            [50.0, 0.0],
+            [30.0, 0.02],
+            [25.0, 3.0],
+            [20.0, 0.02],
+        ];
+        let s = spine(&ring).unwrap();
+        let pts: Vec<Point> = s.elements().iter().filter_map(|e| e.end_point()).collect();
+        let side: Vec<Point> = [0, 4, 3, 2, 1]
+            .iter()
+            .map(|&k| Point::new(ring[k][0], ring[k][1]))
+            .collect();
+        assert_eq!(pts, side);
     }
 
     #[test]
