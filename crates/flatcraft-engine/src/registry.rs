@@ -32,6 +32,7 @@ static ALL: &[&dyn Command] = &[
     &project::ProjectOpen,
     &object::ObjectImport,
     &object::ObjectImportSvg,
+    &object::ObjectRetrace,
     &object::ObjectSelect,
     &object::ObjectSetVisible,
     &object::ObjectDelete,

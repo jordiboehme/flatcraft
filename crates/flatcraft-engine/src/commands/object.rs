@@ -3,8 +3,10 @@
 use std::io::Read;
 use std::path::PathBuf;
 
-use flatcraft_core::document::{ObjectId, Source};
+use flatcraft_core::document::{ObjectId, Source, TraceSettings};
+use flatcraft_core::geometry::CutPath;
 use flatcraft_import::svg::import_svg;
+use flatcraft_import::trace::{TraceResult, trace};
 use flatcraft_import::{ImportError, ImportWarning, fonts};
 use kurbo::{Point, Rect, Vec2};
 use serde::Deserialize;
@@ -34,18 +36,35 @@ pub(crate) fn warning_text(w: &ImportWarning) -> String {
 }
 
 fn import_error(e: ImportError) -> CommandError {
-    CommandError::Failed(format!("cannot import the SVG: {e}"))
+    CommandError::Failed(format!("cannot import the file: {e}"))
 }
 
-/// Adds an SVG object to the active document and selects it. It keeps its
-/// position from the SVG page if it lies inside the cutting area; otherwise
-/// its top-left corner goes to the top-left of the cutting area.
-fn add_svg(s: &mut Session, name: String, bytes: Vec<u8>) -> Result<Value, CommandError> {
-    let import = import_svg(&bytes, fonts::system_fonts()).map_err(import_error)?;
-    let warnings: Vec<String> = import.warnings.iter().map(warning_text).collect();
+/// Blade offset of the active document's plotter, mm. 0.25 if the plotter
+/// cannot be resolved.
+pub(crate) fn blade_offset_mm(s: &Session) -> f64 {
+    let id = &s.doc().document.job.plotter_id;
+    blade_offset_for(s, id)
+}
+
+pub(crate) fn blade_offset_for(s: &Session, plotter_id: &str) -> f64 {
+    s.profiles
+        .plotter(plotter_id)
+        .map(|p| p.blade_offset_mm)
+        .unwrap_or(0.25)
+}
+
+/// Adds an object to the active document and selects it. It keeps its
+/// position from the source page if it lies inside the cutting area;
+/// otherwise its top-left corner goes to the top-left of the cutting area.
+fn add_object(
+    s: &mut Session,
+    name: String,
+    source: Source,
+    paths: Vec<CutPath>,
+) -> Result<ObjectId, CommandError> {
     let area = cutting_area(s).ok();
     let doc = &mut s.doc_mut().document;
-    let id = doc.add(name.clone(), Source::Svg { name, bytes }, import.paths);
+    let id = doc.add(name, source, paths);
     let o = object_mut(doc, id)?;
     o.transform.center_mm = o.local_bounds.center();
     if let (Some(area), Some(b)) = (area, placed_bounds(o)) {
@@ -54,11 +73,75 @@ fn add_svg(s: &mut Session, name: String, bytes: Vec<u8>) -> Result<Value, Comma
             translate(o, Point::new(area.x0, area.y0) - Point::new(b.x0, b.y0));
         }
     }
-    let bounds = placed_bounds(o).map(rect_json).unwrap_or(Value::Null);
     let st = s.doc_mut();
     st.selection.clear();
     st.selection.insert(id);
-    Ok(json!({ "id": id.0, "bounds_mm": bounds, "warnings": warnings }))
+    Ok(id)
+}
+
+fn bounds_json(s: &Session, id: ObjectId) -> Value {
+    s.doc()
+        .document
+        .get(id)
+        .and_then(placed_bounds)
+        .map(rect_json)
+        .unwrap_or(Value::Null)
+}
+
+/// Adds an SVG object to the active document and selects it.
+fn add_svg(s: &mut Session, name: String, bytes: Vec<u8>) -> Result<Value, CommandError> {
+    let import = import_svg(&bytes, fonts::system_fonts()).map_err(import_error)?;
+    let warnings: Vec<String> = import.warnings.iter().map(warning_text).collect();
+    let id = add_object(s, name.clone(), Source::Svg { name, bytes }, import.paths)?;
+    Ok(json!({ "id": id.0, "bounds_mm": bounds_json(s, id), "warnings": warnings }))
+}
+
+/// Warnings and numbers that describe a trace, for people and agents.
+fn trace_report(t: &TraceResult) -> (Vec<String>, Value) {
+    let mut warnings = Vec::new();
+    if t.paths.is_empty() {
+        warnings.push(
+            "nothing was traced: no dark shape is big enough. Try another threshold, invert, or a smaller despeckle area".to_string(),
+        );
+    }
+    if t.dropped_small > 0 {
+        warnings.push(format!(
+            "{} shapes were dropped because they are smaller than the minimum feature size",
+            t.dropped_small
+        ));
+    }
+    let numbers = json!({
+        "dropped_small": t.dropped_small,
+        "threshold_used": t.threshold_used,
+        "size_mm": [t.size_mm.0, t.size_mm.1],
+    });
+    (warnings, numbers)
+}
+
+/// Adds a traced raster object to the active document and selects it.
+fn add_raster(s: &mut Session, name: String, bytes: Vec<u8>) -> Result<Value, CommandError> {
+    let settings = TraceSettings::default();
+    let t = trace(&bytes, &settings, blade_offset_mm(s)).map_err(import_error)?;
+    let (warnings, numbers) = trace_report(&t);
+    let id = add_object(
+        s,
+        name.clone(),
+        Source::Raster {
+            name,
+            bytes,
+            trace: settings,
+        },
+        t.paths,
+    )?;
+    let mut out = json!({ "id": id.0, "bounds_mm": bounds_json(s, id), "warnings": warnings });
+    merge(&mut out, numbers);
+    Ok(out)
+}
+
+fn merge(into: &mut Value, from: Value) {
+    if let (Some(a), Value::Object(b)) = (into.as_object_mut(), from) {
+        a.extend(b);
+    }
 }
 
 // ---------------------------------------------------------------- import
@@ -66,7 +149,7 @@ fn add_svg(s: &mut Session, name: String, bytes: Vec<u8>) -> Result<Value, Comma
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ImportParams {
-    /// Path of the file to import. Supported: .svg and .svgz.
+    /// Path of the file to import. Supported: .svg, .svgz, .png, .jpg, .jpeg, .webp and .gif.
     pub path: PathBuf,
 }
 
@@ -77,14 +160,15 @@ fn run_import(s: &mut Session, p: ImportParams, _: Origin) -> Result<Value, Comm
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase)
         .unwrap_or_default();
-    if ext != "svg" && ext != "svgz" {
+    let raster = matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif");
+    if !raster && ext != "svg" && ext != "svgz" {
         let shown = if ext.is_empty() {
             "no extension".to_string()
         } else {
             format!("'.{ext}'")
         };
         return Err(CommandError::InvalidParams(format!(
-            "unsupported file type ({shown}). Supported types: .svg, .svgz. Raster images are not supported yet"
+            "unsupported file type ({shown}). Supported types: .svg, .svgz, .png, .jpg, .jpeg, .webp, .gif"
         )));
     }
     let name = p
@@ -109,7 +193,11 @@ fn run_import(s: &mut Session, p: ImportParams, _: Origin) -> Result<Value, Comm
             "the file is larger than 50 MB".into(),
         ));
     }
-    add_svg(s, name, bytes)
+    if raster {
+        add_raster(s, name, bytes)
+    } else {
+        add_svg(s, name, bytes)
+    }
 }
 
 command!(
@@ -119,7 +207,7 @@ command!(
     mutates: true,
     params: ImportParams,
     run: run_import,
-    description: "Imports a vector file from disk as a new object and selects it. Supported: .svg and .svgz (by extension); raster images are rejected for now. The object name is the file name without extension. Sizes come from the SVG in mm. The object keeps its position from the SVG page if that lies inside the cutting area, otherwise its top-left corner moves to the top-left of the cutting area. Coordinates are mm, origin top-left of the media, y down. Returns {id, bounds_mm: {x0,y0,x1,y1}, warnings: [text]}.",
+    description: "Imports a vector file from disk as a new object and selects it. Supported: .svg and .svgz, and the raster types .png, .jpg, .jpeg, .webp and .gif (by extension). The object name is the file name without extension. SVG sizes come from the SVG in mm. A raster image is traced into cut outlines with the default trace settings (automatic threshold, dark pixels are cut) at the dpi stored in the file, or 300 dpi; use object.retrace to change the settings. Images over 16384 x 16384 px are refused. The object keeps its position from the SVG page if that lies inside the cutting area, otherwise its top-left corner moves to the top-left of the cutting area. Coordinates are mm, origin top-left of the media, y down. Returns {id, bounds_mm: {x0,y0,x1,y1}, warnings: [text]}; raster imports also return dropped_small (shapes below the minimum feature size that were dropped), threshold_used (0-255) and size_mm [width, height] of the whole image.",
 );
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -143,6 +231,130 @@ command!(
     params: ImportSvgParams,
     run: run_import_svg,
     description: "Imports SVG markup given as text as a new object and selects it. Give the SVG a width and height in mm (for example width=\"50mm\") so the size is exact; plain numbers are CSS pixels (96 per inch). Every visible path, fill or stroke, becomes a cut line; text is cut as outlines. Placement as in object.import. Coordinates are mm, origin top-left of the media, y down. Returns {id, bounds_mm: {x0,y0,x1,y1}, warnings: [text]}.",
+);
+
+// ---------------------------------------------------------------- retrace
+
+/// Trace settings as the command takes them. Missing fields use the defaults.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct RetraceSettings {
+    /// Grey level 0-255; pixels darker than this are cut. Omit or null for automatic (Otsu).
+    pub threshold: Option<u8>,
+    /// Cut the light pixels instead of the dark ones.
+    pub invert: bool,
+    /// Shapes with a smaller area in mm2 are specks and are ignored.
+    pub despeckle_mm2: f64,
+    /// Angles sharper than this many degrees stay corners (0-180).
+    pub corner_threshold_deg: f64,
+    /// 0 follows the pixels closely, 10 gives the smoothest curves.
+    pub smoothing: u8,
+    /// Shapes with a bounding box side below this many mm are dropped. Omit for 6 times the blade offset.
+    pub min_feature_mm: Option<f64>,
+    /// Pixels per inch to use instead of the one stored in the file (default 300).
+    pub dpi_override: Option<f64>,
+}
+
+impl Default for RetraceSettings {
+    fn default() -> Self {
+        TraceSettings::default().into()
+    }
+}
+
+impl From<TraceSettings> for RetraceSettings {
+    fn from(t: TraceSettings) -> Self {
+        Self {
+            threshold: t.threshold,
+            invert: t.invert,
+            despeckle_mm2: t.despeckle_mm2,
+            corner_threshold_deg: t.corner_threshold_deg,
+            smoothing: t.smoothing,
+            min_feature_mm: t.min_feature_mm,
+            dpi_override: t.dpi_override,
+        }
+    }
+}
+
+impl RetraceSettings {
+    fn into_trace(self) -> Result<TraceSettings, CommandError> {
+        let bad = |m: &str| Err(CommandError::InvalidParams(m.to_string()));
+        if self.smoothing > 10 {
+            return bad("smoothing must be between 0 and 10");
+        }
+        if !(self.despeckle_mm2.is_finite() && self.despeckle_mm2 >= 0.0) {
+            return bad("despeckle_mm2 must be 0 or more");
+        }
+        if !(0.0..=180.0).contains(&self.corner_threshold_deg) {
+            return bad("corner_threshold_deg must be between 0 and 180");
+        }
+        if let Some(m) = self.min_feature_mm
+            && !(m.is_finite() && m >= 0.0)
+        {
+            return bad("min_feature_mm must be 0 or more");
+        }
+        if let Some(d) = self.dpi_override
+            && !(d.is_finite() && d > 0.0)
+        {
+            return bad("dpi_override must be a positive number (dpi)");
+        }
+        Ok(TraceSettings {
+            threshold: self.threshold,
+            invert: self.invert,
+            despeckle_mm2: self.despeckle_mm2,
+            corner_threshold_deg: self.corner_threshold_deg,
+            smoothing: self.smoothing,
+            min_feature_mm: self.min_feature_mm,
+            dpi_override: self.dpi_override,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RetraceParams {
+    /// Id of a raster object.
+    pub id: u64,
+    /// The new trace settings. Fields you leave out go back to their defaults.
+    pub settings: RetraceSettings,
+}
+
+fn run_retrace(s: &mut Session, p: RetraceParams, _: Origin) -> Result<Value, CommandError> {
+    let id = ObjectId(p.id);
+    super::check_exists(&s.doc().document, id)?;
+    let settings = p.settings.into_trace()?;
+    let blade = blade_offset_mm(s);
+    let o = s
+        .doc()
+        .document
+        .get(id)
+        .ok_or_else(|| CommandError::NotFound(format!("no object with id {}", id.0)))?;
+    let Source::Raster { bytes, .. } = &o.source else {
+        return Err(CommandError::InvalidParams(format!(
+            "object {} is not a raster image, only traced images can be retraced",
+            id.0
+        )));
+    };
+    let t = trace(bytes, &settings, blade).map_err(import_error)?;
+    let (warnings, numbers) = trace_report(&t);
+    let o = object_mut(&mut s.doc_mut().document, id)?;
+    if let Source::Raster { trace, .. } = &mut o.source {
+        *trace = settings;
+    }
+    // The transform stays as it was.
+    o.set_geometry(t.paths);
+    let mut out = json!({ "id": id.0, "bounds_mm": bounds_json(s, id), "warnings": warnings });
+    merge(&mut out, numbers);
+    Ok(out)
+}
+
+command!(
+    ObjectRetrace,
+    id: "object.retrace",
+    title: "Retrace image",
+    mutates: true,
+    params: RetraceParams,
+    run: run_retrace,
+    description: "Traces a raster object again with new settings and keeps its position, scale, rotation and mirror. Settings (all optional, omitted ones use the defaults): threshold (0-255, null = automatic), invert (cut the light pixels), despeckle_mm2 (default 0.5), corner_threshold_deg (default 60), smoothing (0-10, default 5), min_feature_mm (null = 6 times the blade offset of the plotter), dpi_override (null = dpi of the file, else 300). Only raster objects can be retraced. Returns {id, bounds_mm, warnings, dropped_small, threshold_used, size_mm}.",
 );
 
 // ---------------------------------------------------------------- select / visible / delete

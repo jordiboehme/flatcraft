@@ -83,10 +83,10 @@ fn import_file_by_extension() {
     let id = r["id"].as_u64().unwrap();
     assert_eq!(s.doc().document.get(ObjectId(id)).unwrap().name, "Badge");
 
-    let png = dir.path().join("photo.png");
-    std::fs::write(&png, b"not really").unwrap();
+    let bmp = dir.path().join("photo.bmp");
+    std::fs::write(&bmp, b"not really").unwrap();
     let e = s
-        .execute("object.import", json!({ "path": png }), Origin::User)
+        .execute("object.import", json!({ "path": bmp }), Origin::User)
         .unwrap_err();
     assert!(matches!(e, CommandError::InvalidParams(_)), "{e}");
     assert!(e.to_string().contains(".svg"), "{e}");
@@ -857,4 +857,122 @@ fn auto_arrange_wraps_zero_height_rows() {
             "{b:?} outside the cutting area"
         );
     }
+}
+
+// ---------------------------------------------------------------- raster
+
+/// A 300 dpi style image: 300 x 300 px, white with a black 200 x 200 px square.
+fn square_png(dir: &tempfile::TempDir) -> std::path::PathBuf {
+    let mut img = image::GrayImage::from_pixel(300, 300, image::Luma([255]));
+    for y in 50..250 {
+        for x in 50..250 {
+            img.put_pixel(x, y, image::Luma([0]));
+        }
+    }
+    let path = dir.path().join("Square.PNG");
+    img.save(&path).unwrap();
+    path
+}
+
+#[test]
+fn raster_import_traces_and_reports() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let path = square_png(&dir);
+    let r = run(&mut s, "object.import", json!({ "path": path }));
+    let id = r["id"].as_u64().unwrap();
+    assert_eq!(r["dropped_small"], 0);
+    assert!(r["threshold_used"].as_u64().unwrap() > 0, "{r}");
+    let o = s.doc().document.get(ObjectId(id)).unwrap();
+    assert_eq!(o.name, "Square");
+    assert!(matches!(
+        o.source,
+        flatcraft_core::document::Source::Raster { .. }
+    ));
+    let b = placed_bounds(&s, id);
+    assert!((b.width() - 16.93).abs() < 0.1, "{b:?}");
+    let state = run(&mut s, "document.state", json!({}));
+    assert_eq!(state["objects"][0]["kind"], "raster");
+}
+
+#[test]
+fn retrace_keeps_transform() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let r = run(&mut s, "object.import", json!({ "path": square_png(&dir) }));
+    let id = r["id"].as_u64().unwrap();
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [id], "degrees": 30.0 }),
+    );
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [id], "dx_mm": 7.0, "dy_mm": 3.0 }),
+    );
+    let before = s.doc().document.get(ObjectId(id)).unwrap().transform;
+
+    let r = run(
+        &mut s,
+        "object.retrace",
+        json!({ "id": id, "settings": { "invert": true } }),
+    );
+    assert_eq!(r["dropped_small"], 0);
+    assert!(r["threshold_used"].is_u64(), "{r}");
+    let o = s.doc().document.get(ObjectId(id)).unwrap();
+    assert_eq!(o.transform, before);
+    // Inverted: the white frame, two paths instead of one.
+    assert_eq!(o.geometry.len(), 2);
+    match &o.source {
+        flatcraft_core::document::Source::Raster { trace, .. } => assert!(trace.invert),
+        other => panic!("{other:?}"),
+    }
+
+    run(&mut s, "edit.undo", json!({}));
+    let o = s.doc().document.get(ObjectId(id)).unwrap();
+    assert_eq!(o.geometry.len(), 1);
+}
+
+#[test]
+fn retrace_refuses_bad_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let svg = import(&mut s, 20.0, 10.0);
+    let r = run(&mut s, "object.import", json!({ "path": square_png(&dir) }));
+    let png = r["id"].as_u64().unwrap();
+    for (params, want) in [
+        (json!({ "id": svg, "settings": {} }), "raster"),
+        (json!({ "id": 999, "settings": {} }), "999"),
+        (
+            json!({ "id": png, "settings": { "smoothing": 11 } }),
+            "smoothing",
+        ),
+        (
+            json!({ "id": png, "settings": { "dpi_override": 0.0 } }),
+            "dpi",
+        ),
+        (json!({ "id": png, "settings": { "bogus": 1 } }), "bogus"),
+    ] {
+        let e = s
+            .execute("object.retrace", params.clone(), Origin::Agent)
+            .expect_err(&format!("{params}"));
+        let text = e.to_string();
+        assert!(text.contains(want), "{params}: {text}");
+        assert!(!text.contains('\u{2014}'), "{text}");
+    }
+}
+
+#[test]
+fn project_open_retraces_rasters() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let r = run(&mut s, "object.import", json!({ "path": square_png(&dir) }));
+    let id = r["id"].as_u64().unwrap();
+    let saved = dir.path().join("r.flatcraft");
+    run(&mut s, "project.save", json!({ "path": saved }));
+    let r = run(&mut s, "project.open", json!({ "path": saved }));
+    assert_eq!(r["warnings"].as_array().map(Vec::len), Some(0), "{r}");
+    let b = placed_bounds(&s, id);
+    assert!((b.width() - 16.93).abs() < 0.1, "{b:?}");
 }

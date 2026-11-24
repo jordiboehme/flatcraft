@@ -9,7 +9,7 @@ use flatcraft_import::svg::import_svg;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::object::warning_text;
+use super::object::{blade_offset_for, warning_text};
 use super::{NoParams, command, cutting_area, ids_json, placed_bounds, point_arr, rect_json};
 use crate::session::{CommandError, DocState, Origin, Session};
 
@@ -263,11 +263,12 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
                 }
                 Err(e) => warnings.push(format!("{}: cannot rebuild the shape: {e}", o.name)),
             },
-            Source::Raster { .. } => {
-                warnings.push(format!(
-                    "{}: raster tracing arrives in a later task",
-                    o.name
-                ));
+            Source::Raster { bytes, trace, .. } => {
+                let blade = blade_offset_for(s, &document.job.plotter_id);
+                match flatcraft_import::trace::trace(bytes, trace, blade) {
+                    Ok(t) => o.set_geometry(t.paths),
+                    Err(e) => warnings.push(format!("{}: cannot trace the image: {e}", o.name)),
+                }
             }
         }
     }

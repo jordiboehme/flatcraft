@@ -1494,6 +1494,7 @@ dependencies = [
  "flatcraft-import",
  "flatcraft-path",
  "flate2",
+ "image",
  "kurbo",
  "resvg",
  "schemars",
@@ -1511,6 +1512,7 @@ name = "flatcraft-import"
 version = "0.1.0"
 dependencies = [
  "flatcraft-core",
+ "flatcraft-path",
  "flate2",
  "image",
  "kurbo",

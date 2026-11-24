@@ -25,5 +25,6 @@ resvg.workspace = true
 usvg.workspace = true
 
 [dev-dependencies]
+image = { workspace = true, features = ["png"] }
 tempfile.workspace = true
 flate2.workspace = true

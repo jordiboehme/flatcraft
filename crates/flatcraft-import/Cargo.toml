@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 flatcraft-core = { path = "../flatcraft-core" }
+flatcraft-path = { path = "../flatcraft-path" }
 thiserror.workspace = true
 flate2.workspace = true
 kurbo.workspace = true

@@ -1,7 +1,10 @@
 //! FlatCraft import crate.
 
+pub mod dpi;
 pub mod fonts;
+pub mod raster;
 pub mod svg;
+pub mod trace;
 
 /// Errors from importing a file.
 #[derive(Debug, thiserror::Error)]
