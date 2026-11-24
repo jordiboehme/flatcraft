@@ -983,3 +983,63 @@ fn square_and_thin_line_subpath_are_both_cut() {
     // The closed square, 80 mm plus the overcut.
     assert!(t[1].0 && (t[1].1 - 80.0).abs() < 1.0, "{t:?}");
 }
+
+// ---------------------------------------------------------------- lines hidden under their stroke (fix round 4)
+
+#[test]
+fn jittered_thin_line_with_default_fill_is_one_line() {
+    // A hand-drawn line: 50 mm long, every 0.5 mm a point 0.03 mm above or
+    // below. Its default fill is a row of slivers under the 0.2 mm stroke.
+    let mut d = String::from("M50 50");
+    for i in 1..=100 {
+        let y = if i % 2 == 0 { 50.03 } else { 49.97 };
+        d.push_str(&format!(" L{} {y}", 50.0 + f64::from(i) * 0.5));
+    }
+    let t = job_toolpaths(&svg200(&format!(
+        r#"<path d="{d}" stroke="black" stroke-width="0.2"/>"#
+    )));
+    assert_eq!(t.len(), 1, "{t:?}");
+    assert!(!t[0].0, "the line must stay open: {t:?}");
+    assert!((t[0].1 - 50.0).abs() < 1.0, "{t:?}");
+}
+
+#[test]
+fn kinked_thin_line_with_default_fill_is_one_line() {
+    // One 0.05 mm kink: the fill is a 50 mm sliver under the stroke. Cut
+    // as a ring the knife would run over the same line twice.
+    let t = job_toolpaths(&svg200(
+        r#"<path d="M50 50 L75 50.05 L100 50" stroke="black" stroke-width="0.2"/>"#,
+    ));
+    assert_eq!(t.len(), 1, "{t:?}");
+    assert!(!t[0].0, "the line must stay open: {t:?}");
+    assert!((t[0].1 - 50.0).abs() < 0.01, "no double cut: {t:?}");
+}
+
+#[test]
+fn fill_only_sliver_below_tolerance_is_dropped() {
+    // A 50 x 0.008 mm fill has a mean width below the 0.01 mm tolerance.
+    let sliver = polyline(
+        &[(10.0, 10.0), (60.0, 10.0), (60.0, 10.008), (10.0, 10.008)],
+        true,
+    );
+    let o = object(sliver, Paint::default(), CutOptions::default());
+    assert!(cut(&o).is_empty(), "{:?}", cut(&o));
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let svg = svg200(
+        r#"<path d="M50 50 H100 V50.008 H50 Z"/><rect x="50" y="60" width="10" height="10"/>"#,
+    );
+    run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": svg, "name": "sliver" }),
+    );
+    let r = run(&mut s, "job.preview", json!({}));
+    assert_eq!(r["toolpaths"], 1, "{r}");
+    let warnings = r["warnings"].to_string();
+    assert!(
+        warnings.contains("1 filled paths have no area"),
+        "{warnings}"
+    );
+}

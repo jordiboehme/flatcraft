@@ -7,8 +7,9 @@
 //! where a path crosses itself. So the outline is flattened and united with
 //! itself (i_overlay, non-zero rule); what is left are the real edges of the
 //! painted area, with real counters kept as holes. A filled path with an
-//! outline stroke is cut along the edge of fill united with stroke. All
-//! booleans stay inside one path of one object; merging across objects is
+//! outline stroke is cut along the edge of fill united with stroke. A
+//! subpath whose fill is hidden under its thin stroke is cut as a line.
+//! All booleans stay inside one path of one object; merging across objects is
 //! milestone 2.
 //!
 //! Error budget per cut path (tolerance `t`, the plotter's flatten
@@ -168,29 +169,64 @@ fn object_outlines(
         // A fill, with no stroke or a centre-line stroke: the edge of the
         // fill under its own rule. The thin stroke lies on that edge,
         // except along the implicit closing edge of an open subpath, which
-        // must be cut to free the fill. A subpath without area (a line,
-        // often drawn with the default fill) is visible only through its
-        // stroke, so with a stroke its centre line is cut as well. Known
-        // gap until the milestone 2 booleans: a stroked spur inside a
-        // subpath that does enclose area (a closed shape with a tail drawn
-        // in the same subpath) is lost; only the fill edge is cut.
+        // must be cut to free the fill.
+        //
+        // A subpath whose own fill is hidden under its stroke is a line (a
+        // straight line, a hand-drawn line with jitter, a line with a
+        // slight kink, often drawn with the default fill). It shows only
+        // through its stroke, so its centre line is cut and it stays out
+        // of the fill: its slivers would be cut as tiny loops or as a
+        // second cut next to the first. "Hidden" compares the mean width
+        // of the fill (`mean_width`) with the stroke width, at least the
+        // tolerance. Without a stroke a fill thinner than the tolerance is
+        // not visible and no knife can cut it, so it is dropped.
+        //
+        // Known gaps until the milestone 2 booleans: a stroked spur inside
+        // a subpath that does enclose area (a closed shape with a tail
+        // drawn in the same subpath) is lost; only the fill edge is cut.
+        // A stroked subpath without area that lies inside a filled area of
+        // the same path is cut into the piece.
         (Some(rule), None) => {
-            let fill = contours(placed.iter(), tolerance / 2.0);
-            let edges = boolean(&fill, &[], fill_rule(rule), tolerance);
+            let rule = fill_rule(rule);
+            let line_below = paint
+                .stroke
+                .map(|s| placed_width(s.width_mm, affine))
+                .filter(|w| w.is_finite())
+                .map_or(tolerance, |w| w.max(tolerance));
+            let subs = subpaths(placed.iter());
+            let mut fill: Vec<Contour> = Vec::new();
+            let mut lines: Vec<BezPath> = Vec::new();
+            // The fill of the last subpath that is not a line: the result
+            // if it is the only one.
+            let mut last = Vec::new();
+            for sub in &subs {
+                let contour = sub.contour(tolerance / 2.0);
+                let own = match &contour {
+                    Some(c) => boolean(std::slice::from_ref(c), &[], rule, tolerance),
+                    None => Vec::new(),
+                };
+                if mean_width(&own) < line_below {
+                    if paint.stroke.is_some() && !sub.segments.is_empty() {
+                        lines.push(sub.to_path());
+                    }
+                } else if let Some(c) = contour {
+                    fill.push(c);
+                    last = own;
+                }
+            }
+            let edges = if fill.len() == 1 {
+                last
+            } else {
+                boolean(&fill, &[], rule, tolerance)
+            };
             let mut out: Vec<BezPath> = edges
                 .iter()
+                .filter(|shape| mean_width(std::slice::from_ref(shape)) >= tolerance)
                 .flatten()
                 .filter(|c| c.len() >= 3)
                 .map(|c| ring(c))
                 .collect();
-            if paint.stroke.is_some() {
-                let min_area = tolerance * tolerance;
-                out.extend(
-                    split_subpaths(&placed)
-                        .into_iter()
-                        .filter(|sub| contour_area(sub, tolerance / 2.0) < min_area),
-                );
-            }
+            out.extend(lines);
             return out;
         }
         (fill, Some(style)) => {
@@ -274,60 +310,97 @@ fn bands(path: &BezPath, half: f64, tolerance: f64) -> Vec<Contour> {
     out
 }
 
-/// The subpaths of `path`, each starting with a move. Drawing on after a
-/// close starts again at the closed subpath's start, as in SVG.
-fn split_subpaths(path: &BezPath) -> Vec<BezPath> {
-    let mut out = Vec::new();
-    let mut cur = BezPath::new();
-    let mut start = Point::ORIGIN;
-    for el in path.elements() {
-        match el {
-            PathEl::MoveTo(p) => {
-                if cur.elements().len() > 1 {
-                    out.push(std::mem::take(&mut cur));
-                }
-                cur = BezPath::new();
-                start = *p;
-                cur.push(*el);
-            }
-            PathEl::ClosePath => {
-                cur.push(*el);
-                if cur.elements().len() > 2 {
-                    out.push(std::mem::take(&mut cur));
-                }
-                cur = BezPath::new();
-            }
-            _ => {
-                if cur.elements().is_empty() {
-                    cur.move_to(start);
-                }
-                cur.push(*el);
-            }
+/// One subpath: its start, its drawing segments and whether it is closed.
+struct Subpath {
+    start: Point,
+    segments: Vec<PathEl>,
+    closed: bool,
+}
+
+impl Subpath {
+    fn new(start: Point) -> Self {
+        Self {
+            start,
+            segments: Vec::new(),
+            closed: false,
         }
     }
-    if cur.elements().len() > 1 {
-        out.push(cur);
+
+    fn elements(&self) -> impl Iterator<Item = PathEl> + '_ {
+        std::iter::once(PathEl::MoveTo(self.start))
+            .chain(self.segments.iter().copied())
+            .chain(self.closed.then_some(PathEl::ClosePath))
     }
+
+    fn to_path(&self) -> BezPath {
+        self.elements().collect()
+    }
+
+    /// The flattened contour, closed implicitly as a fill does; `None`
+    /// with fewer than three points.
+    fn contour(&self, tolerance: f64) -> Option<Contour> {
+        let mut c: Contour = Vec::new();
+        kurbo::flatten(self.elements(), tolerance, |el| match el {
+            PathEl::MoveTo(p) | PathEl::LineTo(p) => c.push([p.x, p.y]),
+            // `flatten` only emits moves, lines and closes.
+            _ => {}
+        });
+        (c.len() >= 3).then_some(c)
+    }
+}
+
+/// The subpaths of `path`. The one place that knows where a subpath ends:
+/// a move starts a new one, a close ends one, and drawing on after a close
+/// starts again at the closed subpath's start, as in SVG. A move with
+/// nothing drawn after it is no subpath.
+fn subpaths(path: impl IntoIterator<Item = PathEl>) -> Vec<Subpath> {
+    let mut out = Vec::new();
+    let mut cur: Option<Subpath> = None;
+    let mut start = Point::ORIGIN;
+    for el in path {
+        match el {
+            PathEl::MoveTo(p) => {
+                out.extend(cur.take().filter(|c| !c.segments.is_empty()));
+                start = p;
+                cur = Some(Subpath::new(p));
+            }
+            PathEl::ClosePath => {
+                if let Some(mut c) = cur.take() {
+                    c.closed = true;
+                    out.push(c);
+                }
+            }
+            _ => cur
+                .get_or_insert_with(|| Subpath::new(start))
+                .segments
+                .push(el),
+        }
+    }
+    out.extend(cur.filter(|c| !c.segments.is_empty()));
     out
 }
 
-/// Absolute shoelace area of a subpath's flattened contour (closed
-/// implicitly, as a fill does).
-fn contour_area(sub: &BezPath, tolerance: f64) -> f64 {
-    contours(sub.iter(), tolerance)
-        .iter()
-        .map(|c| {
+/// Mean width of boolean result shapes: twice their area over the length
+/// of all their edges (holes included). A strip of length `l` and width
+/// `w` has area `l w` and about `2 l` of edge, so this is `w`; a triangle
+/// of height `h` over a long base gives `h / 2`. Zero without shapes.
+fn mean_width(shapes: &[Vec<Contour>]) -> f64 {
+    let mut area = 0.0;
+    let mut edge = 0.0;
+    for shape in shapes {
+        let mut signed = 0.0;
+        for c in shape {
             let n = c.len();
-            ((0..n)
-                .map(|i| {
-                    let (a, b) = (c[i], c[(i + 1) % n]);
-                    a[0] * b[1] - b[0] * a[1]
-                })
-                .sum::<f64>()
-                / 2.0)
-                .abs()
-        })
-        .sum()
+            for i in 0..n {
+                let (a, b) = (c[i], c[(i + 1) % n]);
+                signed += a[0] * b[1] - b[0] * a[1];
+                edge += (b[0] - a[0]).hypot(b[1] - a[1]);
+            }
+        }
+        // Holes run against their outer edge, so they subtract.
+        area += (signed / 2.0).abs();
+    }
+    if edge > 0.0 { 2.0 * area / edge } else { 0.0 }
 }
 
 fn fill_rule(rule: FillRule) -> OverlayFill {
@@ -376,93 +449,34 @@ fn is_finite(path: &BezPath) -> bool {
 /// closed, its last point moved onto its start, so the stroker joins the
 /// ends instead of capping them.
 fn close_meeting_ends(path: &BezPath) -> BezPath {
-    let els = path.elements();
     let mut out = BezPath::new();
-    let mut start: Option<Point> = None;
-    let mut drawn = false;
-    let finish = |out: &mut BezPath, start: Option<Point>, drawn: bool| {
-        let Some(s) = start else { return };
-        if !drawn {
-            return;
-        }
-        let last = out.elements().len() - 1;
-        let end = out.elements()[last].end_point();
-        if let Some(e) = end
-            && e.distance(s) < CLOSE_TOLERANCE_MM
+    for mut sub in subpaths(path.iter()) {
+        let start = sub.start;
+        if !sub.closed
+            && let Some(last) = sub.segments.last_mut()
+            && let Some(end) = last.end_point()
+            && end.distance(start) < CLOSE_TOLERANCE_MM
         {
-            let el = match out.elements()[last] {
-                PathEl::LineTo(_) => PathEl::LineTo(s),
-                PathEl::QuadTo(a, _) => PathEl::QuadTo(a, s),
-                PathEl::CurveTo(a, b, _) => PathEl::CurveTo(a, b, s),
+            *last = match *last {
+                PathEl::LineTo(_) => PathEl::LineTo(start),
+                PathEl::QuadTo(a, _) => PathEl::QuadTo(a, start),
+                PathEl::CurveTo(a, b, _) => PathEl::CurveTo(a, b, start),
                 other => other,
             };
-            let mut els = out.elements().to_vec();
-            els[last] = el;
-            *out = BezPath::from_vec(els);
-            out.close_path();
+            sub.closed = true;
         }
-    };
-    for el in els {
-        match el {
-            PathEl::MoveTo(p) => {
-                finish(&mut out, start, drawn);
-                start = Some(*p);
-                drawn = false;
-                out.push(*el);
-            }
-            PathEl::ClosePath => {
-                out.push(*el);
-                start = None;
-                drawn = false;
-            }
-            _ => {
-                if start.is_none() {
-                    // Drawing on after a close: SVG starts again at the
-                    // closed subpath's start.
-                    let s = out
-                        .elements()
-                        .iter()
-                        .rev()
-                        .find_map(|e| match e {
-                            PathEl::MoveTo(p) => Some(*p),
-                            _ => None,
-                        })
-                        .unwrap_or(Point::ORIGIN);
-                    out.move_to(s);
-                    start = Some(s);
-                }
-                out.push(*el);
-                drawn = true;
-            }
-        }
+        out.extend(sub.elements());
     }
-    finish(&mut out, start, drawn);
     out
 }
 
 /// Flattened closed contours of a path; open subpaths are closed
 /// implicitly, as a fill does.
 fn contours(path: impl IntoIterator<Item = PathEl>, tolerance: f64) -> Vec<Contour> {
-    let mut out = Vec::new();
-    let mut cur: Contour = Vec::new();
-    let push = |out: &mut Vec<Contour>, cur: &mut Contour| {
-        let c = std::mem::take(cur);
-        if c.len() >= 3 {
-            out.push(c);
-        }
-    };
-    kurbo::flatten(path, tolerance, |el| match el {
-        PathEl::MoveTo(p) => {
-            push(&mut out, &mut cur);
-            cur.push([p.x, p.y]);
-        }
-        PathEl::LineTo(p) => cur.push([p.x, p.y]),
-        PathEl::ClosePath => push(&mut out, &mut cur),
-        // `flatten` only emits moves, lines and closes.
-        _ => {}
-    });
-    push(&mut out, &mut cur);
-    out
+    subpaths(path)
+        .iter()
+        .filter_map(|sub| sub.contour(tolerance))
+        .collect()
 }
 
 fn ring(c: &[[f64; 2]]) -> BezPath {
@@ -493,6 +507,28 @@ mod tests {
         open.move_to((0.0, 0.0));
         open.line_to((10.0, 0.0));
         assert_eq!(close_meeting_ends(&open), open);
+    }
+
+    #[test]
+    fn drawing_after_a_close_starts_at_the_closed_start() {
+        let mut p = BezPath::new();
+        p.move_to((1.0, 2.0));
+        p.line_to((10.0, 2.0));
+        p.close_path();
+        p.line_to((1.0, 9.0));
+        p.move_to((5.0, 5.0));
+        let subs = subpaths(p.iter());
+        assert_eq!(subs.len(), 2, "a move alone is no subpath");
+        assert!(subs[0].closed && !subs[1].closed);
+        assert_eq!(subs[1].start, Point::new(1.0, 2.0));
+        assert_eq!(subs[1].segments, vec![PathEl::LineTo(Point::new(1.0, 9.0))]);
+    }
+
+    #[test]
+    fn mean_width_of_a_strip_is_its_width() {
+        let strip = vec![vec![[0.0, 0.0], [50.0, 0.0], [50.0, 0.1], [0.0, 0.1]]];
+        assert!((mean_width(&[strip]) - 0.1).abs() < 1e-3);
+        assert_eq!(mean_width(&[]), 0.0);
     }
 
     #[test]
