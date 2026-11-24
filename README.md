@@ -130,6 +130,7 @@ Super massive stability stuff, as Felix Schelhasse would say. Here's FlatCraft's
 
 - **Something doesn't work:** [open a bug report](https://github.com/jordiboehme/flatcraft/issues/new?template=bug_report.yml). If a cut looks wrong, attach the `.gpgl.txt` listing from File Output.
 - **Your plotter isn't supported yet:** [ask for your plotter](https://github.com/jordiboehme/flatcraft/issues/new?template=plotter_support.yml). Name the model and its USB IDs. A USB recording of a simple cut from the vendor software helps a lot.
+  Every new plotter needs testing on the real machine. If you want more plotters supported, you can support the project on [Ko-fi](https://ko-fi.com/V7V31T6CL9) or [PayPal](https://paypal.me/jordiboehmelopez). Or send me a plotter. ;)
 - **You have an idea:** [request a feature](https://github.com/jordiboehme/flatcraft/issues/new?template=feature_request.yml). Tell what you want to do and what stops you today.
 
 ## Contributing
