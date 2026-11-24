@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use flatcraft_core::document::{Document, JobSettings, ObjectId};
 use flatcraft_core::undo::UndoStack;
-use flatcraft_device::ProfileStore;
+use flatcraft_device::{ByteLog, ProfileStore};
 use thiserror::Error;
 
 use crate::prefs::Preferences;
@@ -34,9 +34,16 @@ pub enum CommandError {
     Failed(String),
 }
 
-/// Result of the last job build. Placeholder until the job pipeline exists.
+pub use crate::job::JobResult;
+
+/// An agent's USB send that waits for the person at the FlatCraft window.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JobResult;
+pub struct PendingSend {
+    pub id: u64,
+    /// The sanitised job name.
+    pub name: String,
+    pub requested_at: Instant,
+}
 
 /// Media used by new documents.
 pub const DEFAULT_MEDIA: &str = "mat-12x12";
@@ -82,6 +89,11 @@ pub struct Session {
     /// Directory of the preferences and user presets. Agents may not write here.
     pub config_dir: PathBuf,
     pub last_agent_activity: Option<Instant>,
+    /// Bytes sent to and read from plotters in this session.
+    pub byte_log: ByteLog,
+    /// A send that waits for confirmation in the GUI (see `confirm_pending`).
+    pub pending_send: Option<PendingSend>,
+    next_pending_id: u64,
 }
 
 impl Session {
@@ -101,6 +113,9 @@ impl Session {
             has_ui,
             config_dir,
             last_agent_activity: None,
+            byte_log: ByteLog::new(),
+            pending_send: None,
+            next_pending_id: 1,
         };
         s.docs.push(s.new_doc_state());
         s
@@ -124,6 +139,39 @@ impl Session {
 
     pub fn doc_mut(&mut self) -> &mut DocState {
         &mut self.docs[self.active]
+    }
+
+    /// Stores a send that waits for confirmation in the GUI and returns its
+    /// id. It replaces an older pending send.
+    pub(crate) fn request_confirmation(&mut self, name: String) -> u64 {
+        let id = self.next_pending_id;
+        self.next_pending_id += 1;
+        self.pending_send = Some(PendingSend {
+            id,
+            name,
+            requested_at: Instant::now(),
+        });
+        id
+    }
+
+    /// Sends the pending job after the person confirmed it in the GUI. It
+    /// runs as `Origin::User`. This is not a registry command, so agents
+    /// cannot reach it. A wrong id leaves the pending send in place.
+    pub fn confirm_pending(&mut self, id: u64) -> Result<serde_json::Value, CommandError> {
+        match &self.pending_send {
+            Some(p) if p.id == id => {}
+            _ => {
+                return Err(CommandError::NotFound(format!(
+                    "no send with id {id} is waiting for confirmation"
+                )));
+            }
+        }
+        let pending = self.pending_send.take().expect("checked above");
+        let plotter = self
+            .profiles
+            .plotter(&self.doc().document.job.plotter_id)
+            .map_err(crate::commands::profile_error)?;
+        crate::job::deliver(self, &plotter, &pending.name, Origin::User)
     }
 
     /// Runs a registry command. Commands that change the document record an

@@ -11,6 +11,7 @@ publish = false
 flatcraft-core = { path = "../flatcraft-core" }
 flatcraft-device = { path = "../flatcraft-device" }
 flatcraft-import = { path = "../flatcraft-import" }
+flatcraft-path = { path = "../flatcraft-path" }
 kurbo.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

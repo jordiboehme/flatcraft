@@ -25,6 +25,10 @@ pub struct Preferences {
     pub default_material: String,
     pub theme: Theme,
     pub recent_projects: Vec<PathBuf>,
+    /// Where File Output writes when the plotter profile names no directory.
+    /// `None` means `<Documents>/FlatCraft Output`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_dir: Option<PathBuf>,
 }
 
 impl Default for Preferences {
@@ -37,6 +41,7 @@ impl Default for Preferences {
             default_material: "copy-paper".into(),
             theme: Theme::Dark,
             recent_projects: Vec::new(),
+            output_dir: None,
         }
     }
 }

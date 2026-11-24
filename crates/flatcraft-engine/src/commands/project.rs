@@ -168,7 +168,7 @@ command!(
 // ---------------------------------------------------------------- project.save / open
 
 /// Removes `.` and resolves `..` without touching the file system.
-fn lexical(path: &Path) -> PathBuf {
+pub(crate) fn lexical(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in path.components() {
         match c {
@@ -183,7 +183,7 @@ fn lexical(path: &Path) -> PathBuf {
 }
 
 /// The path with symlinks resolved as far as the file system allows.
-fn resolved(path: &Path) -> PathBuf {
+pub(crate) fn resolved(path: &Path) -> PathBuf {
     if let Ok(p) = path.canonicalize() {
         return p;
     }
@@ -196,7 +196,7 @@ fn resolved(path: &Path) -> PathBuf {
 }
 
 /// True if `path` is the config dir or lies inside it.
-fn inside(path: &Path, config_dir: &Path) -> bool {
+pub(crate) fn inside(path: &Path, config_dir: &Path) -> bool {
     let abs = |p: &Path| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
     let path = abs(path);
     let cfg = abs(config_dir);
