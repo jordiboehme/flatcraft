@@ -118,6 +118,12 @@ Super massive stability stuff, as Felix Schelhasse would say. Here's FlatCraft's
 - **Clean licenses:** FlatCraft uses only libraries with permissive or MPL licenses.
 - **Honest output:** when something can't be cut, FlatCraft says what and why.
 
+## Inspired by software I love
+
+- [PrusaSlicer](https://github.com/prusa3d/PrusaSlicer)
+- [SolidCraft](https://github.com/tangency-labs/solidcraft)
+- [ZigZag](https://github.com/simpsoka/zigzag)
+
 ## Contributing
 
 Help is welcome, most of all from people with a plotter on their desk. [CONTRIBUTING.md](CONTRIBUTING.md) covers how to build and test, the clean-room rule for protocol work and how to report a plotter that isn't supported yet. Open work is in [GitHub issues](https://github.com/jordiboehme/flatcraft/issues). For a security problem, read [SECURITY.md](SECURITY.md).
