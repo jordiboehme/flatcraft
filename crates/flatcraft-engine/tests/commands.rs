@@ -1121,3 +1121,81 @@ fn oversized_image_error_names_the_size() {
     );
     assert!(!text.contains("50 MB"), "{text}");
 }
+
+#[test]
+fn save_by_doc_id_writes_that_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    import(&mut s, 10.0, 10.0);
+    let first = s.doc().id();
+    run(&mut s, "document.new", json!({}));
+    assert_eq!(s.active, 1);
+    let path = dir.path().join("first.flatcraft");
+    let r = run(
+        &mut s,
+        "project.save",
+        json!({ "doc_id": first, "path": path }),
+    );
+    assert_eq!(r["path"], json!(path));
+    assert_eq!(s.active, 1, "saving does not switch documents");
+    assert_eq!(s.docs[0].path.as_deref(), Some(path.as_path()));
+    assert!(!s.docs[0].dirty);
+    assert!(s.docs[1].path.is_none());
+    let saved = flatcraft_core::project::load(&path).unwrap();
+    assert_eq!(saved.objects.len(), 1, "the first document was saved");
+    // Without a path it uses that document's own path.
+    run(&mut s, "project.save", json!({ "doc_id": first }));
+}
+
+#[test]
+fn switch_and_close_by_doc_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = s.doc().id();
+    run(&mut s, "document.new", json!({}));
+    let b = s.doc().id();
+    run(&mut s, "document.new", json!({}));
+    let c = s.doc().id();
+    run(&mut s, "document.switch", json!({ "doc_id": a }));
+    assert_eq!(s.doc().id(), a);
+    // Closing a shifts the indexes; closing b by id still closes b.
+    run(&mut s, "document.close", json!({ "doc_id": a }));
+    run(&mut s, "document.close", json!({ "doc_id": b }));
+    let ids: Vec<u64> = s.docs.iter().map(|d| d.id()).collect();
+    assert_eq!(ids, [c]);
+    let st = run(&mut s, "document.state", json!({}));
+    assert_eq!(st["doc_id"], json!(c));
+    assert_eq!(st["doc_ids"], json!([c]));
+    for (cmd, params) in [
+        ("document.switch", json!({ "doc_id": a })),
+        ("document.close", json!({ "doc_id": a })),
+        (
+            "project.save",
+            json!({ "doc_id": a, "path": dir.path().join("x.flatcraft") }),
+        ),
+    ] {
+        let e = s.execute(cmd, params, Origin::User).unwrap_err();
+        assert_eq!(
+            e,
+            CommandError::NotFound("That document is no longer open.".into()),
+            "{cmd}"
+        );
+    }
+    for params in [json!({}), json!({ "index": 0, "doc_id": c })] {
+        let e = s
+            .execute("document.switch", params, Origin::User)
+            .unwrap_err();
+        assert!(matches!(e, CommandError::InvalidParams(_)), "{e}");
+    }
+}
+
+#[test]
+fn pristine_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    assert!(s.doc().is_pristine());
+    import(&mut s, 10.0, 10.0);
+    assert!(!s.doc().is_pristine());
+    run(&mut s, "edit.undo", json!({}));
+    assert!(!s.doc().is_pristine(), "it has a redo step");
+}

@@ -45,6 +45,8 @@ fn run_state(s: &mut Session, _: NoParams, _: Origin) -> Result<Value, CommandEr
     Ok(json!({
         "index": s.active,
         "documents": s.docs.len(),
+        "doc_id": st.id(),
+        "doc_ids": s.docs.iter().map(|d| d.id()).collect::<Vec<_>>(),
         "objects": st.document.objects.iter().map(object_json).collect::<Vec<_>>(),
         "selection": ids_json(&selection),
         "job": {
@@ -70,7 +72,7 @@ command!(
     mutates: false,
     params: NoParams,
     run: run_state,
-    description: "Describes the active document. All lengths are mm; the origin is the top-left of the media, x right, y down; rotation is degrees clockwise. Returns {index, documents, objects: [{id, name, kind: svg|raster, visible, bounds_mm: {x0,y0,x1,y1} of the placed geometry, transform: {center_mm: [x,y], scale_x, scale_y, rotation_deg, mirror}}], selection: [id], job: {plotter_id, material_id, media_id, speed, force, passes} (null overrides mean the material value), cutting_area_mm: {x0,y0,x1,y1} (objects must stay inside it), dirty, path, can_undo, can_redo}.",
+    description: "Describes the active document. All lengths are mm; the origin is the top-left of the media, x right, y down; rotation is degrees clockwise. Returns {index, documents, doc_id (stable id of the active document), doc_ids (stable ids of all open documents, in index order), objects: [{id, name, kind: svg|raster, visible, bounds_mm: {x0,y0,x1,y1} of the placed geometry, transform: {center_mm: [x,y], scale_x, scale_y, rotation_deg, mirror}}], selection: [id], job: {plotter_id, material_id, media_id, speed, force, passes} (null overrides mean the material value), cutting_area_mm: {x0,y0,x1,y1} (objects must stay inside it), dirty, path, can_undo, can_redo}.",
 );
 
 // ---------------------------------------------------------------- document.new / switch / close
@@ -95,8 +97,10 @@ command!(
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct IndexParams {
-    /// Index of the open document, starting at 0 (see document.state).
-    pub index: usize,
+    /// Index of the open document, starting at 0 (see document.state). Give index or doc_id.
+    pub index: Option<usize>,
+    /// Stable id of the open document (see document.state). Give index or doc_id.
+    pub doc_id: Option<u64>,
 }
 
 fn check_index(s: &Session, index: usize) -> Result<(), CommandError> {
@@ -110,9 +114,20 @@ fn check_index(s: &Session, index: usize) -> Result<(), CommandError> {
     }
 }
 
+/// The index of the document an index or a stable id names. Exactly one
+/// of the two must be given.
+fn target(s: &Session, index: Option<usize>, doc_id: Option<u64>) -> Result<usize, CommandError> {
+    match (index, doc_id) {
+        (Some(index), None) => check_index(s, index).map(|()| index),
+        (None, Some(id)) => s.doc_index(id),
+        _ => Err(CommandError::InvalidParams(
+            "give exactly one of index and doc_id".into(),
+        )),
+    }
+}
+
 fn run_switch(s: &mut Session, p: IndexParams, _: Origin) -> Result<Value, CommandError> {
-    check_index(s, p.index)?;
-    s.active = p.index;
+    s.active = target(s, p.index, p.doc_id)?;
     Ok(json!({ "index": s.active, "documents": s.docs.len() }))
 }
 
@@ -123,33 +138,34 @@ command!(
     mutates: false,
     params: IndexParams,
     run: run_switch,
-    description: "Makes the open document with this index (starting at 0) the active one. Commands work on the active document. Returns {index, documents}.",
+    description: "Makes an open document the active one, named by index (starting at 0) or by its stable doc_id; give exactly one. Commands work on the active document. Returns {index, documents}.",
 );
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CloseParams {
-    /// Index of the open document, starting at 0.
-    pub index: usize,
+    /// Index of the open document, starting at 0. Give index or doc_id.
+    pub index: Option<usize>,
+    /// Stable id of the open document (see document.state). Give index or doc_id.
+    pub doc_id: Option<u64>,
     /// Close even if the document has unsaved changes (default false).
     #[serde(default)]
     pub discard_changes: bool,
 }
 
 fn run_close(s: &mut Session, p: CloseParams, _: Origin) -> Result<Value, CommandError> {
-    check_index(s, p.index)?;
-    if s.docs[p.index].dirty && !p.discard_changes {
+    let index = target(s, p.index, p.doc_id)?;
+    if s.docs[index].dirty && !p.discard_changes {
         return Err(CommandError::Refused(format!(
-            "document {} has unsaved changes. Save it with project.save, or pass discard_changes: true",
-            p.index
+            "document {index} has unsaved changes. Save it with project.save, or pass discard_changes: true"
         )));
     }
-    s.docs.remove(p.index);
+    s.docs.remove(index);
     if s.docs.is_empty() {
         let st = s.new_doc_state();
         s.docs.push(st);
     }
-    if p.index < s.active || s.active >= s.docs.len() {
+    if index < s.active || s.active >= s.docs.len() {
         s.active = s.active.saturating_sub(1);
     }
     Ok(json!({ "index": s.active, "documents": s.docs.len() }))
@@ -162,7 +178,7 @@ command!(
     mutates: false,
     params: CloseParams,
     run: run_close,
-    description: "Closes the open document with this index (starting at 0). A document with unsaved changes is only closed with discard_changes: true. Closing the last document opens a new empty one. Returns {index (the active document), documents}.",
+    description: "Closes an open document, named by index (starting at 0) or by its stable doc_id; give exactly one. A document with unsaved changes is only closed with discard_changes: true. Closing the last document opens a new empty one. Returns {index (the active document), documents}.",
 );
 
 // ---------------------------------------------------------------- project.save / open
@@ -208,20 +224,32 @@ pub(crate) fn inside(path: &Path, config_dir: &Path) -> bool {
 pub struct SaveParams {
     /// File to write, usually ending in .flatcraft. Default: the path the document was opened from or last saved to.
     pub path: Option<PathBuf>,
+    /// Stable id of the open document to save (see document.state). Default: the active document.
+    pub doc_id: Option<u64>,
 }
 
 fn run_save(s: &mut Session, p: SaveParams, origin: Origin) -> Result<Value, CommandError> {
-    let path = p.path.or_else(|| s.doc().path.clone()).ok_or_else(|| {
-        CommandError::InvalidParams("no path: this document was never saved, so give a path".into())
-    })?;
+    let index = match p.doc_id {
+        Some(id) => s.doc_index(id)?,
+        None => s.active,
+    };
+    let path = p
+        .path
+        .or_else(|| s.docs[index].path.clone())
+        .ok_or_else(|| {
+            CommandError::InvalidParams(
+                "no path: this document was never saved, so give a path".into(),
+            )
+        })?;
     if origin == Origin::Agent && inside(&path, &s.config_dir) {
         return Err(CommandError::Refused(format!(
             "agents may not write into the FlatCraft config directory ({})",
             s.config_dir.display()
         )));
     }
-    project::save(&s.doc().document, &path).map_err(|e| CommandError::Failed(e.to_string()))?;
-    let st = s.doc_mut();
+    project::save(&s.docs[index].document, &path)
+        .map_err(|e| CommandError::Failed(e.to_string()))?;
+    let st = &mut s.docs[index];
     st.path = Some(path.clone());
     st.dirty = false;
     Ok(json!({ "path": path }))
@@ -234,7 +262,7 @@ command!(
     mutates: false,
     params: SaveParams,
     run: run_save,
-    description: "Saves the active document as a project file (JSON with the original SVG sources embedded). Without path it uses the document's current path; a document that was never saved needs a path. Agents may not write inside the FlatCraft config directory. Returns {path}.",
+    description: "Saves an open document (the active one, or the one with doc_id) as a project file (JSON with the original SVG sources embedded). Without path it uses the document's current path; a document that was never saved needs a path. Agents may not write inside the FlatCraft config directory. Returns {path}.",
 );
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -275,13 +303,7 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
     let objects = document.objects.len();
     let mut st = DocState::new(document);
     st.path = Some(p.path.clone());
-    let current = s.doc();
-    let pristine = current.document.objects.is_empty()
-        && !current.dirty
-        && current.path.is_none()
-        && !current.undo.can_undo()
-        && !current.undo.can_redo();
-    if pristine {
+    if s.doc().is_pristine() {
         *s.doc_mut() = st;
     } else {
         s.docs.push(st);

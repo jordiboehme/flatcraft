@@ -123,6 +123,17 @@ impl DocState {
         }
     }
 
+    /// True for an empty document nobody has touched: no objects, no
+    /// unsaved changes, no path and nothing to undo or redo. Opening a
+    /// project or starting a new one may reuse it.
+    pub fn is_pristine(&self) -> bool {
+        self.document.objects.is_empty()
+            && !self.dirty
+            && self.path.is_none()
+            && !self.undo.can_undo()
+            && !self.undo.can_redo()
+    }
+
     /// Drops selected ids that no longer exist in the document.
     pub fn prune_selection(&mut self) {
         let doc = &self.document;
@@ -191,6 +202,14 @@ impl Session {
 
     pub fn doc_mut(&mut self) -> &mut DocState {
         &mut self.docs[self.active]
+    }
+
+    /// Index of the open document with this stable id.
+    pub fn doc_index(&self, doc_id: u64) -> Result<usize, CommandError> {
+        self.docs
+            .iter()
+            .position(|d| d.id() == doc_id)
+            .ok_or_else(|| CommandError::NotFound("That document is no longer open.".into()))
     }
 
     /// The send that waits for confirmation in the GUI, if any.
