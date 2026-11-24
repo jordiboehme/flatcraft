@@ -87,14 +87,14 @@ fn run_capture(
         );
     }
     let records = select_device(parsed.records, device)?;
-    if !has_commands(&records) {
-        eprintln!("{NO_COMMANDS}");
-    }
     if records.is_empty() {
         bail!(
             "no USB data found in {}. Check in Wireshark that you see URB_BULK out packets to the Cameo before you capture again, and keep the pcapng.",
             file.display()
         );
+    }
+    if !has_commands(&records) {
+        eprintln!("{NO_COMMANDS}");
     }
     std::fs::create_dir_all(out_dir).with_context(|| format!("create {}", out_dir.display()))?;
     let jsonl = out_dir.join(format!("{name}.jsonl"));
