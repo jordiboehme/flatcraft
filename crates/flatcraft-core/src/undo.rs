@@ -52,6 +52,11 @@ impl<T: Clone> UndoStack<T> {
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
     }
+
+    /// Number of steps that can be undone.
+    pub fn undo_len(&self) -> usize {
+        self.undo.len()
+    }
 }
 
 impl<T: Clone> Default for UndoStack<T> {

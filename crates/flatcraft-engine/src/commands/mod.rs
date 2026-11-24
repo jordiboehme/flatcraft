@@ -117,7 +117,7 @@ pub(crate) fn object_mut(doc: &mut Document, id: ObjectId) -> Result<&mut Object
 /// Bounding box of what is cut of the object (its cut geometry per its cut
 /// options, so stroke outlines count), in mat mm. Falls back to the centre
 /// lines when nothing is cut; `None` if the object has no geometry.
-pub(crate) fn placed_bounds(o: &Object) -> Option<Rect> {
+pub fn placed_bounds(o: &Object) -> Option<Rect> {
     crate::cutgeom::cut_bounds(o).or_else(|| bounds(&o.placed_paths()))
 }
 

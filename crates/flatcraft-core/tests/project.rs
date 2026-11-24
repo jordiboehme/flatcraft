@@ -120,6 +120,18 @@ fn undo_redo_cycle() {
 }
 
 #[test]
+fn undo_len_counts_steps() {
+    let mut s = UndoStack::new(2);
+    assert_eq!(s.undo_len(), 0);
+    s.record(1);
+    s.record(2);
+    s.record(3);
+    assert_eq!(s.undo_len(), 2);
+    s.undo(4);
+    assert_eq!(s.undo_len(), 1);
+}
+
+#[test]
 fn undo_limit_drops_oldest() {
     let mut s = UndoStack::new(2);
     s.record(1);
