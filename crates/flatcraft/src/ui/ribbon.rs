@@ -154,7 +154,6 @@ pub fn search(query: &str, doc_id: u64) -> Vec<(&'static str, &'static str)> {
     hits.into_iter().map(|(_, id, title)| (id, title)).collect()
 }
 
-/// What picking a search hit does.
 /// The ids Reload sends: the selection's linked objects, or every linked
 /// object (an empty list) when nothing is selected. `None` when there is
 /// nothing to reload.
@@ -170,12 +169,31 @@ pub fn reload_ids(snap: &Snapshot) -> Option<Vec<u64>> {
     (!ids.is_empty()).then_some(ids)
 }
 
+/// The id of the selected object when it is the only one and an image.
+pub fn single_raster(snap: &Snapshot) -> Option<u64> {
+    match snap.selected().collect::<Vec<_>>().as_slice() {
+        [o] if o.raster => Some(o.id),
+        _ => None,
+    }
+}
+
+/// What picking a search hit does.
 fn pick(id: &'static str, snap: &Snapshot, st: &mut PrepareState, actions: &mut Vec<Action>) {
     if id == "object.reload" {
         // Like the ribbon button.
         if let Some(ids) = reload_ids(snap) {
             actions.push(Action::run(snap.doc_id, id, json!({ "ids": ids })));
         }
+        return;
+    }
+    if id == "object.retrace"
+        && let Some(o) = single_raster(snap)
+    {
+        // Like the ribbon button; else the Home tab shows where Trace is.
+        actions.push(Action::TraceDialog {
+            doc_id: snap.doc_id,
+            id: o,
+        });
         return;
     }
     match search_target(id, snap.doc_id) {
@@ -274,23 +292,16 @@ pub fn show(
                         ) {
                             actions.push(Action::Import { doc_id });
                         }
-                        let raster = match snap.selected().collect::<Vec<_>>().as_slice() {
-                            [o] if o.raster => Some(o.id),
-                            _ => None,
-                        };
+                        let raster = single_raster(snap);
                         if tool(
                             ui,
                             Icon::Trace,
                             "Trace",
                             raster.is_some(),
-                            "Trace the selected image again",
+                            "Trace the selected image with your own settings",
                         ) && let Some(id) = raster
                         {
-                            run(
-                                actions,
-                                "object.retrace",
-                                json!({ "id": id, "settings": {} }),
-                            );
+                            actions.push(Action::TraceDialog { doc_id, id });
                         }
                         if tool(
                             ui,

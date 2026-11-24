@@ -7,6 +7,7 @@ pub mod files;
 pub mod fonts;
 pub mod home;
 pub mod icons;
+pub mod import_dialog;
 #[cfg(target_os = "macos")]
 pub mod menu;
 pub mod objects;
@@ -78,7 +79,7 @@ impl Workspace {
 }
 
 /// Everything the window shows that is not part of the engine session.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct UiState {
     pub workspace: Workspace,
     pub toasts: Vec<Toast>,
@@ -88,6 +89,8 @@ pub struct UiState {
     /// The number of each untitled document's name, by stable document id,
     /// so "Untitled 3" keeps its name when "Untitled 2" closes.
     pub untitled: BTreeMap<u64, usize>,
+    /// The open Trace dialog.
+    pub trace: Option<import_dialog::TraceDialog>,
 }
 
 impl UiState {
@@ -120,6 +123,14 @@ pub enum Action {
     Import {
         doc_id: u64,
     },
+    /// Open the Trace dialog for this raster object.
+    TraceDialog {
+        doc_id: u64,
+        id: u64,
+    },
+    /// Files dropped on the window: projects open, SVGs and images are
+    /// imported into the active document, one `object.import` each.
+    Dropped(Vec<PathBuf>),
     /// Ask where an object's linked file went, then `object.relink`.
     Reconnect {
         doc_id: u64,
@@ -189,6 +200,8 @@ pub struct FlatCraftApp {
     pub agent: bool,
     /// File dialogs; tests replace them.
     pub files: Box<dyn files::FilePicker>,
+    /// Traces the Trace dialog's previews; tests replace it.
+    pub tracer: import_dialog::Tracer,
     /// The macOS menu bar; it must live as long as the app.
     #[cfg(target_os = "macos")]
     menu: Option<menu::AppMenu>,
@@ -208,6 +221,7 @@ impl FlatCraftApp {
             tokens,
             agent: false,
             files: Box::new(files::NativePicker),
+            tracer: std::sync::Arc::new(flatcraft_import::trace::trace),
             #[cfg(target_os = "macos")]
             menu: None,
         }
@@ -216,6 +230,23 @@ impl FlatCraftApp {
     /// Marks a window started by `flatcraft mcp --window`.
     pub fn with_agent(mut self) -> Self {
         self.agent = true;
+        self
+    }
+
+    /// Traces previews with `f` instead of the real tracer (tests).
+    pub fn with_tracer(
+        mut self,
+        f: impl Fn(
+            &[u8],
+            &flatcraft_core::document::TraceSettings,
+            f64,
+        )
+            -> Result<flatcraft_import::trace::TraceResult, flatcraft_import::ImportError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.tracer = std::sync::Arc::new(f);
         self
     }
 
@@ -349,16 +380,30 @@ impl FlatCraftApp {
                 self.run_on(doc_id, command, params);
             }
             Action::Import { doc_id } => {
-                let req = files::FileRequest {
-                    title: "Import".into(),
-                    filters: vec![files::filter(
-                        "SVG or image",
-                        &["svg", "svgz", "png", "jpg", "jpeg", "webp", "gif"],
-                    )],
-                    ..Default::default()
-                };
-                if let Some(path) = self.files.pick_file(&req) {
+                if let Some(path) = self.files.pick_file(&import_dialog::import_request()) {
                     self.run_on(doc_id, "object.import", json!({ "path": path }));
+                }
+            }
+            Action::TraceDialog { doc_id, id } => self.open_trace(ctx, doc_id, id),
+            Action::Dropped(paths) => {
+                for path in paths {
+                    match import_dialog::drop_kind(&path) {
+                        import_dialog::DropKind::Project => self.apply_one(ctx, Action::Open(path)),
+                        import_dialog::DropKind::Import => {
+                            // The active document now: an earlier file of
+                            // the same drop may have opened a project.
+                            let doc_id = lock(&self.session).doc().id();
+                            if self
+                                .run_on(doc_id, "object.import", json!({ "path": path }))
+                                .is_some()
+                            {
+                                self.ui.workspace = Workspace::Prepare;
+                            }
+                        }
+                        import_dialog::DropKind::Unsupported => {
+                            self.toast(Toast::warning(import_dialog::unsupported_text(&path)));
+                        }
+                    }
                 }
             }
             Action::Reconnect { doc_id, id } => {
@@ -505,6 +550,46 @@ impl FlatCraftApp {
         }
     }
 
+    /// Copies what the Trace dialog needs under one lock and opens it.
+    fn open_trace(&mut self, ctx: &egui::Context, doc_id: u64, id: u64) {
+        let src = {
+            let s = lock(&self.session);
+            if s.doc().id() != doc_id {
+                None
+            } else {
+                s.doc()
+                    .document
+                    .get(flatcraft_core::document::ObjectId(id))
+                    .and_then(|o| match &o.source {
+                        flatcraft_core::document::Source::Raster { bytes, trace, .. } => {
+                            Some(import_dialog::TraceSource {
+                                doc_id,
+                                id,
+                                name: o.name.clone(),
+                                bytes: bytes.clone(),
+                                settings: trace.clone(),
+                                blade_offset_mm:
+                                    flatcraft_engine::commands::object::blade_offset_mm(&s),
+                            })
+                        }
+                        _ => None,
+                    })
+            }
+        };
+        match src {
+            Some(src) => {
+                self.ui.trace = Some(import_dialog::TraceDialog::open(
+                    ctx,
+                    src,
+                    self.tracer.clone(),
+                ));
+            }
+            None => self.toast(Toast::warning(
+                "That image is gone, so there is nothing to trace.",
+            )),
+        }
+    }
+
     /// The file name and folder the Save As dialog suggests: the
     /// document's own file if it has one, else "Untitled N.flatcraft".
     pub fn save_as_suggestion(&self, doc_id: u64) -> (String, Option<PathBuf>) {
@@ -638,6 +723,7 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     };
     app.ui.number_documents(&open);
     shortcuts(&ctx, active, &mut actions);
+    dropped_files(&ctx, &app.tokens, &mut actions);
     let focused = ctx.input(|i| {
         i.raw
             .events
@@ -653,10 +739,21 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     switcher::ribbon(ui, app, snap.as_ref(), &mut actions);
     match (&snap, app.ui.workspace) {
         (Some(snap), _) => {
-            prepare_keys(&ctx, snap, &mut actions);
+            // The Trace dialog owns Escape, and Delete must not remove
+            // the image it traces.
+            if app.ui.trace.is_none() {
+                prepare_keys(&ctx, snap, &mut actions);
+            }
             prepare::show(ui, app, snap, &mut actions);
+            let t = app.tokens;
+            if let Some(why) = import_dialog::show(&ctx, &mut app.ui.trace, snap, &t, &mut actions)
+            {
+                app.toast(Toast::info(why));
+            }
         }
         (None, w) => {
+            // The Trace dialog lives in Prepare.
+            app.ui.trace = None;
             egui::CentralPanel::default()
                 .frame(egui::Frame::new().fill(app.tokens.bg))
                 .show(ui, |ui| match w {
@@ -677,6 +774,38 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     if app.agent {
         // Keeps the agent pill current.
         ctx.request_repaint_after(Duration::from_secs(1));
+    }
+}
+
+/// Files dropped on the window this frame become one action; while files
+/// hover over the window, a hint says what dropping does.
+fn dropped_files(ctx: &egui::Context, t: &Tokens, actions: &mut Vec<Action>) {
+    let (dropped, hovering) = ctx.input(|i| {
+        let dropped: Vec<PathBuf> = i
+            .raw
+            .dropped_files
+            .iter()
+            .map(|f| f.path().to_path_buf())
+            .collect();
+        (dropped, !i.raw.hovered_files.is_empty())
+    });
+    if !dropped.is_empty() {
+        actions.push(Action::Dropped(dropped));
+    }
+    if hovering {
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::unique("flatcraft-drop-hint"),
+        ));
+        let rect = ctx.content_rect();
+        painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(140));
+        painter.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "Drop it! SVGs and images are imported, projects open.",
+            fonts::medium(20.0),
+            t.text,
+        );
     }
 }
 

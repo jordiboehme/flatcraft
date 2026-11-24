@@ -48,7 +48,7 @@ fn import_error(e: ImportError) -> CommandError {
 
 /// Blade offset of the active document's plotter, mm. 0.25 if the plotter
 /// cannot be resolved.
-pub(crate) fn blade_offset_mm(s: &Session) -> f64 {
+pub fn blade_offset_mm(s: &Session) -> f64 {
     let id = &s.doc().document.job.plotter_id;
     blade_offset_for(s, id)
 }

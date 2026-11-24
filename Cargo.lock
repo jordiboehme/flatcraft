@@ -1400,6 +1400,7 @@ dependencies = [
  "flatcraft-core",
  "flatcraft-device",
  "flatcraft-engine",
+ "flatcraft-import",
  "flatcraft-mcp",
  "kurbo",
  "muda",

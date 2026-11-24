@@ -99,7 +99,7 @@ pub(crate) fn clip(text: String) -> String {
 
 /// The kind of object a file becomes, by its extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FileKind {
+pub enum FileKind {
     Svg,
     Raster,
 }
@@ -115,7 +115,7 @@ pub(crate) fn source_kind(source: &Source) -> FileKind {
 }
 
 /// The file kind by extension (case does not matter).
-pub(crate) fn file_kind(path: &Path) -> Result<FileKind, CommandError> {
+pub fn file_kind(path: &Path) -> Result<FileKind, CommandError> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
