@@ -664,3 +664,41 @@ fn hiding_a_mat_that_does_not_exist_is_a_clear_error() {
         "{err}"
     );
 }
+
+#[test]
+fn duplicate_ids_in_a_user_media_list_are_reported_on_load() {
+    let d = tempdir().unwrap();
+    write(
+        d.path(),
+        "plotters",
+        "twice",
+        "id = \"twice\"\nname = \"T\"\ninherits = \"silhouette-cameo-2\"\n\
+         media = [{ id = \"a\", name = \"A\", width_mm = 10.0, height_mm = 10.0 },\n\
+         { id = \"a\", name = \"A2\", width_mm = 20.0, height_mm = 20.0 }]\n",
+    );
+    let s = ProfileStore::load(d.path()).unwrap();
+    let err = s.plotter("twice").unwrap_err();
+    assert!(matches!(err, ProfileError::Invalid { .. }), "{err:?}");
+    assert!(err.to_string().contains("'a'"), "{err}");
+}
+
+#[test]
+fn hidden_mat_without_a_parent_is_a_clear_error() {
+    let d = tempdir().unwrap();
+    write(
+        d.path(),
+        "plotters",
+        "orphan",
+        "id = \"orphan\"\nname = \"O\"\nvendor = \"v\"\nmodel = \"m\"\n\
+         protocol = { Gpgl = { dialect = \"Cameo12\" } }\n\
+         transport = { File = { extension = \"gpgl\" } }\n\
+         media = [{ id = \"nope\", hidden = true }]\n",
+    );
+    let s = ProfileStore::load(d.path()).unwrap();
+    let err = s.plotter("orphan").unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("Mat 'nope' is hidden, but there is no built-in mat with that id to hide."),
+        "{err}"
+    );
+}

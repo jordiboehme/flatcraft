@@ -132,6 +132,16 @@ fn media_id(v: &Value) -> Option<&str> {
 /// Merges two `media` lists by mat id: an entry of `own` replaces the parent mat with the same
 /// id (in place), a new id is appended, and `hidden = true` removes the parent mat from the list.
 fn merge_media(preset: &str, parent: &[Value], own: &[Value]) -> Result<Vec<Value>, ProfileError> {
+    let mut seen: Vec<&str> = Vec::new();
+    for mat in own.iter().filter_map(media_id) {
+        if seen.contains(&mat) {
+            return Err(ProfileError::Invalid {
+                id: preset.to_string(),
+                reason: format!("mat id '{mat}' is used twice"),
+            });
+        }
+        seen.push(mat);
+    }
     let mut out: Vec<Value> = parent.to_vec();
     for e in own {
         let Some(mat) = media_id(e) else {
@@ -440,7 +450,11 @@ impl ProfileStore {
             .ok_or_else(|| ProfileError::UnknownPreset { id: id.to_string() })?;
         let own = &entry.table;
         let Some(parent_id) = own.get("inherits").and_then(Value::as_str) else {
-            return Ok(own.clone());
+            let mut t = own.clone();
+            if let Some(Value::Array(o)) = own.get("media") {
+                t.insert("media".into(), Value::Array(merge_media(id, &[], o)?));
+            }
+            return Ok(t);
         };
         if stack.iter().any(|s| s == id) {
             return Err(ProfileError::Inheritance {
@@ -458,9 +472,12 @@ impl ProfileStore {
         let parent = self.resolve_table(kind, parent_id, stack)?;
         stack.pop();
         let mut merged = merge_tables(&parent, own, kind.replace_keys());
-        if let (Some(Value::Array(p)), Some(Value::Array(o))) =
-            (parent.get("media"), own.get("media"))
-        {
+        if let Some(Value::Array(o)) = own.get("media") {
+            let no_mats = Vec::new();
+            let p = match parent.get("media") {
+                Some(Value::Array(p)) => p,
+                _ => &no_mats,
+            };
             merged.insert("media".into(), Value::Array(merge_media(id, p, o)?));
         }
         merged.insert("id".into(), Value::String(id.to_string()));
