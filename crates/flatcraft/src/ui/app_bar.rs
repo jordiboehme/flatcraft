@@ -11,6 +11,7 @@ use super::{Action, FlatCraftApp, Workspace, display_name, fonts, icon_button, l
 
 /// One open document as the tabs show it.
 struct Tab {
+    id: u64,
     name: String,
     dirty: bool,
 }
@@ -22,18 +23,17 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
         let tabs: Vec<Tab> = s
             .docs
             .iter()
-            .enumerate()
-            .map(|(i, d)| Tab {
-                name: d
-                    .path
-                    .as_deref()
-                    .map(display_name)
-                    .unwrap_or_else(|| format!("Untitled {}", i + 1)),
+            .map(|d| Tab {
+                id: d.id(),
+                name: d.path.as_deref().map(display_name).unwrap_or_else(|| {
+                    let n = app.ui.untitled.get(&d.id()).copied().unwrap_or(1);
+                    format!("Untitled {n}")
+                }),
                 dirty: d.dirty,
             })
             .collect();
         let doc = s.doc();
-        (tabs, s.active, doc.undo.can_undo(), doc.undo.can_redo())
+        (tabs, doc.id(), doc.undo.can_undo(), doc.undo.can_redo())
     };
     let agent = app.agent_status(Instant::now());
     // The two sides are separate closures; the right one collects here.
@@ -59,20 +59,20 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                     }
                     ui.menu_button("File", |ui| {
                         if ui.button("New").clicked() {
-                            actions.push(Action::Execute("document.new", json!({})));
+                            actions.push(Action::NewProject);
                         }
                         if ui.button("Open").clicked() {
                             actions.push(Action::OpenDialog);
                         }
                         if ui.button("Save").clicked() {
-                            actions.push(Action::Save);
+                            actions.push(Action::Save { doc_id: active });
                         }
                         if ui.button("Save As").clicked() {
-                            actions.push(Action::SaveAs);
+                            actions.push(Action::SaveAs { doc_id: active });
                         }
                     });
                     if icon_button(ui, Icon::Save, "Save", true).clicked() {
-                        actions.push(Action::Save);
+                        actions.push(Action::Save { doc_id: active });
                     }
                     if icon_button(ui, Icon::Undo, "Undo", can_undo).clicked() {
                         actions.push(Action::Execute("edit.undo", json!({})));
@@ -81,26 +81,26 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                         actions.push(Action::Execute("edit.redo", json!({})));
                     }
                     ui.separator();
-                    for (i, tab) in tabs.iter().enumerate() {
+                    for tab in &tabs {
                         let label = if tab.dirty {
                             format!("{} *", tab.name)
                         } else {
                             tab.name.clone()
                         };
                         if ui
-                            .add(egui::Button::selectable(i == active, label))
+                            .add(egui::Button::selectable(tab.id == active, label))
                             .clicked()
-                            && i != active
+                            && tab.id != active
                         {
-                            actions.push(Action::Execute("document.switch", json!({ "index": i })));
+                            actions.push(Action::Switch(tab.id));
                         }
                         let close = format!("Close {}", tab.name);
                         if icon_button(ui, Icon::Close, &close, true).clicked() {
-                            actions.push(Action::Execute("document.close", json!({ "index": i })));
+                            actions.push(Action::Close(tab.id));
                         }
                     }
                     if icon_button(ui, Icon::Plus, "New document", true).clicked() {
-                        actions.push(Action::Execute("document.new", json!({})));
+                        actions.push(Action::NewDocument);
                     }
                 },
                 |ui| {

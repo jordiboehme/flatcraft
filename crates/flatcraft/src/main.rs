@@ -53,7 +53,10 @@ fn run_mcp_window(config_dir: PathBuf) -> anyhow::Result<()> {
     let on_change: OnChange = {
         let repaint = repaint.clone();
         Arc::new(move || {
-            let ctx = repaint.lock().ok().and_then(|c| c.clone());
+            let ctx = repaint
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             if let Some(ctx) = ctx {
                 ctx.request_repaint();
             }

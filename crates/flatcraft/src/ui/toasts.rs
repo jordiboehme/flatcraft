@@ -8,6 +8,7 @@ pub const LIFETIME: Duration = Duration::from_secs(4);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToastKind {
     Info,
+    Warning,
     Error,
 }
 
@@ -21,6 +22,10 @@ pub struct Toast {
 impl Toast {
     pub fn info(text: impl Into<String>) -> Self {
         Self::new(text, ToastKind::Info)
+    }
+
+    pub fn warning(text: impl Into<String>) -> Self {
+        Self::new(text, ToastKind::Warning)
     }
 
     pub fn error(text: impl Into<String>) -> Self {
@@ -66,6 +71,7 @@ pub fn show(ctx: &egui::Context, toasts: &[Toast], tokens: &super::theme::Tokens
             for t in toasts {
                 let stroke = match t.kind {
                     ToastKind::Info => tokens.accent_prepare,
+                    ToastKind::Warning => tokens.accent_cut,
                     ToastKind::Error => tokens.danger,
                 };
                 egui::Frame::new()

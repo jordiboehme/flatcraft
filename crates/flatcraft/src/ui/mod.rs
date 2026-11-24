@@ -11,11 +11,12 @@ pub mod switcher;
 pub mod theme;
 pub mod toasts;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use flatcraft_engine::session::{Origin, Session};
+use flatcraft_engine::session::{CommandError, Origin, Session};
 use flatcraft_mcp::SharedSession;
 use serde_json::{Value, json};
 
@@ -96,6 +97,22 @@ pub struct UiState {
     pub show_debug: bool,
     pub show_profiles: bool,
     pub canvas_view: CanvasView,
+    /// The number of each untitled document's name, by stable document id,
+    /// so "Untitled 3" keeps its name when "Untitled 2" closes.
+    pub untitled: BTreeMap<u64, usize>,
+}
+
+impl UiState {
+    /// Numbers documents seen for the first time and forgets closed ones.
+    pub fn number_documents(&mut self, open: &[u64]) {
+        self.untitled.retain(|id, _| open.contains(id));
+        for id in open {
+            if !self.untitled.contains_key(id) {
+                let next = self.untitled.values().max().map_or(1, |n| n + 1);
+                self.untitled.insert(*id, next);
+            }
+        }
+    }
 }
 
 /// Something the person asked for this frame. The widgets only collect
@@ -103,20 +120,35 @@ pub struct UiState {
 /// lock is never held while a widget draws.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
-    /// A registry command as `Origin::User`.
+    /// A registry command on the active document, as `Origin::User`.
     Execute(&'static str, Value),
-    /// Save the active document; asks for a path if it has none.
-    Save,
-    /// Ask for a path, then save the active document there.
-    SaveAs,
+    /// Save this document; asks for a path if it has none.
+    Save {
+        doc_id: u64,
+    },
+    /// Ask for a path, then save this document there.
+    SaveAs {
+        doc_id: u64,
+    },
+    /// Save this document to this path.
+    SaveTo {
+        doc_id: u64,
+        path: PathBuf,
+    },
     /// Ask for a project file and open it.
     OpenDialog,
     /// Open this project file.
     Open(PathBuf),
-    SetWorkspace(Workspace),
-    /// Home's New: reuse the active document if it is empty and untouched,
+    /// The "+" tab: always a new document.
+    NewDocument,
+    /// Home's New and Cmd+N: reuse the active document if it is pristine,
     /// else open a new one; then go to Prepare.
     NewProject,
+    /// Make this document the active one.
+    Switch(u64),
+    /// Close this document.
+    Close(u64),
+    SetWorkspace(Workspace),
     ShowProfiles,
     Help,
     Quit,
@@ -184,7 +216,7 @@ impl FlatCraftApp {
         match result {
             Ok(v) => Some(v),
             Err(e) => {
-                self.toast(Toast::error(e.to_string()));
+                self.toast(Toast::error(person_text(&e)));
                 None
             }
         }
@@ -195,23 +227,39 @@ impl FlatCraftApp {
             Action::Execute(id, params) => {
                 self.execute(id, params);
             }
-            Action::Save => {
-                let has_path = lock(&self.session).doc().path.is_some();
-                if has_path {
-                    if let Some(v) = self.execute("project.save", json!({})) {
-                        self.saved(&v);
+            Action::Save { doc_id } => {
+                let path = {
+                    let s = lock(&self.session);
+                    s.doc_index(doc_id).map(|i| s.docs[i].path.is_some())
+                };
+                match path {
+                    Ok(true) => {
+                        if let Some(v) = self.execute("project.save", json!({ "doc_id": doc_id })) {
+                            self.saved(&v);
+                        }
                     }
-                } else {
-                    self.apply_one(ctx, Action::SaveAs);
+                    Ok(false) => self.apply_one(ctx, Action::SaveAs { doc_id }),
+                    Err(e) => self.toast(Toast::error(person_text(&e))),
                 }
             }
-            Action::SaveAs => {
+            Action::SaveAs { doc_id } => {
+                // The dialog blocks without the lock; an agent may change the
+                // active document meanwhile, so the save names `doc_id`.
+                let name = match self.ui.untitled.get(&doc_id) {
+                    Some(n) => format!("Untitled {n}.{PROJECT_EXTENSION}"),
+                    None => format!("Untitled.{PROJECT_EXTENSION}"),
+                };
                 let file = rfd::FileDialog::new()
                     .add_filter("FlatCraft project", &[PROJECT_EXTENSION])
-                    .set_file_name(format!("Untitled.{PROJECT_EXTENSION}"))
+                    .set_file_name(name)
                     .save_file();
-                if let Some(path) = file
-                    && let Some(v) = self.execute("project.save", json!({ "path": path }))
+                if let Some(path) = file {
+                    self.apply_one(ctx, Action::SaveTo { doc_id, path });
+                }
+            }
+            Action::SaveTo { doc_id, path } => {
+                if let Some(v) =
+                    self.execute("project.save", json!({ "doc_id": doc_id, "path": path }))
                 {
                     self.saved(&v);
                 }
@@ -229,27 +277,49 @@ impl FlatCraftApp {
                     self.remember_recent(&path);
                     for w in v["warnings"].as_array().into_iter().flatten() {
                         if let Some(w) = w.as_str() {
-                            self.toast(Toast::error(w.to_string()));
+                            self.toast(Toast::warning(w.to_string()));
                         }
                     }
                     self.ui.workspace = Workspace::Prepare;
                 }
             }
-            Action::SetWorkspace(w) => self.ui.workspace = w,
+            Action::NewDocument => {
+                self.execute("document.new", json!({}));
+            }
             Action::NewProject => {
-                let pristine = {
-                    let s = lock(&self.session);
-                    let d = s.doc();
-                    d.document.objects.is_empty()
-                        && !d.dirty
-                        && d.path.is_none()
-                        && !d.undo.can_undo()
-                        && !d.undo.can_redo()
+                // Checked and acted on under one lock.
+                let result = {
+                    let mut s = lock(&self.session);
+                    if s.doc().is_pristine() {
+                        Ok(Value::Null)
+                    } else {
+                        s.execute("document.new", json!({}), Origin::User)
+                    }
                 };
-                if pristine || self.execute("document.new", json!({})).is_some() {
-                    self.ui.workspace = Workspace::Prepare;
+                match result {
+                    Ok(_) => self.ui.workspace = Workspace::Prepare,
+                    Err(e) => self.toast(Toast::error(person_text(&e))),
                 }
             }
+            Action::Switch(doc_id) => {
+                self.execute("document.switch", json!({ "doc_id": doc_id }));
+            }
+            Action::Close(doc_id) => {
+                let result = lock(&self.session).execute(
+                    "document.close",
+                    json!({ "doc_id": doc_id }),
+                    Origin::User,
+                );
+                match result {
+                    Ok(_) => {}
+                    // The unsaved-changes dialog replaces this toast later.
+                    Err(CommandError::Refused(_)) => self.toast(Toast::error(
+                        "This document has unsaved changes. Save it first.",
+                    )),
+                    Err(e) => self.toast(Toast::error(person_text(&e))),
+                }
+            }
+            Action::SetWorkspace(w) => self.ui.workspace = w,
             Action::ShowProfiles => self.ui.show_profiles = true,
             Action::Help => ctx.open_url(egui::OpenUrl::new_tab(HELP_URL)),
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
@@ -296,6 +366,15 @@ impl FlatCraftApp {
     }
 }
 
+/// The text of a command error for a person. A missing document reads
+/// "That document is no longer open." without the "Not found" prefix.
+pub fn person_text(e: &CommandError) -> String {
+    match e {
+        CommandError::NotFound(m) => m.clone(),
+        other => other.to_string(),
+    }
+}
+
 /// Locks the session. A panic in another holder does not take the window down.
 pub fn lock(session: &SharedSession) -> MutexGuard<'_, Session> {
     session.lock().unwrap_or_else(PoisonError::into_inner)
@@ -325,22 +404,22 @@ pub fn icon_button(ui: &mut egui::Ui, icon: Icon, name: &str, enabled: bool) -> 
 }
 
 /// Keyboard shortcuts. On macOS the menu bar owns Undo and Redo.
-fn shortcuts(ctx: &egui::Context, actions: &mut Vec<Action>) {
+fn shortcuts(ctx: &egui::Context, active: u64, actions: &mut Vec<Action>) {
     use egui::{Key, KeyboardShortcut, Modifiers};
     let cmd = |key| KeyboardShortcut::new(Modifiers::COMMAND, key);
     let cmd_shift = |key| KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, key);
     ctx.input_mut(|i| {
         if i.consume_shortcut(&cmd_shift(Key::S)) {
-            actions.push(Action::SaveAs);
+            actions.push(Action::SaveAs { doc_id: active });
         }
         if i.consume_shortcut(&cmd(Key::S)) {
-            actions.push(Action::Save);
+            actions.push(Action::Save { doc_id: active });
         }
         if i.consume_shortcut(&cmd(Key::O)) {
             actions.push(Action::OpenDialog);
         }
         if i.consume_shortcut(&cmd(Key::N)) {
-            actions.push(Action::Execute("document.new", json!({})));
+            actions.push(Action::NewProject);
         }
         if !cfg!(target_os = "macos") {
             if i.consume_shortcut(&cmd_shift(Key::Z)) || i.consume_shortcut(&cmd(Key::Y)) {
@@ -357,7 +436,13 @@ fn shortcuts(ctx: &egui::Context, actions: &mut Vec<Action>) {
 pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     let ctx = ui.ctx().clone();
     let mut actions = Vec::new();
-    shortcuts(&ctx, &mut actions);
+    let (active, open) = {
+        let s = lock(&app.session);
+        let open: Vec<u64> = s.docs.iter().map(|d| d.id()).collect();
+        (s.doc().id(), open)
+    };
+    app.ui.number_documents(&open);
+    shortcuts(&ctx, active, &mut actions);
 
     app_bar::show(ui, app, &mut actions);
     switcher::ribbon(ui, app, &mut actions);

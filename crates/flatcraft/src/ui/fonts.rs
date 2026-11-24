@@ -56,3 +56,46 @@ pub fn medium(size: f32) -> FontId {
 pub fn semibold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(SEMIBOLD.into()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn missing(text: &str) -> Vec<char> {
+        let ctx = egui::Context::default();
+        install(&ctx);
+        let mut out = ctx.run_ui(Default::default(), |_| {});
+        out.textures_delta.clear();
+        ctx.fonts_mut(|f| {
+            text.chars()
+                .filter(|c| !f.has_glyph(&FontId::proportional(14.0), *c))
+                .collect()
+        })
+    }
+
+    /// Characters egui itself draws as text in the widgets FlatCraft uses:
+    /// the ellipsis of elided text, the minus and thin space of drag
+    /// values, degrees and the multiplication sign. Arrows, check marks and
+    /// menu chevrons are painted shapes, not glyphs.
+    #[test]
+    fn plex_covers_the_glyphs_egui_draws() {
+        assert_eq!(
+            missing("\u{2026}\u{2212}\u{2009}\u{b0}\u{d7}"),
+            Vec::<char>::new()
+        );
+    }
+
+    /// Plex has no macOS modifier symbols and no warning sign. egui only
+    /// draws them for `Context::format_shortcut` texts and for images that
+    /// fail to load. FlatCraft uses neither: shortcut hints are written out
+    /// ("Cmd+S") and icons are textures. egui's own fonts would cover them,
+    /// but they bring the OFL and Ubuntu font licences, which deny.toml does
+    /// not allow. If this test fails, Plex gained them: drop the rule.
+    #[test]
+    fn plex_lacks_the_modifier_symbols() {
+        assert_eq!(
+            missing("\u{2318}\u{21e7}\u{2303}\u{2325}\u{26a0}"),
+            vec!['\u{2318}', '\u{21e7}', '\u{2303}', '\u{2325}', '\u{26a0}']
+        );
+    }
+}
