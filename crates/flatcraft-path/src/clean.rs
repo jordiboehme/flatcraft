@@ -17,10 +17,12 @@ const ZERO_LEN: f64 = 1e-9;
 /// explicitly closed or when their ends meet within `join_tol`.
 pub fn clean(p: &BezPath, join_tol: f64) -> Vec<Polyline> {
     let mut lines = split_subpaths(p);
+    // A ring drawn without Z is closed first, so it cannot be joined to a
+    // neighbour that touches its seam and lose its closed (overcut) state.
+    close_rings(&mut lines, join_tol);
     join_open(&mut lines, join_tol);
-    for line in lines.iter_mut().filter(|l| !l.closed) {
-        close_if_ring(line, join_tol);
-    }
+    // Joining can complete a ring (two halves of a square).
+    close_rings(&mut lines, join_tol);
     lines
 }
 
@@ -73,7 +75,8 @@ fn split_subpaths(p: &BezPath) -> Vec<Polyline> {
 }
 
 /// Join open polylines whose ends meet within `tol`, reversing as needed,
-/// until no join applies. The merged line keeps the earlier source position.
+/// until no join applies. Each round takes the first match in source order
+/// (lowest `i`, then lowest `j`); the merged line keeps the earlier position.
 fn join_open(lines: &mut Vec<Polyline>, tol: f64) {
     'again: loop {
         for i in 0..lines.len() {
@@ -112,6 +115,12 @@ fn try_join(a: &[Point], b: &[Point], tol: f64) -> Option<Vec<Point>> {
     // the shared point is kept once, from the head
     head.extend_from_slice(&tail[1..]);
     Some(head)
+}
+
+fn close_rings(lines: &mut [Polyline], tol: f64) {
+    for line in lines.iter_mut().filter(|l| !l.closed) {
+        close_if_ring(line, tol);
+    }
 }
 
 fn close_if_ring(line: &mut Polyline, tol: f64) {
@@ -202,6 +211,62 @@ mod tests {
         assert!(r[0].closed);
         assert_eq!(r[0].points.first(), r[0].points.last());
         assert_eq!(r[0].points.len(), 5);
+    }
+
+    #[test]
+    fn clean_keeps_unclosed_ring_closed() {
+        // a square drawn back to its start without Z, plus a line touching its corner
+        let mut p = poly(
+            &[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+                (0.0, 0.0),
+            ],
+            false,
+        );
+        p.move_to((0.0, 0.0));
+        p.line_to((-10.0, 0.0));
+        let r = clean(&p, 0.01);
+        assert_eq!(r.len(), 2, "{r:?}");
+        assert!(r[0].closed);
+        assert_eq!(r[0].points.len(), 5);
+        assert!(!r[1].closed);
+        assert_eq!(
+            r[1].points,
+            vec![Point::new(0.0, 0.0), Point::new(-10.0, 0.0)]
+        );
+    }
+
+    #[test]
+    fn clean_figure_eight_gives_two_rings() {
+        let mut p = poly(
+            &[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+                (0.0, 0.0),
+            ],
+            false,
+        );
+        p.move_to((0.0, 0.0));
+        p.line_to((-10.0, 0.0));
+        p.line_to((-10.0, -10.0));
+        p.line_to((0.0, -10.0));
+        p.line_to((0.0, 0.0));
+        let r = clean(&p, 0.01);
+        assert_eq!(r.len(), 2, "{r:?}");
+        assert!(r.iter().all(|l| l.closed && l.points.len() == 5));
+    }
+
+    #[test]
+    fn clean_drops_close_right_after_move() {
+        let mut p = BezPath::new();
+        p.move_to((3.0, 3.0));
+        p.close_path();
+        assert!(clean(&p, 0.01).is_empty());
     }
 
     #[test]

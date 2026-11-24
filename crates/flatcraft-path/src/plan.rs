@@ -52,8 +52,43 @@ pub struct CutPlan {
 pub enum PlanError {
     #[error("there is nothing to cut")]
     Empty,
+    #[error("invalid setting {field}: {value}")]
+    InvalidSettings { field: &'static str, value: f64 },
     #[error("{} object(s) reach outside the cutting area: {}", .objects.len(), format_ids(.objects))]
     OutOfArea { objects: Vec<ObjectId> },
+}
+
+/// Smallest tolerance accepted; below it kurbo's flattening takes ages.
+const MIN_TOLERANCE_MM: f64 = 0.001;
+
+fn validate(s: &PipelineSettings) -> Result<(), PlanError> {
+    let bad = |field, value| Err(PlanError::InvalidSettings { field, value });
+    for (field, v) in [
+        ("flatten_tolerance_mm", s.flatten_tolerance_mm),
+        ("join_tolerance_mm", s.join_tolerance_mm),
+    ] {
+        if !(v.is_finite() && v >= MIN_TOLERANCE_MM) {
+            return bad(field, v);
+        }
+    }
+    if !(s.overcut_mm.is_finite() && s.overcut_mm >= 0.0) {
+        return bad("overcut_mm", s.overcut_mm);
+    }
+    if s.passes < 1 {
+        return bad("passes", f64::from(s.passes));
+    }
+    let a = s.cutting_area;
+    for v in [a.x0, a.y0, a.x1, a.y1] {
+        if !v.is_finite() {
+            return bad("cutting_area", v);
+        }
+    }
+    for size in [a.x1 - a.x0, a.y1 - a.y0] {
+        if size <= 0.0 {
+            return bad("cutting_area", size);
+        }
+    }
+    Ok(())
 }
 
 /// Every point of the flattened path lies in `area`, with a 1e-6 mm epsilon so
@@ -76,9 +111,10 @@ fn format_ids(ids: &[ObjectId]) -> String {
         .join(", ")
 }
 
-/// Run the full pipeline: flatten, area check, clean, merge collinear,
+/// Run the full pipeline (after validating the settings): flatten, area check, clean, merge collinear,
 /// order, overcut, passes.
 pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanError> {
+    validate(s)?;
     let flat: Vec<BezPath> = input
         .iter()
         .map(|p| flatten::flatten(&p.path, s.flatten_tolerance_mm))
@@ -99,8 +135,14 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
     let mut toolpaths = Vec::new();
     for (placed, f) in input.iter().zip(&flat) {
         for line in clean::clean(f, s.join_tolerance_mm) {
+            let points = flatten::merge_collinear(&line.points, s.flatten_tolerance_mm);
+            // a ring that collapsed (fewer than 3 distinct vertices) would plunge
+            // the blade without moving
+            if line.closed && points.len() < 4 {
+                continue;
+            }
             toolpaths.push(Toolpath {
-                points: flatten::merge_collinear(&line.points, s.flatten_tolerance_mm),
+                points,
                 closed: line.closed,
                 source: placed.source,
                 pass: 1,

@@ -71,7 +71,7 @@ mod tests {
         for el in flat.elements() {
             match el {
                 PathEl::MoveTo(p) | PathEl::LineTo(p) => pts.push(*p),
-                PathEl::ClosePath => {}
+                PathEl::ClosePath => pts.push(pts[0]),
                 other => panic!("curve left in flattened path: {other:?}"),
             }
         }
