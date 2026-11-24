@@ -1,9 +1,11 @@
-//! FlatCraft device crate (stub, filled by later tasks).
+//! FlatCraft device crate: plotter and material profiles (more later).
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn smoke() {
-        assert_eq!(2 + 2, 4);
-    }
-}
+pub mod presets;
+pub mod profile;
+pub mod store;
+
+pub use profile::{
+    AxisMapping, Capabilities, GpglDialect, KnifeCompensation, Margins, MaterialOverride,
+    MaterialProfile, Media, PlotterProfile, Protocol, TransportSpec,
+};
+pub use store::{PresetInfo, ProfileError, ProfileStore};

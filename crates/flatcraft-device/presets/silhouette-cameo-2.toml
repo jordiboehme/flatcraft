@@ -1,0 +1,33 @@
+id = "silhouette-cameo-2"
+name = "Silhouette Cameo 2"
+vendor = "Silhouette"
+model = "Cameo 2"
+protocol = { Gpgl = { dialect = "Cameo12" } }
+transport = { Usb = { vid = 0x0b4d, pid = 0x112b } }
+units_per_mm = 20.0
+scale_x = 1.0
+scale_y = 1.0
+knife_compensation = { Firmware = { fc = 18 } }
+blade_offset_mm = 0.25
+speed_range = [1, 10]
+force_range = [1, 33]
+flatten_tolerance_mm = 0.01
+media = [
+  { id = "mat-12x12", name = "Mat 12x12", width_mm = 304.8, height_mm = 304.8 },
+  { id = "mat-12x24", name = "Mat 12x24", width_mm = 304.8, height_mm = 609.6 },
+]
+
+[margins]
+top = 5.0
+right = 5.0
+bottom = 5.0
+left = 5.0
+
+[axis]
+mirror_x = false
+mirror_y = false
+
+[capabilities]
+track_enhancing = true
+registration_marks = false
+auto_blade = false
