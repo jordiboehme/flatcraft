@@ -1,0 +1,644 @@
+//! Command registry tests on a headless session.
+
+use flatcraft_core::document::ObjectId;
+use flatcraft_core::geometry::bounds;
+use flatcraft_device::ProfileStore;
+use flatcraft_engine::prefs::Preferences;
+use flatcraft_engine::registry;
+use flatcraft_engine::session::{CommandError, Origin, Session};
+use kurbo::{PathEl, Point, Rect};
+use serde_json::{Value, json};
+
+const EPS: f64 = 1e-9;
+
+fn session(dir: &tempfile::TempDir) -> Session {
+    let profiles = ProfileStore::load(dir.path()).unwrap();
+    Session::new(
+        profiles,
+        Preferences::default(),
+        false,
+        dir.path().to_path_buf(),
+    )
+}
+
+fn rect_svg(w: f64, h: f64) -> String {
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="200mm" viewBox="0 0 200 200"><rect x="20" y="20" width="{w}" height="{h}"/></svg>"#
+    )
+}
+
+fn run(s: &mut Session, id: &str, params: Value) -> Value {
+    s.execute(id, params, Origin::User)
+        .unwrap_or_else(|e| panic!("{id} failed: {e}"))
+}
+
+fn import(s: &mut Session, w: f64, h: f64) -> u64 {
+    let r = run(
+        s,
+        "object.import_svg",
+        json!({ "svg": rect_svg(w, h), "name": "rect" }),
+    );
+    r["id"].as_u64().unwrap()
+}
+
+fn placed_bounds(s: &Session, id: u64) -> Rect {
+    let o = s.doc().document.get(ObjectId(id)).unwrap();
+    bounds(&o.placed_paths()).unwrap()
+}
+
+/// usvg works in f32, so imported coordinates carry about 1e-6 mm of noise.
+fn close(a: f64, b: f64) -> bool {
+    (a - b).abs() < 1e-4
+}
+
+#[test]
+fn import_then_state_reports_bounds() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 50.0, 50.0);
+    let state = run(&mut s, "document.state", json!({}));
+    let objects = state["objects"].as_array().unwrap();
+    assert_eq!(objects.len(), 1);
+    let o = &objects[0];
+    assert_eq!(o["id"].as_u64(), Some(id));
+    assert_eq!(o["name"], "rect");
+    assert_eq!(o["kind"], "svg");
+    assert_eq!(o["visible"], true);
+    let b = &o["bounds_mm"];
+    let w = b["x1"].as_f64().unwrap() - b["x0"].as_f64().unwrap();
+    assert!(close(w, 50.0), "{b}");
+    assert!(state["cutting_area_mm"].is_object(), "{state}");
+    assert_eq!(state["dirty"], true);
+    assert!(state["path"].is_null());
+    assert_eq!(state["job"]["plotter_id"], "file-output-gpgl-cameo2");
+}
+
+#[test]
+fn import_file_by_extension() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let svg = dir.path().join("Badge.SVG");
+    std::fs::write(&svg, rect_svg(30.0, 30.0)).unwrap();
+    let r = run(&mut s, "object.import", json!({ "path": svg }));
+    let id = r["id"].as_u64().unwrap();
+    assert_eq!(s.doc().document.get(ObjectId(id)).unwrap().name, "Badge");
+
+    let png = dir.path().join("photo.png");
+    std::fs::write(&png, b"not really").unwrap();
+    let e = s
+        .execute("object.import", json!({ "path": png }), Origin::User)
+        .unwrap_err();
+    assert!(matches!(e, CommandError::InvalidParams(_)), "{e}");
+    assert!(e.to_string().contains(".svg"), "{e}");
+}
+
+#[test]
+fn move_scale_rotate_mirror_update_bounds() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let sq = import(&mut s, 50.0, 50.0);
+
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [sq], "dx_mm": 10.0, "dy_mm": -5.0 }),
+    );
+    let b = placed_bounds(&s, sq);
+    assert!(close(b.x0, 30.0) && close(b.y0, 15.0), "{b:?}");
+
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [sq], "center_mm": [100.0, 100.0] }),
+    );
+    let b = placed_bounds(&s, sq);
+    assert!(close(b.center().x, 100.0) && close(b.center().y, 100.0));
+
+    run(
+        &mut s,
+        "object.scale",
+        json!({ "ids": [sq], "width_mm": 100.0, "keep_aspect": true }),
+    );
+    let b = placed_bounds(&s, sq);
+    assert!(close(b.width(), 100.0) && close(b.height(), 100.0), "{b:?}");
+    assert!(close(b.center().x, 100.0), "center anchor stays: {b:?}");
+
+    // Anchor top_left keeps the top-left corner.
+    let before = placed_bounds(&s, sq);
+    run(
+        &mut s,
+        "object.scale",
+        json!({ "ids": [sq], "factor": 0.5, "anchor": "top_left" }),
+    );
+    let b = placed_bounds(&s, sq);
+    assert!(close(b.x0, before.x0) && close(b.y0, before.y0), "{b:?}");
+    assert!(close(b.width(), 50.0));
+
+    // Non-uniform: only height, keep_aspect false.
+    run(
+        &mut s,
+        "object.scale",
+        json!({ "ids": [sq], "height_mm": 20.0, "keep_aspect": false, "anchor": "bottom_right" }),
+    );
+    let b2 = placed_bounds(&s, sq);
+    assert!(
+        close(b2.width(), 50.0) && close(b2.height(), 20.0),
+        "{b2:?}"
+    );
+    assert!(close(b2.x1, b.x1) && close(b2.y1, b.y1), "{b2:?}");
+
+    let r = import(&mut s, 20.0, 10.0);
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [r], "degrees": 90.0 }),
+    );
+    let b = placed_bounds(&s, r);
+    assert!(close(b.width(), 10.0) && close(b.height(), 20.0), "{b:?}");
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [r], "degrees": -180.0 }),
+    );
+    let t = s.doc().document.get(ObjectId(r)).unwrap().transform;
+    assert!(close(t.rotation_deg, 270.0), "{t:?}");
+}
+
+#[test]
+fn mirror_at_30_degrees() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 20.0, 10.0);
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [id], "degrees": 30.0 }),
+    );
+    let obj = s.doc().document.get(ObjectId(id)).unwrap().clone();
+    let c = obj.transform.center_mm;
+    let before = obj.placed_paths();
+
+    run(
+        &mut s,
+        "object.mirror",
+        json!({ "ids": [id], "axis": "horizontal" }),
+    );
+    let obj2 = s.doc().document.get(ObjectId(id)).unwrap();
+    assert!((obj2.transform.rotation_deg - 330.0).abs() < EPS);
+    assert!(obj2.transform.mirror != obj.transform.mirror);
+    let after = obj2.placed_paths();
+
+    let reflect = |p: Point| Point::new(2.0 * c.x - p.x, p.y);
+    let pts = |els: &[PathEl]| -> Vec<Point> {
+        els.iter()
+            .flat_map(|e| match *e {
+                PathEl::MoveTo(p) | PathEl::LineTo(p) => vec![p],
+                PathEl::QuadTo(a, b) => vec![a, b],
+                PathEl::CurveTo(a, b, d) => vec![a, b, d],
+                PathEl::ClosePath => vec![],
+            })
+            .collect()
+    };
+    assert_eq!(before.len(), after.len());
+    for (b, a) in before.iter().zip(&after) {
+        let pb = pts(b.path.elements());
+        let pa = pts(a.path.elements());
+        assert_eq!(pb.len(), pa.len());
+        for (p, q) in pb.iter().zip(&pa) {
+            let r = reflect(*p);
+            assert!(
+                (r.x - q.x).abs() < EPS && (r.y - q.y).abs() < EPS,
+                "{r:?} vs {q:?}"
+            );
+        }
+    }
+
+    run(
+        &mut s,
+        "object.mirror",
+        json!({ "ids": [id], "axis": "vertical" }),
+    );
+    let t = s.doc().document.get(ObjectId(id)).unwrap().transform;
+    // 180 - 330 = -150 -> 210.
+    assert!((t.rotation_deg - 210.0).abs() < EPS, "{t:?}");
+    assert_eq!(t.mirror, obj.transform.mirror);
+}
+
+#[test]
+fn undo_restores_previous_transform() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 50.0, 50.0);
+    let before = s.doc().document.get(ObjectId(id)).unwrap().transform;
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [id], "dx_mm": 7.0, "dy_mm": 3.0 }),
+    );
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(
+        s.doc().document.get(ObjectId(id)).unwrap().transform,
+        before
+    );
+    // Undo the import too, then nothing is left to undo.
+    run(&mut s, "edit.undo", json!({}));
+    assert!(s.doc().document.objects.is_empty());
+    let e = s.execute("edit.undo", json!({}), Origin::User).unwrap_err();
+    assert!(matches!(e, CommandError::Refused(_)), "{e}");
+}
+
+#[test]
+fn redo_reapplies() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 50.0, 50.0);
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [id], "dx_mm": 7.0, "dy_mm": 3.0 }),
+    );
+    let moved = s.doc().document.get(ObjectId(id)).unwrap().transform;
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.doc().document.get(ObjectId(id)).unwrap().transform, moved);
+    assert!(
+        !s.doc()
+            .document
+            .get(ObjectId(id))
+            .unwrap()
+            .geometry
+            .is_empty(),
+        "redo keeps geometry"
+    );
+}
+
+#[test]
+fn failed_command_leaves_no_trace() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 50.0, 50.0);
+    let before = s.doc().document.get(ObjectId(id)).unwrap().transform;
+    // Second id is unknown: nothing may move, and no undo entry is added.
+    let e = s
+        .execute(
+            "object.move",
+            json!({ "ids": [id, 999], "dx_mm": 5.0 }),
+            Origin::User,
+        )
+        .unwrap_err();
+    assert!(matches!(e, CommandError::NotFound(_)), "{e}");
+    assert!(e.to_string().contains("999"), "{e}");
+    assert_eq!(
+        s.doc().document.get(ObjectId(id)).unwrap().transform,
+        before
+    );
+    run(&mut s, "edit.undo", json!({}));
+    assert!(
+        s.doc().document.objects.is_empty(),
+        "undo removed the import"
+    );
+}
+
+#[test]
+fn unknown_fields_are_invalid_params() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let e = s
+        .execute("document.state", json!({ "bogus": 1 }), Origin::Agent)
+        .unwrap_err();
+    assert!(matches!(e, CommandError::InvalidParams(_)), "{e}");
+}
+
+#[test]
+fn empty_ids_use_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = import(&mut s, 10.0, 10.0);
+    let b = import(&mut s, 10.0, 10.0);
+    run(&mut s, "object.select", json!({ "ids": [b] }));
+    let ba = placed_bounds(&s, a);
+    run(&mut s, "object.move", json!({ "ids": [], "dx_mm": 5.0 }));
+    assert_eq!(placed_bounds(&s, a), ba);
+    run(
+        &mut s,
+        "object.set_visible",
+        json!({ "ids": [], "visible": false }),
+    );
+    assert!(!s.doc().document.get(ObjectId(b)).unwrap().visible);
+    run(&mut s, "object.select", json!({ "ids": [] }));
+    let e = s
+        .execute("object.delete", json!({ "ids": [] }), Origin::User)
+        .unwrap_err();
+    assert!(matches!(e, CommandError::InvalidParams(_)), "{e}");
+    run(&mut s, "object.delete", json!({ "ids": [a] }));
+    assert!(s.doc().document.get(ObjectId(a)).is_none());
+}
+
+#[test]
+fn duplicate_offsets_and_new_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 20.0, 20.0);
+    let r = run(&mut s, "object.duplicate", json!({ "ids": [id] }));
+    let new_ids: Vec<u64> = r["ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .collect();
+    assert_eq!(new_ids.len(), 1);
+    assert_ne!(new_ids[0], id);
+    let a = placed_bounds(&s, id);
+    let b = placed_bounds(&s, new_ids[0]);
+    assert!(close(b.x0 - a.x0, 10.0) && close(b.y0 - a.y0, 10.0));
+    let r = run(
+        &mut s,
+        "object.duplicate",
+        json!({ "ids": [id], "offset_mm": [0.0, 30.0] }),
+    );
+    let c = r["ids"][0].as_u64().unwrap();
+    assert!(c != id && c != new_ids[0]);
+    assert!(close(placed_bounds(&s, c).y0 - a.y0, 30.0));
+}
+
+#[test]
+fn align_left_to_cutting_area() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = import(&mut s, 20.0, 20.0);
+    let b = import(&mut s, 40.0, 10.0);
+    run(&mut s, "object.move", json!({ "ids": [b], "dx_mm": 60.0 }));
+    run(
+        &mut s,
+        "arrange.align",
+        json!({ "ids": [a, b], "mode": "left", "relative_to": "cutting_area" }),
+    );
+    assert!(close(placed_bounds(&s, a).x0, 5.0));
+    assert!(close(placed_bounds(&s, b).x0, 5.0));
+
+    run(&mut s, "object.move", json!({ "ids": [b], "dx_mm": 60.0 }));
+    run(
+        &mut s,
+        "arrange.align",
+        json!({ "ids": [a, b], "mode": "right", "relative_to": "selection" }),
+    );
+    assert!(close(placed_bounds(&s, a).x1, placed_bounds(&s, b).x1));
+}
+
+#[test]
+fn auto_arrange_packs_without_overlap() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let sizes = [
+        (80.0, 40.0),
+        (120.0, 60.0),
+        (30.0, 90.0),
+        (60.0, 60.0),
+        (100.0, 20.0),
+        (45.0, 70.0),
+    ];
+    let ids: Vec<u64> = sizes.iter().map(|&(w, h)| import(&mut s, w, h)).collect();
+    let r = run(&mut s, "arrange.auto", json!({}));
+    assert_eq!(r["placed"].as_array().unwrap().len(), 6, "{r}");
+    assert!(r["did_not_fit"].as_array().unwrap().is_empty(), "{r}");
+    let area = Rect::new(5.0, 5.0, 299.8, 299.8);
+    let rects: Vec<Rect> = ids.iter().map(|&i| placed_bounds(&s, i)).collect();
+    for (i, a) in rects.iter().enumerate() {
+        assert!(
+            a.x0 >= area.x0 - 1e-6
+                && a.y0 >= area.y0 - 1e-6
+                && a.x1 <= area.x1 + 1e-6
+                && a.y1 <= area.y1 + 1e-6,
+            "{a:?} outside"
+        );
+        for b in &rects[i + 1..] {
+            let o = a.intersect(*b);
+            assert!(
+                o.width() <= 1e-6 || o.height() <= 1e-6,
+                "{a:?} overlaps {b:?}"
+            );
+        }
+    }
+    // Wider than the cutting area: does not fit and stays where it is.
+    let big = import(&mut s, 300.0, 100.0);
+    let before = placed_bounds(&s, big);
+    let r = run(&mut s, "arrange.auto", json!({ "spacing_mm": 5.0 }));
+    assert_eq!(r["did_not_fit"], json!([big]), "{r}");
+    assert_eq!(placed_bounds(&s, big), before);
+}
+
+#[test]
+fn project_roundtrip_rebuilds_geometry() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 50.0, 25.0);
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [id], "degrees": 45.0 }),
+    );
+    let b = placed_bounds(&s, id);
+    let path = dir.path().join("work").join("p.flatcraft");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    run(&mut s, "project.save", json!({ "path": path }));
+    assert!(!s.doc().dirty);
+    // Save again without a path uses the remembered one.
+    run(&mut s, "project.save", json!({}));
+
+    let mut s2 = session(&dir);
+    let r = run(&mut s2, "project.open", json!({ "path": path }));
+    assert!(r["warnings"].as_array().unwrap().is_empty(), "{r}");
+    assert_eq!(s2.doc().path.as_deref(), Some(path.as_path()));
+    assert!(!s2.doc().dirty);
+    let b2 = placed_bounds(&s2, id);
+    assert!(
+        close(b.x0, b2.x0) && close(b.y1, b2.y1) && close(b.width(), b2.width()),
+        "{b:?} vs {b2:?}"
+    );
+}
+
+#[test]
+fn save_without_any_path_is_invalid() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let e = s
+        .execute("project.save", json!({}), Origin::User)
+        .unwrap_err();
+    assert!(matches!(e, CommandError::InvalidParams(_)), "{e}");
+}
+
+#[test]
+fn agent_cannot_save_into_config_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let inside = dir.path().join("sneaky.flatcraft");
+    let e = s
+        .execute("project.save", json!({ "path": inside }), Origin::Agent)
+        .unwrap_err();
+    assert!(matches!(e, CommandError::Refused(_)), "{e}");
+    assert!(!inside.exists());
+    let nested = dir
+        .path()
+        .join("plotters")
+        .join("..")
+        .join("preferences.toml");
+    let e = s
+        .execute("project.save", json!({ "path": nested }), Origin::Agent)
+        .unwrap_err();
+    assert!(matches!(e, CommandError::Refused(_)), "{e}");
+    // The user may.
+    run(&mut s, "project.save", json!({ "path": inside }));
+    assert!(inside.exists());
+}
+
+#[test]
+fn documents_new_switch_close() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    import(&mut s, 10.0, 10.0);
+    run(&mut s, "document.new", json!({}));
+    assert_eq!(s.docs.len(), 2);
+    assert_eq!(s.active, 1);
+    assert!(s.doc().document.objects.is_empty());
+    run(&mut s, "document.switch", json!({ "index": 0 }));
+    assert_eq!(s.doc().document.objects.len(), 1);
+    let e = s
+        .execute("document.switch", json!({ "index": 5 }), Origin::User)
+        .unwrap_err();
+    assert!(matches!(e, CommandError::NotFound(_)), "{e}");
+    let e = s
+        .execute("document.close", json!({ "index": 0 }), Origin::Agent)
+        .unwrap_err();
+    assert!(matches!(e, CommandError::Refused(_)), "dirty: {e}");
+    run(
+        &mut s,
+        "document.close",
+        json!({ "index": 0, "discard_changes": true }),
+    );
+    assert_eq!(s.docs.len(), 1);
+    assert!(s.doc().document.objects.is_empty());
+    run(&mut s, "document.close", json!({ "index": 0 }));
+    assert_eq!(
+        s.docs.len(),
+        1,
+        "closing the last document opens a fresh one"
+    );
+}
+
+#[test]
+fn profiles_and_job_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let r = run(&mut s, "profiles.list", json!({}));
+    assert!(r["plotters"].as_array().unwrap().len() >= 2, "{r}");
+    assert!(r["materials"].as_array().unwrap().len() >= 2, "{r}");
+    let p = run(
+        &mut s,
+        "profiles.get",
+        json!({ "id": "silhouette-cameo-2" }),
+    );
+    assert_eq!(p["speed_range"], json!([1, 10]));
+    let m = run(&mut s, "profiles.get", json!({ "id": "vinyl" }));
+    assert_eq!(m["id"], "vinyl");
+    let e = s
+        .execute("profiles.get", json!({ "id": "nope" }), Origin::User)
+        .unwrap_err();
+    assert!(matches!(e, CommandError::NotFound(_)), "{e}");
+
+    run(&mut s, "job.set_material", json!({ "id": "vinyl" }));
+    run(&mut s, "job.set_media", json!({ "id": "mat-12x24" }));
+    let state = run(&mut s, "document.state", json!({}));
+    assert_eq!(state["job"]["material_id"], "vinyl");
+    assert!(close(
+        state["cutting_area_mm"]["y1"].as_f64().unwrap(),
+        604.6
+    ));
+    let e = s
+        .execute("job.set_media", json!({ "id": "a4" }), Origin::User)
+        .unwrap_err();
+    assert!(matches!(e, CommandError::NotFound(_)), "{e}");
+    run(
+        &mut s,
+        "job.set_plotter",
+        json!({ "id": "silhouette-cameo-2" }),
+    );
+    assert_eq!(s.doc().document.job.plotter_id, "silhouette-cameo-2");
+
+    run(
+        &mut s,
+        "job.set_overrides",
+        json!({ "speed": 3, "force": 20, "passes": 2 }),
+    );
+    let job = &s.doc().document.job;
+    assert_eq!(
+        (job.speed, job.force, job.passes),
+        (Some(3), Some(20), Some(2))
+    );
+    run(&mut s, "job.set_overrides", json!({ "clear": true }));
+    let job = &s.doc().document.job;
+    assert_eq!((job.speed, job.force, job.passes), (None, None, None));
+}
+
+#[test]
+fn set_overrides_validates_range() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let e = s
+        .execute("job.set_overrides", json!({ "speed": 11 }), Origin::User)
+        .unwrap_err();
+    assert!(matches!(e, CommandError::InvalidParams(_)), "{e}");
+    let e = s
+        .execute("job.set_overrides", json!({ "force": 34 }), Origin::User)
+        .unwrap_err();
+    assert!(matches!(e, CommandError::InvalidParams(_)), "{e}");
+    assert_eq!(s.doc().document.job.speed, None);
+}
+
+#[test]
+fn unknown_command_is_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let e = s
+        .execute("object.teleport", json!({}), Origin::Agent)
+        .unwrap_err();
+    assert!(matches!(e, CommandError::UnknownCommand(_)), "{e}");
+    assert!(e.to_string().contains("object.teleport"), "{e}");
+}
+
+#[test]
+fn every_command_has_schema_and_description() {
+    let all = registry::all();
+    assert!(all.len() >= 26, "{}", all.len());
+    let mut ids = std::collections::BTreeSet::new();
+    for c in all {
+        assert!(ids.insert(c.id()), "duplicate id {}", c.id());
+        assert!(!c.description().trim().is_empty(), "{}", c.id());
+        assert!(!c.title().trim().is_empty(), "{}", c.id());
+        assert!(
+            !c.description().contains('\u{2014}'),
+            "em-dash in {}",
+            c.id()
+        );
+        let schema = serde_json::to_value(c.params_schema()).unwrap();
+        assert!(schema.is_object(), "{}", c.id());
+        assert_eq!(schema["type"], "object", "{}: {schema}", c.id());
+        assert!(registry::get(c.id()).is_some());
+    }
+    assert!(registry::get("nope").is_none());
+}
+
+#[test]
+fn preferences_roundtrip_and_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = Preferences::load(dir.path());
+    assert_eq!(p, Preferences::default());
+    assert_eq!(p.mcp_port, 27891);
+    assert!(p.mcp_enabled && !p.allow_agent_cuts);
+    let mut q = p.clone();
+    q.mcp_port = 4000;
+    q.recent_projects.push(dir.path().join("x.flatcraft"));
+    q.save(dir.path()).unwrap();
+    assert_eq!(Preferences::load(dir.path()), q);
+    std::fs::write(dir.path().join("preferences.toml"), "mcp_port = 'nope").unwrap();
+    assert_eq!(Preferences::load(dir.path()), Preferences::default());
+}

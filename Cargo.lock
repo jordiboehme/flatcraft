@@ -1489,12 +1489,18 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "directories",
+ "flatcraft-core",
+ "flatcraft-device",
+ "flatcraft-import",
+ "kurbo",
  "resvg",
  "schemars",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "tiny-skia",
+ "toml 1.2.2+spec-1.1.0",
  "usvg",
 ]
 

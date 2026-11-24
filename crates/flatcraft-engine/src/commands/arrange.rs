@@ -1,0 +1,159 @@
+//! Arrange commands: align and automatic shelf packing.
+
+use flatcraft_core::document::ObjectId;
+use kurbo::{Point, Rect, Vec2};
+use serde::Deserialize;
+use serde_json::{Value, json};
+
+use super::{
+    command, cutting_area, ids_json, object_mut, placed_bounds, placed_bounds_or_center,
+    resolve_ids, translate,
+};
+use crate::session::{CommandError, Origin, Session};
+
+/// Slack for float noise when testing whether something fits.
+const FIT_EPS: f64 = 1e-9;
+
+#[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AlignMode {
+    Left,
+    Hcenter,
+    Right,
+    Top,
+    Vcenter,
+    Bottom,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AlignTarget {
+    /// The common bounding box of the given objects.
+    #[default]
+    Selection,
+    /// The cutting area (media minus the plotter margins).
+    CuttingArea,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AlignParams {
+    /// Object ids; empty means the current selection.
+    #[serde(default)]
+    pub ids: Vec<u64>,
+    /// Which edge or centre line to line up.
+    pub mode: AlignMode,
+    /// What to align to (default selection).
+    #[serde(default)]
+    pub relative_to: AlignTarget,
+}
+
+fn run_align(s: &mut Session, p: AlignParams, _: Origin) -> Result<Value, CommandError> {
+    let ids = resolve_ids(s, &p.ids)?;
+    let target = match p.relative_to {
+        AlignTarget::CuttingArea => cutting_area(s)?,
+        AlignTarget::Selection => {
+            let doc = &s.doc().document;
+            ids.iter()
+                .filter_map(|id| doc.get(*id))
+                .map(placed_bounds_or_center)
+                .reduce(|a, b| a.union(b))
+                .unwrap_or(Rect::ZERO)
+        }
+    };
+    let doc = &mut s.doc_mut().document;
+    for id in &ids {
+        let o = object_mut(doc, *id)?;
+        let b = placed_bounds_or_center(o);
+        let d = match p.mode {
+            AlignMode::Left => Vec2::new(target.x0 - b.x0, 0.0),
+            AlignMode::Hcenter => Vec2::new(target.center().x - b.center().x, 0.0),
+            AlignMode::Right => Vec2::new(target.x1 - b.x1, 0.0),
+            AlignMode::Top => Vec2::new(0.0, target.y0 - b.y0),
+            AlignMode::Vcenter => Vec2::new(0.0, target.center().y - b.center().y),
+            AlignMode::Bottom => Vec2::new(0.0, target.y1 - b.y1),
+        };
+        translate(o, d);
+    }
+    Ok(json!({ "ids": ids_json(&ids) }))
+}
+
+command!(
+    ArrangeAlign,
+    id: "arrange.align",
+    title: "Align",
+    mutates: true,
+    params: AlignParams,
+    run: run_align,
+    description: "Aligns the bounding boxes of objects. mode: left, hcenter, right, top, vcenter or bottom. relative_to: selection (the common bounding box of the objects, default) or cutting_area (the media minus the plotter margins; left puts objects at the left margin). Origin top-left of the media, y down, units mm. An empty ids list means the current selection. Returns {ids}.",
+);
+
+fn default_spacing() -> f64 {
+    5.0
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AutoParams {
+    /// Gap between objects in mm (default 5).
+    #[serde(default = "default_spacing")]
+    pub spacing_mm: f64,
+}
+
+fn run_auto(s: &mut Session, p: AutoParams, _: Origin) -> Result<Value, CommandError> {
+    if !(p.spacing_mm.is_finite() && p.spacing_mm >= 0.0) {
+        return Err(CommandError::InvalidParams(
+            "spacing_mm must be 0 or more".into(),
+        ));
+    }
+    let area = cutting_area(s)?;
+    let doc = &mut s.doc_mut().document;
+    let mut items: Vec<(ObjectId, Rect)> = Vec::new();
+    // Objects without geometry (for example untraced rasters) cannot be placed.
+    let mut did_not_fit = Vec::new();
+    for o in doc.objects.iter().filter(|o| o.visible) {
+        match placed_bounds(o) {
+            Some(b) => items.push((o.id, b)),
+            None => did_not_fit.push(o.id),
+        }
+    }
+    // Stable: equal heights keep document order.
+    items.sort_by(|a, b| b.1.height().total_cmp(&a.1.height()));
+
+    let mut placed = Vec::new();
+    let (mut x, mut y, mut row_h) = (area.x0, area.y0, 0.0_f64);
+    for (id, b) in items {
+        let (w, h) = (b.width(), b.height());
+        if w > area.width() + FIT_EPS || h > area.height() + FIT_EPS {
+            did_not_fit.push(id);
+            continue;
+        }
+        if x + w > area.x1 + FIT_EPS && row_h > 0.0 {
+            y += row_h + p.spacing_mm;
+            x = area.x0;
+            row_h = 0.0;
+        }
+        if y + h > area.y1 + FIT_EPS {
+            did_not_fit.push(id);
+            continue;
+        }
+        translate(
+            object_mut(doc, id)?,
+            Point::new(x, y) - Point::new(b.x0, b.y0),
+        );
+        placed.push(id);
+        x += w + p.spacing_mm;
+        row_h = row_h.max(h);
+    }
+    Ok(json!({ "placed": ids_json(&placed), "did_not_fit": ids_json(&did_not_fit) }))
+}
+
+command!(
+    ArrangeAuto,
+    id: "arrange.auto",
+    title: "Auto arrange",
+    mutates: true,
+    params: AutoParams,
+    run: run_auto,
+    description: "Packs all visible objects into the cutting area in rows (shelf packing), keeping rotation and size. Objects are sorted by bounding box height, tallest first, and placed left to right from the top-left of the cutting area, with spacing_mm (default 5) between them. Objects that do not fit, or have no cut geometry yet, stay where they are and are listed in did_not_fit. Origin top-left of the media, y down, units mm. Returns {placed: [id], did_not_fit: [id]}.",
+);

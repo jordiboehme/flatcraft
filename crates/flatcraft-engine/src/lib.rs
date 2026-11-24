@@ -1,9 +1,11 @@
-//! FlatCraft engine crate (stub, filled by later tasks).
+//! FlatCraft engine: session, preferences and the command registry that the
+//! GUI, the MCP server and tests share.
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn smoke() {
-        assert_eq!(2 + 2, 4);
-    }
-}
+pub mod commands;
+pub mod prefs;
+pub mod registry;
+pub mod session;
+
+pub use prefs::Preferences;
+pub use registry::Command;
+pub use session::{CommandError, DocState, JobResult, Origin, Session};
