@@ -8,65 +8,104 @@ This guide is for a MacBook Air. Plan about two hours for the full run list. Rea
 
 - The MacBook Air, the Cameo 2 and its USB cable.
 - Silhouette Studio installed on the Mac.
-- Wireshark (includes `tshark`): `brew install --cask wireshark`.
-- Copy paper, a cutting mat, and a shallow blade setting (so the cuts are light).
+- Wireshark with `tshark` (Part 1).
+- Copy paper, a cutting mat and a shallow blade setting (so the cuts are light).
 - A checkout of FlatCraft on the same Mac, to run `cargo xtask capture`.
 
-## Part 1: lower the macOS security (SIP) - READ THIS PART TWICE
+## Be honest about the odds
 
-> **WARNING: these steps lower the security of your Mac.** macOS hides USB capture behind System Integrity Protection (SIP). We turn it down for the capture session only and turn it back on at the end. Do not forget Part 7.
+Capturing USB on a Mac is a hack, not a feature. It uses hidden `XHC` interfaces that Apple never promised to keep. A report on the Apple developer forums says it may no longer work on macOS 15.6 and later. **It may fail on macOS 27.** So Part 3 is a go/no-go test. If it fails, we stop and use Plan B (Part 8). Do not spend two hours on the run list before the test says go.
 
-Apple Silicon Mac (MacBook Air M-series). Steps:
+Sources:
+- https://wiki.wireshark.org/CaptureSetup/USB
+- https://ask.wireshark.org/question/23351/
+- https://developer.apple.com/forums/thread/124875
+
+## Part 1: install Wireshark (before the SIP reboot)
+
+```
+brew install --cask wireshark-app
+```
+
+The cask is called `wireshark-app`. The installer also installs ChmodBPF (the permission helper). That step needs a **reboot**. We do it once, together with the SIP reboot in Part 2, so you reboot into Recovery directly after this install.
+
+Source: https://formulae.brew.sh/api/cask/wireshark-app.json
+
+Also unplug every other USB device now. Use the Cameo's own cable, straight into the Mac. No hub, no dock.
+
+## Part 2: lower the macOS security (SIP) - READ THIS PART TWICE
+
+> **WARNING: these steps lower the security of your Mac.** macOS hides USB capture behind System Integrity Protection (SIP). We turn it off for the capture session only and turn it back on at the end. Do not forget Part 9.
+
+While the Mac runs in this mode, **iOS and iPadOS apps on the Mac stop launching.** That is expected. It comes back when you restore security.
+
+Apple Silicon Mac (MacBook Air M-series):
 
 1. Shut the Mac down: Apple menu > Shut Down.
 2. Press and hold the power button until you see "Loading startup options".
 3. Click Options, then Continue. This is macOS Recovery. Log in if asked.
-4. In the menu bar: Utilities > Terminal.
-5. Type this and press Return:
+4. In the menu bar: Utilities > Startup Security Utility. Select your startup disk, click Security Policy, choose **Reduced Security**, confirm with your admin credentials.
+5. In the menu bar: Utilities > Terminal. Run:
 
    ```
-   csrutil enable --without debug
+   csrutil disable
    ```
 
-   (This is the milder setting, sometimes called Permissive. If Wireshark shows no USB interface later, repeat these steps with `csrutil disable` instead. This is the stronger setting.) Both are wrong for daily use, so Part 7 matters.
+   Answer `y` when asked and give the admin credentials. This is the only SIP command. Nothing milder is needed.
 6. Apple menu > Restart.
 
-Check after the restart. Open Terminal and run:
+The resulting boot policy is called "Permissive Security". It is not a milder SIP mode. It is simply what the Mac reports once SIP is off.
+
+After the restart, open Terminal and run:
 
 ```
 csrutil status
 ```
 
-It should say that SIP is disabled or that some protections are off. Write it down in your note file.
+It must say that System Integrity Protection is disabled. Write it in your note file.
 
-## Part 2: install the capture permission for Wireshark
+Sources:
+- https://eclecticlight.co/2024/08/21/controlling-system-integrity-protection-using-csrutil-a-reference/
+- https://support.apple.com/guide/security/sec7d92dc49f
 
-1. Open Wireshark once. It asks to install "ChmodBPF". Let it install, enter your password.
-2. If it does not ask: in the Wireshark disk image, run "Install ChmodBPF.pkg".
-3. Log out and log in again (or restart).
+## Part 3: preflight - go or no-go
 
-## Part 3: find the USB interface (XHC)
+Do this before anything else. It takes five minutes.
 
-macOS exposes the USB controllers to Wireshark as interfaces called `XHC20`, `XHC0`, `XHC1` and so on.
+1. Plug in the Cameo 2 (switch it off for now).
+2. List the capture interfaces:
 
-1. Plug in the Cameo 2 and switch it on.
-2. Open Wireshark. On the start screen you see the list of interfaces.
-3. Look for names that start with `XHC`. Each one is a USB controller.
-4. Double-click one and look at the packet list while you open Silhouette Studio. The right one shows packets with protocol "USB" and the Cameo 2 (vendor ID `0x0b4d`, product ID `0x112b`).
-5. If the packet list stays empty, stop the capture and try the next XHC interface.
-6. No XHC interface at all, even with SIP lowered? Go to Part 8 (the Cynthion fallback).
+   ```
+   ifconfig -l | tr ' ' '\n' | grep XHC
+   ```
 
-Tip: the Cameo 2 may be on a different XHC when you use another USB port. Use the same port for the whole session.
+   or `tshark -D`. You should see names such as `XHC0`, `XHC1`, `XHC20`. These are the USB controllers.
+3. Bring **every** XHC interface up, one command each:
 
-## Part 4: the capture filter and the display filter
+   ```
+   sudo ifconfig XHC0 up
+   sudo ifconfig XHC1 up
+   ```
 
-- Capture filter: leave it empty. USB packets on macOS come through the XHC interface unfiltered, and a capture filter can hide the useful ones.
-- Display filter, to check what you see: `usb.idVendor == 0x0b4d || usb.capdata`
-- The tool reads only packets that carry data (`usb.capdata`). You do not need to filter before saving.
+   Repeat for each one in your list. You must do this again after every reboot.
+4. Open Wireshark and select the XHC interfaces (or run `tshark -i XHC0 -a duration:10`). Start a 10 second test capture. During those 10 seconds, switch on the Cameo 2 (or unplug and plug in its cable).
+5. Look at the packets. You must see packets that carry the Cameo's descriptors: vendor ID `0x0b4d`, product ID `0x112b`.
+
+Decision:
+- **Packets with 0b4d:112b appear: GO.** Continue with Part 4.
+- **Nothing appears, on any XHC: NO-GO.** Stop here. Do not run the list. Go to Plan B (Part 8).
+
+## Part 4: the capture setup
+
+- Capture on the XHC interface that showed the Cameo in Part 3. Tip: the Cameo may sit on a different XHC when you change the port. Use the same port for the whole session.
+- Capture filter: leave it empty. A capture filter can hide the useful packets.
+- Display filter, to see what you have: `usb.capdata`. In the packet list, bulk packets to the Cameo show as `URB_BULK out`.
+- The tool reads only packets that carry data. You do not need to filter before saving.
+- Save every capture as pcapng.
 
 ## Part 5: one capture per run
 
-For every run in the run list (Part 6):
+Run 0 (the connection) comes first in the session. All other runs follow this recipe:
 
 1. In Silhouette Studio: Page Setup panel, choose the mat or "No mat" for this run. Load the mat with the paper.
 2. Load the test pattern sheet and set the one setting that this run changes. Everything else stays at the baseline.
@@ -81,17 +120,7 @@ Change one setting per run. Only one. "Make it so" works for Picard, not for sci
 
 ### Naming
 
-`<pattern>__<setting>.pcapng` with two underscores between the parts. Examples:
-
-- `square50__baseline.pcapng`
-- `square50__speed3.pcapng`
-- `square50__force20.pcapng`
-- `square50__passes2.pcapng`
-- `star__overcut-on.pcapng`
-- `square10__mat12x12.pcapng`
-- `square10__nomat.pcapng`
-
-Lowercase, digits, hyphens. No spaces.
+`<pattern>__<setting>.pcapng` with two underscores between the parts. The run table below gives the exact name for every run. Lowercase, digits, hyphens. No spaces.
 
 ### The note file
 
@@ -116,13 +145,21 @@ Next to each capture, a text file `<same name>.md`:
 - Notes (anything odd, cut looked wrong, Studio showed a warning):
 ```
 
-The firmware string: the capture of the first run contains the `FG` question and its reply (for example `CAMEO V1.10`). After you run the tool (Part 6.4), look under `# replies` in the `.gpgl.txt` file. If it is not there, Studio did not ask in that run. Copy it from another run.
+The firmware string: the capture contains the `FG` question and its reply (for example `CAMEO V1.10`). After you run the tool (Part 7), look under `# replies` in the `.gpgl.txt` file. If it is not there, Studio did not ask in that run. Copy it from another run.
 
 ## Part 6: the run list
 
-The test pattern sheet comes from FlatCraft (command `tools.test_patterns`): 50 mm square, corner star, circles, hole in a square, open line, S-curve, a small "F" and a 100 mm ruler. If FlatCraft cannot make it yet, use a plain 50 mm square drawn in Studio and name the pattern `square50`.
+The test pattern sheet comes from FlatCraft (command `tools.test_patterns`): 50 mm square, corner star, circles, hole in a square, open line, S-curve, a small "F" and a 100 mm ruler. If FlatCraft cannot make it yet, use a plain 50 mm square drawn in Studio and name the pattern `square50` instead of `sheet`.
 
 Baseline values: pick the ones Studio proposes for "copy paper" and write them in the note file. Low, mid and high are three clearly different values within the Cameo 2 range (speed 1-10, force 1-33).
+
+### 6.0 Run 0: the connection (first in the session)
+
+| # | Name | What | Question it answers |
+|---|---|---|---|
+| 0 | `connect__studio-start` | Start the capture first. Then plug in or switch on the Cameo. Then start Silhouette Studio and wait until Studio shows the machine. Stop. No cut. | What are the descriptors, endpoints and packet sizes? Which device address does the Cameo get (the tool uses it to ignore other devices)? What is the first thing Studio asks (`ESC 0x05`, `FG`)? How does the status polling look? |
+
+If Studio is already running, quit it first. Run 0 must see the plug-in.
 
 ### 6.1 Cutting runs
 
@@ -143,6 +180,7 @@ Baseline values: pick the ones Studio proposes for "copy paper" and write them i
 | 13 | `sheet__track-enhancing-off` | track enhancing off | Compare with run 12. |
 | 14 | `sheet__blade-offset` | change the blade setting in Studio's cut settings, if the option exists | What do `FC` and the offset commands carry? What range does the Cameo 2 take? |
 | 15 | `sheet__cancel` | click Send, then stop the job from Studio (or press the Pause/Stop on the machine) in the middle of the cut | How does a cancel look? Which bytes end the job? |
+| 20 | `sheet__corner-sharpen` | the Studio option that changes how sharp corners are cut (look for it in the cut settings; use the corner star pattern). If Studio has no such option, skip the run and write that in the notes. | What does `FF` really do, and which values does Studio send? Does it differ between the star's sharp and wide corners? |
 
 For each run, also write in the note file how the cut looked (corners, overcut, was the paper cut through).
 
@@ -167,15 +205,11 @@ For every mat run:
 
 Wrong measurements are fine. Write down what you see, even if it looks odd. The odd ones teach most.
 
-### 6.3 Setup run
+### 6.3 After each capture: check the first run
 
-| # | Name | What | Question it answers |
-|---|---|---|---|
-| 20 | `connect__studio-start` | Start the capture, then start Silhouette Studio with the plotter on, wait until Studio shows the machine, stop. No cut. | What are the descriptors, endpoints and packet sizes? What is the first thing Studio asks (`ESC 0x05`, `FG`)? How does the status polling work? |
+For run 0 and run 1, open the capture in Wireshark and check that you see `URB_BULK out` packets to the Cameo before you go on. Do not carry on with a capture that has none.
 
-If Studio is already running, quit it first. The setup run captures the connection.
-
-### 6.4 Turn each capture into fixtures
+## Part 7: turn each capture into fixtures
 
 For each `.pcapng` file, in the FlatCraft checkout:
 
@@ -183,43 +217,89 @@ For each `.pcapng` file, in the FlatCraft checkout:
 cargo xtask capture ~/Desktop/captures/sheet__baseline.pcapng
 ```
 
-This writes two files into `tests/fixtures/captures/`:
+It works on macOS (Darwin), Linux and Windows (USBPcap) captures.
 
-- `sheet__baseline.jsonl` - every USB transfer: time in seconds, direction (`out` or `in`), endpoint, bytes in hex.
+This writes two files into `tests/fixtures/captures/` of the checkout, wherever you start the command:
+
+- `sheet__baseline.jsonl` - every USB transfer: time in seconds, direction (`out` or `in`), endpoint, device address (`dev`), bytes in hex.
 - `sheet__baseline.gpgl.txt` - the OUT bytes decoded, one command per line with its meaning, then the replies under `# replies`.
 
-Options: `--out <folder>` for another folder, `--name <name>` for another file name.
+Options: `--out <folder>` for another folder, `--name <name>` for another file name, `--device <n>` for the Cameo's USB device address.
 
-If it says "tshark not found", install Wireshark (Part "What you need"). If it says "no USB data found", you picked the wrong XHC interface or the filter hid the data. Capture again.
+What the tool tells you:
+
+- It prints the bulk OUT bytes per device address and which address it used. By default it uses the busiest one, which is the Cameo. Check that this fits run 0. If not, pass `--device`.
+- If it prints a warning about lines that could not be read, look at the first line it shows. A few bad lines can be fine. Many are not.
+- If it says "no USB data found", check in Wireshark that you see URB_BULK out packets to the Cameo before you capture again, and keep the pcapng.
+
+First-run check: open the `.gpgl.txt` file. **Commands must not appear doubled** (the same command twice in a row means the tool read both the submit and the complete packet). If you see doubles, stop and report it with the pcapng.
+
+If it says "tshark not found", install Wireshark (Part 1).
 
 Look at the `.gpgl.txt` file. Commands marked "unknown" are the interesting ones. Do not delete them. Put the note file next to them and commit all three files.
 
-## Part 7: turn SIP back on - DO NOT SKIP
+## Part 8: Plan B, if the Mac test says no-go
+
+Ranked. Take the first one you can do.
+
+### Plan B1: a Windows PC (best)
+
+Any x86-64 Windows PC with Silhouette Studio installed. USBPcap works with the plain Windows driver and needs no security changes on the Mac.
+
+1. Install Wireshark on the PC. In the installer, tick **USBPcap** and let it install. Reboot when asked.
+2. Plug in the Cameo 2 and switch it on. Use its own cable and unplug other USB devices.
+3. Start Wireshark. You see interfaces called `USBPcap1`, `USBPcap2` and so on, one per USB root hub. Pick the one the Cameo is on: open the interface options (gear icon), and in the USBPcap dialog, tick the device with `Silhouette` or vendor ID 0b4d. If unsure, start a capture on one hub, switch the Cameo on, and look for `0b4d:112b`. Try the next hub if nothing shows.
+4. Use the same run list, the same names and the same note files. Run 0 first.
+5. Copy the pcapng files to the Mac and run `cargo xtask capture` as in Part 7. The tool reads USBPcap captures.
+
+### Plan B2: Cynthion and Packetry
+
+The Cynthion (Great Scott Gadgets, about 210 US dollars) is a USB analyser. macOS stays untouched, so SIP stays on (skip Parts 2 and 9).
+
+1. Connect the CONTROL port of the Cynthion to the computer that runs Packetry (the analysis computer).
+2. Connect the TARGET C port to the host that runs Silhouette Studio.
+3. Connect the TARGET A port to the Cameo 2. **Start the capture in Packetry before you connect TARGET A**, so you see the connection.
+4. If the analyser does not respond, reload it: `cynthion run analyzer`.
+5. Packetry saves `.pcap` files with LINKTYPE_USB_2_0. **The tool path for these files is untested.** Try `cargo xtask capture` on one. If it finds no data or looks wrong, keep the file and report it, and we adjust the tool.
+
+Sources:
+- https://packetry.readthedocs.io/en/latest/quick_start.html
+- https://cynthion.readthedocs.io/en/latest/getting_started_packetry.html
+
+### Plan B3: experimental, UTM or QEMU
+
+A virtual machine with Windows or Linux and USB passthrough of the Cameo, with a USB pcap property on the virtual USB controller. This is experimental. We do not know if the vendor software runs well there, and timing may differ. Use it only if B1 and B2 are not possible. Report what you try.
+
+## Part 9: turn SIP back on and clean up - DO NOT SKIP
 
 > **Restore the security of your Mac when the last capture is done.**
 
-1. Shut the Mac down. Hold the power button until "Loading startup options".
-2. Options > Continue. Log in if asked.
-3. Utilities > Terminal.
-4. Type:
+1. Bring the capture interfaces down. For every XHC you brought up in Part 3:
+
+   ```
+   sudo ifconfig XHC0 down
+   ```
+
+   (Same for `XHC1` and the others.) A reboot also resets them.
+2. Shut the Mac down. Hold the power button until "Loading startup options".
+3. Options > Continue. Log in if asked.
+4. Utilities > Terminal. Type:
 
    ```
    csrutil enable
    ```
 
-5. Apple menu > Restart.
-6. In Terminal, run `csrutil status`. It must say: `System Integrity Protection status: enabled.`
+5. Utilities > Startup Security Utility. Select your startup disk, Security Policy, choose **Full Security**, confirm.
+6. Apple menu > Restart.
+7. In Terminal, run `csrutil status`. It must say: `System Integrity Protection status: enabled.` If it does not, repeat the steps.
 
-Also: Wireshark's ChmodBPF stays installed. You can remove it: in Wireshark, run "Uninstall ChmodBPF.pkg" from the disk image. It is optional. The recordings contain only your plotter traffic, but delete the pcapng files after you have the fixtures if they hold anything private.
+Wireshark stays installed. To remove it and the ChmodBPF helper, run:
 
-## Part 8: the fallback, a Cynthion analyser
+```
+brew uninstall --cask wireshark-app
+```
 
-If macOS 27 shows no XHC interface even with SIP lowered, use a hardware USB analyser. The Cynthion (Great Scott Gadgets, about 210 US dollars) sits between the Cameo 2 and the Mac and records the traffic with no changes to macOS. SIP stays on.
-
-1. Wire it as the Cynthion documentation describes for a pass-through capture: the Cameo 2 on the device side, the computer that runs Silhouette Studio on the host side, the Cynthion in between.
-2. Install the Cynthion tools (Packetry) as the Cynthion documentation says. Packetry shows the packets and can export a capture.
-3. Run the same run list. Export each capture so we get direction, endpoint and bytes. Then convert it: if you can export pcapng, use `cargo xtask capture`. If not, send the export to the project and we write a small reader.
-4. SIP is not touched, so Parts 1, 2 and 7 do not apply.
+The recordings contain only your plotter traffic, but delete the pcapng files after you have the fixtures if they hold anything private.
 
 ## Quick checklist for each run
 
@@ -228,6 +308,6 @@ If macOS 27 shows no XHC interface even with SIP lowered, use a hardware USB ana
 - [ ] Wireshark capturing before Send
 - [ ] Cut finished, capture stopped, saved as `<pattern>__<setting>.pcapng`
 - [ ] Note file written
-- [ ] `cargo xtask capture` run, files in `tests/fixtures/captures/`
+- [ ] `cargo xtask capture` run, files in `tests/fixtures/captures/`, no doubled commands
 
-And at the very end: **SIP back on** (Part 7). "With great power comes great responsibility."
+And at the very end: **SIP back on and Full Security** (Part 9). "With great power comes great responsibility."

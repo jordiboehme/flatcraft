@@ -23,8 +23,17 @@ pub struct LogEntry {
     pub bytes: Vec<u8>,
 }
 
+/// PROVISIONAL endpoints for a log made with `ByteLog::new`: 0x01 out, 0x82 in, as expected on
+/// the Cameo 2. Spec section 11 says the real ones come from the USB descriptor.
+/// TODO(M3 USB transport task): the transport passes its descriptor endpoints through
+/// `ByteLog::with_endpoints` and these defaults go away.
+pub const PROVISIONAL_OUT_EP: u8 = 0x01;
+pub const PROVISIONAL_IN_EP: u8 = 0x82;
+
 #[derive(Debug, Clone)]
 pub struct ByteLog {
+    out_ep: u8,
+    in_ep: u8,
     start: Instant,
     entries: VecDeque<LogEntry>,
 }
@@ -37,7 +46,14 @@ impl Default for ByteLog {
 
 impl ByteLog {
     pub fn new() -> Self {
+        Self::with_endpoints(PROVISIONAL_OUT_EP, PROVISIONAL_IN_EP)
+    }
+
+    /// A log that writes these endpoint addresses (from the transport's descriptor) into its JSONL.
+    pub fn with_endpoints(out_ep: u8, in_ep: u8) -> Self {
         Self {
+            out_ep,
+            in_ep,
             start: Instant::now(),
             entries: VecDeque::new(),
         }
@@ -81,13 +97,21 @@ impl ByteLog {
 
     /// One JSON object per line, in the capture fixture format:
     /// `{"t": <seconds>, "dir": "out"|"in", "ep": "0x01"|"0x82", "hex": ".."}`.
+    fn endpoint(&self, dir: Dir) -> u8 {
+        match dir {
+            Dir::Out => self.out_ep,
+            Dir::In => self.in_ep,
+        }
+    }
+
     pub fn to_jsonl(&self) -> String {
         let mut out = String::new();
         for e in &self.entries {
             out.push_str(&jsonl_line(
                 e.t_ms as f64 / 1000.0,
                 e.dir,
-                default_ep(e.dir),
+                self.endpoint(e.dir),
+                None,
                 &e.bytes,
             ));
             out.push('\n');
@@ -104,25 +128,21 @@ pub(crate) struct Line {
     pub dir: Dir,
     pub ep: String,
     pub hex: String,
+    /// USB device address, when the capture knows it. Left out of the JSON when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dev: Option<u8>,
 }
 
 /// One JSONL line (no newline) for a transfer.
-pub(crate) fn jsonl_line(t: f64, dir: Dir, ep: u8, bytes: &[u8]) -> String {
+pub(crate) fn jsonl_line(t: f64, dir: Dir, ep: u8, dev: Option<u8>, bytes: &[u8]) -> String {
     let line = Line {
         t,
         dir,
         ep: format!("0x{ep:02x}"),
         hex: hex(bytes),
+        dev,
     };
     serde_json::to_string(&line).expect("a log line always serialises")
-}
-
-/// The default endpoint of a direction on the Cameo 2: 0x01 out, 0x82 in.
-fn default_ep(dir: Dir) -> u8 {
-    match dir {
-        Dir::Out => 0x01,
-        Dir::In => 0x82,
-    }
 }
 
 /// Lowercase hex, two digits per byte.
@@ -151,4 +171,20 @@ pub(crate) fn unhex(s: &str) -> Option<Vec<u8>> {
             u8::try_from(hi * 16 + lo).ok()
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn endpoints_come_from_the_log() {
+        let mut log = ByteLog::with_endpoints(0x03, 0x84);
+        log.push(Dir::Out, b"H");
+        log.push(Dir::In, b"0");
+        let text = log.to_jsonl();
+        assert!(text.contains("\"ep\":\"0x03\""));
+        assert!(text.contains("\"ep\":\"0x84\""));
+        assert!(!text.contains("dev"));
+    }
 }

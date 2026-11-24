@@ -12,23 +12,146 @@ pub struct CaptureRecord {
     pub dir: Dir,
     /// Endpoint address. Bit 0x80 set means device to host.
     pub ep: u8,
+    /// USB device address when the capture has one. Left out of the JSONL when `None`.
+    pub device: Option<u8>,
     pub bytes: Vec<u8>,
 }
 
-/// Parses one line of `tshark -T fields -e frame.time_relative -e usb.endpoint_address
-/// -e usb.capdata` (tab separated). `None` when the line has no data or cannot be read.
-pub fn parse_tshark_line(line: &str) -> Option<CaptureRecord> {
-    let mut fields = line.trim_end_matches(['\r', '\n']).split('\t');
-    let t: f64 = fields.next()?.trim().parse().ok()?;
-    let ep = parse_ep(fields.next()?)?;
-    // tshark joins several data fields with a comma; the colons inside one are dropped.
-    let data: String = fields.next()?.chars().filter(|c| *c != ':').collect();
-    let bytes = unhex(&data)?;
-    if bytes.is_empty() {
-        return None;
+/// The tshark `-e` fields, in the column order `parse_tshark_line` reads. macOS captures
+/// (LINKTYPE_USB_DARWIN) fill the `darwin` columns; Linux usbmon and Windows USBPcap fill the
+/// plain ones. The parser takes whichever is not empty.
+pub const TSHARK_FIELDS: [&str; 7] = [
+    "frame.time_relative",
+    "usb.endpoint_address",
+    "usb.darwin.endpoint_address",
+    "usb.device_address",
+    "usb.darwin.device_address",
+    "usb.darwin.request_type",
+    "usb.capdata",
+];
+
+/// What one tshark line turned out to be.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParsedLine {
+    Record(CaptureRecord),
+    /// A readable line that carries nothing we keep: no data, OUT data on the COMPLETE packet
+    /// or IN data on the SUBMIT packet (the same bytes already appear on the other packet).
+    Skipped,
+    /// Data that could not be read.
+    Bad,
+}
+
+/// Parses one tab separated line with the columns of `TSHARK_FIELDS`.
+pub fn parse_tshark_row(line: &str) -> ParsedLine {
+    let line = line.trim_end_matches(['\r', '\n']);
+    let col: Vec<&str> = line.split('\t').map(str::trim).collect();
+    let get = |i: usize| col.get(i).copied().unwrap_or("");
+    // Commas join several data fields in one cell and colons separate bytes: drop both.
+    let data: String = get(6).chars().filter(|c| *c != ':' && *c != ',').collect();
+    if data.is_empty() {
+        return ParsedLine::Skipped;
     }
+    let first = |a: &str, b: &str| {
+        if a.is_empty() {
+            b.to_string()
+        } else {
+            a.to_string()
+        }
+    };
+    let (Ok(t), Some(ep), Some(bytes)) = (
+        get(0).parse::<f64>(),
+        parse_num(&first(get(1), get(2))),
+        unhex(&data),
+    ) else {
+        return ParsedLine::Bad;
+    };
     let dir = if ep & 0x80 != 0 { Dir::In } else { Dir::Out };
-    Some(CaptureRecord { t, dir, ep, bytes })
+    // Darwin request type: 0 is SUBMIT, 1 is COMPLETE. OUT data is in the SUBMIT, IN data in
+    // the COMPLETE. Taking the other packet would double every command.
+    match (dir, parse_num(get(5))) {
+        (Dir::Out, Some(1)) | (Dir::In, Some(0)) => return ParsedLine::Skipped,
+        _ => {}
+    }
+    let device = match first(get(3), get(4)).as_str() {
+        "" => None,
+        d => match parse_num(d) {
+            Some(d) => Some(d),
+            None => return ParsedLine::Bad,
+        },
+    };
+    ParsedLine::Record(CaptureRecord {
+        t,
+        dir,
+        ep,
+        device,
+        bytes,
+    })
+}
+
+/// The record of one line, `None` for lines that are skipped or bad.
+pub fn parse_tshark_line(line: &str) -> Option<CaptureRecord> {
+    match parse_tshark_row(line) {
+        ParsedLine::Record(r) => Some(r),
+        _ => None,
+    }
+}
+
+/// The result of reading a whole tshark output.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TsharkParse {
+    pub records: Vec<CaptureRecord>,
+    /// Non-empty lines with data that could not be read.
+    pub bad: usize,
+    pub first_bad: Option<String>,
+}
+
+/// Reads the whole output. Bad lines are counted, never silently dropped.
+pub fn parse_tshark(text: &str) -> TsharkParse {
+    let mut out = TsharkParse::default();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match parse_tshark_row(line) {
+            ParsedLine::Record(r) => out.records.push(r),
+            ParsedLine::Skipped => {}
+            ParsedLine::Bad => {
+                out.bad += 1;
+                if out.first_bad.is_none() {
+                    out.first_bad = Some(line.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Bulk OUT bytes per device address, the busiest first. Records without an address are
+/// not counted.
+pub fn bulk_out_bytes_by_device(records: &[CaptureRecord]) -> Vec<(u8, usize)> {
+    let mut counts: Vec<(u8, usize)> = Vec::new();
+    for r in records {
+        let (Some(dev), Dir::Out) = (r.device, r.dir) else {
+            continue;
+        };
+        if r.ep & 0x7f == 0 {
+            continue;
+        }
+        match counts.iter_mut().find(|(d, _)| *d == dev) {
+            Some((_, n)) => *n += r.bytes.len(),
+            None => counts.push((dev, r.bytes.len())),
+        }
+    }
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    counts
+}
+
+/// The records of one device. Records without an address are kept.
+pub fn retain_device(records: Vec<CaptureRecord>, device: u8) -> Vec<CaptureRecord> {
+    records
+        .into_iter()
+        .filter(|r| r.device.is_none_or(|d| d == device))
+        .collect()
 }
 
 /// The OUT bytes and the IN bytes, each in capture order. Control transfers (endpoint 0x00
@@ -55,7 +178,7 @@ pub fn read_jsonl(text: &str) -> Result<Vec<CaptureRecord>, String> {
         }
         let n = i + 1;
         let line: Line = serde_json::from_str(raw).map_err(|e| format!("line {n}: {e}"))?;
-        let ep = parse_ep(&line.ep).ok_or_else(|| {
+        let ep = parse_num(&line.ep).ok_or_else(|| {
             format!(
                 "line {n}: bad endpoint {:?}, expected like \"0x01\"",
                 line.ep
@@ -66,6 +189,7 @@ pub fn read_jsonl(text: &str) -> Result<Vec<CaptureRecord>, String> {
             t: line.t,
             dir: line.dir,
             ep,
+            device: line.dev,
             bytes,
         });
     }
@@ -76,20 +200,20 @@ pub fn read_jsonl(text: &str) -> Result<Vec<CaptureRecord>, String> {
 pub fn to_jsonl(records: &[CaptureRecord]) -> String {
     let mut out = String::new();
     for r in records {
-        out.push_str(&jsonl_line(r.t, r.dir, r.ep, &r.bytes));
+        out.push_str(&jsonl_line(r.t, r.dir, r.ep, r.device, &r.bytes));
         out.push('\n');
     }
     out
 }
 
-/// `0x82` (or `82`) to the endpoint address.
-fn parse_ep(s: &str) -> Option<u8> {
+/// `0x82`, `82` (hex, for endpoints) or a plain decimal for small numbers is not guessed:
+/// a `0x` prefix means hex, no prefix means decimal.
+fn parse_num(s: &str) -> Option<u8> {
     let s = s.trim();
-    let digits = s
-        .strip_prefix("0x")
-        .or_else(|| s.strip_prefix("0X"))
-        .unwrap_or(s);
-    u8::from_str_radix(digits, 16).ok()
+    match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        Some(h) => u8::from_str_radix(h, 16).ok(),
+        None => s.parse().ok(),
+    }
 }
 
 #[cfg(test)]
@@ -101,38 +225,114 @@ mod tests {
             t,
             dir,
             ep,
+            device: None,
             bytes: bytes.to_vec(),
         }
     }
 
+    // Columns: time, ep, darwin ep, dev, darwin dev, darwin request type, data.
     #[test]
     fn parses_out_line() {
-        let r = parse_tshark_line("0.123\t0x01\t1b:04").unwrap();
+        let r = parse_tshark_line("0.123\t0x01\t\t\t\t\t1b:04").unwrap();
         assert_eq!(r, rec(0.123, Dir::Out, 0x01, &[0x1b, 0x04]));
     }
 
     #[test]
     fn parses_in_line() {
-        let r = parse_tshark_line("1.5\t0x82\t30:03").unwrap();
+        let r = parse_tshark_line("1.5\t0x82\t\t\t\t\t30:03").unwrap();
         assert_eq!(r.dir, Dir::In);
         assert_eq!(r.ep, 0x82);
         assert_eq!(r.bytes, b"0\x03");
     }
 
     #[test]
+    fn parses_a_darwin_line_with_the_plain_endpoint_empty() {
+        let r = parse_tshark_line("2.0\t\t0x01\t\t7\t0\t46:47:03").unwrap();
+        assert_eq!(r.ep, 0x01);
+        assert_eq!(r.device, Some(7));
+        assert_eq!(r.dir, Dir::Out);
+        assert_eq!(r.bytes, b"FG\x03");
+    }
+
+    #[test]
+    fn parses_a_usbpcap_line() {
+        let r = parse_tshark_line("0.5\t0x82\t\t3\t\t\t30:03").unwrap();
+        assert_eq!(r.ep, 0x82);
+        assert_eq!(r.device, Some(3));
+        assert_eq!(r.dir, Dir::In);
+    }
+
+    #[test]
+    fn darwin_out_data_comes_only_from_submit() {
+        assert!(parse_tshark_line("1\t\t0x01\t\t7\t0\t48:03").is_some());
+        assert!(parse_tshark_line("1\t\t0x01\t\t7\t1\t48:03").is_none());
+    }
+
+    #[test]
+    fn darwin_in_data_comes_only_from_complete() {
+        assert!(parse_tshark_line("1\t\t0x82\t\t7\t1\t30:03").is_some());
+        assert!(parse_tshark_line("1\t\t0x82\t\t7\t0\t30:03").is_none());
+    }
+
+    #[test]
     fn skips_lines_without_capdata() {
-        assert!(parse_tshark_line("0.1\t0x01\t").is_none());
-        assert!(parse_tshark_line("0.1\t0x01").is_none());
-        assert!(parse_tshark_line("").is_none());
-        assert!(parse_tshark_line("x\t0x01\t1b").is_none());
-        assert!(parse_tshark_line("0.1\t0x01\tzz").is_none());
-        assert!(parse_tshark_line("0.1\t0x01\t1b0").is_none());
+        assert_eq!(parse_tshark_row("0.1\t0x01\t\t\t\t\t"), ParsedLine::Skipped);
+        assert_eq!(parse_tshark_row("0.1\t0x01"), ParsedLine::Skipped);
+        assert_eq!(parse_tshark_row(""), ParsedLine::Skipped);
+    }
+
+    #[test]
+    fn unreadable_data_is_bad() {
+        for bad in [
+            "x\t0x01\t\t\t\t\t1b",
+            "0.1\t0x01\t\t\t\t\tzz",
+            "0.1\t0x01\t\t\t\t\t1b0",
+            "0.1\t\t\t\t\t\t1b",
+            "0.1\t0x01\t\tq\t\t\t1b",
+        ] {
+            assert_eq!(parse_tshark_row(bad), ParsedLine::Bad, "{bad}");
+        }
+    }
+
+    #[test]
+    fn comma_joined_data_is_concatenated() {
+        let r = parse_tshark_line("0.5\t0x01\t\t\t\t\t46:47,03").unwrap();
+        assert_eq!(r.bytes, b"FG\x03");
     }
 
     #[test]
     fn tolerates_trailing_newline_and_crlf() {
-        let r = parse_tshark_line("0.5\t0x01\t48:03\r\n").unwrap();
+        let r = parse_tshark_line("0.5\t0x01\t\t\t\t\t48:03\r\n").unwrap();
         assert_eq!(r.bytes, b"H\x03");
+    }
+
+    #[test]
+    fn parse_tshark_counts_bad_lines_and_keeps_the_first() {
+        let text = "0.1\t0x01\t\t\t\t\t48\n\nbroken\t0x01\t\t\t\t\t48\n0.2\t0x01\t\t\t\t\tzz\n0.3\t0x01\t\t\t\t\t\n";
+        let p = parse_tshark(text);
+        assert_eq!(p.records.len(), 1);
+        assert_eq!(p.bad, 2);
+        assert!(p.first_bad.unwrap().starts_with("broken"));
+    }
+
+    #[test]
+    fn device_counts_use_bulk_out_bytes_and_the_busiest_wins() {
+        let d = |dev, dir, ep, n: usize| CaptureRecord {
+            device: Some(dev),
+            ..rec(0.0, dir, ep, &vec![0; n])
+        };
+        let records = vec![
+            d(3, Dir::Out, 0x02, 10),
+            d(7, Dir::Out, 0x01, 100),
+            d(7, Dir::Out, 0x00, 5000),
+            d(3, Dir::In, 0x81, 9000),
+            d(7, Dir::Out, 0x01, 20),
+            rec(0.0, Dir::Out, 0x01, b"no address"),
+        ];
+        assert_eq!(bulk_out_bytes_by_device(&records), vec![(7, 120), (3, 10)]);
+        let kept = retain_device(records, 7);
+        assert_eq!(kept.len(), 4);
+        assert!(kept.iter().all(|r| r.device != Some(3)));
     }
 
     #[test]
@@ -161,6 +361,17 @@ mod tests {
             "{\"t\":0.123,\"dir\":\"out\",\"ep\":\"0x01\",\"hex\":\"1b04\"}\n\
              {\"t\":1.5,\"dir\":\"in\",\"ep\":\"0x82\",\"hex\":\"3003\"}\n"
         );
+        assert_eq!(read_jsonl(&text).unwrap(), records);
+    }
+
+    #[test]
+    fn jsonl_keeps_the_device_address_when_there_is_one() {
+        let records = vec![CaptureRecord {
+            device: Some(7),
+            ..rec(0.5, Dir::Out, 0x01, b"H")
+        }];
+        let text = to_jsonl(&records);
+        assert!(text.contains("\"dev\":7"));
         assert_eq!(read_jsonl(&text).unwrap(), records);
     }
 

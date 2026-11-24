@@ -4,10 +4,10 @@ Fixtures made from Wireshark recordings of the vendor software talking to a Came
 
 Each capture gives two files plus a note:
 
-- `<name>.jsonl` - one JSON object per USB transfer: `{"t": seconds, "dir": "out"|"in", "ep": "0x01", "hex": "..."}`. Same format as the Debug panel byte log.
+- `<name>.jsonl` - one JSON object per USB transfer: `{"t": seconds, "dir": "out"|"in", "ep": "0x01", "hex": "...", "dev": 7}` (`dev`, the USB device address, is optional). Same format as the Debug panel byte log.
 - `<name>.gpgl.txt` - the OUT bytes decoded, one command per line with its meaning, then the replies under `# replies`.
 - `<name>.md` - the note file (Studio version, firmware string, settings). Template in `docs/capture.md`.
 
 Make them with `cargo xtask capture <file.pcapng>`. The full guide is `docs/capture.md`.
 
-Naming: `<pattern>__<setting>`, for example `square50__speed3`.
+Naming: `<pattern>__<setting>`, for example `sheet__speed-low`.
