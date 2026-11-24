@@ -124,6 +124,14 @@ Super massive stability stuff, as Felix Schelhasse would say. Here's FlatCraft's
 - [SolidCraft](https://github.com/tangency-labs/solidcraft)
 - [ZigZag](https://github.com/simpsoka/zigzag)
 
+## Broken, missing or your plotter?
+
+> "Every defect gets respect." - Laura Kampf
+
+- **Something doesn't work:** [open a bug report](https://github.com/jordiboehme/flatcraft/issues/new?template=bug_report.yml). If a cut looks wrong, attach the `.gpgl.txt` listing from File Output.
+- **Your plotter isn't supported yet:** [ask for your plotter](https://github.com/jordiboehme/flatcraft/issues/new?template=plotter_support.yml). Name the model and its USB IDs. A USB recording of a simple cut from the vendor software helps a lot.
+- **You have an idea:** [request a feature](https://github.com/jordiboehme/flatcraft/issues/new?template=feature_request.yml). Tell what you want to do and what stops you today.
+
 ## Contributing
 
 Help is welcome, most of all from people with a plotter on their desk. [CONTRIBUTING.md](CONTRIBUTING.md) covers how to build and test, the clean-room rule for protocol work and how to report a plotter that isn't supported yet. Open work is in [GitHub issues](https://github.com/jordiboehme/flatcraft/issues). For a security problem, read [SECURITY.md](SECURITY.md).
