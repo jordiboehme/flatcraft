@@ -77,11 +77,17 @@ sudo apt-get install libxkbcommon-dev libgl1-mesa-dev libx11-dev libxcursor-dev 
 
 ## AI agents (MCP)
 
-FlatCraft runs an [MCP](https://modelcontextprotocol.io) server on localhost, protected by a token. `flatcraft mcp` is the bridge for clients that start a command: it talks to the running app, so you can watch, or starts a session without a window.
+FlatCraft speaks [MCP](https://modelcontextprotocol.io) over stdio. Your agent's client starts it, so there's no server to run, no port and no token. For Claude Code:
+
+```sh
+claude mcp add flatcraft -- flatcraft mcp --window
+```
+
+With `--window` the app opens and you watch the agent work. Without it FlatCraft runs headless, which is fine for File Output.
 
 Everything a person can do, an agent can do too, from the same command list: import, trace, arrange, pick plotter and material, preview and send to File Output. Units are millimetres, the origin is the top-left corner of the mat.
 
-The blade stays your call. A USB cut started by an agent needs your click in the app, or a setting you turned on yourself.
+The blade stays your call. A USB cut started by an agent needs your click in the window, or a setting you turned on yourself.
 
 ## Safety first
 
