@@ -6,6 +6,7 @@ pub mod job;
 pub mod object;
 pub mod profiles;
 pub mod project;
+pub mod tools;
 
 use flatcraft_core::document::{Document, Object, ObjectId};
 use flatcraft_core::geometry::bounds;

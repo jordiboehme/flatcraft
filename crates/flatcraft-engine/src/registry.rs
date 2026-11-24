@@ -1,6 +1,6 @@
 //! Command registry. The GUI, the MCP server and tests call the same commands.
 
-use crate::commands::{arrange, edit, job, object, profiles, project};
+use crate::commands::{arrange, edit, job, object, profiles, project, tools};
 use crate::session::{CommandError, Origin, Session};
 
 /// One registry command.
@@ -53,6 +53,8 @@ static ALL: &[&dyn Command] = &[
     &profiles::JobSetOverrides,
     &job::JobPreview,
     &job::JobSend,
+    &tools::ToolsTestPatterns,
+    &tools::DocumentPreview,
 ];
 
 /// Every command, in a stable order.

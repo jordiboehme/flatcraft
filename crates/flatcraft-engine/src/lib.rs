@@ -4,7 +4,9 @@
 pub mod commands;
 pub mod gate;
 pub mod job;
+pub mod patterns;
 pub mod prefs;
+pub mod preview;
 pub mod registry;
 pub mod session;
 

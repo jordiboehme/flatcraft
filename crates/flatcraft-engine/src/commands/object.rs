@@ -92,7 +92,11 @@ fn bounds_json(s: &Session, id: ObjectId) -> Value {
 }
 
 /// Adds an SVG object to the active document and selects it.
-fn add_svg(s: &mut Session, name: String, bytes: Vec<u8>) -> Result<Value, CommandError> {
+pub(crate) fn add_svg(
+    s: &mut Session,
+    name: String,
+    bytes: Vec<u8>,
+) -> Result<Value, CommandError> {
     let import = import_svg(&bytes, fonts::system_fonts()).map_err(import_error)?;
     let warnings: Vec<String> = import.warnings.iter().map(warning_text).collect();
     let id = add_object(s, name.clone(), Source::Svg { name, bytes }, import.paths)?;
