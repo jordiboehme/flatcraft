@@ -1,5 +1,5 @@
 fn main() {
-    println!("flatcraft: nothing to cut yet");
+    println!("xtask: no tasks yet");
 }
 
 #[cfg(test)]

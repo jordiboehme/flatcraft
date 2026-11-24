@@ -1,5 +1,3 @@
-<!-- Banner image goes here (Task 20): ![FlatCraft](.github/banner.png) -->
-
 # FlatCraft
 
 **Free your cutting plotter. Keep the Cameo out of landfill.**
@@ -17,7 +15,7 @@ FlatCraft is the fix. It takes your artwork, turns it into clean cut paths and w
 
 > "Failure is always an option." - Adam Savage
 
-A plotter that gets thrown away never gets the chance to fail, learn and cut again. We say: keep it running.
+A plotter that gets thrown away never gets the chance to fail, learn and cut again. We say: keep it running. Like Def Leppard put it, we want to pour some sugar on it - and by sugar we mean fresh cardstock.
 
 Think of it as the Mr. Fusion for old plotters: you feed it what you have, and it keeps the flux capacitor of your workshop running. We're gonna need a bigger mat.
 
@@ -35,7 +33,7 @@ What works in M1:
 - File Output as the default device
 - An MCP server so an agent can open, check and preview a job
 
-Think of M1 as the first Back to the Future film: the DeLorean gets to 88 mph, and the road trip comes later.
+Like Van Halen, we check the bowl for brown M&Ms: the details matter. Think of M1 as the first Back to the Future film: the DeLorean gets to 88 mph, and the road trip comes later.
 
 ## Build from source
 

@@ -4,9 +4,10 @@
 allow = [
     "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-3-Clause", "Zlib", "MPL-2.0",
     "Unicode-3.0", "Unlicense", "0BSD",
-    # arrayref 0.3.9 and roots 0.0.6 (permissive, BSD-style).
+    # arrayref 0.3.9 (via tiny-skia), roots 0.0.6 (via visioncortex's flo_curves) and
+    # zerocopy 0.8.64 (via ahash, egui and eframe). Permissive, BSD-style.
     "BSD-2-Clause",
-    # libloading 0.8.9 (permissive, via the window system and GL loading).
+    # libloading 0.8.9 (permissive): eframe -> glutin -> libloading, for GL loading.
     "ISC",
 ]
 
