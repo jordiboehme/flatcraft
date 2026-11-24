@@ -36,7 +36,7 @@ body:
     id: plotter
     attributes:
       label: Plotter and profile
-      description: For example Silhouette Cameo 2 or File Output, and the material profile.
+      description: Your plotter model or File Output, and the material profile.
   - type: textarea
     id: output
     attributes:

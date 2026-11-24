@@ -6,7 +6,7 @@ body:
     id: model
     attributes:
       label: Plotter model
-      description: Vendor and model, for example Silhouette Portrait 2.
+      description: Vendor and model, as printed on the machine.
     validations:
       required: true
   - type: input
