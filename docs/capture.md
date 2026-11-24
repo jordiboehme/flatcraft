@@ -91,6 +91,18 @@ Do this before anything else. It takes five minutes.
 4. Open Wireshark and select the XHC interfaces (or run `tshark -i XHC0 -a duration:10`). Start a 10 second test capture. During those 10 seconds, switch on the Cameo 2 (or unplug and plug in its cable).
 5. Look at the packets. You must see packets that carry the Cameo's descriptors: vendor ID `0x0b4d`, product ID `0x112b`.
 
+How to see the Cameo:
+- In the Wireshark GUI, type this display filter in the bar and press Return: `usb.idVendor == 0x0b4d`. Packets that remain are the Cameo's descriptors.
+- Several XHC interfaces at once: in the start screen, Cmd-click each XHC interface to select more than one, then start the capture.
+- On the command line, one call per XHC interface:
+
+  ```
+  tshark -i XHC0 -a duration:10 -Y "usb.idVendor == 0x0b4d"
+  tshark -i XHC1 -a duration:10 -Y "usb.idVendor == 0x0b4d"
+  ```
+
+  Switch the Cameo on during the 10 seconds. Any line of output means GO.
+
 Decision:
 - **Packets with 0b4d:112b appear: GO.** Continue with Part 4.
 - **Nothing appears, on any XHC: NO-GO.** Stop here. Do not run the list. Go to Plan B (Part 8).
@@ -112,7 +124,7 @@ Run 0 (the connection) comes first in the session. All other runs follow this re
 3. In Wireshark: Capture > Start (the blue fin). Wait two seconds.
 4. In Silhouette Studio: click Send. Let the Cameo cut until it stops.
 5. Wait two more seconds. In Wireshark: Capture > Stop.
-6. File > Save As. Format: pcapng. Name: `<pattern>__<setting>.pcapng`.
+6. File > Save As. Format: pcapng. Folder: `~/Desktop/captures/` (create it once). Name: `<pattern>__<setting>.pcapng`.
 7. Write the note file (template below).
 8. Unload the mat. Check the cut. Go on to the next run.
 
@@ -205,9 +217,22 @@ For every mat run:
 
 Wrong measurements are fine. Write down what you see, even if it looks odd. The odd ones teach most.
 
-### 6.3 After each capture: check the first run
+### 6.3 Check run 0 and run 1 right away
 
-For run 0 and run 1, open the capture in Wireshark and check that you see `URB_BULK out` packets to the Cameo before you go on. Do not carry on with a capture that has none.
+After run 0 and again after run 1, do not wait for the end of the session. Save the pcapng in `~/Desktop/captures/` and run the tool at once (Part 7):
+
+```
+cargo xtask capture ~/Desktop/captures/connect__studio-start.pcapng
+cargo xtask capture ~/Desktop/captures/sheet__baseline.pcapng
+```
+
+Then check three things before you run the rest of the list:
+
+- In Wireshark you see `URB_BULK out` packets to the Cameo.
+- The tool printed a device address and no "no commands found" warning.
+- The `.gpgl.txt` file has commands and none of them appear doubled.
+
+If one check fails, stop and fix the setup first.
 
 ## Part 7: turn each capture into fixtures
 
@@ -248,7 +273,7 @@ Any x86-64 Windows PC with Silhouette Studio installed. USBPcap works with the p
 
 1. Install Wireshark on the PC. In the installer, tick **USBPcap** and let it install. Reboot when asked.
 2. Plug in the Cameo 2 and switch it on. Use its own cable and unplug other USB devices.
-3. Start Wireshark. You see interfaces called `USBPcap1`, `USBPcap2` and so on, one per USB root hub. Pick the one the Cameo is on: open the interface options (gear icon), and in the USBPcap dialog, tick the device with `Silhouette` or vendor ID 0b4d. If unsure, start a capture on one hub, switch the Cameo on, and look for `0b4d:112b`. Try the next hub if nothing shows.
+3. Start Wireshark. You see interfaces called `USBPcap1`, `USBPcap2` and so on, one per USB root hub. Pick the one the Cameo is on: open the interface options (gear icon), and in the USBPcap dialog, tick the device with `Silhouette` or vendor ID 0b4d. If unsure, start a capture on one hub, switch the Cameo on, and look for `0b4d:112b`. Try the next hub if nothing shows. In the same dialog, tick "Capture from all devices connected" and "Capture from newly connected devices". Optionally also tick "Inject already connected devices descriptors into capture data", so a capture started after the Cameo was plugged in still has its descriptors. The tool filters by device address anyway. Source: https://ask.wireshark.org/question/37235/capturing-usb-data
 4. Use the same run list, the same names and the same note files. Run 0 first.
 5. Copy the pcapng files to the Mac and run `cargo xtask capture` as in Part 7. The tool reads USBPcap captures.
 

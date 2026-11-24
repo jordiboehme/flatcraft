@@ -60,7 +60,7 @@ pub fn parse_tshark_row(line: &str) -> ParsedLine {
     };
     let (Ok(t), Some(ep), Some(bytes)) = (
         get(0).parse::<f64>(),
-        parse_num(&first(get(1), get(2))),
+        parse_ep(&first(get(1), get(2))),
         unhex(&data),
     ) else {
         return ParsedLine::Bad;
@@ -178,7 +178,7 @@ pub fn read_jsonl(text: &str) -> Result<Vec<CaptureRecord>, String> {
         }
         let n = i + 1;
         let line: Line = serde_json::from_str(raw).map_err(|e| format!("line {n}: {e}"))?;
-        let ep = parse_num(&line.ep).ok_or_else(|| {
+        let ep = parse_ep(&line.ep).ok_or_else(|| {
             format!(
                 "line {n}: bad endpoint {:?}, expected like \"0x01\"",
                 line.ep
@@ -206,8 +206,18 @@ pub fn to_jsonl(records: &[CaptureRecord]) -> String {
     out
 }
 
-/// `0x82`, `82` (hex, for endpoints) or a plain decimal for small numbers is not guessed:
-/// a `0x` prefix means hex, no prefix means decimal.
+/// An endpoint address. Always hex, with or without the `0x` prefix: `0x82` and `82` are the
+/// same endpoint.
+fn parse_ep(s: &str) -> Option<u8> {
+    let s = s.trim();
+    let digits = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
+    u8::from_str_radix(digits, 16).ok()
+}
+
+/// A device address or a request type: decimal, or hex with a `0x` prefix.
 fn parse_num(s: &str) -> Option<u8> {
     let s = s.trim();
     match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
@@ -252,6 +262,23 @@ mod tests {
         assert_eq!(r.device, Some(7));
         assert_eq!(r.dir, Dir::Out);
         assert_eq!(r.bytes, b"FG\x03");
+    }
+
+    #[test]
+    fn endpoints_are_always_hex_with_or_without_the_prefix() {
+        let r = parse_tshark_line("0\t82\t\t\t\t\t30").unwrap();
+        assert_eq!(r.ep, 0x82);
+        assert_eq!(r.dir, Dir::In);
+        let r = parse_tshark_line("0\t\t0x01\t\t\t\t30").unwrap();
+        assert_eq!(r.ep, 0x01);
+        let jsonl = "{\"t\":0.0,\"dir\":\"in\",\"ep\":\"82\",\"hex\":\"30\"}";
+        assert_eq!(read_jsonl(jsonl).unwrap()[0].ep, 0x82);
+    }
+
+    #[test]
+    fn device_addresses_are_decimal() {
+        let r = parse_tshark_line("0\t0x01\t\t10\t\t\t30").unwrap();
+        assert_eq!(r.device, Some(10));
     }
 
     #[test]

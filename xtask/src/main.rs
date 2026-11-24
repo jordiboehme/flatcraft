@@ -10,6 +10,8 @@ use flatcraft_device::capture::{self, CaptureRecord};
 use flatcraft_device::gpgl::decode;
 
 const ETX: u8 = 0x03;
+const NO_COMMANDS: &str =
+    "warning: no commands found: check SUBMIT/COMPLETE and the device (try --device).";
 const TSHARK_MISSING: &str =
     "tshark not found. Install Wireshark (brew install --cask wireshark-app).";
 
@@ -85,6 +87,9 @@ fn run_capture(
         );
     }
     let records = select_device(parsed.records, device)?;
+    if !has_commands(&records) {
+        eprintln!("{NO_COMMANDS}");
+    }
     if records.is_empty() {
         bail!(
             "no USB data found in {}. Check in Wireshark that you see URB_BULK out packets to the Cameo before you capture again, and keep the pcapng.",
@@ -107,9 +112,24 @@ fn run_capture(
     Ok(())
 }
 
+/// True when there are OUT bytes (commands) to decode.
+fn has_commands(records: &[CaptureRecord]) -> bool {
+    !capture::split_out_in(records).0.is_empty()
+}
+
 /// Keeps the records of one device. Prints the per-device bulk OUT bytes and the address used.
 fn select_device(records: Vec<CaptureRecord>, device: Option<u8>) -> Result<Vec<CaptureRecord>> {
     let counts = capture::bulk_out_bytes_by_device(&records);
+    if let Some(d) = device
+        && !counts.is_empty()
+        && !counts.iter().any(|(a, _)| *a == d)
+    {
+        let valid: Vec<String> = counts.iter().map(|(a, _)| a.to_string()).collect();
+        bail!(
+            "no bulk OUT data from device {d}. Valid addresses: {}",
+            valid.join(", ")
+        );
+    }
     if counts.is_empty() {
         if device.is_some() {
             bail!("--device given, but the capture has no device addresses with bulk OUT data");
@@ -220,6 +240,21 @@ mod tests {
         assert_eq!(kept[0].device, Some(7));
         let kept = select_device(capture::parse_tshark(text).records, Some(3)).unwrap();
         assert_eq!(kept[0].device, Some(3));
+    }
+
+    #[test]
+    fn unknown_device_is_refused_with_the_valid_addresses() {
+        let text = "0\t\t0x01\t\t3\t0\t48\n1\t\t0x01\t\t7\t0\t48:48\n";
+        let err = select_device(capture::parse_tshark(text).records, Some(9)).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("device 9") && msg.contains("7, 3"), "{msg}");
+    }
+
+    #[test]
+    fn a_device_with_only_in_data_leaves_no_commands() {
+        let text = "0\t\t0x82\t\t7\t1\t30:03\n";
+        let kept = select_device(capture::parse_tshark(text).records, None).unwrap();
+        assert!(!has_commands(&kept));
     }
 
     #[test]
