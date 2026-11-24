@@ -23,13 +23,22 @@ use crate::session::{CommandError, Origin, Session};
 /// Text for an import warning, for people and agents.
 pub(crate) fn warning_text(w: &ImportWarning) -> String {
     match w {
+        ImportWarning::ClipOrMaskIgnored { count: 1 } => {
+            "1 clip path or mask was ignored; the full shape will be cut".into()
+        }
         ImportWarning::ClipOrMaskIgnored { count } => {
             format!("{count} clip paths or masks were ignored; the full shapes will be cut")
+        }
+        ImportWarning::ImagesSkipped { count: 1 } => {
+            "1 embedded image was skipped; only vector paths are cut".into()
         }
         ImportWarning::ImagesSkipped { count } => {
             format!("{count} embedded images were skipped; only vector paths are cut")
         }
         ImportWarning::NoPaths => "the file has no visible paths, so nothing will be cut".into(),
+        ImportWarning::DashesIgnored { count: 1 } => {
+            "1 stroke is dashed; its dashes are cut as a solid line".into()
+        }
         ImportWarning::DashesIgnored { count } => {
             format!("{count} strokes are dashed; dashes are cut as a solid line")
         }
@@ -136,11 +145,13 @@ pub(crate) fn trace_report(t: &TraceResult, invert: bool) -> (Vec<String>, Value
             "The file declares {dpi:.1} dpi, which is not plausible. It was ignored and 300 dpi used; set dpi_override to change it."
         ));
     }
-    if t.dropped_small > 0 {
-        warnings.push(format!(
-            "{} shapes were dropped because they are smaller than the minimum feature size",
-            t.dropped_small
-        ));
+    match t.dropped_small {
+        0 => {}
+        1 => warnings
+            .push("1 shape was dropped because it is smaller than the minimum feature size".into()),
+        n => warnings.push(format!(
+            "{n} shapes were dropped because they are smaller than the minimum feature size"
+        )),
     }
     let numbers = json!({
         "dropped_small": t.dropped_small,
@@ -924,5 +935,39 @@ mod tests {
         assert_eq!(s, TraceSettings::default());
         let from_empty: RetraceSettings = serde_json::from_value(json!({})).unwrap();
         assert_eq!(from_empty.into_trace().unwrap(), TraceSettings::default());
+    }
+
+    #[test]
+    fn counts_of_one_are_singular() {
+        let one = |w| warning_text(&w);
+        assert_eq!(
+            one(ImportWarning::ClipOrMaskIgnored { count: 1 }),
+            "1 clip path or mask was ignored; the full shape will be cut"
+        );
+        assert_eq!(
+            one(ImportWarning::ImagesSkipped { count: 1 }),
+            "1 embedded image was skipped; only vector paths are cut"
+        );
+        assert_eq!(
+            one(ImportWarning::DashesIgnored { count: 1 }),
+            "1 stroke is dashed; its dashes are cut as a solid line"
+        );
+        assert!(one(ImportWarning::DashesIgnored { count: 2 }).starts_with("2 strokes are dashed"));
+        let t = TraceResult {
+            paths: Vec::new(),
+            dropped_small: 1,
+            despeckled: 0,
+            size_mm: (10.0, 10.0),
+            threshold_used: 128,
+            downscaled_from: None,
+            ignored_dpi: None,
+        };
+        let (warnings, _) = trace_report(&t, false);
+        assert!(
+            warnings.contains(
+                &"1 shape was dropped because it is smaller than the minimum feature size".into()
+            ),
+            "{warnings:?}"
+        );
     }
 }

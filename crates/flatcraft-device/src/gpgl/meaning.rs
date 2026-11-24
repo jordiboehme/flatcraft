@@ -63,9 +63,22 @@ pub fn move_to(y: i64, x: i64) -> String {
 }
 
 pub fn draw(points: usize) -> String {
-    format!("draw through {points} points")
+    if points == 1 {
+        "draw through 1 point".into()
+    } else {
+        format!("draw through {points} points")
+    }
 }
 
 pub fn forbidden(what: &str) -> String {
     format!("FORBIDDEN: calibration write ({what}), never send")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn one_point_is_singular() {
+        assert_eq!(super::draw(1), "draw through 1 point");
+        assert_eq!(super::draw(2), "draw through 2 points");
+    }
 }
