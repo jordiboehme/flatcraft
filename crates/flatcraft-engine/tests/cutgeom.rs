@@ -1039,7 +1039,9 @@ fn fill_only_sliver_below_tolerance_is_dropped() {
     assert_eq!(r["toolpaths"], 1, "{r}");
     let warnings = r["warnings"].to_string();
     assert!(
-        warnings.contains("1 filled paths have no area"),
+        warnings.contains(
+            "'sliver': 1 filled paths have no area or are thinner than the cut tolerance (0.01 mm) and are not cut."
+        ),
         "{warnings}"
     );
 }
@@ -1139,7 +1141,13 @@ fn hairline_spine_does_not_depend_on_start() {
     let first = spine(0);
     assert_eq!(first.first(), Some(&Point::new(10.0, 10.0)));
     assert_eq!(first.last(), Some(&Point::new(60.0, 10.0)));
-    assert_eq!(first.len(), 4, "the side with more vertices: {first:?}");
+    // Between the two sides: below the kink, above the lower side.
+    assert!(
+        first[1..first.len() - 1]
+            .iter()
+            .all(|p| p.y > 9.98 && p.y < 10.05),
+        "{first:?}"
+    );
     for start in 1..ring.len() {
         let other = spine(start);
         assert_eq!(other.len(), first.len(), "start {start}: {other:?}");
@@ -1147,4 +1155,65 @@ fn hairline_spine_does_not_depend_on_start() {
             assert!(a.distance(*b) < TOL, "start {start}: {other:?}");
         }
     }
+}
+
+/// A closed wavy hairline over 50 mm, `width` wide, with `n` vertices on
+/// its upper side and fewer on its lower side, and its centre line.
+fn wavy_hairline(n: usize, width: f64) -> (BezPath, BezPath) {
+    let centre = |x: f64| Point::new(10.0 + x, 50.0 + 2.0 * (x / 8.0).sin());
+    let side = |count: usize, off: f64| -> Vec<Point> {
+        (1..count)
+            .map(|i| centre(50.0 * i as f64 / count as f64) + kurbo::Vec2::new(0.0, off))
+            .collect()
+    };
+    let mut ring = BezPath::new();
+    ring.move_to(centre(0.0));
+    for p in side(n, -width / 2.0) {
+        ring.line_to(p);
+    }
+    ring.line_to(centre(50.0));
+    for p in side(n * 7 / 10, width / 2.0).into_iter().rev() {
+        ring.line_to(p);
+    }
+    ring.close_path();
+    let mut mid = BezPath::new();
+    mid.move_to(centre(0.0));
+    for i in 1..=4 * n {
+        mid.line_to(centre(50.0 * i as f64 / (4 * n) as f64));
+    }
+    (ring, mid)
+}
+
+#[test]
+fn hairline_spine_follows_the_middle() {
+    let (ring, centre) = wavy_hairline(100, 0.08);
+    let subs = subpaths(&cut(&object(
+        ring,
+        fill_thin_stroke(),
+        CutOptions::default(),
+    )));
+    assert_eq!(subs.len(), 1, "{subs:?}");
+    assert!(!subs[0].1, "the spine must be open");
+    let spine = &subs[0].0;
+    assert!((length(spine) - length(&centre)).abs() < 0.05);
+    let worst = vertices(spine)
+        .iter()
+        .map(|p| dist(&centre, *p))
+        .fold(0.0, f64::max);
+    assert!(worst < 0.01, "spine is {worst} mm off the centre line");
+}
+
+#[test]
+fn long_hairline_spine_is_fast() {
+    // About 20000 vertices: comparing every pair takes about a second,
+    // the hull a few milliseconds.
+    let (ring, _) = wavy_hairline(11_765, 0.08);
+    assert!(ring.elements().len() > 20_000);
+    let o = object(ring, fill_thin_stroke(), CutOptions::default());
+    let t0 = std::time::Instant::now();
+    let subs = subpaths(&cut(&o));
+    let took = t0.elapsed();
+    assert_eq!(subs.len(), 1);
+    assert!(!subs[0].1);
+    assert!(took.as_millis() < 250, "{took:?}");
 }

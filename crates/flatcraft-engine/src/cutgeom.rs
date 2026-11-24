@@ -417,51 +417,28 @@ fn subpaths(path: impl IntoIterator<Item = PathEl>) -> Vec<Subpath> {
 }
 
 /// The spine of a closed hairline with the flattened vertices `ring`: the
-/// open line between its two vertices that are farthest apart, along one
-/// of the two sides between them. The side with more vertices wins, then
-/// the longer one. Every choice, the direction too, is made from the
-/// coordinates alone, so the spine does not depend on where the ring
-/// starts. `None` if the ring has fewer than two different vertices.
+/// open line through its middle, between its two vertices that are
+/// farthest apart. Those two split the ring into two sides; the spine
+/// joins the midpoints of the points at the same share of each side's
+/// length. The ends and the direction are chosen from the coordinates
+/// alone and the midpoints treat both sides alike, so the spine does not
+/// depend on where the ring starts. A blunt end (a thin rectangle) starts
+/// at one of its corners, half a width off the middle. `None` if the ring
+/// has fewer than two different vertices.
 fn spine(ring: &[[f64; 2]]) -> Option<BezPath> {
     let mut ring = ring.to_vec();
     ring.dedup();
     if ring.len() > 1 && ring.first() == ring.last() {
         ring.pop();
     }
-    let n = ring.len();
-    let order = |a: &[f64; 2], b: &[f64; 2]| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1]));
-    // A pair of vertices as (distance squared, lower end, upper end).
-    let pair = |i: usize, j: usize| {
-        let (a, b) = (ring[i], ring[j]);
-        let d = (b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2);
-        if order(&a, &b).is_le() {
-            (d, a, b)
-        } else {
-            (d, b, a)
-        }
-    };
-    // The farthest pair; ties go to the pair that sorts higher.
-    let mut ends: Option<(usize, usize)> = None;
-    for i in 0..n {
-        for j in i + 1..n {
-            let better = ends.is_none_or(|(bi, bj)| {
-                let ((d, lo, hi), (bd, blo, bhi)) = (pair(i, j), pair(bi, bj));
-                d.total_cmp(&bd)
-                    .then(order(&lo, &blo))
-                    .then(order(&hi, &bhi))
-                    .is_gt()
-            });
-            if better {
-                ends = Some((i, j));
-            }
-        }
-    }
-    let (i, j) = ends?;
-    let (d, lo, _) = pair(i, j);
-    if d <= 0.0 {
-        return None;
-    }
+    let (i, j) = farthest_pair(&ring)?;
+    let (i, j) = (i.min(j), i.max(j));
     // Both sides, from the lower end to the upper end.
+    let lo = if point_order(&ring[i], &ring[j]).is_le() {
+        ring[i]
+    } else {
+        ring[j]
+    };
     let mut sides = [
         ring[i..=j].to_vec(),
         ring[j..].iter().chain(&ring[..=i]).copied().collect(),
@@ -471,31 +448,138 @@ fn spine(ring: &[[f64; 2]]) -> Option<BezPath> {
             side.reverse();
         }
     }
-    let length = |side: &Contour| -> f64 {
-        side.windows(2)
-            .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
-            .sum()
-    };
-    let [a, b] = sides;
-    let first = a
-        .len()
-        .cmp(&b.len())
-        .then(length(&a).total_cmp(&length(&b)))
-        .then_with(|| {
-            a.iter()
-                .zip(&b)
-                .map(|(p, q)| order(p, q))
-                .find(|o| o.is_ne())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .is_ge();
-    let side = if first { a } else { b };
+    let [a, b] = sides.map(Side::new);
+    // Every vertex of either side gives one spine point.
+    let mut shares: Vec<f64> = a.shares.iter().chain(&b.shares).copied().collect();
+    shares.sort_by(f64::total_cmp);
+    shares.dedup_by(|x, y| (*x - *y).abs() < 1e-12);
+    let mut points: Vec<Point> = shares.iter().map(|&u| a.at(u).midpoint(b.at(u))).collect();
+    points.dedup();
     let mut path = BezPath::new();
-    path.move_to(Point::new(side[0][0], side[0][1]));
-    for p in &side[1..] {
-        path.line_to(Point::new(p[0], p[1]));
+    path.move_to(*points.first()?);
+    for p in &points[1..] {
+        path.line_to(*p);
     }
     Some(path)
+}
+
+/// One side of a hairline with, for every vertex, its share of the side's
+/// length (0 at the first vertex, 1 at the last).
+struct Side {
+    points: Contour,
+    shares: Vec<f64>,
+}
+
+impl Side {
+    fn new(points: Contour) -> Self {
+        let mut shares = Vec::with_capacity(points.len());
+        let mut length = 0.0;
+        shares.push(0.0);
+        for w in points.windows(2) {
+            length += (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]);
+            shares.push(length);
+        }
+        for s in &mut shares {
+            // A side without length is one point; every share is its start.
+            *s = if length > 0.0 { *s / length } else { 0.0 };
+        }
+        if let Some(last) = shares.last_mut().filter(|_| length > 0.0) {
+            *last = 1.0;
+        }
+        Self { points, shares }
+    }
+
+    /// The point at share `u` of the side's length.
+    fn at(&self, u: f64) -> Point {
+        let point = |k: usize| Point::new(self.points[k][0], self.points[k][1]);
+        // The first vertex with a share of `u` or more.
+        let k = self.shares.partition_point(|s| *s < u);
+        if k == 0 {
+            return point(0);
+        }
+        if k >= self.points.len() {
+            return point(self.points.len() - 1);
+        }
+        let (s0, s1) = (self.shares[k - 1], self.shares[k]);
+        let t = if s1 > s0 { (u - s0) / (s1 - s0) } else { 1.0 };
+        point(k - 1).lerp(point(k), t)
+    }
+}
+
+fn point_order(a: &[f64; 2], b: &[f64; 2]) -> std::cmp::Ordering {
+    a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1]))
+}
+
+/// Indices of the two points that are farthest apart; `None` if all
+/// points are the same. Exact, in `O(n log n)`: the two lie on the convex
+/// hull (monotone chain), and rotating calipers walk the hull's opposite
+/// pairs once. The hull is built from the sorted points, and equal
+/// distances go to the pair that sorts higher, so the answer does not
+/// depend on the order of `points`.
+fn farthest_pair(points: &[[f64; 2]]) -> Option<(usize, usize)> {
+    let mut sorted: Vec<usize> = (0..points.len()).collect();
+    sorted.sort_by(|&a, &b| point_order(&points[a], &points[b]).then(a.cmp(&b)));
+    sorted.dedup_by(|a, b| points[*a] == points[*b]);
+    let cross = |o: usize, a: usize, b: usize| {
+        let (o, a, b) = (points[o], points[a], points[b]);
+        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    };
+    // Lower chain, then upper chain; points on a hull edge are left out.
+    let mut hull: Vec<usize> = Vec::new();
+    for &p in &sorted {
+        while hull.len() >= 2 && cross(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0 {
+            hull.pop();
+        }
+        hull.push(p);
+    }
+    let lower = hull.len() + 1;
+    for &p in sorted.iter().rev().skip(1) {
+        while hull.len() >= lower && cross(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0 {
+            hull.pop();
+        }
+        hull.push(p);
+    }
+    // The last point is the first one again.
+    hull.pop();
+    let h = hull.len();
+    if h < 2 {
+        return None;
+    }
+    // A pair as (distance squared, lower end, upper end).
+    let key = |a: usize, b: usize| {
+        let (p, q) = (points[a], points[b]);
+        let d = (q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2);
+        if point_order(&p, &q).is_le() {
+            (d, p, q)
+        } else {
+            (d, q, p)
+        }
+    };
+    let mut best = (hull[0], hull[1]);
+    let mut consider = |a: usize, b: usize| {
+        let ((d, lo, hi), (bd, blo, bhi)) = (key(a, b), key(best.0, best.1));
+        if d.total_cmp(&bd)
+            .then(point_order(&lo, &blo))
+            .then(point_order(&hi, &bhi))
+            .is_gt()
+        {
+            best = (a, b);
+        }
+    };
+    let mut j = 1;
+    for i in 0..h {
+        let next = (i + 1) % h;
+        // The hull vertex farthest from the edge i -> next.
+        while cross(hull[i], hull[next], hull[(j + 1) % h]) > cross(hull[i], hull[next], hull[j]) {
+            j = (j + 1) % h;
+        }
+        // With a parallel opposite edge the vertex after `j` is as far.
+        for far in [j, (j + 1) % h] {
+            consider(hull[i], hull[far]);
+            consider(hull[next], hull[far]);
+        }
+    }
+    Some(best)
 }
 
 /// Mean width of boolean result shapes: twice their area over the length
@@ -651,6 +735,71 @@ mod tests {
         ];
         assert_eq!(s.elements(), line.as_slice());
         assert!(spine(&[[1.0, 1.0], [1.0, 1.0]]).is_none());
+    }
+
+    /// The farthest pair by comparing every pair.
+    fn farthest_distance(points: &[[f64; 2]]) -> f64 {
+        let mut best: f64 = 0.0;
+        for a in points {
+            for b in points {
+                best = best.max((a[0] - b[0]).hypot(a[1] - b[1]));
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn farthest_pair_matches_every_pair_compared() {
+        // Deterministic scattered points, a circle (all on the hull), a
+        // rectangle (parallel edges), collinear points and duplicates.
+        let mut seed: u64 = 42;
+        let mut next = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut sets: Vec<Vec<[f64; 2]>> = (3..40)
+            .map(|n| (0..n).map(|_| [next() * 50.0, next() * 3.0]).collect())
+            .collect();
+        sets.push(
+            (0..97)
+                .map(|k| {
+                    let a = f64::from(k) * 0.0648;
+                    [10.0 * a.cos(), 10.0 * a.sin()]
+                })
+                .collect(),
+        );
+        sets.push(vec![[0.0, 0.0], [50.0, 0.0], [50.0, 0.08], [0.0, 0.08]]);
+        sets.push(vec![[0.0, 0.0], [10.0, 0.0], [30.0, 0.0], [20.0, 0.0]]);
+        sets.push(vec![[1.0, 1.0], [4.0, 5.0], [1.0, 1.0], [4.0, 5.0]]);
+        sets.push(vec![[1.0, 1.0], [4.0, 5.0]]);
+        for set in &sets {
+            let (i, j) = farthest_pair(set).unwrap();
+            let d = (set[i][0] - set[j][0]).hypot(set[i][1] - set[j][1]);
+            assert!((d - farthest_distance(set)).abs() < 1e-12, "{set:?}");
+            // The same pair of points when the order changes.
+            let mut turned = set.clone();
+            turned.rotate_left(set.len() / 2);
+            let (a, b) = farthest_pair(&turned).unwrap();
+            let mut first = [set[i], set[j]];
+            let mut second = [turned[a], turned[b]];
+            first.sort_by(point_order);
+            second.sort_by(point_order);
+            assert_eq!(first, second, "{set:?}");
+        }
+        assert_eq!(farthest_pair(&[[1.0, 1.0], [1.0, 1.0]]), None);
+        assert_eq!(farthest_pair(&[]), None);
+    }
+
+    #[test]
+    fn spine_of_a_thin_rectangle_runs_through_its_middle() {
+        let s = spine(&[[0.0, 0.0], [50.0, 0.0], [50.0, 0.08], [0.0, 0.08]]).unwrap();
+        let pts: Vec<Point> = s.elements().iter().filter_map(|e| e.end_point()).collect();
+        assert_eq!(pts.len(), 4, "{pts:?}");
+        // Corner to corner, with the long run on the middle.
+        assert!(pts[1].distance(Point::new(0.04, 0.04)) < 1e-9, "{pts:?}");
+        assert!(pts[2].distance(Point::new(49.96, 0.04)) < 1e-9, "{pts:?}");
     }
 
     #[test]

@@ -124,8 +124,8 @@ pub fn build(session: &Session) -> Result<JobResult, CommandError> {
             }
             let cut = cutgeom::cut_path(p, &o.cut, affine, plotter.flatten_tolerance_mm);
             if cut.is_empty() && p.paint.stroke.is_none() && !p.path.elements().is_empty() {
-                // A stroke-less fill without area is not visible and gives
-                // nothing to cut.
+                // A stroke-less fill without area, or thinner than the
+                // tolerance, is not visible and gives nothing to cut.
                 no_area += 1;
             }
             for path in cut {
@@ -140,8 +140,9 @@ pub fn build(session: &Session) -> Result<JobResult, CommandError> {
         }
         if no_area > 0 {
             warnings.push(format!(
-                "'{}': {no_area} filled paths have no area (no visible shape) and are not cut.",
-                one_line(&o.name)
+                "'{}': {no_area} filled paths have no area or are thinner than the cut tolerance ({} mm) and are not cut.",
+                one_line(&o.name),
+                plotter.flatten_tolerance_mm
             ));
         }
         if placed.len() == before {
