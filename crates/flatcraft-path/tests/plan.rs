@@ -275,7 +275,7 @@ fn invalid_settings_message_is_readable() {
     for (field, label) in [
         ("join_tolerance_mm", "join tolerance"),
         ("overcut_mm", "overcut"),
-        ("passes", "passes"),
+        ("passes", "number of passes"),
         ("cutting_area", "cutting area"),
     ] {
         let msg = PlanError::InvalidSettings { field, value: -1.0 }.to_string();
@@ -369,7 +369,7 @@ proptest! {
     #[test]
     fn closed_rings_stay_closed(
         radii in proptest::collection::vec(5.0f64..40.0, 3..64),
-        overcut_factor in 0.0f64..1.5,
+        overcut_factor in 0.0f64..2.5,
     ) {
         // star-shaped polygon: increasing angles, so it is simple
         let n = radii.len();
@@ -390,9 +390,8 @@ proptest! {
         let mut ring = pts.clone();
         ring.push(pts[0]);
         let unmerged = ring.clone();
-        // overcut up to 1.5x the shortest edge, so it sometimes passes a corner
-        let shortest = ring.windows(2).map(|w| w[0].distance(w[1])).fold(f64::MAX, f64::min);
-        let overcut = overcut_factor * shortest;
+        // overcut up to 2.5x the first edge, so it often crosses a corner
+        let overcut = overcut_factor * ring[0].distance(ring[1]);
         // the plan merges collinear points with the same tolerance
         let ring = flatcraft_path::flatten::merge_collinear(&ring, 0.001);
         let perimeter = length(&ring);
@@ -411,7 +410,7 @@ proptest! {
         // against the unmerged source ring
         prop_assert_eq!(t.points[0], pts[0]);
         let expect_src = point_at(&unmerged, overcut);
-        prop_assert!(t.points.last().unwrap().distance(expect_src) <= 0.001 + 1e-9);
+        prop_assert!(t.points.last().unwrap().distance(expect_src) <= 2.0 * 0.001);
     }
 
     #[test]

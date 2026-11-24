@@ -118,7 +118,7 @@ fn invalid_settings_message(field: &str, value: f64) -> String {
         "overcut_mm" => {
             format!("The overcut must be a number of at least 0 mm (got {value}).")
         }
-        "passes" => format!("The passes must be at least 1 (got {value})."),
+        "passes" => format!("The number of passes must be at least 1 (got {value})."),
         "cutting_area" => format!(
             "The cutting area must have finite coordinates and a positive width and height (got {value})."
         ),
