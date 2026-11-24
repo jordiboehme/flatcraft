@@ -1,0 +1,25 @@
+[package]
+name = "flatcraft"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+eframe = { workspace = true, features = ["glow", "accesskit", "x11", "wayland"] }
+egui.workspace = true
+resvg.workspace = true
+usvg.workspace = true
+tiny-skia.workspace = true
+rfd.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+muda.workspace = true
+
+[dev-dependencies]
+egui_kittest.workspace = true
+tempfile.workspace = true

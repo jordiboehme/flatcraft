@@ -1,0 +1,17 @@
+[licenses]
+# Only licenses the tree uses are listed; add one (permissive or MPL) when a new crate
+# needs it, with a comment naming the crate. Never GPL, LGPL or AGPL.
+allow = [
+    "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-3-Clause", "Zlib", "MPL-2.0",
+    "Unicode-3.0", "Unlicense", "0BSD",
+    # arrayref 0.3.9 and roots 0.0.6 (permissive, BSD-style).
+    "BSD-2-Clause",
+    # libloading 0.8.9 (permissive, via the window system and GL loading).
+    "ISC",
+]
+
+[bans]
+multiple-versions = "warn"
+
+[advisories]
+ignore = []
