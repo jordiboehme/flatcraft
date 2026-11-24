@@ -196,37 +196,34 @@ fn star_has_eight_tips() {
     }
 }
 
-#[test]
-fn f_glyph_is_not_mirrored_in_device_space() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut s = session(&dir);
-    run(&mut s, "tools.test_patterns", json!({}));
-    let result = job::build(&s).expect("the sheet builds with the file output profile");
+/// Builds the sheet job and checks the F in device units: 20 mm tall, stem on
+/// the left spanning the full height, a long top arm above a shorter middle
+/// arm, both pointing to larger device x.
+fn f_check(s: &Session) -> Result<(), String> {
+    let result = job::build(s).map_err(|e| e.to_string())?;
     let sheet = &s.doc().document.objects[0];
     let paths = sheet.placed_paths();
     let f_index = paths
         .iter()
         .position(|p| p.label.as_deref() == Some("f-glyph"))
-        .expect("f-glyph path");
-
-    // The job listing names the F through its label.
-    assert!(
-        result
-            .job
-            .listing
-            .iter()
-            .any(|l| l.note.contains("[f-glyph]")),
-        "no listing note names f-glyph"
-    );
+        .ok_or("no f-glyph path")?;
+    if !result
+        .job
+        .listing
+        .iter()
+        .any(|l| l.note.contains("[f-glyph]"))
+    {
+        return Err("no listing note names f-glyph".into());
+    }
     let plotter = s
         .profiles
         .plotter(&s.doc().document.job.plotter_id)
-        .unwrap();
+        .map_err(|e| e.to_string())?;
     let media = plotter
         .media
         .iter()
         .find(|m| m.id == s.doc().document.job.media_id)
-        .unwrap();
+        .ok_or("no media")?;
     let pts: Vec<_> = result
         .plan
         .toolpaths
@@ -234,15 +231,16 @@ fn f_glyph_is_not_mirrored_in_device_space() {
         .filter(|t| t.source.object == sheet.id && t.source.path_index == f_index)
         .flat_map(|t| t.points.iter().map(|p| to_device(*p, &plotter, media)))
         .collect();
-    assert!(pts.len() >= 10);
-
+    if pts.len() < 10 {
+        return Err("too few F points".into());
+    }
     let min_x = pts.iter().map(|p| p.x).min().unwrap();
     let min_y = pts.iter().map(|p| p.y).min().unwrap();
     let max_y = pts.iter().map(|p| p.y).max().unwrap();
-    let u = plotter.units_per_mm;
-    let mm = |v: f64| (v * u).round() as i32;
-    assert!((max_y - min_y - mm(20.0)).abs() <= 1, "F is 20 mm tall");
-
+    let mm = |v: f64| (v * plotter.units_per_mm).round() as i32;
+    if (max_y - min_y - mm(20.0)).abs() > 1 {
+        return Err("F is not 20 mm tall".into());
+    }
     // Arm tips: the largest x in the band of each arm.
     let band_max_x = |from_mm: f64, to_mm: f64| {
         pts.iter()
@@ -253,35 +251,136 @@ fn f_glyph_is_not_mirrored_in_device_space() {
     };
     let top_arm_x = band_max_x(0.0, 4.0);
     let mid_arm_x = band_max_x(8.0, 12.0);
-    let top_arm_y = pts
-        .iter()
-        .filter(|p| p.x == top_arm_x)
-        .map(|p| p.y)
-        .min()
-        .unwrap();
-    let mid_arm_y = pts
-        .iter()
-        .filter(|p| p.x == mid_arm_x)
-        .map(|p| p.y)
-        .min()
-        .unwrap();
-
+    let first_y = |x: i32| pts.iter().filter(|p| p.x == x).map(|p| p.y).min().unwrap();
     // Stem on the left, the arms point right.
-    assert!(min_x < top_arm_x && min_x < mid_arm_x);
-    assert!(top_arm_x - min_x >= mm(13.0), "top arm is 14 mm wide");
-    assert!(
-        mid_arm_x - min_x >= mm(10.0) && mid_arm_x < top_arm_x,
-        "middle arm is shorter"
-    );
+    if !(min_x < top_arm_x && min_x < mid_arm_x) {
+        return Err("stem is not left of the arms".into());
+    }
+    if top_arm_x - min_x < mm(13.0) {
+        return Err("top arm is not 14 mm wide".into());
+    }
+    if mid_arm_x - min_x < mm(10.0) || mid_arm_x >= top_arm_x {
+        return Err("middle arm is not shorter than the top arm".into());
+    }
     // The stem spans the full height at the left edge.
     let stem_ys: Vec<i32> = pts
         .iter()
         .filter(|p| p.x <= min_x + 1)
         .map(|p| p.y)
         .collect();
-    assert!(stem_ys.contains(&min_y) && stem_ys.contains(&max_y));
+    if !(stem_ys.contains(&min_y) && stem_ys.contains(&max_y)) {
+        return Err("stem does not span the full height".into());
+    }
     // Top arm above the middle arm.
-    assert!(top_arm_y < mid_arm_y);
+    if first_y(top_arm_x) >= first_y(mid_arm_x) {
+        return Err("top arm is not above the middle arm".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn f_glyph_is_not_mirrored_in_device_space() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    run(&mut s, "tools.test_patterns", json!({}));
+    f_check(&s).unwrap();
+}
+
+/// A session whose plotter is the file output profile with one axis mirrored.
+fn mirrored_session(dir: &tempfile::TempDir, axis: &str) -> Session {
+    let plotters = dir.path().join("plotters");
+    std::fs::create_dir_all(&plotters).unwrap();
+    std::fs::write(
+        plotters.join("mirrored.toml"),
+        format!(
+            "id = \"mirrored\"\nname = \"Mirrored\"\ninherits = \"file-output-gpgl-cameo2\"\n[axis]\n{axis} = true\n"
+        ),
+    )
+    .unwrap();
+    let mut s = session(dir);
+    run(&mut s, "job.set_plotter", json!({ "id": "mirrored" }));
+    s
+}
+
+#[test]
+fn f_glyph_check_fails_when_mirrored() {
+    for axis in ["mirror_x", "mirror_y"] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = mirrored_session(&dir, axis);
+        let profile = s.profiles.plotter("mirrored").unwrap();
+        assert_eq!(
+            (profile.axis.mirror_x, profile.axis.mirror_y),
+            (axis == "mirror_x", axis == "mirror_y")
+        );
+        run(&mut s, "tools.test_patterns", json!({}));
+        assert!(f_check(&s).is_err(), "{axis}: the check must fail");
+    }
+}
+
+#[test]
+fn rulers_are_twelve_separate_paths_with_10_mm_ticks() {
+    let paths = sheet_paths();
+    for (label, along_x) in [("ruler-x", true), ("ruler-y", false)] {
+        let rs = labelled(&paths, label);
+        assert_eq!(rs.len(), 12, "{label}: 1 line + 11 ticks");
+        for r in &rs {
+            let subpaths = r
+                .path
+                .elements()
+                .iter()
+                .filter(|e| matches!(e, PathEl::MoveTo(_)))
+                .count();
+            assert_eq!(subpaths, 1, "{label}: one stroke per path");
+        }
+        let rects: Vec<Rect> = rs.iter().map(|r| r.path.bounding_box()).collect();
+        let long = |r: &Rect| if along_x { r.width() } else { r.height() };
+        let (lines, ticks): (Vec<_>, Vec<_>) = rects.iter().partition(|r| long(r) > 50.0);
+        assert_eq!(lines.len(), 1);
+        assert!((long(lines[0]) - 100.0).abs() < 1e-3);
+        assert_eq!(ticks.len(), 11);
+        let mut pos: Vec<f64> = ticks
+            .iter()
+            .map(|r| if along_x { r.x0 } else { r.y0 })
+            .collect();
+        pos.sort_by(f64::total_cmp);
+        for w in pos.windows(2) {
+            assert!((w[1] - w[0] - 10.0).abs() < 1e-3, "{label}: tick spacing");
+        }
+        for t in &ticks {
+            assert!((if along_x { t.height() } else { t.width() } - 5.0).abs() < 1e-3);
+        }
+    }
+}
+
+#[test]
+fn hole_and_circles_are_as_documented() {
+    let paths = sheet_paths();
+    let hole = labelled(&paths, "hole-in-square");
+    let mut rects: Vec<Rect> = hole.iter().map(|p| p.path.bounding_box()).collect();
+    rects.sort_by(|a, b| b.width().total_cmp(&a.width()));
+    let (outer, inner) = (rects[0], rects[1]);
+    assert!((outer.center().x - inner.center().x).abs() < 1e-3);
+    assert!((outer.center().y - inner.center().y).abs() < 1e-3);
+
+    let mut circles: Vec<Rect> = labelled(&paths, "circles")
+        .iter()
+        .map(|p| p.path.bounding_box())
+        .collect();
+    circles.sort_by(|a, b| a.width().total_cmp(&b.width()));
+    let want = [
+        (0.5, 10.5),
+        (1.0, 22.0),
+        (2.0, 35.0),
+        (5.0, 52.0),
+        (10.0, 77.0),
+        (25.0, 122.0),
+    ];
+    assert_eq!(circles.len(), want.len());
+    for (c, (r, cx)) in circles.iter().zip(want) {
+        assert!((c.width() / 2.0 - r).abs() < 1e-3, "radius {r}");
+        assert!((c.center().x - cx).abs() < 1e-3, "centre x of r {r}");
+        assert!((c.center().y - 105.0).abs() < 1e-3, "centre y of r {r}");
+    }
 }
 
 fn decode_size(png: &[u8]) -> (u32, u32) {

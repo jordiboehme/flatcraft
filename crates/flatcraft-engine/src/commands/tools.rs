@@ -69,15 +69,15 @@ fn run_test_patterns(
     }
     let svg = sheet_svg();
     let mut out = Map::new();
+    if let Some(path) = &p.svg_path {
+        write_atomic(path, &svg)?;
+        out.insert("svg_path".into(), json!(path));
+    }
     if p.add_to_document {
         let added = add_svg(s, SHEET_NAME.to_string(), svg.clone().into_bytes())?;
         let id = ObjectId(added["id"].as_u64().unwrap_or_default());
         centre_sheet(s, id)?;
         out.insert("id".into(), id.0.into());
-    }
-    if let Some(path) = &p.svg_path {
-        write_atomic(path, &svg)?;
-        out.insert("svg_path".into(), json!(path));
     }
     Ok(Value::Object(out))
 }

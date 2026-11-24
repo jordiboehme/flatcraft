@@ -105,17 +105,16 @@ pub fn sheet_svg() -> String {
         r#"<path d="M170 85 H184 V89 H174 V93 H181 V97 H174 V105 H170 Z"/>"#,
     );
 
-    // Rulers: a 100 mm line with a 5 mm tick every 10 mm.
-    let mut rx = String::from("M10 250 H110");
+    // Rulers: a 100 mm line and 11 ticks of 5 mm, every 10 mm. Each stroke is
+    // its own path, so the blade lifts between them and never drags.
+    let mut rx = String::from(r#"<path d="M10 250 H110"/>"#);
+    let mut ry = String::from(r#"<path d="M260 70 V170"/>"#);
     for i in 0..=10 {
-        let _ = write!(rx, " M{} 250 V245", 10 + 10 * i);
+        let _ = write!(rx, r#"<path d="M{} 250 V245"/>"#, 10 + 10 * i);
+        let _ = write!(ry, r#"<path d="M260 {} H255"/>"#, 70 + 10 * i);
     }
-    group(&mut s, "ruler-x", &format!(r#"<path d="{rx}"/>"#));
-    let mut ry = String::from("M260 70 V170");
-    for i in 0..=10 {
-        let _ = write!(ry, " M260 {} H255", 70 + 10 * i);
-    }
-    group(&mut s, "ruler-y", &format!(r#"<path d="{ry}"/>"#));
+    group(&mut s, "ruler-x", &rx);
+    group(&mut s, "ruler-y", &ry);
 
     s.push_str("</svg>\n");
     s
