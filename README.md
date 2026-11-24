@@ -9,7 +9,7 @@
 
 <p align="center">
   <strong>Your cutting plotter, back in the game. Agents welcome.</strong><br>
-  An open-source desktop app for cutting plotters like the Silhouette Cameo 2. Bring in a design,
+  An open-source desktop app for cutting plotters. Bring in a design,
   place it on the mat and cut it. Or let your AI agent prepare the job through the built-in MCP server.
 </p>
 
@@ -45,7 +45,7 @@ Early. Nothing to download yet.
 
 - Now: M1, the slicer app with File Output. It's built in the open, one reviewed task at a time ([PR #1](https://github.com/jordiboehme/flatcraft/pull/1)).
 - Next: M2, a knife simulator that measures cut quality, and the final path algorithms.
-- Then: M3, USB for a real Cameo 2, with ruler tests and a calibration wizard.
+- Then: M3, cutting over USB on a real plotter, with ruler tests and a calibration wizard.
 - Later: M4, a signed app, Homebrew and self-update.
 
 Star the repo if you want to see it cut. Don't stop believin'.
@@ -54,6 +54,7 @@ Star the repo if you want to see it cut. Don't stop believin'.
 
 - **Import in true size:** SVG in px, mm or inches comes in at the right size. PNG, JPEG, WebP and GIF are traced into cut outlines, with a live preview.
 - **Arrange like a slicer:** move, scale, rotate, mirror, align and auto-arrange on the mat. No vector editor, no node fiddling: bring it in, place it, cut it.
+- **One app, many plotters:** every machine gets a profile: the language it speaks, how it connects and what it can do. A new plotter is a new profile, not a new app.
 - **Profiles, PrusaSlicer style:** plotter and material presets with inheritance. Speed, force and passes per material, and a quick override per job.
 - **Cut quality first:** holes before outlines, so a piece never moves before it's done. Start points on corners. An overcut that closes every shape. Passes that stay on one shape until it's finished.
 - **File Output:** the exact bytes the plotter would get, plus a readable listing of every command. Think G-code for your plotter. It's the default device, so nothing moves by accident.
