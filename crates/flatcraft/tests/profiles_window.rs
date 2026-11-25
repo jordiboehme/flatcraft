@@ -851,3 +851,102 @@ fn theme_buttons_offer_system_and_follow_the_os() {
     assert_eq!(Preferences::load(dir.path()).theme, Theme::System);
     assert_eq!(app(&h).tokens, flatcraft::ui::theme::Tokens::light());
 }
+
+/// The labels of the checkboxes shown now.
+fn checkboxes(h: &AppHarness) -> Vec<String> {
+    h.query_all_by_role(Role::CheckBox)
+        .filter_map(|n| n.accesskit_node().label())
+        .collect()
+}
+
+/// Hovers every checkbox of the open page that is not in `outside` and
+/// returns the ones that show no setting card.
+fn checkboxes_without_a_card(h: &mut AppHarness, outside: &[String]) -> (usize, Vec<String>) {
+    use flatcraft::ui::tools::Setting;
+    let labels: Vec<String> = checkboxes(h)
+        .into_iter()
+        .filter(|l| !outside.contains(l))
+        .collect();
+    let mut missing = Vec::new();
+    for label in &labels {
+        let at = h.get_by_label(label).rect().center();
+        h.hover_at(egui::pos2(at.x, at.y));
+        h.run();
+        h.run();
+        if !Setting::ALL
+            .iter()
+            .any(|s| h.query_by_label(s.card()).is_some())
+        {
+            missing.push(label.clone());
+        }
+        h.hover_at(egui::pos2(1.0, 1.0));
+        h.run();
+    }
+    (labels.len(), missing)
+}
+
+#[test]
+fn every_checkbox_in_the_preset_pages_has_a_hover_card() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    // Tall enough that every field of a page is on screen to hover.
+    let mut h = common::harness_sized(&dir, s.clone(), [1400.0, 2400.0], 8, |app| app);
+    let outside = checkboxes(&h);
+    // A user material with one plotter override shows the override boxes.
+    open(&mut h, "Materials");
+    click(&mut h, "Copy Paper");
+    click(&mut h, "Save as user preset...");
+    type_into(&mut h, "Preset name", "My Paper");
+    h.get_by_label("Add override for").click();
+    h.run();
+    click(&mut h, "Silhouette Cameo 2");
+    let mut seen = 0;
+    let (n, missing) = checkboxes_without_a_card(&mut h, &outside);
+    assert_eq!(missing, Vec::<String>::new(), "Materials");
+    seen += n;
+    // The system Cameo 2: every field dimmed, a built-in mat to hide.
+    for (tab, preset) in [("Plotters", "Silhouette Cameo 2"), ("Mats", "")] {
+        page(&mut h, tab);
+        if !preset.is_empty() {
+            click(&mut h, preset);
+        }
+        let (n, missing) = checkboxes_without_a_card(&mut h, &outside);
+        assert_eq!(missing, Vec::<String>::new(), "{tab}");
+        seen += n;
+    }
+    // Mirror x and y, three capabilities, Calibrated, Hidden, Reverse
+    // alternate passes, Track enhancing and four override boxes.
+    assert!(seen >= 13, "{seen}");
+}
+
+#[test]
+fn dimmed_fields_say_why_on_their_card() {
+    use flatcraft::ui::profiles_window::{OVERRIDE_OFF, SYSTEM_READ_ONLY};
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = common::harness_sized(&dir, s.clone(), [1400.0, 2400.0], 8, |app| app);
+    let hover = |h: &mut AppHarness, label: &str| {
+        let at = h.get_by_label(label).rect().center();
+        h.hover_at(egui::pos2(at.x, at.y));
+        h.run();
+        h.run();
+    };
+    // A system preset is read-only.
+    open(&mut h, "Plotters");
+    click(&mut h, "Silhouette Cameo 2");
+    assert!(disabled(&h, "Track enhancing"));
+    hover(&mut h, "Track enhancing");
+    assert!(h.query_by_label(SYSTEM_READ_ONLY).is_some());
+    // An override value counts only while its box is ticked.
+    open(&mut h, "Materials");
+    click(&mut h, "Copy Paper");
+    click(&mut h, "Save as user preset...");
+    type_into(&mut h, "Preset name", "My Paper");
+    h.get_by_label("Add override for").click();
+    h.run();
+    click(&mut h, "Silhouette Cameo 2");
+    assert!(disabled(&h, "Silhouette Cameo 2 force"));
+    hover(&mut h, "Silhouette Cameo 2 force");
+    assert!(h.query_by_label(OVERRIDE_OFF).is_some());
+    assert!(h.query_by_label(SYSTEM_READ_ONLY).is_none());
+}

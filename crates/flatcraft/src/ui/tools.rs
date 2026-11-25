@@ -1045,10 +1045,19 @@ pub enum Setting {
     AutoMinFeature,
     AutoArrangeSpacing,
     KnifeCompensation,
+    MirrorX,
+    MirrorY,
+    TrackEnhancingSupport,
+    RegistrationMarks,
+    AutoBlade,
+    Calibrated,
+    HiddenMat,
+    TrackEnhancing,
+    OverrideSet,
 }
 
 impl Setting {
-    pub const ALL: [Setting; 25] = [
+    pub const ALL: [Setting; 34] = [
         Setting::Width,
         Setting::Height,
         Setting::ScalePercent,
@@ -1074,6 +1083,15 @@ impl Setting {
         Setting::AutoMinFeature,
         Setting::AutoArrangeSpacing,
         Setting::KnifeCompensation,
+        Setting::MirrorX,
+        Setting::MirrorY,
+        Setting::TrackEnhancingSupport,
+        Setting::RegistrationMarks,
+        Setting::AutoBlade,
+        Setting::Calibrated,
+        Setting::HiddenMat,
+        Setting::TrackEnhancing,
+        Setting::OverrideSet,
     ];
 
     /// The text of its hover card: what it does, when to change it, and
@@ -1152,6 +1170,33 @@ impl Setting {
             }
             Setting::KnifeCompensation => {
                 "Who steers the blade around corners. Firmware lets the plotter do it, Host lets FlatCraft do it, None cuts the plain lines."
+            }
+            Setting::MirrorX => {
+                "Flips the x axis: x runs from the far edge of the mat instead of the near one. Turn it on only when this plotter counts x the other way round, so its cuts come out mirrored left to right. The Cameo 2 leaves it off."
+            }
+            Setting::MirrorY => {
+                "Flips the y axis: y runs from the far end of the mat instead of the start. Turn it on only when this plotter counts y the other way round, so its cuts come out upside down. The Cameo 2 leaves it off."
+            }
+            Setting::TrackEnhancingSupport => {
+                "Says whether this plotter has track enhancing. Track enhancing is a mode for the feed rollers (the rubber wheels that move the mat or sheet) that is meant to help long or heavy material run straight. A material can only use it when this is on."
+            }
+            Setting::RegistrationMarks => {
+                "Says whether this plotter can find registration marks: small printed marks near the corners of a sheet that the plotter's light sensor looks for, so it can cut around a picture you printed. FlatCraft does not use registration marks yet, so this changes nothing today."
+            }
+            Setting::AutoBlade => {
+                "Says whether this plotter sets the blade depth by itself (an auto blade). Without one, like on the Cameo 2, you turn the blade cap by hand to set the depth. FlatCraft does not use this yet, so this changes nothing today."
+            }
+            Setting::Calibrated => {
+                "Turn this on once you know the grid values above match this mat exactly. While it is off, FlatCraft keeps every cut 5 mm inside the printed grid, to be safe. The calibration wizard that checks this for you arrives in milestone 3."
+            }
+            Setting::HiddenMat => {
+                "Hides this built-in mat from the mat lists, so you only see the mats you own. Untick it to bring the mat back. A mat in use cannot be hidden: that is a mat an open document cuts on, or the mat new documents start on."
+            }
+            Setting::TrackEnhancing => {
+                "Turns on track enhancing for this material: a mode for the feed rollers (the rubber wheels that move the mat or sheet) that is meant to help long or heavy material run straight. It only works when the plotter's own Track enhancing box is on too."
+            }
+            Setting::OverrideSet => {
+                "Tick this to use a different value with this one plotter. While it is ticked, the value next to it counts for that plotter; untick it and the material's own value applies again."
             }
         }
     }

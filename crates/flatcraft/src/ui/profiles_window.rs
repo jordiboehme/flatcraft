@@ -33,6 +33,13 @@ pub const AUTO_RELOAD_HELP: &str = "When an imported file changes on disk, FlatC
 /// Why a mat cannot be hidden or deleted.
 pub const MAT_IN_USE: &str = "This mat is in use. Pick another mat in the job first.";
 
+/// Why a field of a system preset is dimmed, on its hover card.
+pub const SYSTEM_READ_ONLY: &str =
+    "This is a system preset, so it cannot be changed. Save a user preset to change it.";
+
+/// Why a plotter override value is dimmed, on its hover card.
+pub const OVERRIDE_OFF: &str = "The box on its left is off, so the material's own value applies. Tick the box to set a value for this plotter.";
+
 /// Warning under "Allow agents to start cuts".
 pub const AGENT_CUTS_WARNING: &str = "With this on, an agent can start a USB cut without asking you first. Turn it on only when the mat is loaded and you trust the agent. File Output never needs it.";
 
@@ -518,6 +525,8 @@ struct Form<'a> {
     t: &'a Tokens,
     /// The row a search jumped to.
     highlight: &'a Highlight,
+    /// A system preset: every field is dimmed and its card says why.
+    system: bool,
 }
 
 impl Form<'_> {
@@ -544,10 +553,21 @@ impl Form<'_> {
         let r = add(ui);
         set_name(ui, &r, &self.name(label, key));
         if let Some(setting) = setting_of(key) {
-            super::groups::card(&r, label, setting.card(), None, false);
+            self.card(&r, label, setting, None);
         }
         self.mark(ui, label, at.union(r.rect));
         ui.end_row();
+    }
+
+    /// The hover card of `setting` on `r`. On a system preset it says why
+    /// the field is dimmed; otherwise `reason` does, when there is one.
+    fn card(&self, r: &Response, label: &str, setting: Setting, reason: Option<&str>) {
+        let reason = if self.system {
+            Some(SYSTEM_READ_ONLY)
+        } else {
+            reason
+        };
+        super::groups::card(r, label, setting.card(), reason, false);
     }
 
     /// Outlines the row a search jumped to and scrolls it into view once.
@@ -561,15 +581,14 @@ impl Form<'_> {
         }
     }
 
-    /// A checkbox in the widget column.
-    fn check(&self, ui: &mut Ui, label: &str, key: &str, v: &mut bool) {
+    /// A checkbox in the widget column, with the hover card of `setting`.
+    /// Every checkbox has one.
+    fn check(&self, ui: &mut Ui, label: &str, key: &str, setting: Setting, v: &mut bool) {
         let dot = self.is_modified(key).then_some(self.t.accent_prepare);
         let at = paint_text(ui, "", ui.visuals().text_color(), dot);
         let r = ui.checkbox(v, label);
         set_name(ui, &r, &self.name(label, key));
-        if let Some(setting) = setting_of(key) {
-            super::groups::card(&r, label, setting.card(), None, false);
-        }
+        self.card(&r, label, setting, None);
         self.mark(ui, label, at.union(r.rect));
         ui.end_row();
     }
@@ -581,7 +600,6 @@ fn setting_of(key: &str) -> Option<Setting> {
         "speed" | "speed_range" => Setting::Speed,
         "force" | "force_range" => Setting::Force,
         "passes" | "passes_range" => Setting::Passes,
-        "reverse_alternate_passes" => Setting::ReverseAlternatePasses,
         "overcut_mm" => Setting::Overcut,
         "blade_offset_mm" => Setting::BladeOffset,
         "knife_compensation" => Setting::KnifeCompensation,
@@ -882,6 +900,7 @@ pub(crate) fn mats_page(
                     modified: &[],
                     t,
                     highlight,
+                    system: false,
                 };
                 f.mark(ui, "Calibration", at);
             });
@@ -896,6 +915,7 @@ fn plotter_form(ui: &mut Ui, d: &mut Draft<PlotterProfile>, highlight: &Highligh
         modified: &d.modified,
         t,
         highlight,
+        system: d.system,
     };
     let p = &mut d.edit;
     ui.add_enabled_ui(!d.system, |ui| {
@@ -982,8 +1002,20 @@ fn plotter_form(ui: &mut Ui, d: &mut Draft<PlotterProfile>, highlight: &Highligh
                 f.row(ui, "Units per mm", "units_per_mm", |ui| {
                     ui.add(num(&mut p.units_per_mm, 3))
                 });
-                f.check(ui, "Mirror x", "axis.mirror_x", &mut p.axis.mirror_x);
-                f.check(ui, "Mirror y", "axis.mirror_y", &mut p.axis.mirror_y);
+                f.check(
+                    ui,
+                    "Mirror x",
+                    "axis.mirror_x",
+                    Setting::MirrorX,
+                    &mut p.axis.mirror_x,
+                );
+                f.check(
+                    ui,
+                    "Mirror y",
+                    "axis.mirror_y",
+                    Setting::MirrorY,
+                    &mut p.axis.mirror_y,
+                );
                 f.row(ui, "Scale x", "scale_x", |ui| {
                     ui.add(num(&mut p.scale_x, 5).speed(0.0005))
                 });
@@ -1017,18 +1049,21 @@ fn plotter_form(ui: &mut Ui, d: &mut Draft<PlotterProfile>, highlight: &Highligh
                     ui,
                     "Track enhancing",
                     "capabilities.track_enhancing",
+                    Setting::TrackEnhancingSupport,
                     &mut c.track_enhancing,
                 );
                 f.check(
                     ui,
                     "Registration marks",
                     "capabilities.registration_marks",
+                    Setting::RegistrationMarks,
                     &mut c.registration_marks,
                 );
                 f.check(
                     ui,
                     "Auto blade",
                     "capabilities.auto_blade",
+                    Setting::AutoBlade,
                     &mut c.auto_blade,
                 );
                 f.row(ui, "Flatten tolerance (mm)", "flatten_tolerance_mm", |ui| {
@@ -1124,6 +1159,7 @@ fn mats(
         modified: &d.modified,
         t,
         highlight,
+        system: d.system,
     };
     ui.label(
         RichText::new("Measure twice, cut once. The grid's 0,0 is FlatCraft's 0,0.")
@@ -1234,6 +1270,7 @@ fn mats(
             let mut hide = at.is_none();
             let r = ui.checkbox(&mut hide, "Hidden");
             set_name(ui, &r, "Hidden");
+            f.card(&r, "Hidden", Setting::HiddenMat, None);
             if r.changed() {
                 match (hide, at) {
                     (true, Some(_)) if in_use.contains(&id.as_str()) => {
@@ -1288,6 +1325,7 @@ fn mats(
         modified: &mat_modified,
         t,
         highlight,
+        system,
     };
     let m = &mut media[i];
     let problem = mat_problem(m);
@@ -1348,7 +1386,13 @@ fn mats(
                         ui.add(num(&mut m.grid.height_mm, 2))
                     });
                     show_problem(ui, MediaField::GridHeight);
-                    f.check(ui, "Calibrated", "calibrated", &mut m.calibrated);
+                    f.check(
+                        ui,
+                        "Calibrated",
+                        "calibrated",
+                        Setting::Calibrated,
+                        &mut m.calibrated,
+                    );
                     f.row(ui, "Mat colour", "color", |ui| {
                         ui.color_edit_button_srgb(&mut m.color)
                     });
@@ -1522,6 +1566,7 @@ fn material_form(
         modified: &d.modified,
         t,
         highlight,
+        system: d.system,
     };
     let m = &mut d.edit;
     ui.add_enabled_ui(!d.system, |ui| {
@@ -1545,6 +1590,7 @@ fn material_form(
                     ui,
                     "Reverse alternate passes",
                     "reverse_alternate_passes",
+                    Setting::ReverseAlternatePasses,
                     &mut m.reverse_alternate_passes,
                 );
                 f.row(ui, "Overcut (mm)", "overcut_mm", |ui| {
@@ -1554,6 +1600,7 @@ fn material_form(
                     ui,
                     "Track enhancing",
                     "track_enhancing",
+                    Setting::TrackEnhancing,
                     &mut m.track_enhancing,
                 );
                 f.row(ui, "Blade depth hint", "blade_depth_hint", |ui| {
@@ -1606,6 +1653,7 @@ fn overrides(ui: &mut Ui, f: &Form<'_>, m: &mut MaterialProfile, view: &View, t:
                     f,
                     &format!("{name} speed"),
                     &format!("{key}.speed"),
+                    Setting::Speed,
                     &mut o.speed,
                     base.0,
                 );
@@ -1614,6 +1662,7 @@ fn overrides(ui: &mut Ui, f: &Form<'_>, m: &mut MaterialProfile, view: &View, t:
                     f,
                     &format!("{name} force"),
                     &format!("{key}.force"),
+                    Setting::Force,
                     &mut o.force,
                     base.1,
                 );
@@ -1622,6 +1671,7 @@ fn overrides(ui: &mut Ui, f: &Form<'_>, m: &mut MaterialProfile, view: &View, t:
                     f,
                     &format!("{name} passes"),
                     &format!("{key}.passes"),
+                    Setting::Passes,
                     &mut o.passes,
                     base.2,
                 );
@@ -1630,12 +1680,14 @@ fn overrides(ui: &mut Ui, f: &Form<'_>, m: &mut MaterialProfile, view: &View, t:
                     let mut on = o.overcut_mm.is_some();
                     let r = ui.checkbox(&mut on, "");
                     set_name(ui, &r, &format!("{label} set"));
+                    f.card(&r, &label, Setting::OverrideSet, None);
                     if r.changed() {
                         o.overcut_mm = on.then_some(base.3);
                     }
                     let mut v = o.overcut_mm.unwrap_or(base.3);
                     let r = ui.add_enabled(on, num(&mut v, 2));
                     set_name(ui, &r, &f.name(&label, &format!("{key}.overcut_mm")));
+                    f.card(&r, &label, Setting::Overcut, (!on).then_some(OVERRIDE_OFF));
                     if on {
                         o.overcut_mm = Some(v);
                     }
@@ -1679,6 +1731,7 @@ fn cell<T: egui::emath::Numeric>(
     f: &Form<'_>,
     label: &str,
     key: &str,
+    setting: Setting,
     v: &mut Option<T>,
     base: T,
 ) {
@@ -1686,12 +1739,14 @@ fn cell<T: egui::emath::Numeric>(
         let mut on = v.is_some();
         let r = ui.checkbox(&mut on, "");
         set_name(ui, &r, &format!("{label} set"));
+        f.card(&r, label, Setting::OverrideSet, None);
         if r.changed() {
             *v = on.then_some(base);
         }
         let mut x = v.unwrap_or(base);
         let r = ui.add_enabled(on, egui::DragValue::new(&mut x).update_while_editing(false));
         set_name(ui, &r, &f.name(label, key));
+        f.card(&r, label, setting, (!on).then_some(OVERRIDE_OFF));
         if on {
             *v = Some(x);
         }
@@ -2028,9 +2083,7 @@ mod tests {
 
     #[test]
     fn reverse_alternate_passes_has_a_hover_card() {
-        let card = setting_of("reverse_alternate_passes")
-            .expect("the checkbox has a hover card")
-            .card();
+        let card = Setting::ReverseAlternatePasses.card();
         assert!(card.contains("every second pass"), "{card}");
         assert!(card.contains("lift"), "{card}");
         assert!(!card.contains('\u{2014}'), "{card}");
