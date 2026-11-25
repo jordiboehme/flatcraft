@@ -151,6 +151,9 @@ pub enum Action {
         command: &'static str,
         params: Value,
     },
+    /// Store the "Each object" switch of the Arrange tab in the
+    /// preferences, so the next start has it as it was.
+    RememberEach(bool),
     /// Ask for a file and import it into this document.
     Import {
         doc_id: u64,
@@ -272,14 +275,19 @@ pub struct FlatCraftApp {
 impl FlatCraftApp {
     /// Installs the fonts and the theme of the preferences on `ctx`.
     pub fn new(ctx: &egui::Context, session: SharedSession, config_dir: PathBuf) -> Self {
-        let theme = lock(&session).prefs.theme;
+        let (theme, rotate_each) = {
+            let s = lock(&session);
+            (s.prefs.theme, s.prefs.rotate_each)
+        };
         let tokens = Tokens::for_theme(theme);
         fonts::install(ctx);
         theme::apply(ctx, &tokens);
+        let mut ui = UiState::default();
+        ui.prepare.fields.each = rotate_each;
         Self {
             session,
             config_dir,
-            ui: UiState::default(),
+            ui,
             tokens,
             agent: false,
             files: Box::new(files::NativePicker),
@@ -719,6 +727,14 @@ impl FlatCraftApp {
                 }
             }
             Action::ShowProfiles => self.ui.show_profiles = true,
+            Action::RememberEach(each) => {
+                let result = lock(&self.session).update_prefs(|p| p.rotate_each = each);
+                if let Err(e) = result {
+                    self.toast(Toast::error(format!(
+                        "Cannot store the Each object setting: {e}"
+                    )));
+                }
+            }
             Action::Profiles(req) => profiles_window::apply(self, ctx, req),
             Action::Help => ctx.open_url(egui::OpenUrl::new_tab(HELP_URL)),
             Action::Quit => {

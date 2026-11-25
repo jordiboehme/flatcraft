@@ -639,5 +639,8 @@ fn toasts_expire_by_the_window_clock() {
     assert_eq!(app(&h).ui.toasts.len(), 1);
     *now.lock().unwrap() += flatcraft::ui::toasts::LIFETIME;
     h.run();
-    assert!(app(&h).ui.toasts.is_empty(), "expired after 4 s on the clock");
+    assert!(
+        app(&h).ui.toasts.is_empty(),
+        "expired after 4 s on the clock"
+    );
 }

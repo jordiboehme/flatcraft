@@ -34,6 +34,11 @@ pub struct Preferences {
     /// `document.check_sources` are reloaded, never `missing` or
     /// `unreadable`. Off by default.
     pub auto_reload: bool,
+    /// The window's "Each object" switch: rotate and mirror turn each
+    /// selected object about its own centre instead of the selection as one
+    /// group. Only the window writes it (a UI preference, ruling R16); no
+    /// registry command reads or changes it. Off by default.
+    pub rotate_each: bool,
 }
 
 impl Default for Preferences {
@@ -46,6 +51,7 @@ impl Default for Preferences {
             recent_projects: Vec::new(),
             output_dir: None,
             auto_reload: false,
+            rotate_each: false,
         }
     }
 }

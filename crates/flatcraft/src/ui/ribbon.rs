@@ -527,9 +527,14 @@ fn arrange(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Ve
     } else {
         "Rotate and mirror each object about its own centre. Select several objects first."
     };
-    ui.add_enabled(several, egui::Checkbox::new(&mut f.each, "Each object"))
+    if ui
+        .add_enabled(several, egui::Checkbox::new(&mut f.each, "Each object"))
         .on_hover_text(hint)
-        .on_disabled_hover_text(hint);
+        .on_disabled_hover_text(hint)
+        .changed()
+    {
+        actions.push(Action::RememberEach(f.each));
+    }
     ui.separator();
     let align_to_area = &mut st.fields.align_to_area;
     ui.add_enabled_ui(any, |ui| {

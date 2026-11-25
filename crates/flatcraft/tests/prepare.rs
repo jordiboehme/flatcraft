@@ -2097,3 +2097,44 @@ fn typed_percent_of_a_multi_selection_scales_the_group() {
         "about the group centre"
     );
 }
+
+#[test]
+fn each_object_is_remembered_across_restarts() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let b = square_at(&s, 60.0);
+    select(&s, &[a, b]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.run();
+    h.get_by_label("Each object").click();
+    h.run();
+    assert!(
+        s.lock().unwrap().prefs.rotate_each,
+        "stored in the preferences"
+    );
+    drop(h);
+    // A new window on the stored preferences starts with it on.
+    let prefs = flatcraft_engine::prefs::Preferences::load(dir.path());
+    assert!(prefs.rotate_each, "written to the file");
+    let s2 = session(&dir);
+    s2.lock().unwrap().prefs = prefs;
+    let a = import_square(&s2);
+    let b = square_at(&s2, 60.0);
+    select(&s2, &[a, b]);
+    let mut h = harness(&dir, s2.clone(), false);
+    to_prepare(&mut h);
+    assert!(app(&h).ui.prepare.fields.each);
+    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.run();
+    assert_eq!(
+        h.get_by_label("Each object").accesskit_node().toggled(),
+        Some(egui::accesskit::Toggled::True)
+    );
+    // Off again is stored too.
+    h.get_by_label("Each object").click();
+    h.run();
+    assert!(!flatcraft_engine::prefs::Preferences::load(dir.path()).rotate_each);
+}
