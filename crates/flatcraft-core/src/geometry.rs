@@ -87,11 +87,18 @@ mod svg_path {
     }
 }
 
+/// True if `path` draws anything: it has at least one segment. A path of
+/// lone moves has none, and kurbo gives it an empty box at (0, 0).
+pub fn has_segments(path: &BezPath) -> bool {
+    path.segments().next().is_some()
+}
+
 /// Union of the bounding boxes of all paths, `None` if there are no paths.
+/// Paths without segments are left out.
 pub fn bounds(paths: &[CutPath]) -> Option<Rect> {
     paths
         .iter()
-        .filter(|p| !p.path.elements().is_empty())
+        .filter(|p| has_segments(&p.path))
         .map(|p| p.path.bounding_box())
         .reduce(|a, b| a.union(b))
 }
@@ -113,6 +120,23 @@ mod tests {
             color: None,
             label: None,
             paint: Paint::default(),
+        }
+    }
+
+    /// A path that only moves draws nothing and must not pull the bounds
+    /// to (0, 0) (kurbo gives such a path an empty box at the origin).
+    #[test]
+    fn a_path_without_segments_adds_nothing_to_the_bounds() {
+        for stray in ["M50 50", "M50 50 Z"] {
+            let only_move = CutPath {
+                path: BezPath::from_svg(stray).unwrap(),
+                color: None,
+                label: None,
+                paint: Paint::default(),
+            };
+            let b = bounds(&[square(10.0, 10.0, 10.0), only_move.clone()]).unwrap();
+            assert_eq!(b, kurbo::Rect::new(10.0, 10.0, 20.0, 20.0), "{stray}");
+            assert_eq!(bounds(&[only_move]), None, "{stray}");
         }
     }
 

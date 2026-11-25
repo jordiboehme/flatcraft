@@ -80,7 +80,7 @@ pub fn cut_bounds(object: &Object) -> Option<Rect> {
 
 fn path_bounds(path: &CutPath, options: &CutOptions, affine: Affine) -> Option<Rect> {
     let placed = affine * &path.path;
-    if placed.elements().is_empty() {
+    if !flatcraft_core::geometry::has_segments(&placed) {
         return None;
     }
     let centre = placed.bounding_box();
@@ -838,6 +838,29 @@ pub(crate) mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_path_without_segments_has_no_cut_bounds() {
+        for stray in ["M50 50", "M50 50 Z"] {
+            let path = CutPath {
+                path: BezPath::from_svg(stray).unwrap(),
+                color: None,
+                label: None,
+                paint: Default::default(),
+            };
+            for mode in [CutMode::AllLines, CutMode::ObjectOutlines] {
+                let options = CutOptions {
+                    mode,
+                    ..CutOptions::default()
+                };
+                assert_eq!(
+                    path_bounds(&path, &options, Affine::IDENTITY),
+                    None,
+                    "{stray}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn meeting_ends_are_closed() {
