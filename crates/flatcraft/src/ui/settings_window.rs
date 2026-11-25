@@ -1142,6 +1142,12 @@ fn section(ui: &mut Ui, cx: &mut Cx<'_>, title: &str, add: impl FnOnce(&mut Ui, 
         rect.center().y,
         egui::Stroke::new(1.0, t.border),
     );
+    let what = if open {
+        "Click to fold this section away."
+    } else {
+        "Click to show this section again."
+    };
+    super::groups::card(&resp, title, what, None, false);
     if resp.clicked() {
         if open {
             cx.collapsed.insert(key);
@@ -1334,6 +1340,14 @@ fn stepper(
             egui::Button::new("\u{2212}").min_size(vec2(24.0, 22.0)),
         );
         set_name(ui, &less, &format!("Less {name}"));
+        let low = format!("{lo}{unit} is the smallest value.");
+        super::groups::card(
+            &less,
+            &format!("Less {name}"),
+            &format!("Takes {step}{unit} off."),
+            (*v <= lo).then_some(low.as_str()),
+            false,
+        );
         if less.clicked() {
             *v = ((*v - step) / step).round() * step;
             *v = v.clamp(lo, hi);
@@ -1349,6 +1363,14 @@ fn stepper(
         set_name(ui, &r, name);
         let more = ui.add_enabled(*v < hi, egui::Button::new("+").min_size(vec2(24.0, 22.0)));
         set_name(ui, &more, &format!("More {name}"));
+        let high = format!("{hi}{unit} is the largest value.");
+        super::groups::card(
+            &more,
+            &format!("More {name}"),
+            &format!("Adds {step}{unit}."),
+            (*v >= hi).then_some(high.as_str()),
+            false,
+        );
         if more.clicked() {
             *v = ((*v + step) / step).round() * step;
             *v = v.clamp(lo, hi);
@@ -1372,10 +1394,25 @@ fn general(ui: &mut Ui, cx: &mut Cx<'_>, d: &mut Preferences, actions: &mut Vec<
                 if choose.clicked() {
                     actions.push(Action::Profiles(Request::ChooseOutputFolder));
                 }
-                if ui
-                    .add_enabled(d.output_dir.is_some(), egui::Button::new("Use the default"))
-                    .clicked()
-                {
+                super::groups::card(
+                    &choose,
+                    "Choose folder",
+                    "Pick the folder File Output writes to. Apply or OK stores it.",
+                    None,
+                    false,
+                );
+                let default =
+                    ui.add_enabled(d.output_dir.is_some(), egui::Button::new("Use the default"));
+                super::groups::card(
+                    &default,
+                    "Use the default",
+                    "Write to Documents/FlatCraft Output again.",
+                    d.output_dir
+                        .is_none()
+                        .then_some("FlatCraft already uses the default folder."),
+                    false,
+                );
+                if default.clicked() {
                     d.output_dir = None;
                 }
                 Some(choose)
@@ -1691,6 +1728,13 @@ fn snippet(ui: &mut Ui, text: &str, copy: &str, t: &Tokens) {
         });
     let r = ui.button("Copy");
     set_name(ui, &r, copy);
+    super::groups::card(
+        &r,
+        copy,
+        "Copies the text above, so you can paste it into your agent's setup.",
+        None,
+        false,
+    );
     if r.clicked() {
         ui.ctx().copy_text(text.to_string());
     }

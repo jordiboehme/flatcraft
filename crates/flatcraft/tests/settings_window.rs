@@ -400,7 +400,12 @@ fn the_window_fits_at_900_by_600() {
     let mut h = harness_sized(&dir, s.clone(), [900.0, 600.0], 8, |app| app);
     h.get_by_role_and_label(Role::Button, "Settings").click();
     h.run();
-    let screen = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(916.0, 616.0));
+    let window: Rect = h
+        .ctx
+        .memory(|m| m.area_rect(egui::Id::unique("flatcraft-settings")))
+        .expect("the Settings window is drawn");
+    let screen = h.ctx.content_rect();
+    assert!(screen.contains_rect(window), "{window:?} in {screen:?}");
     for page in Page::ALL {
         h.get_by_role_and_label(Role::Tab, page.name()).click();
         h.run();
@@ -420,10 +425,27 @@ fn the_window_fits_at_900_by_600() {
                 .unwrap_or_else(|| panic!("{name} missing on {}", page.name()));
             let r = node.rect();
             assert!(
-                screen.contains_rect(r),
-                "{name} at {r:?} is outside the window on {}",
+                window.contains_rect(r),
+                "{name} at {r:?} is outside the window {window:?} on {}",
                 page.name()
             );
+        }
+        // Nothing of the page runs past the window's right edge: pages
+        // scroll down, never sideways.
+        for shape in common::painted(&h) {
+            let r = shape.visual_bounding_rect();
+            let inside = r.is_finite()
+                && r.min.x >= window.left()
+                && r.min.x < window.right()
+                && r.min.y >= window.top()
+                && r.max.y <= window.bottom();
+            if inside {
+                assert!(
+                    r.max.x <= window.right() + 1.0,
+                    "a shape at {r:?} runs past the window {window:?} on {}",
+                    page.name()
+                );
+            }
         }
     }
 }
