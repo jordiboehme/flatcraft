@@ -36,8 +36,7 @@ fn load_session(config_dir: PathBuf, has_ui: bool) -> anyhow::Result<SharedSessi
     let (prefs, warning) = Preferences::load_reporting(&config_dir);
     let mut session = Session::new(profiles, prefs, has_ui, config_dir);
     if let Some(w) = warning {
-        // stderr only: stdout is the MCP channel.
-        eprintln!("warning: {w}");
+        // Already on stderr in full (never stdout, the MCP channel).
         session.note_prefs_warning(w);
     }
     session.watch_prefs_file();

@@ -506,7 +506,10 @@ impl Session {
         }
         w.last_check = Some(now);
         let stamp = Preferences::stamp(&self.config_dir);
-        if stamp == w.stamp {
+        // After a failed read the file is read again even when it looks
+        // like the last good one: an exact restore (`cp -p`) has the same
+        // time and size.
+        if stamp == w.stamp && w.warned.is_none() {
             return false;
         }
         // The stamp is taken before the read: a change in between only
@@ -523,11 +526,10 @@ impl Session {
                 self.prefs.allow_agent_cuts = false;
                 if w.warned != Some(stamp) {
                     w.warned = Some(stamp);
-                    let text = format!(
-                        "{e}. Keeping the preferences read before, with agent cuts off until the file is fixed."
-                    );
-                    eprintln!("warning: {text}");
-                    self.prefs_warning = Some(text);
+                    self.prefs_warning = Some(crate::prefs::warning(
+                        &e,
+                        "Keeping the preferences read before, with agent cuts off until the file is fixed.",
+                    ));
                 }
                 false
             }

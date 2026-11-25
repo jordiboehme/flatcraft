@@ -2256,6 +2256,8 @@ fn a_broken_preferences_file_is_reported_once() {
     assert!(!s.refresh_prefs(t0));
     let w = s.take_prefs_warning().expect("a warning");
     assert!(w.contains("preferences.toml"), "{w}");
+    assert!(!w.contains('\n'), "one line for the window: {w}");
+    assert!(w.ends_with("until the file is fixed."), "{w}");
     for n in 1..4 {
         assert!(!s.refresh_prefs(t0 + Duration::from_millis(1100 * n)));
         assert_eq!(s.take_prefs_warning(), None, "the same file, no news");
@@ -2269,6 +2271,55 @@ fn a_broken_preferences_file_is_reported_once() {
     assert!(s.refresh_prefs(t0 + Duration::from_secs(20)));
     assert!(s.prefs.auto_reload);
     assert_eq!(s.take_prefs_warning(), None);
+}
+
+/// The start-up warning for the window is one line; the parser's details
+/// go to stderr.
+#[test]
+fn the_start_up_preferences_warning_is_one_line() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(flatcraft_engine::prefs::FILE_NAME),
+        "allow_agent_cuts = [",
+    )
+    .unwrap();
+    let (prefs, w) = Preferences::load_reporting(dir.path());
+    assert_eq!(prefs, Preferences::default());
+    let w = w.expect("a warning");
+    assert!(w.contains("preferences.toml is broken"), "{w}");
+    assert!(!w.contains('\n'), "{w}");
+    assert!(w.ends_with("Using default preferences."), "{w}");
+}
+
+/// A broken file put back exactly as it was read last (same time and size,
+/// like `cp -p` of a backup) is read again, so agent cuts come back.
+#[test]
+fn an_exact_restore_after_a_broken_file_is_read_again() {
+    use std::time::{Duration, Instant, SystemTime};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(flatcraft_engine::prefs::FILE_NAME);
+    let good = "allow_agent_cuts = true\n";
+    let at = SystemTime::now() - Duration::from_secs(3600);
+    let write = |text: &str, at: SystemTime| {
+        std::fs::write(&path, text).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(at)
+            .unwrap();
+    };
+    write(good, at);
+    let mut s = prefs_session(&dir);
+    s.watch_prefs_file();
+    assert!(s.prefs.allow_agent_cuts);
+    write("allow_agent_cuts = [", at + Duration::from_secs(60));
+    let t0 = Instant::now() + Duration::from_secs(5);
+    assert!(!s.refresh_prefs(t0));
+    assert!(!s.prefs.allow_agent_cuts, "fails closed");
+    write(good, at);
+    assert!(s.refresh_prefs(t0 + Duration::from_millis(1100)));
+    assert!(s.prefs.allow_agent_cuts, "the restored file counts again");
 }
 
 /// A read that fails while the file itself stays the same (time and size)

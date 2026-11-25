@@ -53,22 +53,19 @@ impl Preferences {
     /// Loads the preferences. A missing file gives the defaults; a broken file
     /// gives the defaults and a warning on stderr.
     pub fn load(config_dir: &Path) -> Self {
-        let (prefs, warning) = Self::load_reporting(config_dir);
-        if let Some(w) = warning {
-            eprintln!("warning: {w}");
-        }
-        prefs
+        Self::load_reporting(config_dir).0
     }
 
-    /// Like [`Preferences::load`], but hands the warning about a broken or
-    /// unreadable file to the caller instead of printing it, so a window
-    /// can show it ([`crate::session::Session::note_prefs_warning`]).
+    /// Like [`Preferences::load`], and also returns a one-line warning
+    /// about a broken or unreadable file for a window to show
+    /// ([`crate::session::Session::note_prefs_warning`]). The full text,
+    /// with the parser's details, goes to stderr.
     pub fn load_reporting(config_dir: &Path) -> (Self, Option<String>) {
         match Self::read(config_dir) {
             Ok(prefs) => (prefs, None),
             Err(e) => (
                 Self::default(),
-                Some(format!("{e}. Using default preferences.")),
+                Some(warning(&e, "Using default preferences.")),
             ),
         }
     }
@@ -142,6 +139,14 @@ impl Preferences {
         let written = fresh.save(config_dir);
         (fresh, written)
     }
+}
+
+/// Prints `error` with `then` on stderr in full and returns its first line
+/// with `then`, for a toast: a parse error spans several lines.
+pub(crate) fn warning(error: &str, then: &str) -> String {
+    eprintln!("warning: {error}. {then}");
+    let first = error.lines().next().unwrap_or_default().trim_end();
+    format!("{}. {then}", first.trim_end_matches(['.', ':']))
 }
 
 /// Copies a broken preferences file to `preferences.toml.bak-<UTC time>`
