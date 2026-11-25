@@ -16,8 +16,8 @@ Status: provisional. Nothing here has been checked against our own USB captures 
 - `[C]`: confirmed by our own USB capture or test cut. No fact has this mark yet.
 - FlatCraft choice (provisional): not a device fact. FlatCraft decides this. It may change after
   captures.
-- FlatCraft rule: not a device fact. A hard rule from the FlatCraft design spec or the global
-  constraints. Captures do not change it.
+- FlatCraft rule: not a device fact. A hard rule FlatCraft sets for itself; this document states
+  each one where it applies. Captures do not change it.
 
 Every fact below carries one of the marks above and a source key. A row with both a mark and
 "FlatCraft choice (provisional)" means: the command itself is known (mark), the value or the
@@ -50,7 +50,7 @@ way FlatCraft uses it is our choice.
 |---|---|---|---|
 | USB vendor ID | `0x0b4d` (Graphtec America) | [M] | R |
 | Cameo 2 product ID | `0x112b` | [1] | R, U (inkscape-silhouette device list only) |
-| Related product IDs | Cameo `0x1121`, Cameo 3 `0x112f`, Portrait `0x1123`, Portrait 2 `0x1132` | [M] (mostly; not each ID has several sources) | R |
+| Related product IDs | Cameo `0x1121`, Cameo 3 `0x112f`, Portrait `0x1123`, Portrait 2 `0x1132` | [1] (some IDs have several sources, but not each one) | R |
 | USB interface class | 7 (Printer) | [M] | R |
 | Interface number | 0 | [M] | R |
 | Bulk OUT endpoint | `0x01` | [M] (no Cameo 2 descriptor dump seen) | R, U |
@@ -198,8 +198,9 @@ no `FW`, and `H` at the end of every completely sent job (FlatCraft rule). Secti
 |---|---|---|---|
 | `FB...` | Changes the device calibration permanently. | [M] | R |
 | `TB72...` | Writes calibration permanently, like `FB`. | [M] | R |
+| `FB...` and `TB72...` in FlatCraft | Never built, never sent. The rules below say how. | FlatCraft rule | - |
 
-Rules for FlatCraft. Hard rule (FlatCraft global constraint), not provisional:
+Rules for FlatCraft (FlatCraft rule, not provisional):
 
 - The emitter has no way to build `FB` or `TB72`.
 - The safety check rejects any job that contains a command starting with `FB` or `TB72`.
@@ -212,7 +213,7 @@ Rules for FlatCraft. Hard rule (FlatCraft global constraint), not provisional:
 |---|---|---|---|
 | One command of look-ahead | The device holds back the last command until the next one arrives (it needs it for the blade offset). The last `D` of a job is not cut until another command follows. Every job that was sent completely ends with `H` (FlatCraft rule). | [M] | R |
 | Never resend | After a timeout or a partial write, part of the data may already be in the device. Sending it again cuts twice. | [M] | R |
-| Failure stop | After a write timeout, a partial write or a user cancel, FlatCraft sends nothing more on that connection: no `H`, no retry, no status poll (`ESC 0x05`). This lasts until the user has reset the machine with its own button and reconnects (a new transport session). Reason: a half-sent command plus any new bytes can merge into a different command. | FlatCraft rule (design spec section 11), based on never resend [M] | R |
+| Failure stop | After a write timeout, a partial write or a user cancel, FlatCraft sends nothing more on that connection: no `H`, no retry, no status poll (`ESC 0x05`). This lasts until the user has reset the machine with its own button and reconnects (a new transport session). Reason: a half-sent command plus any new bytes can merge into a different command. | FlatCraft rule, based on "Never resend" above [M] | R |
 | Head parked left | A Cameo 2 does not start a job unless the head is parked on the left. There is no command to check it. When the pre-send check (section 4) says not ready, the message tells the user to check that the head is parked left. | [1] | R |
 | Never USB-reset | Do not reset the USB device by default. It broke usbip setups (#10). | [M] | R, #10 |
 | Status 3 and 4 | Paused and after-cancel are not ready. Do not send a job then. | [M] | R |
