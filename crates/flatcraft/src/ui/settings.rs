@@ -58,27 +58,29 @@ fn strokes_name(m: StrokeMode) -> &'static str {
     }
 }
 
-/// A labelled combo box. Returns the picked value when it changed.
+/// A labelled combo box. Returns the picked value when it differs from
+/// `current`; `selected` is the entry shown as selected (usually the same).
 fn combo<T: Clone + PartialEq>(
     ui: &mut Ui,
     label: &str,
-    current: &str,
+    text: &str,
     choices: &[(T, String)],
     selected: Option<&T>,
+    current: Option<&T>,
     enabled: bool,
 ) -> Option<T> {
     let mut picked = None;
     painted_label(ui, label);
     ui.add_enabled_ui(enabled, |ui| {
         let r = egui::ComboBox::from_id_salt(label)
-            .selected_text(current)
+            .selected_text(text)
             .width(ui.available_width())
             .show_ui(ui, |ui| {
                 for (value, text) in choices {
                     if ui
                         .selectable_label(selected == Some(value), text.as_str())
                         .clicked()
-                        && selected != Some(value)
+                        && current != Some(value)
                     {
                         picked = Some(value.clone());
                     }
@@ -120,7 +122,15 @@ pub fn show(
                 (true, Some(m)) => mode_name(m),
                 (true, None) => "Mixed",
             };
-            if let Some(m) = combo(ui, "Cut mode", text, &modes, mode.as_ref(), any) {
+            if let Some(m) = combo(
+                ui,
+                "Cut mode",
+                text,
+                &modes,
+                mode.as_ref(),
+                mode.as_ref(),
+                any,
+            ) {
                 let v = match m {
                     CutMode::AllLines => "all_lines",
                     CutMode::ObjectOutlines => "object_outlines",
@@ -139,7 +149,15 @@ pub fn show(
                 (true, Some(m)) => strokes_name(m),
                 (true, None) => "Mixed",
             };
-            if let Some(m) = combo(ui, "Strokes", text, &choices, strokes.as_ref(), any) {
+            if let Some(m) = combo(
+                ui,
+                "Strokes",
+                text,
+                &choices,
+                strokes.as_ref(),
+                strokes.as_ref(),
+                any,
+            ) {
                 let v = match m {
                     StrokeMode::Auto => "auto",
                     StrokeMode::CentreLine => "centre_line",
@@ -186,21 +204,42 @@ pub fn job(
                 name,
                 &plotters,
                 Some(&snap.job.plotter_id),
+                Some(&snap.job.plotter_id),
                 true,
             ) {
                 run(actions, "job.set_plotter", json!({ "id": id }));
             }
+            // A mat the plotter no longer lists: its first mat is used and
+            // shown as selected, marked "(fallback)"; picking it makes it
+            // the document's own mat.
+            let fallback = snap.mat_warning.is_some();
+            let shown = snap.mat.as_ref().map(|m| m.id.clone());
+            let mark = |id: &str, name: &str| {
+                if fallback && shown.as_deref() == Some(id) {
+                    format!("{name} (fallback)")
+                } else {
+                    name.to_string()
+                }
+            };
             let mats: Vec<(String, String)> = snap
                 .plotter
                 .iter()
                 .flat_map(|p| &p.media)
-                .map(|m| (m.id.clone(), m.name.clone()))
+                .map(|m| (m.id.clone(), mark(&m.id, &m.name)))
                 .collect();
             let name = snap
                 .mat
                 .as_ref()
-                .map_or(snap.job.media_id.as_str(), |m| m.name.as_str());
-            if let Some(id) = combo(ui, "Mat", name, &mats, Some(&snap.job.media_id), true) {
+                .map_or(snap.job.media_id.clone(), |m| mark(&m.id, &m.name));
+            if let Some(id) = combo(
+                ui,
+                "Mat",
+                &name,
+                &mats,
+                shown.as_ref(),
+                Some(&snap.job.media_id),
+                true,
+            ) {
                 run(actions, "job.set_media", json!({ "id": id }));
             }
             let materials: Vec<(String, String)> = snap
@@ -217,6 +256,7 @@ pub fn job(
                 "Material",
                 name,
                 &materials,
+                Some(&snap.job.material_id),
                 Some(&snap.job.material_id),
                 true,
             ) {

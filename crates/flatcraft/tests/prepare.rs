@@ -7,7 +7,7 @@ use std::path::Path;
 use common::{AppHarness, FakePicker, app, app_mut, harness, harness_with, import_square, session};
 use egui::accesskit::Role;
 use egui::{Color32, Event, Modifiers, Pos2, Shape, Vec2};
-use egui_kittest::kittest::Queryable as _;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use flatcraft::ui::Workspace;
 use flatcraft::ui::canvas::CanvasView;
 use flatcraft_core::document::ObjectId;
@@ -1044,6 +1044,27 @@ fn a_dead_shape_worker_falls_back_to_building_inline() {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     assert_eq!(app(&h).ui.prepare.cache.building(), 0);
+}
+
+#[test]
+fn the_mat_combo_shows_the_fallback_mat() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    s.lock().unwrap().doc_mut().document.job.media_id = "gone".into();
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    h.get_by_label("Mat").click();
+    h.run();
+    let item = h.get_by_label("Mat 12x12 (fallback)");
+    let n = item.accesskit_node();
+    // egui reports a selectable label's state as toggled.
+    assert_eq!(n.toggled(), Some(egui::accesskit::Toggled::True));
+    // Picking it makes it the document's own mat.
+    h.get_by_label("Mat 12x12 (fallback)").click();
+    h.run();
+    assert_eq!(s.lock().unwrap().doc().document.job.media_id, "mat-12x12");
+    assert!(h.query_by_label_contains("is not available").is_none());
 }
 
 #[test]
