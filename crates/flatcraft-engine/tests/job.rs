@@ -1,6 +1,7 @@
 //! Job building, File Output and the send gate.
 
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use flatcraft_device::gpgl::check_safe;
 use flatcraft_device::{ProfileStore, TransportSpec};
@@ -551,18 +552,18 @@ fn agent_cannot_self_confirm() {
     assert!(registry::all().iter().all(|c| !c.id().contains("confirm")));
 
     // A wrong id changes nothing.
-    let e = s.confirm_pending(pending.id).unwrap_err();
+    let e = s.confirm_pending(pending.id, Instant::now()).unwrap_err();
     assert!(matches!(e, CommandError::NotFound(_)), "{e}");
     assert_eq!(s.pending_send(), Some(&newer));
 
     // The GUI confirms: it runs as the user and reaches the USB transport.
-    let e = s.confirm_pending(newer.id).unwrap_err();
+    let e = s.confirm_pending(newer.id, Instant::now()).unwrap_err();
     assert_eq!(
         e,
         CommandError::Refused("USB cutting arrives in milestone 3.".into())
     );
     assert!(s.pending_send().is_none());
-    let e = s.confirm_pending(newer.id).unwrap_err();
+    let e = s.confirm_pending(newer.id, Instant::now()).unwrap_err();
     assert!(matches!(e, CommandError::NotFound(_)), "{e}");
 }
 
@@ -655,7 +656,7 @@ fn confirm_sends_the_snapshot_not_the_current_document() {
     assert_eq!(s.pending_send().unwrap().job.bytes, snapshot.job.bytes);
 
     // Confirming sends the snapshot: it reaches the USB transport and never rebuilds.
-    let e = s.confirm_pending(id).unwrap_err();
+    let e = s.confirm_pending(id, Instant::now()).unwrap_err();
     assert_eq!(
         e,
         CommandError::Refused("USB cutting arrives in milestone 3.".into())
@@ -706,7 +707,7 @@ fn switching_documents_keeps_the_snapshot() {
     assert_eq!(s.active, 1);
     assert!(s.doc().document.objects.is_empty());
     assert_eq!(s.pending_send().unwrap().job.bytes, bytes);
-    let e = s.confirm_pending(id).unwrap_err();
+    let e = s.confirm_pending(id, Instant::now()).unwrap_err();
     assert_eq!(
         e,
         CommandError::Refused("USB cutting arrives in milestone 3.".into())
@@ -844,6 +845,32 @@ fn deny_drops_only_the_named_request() {
     assert!(s.pending_send().is_some());
     assert!(s.deny_pending(id));
     assert!(s.pending_send().is_none());
-    let e = s.confirm_pending(id).unwrap_err();
+    let e = s.confirm_pending(id, Instant::now()).unwrap_err();
     assert!(matches!(e, CommandError::NotFound(_)), "{e}");
+}
+
+#[test]
+fn confirm_uses_the_clock_it_is_given() {
+    use flatcraft_engine::session::{PENDING_EXPIRED, PENDING_TTL};
+    let d = dirs();
+    let mut s = usb_ui_session(&d);
+    let id = request(&mut s);
+    let asked = s.pending_send().unwrap().requested_at;
+    // Just in time: the request reaches the (missing) USB transport.
+    let e = s
+        .confirm_pending(
+            id,
+            asked + PENDING_TTL - std::time::Duration::from_millis(1),
+        )
+        .unwrap_err();
+    assert_eq!(
+        e,
+        CommandError::Refused("USB cutting arrives in milestone 3.".into())
+    );
+    // Too late by the caller's clock: refused and dropped.
+    let id = request(&mut s);
+    let asked = s.pending_send().unwrap().requested_at;
+    let e = s.confirm_pending(id, asked + PENDING_TTL).unwrap_err();
+    assert_eq!(e, CommandError::Refused(PENDING_EXPIRED.into()));
+    assert!(s.pending_send().is_none());
 }

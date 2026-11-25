@@ -588,7 +588,8 @@ impl FlatCraftApp {
                 self.run_on(doc_id, "job.send", json!({}));
             }
             Action::ConfirmPending(id) => {
-                let result = lock(&self.session).confirm_pending(id);
+                let now = (self.clock)();
+                let result = lock(&self.session).confirm_pending(id, now);
                 match result {
                     Ok(v) => self.sent(&v),
                     Err(e) => self.toast(Toast::error(person_text(&e))),

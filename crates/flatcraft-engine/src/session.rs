@@ -314,12 +314,16 @@ impl Session {
     /// agent asked: the same bytes through the same transport. The document
     /// is not looked at again. This is not a registry command, so agents
     /// cannot reach it. A wrong id leaves the pending send in place.
-    /// A request older than [`PENDING_TTL`] is dropped and refused.
-    pub fn confirm_pending(&mut self, id: u64) -> Result<serde_json::Value, CommandError> {
+    /// A request older than [`PENDING_TTL`] at `now` is dropped and
+    /// refused. `now` comes from the caller's monotonic clock, the same one
+    /// it passes to [`Session::expire_pending`], so both agree.
+    pub fn confirm_pending(
+        &mut self,
+        id: u64,
+        now: Instant,
+    ) -> Result<serde_json::Value, CommandError> {
         self.prune_pending();
-        if self.pending_send.as_ref().is_some_and(|p| p.id == id)
-            && self.expire_pending(Instant::now())
-        {
+        if self.pending_send.as_ref().is_some_and(|p| p.id == id) && self.expire_pending(now) {
             return Err(CommandError::Refused(PENDING_EXPIRED.into()));
         }
         let pending = match &self.pending_send {

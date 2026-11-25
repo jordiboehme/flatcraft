@@ -282,6 +282,9 @@ fn allow_sends_the_snapshot_not_the_current_document() {
     let s = session(&dir);
     let id = agent_request(&s);
     let snapshot = s.lock().unwrap().pending_send().cloned().unwrap();
+    // An independent build of the document as the agent asked.
+    let built = flatcraft_engine::job::build(&s.lock().unwrap()).unwrap();
+    assert_eq!(built.job.bytes, snapshot.job.bytes);
     // The agent empties the document and raises the force after asking.
     let ids: Vec<u64> = {
         let g = s.lock().unwrap();
@@ -304,7 +307,9 @@ fn allow_sends_the_snapshot_not_the_current_document() {
         let g = s.lock().unwrap();
         let p = g.pending_send().unwrap();
         assert_eq!(p.id, id);
-        assert_eq!(p.job.bytes, snapshot.job.bytes);
+        assert_eq!(p.job.bytes, built.job.bytes);
+        // The document now builds to something else (here: nothing).
+        assert!(flatcraft_engine::job::build(&g).is_err());
     }
     h.get_by_role_and_label(Role::Button, "Allow").click();
     h.run();
