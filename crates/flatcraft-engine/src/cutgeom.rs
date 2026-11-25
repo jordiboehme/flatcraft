@@ -503,7 +503,7 @@ fn spine(ring: &[[f64; 2]]) -> Option<BezPath> {
         // runs along it. If not (the ends were picked at the apex of a
         // narrow "V", so each side is one arm), cutting it would leave
         // the other part uncut: the ring is cut as drawn.
-        if !all_near(&ring_samples(&ring), &side.points, 2.0 * HAIRLINE_MM) {
+        if !all_near(ring_samples(&ring), &side.points, 2.0 * HAIRLINE_MM) {
             return None;
         }
         points = side.points.iter().map(|p| Point::new(p[0], p[1])).collect();
@@ -518,26 +518,25 @@ fn spine(ring: &[[f64; 2]]) -> Option<BezPath> {
 
 /// The vertices of the closed `ring` and points along each of its edges,
 /// the closing edge too, at most `HAIRLINE_MM` apart. A long edge between
-/// two vertices must be covered as well as the vertices.
-fn ring_samples(ring: &[[f64; 2]]) -> Vec<[f64; 2]> {
+/// two vertices must be covered as well as the vertices. The points are
+/// made one at a time as they are used, so a long ring needs no buffer.
+fn ring_samples(ring: &[[f64; 2]]) -> impl Iterator<Item = [f64; 2]> + '_ {
     let n = ring.len();
-    let mut out = Vec::with_capacity(n);
-    for k in 0..n {
+    (0..n).flat_map(move |k| {
         let (a, b) = (ring[k], ring[(k + 1) % n]);
         let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
         let parts = (dx.hypot(dy) / HAIRLINE_MM).ceil().max(1.0) as usize;
-        out.extend((0..parts).map(|m| {
+        (0..parts).map(move |m| {
             let t = m as f64 / parts as f64;
             [a[0] + dx * t, a[1] + dy * t]
-        }));
-    }
-    out
+        })
+    })
 }
 
 /// Whether every one of `points` lies within `reach` of the polyline
 /// `line`. The line's segments are sorted into a grid of cells two
 /// `reach` wide, so each point is compared only with the segments near it.
-fn all_near(points: &[[f64; 2]], line: &[[f64; 2]], reach: f64) -> bool {
+fn all_near(points: impl IntoIterator<Item = [f64; 2]>, line: &[[f64; 2]], reach: f64) -> bool {
     let cell = 2.0 * reach;
     let key = |x: f64, y: f64| ((x / cell).floor() as i64, (y / cell).floor() as i64);
     let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> =
@@ -569,12 +568,12 @@ fn all_near(points: &[[f64; 2]], line: &[[f64; 2]], reach: f64) -> bool {
         };
         (p[0] - a[0] - dx * t).hypot(p[1] - a[1] - dy * t)
     };
-    points.iter().all(|p| {
+    points.into_iter().all(|p| {
         let (cx, cy) = key(p[0], p[1]);
         (-1..=1).any(|ox| {
             (-1..=1).any(|oy| {
                 grid.get(&(cx + ox, cy + oy))
-                    .is_some_and(|near| near.iter().any(|&k| distance(p, k) <= reach))
+                    .is_some_and(|near| near.iter().any(|&k| distance(&p, k) <= reach))
             })
         })
     })
@@ -896,10 +895,10 @@ pub(crate) mod tests {
     fn all_near_finds_far_points_along_long_segments() {
         let line = [[0.0, 0.0], [30.0, 40.0], [30.0, 40.1]];
         // On the long diagonal, off it by 0.15 and by 0.25.
-        assert!(all_near(&[[15.0, 20.0], [15.12, 19.91]], &line, 0.2));
-        assert!(!all_near(&[[15.0, 20.0], [15.2, 19.85]], &line, 0.2));
-        assert!(!all_near(&[[30.0, 40.4]], &line, 0.2));
-        assert!(all_near(&[], &line, 0.2));
+        assert!(all_near([[15.0, 20.0], [15.12, 19.91]], &line, 0.2));
+        assert!(!all_near([[15.0, 20.0], [15.2, 19.85]], &line, 0.2));
+        assert!(!all_near([[30.0, 40.4]], &line, 0.2));
+        assert!(all_near(std::iter::empty(), &line, 0.2));
     }
 
     #[test]
@@ -912,10 +911,20 @@ pub(crate) mod tests {
         assert!(spine(&ring).is_none(), "{:?}", spine(&ring));
     }
 
+    /// The samples are streamed, never collected: a 1000 km edge costs
+    /// nothing until its samples are asked for.
+    #[test]
+    fn ring_samples_are_streamed() {
+        let ring = [[0.0, 0.0], [1e9, 0.0], [1e9, 0.05]];
+        let first: Vec<[f64; 2]> = ring_samples(&ring).take(3).collect();
+        assert_eq!(first[0], [0.0, 0.0]);
+        assert!((first[1][0] - HAIRLINE_MM).abs() < 1e-6, "{first:?}");
+    }
+
     #[test]
     fn ring_samples_are_at_most_a_hairline_apart() {
         let ring = [[0.0, 0.0], [50.0, 0.0], [50.0, 0.05], [10.0, 0.25]];
-        let samples = ring_samples(&ring);
+        let samples: Vec<[f64; 2]> = ring_samples(&ring).collect();
         assert!(ring.iter().all(|v| samples.contains(v)));
         let n = samples.len();
         for k in 0..n {
