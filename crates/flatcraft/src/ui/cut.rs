@@ -492,7 +492,7 @@ fn draw_toolpaths(
         at = *tp.points.last().unwrap_or(&first);
     }
     let key = LabelKey {
-        plan: Arc::as_ptr(job) as usize,
+        plan: job.clone(),
         visible,
         view: *view,
         rect,
@@ -555,13 +555,23 @@ pub fn place_labels(starts: &[(usize, Pos2)]) -> Vec<Label> {
 
 /// What the placed labels were made for: the plan, how many toolpaths are
 /// drawn, the view and the canvas.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct LabelKey {
-    /// Address of the plan's `Arc<JobResult>` (held by `CutState.plan`).
-    pub plan: usize,
+    /// The plan. Holding it keeps its address from being reused, and keys
+    /// compare it with `Arc::ptr_eq`, never by content.
+    pub plan: Arc<JobResult>,
     pub visible: usize,
     pub view: CanvasView,
     pub rect: Rect,
+}
+
+impl PartialEq for LabelKey {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.plan, &other.plan)
+            && self.visible == other.visible
+            && self.view == other.view
+            && self.rect == other.rect
+    }
 }
 
 /// The order numbers of the last frame, reused while nothing moved.
@@ -578,7 +588,7 @@ impl LabelCache {
     /// only) when the key changed. `None` when there are more than
     /// [`MAX_LABELS`] starts.
     pub fn get(&mut self, key: LabelKey, starts: &[(usize, Pos2)]) -> Option<Arc<Vec<Label>>> {
-        if self.key != Some(key) {
+        if self.key.as_ref() != Some(&key) {
             self.key = Some(key);
             self.labels = (starts.len() <= MAX_LABELS).then(|| {
                 self.placed += 1;
@@ -640,9 +650,32 @@ mod tests {
         assert_eq!(far[1].at, Pos2::new(200.0, 0.0) + LABEL_OFFSET);
     }
 
+    /// A real plan: a square on the default plotter.
+    fn plan() -> Arc<JobResult> {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles = flatcraft_device::ProfileStore::load(dir.path()).unwrap();
+        let mut s = flatcraft_engine::Session::new(
+            profiles,
+            flatcraft_engine::Preferences::default(),
+            false,
+            dir.path().to_path_buf(),
+        );
+        s.execute(
+            "object.import_svg",
+            serde_json::json!({ "name": "sq", "svg": r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><rect x="20" y="20" width="10" height="10"/></svg>"# }),
+            flatcraft_engine::Origin::User,
+        )
+        .unwrap();
+        Arc::new(flatcraft_engine::job::build(&s).unwrap())
+    }
+
+    thread_local! {
+        static PLAN: Arc<JobResult> = plan();
+    }
+
     fn key(visible: usize, px: f32) -> LabelKey {
         LabelKey {
-            plan: 1,
+            plan: PLAN.with(Arc::clone),
             visible,
             view: CanvasView {
                 offset: Vec2::ZERO,
@@ -663,6 +696,20 @@ mod tests {
         cache.get(key(2, 3.0), &starts);
         cache.get(key(1, 3.0), &starts[..1]);
         assert_eq!(cache.placed, 3);
+    }
+
+    #[test]
+    fn an_equal_but_new_plan_places_labels_again() {
+        let mut cache = LabelCache::default();
+        let starts = [(1, Pos2::new(10.0, 10.0))];
+        cache.get(key(1, 2.0), &starts);
+        let mut other = key(1, 2.0);
+        other.plan = Arc::new((*other.plan).clone());
+        assert_eq!(*other.plan, *key(1, 2.0).plan);
+        cache.get(other.clone(), &starts);
+        assert_eq!(cache.placed, 2);
+        cache.get(other, &starts);
+        assert_eq!(cache.placed, 2);
     }
 
     #[test]
