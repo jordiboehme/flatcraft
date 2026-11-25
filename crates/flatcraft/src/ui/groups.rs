@@ -513,9 +513,12 @@ fn row(ui: &mut Ui, t: &'static Tool, cx: &mut Cx) {
         let main_width = ui.available_width() - ICON_SIZE - 3.0 * ui.spacing().item_spacing.x;
         let mut b = egui::Button::image_and_text(image(ui, t.icon, ICON_SIZE), t.title)
             .min_size(egui::vec2(main_width, 0.0));
-        if let Some(key) = t.shortcut() {
-            b = b.shortcut_text(help::hint(key));
-        }
+        // The shortcut at the right; without one, an empty right part keeps
+        // the icon and title at the left.
+        b = match t.shortcut() {
+            Some(key) => b.shortcut_text(help::hint(key)),
+            None => b.right_text(""),
+        };
         if let Some(on) = t.selected(cx.st, *cx.show_debug) {
             b = b.selected(on);
         }
