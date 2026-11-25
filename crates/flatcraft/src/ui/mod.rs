@@ -98,6 +98,31 @@ pub struct UiState {
     pub trace: Option<import_dialog::TraceDialog>,
     pub cut: cut::CutState,
     pub debug: debug::DebugState,
+    /// The open unsaved-changes dialog.
+    pub unsaved: Option<Unsaved>,
+    /// The person chose to quit (nothing unsaved, saved or discarded): the
+    /// window closes and is not asked again.
+    pub closing: bool,
+}
+
+/// What the unsaved-changes dialog asks about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unsaved {
+    /// Quitting while these documents have unsaved changes.
+    Quit(Vec<u64>),
+    /// Closing this document with unsaved changes.
+    Close(u64),
+}
+
+/// The answer in the unsaved-changes dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnsavedChoice {
+    /// Save (asks for a path for an untitled document), then go on.
+    Save,
+    /// Go on and lose the changes.
+    Discard,
+    /// Stay as it is.
+    Cancel,
 }
 
 impl UiState {
@@ -198,7 +223,10 @@ pub enum Action {
     /// A save, delete or preference change from the Profiles window.
     Profiles(profiles_window::Request),
     Help,
+    /// Quit; asks first when a document has unsaved changes.
     Quit,
+    /// The answer in the unsaved-changes dialog.
+    Unsaved(UnsavedChoice),
 }
 
 impl Action {
@@ -620,18 +648,21 @@ impl FlatCraftApp {
                 self.execute("document.switch", json!({ "doc_id": doc_id }));
             }
             Action::Close(doc_id) => {
-                let result = lock(&self.session).execute(
-                    "document.close",
-                    json!({ "doc_id": doc_id }),
-                    Origin::User,
-                );
+                let result = {
+                    let mut s = lock(&self.session);
+                    match s.doc_index(doc_id) {
+                        Ok(i) if s.docs[i].dirty => None,
+                        _ => Some(s.execute(
+                            "document.close",
+                            json!({ "doc_id": doc_id }),
+                            Origin::User,
+                        )),
+                    }
+                };
                 match result {
-                    Ok(_) => {}
-                    // The unsaved-changes dialog replaces this toast later.
-                    Err(CommandError::Refused(_)) => self.toast(Toast::error(
-                        "This document has unsaved changes. Save it first.",
-                    )),
-                    Err(e) => self.toast(Toast::error(person_text(&e))),
+                    None => self.ui.unsaved = Some(Unsaved::Close(doc_id)),
+                    Some(Ok(_)) => {}
+                    Some(Err(e)) => self.toast(Toast::error(person_text(&e))),
                 }
             }
             Action::Undo(doc_id) => {
@@ -687,8 +718,113 @@ impl FlatCraftApp {
             Action::ShowProfiles => self.ui.show_profiles = true,
             Action::Profiles(req) => profiles_window::apply(self, ctx, req),
             Action::Help => ctx.open_url(egui::OpenUrl::new_tab(HELP_URL)),
-            Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Action::Quit => {
+                let dirty = self.dirty_docs();
+                if dirty.is_empty() {
+                    self.close_window(ctx);
+                } else {
+                    self.ui.unsaved = Some(Unsaved::Quit(dirty));
+                }
+            }
+            Action::Unsaved(choice) => self.answer_unsaved(ctx, choice),
         }
+    }
+
+    /// Stable ids of the documents with unsaved changes.
+    pub fn dirty_docs(&self) -> Vec<u64> {
+        let s = lock(&self.session);
+        s.docs.iter().filter(|d| d.dirty).map(|d| d.id()).collect()
+    }
+
+    /// Closes the window without asking again.
+    fn close_window(&mut self, ctx: &egui::Context) {
+        self.ui.closing = true;
+        self.ui.unsaved = None;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    /// Runs the answer of the unsaved-changes dialog.
+    fn answer_unsaved(&mut self, ctx: &egui::Context, choice: UnsavedChoice) {
+        let Some(asked) = self.ui.unsaved.take() else {
+            return;
+        };
+        match (asked, choice) {
+            (_, UnsavedChoice::Cancel) => {}
+            (Unsaved::Close(doc_id), UnsavedChoice::Discard) => {
+                self.execute(
+                    "document.close",
+                    json!({ "doc_id": doc_id, "discard_changes": true }),
+                );
+            }
+            (Unsaved::Close(doc_id), UnsavedChoice::Save) => {
+                if self.save_for_close(doc_id) {
+                    self.execute("document.close", json!({ "doc_id": doc_id }));
+                }
+            }
+            (Unsaved::Quit(_), UnsavedChoice::Discard) => self.close_window(ctx),
+            (Unsaved::Quit(_), UnsavedChoice::Save) => {
+                // The documents dirty now: an agent may have changed more.
+                for doc_id in self.dirty_docs() {
+                    if !self.save_for_close(doc_id) {
+                        self.toast(Toast::warning(
+                            "Not everything was saved, so FlatCraft stays open.",
+                        ));
+                        return;
+                    }
+                }
+                self.close_window(ctx);
+            }
+        }
+    }
+
+    /// Saves a document before it closes, asking for a path when it has
+    /// none. False when the person cancelled the dialog or the save failed
+    /// (a toast says why). A document that is gone counts as done.
+    fn save_for_close(&mut self, doc_id: u64) -> bool {
+        let has_path = {
+            let s = lock(&self.session);
+            match s.doc_index(doc_id) {
+                Ok(i) => s.docs[i].path.is_some(),
+                Err(_) => return true,
+            }
+        };
+        let params = if has_path {
+            json!({ "doc_id": doc_id })
+        } else {
+            // The dialog blocks without the lock.
+            let (name, dir) = self.save_as_suggestion(doc_id);
+            let req = files::FileRequest {
+                title: format!("Save {}", self.doc_name(doc_id)),
+                filters: vec![files::filter("FlatCraft project", &[PROJECT_EXTENSION])],
+                file_name: Some(name),
+                directory: dir,
+            };
+            match self.files.save_file(&req) {
+                Some(path) => json!({ "doc_id": doc_id, "path": path }),
+                None => return false,
+            }
+        };
+        match self.execute("project.save", params) {
+            Some(v) => {
+                self.saved(&v);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The name a tab shows for a document: its file name, or "Untitled N".
+    pub fn doc_name(&self, doc_id: u64) -> String {
+        let path = {
+            let s = lock(&self.session);
+            s.doc_index(doc_id)
+                .ok()
+                .and_then(|i| s.docs[i].path.clone())
+        };
+        path.as_deref().map(display_name).unwrap_or_else(|| {
+            let n = self.ui.untitled.get(&doc_id).copied().unwrap_or(1);
+            format!("Untitled {n}")
+        })
     }
 
     /// Imports dropped files into the active document, as one command.
@@ -909,6 +1045,7 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
         (s.doc().id(), open)
     };
     app.ui.number_documents(&open);
+    guard_close(&ctx, app);
     refresh_prefs(&ctx, app);
     shortcuts(&ctx, active, &mut actions);
     dropped_files(&ctx, &app.tokens, &mut actions);
@@ -966,6 +1103,7 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
         profiles_window::show(&ctx, app, &mut actions);
     }
     pending_modal(&ctx, app, &mut actions);
+    unsaved_modal(&ctx, app, &mut actions);
 
     app.apply(&ctx, actions);
 
@@ -980,6 +1118,71 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     if app.agent {
         // Keeps the agent pill current.
         ctx.request_repaint_after(Duration::from_secs(1));
+    }
+}
+
+/// Keeps the window open while documents have unsaved changes: a close
+/// request (the window's close button, Cmd+Q) is cancelled and the
+/// unsaved-changes dialog asks. Once the person chose to quit
+/// (`UiState::closing`), the close goes ahead. Runs in `logic` (also while
+/// the window is hidden) and in [`shell`].
+pub fn guard_close(ctx: &egui::Context, app: &mut FlatCraftApp) {
+    if app.ui.closing || !ctx.input(|i| i.viewport().close_requested()) {
+        return;
+    }
+    let dirty = app.dirty_docs();
+    if dirty.is_empty() {
+        return;
+    }
+    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+    if !matches!(app.ui.unsaved, Some(Unsaved::Quit(_))) {
+        app.ui.unsaved = Some(Unsaved::Quit(dirty));
+    }
+}
+
+/// The unsaved-changes dialog: Save (all) / Discard / Cancel.
+fn unsaved_modal(ctx: &egui::Context, app: &mut FlatCraftApp, actions: &mut Vec<Action>) {
+    let Some(asked) = app.ui.unsaved.clone() else {
+        return;
+    };
+    let (text, save) = match &asked {
+        Unsaved::Quit(docs) if docs.len() == 1 => (
+            "You have unsaved changes in 1 document.".to_string(),
+            "Save all",
+        ),
+        Unsaved::Quit(docs) => (
+            format!("You have unsaved changes in {} documents.", docs.len()),
+            "Save all",
+        ),
+        Unsaved::Close(doc_id) => (
+            format!("You have unsaved changes in {}.", app.doc_name(*doc_id)),
+            "Save",
+        ),
+    };
+    let t = app.tokens;
+    let modal = egui::Modal::new(egui::Id::unique("flatcraft-unsaved")).show(ctx, |ui| {
+        ui.set_max_width(420.0);
+        ui.label(egui::RichText::new(text).font(fonts::semibold(15.0)));
+        ui.add_space(t.spacing);
+        ui.label(
+            egui::RichText::new("Discard drops them for good. No undo past this point.")
+                .color(t.text_dim),
+        );
+        ui.add_space(t.spacing);
+        ui.horizontal(|ui| {
+            if ui.button(save).clicked() {
+                actions.push(Action::Unsaved(UnsavedChoice::Save));
+            }
+            if ui.button("Discard").clicked() {
+                actions.push(Action::Unsaved(UnsavedChoice::Discard));
+            }
+            if ui.button("Cancel").clicked() {
+                actions.push(Action::Unsaved(UnsavedChoice::Cancel));
+            }
+        });
+    });
+    if modal.should_close() && actions.iter().all(|a| !matches!(a, Action::Unsaved(_))) {
+        actions.push(Action::Unsaved(UnsavedChoice::Cancel));
     }
 }
 
@@ -1146,13 +1349,16 @@ fn pending_modal(ctx: &egui::Context, app: &mut FlatCraftApp, actions: &mut Vec<
 }
 
 impl eframe::App for FlatCraftApp {
-    #[cfg(target_os = "macos")]
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let active = lock(&self.session).doc().id();
-        let actions = self.menu.as_ref().map(|m| m.actions(active));
-        if let Some(actions) = actions {
-            self.apply(ctx, actions);
+        #[cfg(target_os = "macos")]
+        {
+            let active = lock(&self.session).doc().id();
+            let actions = self.menu.as_ref().map(|m| m.actions(active));
+            if let Some(actions) = actions {
+                self.apply(ctx, actions);
+            }
         }
+        guard_close(ctx, self);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {

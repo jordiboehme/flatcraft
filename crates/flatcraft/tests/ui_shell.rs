@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{app, app_mut, harness, import_square, session};
+use common::{FakePicker, app, app_mut, harness, harness_with, import_square, session};
 use egui::accesskit::Role;
 use egui_kittest::kittest::Queryable as _;
 use flatcraft::ui::{Action, Workspace};
@@ -235,7 +235,7 @@ fn close_targets_the_document_by_id() {
 }
 
 #[test]
-fn dirty_tab_close_asks_to_save_first() {
+fn closing_a_dirty_tab_offers_discard() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     import_square(&s);
@@ -244,8 +244,171 @@ fn dirty_tab_close_asks_to_save_first() {
         .click();
     h.run();
     assert_eq!(s.lock().unwrap().docs[0].document.objects.len(), 1);
-    let texts: Vec<&str> = app(&h).ui.toasts.iter().map(|t| t.text.as_str()).collect();
-    assert_eq!(texts, ["This document has unsaved changes. Save it first."]);
+    h.get_by_label("You have unsaved changes in Untitled 1.");
+    // Cancel keeps it.
+    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    h.run();
+    assert!(
+        h.query_by_label("You have unsaved changes in Untitled 1.")
+            .is_none()
+    );
+    assert_eq!(s.lock().unwrap().docs[0].document.objects.len(), 1);
+    // Discard closes it.
+    h.get_by_role_and_label(Role::Button, "Close Untitled 1")
+        .click();
+    h.run();
+    h.get_by_role_and_label(Role::Button, "Discard").click();
+    h.run();
+    let st = s.lock().unwrap();
+    assert_eq!(st.docs.len(), 1);
+    assert!(st.doc().document.objects.is_empty(), "a fresh document");
+}
+
+#[test]
+fn closing_a_dirty_tab_can_save_it_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let path = dir.path().join("kept.flatcraft");
+    let picker = FakePicker::answering([path.clone()]);
+    let mut h = harness_with(&dir, s.clone(), |a| a.with_file_picker(picker.clone()));
+    h.get_by_role_and_label(Role::Button, "Close Untitled 1")
+        .click();
+    h.run();
+    // The ribbon has a Save button too; the dialog is drawn last.
+    h.get_all_by_role_and_label(Role::Button, "Save")
+        .last()
+        .unwrap()
+        .click();
+    h.run();
+    assert_eq!(
+        flatcraft_core::project::load(&path).unwrap().objects.len(),
+        1
+    );
+    assert!(s.lock().unwrap().doc().document.objects.is_empty());
+}
+
+fn root_commands(h: &common::AppHarness) -> Vec<egui::ViewportCommand> {
+    h.output()
+        .viewport_output
+        .get(&egui::ViewportId::ROOT)
+        .map(|v| v.commands.clone())
+        .unwrap_or_default()
+}
+
+fn asks_to_close(h: &common::AppHarness) -> bool {
+    root_commands(h).contains(&egui::ViewportCommand::Close)
+}
+
+#[test]
+fn quit_with_unsaved_work_asks_first_and_cancel_keeps_the_app() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    let ctx = h.ctx.clone();
+    app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
+    h.run();
+    h.get_by_label("You have unsaved changes in 1 document.");
+    assert!(!asks_to_close(&h));
+    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    h.run();
+    assert!(
+        h.query_by_label("You have unsaved changes in 1 document.")
+            .is_none()
+    );
+    assert!(!asks_to_close(&h));
+    assert!(!app(&h).ui.closing);
+    assert_eq!(s.lock().unwrap().docs[0].document.objects.len(), 1);
+}
+
+#[test]
+fn quit_without_unsaved_work_closes_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(&dir, session(&dir), false);
+    let ctx = h.ctx.clone();
+    app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
+    assert!(app(&h).ui.unsaved.is_none());
+    assert!(app(&h).ui.closing);
+}
+
+#[test]
+fn discard_on_quit_closes_the_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    s.lock()
+        .unwrap()
+        .execute("document.new", json!({}), Origin::User)
+        .unwrap();
+    let s2 = s.clone();
+    import_square(&s2);
+    let mut h = harness(&dir, s.clone(), false);
+    let ctx = h.ctx.clone();
+    app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
+    h.run();
+    h.get_by_label("You have unsaved changes in 2 documents.");
+    h.get_by_role_and_label(Role::Button, "Discard").click();
+    h.run();
+    assert!(app(&h).ui.closing, "the window closes");
+    assert!(app(&h).ui.unsaved.is_none());
+}
+
+#[test]
+fn the_window_close_button_asks_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let mut h = harness(&dir, s, false);
+    h.input_mut()
+        .viewports
+        .entry(egui::ViewportId::ROOT)
+        .or_default()
+        .events
+        .push(egui::ViewportEvent::Close);
+    h.step();
+    assert!(root_commands(&h).contains(&egui::ViewportCommand::CancelClose));
+    h.run();
+    h.get_by_label("You have unsaved changes in 1 document.");
+}
+
+#[test]
+fn save_all_asks_for_a_path_per_untitled_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let path = dir.path().join("saved.flatcraft");
+    let picker = FakePicker::answering([path.clone()]);
+    let mut h = harness_with(&dir, s.clone(), |a| a.with_file_picker(picker.clone()));
+    let ctx = h.ctx.clone();
+    app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
+    h.run();
+    h.get_by_role_and_label(Role::Button, "Save all").click();
+    h.run();
+    assert_eq!(picker.requests.lock().unwrap().len(), 1);
+    assert_eq!(
+        flatcraft_core::project::load(&path).unwrap().objects.len(),
+        1
+    );
+    assert!(!s.lock().unwrap().doc().dirty);
+    assert!(app(&h).ui.closing, "the window closes");
+}
+
+#[test]
+fn a_cancelled_save_all_keeps_the_app_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let picker = FakePicker::default();
+    let mut h = harness_with(&dir, s.clone(), |a| a.with_file_picker(picker.clone()));
+    let ctx = h.ctx.clone();
+    app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
+    h.run();
+    h.get_by_role_and_label(Role::Button, "Save all").click();
+    h.run();
+    assert!(!asks_to_close(&h));
+    assert!(!app(&h).ui.closing);
+    assert!(s.lock().unwrap().doc().dirty);
 }
 
 #[test]
