@@ -869,6 +869,8 @@ pub struct MoveParams {
     pub dy_mm: Option<f64>,
     /// Absolute target [x, y] in mm for the centre of the objects' common bounding box. Do not combine with dx_mm/dy_mm.
     pub center_mm: Option<[f64; 2]>,
+    /// Merges this move into the undo step of the move just before it when that one had the same key and the same ids and nothing else changed the document in between. For a burst of small moves (arrow-key nudges) that the person undoes as one.
+    pub coalesce_key: Option<String>,
 }
 
 fn run_move(s: &mut Session, p: MoveParams, _: Origin) -> Result<Value, CommandError> {
@@ -901,6 +903,9 @@ fn run_move(s: &mut Session, p: MoveParams, _: Origin) -> Result<Value, CommandE
     for id in &ids {
         translate(object_mut(doc, *id)?, delta);
     }
+    if let Some(key) = p.coalesce_key {
+        s.coalesce_with(key, ids.clone());
+    }
     Ok(json!({ "ids": ids_json(&ids), "moved_by_mm": [delta.x, delta.y] }))
 }
 
@@ -911,7 +916,7 @@ command!(
     mutates: true,
     params: MoveParams,
     run: run_move,
-    description: "Moves objects. Either relative with dx_mm and dy_mm (a missing one is 0), or absolute with center_mm [x, y], which puts the centre of the objects' common bounding box there. Units mm, origin the 0,0 of the grid printed on the mat, x right, y down. An empty ids list means the current selection. Returns {ids, moved_by_mm: [dx, dy]}.",
+    description: "Moves objects. Either relative with dx_mm and dy_mm (a missing one is 0), or absolute with center_mm [x, y], which puts the centre of the objects' common bounding box there. Units mm, origin the 0,0 of the grid printed on the mat, x right, y down. Each move is one undo step, except with coalesce_key: a move with the same key and the same ids as the move just before it, with no other change of the document in between, joins that move's undo step (the window's arrow-key nudges do this). A burst that ends where it started leaves no undo step. An empty ids list means the current selection. Returns {ids, moved_by_mm: [dx, dy]}.",
 );
 
 // ---------------------------------------------------------------- scale
@@ -1160,6 +1165,17 @@ command!(
 
 // ---------------------------------------------------------------- rotate
 
+/// What a rotate or mirror of several objects turns about.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum About {
+    /// The objects as one group, about the centre of their common bounding box (default).
+    #[default]
+    Group,
+    /// Each object about its own centre.
+    Each,
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RotateParams {
@@ -1168,16 +1184,61 @@ pub struct RotateParams {
     pub ids: Vec<u64>,
     /// Angle in degrees, clockwise on screen, added to the current rotation.
     pub degrees: f64,
+    /// group (default): turn the objects as one group about the centre of their common bounding box. each: turn each about its own centre. One object turns about its own centre either way.
+    #[serde(default)]
+    pub about: About,
+}
+
+/// The centre a group rotate or mirror of `ids` turns about: the centre
+/// of their common placed bounds, measured before anything changes. `None`
+/// when each object turns about its own centre (`about: each`, or one
+/// object, which is the same either way).
+fn group_centre(doc: &Document, ids: &[ObjectId], about: About) -> Option<Point> {
+    if about == About::Each || ids.len() < 2 {
+        return None;
+    }
+    ids.iter()
+        .filter_map(|id| doc.get(*id))
+        .map(placed_bounds_or_center)
+        .reduce(|a, b| a.union(b))
+        .map(|r| r.center())
+}
+
+/// Sine and cosine of `degrees`, exact at multiples of 90 degrees, so a
+/// quarter turn of a group lands its centres on round numbers.
+fn sin_cos_deg(degrees: f64) -> (f64, f64) {
+    let quarter = degrees / 90.0;
+    if quarter == quarter.round() {
+        match (quarter.round() as i64).rem_euclid(4) {
+            0 => (0.0, 1.0),
+            1 => (1.0, 0.0),
+            2 => (0.0, -1.0),
+            _ => (-1.0, 0.0),
+        }
+    } else {
+        degrees.to_radians().sin_cos()
+    }
 }
 
 fn run_rotate(s: &mut Session, p: RotateParams, _: Origin) -> Result<Value, CommandError> {
     let ids = resolve_ids(s, &p.ids)?;
     let doc = &mut s.doc_mut().document;
+    let centre = group_centre(doc, &ids, p.about);
+    let (sin, cos) = sin_cos_deg(p.degrees);
     let mut out = Vec::new();
     for id in &ids {
         let t = &mut object_mut(doc, *id)?.transform;
+        if let Some(c) = centre {
+            // Clockwise on screen with y down, as `Transform::affine`.
+            let d = t.center_mm - c;
+            t.center_mm = c + Vec2::new(d.x * cos - d.y * sin, d.x * sin + d.y * cos);
+        }
         t.rotation_deg = normalize_deg(t.rotation_deg + p.degrees);
-        out.push(json!({ "id": id.0, "rotation_deg": t.rotation_deg }));
+        out.push(json!({
+            "id": id.0,
+            "rotation_deg": t.rotation_deg,
+            "center_mm": [t.center_mm.x, t.center_mm.y],
+        }));
     }
     Ok(json!({ "objects": out }))
 }
@@ -1189,7 +1250,7 @@ command!(
     mutates: true,
     params: RotateParams,
     run: run_rotate,
-    description: "Rotates each object around its own centre by degrees, relative to its current rotation. Positive is clockwise on screen (y points down). The stored rotation is kept in [0, 360). An empty ids list means the current selection. Returns {objects: [{id, rotation_deg}]}.",
+    description: "Rotates objects by degrees, relative to their current rotation, in one undo step. Positive is clockwise on screen (y points down). about: group | each, default group. With group, several objects turn as one group about the centre of their common bounding box: each centre turns about that point and each object's own rotation grows by the angle, so the layout turns with them (the window does this for a multi-selection). With each, every object turns about its own centre and the centres stay. One object turns about its own centre either way. Positions in mm, origin the 0,0 of the grid printed on the mat. Linked copies (see object.copies) keep their own rotation: only the objects in ids turn. The stored rotation is kept in [0, 360). An empty ids list means the current selection. Returns {objects: [{id, rotation_deg, center_mm: [x, y]}]}.",
 );
 
 // ---------------------------------------------------------------- mirror
@@ -1211,13 +1272,23 @@ pub struct MirrorParams {
     pub ids: Vec<u64>,
     /// horizontal flips left and right, vertical flips top and bottom.
     pub axis: MirrorAxis,
+    /// group (default): mirror the objects as one group across the centre line of their common bounding box. each: mirror each across its own centre. One object mirrors across its own centre either way.
+    #[serde(default)]
+    pub about: About,
 }
 
 fn run_mirror(s: &mut Session, p: MirrorParams, _: Origin) -> Result<Value, CommandError> {
     let ids = resolve_ids(s, &p.ids)?;
     let doc = &mut s.doc_mut().document;
+    let centre = group_centre(doc, &ids, p.about);
     for id in &ids {
         let t = &mut object_mut(doc, *id)?.transform;
+        if let Some(c) = centre {
+            match p.axis {
+                MirrorAxis::Horizontal => t.center_mm.x = 2.0 * c.x - t.center_mm.x,
+                MirrorAxis::Vertical => t.center_mm.y = 2.0 * c.y - t.center_mm.y,
+            }
+        }
         t.mirror = !t.mirror;
         t.rotation_deg = normalize_deg(match p.axis {
             MirrorAxis::Horizontal => -t.rotation_deg,
@@ -1234,7 +1305,7 @@ command!(
     mutates: true,
     params: MirrorParams,
     run: run_mirror,
-    description: "Mirrors each object along a screen axis through its own centre. horizontal flips left and right, vertical flips top and bottom. Use horizontal for iron-on vinyl, which is cut from the back. An empty ids list means the current selection. Returns {ids}.",
+    description: "Mirrors objects along a screen axis, in one undo step. horizontal flips left and right, vertical flips top and bottom. about: group | each, default group. With group, several objects mirror as one group across the centre line of their common bounding box: each centre is reflected across it and each object is mirrored, so the layout flips with them (the window does this for a multi-selection). With each, every object mirrors across its own centre and the centres stay. One object mirrors across its own centre either way. Positions in mm, origin the 0,0 of the grid printed on the mat, y down. Linked copies (see object.copies) keep their own mirror: only the objects in ids flip. Use horizontal for iron-on vinyl, which is cut from the back. An empty ids list means the current selection. Returns {ids}.",
 );
 
 // ---------------------------------------------------------------- cut options

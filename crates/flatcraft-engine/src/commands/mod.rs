@@ -146,10 +146,10 @@ pub(crate) fn translate(o: &mut Object, d: Vec2) {
     o.transform.center_mm += d;
 }
 
-/// Degrees in [0, 360).
+/// Degrees in [0, 360), never -0 (a mirror of 0 degrees).
 pub(crate) fn normalize_deg(deg: f64) -> f64 {
     let r = deg.rem_euclid(360.0);
-    if r >= 360.0 { 0.0 } else { r }
+    if r >= 360.0 || r == 0.0 { 0.0 } else { r }
 }
 
 /// The cutting area of the active document's plotter and media (the

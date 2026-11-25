@@ -119,6 +119,19 @@ pub struct DocState {
     revision: u64,
     /// `placed_bounds` of each object, for `document.state`.
     bounds_cache: HashMap<ObjectId, BoundsEntry>,
+    /// The burst of coalescing moves whose undo step is the newest one.
+    burst: Option<Burst>,
+}
+
+/// A run of `object.move` calls with one `coalesce_key` that share one
+/// undo step (see [`Session::coalesce_with`]).
+#[derive(Debug, Clone, PartialEq)]
+struct Burst {
+    key: String,
+    ids: Vec<ObjectId>,
+    /// The document revision after the burst's last move. Any other change
+    /// (a command, undo, redo, a save) raises it and ends the burst.
+    revision: u64,
 }
 
 /// Everything `placed_bounds` of an object depends on.
@@ -171,6 +184,7 @@ impl Clone for DocState {
             last_sent_rev: self.last_sent_rev,
             revision: self.revision,
             bounds_cache: self.bounds_cache.clone(),
+            burst: self.burst.clone(),
         }
     }
 }
@@ -194,6 +208,7 @@ impl DocState {
             last_sent_rev: 0,
             revision: 0,
             bounds_cache: HashMap::new(),
+            burst: None,
         }
     }
 
@@ -371,6 +386,9 @@ pub struct Session {
     /// Set by a mutating command that ended up changing nothing the user
     /// would undo (see `mark_no_user_change`). Reset before every command.
     no_user_change: bool,
+    /// Set by a move that may join the undo step of the burst before it
+    /// (see `coalesce_with`). Reset before every command.
+    coalesce: Option<(String, Vec<ObjectId>)>,
     /// Set by [`Session::watch_prefs_file`] (headless MCP).
     prefs_watch: Option<PrefsWatch>,
     /// The last warning about a broken or unreadable preferences file that
@@ -417,6 +435,7 @@ impl Session {
             pending_send: None,
             next_pending_id: 1,
             no_user_change: false,
+            coalesce: None,
             prefs_watch: None,
             prefs_warning: None,
         };
@@ -695,6 +714,14 @@ impl Session {
         self.no_user_change = true;
     }
 
+    /// Called by a move with a `coalesce_key`: if the newest undo step is a
+    /// burst of moves with this key and these ids, and nothing changed the
+    /// document since, this move joins that step instead of recording its
+    /// own. A burst that ends where it started leaves no step at all.
+    pub(crate) fn coalesce_with(&mut self, key: String, ids: Vec<ObjectId>) {
+        self.coalesce = Some((key, ids));
+    }
+
     fn run_command(
         &mut self,
         command: &dyn registry::Command,
@@ -732,8 +759,10 @@ impl Session {
             .map(|d| (d.id(), d.document.clone()))
             .collect();
         self.no_user_change = false;
+        self.coalesce = None;
         let caught = run_caught(command, self, params, origin);
         let no_user_change = std::mem::take(&mut self.no_user_change);
+        let coalesce = self.coalesce.take();
         let Ok(result) = caught else {
             // A panic: the command may have stopped half way. Put the
             // document back, if it is still open.
@@ -790,9 +819,32 @@ impl Session {
                 Err(CommandError::Refused(TOO_LARGE.into()))
             }
             Ok(value) => {
+                let joins = match (&coalesce, &state.burst) {
+                    (Some((key, ids)), Some(b)) => {
+                        b.key == *key && b.ids == *ids && b.revision == state.revision
+                    }
+                    _ => false,
+                };
                 state.touch();
-                state.undo.record(before);
+                if !joins {
+                    state.undo.record(before);
+                }
                 state.dirty = true;
+                state.burst = coalesce.map(|(key, ids)| Burst {
+                    key,
+                    ids,
+                    revision: state.revision,
+                });
+                if joins
+                    && state
+                        .undo
+                        .last()
+                        .is_some_and(|start| same_document(start, &state.document))
+                {
+                    // Back where the burst started: nothing to undo.
+                    state.undo.discard_last();
+                    state.burst = None;
+                }
                 state.prune_selection();
                 Ok(value)
             }
@@ -870,6 +922,7 @@ impl Session {
                     last_sent_rev: d.last_sent_rev,
                     revision: d.revision + 1,
                     bounds_cache: HashMap::new(),
+                    burst: None,
                 },
             };
             self.docs.push(st);
