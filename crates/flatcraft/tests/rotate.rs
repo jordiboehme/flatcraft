@@ -726,3 +726,66 @@ fn a_typed_angle_counts_before_a_save_click() {
     assert!(near(doc.objects[0].transform.rotation_deg, 30.0));
     assert!(!s.lock().unwrap().doc().dirty, "saved after the change");
 }
+
+/// A 150 mm square behind a 50 mm square in its middle; the small one is
+/// selected. The rig is around the small one's centre (45, 45).
+fn nested(dir: &tempfile::TempDir) -> (SharedSession, u64, u64, AppHarness, CanvasView) {
+    let s = session(dir);
+    let big = import_square(&s);
+    run(&s, "object.scale", json!({ "ids": [big], "factor": 3.0 }));
+    let small = import_square(&s);
+    run(&s, "object.select", json!({ "ids": [small] }));
+    let (h, v) = rig(dir, s.clone(), kurbo::Point::new(45.0, 45.0));
+    (s, big, small, h, v)
+}
+
+#[test]
+fn an_object_behind_the_selection_leaves_the_rotate_zone_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, big, small, mut h, v) = nested(&dir);
+    let big_before = transform(&s, big);
+    let at = zone(&v, kurbo::Point::new(70.0, 70.0));
+    h.hover_at(at);
+    h.run();
+    h.run();
+    assert_eq!(cursor(&h), CursorIcon::None, "the rotate cursor");
+    turn(&mut h, at, mm(&v, 45.0, 45.0), 30.0, Modifiers::NONE);
+    assert!(near(transform(&s, small).rotation_deg, 30.0));
+    let big_after = transform(&s, big);
+    assert_eq!(big_after, big_before, "the big square did not move");
+    let sel: Vec<u64> = s
+        .lock()
+        .unwrap()
+        .doc()
+        .selection
+        .iter()
+        .map(|i| i.0)
+        .collect();
+    assert_eq!(sel, vec![small]);
+}
+
+/// A backing piece whose outline runs right through the rotate zone still
+/// leaves it alone: it lies behind the whole selection.
+#[test]
+fn a_backing_piece_with_its_edge_in_the_zone_leaves_it_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let back = import_square(&s);
+    run(
+        &s,
+        "object.scale",
+        json!({ "ids": [back], "factor": 1.1, "anchor": "top_left" }),
+    );
+    let front = import_square(&s);
+    run(&s, "object.select", json!({ "ids": [front] }));
+    let (mut h, v) = rig(&dir, s.clone(), kurbo::Point::new(45.0, 45.0));
+    let at = zone(&v, kurbo::Point::new(70.0, 70.0));
+    h.hover_at(at);
+    h.run();
+    h.run();
+    assert_eq!(cursor(&h), CursorIcon::None, "the rotate cursor");
+    let before = transform(&s, back);
+    turn(&mut h, at, mm(&v, 45.0, 45.0), 30.0, Modifiers::NONE);
+    assert!(near(transform(&s, front).rotation_deg, 30.0));
+    assert_eq!(transform(&s, back), before);
+}

@@ -542,20 +542,61 @@ fn hit_test(snap: &Snapshot, view: &CanvasView, at: Pos2) -> Hit {
             }
         }
         // Then the rotate zone, just outside a corner. A handle always wins
-        // inside its own pick area (above), and an object that is not
-        // selected wins over the zone: a click or drag there is for it.
+        // inside its own pick area (above). An object that is not selected
+        // wins over the zone only near one of its outlines, and never one
+        // that lies behind the whole selection (a backing piece).
         if !screen.contains(at) {
             for (i, c) in handle_points(b).into_iter().take(4).enumerate() {
                 if view.mm_to_screen(c).distance(at) <= ROTATE_REACH {
-                    return match object_at(snap, view, at) {
-                        Some(id) if !snap.selection.contains(&id) => Hit::Object(id),
-                        _ => Hit::Rotate(i),
-                    };
+                    return outline_at(snap, view, at, b).map_or(Hit::Rotate(i), Hit::Object);
                 }
             }
         }
     }
     object_at(snap, view, at).map_or(Hit::Nothing, Hit::Object)
+}
+
+/// The topmost visible object that is not selected and has one of its
+/// outlines within [`HANDLE_PICK`] of `at`, leaving out objects whose box
+/// holds the whole selection box `selection` (mm).
+fn outline_at(snap: &Snapshot, view: &CanvasView, at: Pos2, selection: kurbo::Rect) -> Option<u64> {
+    let mm = view.screen_to_mm(at);
+    let reach = f64::from(HANDLE_PICK / view.px_per_mm);
+    // With a hair of slack: shapes that share an edge come out of the
+    // import a few nanometres apart.
+    let contains = |outer: kurbo::Rect, inner: kurbo::Rect| {
+        let outer = outer.inflate(1e-3, 1e-3);
+        outer.x0 <= inner.x0 && outer.y0 <= inner.y0 && outer.x1 >= inner.x1 && outer.y1 >= inner.y1
+    };
+    snap.objects
+        .iter()
+        .rev()
+        .filter(|o| o.visible && !snap.selection.contains(&o.id))
+        .filter(|o| o.bounds().is_some_and(|b| !contains(b, selection)))
+        .find(|o| {
+            let c = o.transform.center_mm.to_vec2();
+            o.shape.lines.iter().any(|l| {
+                let pts: Vec<kurbo::Point> = l.points.iter().map(|p| *p + c).collect();
+                let closing = (l.closed && pts.len() > 2).then(|| (pts[pts.len() - 1], pts[0]));
+                pts.windows(2)
+                    .map(|w| (w[0], w[1]))
+                    .chain(closing)
+                    .any(|(a, b)| segment_distance(mm, a, b) <= reach)
+            })
+        })
+        .map(|o| o.id)
+}
+
+/// The distance from `p` to the segment `a`-`b`.
+fn segment_distance(p: kurbo::Point, a: kurbo::Point, b: kurbo::Point) -> f64 {
+    let d = b - a;
+    let len2 = d.hypot2();
+    let t = if len2 <= 1e-12 {
+        0.0
+    } else {
+        ((p - a).dot(d) / len2).clamp(0.0, 1.0)
+    };
+    (p - (a + d * t)).hypot()
 }
 
 /// The topmost visible object under `at`, with 3 points of slack.
@@ -1587,6 +1628,15 @@ mod tests {
         // Past the fixed side it does not mirror.
         let s = stretch(b, 5, kurbo::Point::new(-30.0, 10.0), false, false);
         assert_eq!(s.fx, MIN_FACTOR);
+    }
+
+    #[test]
+    fn the_distance_to_a_segment_is_to_its_nearest_point() {
+        let a = kurbo::Point::new(0.0, 0.0);
+        let b = kurbo::Point::new(10.0, 0.0);
+        assert_eq!(segment_distance(kurbo::Point::new(5.0, 3.0), a, b), 3.0);
+        assert_eq!(segment_distance(kurbo::Point::new(13.0, 4.0), a, b), 5.0);
+        assert_eq!(segment_distance(kurbo::Point::new(3.0, 4.0), a, a), 5.0);
     }
 
     #[test]

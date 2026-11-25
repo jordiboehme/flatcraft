@@ -3375,10 +3375,9 @@ fn angles_too_large_to_be_exact_are_refused() {
 /// value itself.
 #[test]
 fn a_non_finite_angle_is_refused() {
-    use flatcraft_engine::commands::object::{RotateParams, check_angle};
+    use flatcraft_engine::commands::object::check_angle;
     for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         assert!(check_angle(v).is_err(), "{v}");
     }
     assert!(check_angle(1e9).is_ok());
-    let _ = std::mem::size_of::<RotateParams>();
 }
