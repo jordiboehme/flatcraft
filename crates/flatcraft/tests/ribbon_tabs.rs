@@ -191,10 +191,6 @@ fn the_switches_are_compact_and_inside_their_group() {
         );
         let keep = node_rect(&h, Role::CheckBox, "Keep aspect");
         assert_eq!(keep.height(), COMPACT_HEIGHT);
-        assert!(
-            (keep.center().y - pins_mid).abs() <= 0.5,
-            "{width}: {keep:?}"
-        );
     }
 }
 
@@ -245,6 +241,43 @@ fn the_painted_active_tab_opens_into_the_panel() {
                     "{tab:?}: a border line {a}..{b} runs under the tab {tab_rect:?}"
                 );
             }
+        }
+    }
+}
+
+#[test]
+fn the_size_group_has_two_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select_all(&s, &[a]);
+    for width in [900.0, 1400.0] {
+        let mut h = rig(&dir, s.clone(), width);
+        show_tab(&mut h, RibbonTab::Arrange);
+        let l = layout(&h);
+        let w = node_rect(&h, Role::TextInput, "Width (mm)");
+        let hh = node_rect(&h, Role::TextInput, "Height (mm)");
+        let pct = node_rect(&h, Role::TextInput, "Scale (%)");
+        let keep = node_rect(&h, Role::CheckBox, "Keep aspect");
+        // Column 1: W above H, the fields lined up.
+        assert!(w.bottom() <= hh.top(), "{width}: {w:?} {hh:?}");
+        assert_eq!(w.left(), hh.left(), "{width}");
+        // Column 2, right of it: % above Keep aspect, which sits under the
+        // field.
+        assert!(pct.left() > w.right(), "{width}");
+        assert!(pct.bottom() <= keep.top(), "{width}: {pct:?} {keep:?}");
+        assert_eq!(keep.left(), pct.left(), "{width}");
+        // The labels line up too.
+        let wl = h.get_by_label("W").rect();
+        let hl = h.get_by_label("H").rect();
+        assert_eq!(wl.left(), hl.left(), "{width}");
+        // Everything inside the pins row, above the "Size" title.
+        for r in [w, hh, pct, keep] {
+            assert!(
+                r.top() >= l.tools.top() && r.bottom() <= l.tools.top() + BIG_HEIGHT,
+                "{width}: {r:?} not in the pins row of {:?}",
+                l.tools
+            );
         }
     }
 }

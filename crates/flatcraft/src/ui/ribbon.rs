@@ -691,9 +691,28 @@ fn size_group(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
     let def = GroupId::Size.def();
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = groups::GROUP_GAP;
+        // Two columns of two rows: W above H, and % above Keep aspect.
+        // Each is a grid, so the labels line up.
         let top = groups::pins_row(ui, |ui| {
-            size_wh(ui, cx);
-            size_rest(ui, mode, cx);
+            // Two rows fill the pins row's height, so the columns start at
+            // its top (a grid does not centre itself in a row).
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), groups::BIG_HEIGHT),
+                egui::Layout::left_to_right(egui::Align::Min),
+                |ui| {
+                    egui::Grid::new("flatcraft-size-wh")
+                        .num_columns(2)
+                        .min_col_width(0.0)
+                        .spacing(SIZE_GRID_GAP)
+                        .show(ui, |ui| size_wh(ui, cx));
+                    egui::Grid::new("flatcraft-size-scale")
+                        .num_columns(2)
+                        .min_col_width(0.0)
+                        .spacing(SIZE_GRID_GAP)
+                        .show(ui, |ui| size_scale(ui, mode, cx));
+                },
+            );
+            linked_note(ui, mode, cx);
         });
         // Its title, like a group button, but nothing to open.
         let (rect, resp) = ui.allocate_exact_size(
@@ -729,6 +748,7 @@ fn size_wh(ui: &mut Ui, cx: &mut Cx) {
         Some(b.map(|b| mm(b.width())).unwrap_or_default()),
         any,
     );
+    ui.end_row();
     let h = number_field(
         ui,
         "scale-height",
@@ -739,6 +759,7 @@ fn size_wh(ui: &mut Ui, cx: &mut Cx) {
         Some(b.map(|b| mm(b.height())).unwrap_or_default()),
         any,
     );
+    ui.end_row();
     for (target, key, have) in [
         (w, "width_mm", b.map(|b| b.width())),
         (h, "height_mm", b.map(|b| b.height())),
@@ -764,13 +785,38 @@ fn size_wh(ui: &mut Ui, cx: &mut Cx) {
     }
 }
 
-fn size_rest(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
+/// Room between the cells of the Size group's columns.
+const SIZE_GRID_GAP: egui::Vec2 = egui::vec2(4.0, 4.0);
+
+/// The second column: % above Keep aspect, which sits under the field.
+fn size_scale(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
     let snap = cx.snap;
     let doc_id = snap.doc_id;
     let ids: Vec<u64> = snap.selection.iter().copied().collect();
     let any = !ids.is_empty();
     let single = ids.len() == 1;
     let f = &mut cx.st.fields;
+    if let Some(p) = number_field(
+        ui,
+        "scale-percent",
+        "%",
+        "Scale (%)",
+        Setting::ScalePercent,
+        &mut f.percent,
+        Some(if any { "100.00".into() } else { String::new() }),
+        any,
+    ) && p > 0.0
+    {
+        // Each object scales about its own centre when the switch is on.
+        cx.actions.push(Action::run(
+            doc_id,
+            "object.scale",
+            json!({ "ids": ids, "factor": p / 100.0, "group": !single && !f.each }),
+        ));
+    }
+    ui.end_row();
+    // No label of its own: the switch sits under the % field.
+    ui.allocate_exact_size(egui::Vec2::ZERO, egui::Sense::hover());
     if ids.len() > 1 {
         let mut on = true;
         switch(
@@ -793,26 +839,13 @@ fn size_rest(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
             (!any).then_some("Select something first."),
         );
     }
-    if let Some(p) = number_field(
-        ui,
-        "scale-percent",
-        "%",
-        "Scale (%)",
-        Setting::ScalePercent,
-        &mut f.percent,
-        Some(if any { "100.00".into() } else { String::new() }),
-        any,
-    ) && p > 0.0
-    {
-        // Each object scales about its own centre when the switch is on.
-        cx.actions.push(Action::run(
-            doc_id,
-            "object.scale",
-            json!({ "ids": ids, "factor": p / 100.0, "group": !single && !f.each }),
-        ));
-    }
+    ui.end_row();
+}
+
+/// "Scales all N linked copies" after the columns, when it applies.
+fn linked_note(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
     // Linked copies share the scale.
-    if let Some(n) = snap.linked_reach() {
+    if let Some(n) = cx.snap.linked_reach() {
         let text = format!("Scales all {n} linked copies");
         let hint = "Linked copies share the scale. Each keeps its own place.";
         if mode == Mode::Full {
