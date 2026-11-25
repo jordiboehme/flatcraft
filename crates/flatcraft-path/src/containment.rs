@@ -204,6 +204,29 @@ pub fn keep_side(tree: &ContainmentTree, i: usize, closed: bool) -> KeepSide {
     }
 }
 
+/// Which side of an object's cuts is kept material.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeepMode {
+    /// The cut shapes are kept: inside an odd number of the object's rings.
+    /// Outside and the holes are waste.
+    #[default]
+    Pieces,
+    /// The sheet is kept and the cut shapes fall out: inside an odd number
+    /// of the object's rings is waste, the rest of the cutting area is kept.
+    Stencil,
+    /// Both sides are kept: the pieces, and everything within the
+    /// clearance of the object's rings, so no lead-in or overshoot lands
+    /// next to its cuts.
+    Both,
+}
+
+/// The closed `Cut` rings of one object, one lap each, and its keep mode.
+#[derive(Debug, Clone)]
+pub struct KeptObject<'a> {
+    pub rings: Vec<&'a [Point]>,
+    pub mode: KeepMode,
+}
+
 /// The edge of a grid cell of [`KeptMaterial`], in millimetres.
 const CELL_MM: f64 = 1.0;
 
@@ -215,15 +238,25 @@ fn cell(v: f64) -> i64 {
     (v / CELL_MM).floor() as i64
 }
 
-/// What is kept material and what is waste, for the whole job (review C3):
-/// a point is kept when it lies strictly inside an odd number of rings
-/// (piece 1, hole 2, piece in a hole 3). Classifying the whole job, not one
-/// path, means a waste move is never judged safe while it cuts a
-/// neighbour or crosses a hole into its parent.
+/// What is kept material and what is waste, for the whole job (review C3).
+/// Classifying the whole job, not one path, means a waste move is never
+/// judged safe while it cuts a neighbour or crosses a hole into its parent.
+///
+/// Each object classifies by its [`KeepMode`], counting even-odd over its
+/// own rings (piece 1, hole 2, piece in a hole 3). Across objects kept
+/// wins: a point is waste only when no object calls it kept.
 #[derive(Debug, Clone)]
 pub struct KeptMaterial {
     /// Every ring edge as (start, end, ring index).
     segs: Vec<(Point, Point, usize)>,
+    /// The object each ring belongs to.
+    ring_object: Vec<usize>,
+    /// The keep mode of each object.
+    modes: Vec<KeepMode>,
+    /// A stencil's sheet: the whole cutting area, boundary included.
+    sheet: Rect,
+    /// How far from a `Both` object's rings everything is kept.
+    clearance_mm: f64,
     /// A uniform grid of [`CELL_MM`] cells: the edges near each cell.
     cells: HashMap<(i64, i64), Vec<usize>>,
     /// The last column of each row that holds an edge.
@@ -233,20 +266,45 @@ pub struct KeptMaterial {
 }
 
 impl KeptMaterial {
-    /// Index all closed `Cut` rings of the job, one lap each.
+    /// Index all closed `Cut` rings of the job, one lap each, as one
+    /// [`KeepMode::Pieces`] object: a point is kept when it lies strictly
+    /// inside an odd number of them.
     pub fn new(rings: &[&[Point]]) -> Self {
+        Self::with_modes(
+            &[KeptObject {
+                rings: rings.to_vec(),
+                mode: KeepMode::Pieces,
+            }],
+            Rect::ZERO,
+            0.0,
+        )
+    }
+
+    /// Index the closed `Cut` rings of each object, one lap each.
+    /// `cutting_area` is the sheet a [`KeepMode::Stencil`] keeps, and
+    /// `clearance_mm` how far from a [`KeepMode::Both`] object's rings
+    /// everything is kept.
+    pub fn with_modes(objects: &[KeptObject], cutting_area: Rect, clearance_mm: f64) -> Self {
         let mut kept = Self {
             segs: Vec::new(),
+            ring_object: Vec::new(),
+            modes: objects.iter().map(|o| o.mode).collect(),
+            sheet: cutting_area,
+            clearance_mm,
             cells: HashMap::new(),
             row_end: HashMap::new(),
             extent: None,
         };
-        for (r, ring) in rings.iter().enumerate() {
-            let n = ring.len();
-            for i in 0..n {
-                let (a, b) = (ring[i], ring[(i + 1) % n]);
-                if a != b && a.is_finite() && b.is_finite() {
-                    kept.insert(a, b, r);
+        for (o, object) in objects.iter().enumerate() {
+            for ring in &object.rings {
+                let r = kept.ring_object.len();
+                kept.ring_object.push(o);
+                let n = ring.len();
+                for i in 0..n {
+                    let (a, b) = (ring[i], ring[(i + 1) % n]);
+                    if a != b && a.is_finite() && b.is_finite() {
+                        kept.insert(a, b, r);
+                    }
                 }
             }
         }
@@ -282,12 +340,13 @@ impl KeptMaterial {
         }
     }
 
-    /// True when `p` lies strictly inside an odd number of rings. A ring
-    /// that `p` lies on (within [`EPS`]) does not count.
-    pub fn is_kept(&self, p: Point) -> bool {
+    /// The objects inside an odd number of whose rings `p` lies strictly.
+    /// A ring that `p` lies on (within [`EPS`]) does not count, so the
+    /// ring's own object counts only its other rings.
+    fn odd_objects(&self, p: Point) -> Vec<usize> {
         let (pc, pr) = (cell(p.x), cell(p.y));
         let Some(&end) = self.row_end.get(&pr) else {
-            return false;
+            return Vec::new();
         };
         // An edge within EPS of p is indexed in p's own cell.
         let on: Vec<usize> = self
@@ -299,7 +358,7 @@ impl KeptMaterial {
             .filter(|&(a, b, _)| kurbo::Line::new(a, b).nearest(p, 0.0).distance_sq <= EPS * EPS)
             .map(|s| s.2)
             .collect();
-        let mut kept = false;
+        let mut objects = Vec::new();
         // Walk p's row towards +x. Each crossing is counted in the one cell
         // that holds the crossing point.
         for col in pc..=end {
@@ -309,16 +368,54 @@ impl KeptMaterial {
                     && cell(x) == col
                     && !on.contains(&ring)
                 {
-                    kept = !kept;
+                    objects.push(self.ring_object[ring]);
                 }
             }
         }
-        kept
+        objects.sort_unstable();
+        let mut odd = Vec::new();
+        for run in objects.chunk_by(|a, b| a == b) {
+            if run.len() % 2 == 1 {
+                odd.push(run[0]);
+            }
+        }
+        odd
+    }
+
+    /// True when `p` is kept material: some object calls it kept.
+    pub fn is_kept(&self, p: Point) -> bool {
+        let odd = self.odd_objects(p);
+        if odd.iter().any(|&o| self.modes[o] != KeepMode::Stencil) {
+            return true;
+        }
+        let stencils = self
+            .modes
+            .iter()
+            .filter(|m| **m == KeepMode::Stencil)
+            .count();
+        let on_sheet = p.x >= self.sheet.x0
+            && p.x <= self.sheet.x1
+            && p.y >= self.sheet.y0
+            && p.y <= self.sheet.y1;
+        // `odd` holds only stencils here; a stencil not in it keeps p.
+        if on_sheet && odd.len() < stencils {
+            return true;
+        }
+        self.modes.contains(&KeepMode::Both)
+            && self.nearest(p, |o| self.modes[o] == KeepMode::Both, self.clearance_mm)
+                <= self.clearance_mm
     }
 
     /// The distance from `p` to the nearest ring, `f64::INFINITY` when
     /// there is none.
     pub fn distance_to_cut(&self, p: Point) -> f64 {
+        self.nearest(p, |_| true, f64::INFINITY)
+    }
+
+    /// The distance from `p` to the nearest ring of an object that `take`
+    /// accepts, `f64::INFINITY` when there is none. The search may stop
+    /// early with any value above `limit` once no ring can be that near.
+    fn nearest(&self, p: Point, take: impl Fn(usize) -> bool, limit: f64) -> f64 {
         let Some((c0, r0, c1, r1)) = self.extent else {
             return f64::INFINITY;
         };
@@ -340,14 +437,16 @@ impl KeptMaterial {
                 };
                 for col in cols {
                     for &id in self.cells.get(&(col, row)).into_iter().flatten() {
-                        let (a, b, _) = self.segs[id];
-                        let d = kurbo::Line::new(a, b).nearest(p, 0.0).distance_sq.sqrt();
-                        best = best.min(d);
+                        let (a, b, ring) = self.segs[id];
+                        if take(self.ring_object[ring]) {
+                            let d = kurbo::Line::new(a, b).nearest(p, 0.0).distance_sq.sqrt();
+                            best = best.min(d);
+                        }
                     }
                 }
             }
             // An edge first met beyond ring k of cells is at least k cells away.
-            if best <= k as f64 * CELL_MM || k >= last {
+            if best <= k as f64 * CELL_MM || k as f64 * CELL_MM > limit || k >= last {
                 return best;
             }
             k += 1;
@@ -360,6 +459,7 @@ mod tests {
     use super::*;
     use crate::plan::{PathRef, Toolpath};
     use flatcraft_core::document::ObjectId;
+    use kurbo::Rect;
 
     /// A toolpath of the given points (Ruling F3: rings are read through `lap()`).
     fn tp(pts: &[(f64, f64)], closed: bool) -> Toolpath {
@@ -742,5 +842,139 @@ mod tests {
                 assert_eq!(kept.is_kept(p), inside, "{p:?}");
             }
         }
+    }
+    fn area() -> Rect {
+        Rect::new(0.0, 0.0, 200.0, 200.0)
+    }
+
+    #[test]
+    fn stencil_keeps_the_sheet_and_wastes_the_shape() {
+        let r = sq(50.0, 50.0, 80.0, 70.0);
+        let kept = KeptMaterial::with_modes(
+            &[KeptObject {
+                rings: vec![r.lap()],
+                mode: KeepMode::Stencil,
+            }],
+            area(),
+            1.0,
+        );
+        assert!(!kept.is_kept(Point::new(60.0, 60.0)), "cut shape is waste");
+        assert!(kept.is_kept(Point::new(40.0, 60.0)), "sheet beside it");
+        assert!(kept.is_kept(Point::new(150.0, 150.0)), "sheet far away");
+        assert!(
+            !kept.is_kept(Point::new(250.0, 60.0)),
+            "off the cutting area"
+        );
+    }
+
+    #[test]
+    fn stencil_with_a_piece_in_a_hole_wastes_only_the_odd_regions() {
+        // A letter O: the ring between the two outlines falls out, the
+        // counter (the middle) stays with the sheet.
+        let outer = sq(50.0, 50.0, 90.0, 90.0);
+        let inner = sq(60.0, 60.0, 80.0, 80.0);
+        let kept = KeptMaterial::with_modes(
+            &[KeptObject {
+                rings: vec![outer.lap(), inner.lap()],
+                mode: KeepMode::Stencil,
+            }],
+            area(),
+            1.0,
+        );
+        assert!(!kept.is_kept(Point::new(55.0, 70.0)));
+        assert!(kept.is_kept(Point::new(70.0, 70.0)));
+    }
+
+    #[test]
+    fn both_leaves_no_waste_near_the_rings() {
+        let outer = sq(50.0, 50.0, 90.0, 90.0);
+        let hole = sq(60.0, 60.0, 80.0, 80.0);
+        let kept = KeptMaterial::with_modes(
+            &[KeptObject {
+                rings: vec![outer.lap(), hole.lap()],
+                mode: KeepMode::Both,
+            }],
+            area(),
+            2.0,
+        );
+        assert!(kept.is_kept(Point::new(55.0, 70.0)), "the piece");
+        assert!(
+            kept.is_kept(Point::new(48.5, 70.0)),
+            "sheet within clearance"
+        );
+        assert!(
+            kept.is_kept(Point::new(61.5, 70.0)),
+            "hole within clearance"
+        );
+        assert!(kept.is_kept(Point::new(50.0, 70.0)), "on the cut");
+        assert!(
+            !kept.is_kept(Point::new(40.0, 70.0)),
+            "sheet beyond clearance"
+        );
+        assert!(
+            !kept.is_kept(Point::new(70.0, 70.0)),
+            "hole beyond clearance"
+        );
+    }
+
+    #[test]
+    fn overlapping_pieces_and_stencil_keep_wins() {
+        let piece = sq(0.0, 0.0, 20.0, 20.0);
+        let stencil = sq(10.0, 0.0, 30.0, 20.0);
+        let kept = KeptMaterial::with_modes(
+            &[
+                KeptObject {
+                    rings: vec![piece.lap()],
+                    mode: KeepMode::Pieces,
+                },
+                KeptObject {
+                    rings: vec![stencil.lap()],
+                    mode: KeepMode::Stencil,
+                },
+            ],
+            area(),
+            1.0,
+        );
+        assert!(
+            kept.is_kept(Point::new(15.0, 10.0)),
+            "piece wins over stencil cut-out"
+        );
+        assert!(
+            kept.is_kept(Point::new(5.0, 10.0)),
+            "piece and stencil sheet"
+        );
+        assert!(
+            !kept.is_kept(Point::new(25.0, 10.0)),
+            "stencil cut-out only"
+        );
+        assert!(kept.is_kept(Point::new(100.0, 100.0)), "stencil sheet");
+    }
+
+    #[test]
+    fn overlapping_pieces_of_two_objects_stay_kept() {
+        // Job-wide even-odd would call the overlap waste (count 2). Per
+        // object, each piece keeps it.
+        let a = sq(0.0, 0.0, 20.0, 20.0);
+        let b = sq(10.0, 0.0, 30.0, 20.0);
+        let per_object = KeptMaterial::with_modes(
+            &[
+                KeptObject {
+                    rings: vec![a.lap()],
+                    mode: KeepMode::Pieces,
+                },
+                KeptObject {
+                    rings: vec![b.lap()],
+                    mode: KeepMode::Pieces,
+                },
+            ],
+            area(),
+            1.0,
+        );
+        assert!(per_object.is_kept(Point::new(15.0, 10.0)));
+        assert!(
+            !per_object.is_kept(Point::new(50.0, 10.0)),
+            "no stencil: outside is waste"
+        );
+        assert_eq!(KeepMode::default(), KeepMode::Pieces);
     }
 }
