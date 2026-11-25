@@ -439,3 +439,20 @@ fn x_moves_a_multi_selection_as_one() {
     let (na, nb) = (bounds(&s, a), bounds(&s, b));
     assert!(near(na.x0, 0.0) && near(nb.x0, 60.0), "{na:?} {nb:?}");
 }
+
+#[test]
+fn a_field_tabbed_into_shows_the_new_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _id, mut h, _) = square(&dir);
+    // Keep aspect is on: W 80 makes H 80 too, and H has the focus now.
+    type_text(&mut h, "Width (mm)", "80");
+    h.key_press(Key::Tab);
+    h.run();
+    h.run();
+    assert_eq!(fields(&h).height, "80.00");
+    // Leaving H unchanged applies nothing more.
+    let before = undo_len(&s);
+    h.key_press(Key::Tab);
+    h.run();
+    assert_eq!(undo_len(&s), before);
+}

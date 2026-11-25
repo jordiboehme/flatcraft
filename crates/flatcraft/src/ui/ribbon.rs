@@ -96,6 +96,18 @@ fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) {
     let editing = fields.editing.as_ref().is_some_and(|e| e.field == nf.field);
     if !focused && !editing {
         *nf.field.buf(fields) = nf.current.clone();
+    } else if editing {
+        // Nothing typed yet (the focus came by Tab, say): it follows the
+        // value, which a field applied in the same frame may have changed.
+        let shown = fields.editing.as_ref().map(|e| e.shown.clone());
+        if shown.as_deref() == Some(nf.field.buf(fields).as_str())
+            && shown.as_ref() != Some(&nf.current)
+        {
+            *nf.field.buf(fields) = nf.current.clone();
+            if let Some(e) = fields.editing.as_mut() {
+                e.shown = nf.current.clone();
+            }
+        }
     }
     let why = (!nf.enabled).then_some("Select something first.");
     let l = ui.label(nf.label);
