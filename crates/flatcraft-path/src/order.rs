@@ -7,6 +7,8 @@ use crate::plan::Toolpath;
 /// Even-odd test of `p` against the polygon `ring`. `None` when `p` lies
 /// on (or within `EPS` of) the boundary, where the answer is ambiguous.
 fn inside_ring(p: Point, ring: &[Point]) -> Option<bool> {
+    #[cfg(test)]
+    tests::INSIDE_CALLS.with(|c| c.set(c.get() + 1));
     const EPS: f64 = 1e-9;
     let mut inside = false;
     let n = ring.len();
@@ -153,6 +155,11 @@ pub fn nearest_neighbour(paths: Vec<Toolpath>, start: Point) -> Vec<Toolpath> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// Even-odd tests run on this thread (`inside_ring`).
+        pub(super) static INSIDE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
     use crate::plan::PathRef;
     use flatcraft_core::document::ObjectId;
 
@@ -273,19 +280,35 @@ mod tests {
 
     #[test]
     fn deep_nesting_orders_fast() {
-        // Ruling R32a: 200 concentric rings of 400 vertices.
+        // Ruling R32a: 200 concentric rings of 400 vertices. The guard is
+        // the number of even-odd tests, so it holds on any profile: at
+        // most PROBES per pair whose boxes nest.
         let rings: Vec<Toolpath> = (1..=200)
             .map(|k| circle(k, (300.0, 300.0), k as f64, 400))
             .collect();
+        let boxes: Vec<Rect> = rings.iter().map(|t| bbox(&t.points).unwrap()).collect();
+        let box_nested = boxes
+            .iter()
+            .enumerate()
+            .flat_map(|(i, o)| {
+                boxes.iter().enumerate().filter(move |(j, b)| {
+                    i != *j && b.x0 >= o.x0 && b.y0 >= o.y0 && b.x1 <= o.x1 && b.y1 <= o.y1
+                })
+            })
+            .count();
+        INSIDE_CALLS.with(|c| c.set(0));
         let t = std::time::Instant::now();
         let out = nearest_neighbour(rings, Point::ZERO);
         let took = t.elapsed();
+        let calls = INSIDE_CALLS.with(|c| c.get());
         assert_eq!(ids(&out), (1..=200).collect::<Vec<u64>>());
-        let limit = if cfg!(debug_assertions) {
-            std::time::Duration::from_secs(3)
-        } else {
-            std::time::Duration::from_millis(150)
-        };
+        assert_eq!(box_nested, 200 * 199 / 2);
+        assert!(
+            calls <= PROBES * box_nested,
+            "{calls} even-odd tests for {box_nested} nested pairs"
+        );
+        // A loose extra: well inside this on the dev profile.
+        let limit = std::time::Duration::from_millis(250);
         assert!(took < limit, "took {took:?}, limit {limit:?}");
     }
 
