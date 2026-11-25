@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use common::{
-    AppHarness, FakePicker, app, app_mut, harness, harness_with, import_square, session,
-    wait_for_source_check,
+    AppHarness, FakePicker, app, harness, harness_with, import_square, session, to_prepare,
+    undo_len, wait_for_source_check,
 };
 use egui::accesskit::Role;
 use egui_kittest::kittest::Queryable as _;
@@ -18,15 +18,6 @@ use flatcraft_core::document::{ObjectId, Source, TraceSettings};
 use flatcraft_engine::session::Origin;
 use flatcraft_mcp::SharedSession;
 use serde_json::json;
-
-fn undo_len(s: &SharedSession) -> usize {
-    s.lock().unwrap().doc().undo.undo_len()
-}
-
-fn to_prepare(h: &mut AppHarness) {
-    app_mut(h).ui.workspace = Workspace::Prepare;
-    wait_for_source_check(h);
-}
 
 /// A black ring (outer radius 80 px, hole 40 px) on white, 200 x 200 px.
 fn write_ring(path: &Path) {

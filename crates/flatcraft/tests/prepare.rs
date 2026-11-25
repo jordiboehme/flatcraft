@@ -5,13 +5,12 @@ mod common;
 use std::path::Path;
 
 use common::{
-    AppHarness, FakePicker, app, app_mut, harness, harness_with, import_square, session,
-    wait_for_source_check, wait_for_workers, worker_delay,
+    AppHarness, FakePicker, app, app_mut, harness, harness_with, import_square, painted, session,
+    to_prepare, undo_len, wait_for_source_check, wait_for_workers, worker_delay,
 };
 use egui::accesskit::Role;
 use egui::{Color32, Event, Modifiers, Pos2, Shape, Vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
-use flatcraft::ui::Workspace;
 use flatcraft::ui::canvas::CanvasView;
 use flatcraft_core::document::ObjectId;
 use flatcraft_engine::session::Origin;
@@ -34,15 +33,6 @@ fn bounds(s: &SharedSession, id: u64) -> Value {
         .find(|o| o["id"] == id)
         .unwrap()["bounds_mm"]
         .clone()
-}
-
-fn undo_len(s: &SharedSession) -> usize {
-    s.lock().unwrap().doc().undo.undo_len()
-}
-
-fn to_prepare(h: &mut AppHarness) {
-    app_mut(h).ui.workspace = Workspace::Prepare;
-    wait_for_source_check(h);
 }
 
 /// A view where 1 mm is 2 points and `mm` sits at the canvas centre.
@@ -254,21 +244,6 @@ fn corner_drag_scales_about_the_opposite_corner() {
         near(&b["x1"], x0 + 75.0) && near(&b["y1"], y0 + 75.0),
         "{b}"
     );
-}
-
-/// Every shape painted last frame, with nested lists flattened.
-fn painted(h: &AppHarness) -> Vec<Shape> {
-    fn walk(shape: &Shape, out: &mut Vec<Shape>) {
-        match shape {
-            Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
-            other => out.push(other.clone()),
-        }
-    }
-    let mut out = Vec::new();
-    for c in &h.output().shapes {
-        walk(&c.shape, &mut out);
-    }
-    out
 }
 
 #[test]
@@ -2089,11 +2064,36 @@ fn typed_size_of_a_multi_selection_sizes_the_common_box() {
         (f(&nb, "x0") - f(&na, "x1") - 20.0).abs() < 1e-3,
         "{na} {nb}"
     );
-    // A percentage scales the group too.
+}
+
+#[test]
+fn typed_percent_of_a_multi_selection_scales_the_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let b = square_at(&s, 60.0);
+    select(&s, &[a, b]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.run();
+    let f = |v: &Value, k: &str| v[k].as_f64().unwrap();
+    let (oa, ob) = (bounds(&s, a), bounds(&s, b));
+    let before = undo_len(&s);
+    // The ribbon sends group: true for several objects. 110 mm wide at
+    // 50 %: 55 mm, the gap shrinks with it, one undo step.
     type_into(&mut h, "Scale (%)", "50");
+    assert_eq!(undo_len(&s), before + 1);
     let (na, nb) = (bounds(&s, a), bounds(&s, b));
+    let width = f(&nb, "x1") - f(&na, "x0");
+    assert!((width - 55.0).abs() < 1e-3, "common width {width}");
     assert!(
-        (f(&nb, "x1") - f(&na, "x0") - 110.0).abs() < 1e-3,
+        (f(&nb, "x0") - f(&na, "x1") - 5.0).abs() < 1e-3,
         "{na} {nb}"
+    );
+    let centre = |a: &Value, b: &Value| (f(a, "x0") + f(b, "x1")) / 2.0;
+    assert!(
+        (centre(&na, &nb) - centre(&oa, &ob)).abs() < 1e-3,
+        "about the group centre"
     );
 }

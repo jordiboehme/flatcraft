@@ -86,6 +86,32 @@ pub fn harness_steps(
     h
 }
 
+/// Shows Prepare and waits for the source check it starts.
+pub fn to_prepare(h: &mut AppHarness) {
+    app_mut(h).ui.workspace = ui::Workspace::Prepare;
+    wait_for_source_check(h);
+}
+
+/// Steps the active document can undo.
+pub fn undo_len(s: &SharedSession) -> usize {
+    s.lock().unwrap().doc().undo.undo_len()
+}
+
+/// Every shape painted last frame, with nested lists flattened.
+pub fn painted(h: &AppHarness) -> Vec<egui::Shape> {
+    fn walk(shape: &egui::Shape, out: &mut Vec<egui::Shape>) {
+        match shape {
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+            other => out.push(other.clone()),
+        }
+    }
+    let mut out = Vec::new();
+    for c in &h.output().shapes {
+        walk(&c.shape, &mut out);
+    }
+    out
+}
+
 pub fn app(h: &AppHarness) -> &FlatCraftApp {
     h.state().as_ref().unwrap()
 }

@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{AppHarness, FakePicker, app, app_mut, harness_steps, session};
+use common::{AppHarness, FakePicker, app, app_mut, harness_steps, painted, session};
 use egui::accesskit::{Role, Toggled};
 use egui::{Color32, Modifiers, Shape};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
@@ -68,21 +68,6 @@ fn keys(t: &toml::Table) -> Vec<&str> {
 
 fn store(s: &SharedSession) -> ProfileStore {
     s.lock().unwrap().profiles.clone()
-}
-
-/// Every shape painted last frame, with nested lists flattened.
-fn painted(h: &AppHarness) -> Vec<Shape> {
-    fn walk(shape: &Shape, out: &mut Vec<Shape>) {
-        match shape {
-            Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
-            other => out.push(other.clone()),
-        }
-    }
-    let mut out = Vec::new();
-    for c in &h.output().shapes {
-        walk(&c.shape, &mut out);
-    }
-    out
 }
 
 /// Makes `id` the plotter of the active document, closes the Profiles
