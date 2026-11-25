@@ -37,6 +37,29 @@ pub(crate) fn field_width(ui: &Ui, text: &str) -> f32 {
     galley.size().x + 2.0 * FIELD_MARGIN.x + 4.0
 }
 
+/// How a number field selects: a double-click selects the whole value
+/// (not only the digits under the pointer) and so does Tab or Shift-Tab
+/// into it, so typing replaces it. A single click only places the text
+/// cursor. Call it with the field's response and text, right after adding
+/// it.
+pub(crate) fn select_whole_value(ui: &Ui, resp: &egui::Response, text: &str) {
+    let by_pointer = ui.input(|i| i.pointer.any_pressed() || i.pointer.any_released());
+    let keyboard_focus = resp.gained_focus() && !by_pointer && !resp.clicked();
+    if !(resp.double_clicked() || keyboard_focus) {
+        return;
+    }
+    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), resp.id) {
+        let len = text.chars().count();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(len),
+            )));
+        state.store(ui.ctx(), resp.id);
+    }
+}
+
 /// The inner margin of the ribbon's number fields.
 const FIELD_MARGIN: egui::Vec2 = egui::vec2(4.0, 2.0);
 
@@ -162,6 +185,7 @@ fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) -> egui::Rect {
             .min_size(egui::vec2(width, 0.0)),
     );
     set_name(ui, &resp, nf.name);
+    select_whole_value(ui, &resp, nf.field.buf(&mut cx.st.fields));
     groups::card(&resp, nf.name, nf.setting.card(), why, false);
     if resp.has_focus() {
         if !editing {

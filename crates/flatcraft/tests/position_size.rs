@@ -761,3 +761,79 @@ fn the_keep_aspect_lock_opens_and_closes() {
     h.run();
     assert!(fields(&h).keep_aspect);
 }
+
+// ---------------------------------------------------------------- selecting
+
+/// Presses and releases the primary button at `at`.
+fn click_at(h: &mut AppHarness, at: Pos2) {
+    h.drag_at(at);
+    h.run();
+    h.drop_at(at);
+    h.run();
+}
+
+#[test]
+fn a_double_click_selects_the_whole_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_s, _id, mut h, _) = square(&dir);
+    assert_eq!(fields(&h).width, "50.00");
+    // On the "50" part, which a word selection would take alone.
+    let r = h.get_by_label("Width (mm)").rect();
+    let at = Pos2::new(r.left() + 8.0, r.center().y);
+    h.hover_at(at);
+    h.run();
+    // A test frame lasts longer than a real double-click may take. The
+    // click on the Layout tab is long past, so this is not a triple click.
+    h.ctx
+        .options_mut(|o| o.input_options.max_double_click_delay = 2.0);
+    for _ in 0..8 {
+        h.step();
+    }
+    click_at(&mut h, at);
+    click_at(&mut h, at);
+    h.run();
+    h.get_by_label("Width (mm)").type_text("7");
+    h.run();
+    assert_eq!(fields(&h).width, "7", "typing replaced the whole value");
+}
+
+#[test]
+fn a_single_click_places_the_cursor_without_a_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_s, _id, mut h, _) = square(&dir);
+    let r = h.get_by_label("Width (mm)").rect();
+    // Past the end of the text: the cursor goes to the end.
+    let at = Pos2::new(r.right() - 2.0, r.center().y);
+    h.hover_at(at);
+    h.run();
+    click_at(&mut h, at);
+    h.run();
+    h.get_by_label("Width (mm)").type_text("5");
+    h.run();
+    assert_eq!(
+        fields(&h).width,
+        "50.005",
+        "the value stays, the digit is added"
+    );
+}
+
+#[test]
+fn tab_into_a_field_selects_the_whole_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_s, _id, mut h, _) = square(&dir);
+    h.get_by_label("X (mm)").click();
+    h.run();
+    h.key_press(Key::Tab);
+    h.run();
+    h.run();
+    h.get_by_label("Y (mm)").type_text("9");
+    h.run();
+    assert_eq!(fields(&h).y, "9");
+    // Shift-Tab back into X too.
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    h.run();
+    h.run();
+    h.get_by_label("X (mm)").type_text("4");
+    h.run();
+    assert_eq!(fields(&h).x, "4");
+}
