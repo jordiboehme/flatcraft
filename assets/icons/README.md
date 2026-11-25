@@ -74,6 +74,11 @@ https://raw.githubusercontent.com/lucide-icons/lucide/1.79.0/icons/<name>.svg, u
 | Warning (dialog badge) | triangle-exclamation-point |
 | Info (dialog badge) | info |
 | Error (dialog badge) | circle-x |
+| Appearance (Settings) | palette |
+| Agents (Settings) | bot |
+| Shortcuts (Settings) | keyboard |
+| Plotters (Settings) | printer |
+| Materials (Settings) | layers |
 
 The Align directions "to the cutting area" use the Align icons above. The app draws
 them smaller inside a dashed frame at render time; the files are not changed.

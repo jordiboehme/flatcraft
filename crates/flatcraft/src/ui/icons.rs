@@ -90,6 +90,12 @@ pub enum Icon {
     AlignTopArea,
     AlignMiddleArea,
     AlignBottomArea,
+    /// Settings pages: Appearance, Agents, Shortcuts, Plotters, Materials.
+    Palette,
+    Bot,
+    Keyboard,
+    Printer,
+    Layers,
 }
 
 macro_rules! svg {
@@ -99,7 +105,7 @@ macro_rules! svg {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 72] = [
+    pub const ALL: [Icon; 77] = [
         Icon::Import,
         Icon::Trace,
         Icon::Duplicate,
@@ -172,6 +178,11 @@ impl Icon {
         Icon::AlignTopArea,
         Icon::AlignMiddleArea,
         Icon::AlignBottomArea,
+        Icon::Palette,
+        Icon::Bot,
+        Icon::Keyboard,
+        Icon::Printer,
+        Icon::Layers,
     ];
 
     /// The plain icon a framed "to the cutting area" icon is made from.
@@ -261,6 +272,11 @@ impl Icon {
             Icon::Warning => svg!("triangle-exclamation-point"),
             Icon::Info => svg!("info"),
             Icon::Error => svg!("circle-x"),
+            Icon::Palette => svg!("palette"),
+            Icon::Bot => svg!("bot"),
+            Icon::Keyboard => svg!("keyboard"),
+            Icon::Printer => svg!("printer"),
+            Icon::Layers => svg!("layers"),
             Icon::AlignLeftArea
             | Icon::AlignCentreArea
             | Icon::AlignRightArea
