@@ -2958,3 +2958,40 @@ fn copies_description_names_the_refusal_and_the_shared_link() {
     assert!(d.contains("refuses the whole call"), "{d}");
     assert!(d.contains("file link"), "{d}");
 }
+
+/// A reopened .svgz keeps its text: the stored bytes are still gzipped,
+/// and the rebuild must load the fonts for them anyway.
+#[test]
+fn a_reopened_svgz_keeps_its_text() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="40mm" viewBox="0 0 100 40"><text x="5" y="30" font-family="sans-serif" font-size="24">Hi</text></svg>"#;
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(svg.as_bytes()).unwrap();
+    let file = dir.path().join("hi.svgz");
+    std::fs::write(&file, gz.finish().unwrap()).unwrap();
+    let r = run(&mut s, "object.import", json!({ "path": file }));
+    let id = ObjectId(r["id"].as_u64().unwrap());
+    let paths = |s: &Session| s.doc().document.get(id).unwrap().geometry.len();
+    let before = paths(&s);
+    if before == 0 {
+        eprintln!("no system font draws the text here; nothing to compare");
+        return;
+    }
+    let project = dir.path().join("hi.flatcraft");
+    run(&mut s, "project.save", json!({ "path": project }));
+    run(&mut s, "document.new", json!({}));
+    let opened = run(&mut s, "project.open", json!({ "path": project }));
+    assert_eq!(opened["warnings"], json!([]), "{opened}");
+    assert_eq!(paths(&s), before, "the text is still there");
+    let reloaded = run(&mut s, "object.reload", json!({ "ids": [id.0] }));
+    assert_eq!(reloaded["warnings"], json!([]), "{reloaded}");
+    assert_eq!(paths(&s), before);
+    // The Home picture's path: load without opening, then draw.
+    let doc = flatcraft_engine::commands::project::load_rebuilt(&s.profiles, &project).unwrap();
+    assert_eq!(doc.objects[0].geometry.len(), before);
+    let plotter = s.profiles.plotter(&doc.job.plotter_id).unwrap();
+    let png = flatcraft_engine::preview::render_document_png(&plotter, &doc, 128).unwrap();
+    assert_eq!(&png[1..4], b"PNG");
+}
