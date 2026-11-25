@@ -10,3 +10,7 @@ pub const MAX_TOLERANCE_MM: f64 = 1.0;
 pub const MAX_OVERCUT_MM: f64 = 5.0;
 /// Largest pivot threshold of host knife compensation, degrees.
 pub const MAX_PIVOT_THRESHOLD_DEG: f64 = 180.0;
+
+/// Allowed plotter scale factors (`scale_x`, `scale_y`). A calibration
+/// corrects a few percent; anything outside this range is a typo.
+pub const SCALE_RANGE: std::ops::RangeInclusive<f64> = 0.5..=2.0;

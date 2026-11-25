@@ -302,12 +302,29 @@ fn default_passes_range() -> [u32; 2] {
 }
 
 impl PlotterProfile {
-    /// Checks the cut tolerances against sane limits
-    /// ([`flatcraft_core::limits`]): the flatten tolerance, and the blade
-    /// offset and pivot threshold of host knife compensation. The text says
-    /// what to fix.
+    /// Checks the values against sane limits ([`flatcraft_core::limits`]):
+    /// device units per mm (above 0), the x and y scale ([`SCALE_RANGE`]),
+    /// the flatten tolerance, and the blade offset and pivot threshold of
+    /// host knife compensation. The text says what to fix.
+    ///
+    /// [`SCALE_RANGE`]: flatcraft_core::limits::SCALE_RANGE
     pub fn validate_values(&self) -> Result<(), String> {
         use flatcraft_core::limits::*;
+        if !(self.units_per_mm.is_finite() && self.units_per_mm > 0.0) {
+            return Err(format!(
+                "the device units per mm must be a number above 0 (got {})",
+                self.units_per_mm
+            ));
+        }
+        for (axis, scale) in [("x", self.scale_x), ("y", self.scale_y)] {
+            if !SCALE_RANGE.contains(&scale) {
+                return Err(format!(
+                    "the {axis} scale must be {} to {} (got {scale})",
+                    SCALE_RANGE.start(),
+                    SCALE_RANGE.end()
+                ));
+            }
+        }
         if !(MIN_TOLERANCE_MM..=MAX_TOLERANCE_MM).contains(&self.flatten_tolerance_mm) {
             return Err(format!(
                 "the flatten tolerance must be {MIN_TOLERANCE_MM} to {MAX_TOLERANCE_MM} mm (got {})",

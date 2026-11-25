@@ -909,6 +909,45 @@ fn tolerances_have_sane_maxima() {
 }
 
 #[test]
+fn units_and_scale_are_validated() {
+    let (d, mut s) = store();
+    let base = s.plotter("silhouette-cameo-2").unwrap();
+    let mut p = base.clone();
+    p.id = "wild".into();
+    for units in [0.0, -20.0, f64::NAN, f64::INFINITY] {
+        p.units_per_mm = units;
+        let e = s.save_user_plotter(&p, "silhouette-cameo-2").unwrap_err();
+        assert!(e.to_string().contains("units per mm"), "{e}");
+    }
+    p.units_per_mm = 20.0;
+    for scale in [0.0, 0.49, 2.01, f64::NAN] {
+        p.scale_x = scale;
+        let e = s.save_user_plotter(&p, "silhouette-cameo-2").unwrap_err();
+        assert!(e.to_string().contains("x scale"), "{e}");
+        p.scale_x = 1.0;
+        p.scale_y = scale;
+        let e = s.save_user_plotter(&p, "silhouette-cameo-2").unwrap_err();
+        assert!(e.to_string().contains("y scale"), "{e}");
+        p.scale_y = 1.0;
+    }
+    p.scale_x = 0.5;
+    p.scale_y = 2.0;
+    s.save_user_plotter(&p, "silhouette-cameo-2").unwrap();
+    // A hand-edited file is refused when it is used.
+    write(
+        d.path(),
+        "plotters",
+        "edited",
+        "id = \"edited\"\nname = \"E\"\ninherits = \"silhouette-cameo-2\"\nunits_per_mm = 0.0\n",
+    );
+    let s = ProfileStore::load(d.path()).unwrap();
+    assert!(matches!(
+        s.plotter("edited"),
+        Err(ProfileError::Invalid { .. })
+    ));
+}
+
+#[test]
 fn a_save_never_overwrites_an_unreadable_preset_file() {
     let d = tempdir().unwrap();
     write(d.path(), "plotters", "mine", "id = \"mine\"\nname = [");
