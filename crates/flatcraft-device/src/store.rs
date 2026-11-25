@@ -189,7 +189,8 @@ fn diff_media(parent: &[Value], own: &[Value]) -> Vec<Value> {
     out
 }
 
-fn validate_media(id: &str, p: &PlotterProfile) -> Result<(), ProfileError> {
+/// Checks every mat of `p` ([`crate::Media::validate`]) and that no mat id is used twice.
+pub fn validate_media(id: &str, p: &PlotterProfile) -> Result<(), ProfileError> {
     for (i, m) in p.media.iter().enumerate() {
         if p.media[..i].iter().any(|o| o.id == m.id) {
             return Err(ProfileError::Invalid {
@@ -616,7 +617,14 @@ impl ProfileStore {
         };
         fs::create_dir_all(&dir).map_err(|e| io(&dir, e))?;
         let path = dir.join(format!("{id}.toml"));
-        fs::write(&path, text).map_err(|e| io(&path, e))?;
+        // Temp file, then rename: a crash mid-write never leaves a broken
+        // preset, which would stop the next start.
+        let tmp = dir.join(format!("{id}.toml.tmp"));
+        let written = fs::write(&tmp, text).and_then(|()| fs::rename(&tmp, &path));
+        if let Err(e) = written {
+            let _ = fs::remove_file(&tmp);
+            return Err(io(&path, e));
+        }
         self.map_mut(kind).insert(
             id.to_string(),
             Entry {
@@ -642,5 +650,53 @@ impl ProfileStore {
         parent: &str,
     ) -> Result<(), ProfileError> {
         self.save(Kind::Material, profile, &profile.id, &profile.name, parent)
+    }
+
+    fn delete(&mut self, kind: Kind, id: &str) -> Result<(), ProfileError> {
+        let entry = self
+            .map(kind)
+            .get(id)
+            .ok_or_else(|| ProfileError::UnknownPreset { id: id.to_string() })?;
+        if entry.system {
+            return Err(ProfileError::Invalid {
+                id: id.to_string(),
+                reason: "system presets cannot be deleted".into(),
+            });
+        }
+        let children: Vec<&str> = self
+            .map(kind)
+            .iter()
+            .filter(|(_, e)| e.table.get("inherits").and_then(Value::as_str) == Some(id))
+            .map(|(c, _)| c.as_str())
+            .collect();
+        if !children.is_empty() {
+            return Err(ProfileError::Invalid {
+                id: id.to_string(),
+                reason: format!(
+                    "other presets inherit from it ({}). Delete those first",
+                    children.join(", ")
+                ),
+            });
+        }
+        let path = self.user_dir.join(kind.dir()).join(format!("{id}.toml"));
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => return Err(ProfileError::Io { path, source }),
+        }
+        self.map_mut(kind).remove(id);
+        Ok(())
+    }
+
+    /// Deletes a user plotter preset and its file. System presets and presets other
+    /// presets inherit from are refused.
+    pub fn delete_user_plotter(&mut self, id: &str) -> Result<(), ProfileError> {
+        self.delete(Kind::Plotter, id)
+    }
+
+    /// Deletes a user material preset and its file, with the same rules as
+    /// [`ProfileStore::delete_user_plotter`].
+    pub fn delete_user_material(&mut self, id: &str) -> Result<(), ProfileError> {
+        self.delete(Kind::Material, id)
     }
 }

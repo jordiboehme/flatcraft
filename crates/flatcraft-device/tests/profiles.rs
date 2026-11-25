@@ -702,3 +702,65 @@ fn hidden_mat_without_a_parent_is_a_clear_error() {
         "{err}"
     );
 }
+
+#[test]
+fn delete_user_preset_removes_file_and_entry() {
+    let (d, mut s) = store();
+    let mut p = s.plotter("silhouette-cameo-2").unwrap();
+    p.id = "my-cameo".into();
+    p.name = "My Cameo".into();
+    s.save_user_plotter(&p, "silhouette-cameo-2").unwrap();
+    let file = d.path().join("plotters/my-cameo.toml");
+    assert!(file.exists());
+    s.delete_user_plotter("my-cameo").unwrap();
+    assert!(!file.exists());
+    assert!(s.plotter("my-cameo").is_err());
+    let mut m = s.material("vinyl").unwrap();
+    m.id = "my-vinyl".into();
+    s.save_user_material(&m, "vinyl").unwrap();
+    s.delete_user_material("my-vinyl").unwrap();
+    assert!(!d.path().join("materials/my-vinyl.toml").exists());
+}
+
+#[test]
+fn delete_refuses_system_and_parents() {
+    let (_d, mut s) = store();
+    assert!(matches!(
+        s.delete_user_plotter("silhouette-cameo-2"),
+        Err(ProfileError::Invalid { .. })
+    ));
+    assert!(matches!(
+        s.delete_user_plotter("nope"),
+        Err(ProfileError::UnknownPreset { .. })
+    ));
+    let mut p = s.plotter("silhouette-cameo-2").unwrap();
+    p.id = "base".into();
+    s.save_user_plotter(&p, "silhouette-cameo-2").unwrap();
+    p.id = "child".into();
+    s.save_user_plotter(&p, "base").unwrap();
+    let e = s.delete_user_plotter("base").unwrap_err().to_string();
+    assert!(e.contains("child"), "{e}");
+    assert!(s.plotter("base").is_ok());
+}
+
+#[test]
+fn save_leaves_no_temp_file() {
+    let (d, mut s) = store();
+    let mut p = s.plotter("silhouette-cameo-2").unwrap();
+    p.id = "my-cameo".into();
+    s.save_user_plotter(&p, "silhouette-cameo-2").unwrap();
+    let names: Vec<String> = fs::read_dir(d.path().join("plotters"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, ["my-cameo.toml"]);
+}
+
+#[test]
+fn validate_media_is_public() {
+    let (_d, s) = store();
+    let mut p = s.plotter("silhouette-cameo-2").unwrap();
+    assert!(flatcraft_device::store::validate_media(&p.id.clone(), &p).is_ok());
+    p.media[0].grid.origin_y_mm = 100.0;
+    assert!(flatcraft_device::store::validate_media(&p.id.clone(), &p).is_err());
+}
