@@ -2,9 +2,12 @@
 //!
 //! The pipeline is a chain of small pure functions, one per module, in
 //! pipeline order: `flatten`, `clean`, `order`, `overcut`, `passes`. `plan`
-//! wires them together.
+//! wires them together. `containment` holds the ring geometry they share:
+//! the containment tree, the kept side of each ring and the job's kept
+//! material.
 
 pub mod clean;
+pub mod containment;
 pub mod flatten;
 pub mod order;
 pub mod overcut;

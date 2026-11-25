@@ -1,70 +1,9 @@
 //! Stage 5: nearest-neighbour ordering, inside first.
 
-use kurbo::{ParamCurveNearest as _, Point, Rect};
+use kurbo::{Point, Rect};
 
+use crate::containment::{bbox, nested, signed_area};
 use crate::plan::Toolpath;
-
-/// Even-odd test of `p` against the polygon `ring`. `None` when `p` lies
-/// on (or within `EPS` of) the boundary, where the answer is ambiguous.
-fn inside_ring(p: Point, ring: &[Point]) -> Option<bool> {
-    #[cfg(test)]
-    tests::INSIDE_CALLS.with(|c| c.set(c.get() + 1));
-    const EPS: f64 = 1e-9;
-    let mut inside = false;
-    let n = ring.len();
-    for i in 0..n {
-        let a = ring[i];
-        let b = ring[(i + 1) % n];
-        if kurbo::Line::new(a, b).nearest(p, 0.0).distance_sq <= EPS * EPS {
-            return None;
-        }
-        if (a.y > p.y) != (b.y > p.y) {
-            let x = a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x);
-            if p.x < x {
-                inside = !inside;
-            }
-        }
-    }
-    Some(inside)
-}
-
-/// Absolute shoelace area of a ring.
-fn area(points: &[Point]) -> f64 {
-    let n = points.len();
-    let twice: f64 = (0..n)
-        .map(|i| {
-            let (a, b) = (points[i], points[(i + 1) % n]);
-            a.x * b.y - b.x * a.y
-        })
-        .sum();
-    (twice / 2.0).abs()
-}
-
-fn bbox(points: &[Point]) -> Option<Rect> {
-    let (first, rest) = points.split_first()?;
-    Some(
-        rest.iter()
-            .fold(Rect::from_points(*first, *first), |r, p| r.union_pt(*p)),
-    )
-}
-
-/// How many vertices of the inner ring are tried before giving up.
-const PROBES: usize = 3;
-
-/// True if closed ring `inner` lies in closed ring `outer`: its
-/// box lies in the outer box, it is smaller, and one of its vertices is
-/// inside by even-odd. The first of up to [`PROBES`] vertices that is not
-/// on the outer boundary decides.
-fn nested(inner: &[Point], ib: Rect, ia: f64, outer: &[Point], ob: Rect, oa: f64) -> bool {
-    if ib.x0 < ob.x0 || ib.y0 < ob.y0 || ib.x1 > ob.x1 || ib.y1 > ob.y1 || ia >= oa {
-        return false;
-    }
-    inner
-        .iter()
-        .take(PROBES)
-        .find_map(|p| inside_ring(*p, outer))
-        .unwrap_or(false)
-}
 
 /// For each path, how many closed paths lie inside it, and for each path
 /// the paths it lies inside. Open paths neither block nor are blocked.
@@ -74,7 +13,7 @@ fn containment(paths: &[Toolpath]) -> (Vec<usize>, Vec<Vec<usize>>) {
         .iter()
         .map(|t| {
             if t.closed {
-                bbox(&t.points).map(|b| (b, area(&t.points)))
+                bbox(t.lap()).map(|b| (b, signed_area(t.lap()).abs()))
             } else {
                 None
             }
@@ -86,7 +25,7 @@ fn containment(paths: &[Toolpath]) -> (Vec<usize>, Vec<Vec<usize>>) {
         let Some((ob, oa)) = rings[i] else { continue };
         for (j, inner) in paths.iter().enumerate() {
             let Some((ib, ia)) = rings[j] else { continue };
-            if i != j && nested(&inner.points, ib, ia, &outer.points, ob, oa) {
+            if i != j && nested(inner.lap(), ib, ia, outer.lap(), ob, oa) {
                 inside_count[i] += 1;
                 parents[j].push(i);
             }
@@ -103,8 +42,9 @@ fn containment(paths: &[Toolpath]) -> (Vec<usize>, Vec<Vec<usize>>) {
 /// it, so holes and inner parts are cut before the outline that frees them
 /// (once an outline is cut, the part inside it can shift on the mat). If
 /// every remaining path waits (which proper nesting never gives), the
-/// nearest one goes. This is a minimal rule; a containment tree can replace
-/// it later. Containment is found with at most `PROBES` even-odd tests
+/// nearest one goes. This is a minimal rule; the tree in
+/// [`crate::containment`] replaces it in Task 5. Containment is found with
+/// at most [`crate::containment::PROBES`] even-odd tests
 /// per pair of closed paths whose boxes nest, so deep nesting stays fast.
 pub fn nearest_neighbour(paths: Vec<Toolpath>, start: Point) -> Vec<Toolpath> {
     let (mut waiting_on, parents) = containment(&paths);
@@ -156,11 +96,7 @@ pub fn nearest_neighbour(paths: Vec<Toolpath>, start: Point) -> Vec<Toolpath> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    thread_local! {
-        /// Even-odd tests run on this thread (`inside_ring`).
-        pub(super) static INSIDE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    }
+    use crate::containment::{INSIDE_CALLS, PROBES};
     use crate::plan::PathRef;
     use flatcraft_core::document::ObjectId;
 
