@@ -925,30 +925,30 @@ fn size_group(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
                         .min_col_width(0.0)
                         .spacing(SIZE_GRID_GAP)
                         .show(ui, |ui| size_xy(ui, cx));
+                    // The Keep aspect lock and its bracket sit left of W
+                    // and H. Their room now, the toggle after % and Angle:
+                    // Tab goes X, Y, W, H, %, Angle, then the lock.
+                    let gap = ui.spacing().item_spacing.x;
+                    ui.spacing_mut().item_spacing.x = SIZE_GRID_GAP.x;
+                    // The grid ends with its own gap.
+                    ui.add_space(-SIZE_GRID_GAP.x);
+                    let (column, _) = ui.allocate_exact_size(
+                        egui::vec2(LOCK_COLUMN, groups::BIG_HEIGHT),
+                        egui::Sense::hover(),
+                    );
+                    ui.spacing_mut().item_spacing.x = gap;
                     let wh = egui::Grid::new("flatcraft-size-wh")
                         .num_columns(2)
                         .min_col_width(0.0)
                         .spacing(SIZE_GRID_GAP)
                         .show(ui, |ui| size_wh(ui, cx))
                         .inner;
-                    // The lock's bracket is its own gap: less room around it.
-                    let gap = ui.spacing().item_spacing.x;
-                    ui.spacing_mut().item_spacing.x = SIZE_GRID_GAP.x;
-                    // The grid ends with its own gap.
-                    ui.add_space(-SIZE_GRID_GAP.x);
-                    // Its room now, its toggle after % and Angle: Tab goes
-                    // from H on to % and Angle, then the lock.
-                    let (column, _) = ui.allocate_exact_size(
-                        egui::vec2(LOCK_COLUMN, groups::BIG_HEIGHT),
-                        egui::Sense::hover(),
-                    );
                     egui::Grid::new("flatcraft-size-scale")
                         .num_columns(2)
                         .min_col_width(0.0)
                         .spacing(SIZE_GRID_GAP)
                         .show(ui, |ui| size_scale(ui, cx));
-                    keep_aspect(ui, mode, cx, column, wh);
-                    ui.spacing_mut().item_spacing.x = gap;
+                    keep_aspect(ui, cx, column, wh);
                 },
             );
             linked_note(ui, mode, cx);
@@ -1100,51 +1100,20 @@ fn size_scale(ui: &mut Ui, cx: &mut Cx) {
     size_angle(ui, cx);
 }
 
-/// The width of the Keep aspect column: the lock and the bracket's ticks.
-const LOCK_COLUMN: f32 = 20.0;
+/// The width of the Keep aspect column: the lock and the bracket's arms.
+const LOCK_COLUMN: f32 = 16.0;
 
-/// Keep aspect: a lock in `column`, between W/H and %/Angle (closed: on),
-/// joined to the W and H fields (`wh`) by a thin bracket.
-fn keep_aspect(ui: &mut Ui, mode: Mode, cx: &mut Cx, column: egui::Rect, wh: [egui::Rect; 2]) {
-    let (top, bottom) = (wh[0].center().y, wh[1].center().y);
-    let middle = (top + bottom) / 2.0;
-    let lock = egui::Rect::from_center_size(
-        egui::pos2(column.center().x, middle),
-        egui::vec2(LOCK_COLUMN, groups::COMPACT_HEIGHT),
-    );
-    // A child placed in the column's room, so the row's cursor stays.
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(lock));
-    let resp = keep_switch(&mut child, mode, cx);
-    // The bracket: from each field, out to the lock's middle, then along
-    // to the lock.
-    let stroke = egui::Stroke::new(1.0, ui.visuals().weak_text_color());
-    // The ticks start right at the fields.
-    let (left, x) = (wh[0].right().max(wh[1].right()) + 1.0, column.center().x);
-    let gap = 2.0;
-    let painter = ui.painter();
-    painter.line(
-        vec![
-            egui::pos2(left, top),
-            egui::pos2(x, top),
-            egui::pos2(x, resp.rect.top() - gap),
-        ],
-        stroke,
-    );
-    painter.line(
-        vec![
-            egui::pos2(left, bottom),
-            egui::pos2(x, bottom),
-            egui::pos2(x, resp.rect.bottom() + gap),
-        ],
-        stroke,
-    );
-}
+/// The size of the lock icon.
+const LOCK_ICON: f32 = 13.0;
 
-/// The Keep aspect toggle with its card and, when it is fixed, the reason.
-fn keep_switch(ui: &mut Ui, mode: Mode, cx: &mut Cx) -> egui::Response {
+/// Keep aspect: a small lock (closed: on, open: off) in `column`, left of
+/// the W and H fields (`wh`), on a thin bracket that joins W and H. Lock
+/// and bracket are one toggle: one hit area (the bracket's height in the
+/// column, never over the fields), one name, one card, and they light up
+/// together on hover. Monochrome, in the bracket's colour.
+fn keep_aspect(ui: &mut Ui, cx: &mut Cx, column: egui::Rect, wh: [egui::Rect; 2]) {
     let ids: Vec<u64> = cx.snap.selection.iter().copied().collect();
     let any = !ids.is_empty();
-    let f = &mut cx.st.fields;
     let forced = canvas::aspect_lock(cx.snap, &ids).filter(|_| any);
     // With linked copies selected the card says how they follow.
     let card = if cx.snap.selected().any(|o| o.link_group.is_some()) {
@@ -1152,21 +1121,74 @@ fn keep_switch(ui: &mut Ui, mode: Mode, cx: &mut Cx) -> egui::Response {
     } else {
         Setting::KeepAspect
     };
-    let icons = (Icon::KeepAspect, Icon::KeepAspectOff);
-    if let Some(why) = forced {
-        let mut on = true;
-        switch(ui, mode, &mut on, icons, "Keep aspect", card, Some(why))
+    let why = forced.or((!any).then_some("Select something first."));
+    let enabled = why.is_none();
+    let on = forced.is_some() || cx.st.fields.keep_aspect;
+
+    let (top, bottom) = (wh[0].center().y, wh[1].center().y);
+    let hit = egui::Rect::from_x_y_ranges(column.x_range(), (top - 6.0)..=(bottom + 6.0));
+    let id = egui::Id::unique("flatcraft-keep-aspect");
+    let sense = if enabled {
+        egui::Sense::click()
     } else {
-        switch(
-            ui,
-            mode,
-            &mut f.keep_aspect,
-            icons,
-            "Keep aspect",
-            card,
-            (!any).then_some("Select something first."),
-        )
+        egui::Sense::hover()
+    };
+    let mut resp = ui.interact(hit, id, sense);
+    resp.widget_info(|| WidgetInfo::selected(Role::CheckBox, enabled, on, "Keep aspect"));
+    if enabled && resp.clicked() {
+        cx.st.fields.keep_aspect = !cx.st.fields.keep_aspect;
+        resp.mark_changed();
     }
+    let on = forced.is_some() || cx.st.fields.keep_aspect;
+
+    let v = ui.visuals();
+    let colour = if !enabled {
+        v.weak_text_color().gamma_multiply(0.5)
+    } else if resp.hovered() || resp.has_focus() {
+        v.strong_text_color()
+    } else {
+        v.weak_text_color()
+    };
+    let painter = ui.painter();
+    if enabled && (resp.hovered() || resp.has_focus()) {
+        painter.rect_filled(hit, 3.0, v.widgets.hovered.weak_bg_fill);
+    }
+    // The bracket: arms from W and H to a line on the left, broken by the
+    // lock in the middle.
+    let x = hit.left() + LOCK_ICON / 2.0;
+    let right = hit.right() - 1.0;
+    let middle = (top + bottom) / 2.0;
+    let stroke = egui::Stroke::new(1.0, colour);
+    let half = LOCK_ICON / 2.0 + 1.0;
+    painter.line(
+        vec![
+            egui::pos2(right, top),
+            egui::pos2(x, top),
+            egui::pos2(x, middle - half),
+        ],
+        stroke,
+    );
+    painter.line(
+        vec![
+            egui::pos2(right, bottom),
+            egui::pos2(x, bottom),
+            egui::pos2(x, middle + half),
+        ],
+        stroke,
+    );
+    let icon = if on {
+        Icon::KeepAspect
+    } else {
+        Icon::KeepAspectOff
+    };
+    let tex = super::icons::texture_colored(ui.ctx(), icon, LOCK_ICON, colour);
+    painter.image(
+        tex.id(),
+        egui::Rect::from_center_size(egui::pos2(x, middle), egui::Vec2::splat(LOCK_ICON)),
+        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+        egui::Color32::WHITE,
+    );
+    groups::card(&resp, "Keep aspect", card.card(), why, false);
 }
 
 /// "Scales all N linked copies" after the columns, when it applies.

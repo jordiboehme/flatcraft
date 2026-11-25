@@ -837,3 +837,34 @@ fn tab_into_a_field_selects_the_whole_value() {
     h.run();
     assert_eq!(fields(&h).x, "4");
 }
+
+/// The bracket is part of the Keep aspect toggle: a click on one of its
+/// arms toggles it. A click into W still goes to W.
+#[test]
+fn a_click_on_the_bracket_toggles_keep_aspect() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_s, _id, mut h, _) = square(&dir);
+    let keep = h
+        .get_by_role_and_label(Role::CheckBox, "Keep aspect")
+        .rect();
+    let w = h.get_by_label("Width (mm)").rect();
+    // The upper arm: level with W, inside the toggle.
+    let arm = Pos2::new(keep.right() - 3.0, w.center().y);
+    assert!(fields(&h).keep_aspect);
+    h.hover_at(arm);
+    h.run();
+    click_at(&mut h, arm);
+    h.run();
+    assert!(!fields(&h).keep_aspect, "the arm toggled it");
+    // A click into W focuses W and leaves Keep aspect as it is.
+    let into_w = Pos2::new(w.left() + 4.0, w.center().y);
+    h.hover_at(into_w);
+    h.run();
+    click_at(&mut h, into_w);
+    h.run();
+    assert!(!fields(&h).keep_aspect);
+    assert_eq!(
+        fields(&h).editing.map(|e| e.field),
+        Some(flatcraft::ui::prepare::SizeField::Width)
+    );
+}

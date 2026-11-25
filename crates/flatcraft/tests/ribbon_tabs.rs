@@ -190,7 +190,6 @@ fn the_switches_are_compact_and_inside_their_group() {
             "{width}: {each:?}"
         );
         let keep = node_rect(&h, Role::CheckBox, "Keep aspect");
-        assert_eq!(keep.height(), COMPACT_HEIGHT);
         // Both are icon toggles, even with all the room in the world.
         assert!(each.width() < 24.0, "{width}: {each:?}");
         assert!(keep.width() < 24.0, "{width}: {keep:?}");
@@ -276,11 +275,16 @@ fn the_position_and_size_group_has_three_columns_and_a_lock() {
         assert!(pct.left() > w.right(), "{width}");
         assert!(pct.bottom() <= angle.top(), "{width}: {pct:?} {angle:?}");
         assert_eq!(angle.left(), pct.left(), "{width}");
-        // The Keep aspect lock: between W/H and %/Angle, half way between
-        // W and H.
+        // The Keep aspect lock and its bracket: one toggle between X/Y and
+        // the W/H labels, from W down to H, never over a field.
+        let wl = h.get_by_label("W").rect();
         assert!(
-            keep.left() >= w.right() && keep.right() <= pct.left(),
-            "{width}"
+            keep.left() >= x.right() && keep.right() <= wl.left(),
+            "{width}: {keep:?}"
+        );
+        assert!(
+            keep.top() <= w.center().y && keep.bottom() >= hh.center().y,
+            "{width}: {keep:?}"
         );
         let middle = (w.center().y + hh.center().y) / 2.0;
         assert!((keep.center().y - middle).abs() < 1.0, "{width}: {keep:?}");
