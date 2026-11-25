@@ -44,6 +44,9 @@ pub(crate) fn warning_text(w: &ImportWarning) -> String {
         ImportWarning::DashesIgnored { count } => {
             format!("{count} strokes are dashed; dashes are cut as a solid line")
         }
+        ImportWarning::TextSkipped => {
+            "text uses a font that isn't installed, so it was skipped".into()
+        }
     }
 }
 
@@ -1119,6 +1122,10 @@ mod tests {
         assert_eq!(
             one(ImportWarning::DashesIgnored { count: 1 }),
             "1 stroke is dashed; its dashes are cut as a solid line"
+        );
+        assert_eq!(
+            one(ImportWarning::TextSkipped),
+            "text uses a font that isn't installed, so it was skipped"
         );
         assert!(one(ImportWarning::DashesIgnored { count: 2 }).starts_with("2 strokes are dashed"));
         let t = TraceResult {

@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use flatcraft_core::geometry::{CutPath, bounds};
-use flatcraft_import::fonts::system_fonts;
 use flatcraft_import::svg::{SvgImport, import_svg};
 use flatcraft_import::{ImportError, ImportWarning};
 
@@ -12,6 +11,18 @@ fn fixture(name: &str) -> Vec<u8> {
         .join("../../tests/fixtures/svg")
         .join(name);
     std::fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+}
+
+/// IBM Plex Sans from the repository (OFL), so text renders the same on
+/// every machine, whatever fonts it has installed.
+fn plex() -> Arc<usvg::fontdb::Database> {
+    let mut db = usvg::fontdb::Database::new();
+    let font = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/fonts/IBMPlexSans-Regular.ttf");
+    db.load_font_file(&font)
+        .unwrap_or_else(|e| panic!("{}: {e}", font.display()));
+    assert_eq!(db.len(), 1);
+    Arc::new(db)
 }
 
 fn load(name: &str) -> SvgImport {
@@ -70,13 +81,28 @@ fn clip_path_warns() {
 
 #[test]
 fn text_becomes_paths() {
-    let fonts = system_fonts();
-    if fonts.is_empty() {
-        eprintln!("skipping: no system fonts");
-        return;
-    }
-    let r = import_svg(&fixture("text.svg"), fonts).unwrap();
+    let r = import_svg(&fixture("text.svg"), plex()).unwrap();
     assert!(!r.paths.is_empty());
+    assert!(
+        !r.warnings.contains(&ImportWarning::TextSkipped),
+        "{:?}",
+        r.warnings
+    );
+}
+
+#[test]
+fn text_without_its_font_is_skipped_with_a_warning() {
+    let r = import_svg(
+        &fixture("text.svg"),
+        Arc::new(usvg::fontdb::Database::new()),
+    )
+    .unwrap();
+    assert!(r.paths.is_empty());
+    assert!(
+        r.warnings.contains(&ImportWarning::TextSkipped),
+        "{:?}",
+        r.warnings
+    );
 }
 
 #[test]
@@ -191,11 +217,7 @@ fn stroke_only_path_bounds_are_the_centerline() {
 
 #[test]
 fn text_bounds_follow_group_transform() {
-    let fonts = system_fonts();
-    if fonts.is_empty() {
-        eprintln!("skipping: no system fonts");
-        return;
-    }
+    let fonts = plex();
     let a = bounds(
         &import_svg(&fixture("text.svg"), fonts.clone())
             .unwrap()

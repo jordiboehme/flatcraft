@@ -70,10 +70,21 @@ pub(crate) fn import_svg_capped(
     cap: usize,
 ) -> Result<SvgImport, ImportError> {
     let bytes = plain_bytes(bytes, cap)?;
+    // usvg drops text silently when no installed font matches; count it.
+    let missing_font = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let missed = missing_font.clone();
+    let select = usvg::FontResolver::default_font_selector();
     let mut opt = usvg::Options {
         fontdb: fonts,
         ..usvg::Options::default()
     };
+    opt.font_resolver.select_font = Box::new(move |font, db| {
+        let id = select(font, db);
+        if id.is_none() {
+            missed.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        id
+    });
     // Never read files named by `<image href>`.
     opt.image_href_resolver.resolve_string = Box::new(|_, _| None);
     let tree =
@@ -91,6 +102,9 @@ pub(crate) fn import_svg_capped(
     }
     if walk.dashes > 0 {
         warnings.push(ImportWarning::DashesIgnored { count: walk.dashes });
+    }
+    if missing_font.load(std::sync::atomic::Ordering::Relaxed) {
+        warnings.push(ImportWarning::TextSkipped);
     }
     if walk.paths.is_empty() {
         warnings.push(ImportWarning::NoPaths);

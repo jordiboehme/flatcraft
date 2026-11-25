@@ -34,6 +34,8 @@ pub enum ImportWarning {
     DashesIgnored {
         count: usize,
     },
+    /// Text whose font is not installed: it is not drawn, so not cut.
+    TextSkipped,
 }
 
 /// Every error text is a sentence, so it can be shown as it is.

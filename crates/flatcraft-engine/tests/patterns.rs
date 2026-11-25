@@ -9,7 +9,7 @@ use flatcraft_engine::prefs::Preferences;
 use flatcraft_engine::preview::{PreviewKind, render_png};
 use flatcraft_engine::registry;
 use flatcraft_engine::session::{CommandError, Origin, Session};
-use flatcraft_import::{fonts, svg::import_svg};
+use flatcraft_import::svg::import_svg;
 use kurbo::{PathEl, Point, Rect, Shape};
 use serde_json::{Value, json};
 
@@ -28,9 +28,13 @@ fn run(s: &mut Session, id: &str, params: Value) -> Value {
 }
 
 fn sheet_paths() -> Vec<CutPath> {
-    import_svg(sheet_svg().as_bytes(), fonts::system_fonts())
-        .unwrap()
-        .paths
+    // The sheet has no text, so no fonts are needed.
+    import_svg(
+        sheet_svg().as_bytes(),
+        std::sync::Arc::new(usvg::fontdb::Database::new()),
+    )
+    .unwrap()
+    .paths
 }
 
 fn labelled<'a>(paths: &'a [CutPath], label: &str) -> Vec<&'a CutPath> {
