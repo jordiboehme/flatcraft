@@ -166,6 +166,12 @@ pub fn finish_pending(
     }
 }
 
+/// Ends the editing of a field now, whether it still has the focus or
+/// not: a save, close or quit counts what was typed first.
+pub fn finish_now(ctx: &egui::Context, st: &mut PrepareState, actions: &mut Vec<Action>) {
+    finish_edit(ctx, st, actions);
+}
+
 /// Ends the editing of the field that lost the focus: Escape puts its
 /// shown text back, a changed number is applied as one command.
 fn finish_edit(ctx: &egui::Context, st: &mut PrepareState, actions: &mut Vec<Action>) {

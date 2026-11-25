@@ -323,6 +323,20 @@ pub enum Action {
 }
 
 impl Action {
+    /// Whether the action saves, closes or quits, so a value still typed
+    /// into a field must count first.
+    fn needs_typed_values(&self) -> bool {
+        matches!(
+            self,
+            Action::Save { .. }
+                | Action::SaveAs { .. }
+                | Action::SaveTo { .. }
+                | Action::Close(_)
+                | Action::CloseOthers(_)
+                | Action::Quit
+        )
+    }
+
     /// A registry command on the document `doc_id`.
     pub fn run(doc_id: u64, command: &'static str, params: Value) -> Self {
         Action::Run {
@@ -712,7 +726,19 @@ impl FlatCraftApp {
     }
 
     /// Runs the actions the widgets collected.
-    pub fn apply(&mut self, ctx: &egui::Context, actions: Vec<Action>) {
+    pub fn apply(&mut self, ctx: &egui::Context, mut actions: Vec<Action>) {
+        // A value typed into a Position and size field counts before a
+        // save, close or quit, also while its field keeps the focus (Cmd+S).
+        if self.ui.prepare.fields.editing.is_some()
+            && actions.iter().any(Action::needs_typed_values)
+        {
+            let mut typed = Vec::new();
+            ribbon::finish_now(ctx, &mut self.ui.prepare, &mut typed);
+            actions.splice(0..0, typed);
+        }
+        // Typed values first, in the order they came (a stable sort): they
+        // were typed before the click that ended them.
+        actions.sort_by_key(|a| !matches!(a, Action::RunIn { .. }));
         for action in actions {
             self.apply_one(ctx, action);
         }
@@ -1884,19 +1910,20 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     }
     #[cfg(target_os = "macos")]
     app.refresh_menu(&ctx, snap.as_ref());
+    if let Some(snap) = &snap {
+        // A typed size or position applies before anything else of this
+        // frame (the app bar's actions too), also when its group left the
+        // screen.
+        let p = &mut app.ui.prepare;
+        let on_screen = workspace == Workspace::Prepare && p.tab == prepare::RibbonTab::Layout;
+        ribbon::finish_pending(&ctx, p, snap, on_screen, &mut actions);
+    }
     app_bar::show(ui, app, &mut actions);
     if let (Some(snap), Workspace::Prepare) = (&snap, workspace) {
         // Before the ribbon draws: its Settings panel toggle needs to know
         // whether an Arrange panel takes room.
         arrange::keep_or_close(&mut app.ui.prepare, snap);
         app.ui.prepare.panels.arrange_open = app.ui.prepare.panel.is_some();
-    }
-    if let Some(snap) = &snap {
-        // A typed size or position applies before anything else of this
-        // frame, also when its group left the screen.
-        let p = &mut app.ui.prepare;
-        let on_screen = workspace == Workspace::Prepare && p.tab == prepare::RibbonTab::Layout;
-        ribbon::finish_pending(&ctx, p, snap, on_screen, &mut actions);
     }
     switcher::ribbon(ui, app, snap.as_ref(), &mut actions);
     if workspace != Workspace::Prepare {

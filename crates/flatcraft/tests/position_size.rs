@@ -627,3 +627,114 @@ fn a_typed_value_applies_to_its_document_when_the_document_changes() {
     assert!(near(b.width(), 80.0), "{b:?}");
     assert!(fields(&h).editing.is_none());
 }
+
+/// The width of the square in the saved project file.
+fn saved_width(path: &std::path::Path) -> f64 {
+    let doc = flatcraft_engine::commands::project::load_rebuilt(
+        &flatcraft_device::ProfileStore::load(&path.parent().unwrap().join("profiles")).unwrap(),
+        path,
+    )
+    .unwrap();
+    flatcraft_engine::commands::placed_bounds(&doc.objects[0])
+        .unwrap()
+        .width()
+}
+
+fn saving_rig(dir: &tempfile::TempDir) -> (SharedSession, AppHarness, std::path::PathBuf) {
+    let s = session(dir);
+    import_square(&s);
+    let path = dir.path().join("sized.flatcraft");
+    let picker = common::FakePicker::answering([path.clone()]);
+    let mut h = common::harness_with(dir, s.clone(), |a| a.with_file_picker(picker.clone()));
+    to_prepare(&mut h);
+    h.get_by_role_and_label(Role::Tab, "Layout").click();
+    h.run();
+    (s, h, path)
+}
+
+#[test]
+fn a_typed_value_counts_before_a_save_click() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, mut h, path) = saving_rig(&dir);
+    type_text(&mut h, "Width (mm)", "80");
+    h.get_all_by_role_and_label(Role::Button, "Save")
+        .next()
+        .unwrap()
+        .click();
+    h.run();
+    assert!(near(saved_width(&path), 80.0));
+    assert!(!s.lock().unwrap().doc().dirty, "saved after the change");
+}
+
+#[test]
+fn a_typed_value_counts_before_cmd_s() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, mut h, path) = saving_rig(&dir);
+    type_text(&mut h, "Width (mm)", "80");
+    if cfg!(target_os = "macos") {
+        // The menu bar owns Cmd+S there; it sends this action.
+        let doc_id = s.lock().unwrap().doc().id();
+        let ctx = h.ctx.clone();
+        app_mut(&mut h).apply(&ctx, vec![flatcraft::ui::Action::Save { doc_id }]);
+    } else {
+        h.key_press_modifiers(Modifiers::COMMAND, Key::S);
+    }
+    h.run();
+    assert!(near(saved_width(&path), 80.0));
+    assert!(!s.lock().unwrap().doc().dirty, "saved after the change");
+}
+
+#[test]
+fn a_typed_value_counts_before_closing_the_tab() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, mut h, path) = saving_rig(&dir);
+    // Saved, so the document is clean before the typing.
+    run(&s, "project.save", json!({ "path": path }));
+    h.run();
+    assert!(!s.lock().unwrap().doc().dirty);
+    let id = s.lock().unwrap().doc().document.objects[0].id.0;
+    type_text(&mut h, "Width (mm)", "80");
+    h.get_by_role_and_label(Role::Button, "Close sized").click();
+    h.run();
+    h.get_by_label("Save changes to sized?");
+    assert!(s.lock().unwrap().doc().dirty);
+    assert!(app(&h).ui.toasts.is_empty(), "no error toast");
+    assert!(near(bounds(&s, id).width(), 80.0));
+}
+
+#[test]
+fn linked_copies_turned_two_ways_lock_keep_aspect_with_their_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let r = s
+        .lock()
+        .unwrap()
+        .execute(
+            "object.copies",
+            json!({ "id": a, "count": 1, "linked": true }),
+            Origin::User,
+        )
+        .unwrap();
+    let b = r["ids"][0].as_u64().unwrap();
+    run(
+        &s,
+        "object.rotate",
+        json!({ "ids": [b], "degrees": 90.0, "about": "each" }),
+    );
+    run(&s, "object.select", json!({ "ids": [a, b] }));
+    let (mut h, _) = rig(&dir, s.clone(), kurbo::Point::new(75.0, 45.0));
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    let why = flatcraft::ui::canvas::aspect_lock(&snap, &[a, b]).expect("locked");
+    assert!(
+        why.starts_with("Linked copies here are turned different ways"),
+        "{why}"
+    );
+    assert!(why.contains("Unlink copies"), "it says what to do: {why}");
+    assert!(!flatcraft::ui::canvas::free_aspect(&snap, &[a, b]));
+    // Each copy alone may stretch.
+    assert!(flatcraft::ui::canvas::free_aspect(&snap, &[b]));
+    let node = h.get_by_role_and_label(Role::CheckBox, "Keep aspect");
+    assert!(egui_kittest::kittest::NodeT::accesskit_node(&node).is_disabled());
+}

@@ -3184,3 +3184,46 @@ fn execute_in_runs_in_another_document_and_keeps_the_active_one() {
         .is_err()
     );
 }
+
+#[test]
+fn a_group_free_scale_refuses_linked_copies_turned_two_ways() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = import(&mut s, 40.0, 20.0);
+    let r = run(
+        &mut s,
+        "object.copies",
+        json!({ "id": a, "count": 1, "linked": true }),
+    );
+    let b = r["ids"][0].as_u64().unwrap();
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [b], "degrees": 90.0, "about": "each" }),
+    );
+    let undo = s.doc().undo.undo_len();
+    let (ba, bb) = (state_bounds(&mut s, a), state_bounds(&mut s, b));
+    let err = s.execute(
+        "object.scale",
+        json!({ "ids": [a, b], "width_mm": 200.0, "height_mm": 30.0, "keep_aspect": false, "group": true }),
+        Origin::User,
+    );
+    match err {
+        Err(CommandError::InvalidParams(m)) => assert!(m.contains("linked copy"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(s.doc().undo.undo_len(), undo, "nothing changed");
+    assert_eq!(state_bounds(&mut s, a), ba);
+    assert_eq!(state_bounds(&mut s, b), bb);
+    // Turned the same way, they stretch together.
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [a], "degrees": 90.0, "about": "each" }),
+    );
+    run(
+        &mut s,
+        "object.scale",
+        json!({ "ids": [a, b], "width_mm": 200.0, "keep_aspect": false, "group": true }),
+    );
+}
