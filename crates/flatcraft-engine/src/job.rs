@@ -15,7 +15,7 @@ use flatcraft_path::{CutPlan, PathRef, PipelineSettings, PlacedPath, PlanError, 
 use serde_json::{Value, json};
 
 use crate::commands::profile_error;
-use crate::commands::project::{inside, lexical, resolved};
+use crate::commands::project::{in_config, lexical, resolve_strict, resolved};
 use crate::cutgeom;
 use crate::gate::{self, GateDecision};
 use crate::session::{CommandError, JobSummary, Origin, Session};
@@ -392,17 +392,16 @@ fn documents_dir() -> Option<PathBuf> {
     directories::UserDirs::new().and_then(|u| u.document_dir().map(Path::to_path_buf))
 }
 
-/// True if an agent may write File Output into `dir`: anywhere outside the
-/// config dir, and inside it only below `<config dir>/output`.
-fn agent_may_write(dir: &Path, config_dir: &Path) -> bool {
-    if !inside(dir, config_dir) {
+/// True if an agent may write File Output into the folder `given`, which
+/// resolves to `target` (see `resolve_strict`): anywhere outside the config
+/// dir, and inside it only below `<config dir>/output`.
+fn agent_may_write(target: &Path, given: &Path, config_dir: &Path) -> bool {
+    if !in_config(target, given, config_dir) {
         return true;
     }
-    let abs = |p: &Path| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
-    let dir = abs(dir);
-    let cfg = abs(config_dir);
-    resolved(&dir).starts_with(resolved(&cfg).join("output"))
-        && lexical(&dir).starts_with(lexical(&cfg).join("output"))
+    let cfg = std::path::absolute(config_dir).unwrap_or_else(|_| config_dir.to_path_buf());
+    target.starts_with(resolved(&cfg).join("output"))
+        && lexical(given).starts_with(lexical(&cfg).join("output"))
 }
 
 /// The job name: the given one, else the project file stem, else
@@ -532,13 +531,45 @@ pub(crate) fn deliver_built(
                 s.prefs.output_dir.as_deref(),
                 &s.config_dir,
             );
-            if origin == Origin::Agent && !agent_may_write(&dir, &s.config_dir) {
+            // Resolved once: the check and the write see the same folder, so
+            // a link swapped in after the check cannot redirect the job. A
+            // folder that cannot be resolved (a `..` after a missing folder)
+            // is never guessed.
+            let target = match resolve_strict(&dir, usize::MAX) {
+                Ok(target) => target,
+                Err(_) if origin == Origin::Agent => {
+                    return Err(CommandError::Refused(format!(
+                        "agents may not write into the FlatCraft config directory ({}), and the output folder {} cannot be resolved",
+                        s.config_dir.display(),
+                        dir.display()
+                    )));
+                }
+                Err(e) => {
+                    return Err(CommandError::Failed(format!(
+                        "cannot use the output folder {}: {e}",
+                        dir.display()
+                    )));
+                }
+            };
+            if origin == Origin::Agent && !agent_may_write(&target, &dir, &s.config_dir) {
                 return Err(CommandError::Refused(format!(
                     "agents may not write into the FlatCraft config directory ({})",
                     s.config_dir.display()
                 )));
             }
-            FileTransport::new(dir, extension.clone()).send_job(job, name, &mut s.byte_log)
+            #[cfg(test)]
+            crate::commands::project::tests::between_check_and_write();
+            FileTransport::new(target.clone(), extension.clone())
+                .send_job(job, name, &mut s.byte_log)
+                .map(|mut report| {
+                    // Name the files in the folder as the person gave it.
+                    for f in &mut report.files {
+                        if let Ok(rel) = f.strip_prefix(&target) {
+                            *f = dir.join(rel);
+                        }
+                    }
+                    report
+                })
         }
         TransportSpec::Usb { .. } => Err(TransportError::NotAvailable(USB_NOT_AVAILABLE.into())),
     }
@@ -556,6 +587,85 @@ fn transport_error(e: TransportError) -> CommandError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SQUARE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><rect x="20" y="20" width="30" height="30"/></svg>"#;
+
+    /// A link in the output folder's path re-pointed into the config dir
+    /// between the agent check and the write: the job still goes to the
+    /// folder that was checked, and the report names the folder as given.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_re_pointed_after_the_check_does_not_redirect_file_output() {
+        let config = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let real = elsewhere.path().join("real");
+        std::fs::create_dir_all(real.join("jobs")).unwrap();
+        let via = elsewhere.path().join("via");
+        std::os::unix::fs::symlink(&real, &via).unwrap();
+        let out = via.join("jobs");
+        let profiles = flatcraft_device::ProfileStore::load(config.path()).unwrap();
+        let prefs = crate::prefs::Preferences {
+            output_dir: Some(out.clone()),
+            ..Default::default()
+        };
+        let mut s = Session::new(profiles, prefs, false, config.path().to_path_buf());
+        s.execute(
+            "object.import_svg",
+            json!({ "svg": SQUARE, "name": "sq" }),
+            Origin::User,
+        )
+        .unwrap();
+        let cfg = config.path().to_path_buf();
+        std::fs::create_dir(cfg.join("jobs")).unwrap();
+        let link = via.clone();
+        crate::commands::project::tests::set_between(move || {
+            std::fs::remove_file(&link).unwrap();
+            std::os::unix::fs::symlink(&cfg, &link).unwrap();
+        });
+        let r = s
+            .execute("job.send", json!({ "name": "swap" }), Origin::Agent)
+            .unwrap();
+        assert!(
+            !config.path().join("jobs/swap.gpgl").exists(),
+            "the job went through the re-pointed link"
+        );
+        assert!(real.join("jobs/swap.gpgl").exists());
+        let files: Vec<PathBuf> = r["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| PathBuf::from(f.as_str().unwrap()))
+            .collect();
+        assert_eq!(files[0], out.join("swap.gpgl"), "the folder as given");
+    }
+
+    /// An output folder an agent names with a `..` after a folder that does
+    /// not exist is refused, not guessed.
+    #[cfg(unix)]
+    #[test]
+    fn an_unresolvable_output_folder_is_not_guessed() {
+        let config = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(config.path(), elsewhere.path().join("cfglink")).unwrap();
+        let dir = elsewhere.path().join("cfglink/nonexist/../jobs");
+        let profiles = flatcraft_device::ProfileStore::load(config.path()).unwrap();
+        let prefs = crate::prefs::Preferences {
+            output_dir: Some(dir),
+            ..Default::default()
+        };
+        let mut s = Session::new(profiles, prefs, false, config.path().to_path_buf());
+        s.execute(
+            "object.import_svg",
+            json!({ "svg": SQUARE, "name": "sq" }),
+            Origin::User,
+        )
+        .unwrap();
+        let e = s
+            .execute("job.send", json!({ "name": "dots" }), Origin::Agent)
+            .unwrap_err();
+        assert!(matches!(e, CommandError::Refused(_)), "{e}");
+        assert!(!config.path().join("jobs").exists());
+    }
 
     #[test]
     fn user_fixable_emit_errors_are_refusals() {

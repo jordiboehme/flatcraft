@@ -862,6 +862,72 @@ fn agent_writes_through_folder_and_relative_links_are_refused() {
     );
 }
 
+/// A `..` after a folder that does not exist cannot be resolved by the
+/// file system; the guard must not fall back to the lexical path, which
+/// would walk through a linked folder into the config dir.
+#[cfg(unix)]
+#[test]
+fn agent_writes_through_unresolvable_dot_dot_are_refused() {
+    use std::os::unix::fs::symlink;
+    let root = tempfile::tempdir().unwrap();
+    let config = root.path().join("config");
+    let elsewhere = root.path().join("elsewhere");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let profiles = ProfileStore::load(&config).unwrap();
+    let prefs = Preferences {
+        output_dir: Some(root.path().join("output")),
+        ..Preferences::default()
+    };
+    let mut s = Session::new(profiles, prefs, false, config.clone());
+    let prefs_file = config.join("preferences.toml");
+    std::fs::write(&prefs_file, "theme = \"Light\"\n").unwrap();
+    symlink(&config, elsewhere.join("cfglink")).unwrap();
+    symlink(
+        "../nonexist/../config/rel.flatcraft",
+        elsewhere.join("rel.flatcraft"),
+    )
+    .unwrap();
+    symlink("../nonexist/../config/rel.svg", elsewhere.join("rel.svg")).unwrap();
+    let attempts = [
+        (
+            "project.save",
+            json!({ "path": elsewhere.join("cfglink/nonexist/../preferences.toml") }),
+        ),
+        (
+            "project.save",
+            json!({ "path": elsewhere.join("rel.flatcraft") }),
+        ),
+        (
+            "tools.test_patterns",
+            json!({ "add_to_document": false, "svg_path": elsewhere.join("cfglink/nonexist/../sheet.svg") }),
+        ),
+        (
+            "tools.test_patterns",
+            json!({ "add_to_document": false, "svg_path": elsewhere.join("rel.svg") }),
+        ),
+    ];
+    let listing = || {
+        let mut v: Vec<_> = std::fs::read_dir(&config)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        v.sort();
+        v
+    };
+    let before = listing();
+    for (id, params) in attempts {
+        let r = s.execute(id, params.clone(), Origin::Agent);
+        assert!(r.is_err(), "{id} {params}: {r:?}");
+        assert_eq!(
+            std::fs::read_to_string(&prefs_file).unwrap(),
+            "theme = \"Light\"\n",
+            "{id} {params}"
+        );
+        assert_eq!(listing(), before, "{id} {params}");
+    }
+}
+
 #[test]
 fn documents_new_switch_close() {
     let dir = tempfile::tempdir().unwrap();

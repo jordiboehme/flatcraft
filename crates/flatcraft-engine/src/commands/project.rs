@@ -250,23 +250,12 @@ pub(crate) fn lexical(path: &Path) -> PathBuf {
 /// The path with symlinks resolved as far as the file system allows: a link
 /// at the path itself is followed even when it dangles, because a save
 /// writes through it (`fsio::write_atomic`); then the longest part that
-/// exists is resolved and the rest is appended. A link loop leaves the
-/// path as it is (see [`resolve_target`] for the strict form).
+/// exists is resolved and the rest is appended. Lenient: what cannot be
+/// resolved stays lexical. Only for the config dir itself; paths an agent
+/// writes to go through [`resolve_strict`].
 pub(crate) fn resolved(path: &Path) -> PathBuf {
     let linked = flatcraft_device::fsio::resolve_links(path).unwrap_or_else(|_| path.to_path_buf());
-    resolve_folders(&linked)
-}
-
-/// Like [`resolved`], but a link loop is an error.
-fn resolve_target(path: &Path) -> std::io::Result<PathBuf> {
-    Ok(resolve_folders(&flatcraft_device::fsio::resolve_links(
-        path,
-    )?))
-}
-
-/// Resolves the longest part of `linked` that exists and appends the rest.
-fn resolve_folders(linked: &Path) -> PathBuf {
-    let mut base = linked;
+    let mut base = linked.as_path();
     let mut tail = Vec::new();
     loop {
         if let Ok(mut p) = base.canonicalize() {
@@ -278,7 +267,49 @@ fn resolve_folders(linked: &Path) -> PathBuf {
                 tail.push(name);
                 base = parent;
             }
-            _ => return lexical(linked),
+            _ => return lexical(&linked),
+        }
+    }
+}
+
+/// The path with the links at it followed and the folders above resolved
+/// by the file system. The part that does not exist yet must be plain
+/// names, at most `missing` of them: a `..` after a folder that does not
+/// exist, or a link loop, is an error, never a lexical guess (which could
+/// walk through a linked folder somewhere else).
+pub(crate) fn resolve_strict(path: &Path, missing: usize) -> std::io::Result<PathBuf> {
+    resolve_strict_linked(&flatcraft_device::fsio::resolve_links(path)?, missing)
+}
+
+fn resolve_strict_linked(linked: &Path, missing: usize) -> std::io::Result<PathBuf> {
+    let mut base = linked;
+    let mut tail = Vec::new();
+    loop {
+        match base.canonicalize() {
+            Ok(mut p) => {
+                p.extend(tail.iter().rev());
+                return Ok(p);
+            }
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            Err(_) => {}
+        }
+        match (base.parent(), base.file_name()) {
+            (Some(parent), Some(name)) if tail.len() < missing => {
+                tail.push(name);
+                base = parent;
+            }
+            (Some(_), Some(_)) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "the folder does not exist",
+                ));
+            }
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "the path cannot be resolved (a '..' after a folder that does not exist)",
+                ));
+            }
         }
     }
 }
@@ -287,37 +318,46 @@ fn absolute(p: &Path) -> PathBuf {
     std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
-/// True if `path` is the config dir or lies inside it.
-pub(crate) fn inside(path: &Path, config_dir: &Path) -> bool {
-    let path = absolute(path);
-    in_config(&resolved(&path), &path, config_dir)
-}
-
 /// True if the resolved `target` or the `given` path (both absolute) lies
 /// in the config dir.
-fn in_config(target: &Path, given: &Path, config_dir: &Path) -> bool {
+pub(crate) fn in_config(target: &Path, given: &Path, config_dir: &Path) -> bool {
     let cfg = absolute(config_dir);
     target.starts_with(resolved(&cfg)) || lexical(given).starts_with(lexical(&cfg))
 }
 
 /// The file a command's write to `path` replaces, resolved once (links at
-/// the path followed, folders resolved), and checked against the agent
-/// limit. The command writes to exactly this target without following
-/// links again (`fsio::write_atomic_at`), so a link planted after the
-/// check cannot redirect the write.
+/// the path followed, folders resolved by the file system; its folder must
+/// exist), and checked against the agent limit. The command writes to
+/// exactly this target without following links again
+/// (`fsio::write_atomic_at`), so a link planted after the check cannot
+/// redirect the write.
 pub(crate) fn write_target(
     path: &Path,
     config_dir: &Path,
     origin: Origin,
 ) -> Result<PathBuf, CommandError> {
     let given = absolute(path);
-    let target = resolve_target(&given)
-        .map_err(|e| CommandError::Failed(format!("cannot write {}: {e}", path.display())))?;
-    if origin == Origin::Agent && in_config(&target, &given, config_dir) {
-        return Err(CommandError::Refused(format!(
+    let refused = || {
+        CommandError::Refused(format!(
             "agents may not write into the FlatCraft config directory ({})",
             config_dir.display()
-        )));
+        ))
+    };
+    let target = match resolve_strict(&given, 1) {
+        Ok(target) => target,
+        // Never written, but an agent aiming at the config dir hears why.
+        Err(_) if origin == Origin::Agent && in_config(&resolved(&given), &given, config_dir) => {
+            return Err(refused());
+        }
+        Err(e) => {
+            return Err(CommandError::Failed(format!(
+                "cannot write {}: {e}",
+                path.display()
+            )));
+        }
+    };
+    if origin == Origin::Agent && in_config(&target, &given, config_dir) {
+        return Err(refused());
     }
     #[cfg(test)]
     tests::between_check_and_write();
@@ -561,6 +601,11 @@ pub(crate) mod tests {
         static BETWEEN: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
     }
 
+    /// Runs `f` once between the next agent path check and its write.
+    pub(crate) fn set_between(f: impl FnOnce() + 'static) {
+        BETWEEN.with(|b| *b.borrow_mut() = Some(Box::new(f)));
+    }
+
     pub(crate) fn between_check_and_write() {
         if let Some(f) = BETWEEN.with(|b| b.borrow_mut().take()) {
             f();
@@ -587,7 +632,16 @@ pub(crate) mod tests {
         std::os::unix::fs::symlink(config.path(), &folder).unwrap();
         let looped = config.path().join("x");
         std::os::unix::fs::symlink(&looped, &looped).unwrap();
-        assert!(inside(&folder.join("x"), config.path()));
+        let mut s = session(config.path());
+        let e = s
+            .execute(
+                "project.save",
+                json!({ "path": folder.join("x") }),
+                Origin::Agent,
+            )
+            .unwrap_err();
+        assert!(matches!(e, CommandError::Refused(_)), "{e}");
+        assert!(std::fs::symlink_metadata(&looped).unwrap().is_symlink());
     }
 
     /// A link planted at the target after the check but before the write
