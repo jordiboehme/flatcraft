@@ -253,25 +253,32 @@ pub(crate) fn lexical(path: &Path) -> PathBuf {
 /// exists is resolved and the rest is appended. A link loop leaves the
 /// path as it is (see [`resolve_target`] for the strict form).
 pub(crate) fn resolved(path: &Path) -> PathBuf {
-    resolve_target(path).unwrap_or_else(|_| lexical(path))
+    let linked = flatcraft_device::fsio::resolve_links(path).unwrap_or_else(|_| path.to_path_buf());
+    resolve_folders(&linked)
 }
 
 /// Like [`resolved`], but a link loop is an error.
 fn resolve_target(path: &Path) -> std::io::Result<PathBuf> {
-    let linked = flatcraft_device::fsio::resolve_links(path)?;
-    let mut base = linked.as_path();
+    Ok(resolve_folders(&flatcraft_device::fsio::resolve_links(
+        path,
+    )?))
+}
+
+/// Resolves the longest part of `linked` that exists and appends the rest.
+fn resolve_folders(linked: &Path) -> PathBuf {
+    let mut base = linked;
     let mut tail = Vec::new();
     loop {
         if let Ok(mut p) = base.canonicalize() {
             p.extend(tail.iter().rev());
-            return Ok(p);
+            return p;
         }
         match (base.parent(), base.file_name()) {
             (Some(parent), Some(name)) => {
                 tail.push(name);
                 base = parent;
             }
-            _ => return Ok(lexical(&linked)),
+            _ => return lexical(linked),
         }
     }
 }
@@ -567,6 +574,20 @@ pub(crate) mod tests {
             ..Default::default()
         };
         Session::new(profiles, prefs, false, config.to_path_buf())
+    }
+
+    /// A link loop at the file name still leaves the folder links above it
+    /// resolved, so a linked folder into the config dir is seen.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_loop_below_a_linked_folder_is_inside() {
+        let config = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let folder = elsewhere.path().join("folder");
+        std::os::unix::fs::symlink(config.path(), &folder).unwrap();
+        let looped = config.path().join("x");
+        std::os::unix::fs::symlink(&looped, &looped).unwrap();
+        assert!(inside(&folder.join("x"), config.path()));
     }
 
     /// A link planted at the target after the check but before the write
