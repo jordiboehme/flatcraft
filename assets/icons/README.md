@@ -68,9 +68,21 @@ https://raw.githubusercontent.com/lucide-icons/lucide/1.79.0/icons/<name>.svg, u
 | Panels group | panels-top-left |
 | Keep aspect | proportions |
 | Each object | ungroup |
+| Auto arrange... (panel) | layout-dashboard |
 
 The Align directions "to the cutting area" use the Align icons above. The app draws
 them smaller inside a dashed frame at render time; the files are not changed.
 
-The SVGs draw with currentColor. The app replaces it with the theme's text colour before
-resvg renders them.
+The SVGs draw with currentColor. The files stay unchanged; the app colours them at render
+time in the "Paper (crisp)" style (`crates/flatcraft/src/ui/icons.rs`, `styled_svg`):
+
+- Line caps are square and joins are miter, so the icons look crisp.
+- Each icon has a colour role entry (`ICON_ROLES` in `crates/flatcraft/src/ui/tools.rs`):
+  the paper children (the things that get cut) are filled with the theme's paper colour
+  and outlined in the cut colour, one accent part (what happens) uses the accent colour,
+  and the rest uses the ink colour. Paper children are drawn first, so no fill covers a line.
+- The colours are theme tokens (`icon_paper`, `icon_cut`, `icon_accent`, `icon_ink`) for
+  light and dark.
+- At 20 px and less the 2-unit stroke is snapped to a whole number of pixels.
+- Icons without a role entry (app bar, pin, chevron) are drawn in the ink colour, and a
+  tinted icon uses one colour.

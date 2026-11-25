@@ -11,8 +11,9 @@
 //! `ribbon` and `objects`), and an item that is a ribbon action takes its
 //! title, description and reason from the table in [`tools`]. An item
 //! that does not apply right now is shown dimmed, and its hover card says
-//! why; an item that can never apply to what was clicked (Trace again on a
-//! vector, Reload without a file) is left out. Key hints come from
+//! why; an item that can never apply to what was clicked (Trace again on
+//! vectors only, Reload without a file, Unlink on objects that are not
+//! linked) is left out. Only such properties of the objects hide an item. Key hints come from
 //! [`help::SHORTCUTS`].
 
 use egui::Ui;
@@ -147,6 +148,17 @@ impl Item {
         let n = ids.len();
         match self {
             Item::Rename => (n > 1).then_some("Select only one object to rename it."),
+            Item::TraceAgain => (n > 1).then_some("Select only one picture to trace it again."),
+            Item::LinkCopies => {
+                let objs: Vec<_> = ids.iter().filter_map(|id| snap.object(*id)).collect();
+                if n < 2 {
+                    Some("Select 2 or more copies of one design first.")
+                } else if !objs.iter().all(|o| o.same_source(objs[0])) {
+                    Some("Only copies of one design can be linked. Select copies of the same file.")
+                } else {
+                    None
+                }
+            }
             Item::Align => None,
             Item::Distribute => tools::by_act(Act::DistributeHorizontal).blocked_for(snap, n),
             Item::SelectAll => snap
@@ -207,7 +219,9 @@ pub fn items(snap: &Snapshot, st: &PrepareState, ids: &[u64]) -> Vec<Vec<Item>> 
     let mut g = vec![Item::Duplicate, Item::Copies];
     let all_one_group =
         objs[0].link_group.is_some() && objs.iter().all(|o| o.link_group == objs[0].link_group);
-    if n >= 2 && !all_one_group && objs.iter().all(|o| o.same_source(objs[0])) {
+    // Linked already: Unlink instead. Otherwise Link copies is listed,
+    // dimmed until the selection is copies of one design.
+    if !all_one_group {
         g.push(Item::LinkCopies);
     }
     if objs.iter().any(|o| o.link_group.is_some()) {
@@ -235,7 +249,8 @@ pub fn items(snap: &Snapshot, st: &PrepareState, ids: &[u64]) -> Vec<Vec<Item>> 
         Item::CutAgain
     });
     g.push(Item::Rename);
-    if n == 1 && objs[0].raster {
+    // Only pictures can be traced; with several objects it is dimmed.
+    if objs.iter().any(|o| o.raster) {
         g.push(Item::TraceAgain);
     }
     let src = &st.sources;

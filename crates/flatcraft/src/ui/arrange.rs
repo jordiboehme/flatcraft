@@ -208,10 +208,6 @@ fn not_ready(snap: &Snapshot, p: &ArrangePanel) -> Option<String> {
             Some("A total angle of 0 stacks every copy on the original. Pick another angle.".into())
         }
         PanelKind::CircularPattern => too_many(u64::from(v.circular.count.saturating_sub(1))),
-        PanelKind::AutoArrange if snap.area.is_none() => Some(
-            "There is no cutting area to fill. Pick a plotter and a mat in the Settings panel."
-                .into(),
-        ),
         _ => None,
     }
 }

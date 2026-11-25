@@ -388,3 +388,142 @@ fn escape_closes_a_group_list_and_keeps_the_selection() {
         .collect();
     assert_eq!(selection, vec![a], "the selection stays");
 }
+
+#[test]
+fn without_a_cutting_area_the_actions_that_need_one_are_dimmed() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    // The plotter of the document is gone: no mat, no cutting area.
+    s.lock().unwrap().doc_mut().document.job.plotter_id = "gone".into();
+    pin(
+        &s,
+        &[
+            "auto_arrange",
+            "auto_arrange.panel",
+            "align.left.area",
+            "test_patterns",
+        ],
+    );
+    let mut h = rig(&dir, s.clone());
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    assert!(snap.area.is_none());
+    for act in [
+        Act::AutoArrange,
+        Act::AutoArrangePanel,
+        Act::TestPatterns,
+        Act::Align(tools::AlignMode::Left, tools::AlignTo::Area),
+    ] {
+        assert_eq!(
+            tools::by_act(act).blocked(&snap),
+            Some(tools::NO_AREA),
+            "{act:?}"
+        );
+    }
+    // To the selection still needs no area, only 2 objects.
+    assert_ne!(
+        tools::by_act(Act::Align(
+            tools::AlignMode::Left,
+            tools::AlignTo::Selection
+        ))
+        .blocked(&snap),
+        Some(tools::NO_AREA)
+    );
+    // On the ribbon: dimmed, the reason on hover, a click does nothing.
+    assert!(disabled(&h, "Test patterns"));
+    show_tab(&mut h, "Arrange");
+    for name in [
+        "Auto arrange",
+        "Auto arrange...",
+        "Align left · cutting area",
+    ] {
+        assert!(disabled(&h, name), "{name}");
+    }
+    hover_button(&mut h, "Auto arrange");
+    h.get_by_label(tools::NO_AREA);
+    let before = document_bytes(&s);
+    h.get_by_role_and_label(Role::Button, "Auto arrange")
+        .click();
+    h.run();
+    assert_eq!(document_bytes(&s), before);
+    // In the list too.
+    h.get_by_role_and_label(Role::Button, "Arrange").click();
+    h.run();
+    assert!(disabled(&h, "Auto arrange (Arrange)"));
+}
+
+/// Whether a selected-looking fill is painted over `r`.
+fn looks_on(h: &AppHarness, r: egui::Rect) -> bool {
+    let on = h.ctx.global_style().visuals.selection.bg_fill;
+    painted(h).into_iter().any(|s| match s {
+        egui::Shape::Rect(x) => x.fill == on && x.rect.intersects(r.shrink(2.0)),
+        _ => false,
+    })
+}
+
+#[test]
+fn a_dimmed_switch_that_is_on_does_not_look_active() {
+    // Icon-only (900 pt): Keep aspect is on and dimmed with 3 objects,
+    // Each object on and dimmed with 1 object.
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let ids: Vec<u64> = (0..3).map(|_| import_square(&s)).collect();
+    select(&s, &ids);
+    let mut h = harness_sized(&dir, s.clone(), [900.0, 600.0], 8, |app| app);
+    to_prepare(&mut h);
+    show_tab(&mut h, "Arrange");
+    let keep = h.get_by_role_and_label(Role::CheckBox, "Keep aspect");
+    assert!(keep.accesskit_node().is_disabled());
+    assert_eq!(
+        keep.accesskit_node().toggled(),
+        Some(egui::accesskit::Toggled::True),
+        "it says it is on"
+    );
+    let r = keep.rect();
+    assert!(!looks_on(&h, r), "but does not look active");
+    select(&s, &[ids[0]]);
+    app_mut(&mut h).ui.prepare.fields.each = true;
+    h.run();
+    let each = h.get_by_role_and_label(Role::CheckBox, "Each object");
+    assert!(each.accesskit_node().is_disabled());
+    let r = each.rect();
+    assert!(!looks_on(&h, r));
+    // Enabled and on, it does look on.
+    select(&s, &ids);
+    h.run();
+    let r = h
+        .get_by_role_and_label(Role::CheckBox, "Each object")
+        .rect();
+    assert!(looks_on(&h, r), "an active switch keeps its look");
+}
+
+#[test]
+fn the_pin_toggle_is_reachable_by_keyboard() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    let mut h = rig(&dir, s);
+    show_tab(&mut h, "Arrange");
+    h.get_by_role_and_label(Role::Button, "Arrange").click();
+    h.run();
+    // Nothing hovered: an unpinned row shows no toggle.
+    h.hover_at(egui::pos2(1.0, 1.0));
+    h.run();
+    assert!(h.query_by_label("Pin Circular pattern").is_none());
+    h.get_by_label("Circular pattern... (Arrange)").focus();
+    h.run();
+    h.run();
+    h.key_press(egui::Key::Tab);
+    h.run();
+    let toggle = h.get_by_label("Pin Circular pattern");
+    assert!(
+        toggle.accesskit_node().is_focused(),
+        "Tab moved to the toggle"
+    );
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(stored(&h).contains(&"pattern.circular".to_string()));
+}

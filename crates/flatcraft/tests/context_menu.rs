@@ -358,6 +358,7 @@ fn the_menu_of_one_object() {
         vec![
             Duplicate,
             Copies,
+            LinkCopies,
             RotateLeft,
             RotateRight,
             MirrorHorizontal,
@@ -371,7 +372,45 @@ fn the_menu_of_one_object() {
         ]
     );
     // Not now: shown dimmed, with the reason on hover.
-    assert_eq!(dimmed_items(&r.h), vec![Distribute]);
+    assert_eq!(dimmed_items(&r.h), vec![LinkCopies, Distribute]);
+}
+
+#[test]
+fn trace_again_with_several_objects_is_dimmed_and_link_says_why() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let png = dir.path().join("ring.png");
+    write_ring(&png);
+    let pic = import_file(&s, &png);
+    let square = import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    let st = &app(&h).ui.prepare;
+    let flat = |ids: &[u64]| -> Vec<Item> {
+        flatcraft::ui::context_menu::items(&snap, st, ids)
+            .into_iter()
+            .flatten()
+            .collect()
+    };
+    // A picture with another object: Trace again is listed, dimmed.
+    let both = [pic, square];
+    assert!(flat(&both).contains(&TraceAgain));
+    assert_eq!(
+        TraceAgain.why(&snap, &both),
+        Some("Select only one picture to trace it again.")
+    );
+    assert_eq!(TraceAgain.why(&snap, &[pic]), None);
+    // Only vectors: it can never apply, so it is left out.
+    assert!(!flat(&[square]).contains(&TraceAgain));
+    // Link copies: one object, or two different designs, say why.
+    assert!(LinkCopies.why(&snap, &[square]).is_some());
+    assert!(
+        LinkCopies
+            .why(&snap, &both)
+            .is_some_and(|w| w.contains("copies of one design"))
+    );
 }
 
 #[test]

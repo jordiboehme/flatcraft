@@ -207,8 +207,14 @@ pub fn wide_button(
         Mode::Icons | Mode::Collapsed => egui::Button::image(img.alt_text(text)),
         Mode::Full | Mode::List => egui::Button::image_and_text(img, text),
     };
-    if let Some(on) = selected {
-        b = b.selected(on);
+    match selected {
+        // A dimmed switch that is on must not look like an active one:
+        // only a faint fill says it is on.
+        Some(true) if !enabled => {
+            b = b.fill(ui.visuals().selection.bg_fill.gamma_multiply(0.3));
+        }
+        Some(on) => b = b.selected(on),
+        None => {}
     }
     ui.add_enabled(enabled, b)
 }
@@ -503,8 +509,13 @@ fn row(ui: &mut Ui, t: &'static Tool, cx: &mut Cx) {
     let row_id = ui.make_persistent_id(("flatcraft-tool-row", t.id));
     let last: Option<egui::Rect> = ui.data(|d| d.get_temp(row_id));
     let hovered = last.is_some_and(|r| ui.rect_contains_pointer(r));
+    // The row or its pin toggle had the keyboard focus last frame: the
+    // toggle stays, so Tab reaches it.
+    let focus_id = row_id.with("focus");
+    let focused: bool = ui.data(|d| d.get_temp(focus_id)).unwrap_or(false);
     let is_pinned = cx.snap.ribbon_pins.iter().any(|p| p == t.id);
     let indent = t.section.is_some();
+    let mut has_focus = false;
     let row = ui.horizontal(|ui| {
         if indent {
             ui.add_space(ICON_SIZE);
@@ -528,13 +539,15 @@ fn row(ui: &mut Ui, t: &'static Tool, cx: &mut Cx) {
             t.run(cx.snap, cx.st, cx.show_debug, cx.actions);
             ui.close();
         }
-        if hovered || is_pinned {
+        has_focus = r.has_focus();
+        if hovered || is_pinned || focused || has_focus {
             let (icon, tip) = match (is_pinned, hovered) {
                 (true, true) => (Icon::PinOff, UNPIN_TIP),
                 (true, false) => (Icon::Pin, UNPIN_TIP),
                 (false, _) => (Icon::Pin, PIN_TIP),
             };
             let r = super::icon_button_hint(ui, icon, &pin_name(t, is_pinned), true, tip);
+            has_focus |= r.has_focus();
             if r.clicked() {
                 cx.actions.push(Action::SetPin {
                     id: t.id,
@@ -543,5 +556,8 @@ fn row(ui: &mut Ui, t: &'static Tool, cx: &mut Cx) {
             }
         }
     });
-    ui.data_mut(|d| d.insert_temp(row_id, row.response.rect));
+    ui.data_mut(|d| {
+        d.insert_temp(row_id, row.response.rect);
+        d.insert_temp(focus_id, has_focus);
+    });
 }

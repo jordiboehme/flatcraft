@@ -48,7 +48,7 @@ pub const GROUPS: [GroupDef; 8] = [
         tab: RibbonTab::Home,
         title: "Add",
         icon: Icon::Plus,
-        description: "Bring designs onto the mat: SVG files, pictures to trace, or the test sheet.",
+        description: "Bring designs onto the mat: SVG files (the drawing format most design apps save), pictures to trace, or the test sheet.",
     },
     GroupDef {
         id: GroupId::Edit,
@@ -326,7 +326,7 @@ pub const TOOLS: [Tool; 38] = [
         Icon::Import,
         G::Add,
         Wide,
-        "Bring an SVG design or a picture onto the mat. A picture gets traced into cut lines.",
+        "Bring a design or a picture onto the mat. A design is an SVG file, the drawing format most design apps save. A picture gets traced into cut lines.",
     ),
     tool(
         "trace",
@@ -362,7 +362,7 @@ pub const TOOLS: [Tool; 38] = [
         Icon::Copies,
         G::Edit,
         Wide,
-        "Many copies of one object in columns and rows. Sticker sheet, engage!",
+        "Many copies of one object in columns and rows. It opens the Rectangular pattern panel.",
     ),
     tool(
         "delete",
@@ -584,7 +584,7 @@ pub const TOOLS: [Tool; 38] = [
         "auto_arrange.panel",
         Act::AutoArrangePanel,
         "Auto arrange...",
-        Icon::Arrange,
+        Icon::AutoArrangePanel,
         G::Arrange,
         Big,
         "Packs every visible object onto the cutting area in rows, Tetris style, with the gap you choose. A preview shows where they land.",
@@ -669,7 +669,7 @@ pub const TOOLS: [Tool; 38] = [
 /// the one accent part that tells what happens, in the accent colour.
 /// Every other child is ink. Every icon of an action, a group or a
 /// switch has an entry; the framed Align icons use their base icon's.
-pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 39] = [
+pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 40] = [
     (Icon::Import, &[2], &[0, 1]),
     (Icon::Trace, &[], &[2]),
     (Icon::TestPatterns, &[0], &[1]),
@@ -709,6 +709,7 @@ pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 39] = [
     (Icon::Panels, &[0], &[1, 2]),
     (Icon::KeepAspect, &[0], &[1, 2]),
     (Icon::EachObject, &[1], &[0]),
+    (Icon::AutoArrangePanel, &[0, 2], &[1, 3]),
 ];
 
 /// The paper and accent children of `icon` (see [`ICON_ROLES`]); `None`
@@ -803,14 +804,13 @@ impl Tool {
         }
     }
 
-    /// Its keyboard shortcut, from `help::SHORTCUTS`.
+    /// Its keyboard shortcut: the row of `help::SHORTCUTS` that names this
+    /// action.
     pub fn shortcut(&self) -> Option<PrepareKey> {
-        match self.act {
-            Act::Import => Some(PrepareKey::Import),
-            Act::Duplicate => Some(PrepareKey::Duplicate),
-            Act::Delete => Some(PrepareKey::Delete),
-            _ => None,
-        }
+        super::help::SHORTCUTS
+            .iter()
+            .find(|s| s.tool == Some(self.id))
+            .and_then(|s| s.prepare)
     }
 
     /// The registry command the action runs, if any. Search lists the
@@ -845,6 +845,17 @@ impl Tool {
     /// the objects it was opened for).
     pub fn blocked_for(&self, snap: &Snapshot, n: usize) -> Option<&'static str> {
         const SELECT: &str = "Select something first.";
+        // The engine refuses these without a cutting area.
+        let needs_area = matches!(
+            self.act,
+            Act::Align(_, AlignTo::Area)
+                | Act::AutoArrange
+                | Act::AutoArrangePanel
+                | Act::TestPatterns
+        );
+        if needs_area && snap.area.is_none() {
+            return Some(NO_AREA);
+        }
         match self.act {
             Act::Import
             | Act::TestPatterns
@@ -982,6 +993,10 @@ impl Tool {
     }
 }
 
+/// Why an action that needs the cutting area cannot run.
+pub const NO_AREA: &str =
+    "There is no cutting area yet. Pick a plotter and a mat in the Settings panel first.";
+
 /// The one-click Auto arrange, with the spacing of the preferences.
 pub fn auto_arrange_action(snap: &Snapshot) -> Action {
     Action::run(
@@ -1066,7 +1081,7 @@ impl Setting {
                 "The height of the selection in millimetres. Type a number and press Enter."
             }
             Setting::ScalePercent => {
-                "Scale the selection: 200 makes it twice as big, 50 half as big. Type a number and press Enter."
+                "Scale the selection: 200 makes it twice as big, 50 half as big. Type a number and press Enter. With Each object on, every object grows or shrinks about its own centre."
             }
             Setting::KeepAspect => {
                 "On: width and height change together, so the shape does not get squashed. Off: change one without the other."
@@ -1105,20 +1120,20 @@ impl Setting {
                 "Tracing turns the picture into black and white first. Pixels darker than this become cut shapes."
             }
             Setting::AutoThreshold => {
-                "Let FlatCraft pick the threshold from the picture (Otsu's method). A good start for most pictures."
+                "Let FlatCraft pick the threshold: it counts the dark and the light pixels and splits them where they separate best (this is called Otsu's method). A good start for most pictures."
             }
             Setting::Invert => "Cut the light parts instead of the dark ones.",
             Setting::Despeckle => {
                 "Specks smaller than this area are dropped, so dust and noise in the picture are not cut."
             }
             Setting::CornerThreshold => {
-                "Angles sharper than this stay sharp corners. Smaller values give more rounded shapes."
+                "How sharp a turn must be to stay a corner, in degrees. A smaller value keeps more corners; a bigger value gives rounder shapes."
             }
             Setting::Smoothing => {
                 "How much the traced lines are smoothed. 0 follows the pixels, 10 gives the smoothest curves."
             }
             Setting::MinFeature => {
-                "Shapes thinner than this are dropped, because a blade cannot cut what it cannot turn in."
+                "Shapes thinner than this are dropped, because the blade cannot cut such thin parts cleanly. They would tear or stay stuck."
             }
             Setting::AutoMinFeature => {
                 "Use 6 times the blade offset of the plotter as the smallest shape."
@@ -1202,6 +1217,23 @@ mod tests {
                 "{icon:?}: a child is paper and accent"
             );
         }
+    }
+
+    #[test]
+    fn shortcuts_name_actions_of_the_table() {
+        for s in super::super::help::SHORTCUTS.iter() {
+            if let Some(id) = s.tool {
+                let t = by_id(id).unwrap_or_else(|| panic!("{id}"));
+                assert_eq!(t.shortcut(), s.prepare, "{id}");
+            }
+        }
+        assert_eq!(by_act(Act::Import).shortcut(), Some(PrepareKey::Import));
+        assert_eq!(
+            by_act(Act::Duplicate).shortcut(),
+            Some(PrepareKey::Duplicate)
+        );
+        assert_eq!(by_act(Act::Delete).shortcut(), Some(PrepareKey::Delete));
+        assert_eq!(by_act(Act::Trace).shortcut(), None);
     }
 
     #[test]

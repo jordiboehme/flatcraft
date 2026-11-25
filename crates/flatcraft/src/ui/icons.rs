@@ -74,6 +74,8 @@ pub enum Icon {
     KeepAspect,
     /// The Each object switch.
     EachObject,
+    /// "Auto arrange...", the panel (the one-click one uses Arrange).
+    AutoArrangePanel,
     /// The Align directions "to the cutting area": the align icon inside a
     /// small dashed frame, drawn at render time from the Lucide file.
     AlignLeftArea,
@@ -91,7 +93,7 @@ macro_rules! svg {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 66] = [
+    pub const ALL: [Icon; 67] = [
         Icon::Import,
         Icon::Trace,
         Icon::Duplicate,
@@ -152,6 +154,7 @@ impl Icon {
         Icon::Panels,
         Icon::KeepAspect,
         Icon::EachObject,
+        Icon::AutoArrangePanel,
         Icon::AlignLeftArea,
         Icon::AlignCentreArea,
         Icon::AlignRightArea,
@@ -241,6 +244,7 @@ impl Icon {
             Icon::Panels => svg!("panels-top-left"),
             Icon::KeepAspect => svg!("proportions"),
             Icon::EachObject => svg!("ungroup"),
+            Icon::AutoArrangePanel => svg!("layout-dashboard"),
             Icon::AlignLeftArea
             | Icon::AlignCentreArea
             | Icon::AlignRightArea
@@ -362,7 +366,7 @@ pub fn styled_svg(icon: Icon, pal: &Palette) -> String {
 /// Renders the icon into a square image of `px` pixels.
 pub fn rasterize(icon: Icon, px: u32, pal: &Palette) -> ColorImage {
     let px = px.max(1);
-    let svg = styled_svg(icon, pal);
+    let svg = snap_strokes(&styled_svg(icon, pal), px);
     let tree =
         usvg::Tree::from_str(&svg, &usvg::Options::default()).expect("vendored Lucide SVGs parse");
     let mut pixmap = tiny_skia::Pixmap::new(px, px).expect("icon size is not zero");
@@ -372,6 +376,24 @@ pub fn rasterize(icon: Icon, px: u32, pal: &Palette) -> ColorImage {
     resvg::render(&tree, transform, &mut pixmap.as_mut());
     // tiny-skia stores premultiplied RGBA, as egui expects here.
     ColorImage::from_rgba_premultiplied([px as usize, px as usize], pixmap.data())
+}
+
+/// At small sizes (20 px and less) the 2-unit Lucide stroke becomes a
+/// whole number of pixels (16 px: 1, 20 px: 2), so lines are not blurred
+/// across two pixel rows. The Lucide geometry sits on a 24-unit grid, so
+/// line positions cannot all land on pixel edges at 16 or 20 px; only the
+/// widths are snapped.
+pub fn snap_strokes(svg: &str, px: u32) -> String {
+    if px > 20 {
+        return svg.to_string();
+    }
+    let pixels = (2.0 * px as f32 / 24.0).round().max(1.0);
+    let units = pixels * 24.0 / px as f32;
+    svg.replacen(
+        "stroke-width=\"2\"",
+        &format!("stroke-width=\"{units}\""),
+        1,
+    )
 }
 
 #[derive(Clone, Default)]
@@ -478,6 +500,20 @@ mod tests {
                 assert!(!accent.is_empty());
             }
         }
+    }
+
+    #[test]
+    fn small_strokes_are_whole_pixels() {
+        let svg = Icon::Move.svg();
+        assert!(
+            snap_strokes(svg, 16).contains("stroke-width=\"1.5\""),
+            "1 px at 16"
+        );
+        assert!(
+            snap_strokes(svg, 20).contains("stroke-width=\"2.4\""),
+            "2 px at 20"
+        );
+        assert_eq!(snap_strokes(svg, 36), svg, "large sizes stay");
     }
 
     #[test]

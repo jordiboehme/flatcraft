@@ -141,6 +141,17 @@ pub struct Shortcut {
     pub prepare: Option<PrepareKey>,
     /// On macOS the menu bar owns this key, not the key handler.
     pub menu_on_macos: bool,
+    /// The ribbon action (`tools::Tool::id`) whose shortcut this is, so
+    /// its row and menu item show the key.
+    pub tool: Option<&'static str>,
+}
+
+impl Shortcut {
+    /// The same shortcut, as the key of the ribbon action `id`.
+    const fn for_tool(mut self, id: &'static str) -> Self {
+        self.tool = Some(id);
+        self
+    }
 }
 
 const CMD: Modifiers = Modifiers::COMMAND;
@@ -164,6 +175,7 @@ const fn global(
         run: Some(run),
         prepare: None,
         menu_on_macos,
+        tool: None,
     }
 }
 
@@ -180,6 +192,7 @@ const fn prepare(
         run: None,
         prepare: Some(action),
         menu_on_macos: false,
+        tool: None,
     }
 }
 
@@ -208,13 +221,14 @@ pub const SHORTCUTS: [Shortcut; 19] = [
     global(CMD, Key::Y, "Redo", Action::Redo, true),
     global(CMD, Key::Z, "Undo", Action::Undo, true),
     prepare(CMD, Key::A, "Select all objects", PrepareKey::SelectAll),
-    prepare(CMD, Key::I, "Import a design", PrepareKey::Import),
+    prepare(CMD, Key::I, "Import a design", PrepareKey::Import).for_tool("import"),
     prepare(
         CMD,
         Key::D,
         "Duplicate the selection",
         PrepareKey::Duplicate,
-    ),
+    )
+    .for_tool("duplicate"),
     prepare(
         Modifiers::NONE,
         Key::ArrowLeft,
@@ -244,13 +258,15 @@ pub const SHORTCUTS: [Shortcut; 19] = [
         Key::Delete,
         "Delete the selection",
         PrepareKey::Delete,
-    ),
+    )
+    .for_tool("delete"),
     prepare(
         Modifiers::NONE,
         Key::Backspace,
         "Delete the selection",
         PrepareKey::Delete,
-    ),
+    )
+    .for_tool("delete"),
     prepare(
         Modifiers::NONE,
         Key::Escape,
