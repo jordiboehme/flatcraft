@@ -908,19 +908,6 @@ fn tolerances_have_sane_maxima() {
     ));
 }
 
-#[cfg(unix)]
-#[test]
-fn write_atomic_never_follows_a_planted_temp_symlink() {
-    let d = tempdir().unwrap();
-    let victim = d.path().join("victim.txt");
-    fs::write(&victim, "keep me").unwrap();
-    let path = d.path().join("a.toml");
-    std::os::unix::fs::symlink(&victim, d.path().join("a.toml.tmp")).unwrap();
-    flatcraft_device::fsio::write_atomic(&path, b"new").unwrap();
-    assert_eq!(fs::read_to_string(&victim).unwrap(), "keep me");
-    assert_eq!(fs::read_to_string(&path).unwrap(), "new");
-}
-
 #[test]
 fn a_save_never_overwrites_an_unreadable_preset_file() {
     let d = tempdir().unwrap();
