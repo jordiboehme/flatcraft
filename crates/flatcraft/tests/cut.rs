@@ -541,3 +541,22 @@ fn skipped_objects_are_left_out_of_the_cut_preview() {
     h.run();
     assert_eq!(app(&h).ui.cut.timeline.total, 3);
 }
+
+#[test]
+fn cut_moves_are_orange_and_travel_is_faint() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let mut h = harness(&dir, s, false);
+    to_cut(&mut h);
+    stage(&mut h, "Path");
+    let paper = flatcraft_device::PAPER_COLOR;
+    let [r, g, b] = flatcraft_core::colour::cut_colour(paper);
+    let orange = egui::Color32::from_rgb(r, g, b);
+    let shapes = common::painted(&h);
+    let cut_lines = shapes
+        .iter()
+        .filter(|s| matches!(s, egui::Shape::Path(p) if p.stroke.color == egui::epaint::ColorMode::Solid(orange)))
+        .count();
+    assert!(cut_lines >= 1, "no cut line in the cut orange");
+}

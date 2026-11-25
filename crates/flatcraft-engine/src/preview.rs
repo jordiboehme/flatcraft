@@ -195,8 +195,9 @@ pub fn render_png(s: &Session, kind: PreviewKind, max_px: u32) -> Result<Vec<u8>
     let [mr, mg, mb] = flatcraft_core::colour::margin_colour(media.color);
     pm.fill(color(mr, mg, mb));
     let [r, g, b] = media.color;
-    if let Some(p) = rect_path(area) {
-        pm.fill_path(&p, &paint(color(r, g, b)), FillRule::Winding, mat, None);
+    match rect_path(area) {
+        Some(p) => pm.fill_path(&p, &paint(color(r, g, b)), FillRule::Winding, mat, None),
+        None => pm.fill(color(r, g, b)),
     }
     let [lr, lg, lb] = line_colour(media.color);
     let mut grid_lines = PathBuilder::new();
@@ -260,8 +261,9 @@ pub fn render_png(s: &Session, kind: PreviewKind, max_px: u32) -> Result<Vec<u8>
         }
         PreviewKind::Path => {
             let result = crate::job::build(s)?;
-            let cut = paint(color(0x1f, 0x4f, 0xb4));
-            let travel = paint(color(0x88, 0x8e, 0x99));
+            let [cr, cg, cb] = flatcraft_core::colour::cut_colour(media.color);
+            let cut = paint(color(cr, cg, cb));
+            let travel = paint(Color::from_rgba8(lr, lg, lb, 150));
             let start = paint(color(0xd6, 0x28, 0x28));
             let [tr, tg, tb] = label_colour(media.color);
             let label = paint(color(tr, tg, tb));

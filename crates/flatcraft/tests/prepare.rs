@@ -1948,7 +1948,12 @@ fn circular_panel_previews_exactly_what_ok_makes() {
 
 /// The end points of the ghost preview's dashes painted last frame.
 fn ghost_points(h: &AppHarness) -> Vec<egui::Pos2> {
-    let colour = flatcraft::ui::canvas::ghost_colour(flatcraft_device::DEFAULT_MAT_COLOR);
+    let mat = state(&app(h).session)["mat"]["color"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let byte = |k: usize| u8::from_str_radix(&mat[1 + 2 * k..3 + 2 * k], 16).unwrap();
+    let colour = flatcraft::ui::canvas::ghost_colour([byte(0), byte(1), byte(2)]);
     painted(h)
         .into_iter()
         .filter_map(|s| match s {

@@ -96,7 +96,8 @@ impl CanvasView {
 // ---------------------------------------------------------------- colours
 
 pub use flatcraft_core::colour::{
-    contrast_colour, contrast_ratio, luminance, margin_colour, object_colour, selection_colour,
+    contrast_colour, contrast_ratio, cut_colour, luminance, margin_colour, object_colour,
+    selection_colour,
 };
 
 pub fn rgb(c: [u8; 3]) -> Color32 {

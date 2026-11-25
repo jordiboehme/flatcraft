@@ -33,9 +33,27 @@ pub fn contrast_colour(mat: [u8; 3]) -> [u8; 3] {
 }
 
 /// The mat margin (the part outside the cutting area): the mat colour a
-/// little darker, so the cutting area reads as the part that counts.
+/// little darker on a light mat and a little lighter on a dark one, so the
+/// cutting area reads as the part that counts on either.
 pub fn margin_colour(mat: [u8; 3]) -> [u8; 3] {
-    mat.map(|c| (f64::from(c) * 0.88).round() as u8)
+    if luminance(mat) >= 0.18 {
+        mat.map(|c| (f64::from(c) * 0.88).round() as u8)
+    } else {
+        mat.map(|c| (f64::from(c) + (255.0 - f64::from(c)) * 0.14).round() as u8)
+    }
+}
+
+/// The colour of cut moves (blade down) on `mat`: the orange of the cut
+/// line in the icon style, a deeper one on light mats and a brighter one on
+/// dark ones, whichever reads better. Travel moves use [`contrast_colour`].
+pub fn cut_colour(mat: [u8; 3]) -> [u8; 3] {
+    const DEEP: [u8; 3] = [0xB8, 0x4A, 0x00];
+    const BRIGHT: [u8; 3] = [0xFF, 0x9A, 0x3C];
+    if contrast_ratio(mat, DEEP) >= contrast_ratio(mat, BRIGHT) {
+        DEEP
+    } else {
+        BRIGHT
+    }
 }
 
 /// The colour of the selection box, its handles, the selection frame and
@@ -75,6 +93,26 @@ mod tests {
             assert!(contrast_ratio(c, mat) >= 3.0, "{mat:?}");
             assert_ne!(c, contrast_colour(mat));
         }
+    }
+
+    #[test]
+    fn margin_stays_visible_on_dark_mats() {
+        let dark = [0x20, 0x22, 0x26];
+        let m = margin_colour(dark);
+        assert!(luminance(m) > luminance(dark));
+        assert!(contrast_ratio(m, dark) > 1.1);
+    }
+
+    #[test]
+    fn cut_orange_reads_on_paper_and_dark_and_differs_from_the_selection() {
+        for mat in [[0xFB, 0xF4, 0xE4], [0x20, 0x22, 0x26]] {
+            let c = cut_colour(mat);
+            assert!(contrast_ratio(c, mat) >= 3.0, "{mat:?}");
+            assert_ne!(c, selection_colour(mat));
+            assert_ne!(c, contrast_colour(mat));
+        }
+        assert_eq!(cut_colour([0xFB, 0xF4, 0xE4]), [0xB8, 0x4A, 0x00]);
+        assert_eq!(cut_colour([0x20, 0x22, 0x26]), [0xFF, 0x9A, 0x3C]);
     }
 
     #[test]

@@ -481,7 +481,7 @@ fn cut_canvas(
             rect,
             job,
             visible,
-            contrast,
+            (contrast, canvas::rgb(canvas::cut_colour(mat_rgb))),
             &mut st.labels,
         );
         if crowded {
@@ -500,18 +500,19 @@ fn cut_canvas(
 
 /// Draws the first `visible` toolpaths: the cut lines, dotted travel moves
 /// from the device home, a start dot, a direction arrow and the order number.
-/// Everything is in the mat's contrast colour, so it reads on any mat.
+/// Cut moves, start dots and arrows are in the cut orange (`cut`), travel
+/// and the order numbers in the mat's contrast colour, so all read on any mat.
 fn draw_toolpaths(
     painter: &egui::Painter,
     view: &CanvasView,
     rect: Rect,
     job: &Arc<JobResult>,
     visible: usize,
-    contrast: Color32,
+    (contrast, cut): (Color32, Color32),
     cache: &mut LabelCache,
 ) -> bool {
     let paths = &job.plan.toolpaths;
-    let travel = contrast.gamma_multiply(0.7);
+    let travel = contrast.gamma_multiply(0.45);
     let font = fonts::medium(10.0);
     let mut at = job.plan.home;
     // On-screen starts with their order number and direction.
@@ -536,8 +537,8 @@ fn draw_toolpaths(
         if let Some(next) = pts.iter().find(|p| p.distance(start) > 0.5) {
             arrows.push((start, (*next - start).normalized()));
         }
-        painter.add(egui::Shape::line(pts, Stroke::new(width, contrast)));
-        painter.circle_filled(start, 3.0, contrast);
+        painter.add(egui::Shape::line(pts, Stroke::new(width, cut)));
+        painter.circle_filled(start, 3.0, cut);
         if rect.contains(start) {
             starts.push((i + 1, start));
         }
@@ -553,7 +554,7 @@ fn draw_toolpaths(
         return true;
     };
     for (start, dir) in arrows {
-        painter.arrow(start + dir * 4.0, dir * 12.0, Stroke::new(1.5, contrast));
+        painter.arrow(start + dir * 4.0, dir * 12.0, Stroke::new(1.5, cut));
     }
     for l in labels.iter() {
         painter.text(l.at, Align2::LEFT_BOTTOM, &l.text, font.clone(), contrast);
