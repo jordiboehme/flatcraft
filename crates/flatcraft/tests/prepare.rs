@@ -429,7 +429,7 @@ fn unlink_forgets_the_missing_file() {
     to_prepare(&mut h);
     focus_window(&mut h);
     h.get_by_label("1 source file not found");
-    h.get_by_role_and_label(Role::Button, "Unlink").click();
+    h.get_by_role_and_label(Role::Button, "Unlink file").click();
     h.run();
     let st = s.lock().unwrap();
     assert!(st.doc().document.get(ObjectId(id)).unwrap().link.is_none());

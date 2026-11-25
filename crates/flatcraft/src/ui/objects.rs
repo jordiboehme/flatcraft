@@ -165,7 +165,7 @@ fn details(
             actions.push(Action::Reconnect { doc_id, id: o.id });
         }
         if ui
-            .button("Unlink")
+            .button("Unlink file")
             .on_hover_text("Forget the file. The object stays as it is.")
             .clicked()
         {
