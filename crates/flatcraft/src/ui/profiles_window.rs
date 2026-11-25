@@ -2,7 +2,7 @@
 //! plotter, and the app preferences. It opens from the Settings button and
 //! the macOS Preferences menu (Cmd+,).
 //!
-//! System presets are read-only; "Save as user preset…" makes a user
+//! System presets are read-only; "Save as user preset..." makes a user
 //! preset that inherits from them. The widgets only edit a draft in
 //! [`ProfilesState`] and push [`Request`]s; [`apply`] writes presets and
 //! preferences under the session lock, one short step each, so the MCP
@@ -15,7 +15,7 @@ use egui::{Color32, Response, RichText, Sense, Ui, vec2};
 use flatcraft_device::profile::MAX_SIZE_MM;
 use flatcraft_device::{
     DEFAULT_MAT_COLOR, GpglDialect, Grid, KnifeCompensation, MaterialOverride, MaterialProfile,
-    Media, MediaKind, PlotterProfile, PresetInfo, Protocol, TransportSpec,
+    Media, MediaField, MediaKind, PlotterProfile, PresetInfo, Protocol, TransportSpec,
 };
 use flatcraft_engine::prefs::Theme;
 
@@ -25,6 +25,9 @@ use super::{Action, FlatCraftApp, Toast, canvas, files, fonts, lock};
 
 /// Help text of the auto-reload switch.
 pub const AUTO_RELOAD_HELP: &str = "When an imported file changes on disk, FlatCraft reloads it and keeps your placement and cut settings.";
+
+/// Why a mat cannot be hidden or deleted.
+pub const MAT_IN_USE: &str = "This mat is in use. Pick another mat in the job first.";
 
 /// Warning under "Allow agents to start cuts".
 pub const AGENT_CUTS_WARNING: &str = "With this on, an agent can start a USB cut without asking you first. Turn it on only when the mat is loaded and you trust the agent. File Output never needs it.";
@@ -65,6 +68,9 @@ pub struct Draft<T> {
     pub id: String,
     pub system: bool,
     /// The preset this one inherits from; a user preset saves against it.
+    /// A user preset without `inherits` is read-only here: the store saves
+    /// a user preset only as the difference to a parent, so Save stays
+    /// disabled and the window says to edit its file instead.
     pub parent: Option<String>,
     pub saved: T,
     pub edit: T,
@@ -104,9 +110,26 @@ pub struct ProfilesState {
     pub save_as: Option<SaveAs>,
     /// The preset waiting for "Yes, delete".
     pub confirm_delete: Option<(Kind, String, String)>,
+    /// Waiting for "Discard your changes?".
+    pub leave: Option<Leave>,
+    /// Close the window at the end of this frame.
+    closing: bool,
+    /// A message for a toast, from a widget that cannot reach the app.
+    notice: Option<String>,
     /// The text of the hex colour field while it has the keyboard.
     hex: String,
     hex_editing: bool,
+}
+
+/// What waits for "Discard your changes?".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Leave {
+    /// Show this plotter preset.
+    Plotter(String),
+    /// Show this material preset.
+    Material(String),
+    /// Close the window.
+    Close,
 }
 
 /// One change of the preferences. Each is stored right away.
@@ -148,6 +171,28 @@ struct View {
     default_plotter: String,
     output_dir: Option<PathBuf>,
     auto_reload: bool,
+    /// (plotter id, mat id) pairs open jobs and new documents use.
+    mats_in_use: Vec<(String, String)>,
+}
+
+/// The (plotter id, mat id) pairs the open documents use, plus the mat new
+/// documents start on with the default device.
+fn mats_in_use(s: &flatcraft_engine::session::Session) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = s
+        .docs
+        .iter()
+        .map(|d| {
+            (
+                d.document.job.plotter_id.clone(),
+                d.document.job.media_id.clone(),
+            )
+        })
+        .collect();
+    out.push((
+        s.prefs.default_plotter.clone(),
+        flatcraft_engine::session::DEFAULT_MEDIA.to_string(),
+    ));
+    out
 }
 
 /// A preset id from a name: lowercase letters and digits, words joined by
@@ -180,20 +225,11 @@ pub fn parse_hex(s: &str) -> Option<[u8; 3]> {
     Some([(v >> 16) as u8, (v >> 8) as u8, v as u8])
 }
 
-/// Which group of mat fields a problem belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MatGroup {
-    Physical,
-    Origin,
-    GridSize,
-}
-
-/// The problem of a mat for a person, and the fields it is about.
-pub fn mat_problem(m: &Media) -> Option<(MatGroup, String)> {
-    let raw = m.validate().err()?;
-    // "mat 'id': the grid ..." -> "The grid ...."
-    let text = raw.split_once("': ").map_or(raw.as_str(), |(_, r)| r);
-    let mut chars = text.chars();
+/// The problem of a mat for a person ("The grid size must be above 0."),
+/// and the field whose row shows it.
+pub fn mat_problem(m: &Media) -> Option<(MediaField, String)> {
+    let e = m.validate().err()?;
+    let mut chars = e.reason.chars();
     let mut out: String = chars
         .next()
         .map(|c| c.to_uppercase().chain(chars).collect())
@@ -201,14 +237,7 @@ pub fn mat_problem(m: &Media) -> Option<(MatGroup, String)> {
     if !out.ends_with('.') {
         out.push('.');
     }
-    let group = if text.contains("physical size") {
-        MatGroup::Physical
-    } else if text.contains("grid origin") {
-        MatGroup::Origin
-    } else {
-        MatGroup::GridSize
-    };
-    Some((group, out))
+    Some((e.field, out))
 }
 
 /// Problems of a plotter draft that block Save.
@@ -321,6 +350,9 @@ pub fn show(ctx: &egui::Context, app: &mut FlatCraftApp, actions: &mut Vec<Actio
                 }
             });
             ui.separator();
+            if st.leave.is_some() {
+                discard_banner(ui, st, &t);
+            }
             match st.tab {
                 Tab::Plotters => plotters_tab(ui, st, &view, &t, actions),
                 Tab::Materials => materials_tab(ui, st, &view, &t, actions),
@@ -339,11 +371,58 @@ pub fn show(ctx: &egui::Context, app: &mut FlatCraftApp, actions: &mut Vec<Actio
         });
     save_as_dialog(ctx, st, &view, &t, actions);
     delete_dialog(ctx, st, &t, actions);
-    if !open {
-        app.ui.show_profiles = false;
+    let unsaved = st.plotter.as_ref().is_some_and(Draft::changed)
+        || st.material.as_ref().is_some_and(Draft::changed);
+    if !open && unsaved {
+        st.leave = Some(Leave::Close);
+    } else if !open || st.closing {
+        st.closing = false;
+        st.leave = None;
         st.save_as = None;
         st.confirm_delete = None;
+        app.ui.show_profiles = false;
     }
+    if let Some(n) = app.ui.profiles.notice.take() {
+        app.toast(Toast::warning(n));
+    }
+}
+
+/// "Discard your changes?" at the top of the window, for a preset switch
+/// or Close while a draft has unsaved edits.
+fn discard_banner(ui: &mut Ui, st: &mut ProfilesState, t: &Tokens) {
+    egui::Frame::new()
+        .stroke(egui::Stroke::new(1.0, t.accent_cut))
+        .corner_radius(t.radius)
+        .inner_margin(egui::Margin::same(t.spacing as i8))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Discard your changes?").color(t.accent_cut));
+                if ui.button("Discard").clicked() {
+                    match st.leave.take() {
+                        Some(Leave::Plotter(id)) => st.want_plotter = Some(id),
+                        Some(Leave::Material(id)) => st.want_material = Some(id),
+                        Some(Leave::Close) => {
+                            // Reload the stored presets, so the next open
+                            // shows what is on disk.
+                            st.want_plotter = st.plotter.as_ref().map(|d| d.id.clone());
+                            st.want_material = st.material.as_ref().map(|d| d.id.clone());
+                            for d in st.plotter.iter_mut() {
+                                d.edit = d.saved.clone();
+                            }
+                            for d in st.material.iter_mut() {
+                                d.edit = d.saved.clone();
+                            }
+                            st.closing = true;
+                        }
+                        None => {}
+                    }
+                }
+                if ui.button("Keep editing").clicked() {
+                    st.leave = None;
+                }
+            });
+        });
+    ui.add_space(t.spacing / 2.0);
 }
 
 /// Copies the lists and preferences, and loads a newly selected preset,
@@ -386,7 +465,7 @@ fn load(app: &mut FlatCraftApp) -> View {
                     parent: info.inherits.clone(),
                     saved: p.clone(),
                     edit: p,
-                    modified: s.profiles.modified_fields(&id),
+                    modified: s.profiles.modified_plotter_fields(&id),
                 });
                 st.load_error = None;
             }
@@ -407,7 +486,7 @@ fn load(app: &mut FlatCraftApp) -> View {
                     parent: info.inherits.clone(),
                     saved: m.clone(),
                     edit: m,
-                    modified: s.profiles.modified_fields(&id),
+                    modified: s.profiles.modified_material_fields(&id),
                 });
                 st.load_error = None;
             }
@@ -419,6 +498,7 @@ fn load(app: &mut FlatCraftApp) -> View {
         }
     }
     View {
+        mats_in_use: mats_in_use(&s),
         plotters,
         materials,
         allow_agent_cuts: s.prefs.allow_agent_cuts,
@@ -595,7 +675,7 @@ fn preset_buttons(
         if ui
             .add_enabled(
                 problems.is_empty(),
-                egui::Button::new("Save as user preset…"),
+                egui::Button::new("Save as user preset..."),
             )
             .clicked()
         {
@@ -615,7 +695,7 @@ fn preset_buttons(
     if system {
         ui.label(
             RichText::new(
-                "System presets are read-only. Save a user preset to change it, it keeps up with this one for everything you leave alone.",
+                "System presets are read-only. Save a user preset to change it. It keeps up with this one for everything you leave alone.",
             )
             .color(t.text_dim),
         );
@@ -644,7 +724,11 @@ fn plotters_tab(
                 .show(ui, |ui| {
                     let sel = st.plotter.as_ref().map(|d| d.id.as_str());
                     if let Some(id) = preset_list(ui, &view.plotters, sel, t) {
-                        st.want_plotter = Some(id);
+                        if st.plotter.as_ref().is_some_and(Draft::changed) {
+                            st.leave = Some(Leave::Plotter(id));
+                        } else {
+                            st.want_plotter = Some(id);
+                        }
                     }
                 });
         });
@@ -699,9 +783,17 @@ fn plotters_tab(
                 .id_salt("flatcraft-profiles-mats")
                 .max_height(height)
                 .show(ui, |ui| {
+                    let in_use: Vec<&str> = view
+                        .mats_in_use
+                        .iter()
+                        .filter(|(p, _)| *p == d.id)
+                        .map(|(_, m)| m.as_str())
+                        .collect();
                     mats(
                         ui,
                         d,
+                        &in_use,
+                        &mut st.notice,
                         &st.parent_media,
                         &mut st.mat,
                         &mut st.hex,
@@ -925,9 +1017,12 @@ fn fresh_mat_id(base: &str, taken: &[&str]) -> String {
 
 /// The Mats section: list, add, copy, delete, the fields of the selected
 /// mat and a small drawing of it.
+#[allow(clippy::too_many_arguments)]
 fn mats(
     ui: &mut Ui,
     d: &mut Draft<PlotterProfile>,
+    in_use: &[&str],
+    notice: &mut Option<String>,
     parent: &[Media],
     selected: &mut Option<String>,
     hex_text: &mut String,
@@ -1024,8 +1119,12 @@ fn mats(
             if let Some(i) = own
                 && ui.button("Delete mat").clicked()
             {
-                media.remove(i);
-                *selected = media.first().map(|m| m.id.clone());
+                if in_use.contains(&media[i].id.as_str()) {
+                    *notice = Some(MAT_IN_USE.into());
+                } else {
+                    media.remove(i);
+                    *selected = media.first().map(|m| m.id.clone());
+                }
             }
         });
     });
@@ -1043,6 +1142,9 @@ fn mats(
             set_name(ui, &r, "Hidden");
             if r.changed() {
                 match (hide, at) {
+                    (true, Some(_)) if in_use.contains(&id.as_str()) => {
+                        *notice = Some(MAT_IN_USE.into());
+                    }
                     (true, Some(i)) => {
                         media.remove(i);
                     }
@@ -1094,7 +1196,8 @@ fn mats(
     };
     let m = &mut media[i];
     let problem = mat_problem(m);
-    let show_problem = |ui: &mut Ui, g: MatGroup| {
+    // The error goes on the row right under the field it names.
+    let show_problem = |ui: &mut Ui, g: MediaField| {
         if let Some((pg, text)) = &problem
             && *pg == g
         {
@@ -1123,24 +1226,27 @@ fn mats(
                     f.row(ui, "Physical width (mm)", "width", |ui| {
                         ui.add(num(&mut m.width_mm, 2))
                     });
+                    show_problem(ui, MediaField::Width);
                     f.row(ui, "Physical height (mm)", "height", |ui| {
                         ui.add(num(&mut m.height_mm, 2))
                     });
-                    show_problem(ui, MatGroup::Physical);
+                    show_problem(ui, MediaField::Height);
                     f.row(ui, "Grid origin x (mm)", "origin_x", |ui| {
                         ui.add(num(&mut m.grid.origin_x_mm, 2))
                     });
+                    show_problem(ui, MediaField::OriginX);
                     f.row(ui, "Grid origin y (mm)", "origin_y", |ui| {
                         ui.add(num(&mut m.grid.origin_y_mm, 2))
                     });
-                    show_problem(ui, MatGroup::Origin);
+                    show_problem(ui, MediaField::OriginY);
                     f.row(ui, "Grid width (mm)", "grid_width", |ui| {
                         ui.add(num(&mut m.grid.width_mm, 2))
                     });
+                    show_problem(ui, MediaField::GridWidth);
                     f.row(ui, "Grid height (mm)", "grid_height", |ui| {
                         ui.add(num(&mut m.grid.height_mm, 2))
                     });
-                    show_problem(ui, MatGroup::GridSize);
+                    show_problem(ui, MediaField::GridHeight);
                     f.check(ui, "Calibrated", "calibrated", &mut m.calibrated);
                     f.row(ui, "Mat colour", "color", |ui| {
                         ui.color_edit_button_srgb(&mut m.color)
@@ -1245,7 +1351,11 @@ fn materials_tab(
                 .show(ui, |ui| {
                     let sel = st.material.as_ref().map(|d| d.id.as_str());
                     if let Some(id) = preset_list(ui, &view.materials, sel, t) {
-                        st.want_material = Some(id);
+                        if st.material.as_ref().is_some_and(Draft::changed) {
+                            st.leave = Some(Leave::Material(id));
+                        } else {
+                            st.want_material = Some(id);
+                        }
                     }
                 });
         });
@@ -1598,11 +1708,13 @@ fn save_as_dialog(
             if ui.button("Create").clicked() || enter {
                 let name = dialog.name.trim().to_string();
                 let id = slug(&name);
-                let taken = view
-                    .plotters
-                    .iter()
-                    .chain(&view.materials)
-                    .any(|p| p.id == id);
+                // Plotters and materials live in their own folders, so an
+                // id only has to be free within its kind.
+                let same_kind = match kind {
+                    Kind::Plotter => &view.plotters,
+                    Kind::Material => &view.materials,
+                };
+                let taken = same_kind.iter().any(|p| p.id == id);
                 if id.is_empty() {
                     dialog.error =
                         Some("Give the preset a name with at least one letter or digit.".into());
@@ -1713,8 +1825,13 @@ pub fn apply(app: &mut FlatCraftApp, ctx: &egui::Context, req: Request) {
             let result = {
                 let mut s = lock(&app.session);
                 let problems = plotter_problems(&profile);
+                let drops_used = mats_in_use(&s)
+                    .iter()
+                    .any(|(p, m)| *p == profile.id && !profile.media.iter().any(|x| x.id == *m));
                 if !problems.is_empty() {
                     Err(problems.join(" "))
+                } else if drops_used {
+                    Err(MAT_IN_USE.to_string())
                 } else if new && s.profiles.plotters().iter().any(|p| p.id == profile.id) {
                     Err(format!(
                         "A preset with the id '{}' already exists.",

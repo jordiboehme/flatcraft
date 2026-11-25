@@ -49,7 +49,7 @@ fn disabled(h: &AppHarness, label: &str) -> bool {
 fn save_as_my_cameo(h: &mut AppHarness) {
     open(h, "Plotters");
     click(h, "Silhouette Cameo 2");
-    click(h, "Save as user preset…");
+    click(h, "Save as user preset...");
     // Enter in the name field creates it.
     type_into(h, "Preset name", "My Cameo");
 }
@@ -149,7 +149,7 @@ fn system_preset_fields_are_read_only() {
         }
         assert!(h.query_by_label("Save preset").is_none());
         assert!(h.query_by_label("Delete preset").is_none());
-        assert!(!disabled(&h, "Save as user preset…"));
+        assert!(!disabled(&h, "Save as user preset..."));
     }
     open(&mut h, "Materials");
     click(&mut h, "Vinyl");
@@ -350,7 +350,7 @@ fn material_override_saves_only_the_override() {
     let mut h = harness(&dir, &s);
     open(&mut h, "Materials");
     click(&mut h, "Copy Paper");
-    click(&mut h, "Save as user preset…");
+    click(&mut h, "Save as user preset...");
     h.get_by_label("Preset name").click();
     h.run();
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
@@ -422,7 +422,7 @@ fn save_as_refuses_a_taken_name() {
     let s = session(&dir);
     let mut h = harness(&dir, &s);
     save_as_my_cameo(&mut h);
-    click(&mut h, "Save as user preset…");
+    click(&mut h, "Save as user preset...");
     type_into(&mut h, "Preset name", "My Cameo");
     h.get_by_label("A preset with the id 'my-cameo' already exists. Pick another name.");
     assert_eq!(store(&s).plotters().len(), 3);
@@ -463,7 +463,7 @@ fn invalid_field_blocks_save_and_save_as() {
     type_into(&mut h, "Scale x", "0");
     h.get_by_label("The scale must be above 0.");
     assert!(disabled(&h, "Save preset"));
-    assert!(disabled(&h, "Save as user preset…"));
+    assert!(disabled(&h, "Save as user preset..."));
     assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
     assert_eq!(store(&s).plotters().len(), 3);
 }
@@ -492,5 +492,179 @@ fn apply_refuses_an_invalid_preset() {
             .toasts
             .iter()
             .any(|t| t.text.contains("speed range"))
+    );
+}
+
+const MAT_IN_USE: &str = "This mat is in use. Pick another mat in the job first.";
+
+#[test]
+fn hiding_a_mat_in_use_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    save_as_my_cameo(&mut h);
+    for (cmd, p) in [
+        ("job.set_plotter", json!({ "id": "my-cameo" })),
+        ("job.set_media", json!({ "id": "mat-12x24" })),
+    ] {
+        s.lock().unwrap().execute(cmd, p, Origin::User).unwrap();
+    }
+    click(&mut h, "Mat 12x24");
+    click(&mut h, "Hidden");
+    assert!(app(&h).ui.toasts.iter().any(|t| t.text == MAT_IN_USE));
+    let node = h.get_by_label("Hidden");
+    assert_eq!(node.accesskit_node().toggled(), Some(Toggled::False));
+    assert!(disabled(&h, "Save preset"));
+}
+
+#[test]
+fn saving_without_a_mat_in_use_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    save_as_my_cameo(&mut h);
+    let file = dir.path().join("profiles/plotters/my-cameo.toml");
+    let before = std::fs::read_to_string(&file).unwrap();
+    // The default device starts new documents on mat-12x12.
+    s.lock().unwrap().prefs.default_plotter = "my-cameo".into();
+    let mut p = store(&s).plotter("my-cameo").unwrap();
+    p.media.retain(|m| m.id != "mat-12x12");
+    let req = flatcraft::ui::profiles_window::Request::SavePlotter {
+        profile: Box::new(p),
+        parent: "silhouette-cameo-2".into(),
+        new: false,
+    };
+    let ctx = h.ctx.clone();
+    app_mut(&mut h).apply(&ctx, vec![flatcraft::ui::Action::Profiles(req)]);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+    assert!(
+        app(&h)
+            .ui
+            .toasts
+            .iter()
+            .any(|t| t.text.contains(MAT_IN_USE))
+    );
+}
+
+#[test]
+fn mat_errors_land_on_their_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    save_as_my_cameo(&mut h);
+    click(&mut h, "Mat 12x12");
+    let rows = [
+        (
+            "Physical width (mm)",
+            "304.8",
+            "The physical size must be above 0.",
+        ),
+        (
+            "Physical height (mm)",
+            "330.2",
+            "The physical size must be above 0.",
+        ),
+        (
+            "Grid origin x (mm)",
+            "0",
+            "The grid origin must not be negative.",
+        ),
+        (
+            "Grid origin y (mm)",
+            "0",
+            "The grid origin must not be negative.",
+        ),
+        ("Grid width (mm)", "304.8", "The grid size must be above 0."),
+        (
+            "Grid height (mm)",
+            "304.8",
+            "The grid size must be above 0.",
+        ),
+    ];
+    let next = [
+        "Physical height (mm)",
+        "Grid origin x (mm)",
+        "Grid origin y (mm)",
+        "Grid width (mm)",
+        "Grid height (mm)",
+        "Calibrated",
+    ];
+    for ((field, good, text), below) in rows.into_iter().zip(next) {
+        let bad = if field.starts_with("Grid origin") {
+            "-1"
+        } else {
+            "0"
+        };
+        type_into(&mut h, field, bad);
+        let err = h.get_by_label(text).rect();
+        let f = h.get_by_label(field).rect();
+        let n = h.get_by_label(below).rect();
+        assert!(
+            err.top() >= f.bottom() && err.bottom() <= n.top(),
+            "{text} is not between {field} and {below}"
+        );
+        type_into(&mut h, field, good);
+        assert!(
+            h.query_by_label(text).is_none(),
+            "{field} still shows an error"
+        );
+    }
+}
+
+#[test]
+fn switching_presets_asks_before_dropping_edits() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    save_as_my_cameo(&mut h);
+    type_into(&mut h, "Scale x", "1.5");
+    click(&mut h, "Silhouette Cameo 2");
+    h.get_by_label("Discard your changes?");
+    click(&mut h, "Keep editing");
+    assert!(h.query_by_label("Discard your changes?").is_none());
+    let d = app(&h).ui.profiles.plotter.as_ref().unwrap();
+    assert_eq!((d.id.as_str(), d.edit.scale_x), ("my-cameo", 1.5));
+    click(&mut h, "Silhouette Cameo 2");
+    click(&mut h, "Discard");
+    let d = app(&h).ui.profiles.plotter.as_ref().unwrap();
+    assert_eq!(d.id, "silhouette-cameo-2");
+    assert_eq!(store(&s).plotter("my-cameo").unwrap().scale_x, 1.0);
+}
+
+#[test]
+fn closing_asks_before_dropping_edits() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    save_as_my_cameo(&mut h);
+    type_into(&mut h, "Scale x", "1.5");
+    click(&mut h, "Close window");
+    assert!(app(&h).ui.show_profiles);
+    h.get_by_label("Discard your changes?");
+    click(&mut h, "Discard");
+    assert!(!app(&h).ui.show_profiles);
+    // Opening again shows the stored values.
+    open(&mut h, "Plotters");
+    assert_eq!(
+        app(&h).ui.profiles.plotter.as_ref().unwrap().edit.scale_x,
+        1.0
+    );
+}
+
+#[test]
+fn save_as_names_clash_only_within_a_kind() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    save_as_my_cameo(&mut h);
+    open(&mut h, "Materials");
+    click(&mut h, "Vinyl");
+    click(&mut h, "Save as user preset...");
+    type_into(&mut h, "Preset name", "My Cameo");
+    assert!(store(&s).material("my-cameo").is_ok());
+    assert!(store(&s).plotter("my-cameo").is_ok());
+    assert_eq!(
+        store(&s).modified_material_fields("my-cameo"),
+        Vec::<String>::new()
     );
 }
