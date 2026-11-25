@@ -213,6 +213,18 @@ pub struct PrepareState {
     pub copies: Option<CopiesDialog>,
     /// The settings of the last copies made, for the next dialog.
     pub copies_last: CopiesSettings,
+    /// The objects the open context menu works on (see `context_menu`).
+    pub context: Option<Vec<u64>>,
+    /// The open Rename dialog.
+    pub rename: Option<RenameDialog>,
+}
+
+/// The Rename dialog: its object and the name typed so far.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameDialog {
+    pub doc_id: u64,
+    pub id: u64,
+    pub name: String,
 }
 
 /// The speed attempt above the maximum: the document, plotter and
@@ -331,6 +343,8 @@ impl Default for PrepareState {
             cache: ShapeCache::default(),
             copies: None,
             copies_last: CopiesSettings::default(),
+            context: None,
+            rename: None,
         }
     }
 }
@@ -727,6 +741,11 @@ pub struct ObjView {
     pub link: Option<PathBuf>,
     /// The group of linked copies the object belongs to.
     pub link_group: Option<u64>,
+    /// Where the source bytes live and how long they are: objects with the
+    /// same key share one source (copies and linked copies), so they can be
+    /// linked. Two imports of one file hold equal bytes in two places and
+    /// are not found by this key.
+    pub source_key: (usize, usize),
     pub shape: Arc<Shape>,
 }
 
@@ -933,6 +952,11 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
                 cut: o.cut,
                 link: o.link.as_ref().map(|l| l.path.clone()),
                 link_group: o.link_group.map(|g| g.0),
+                source_key: match &o.source {
+                    Source::Svg { bytes, .. } | Source::Raster { bytes, .. } => {
+                        (bytes.as_ptr() as usize, bytes.len())
+                    }
+                },
                 shape,
             });
         }
@@ -1136,7 +1160,7 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
         .default_size(240.0)
         .frame(egui::Frame::new().fill(t.panel).inner_margin(t.spacing))
         .show_collapsible(ui, &mut show_objects, |ui| {
-            objects::show(ui, &app.ui.prepare, snap, &t, actions);
+            objects::show(ui, &mut app.ui.prepare, snap, &t, actions);
         });
     app.ui.prepare.show_objects = show_objects;
 
@@ -1160,6 +1184,55 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
     let p = &mut app.ui.prepare;
     if let Some(used) = copies_window(ui.ctx(), &mut p.copies, snap, &t, actions) {
         p.copies_last = used;
+    }
+    rename_window(ui.ctx(), &mut p.rename, snap, &t, actions);
+}
+
+/// The Rename dialog. It closes when its document is no longer shown or its
+/// object is gone. Enter or Rename sends `object.rename`.
+fn rename_window(
+    ctx: &egui::Context,
+    dialog: &mut Option<RenameDialog>,
+    snap: &Snapshot,
+    t: &Tokens,
+    actions: &mut Vec<Action>,
+) {
+    let Some(d) = dialog else {
+        return;
+    };
+    if d.doc_id != snap.doc_id || !snap.objects.iter().any(|o| o.id == d.id) {
+        *dialog = None;
+        return;
+    }
+    let mut close = false;
+    let modal = egui::Modal::new(egui::Id::unique("flatcraft-rename")).show(ctx, |ui| {
+        ui.set_width(300.0);
+        ui.label(RichText::new("Rename").font(super::fonts::semibold(15.0)));
+        ui.add_space(t.spacing / 2.0);
+        let field = ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(f32::INFINITY));
+        settings::set_name(ui, &field, "Name");
+        if !field.has_focus() && !field.lost_focus() {
+            field.request_focus();
+        }
+        let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        ui.add_space(t.spacing / 2.0);
+        let ok = !d.name.trim().is_empty();
+        ui.horizontal(|ui| {
+            if ui.add_enabled(ok, egui::Button::new("Rename")).clicked() || (entered && ok) {
+                actions.push(Action::run(
+                    d.doc_id,
+                    "object.rename",
+                    json!({ "id": d.id, "name": d.name }),
+                ));
+                close = true;
+            }
+            if ui.button("Cancel").clicked() {
+                close = true;
+            }
+        });
+    });
+    if close || modal.should_close() {
+        *dialog = None;
     }
 }
 

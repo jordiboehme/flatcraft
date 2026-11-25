@@ -169,10 +169,32 @@ pub fn reload_ids(snap: &Snapshot) -> Option<Vec<u64>> {
     (!ids.is_empty()).then_some(ids)
 }
 
+/// The linked objects among `ids` whose file is not broken, for Reload.
+/// `None` when there are none.
+pub fn reload_ids_of(
+    snap: &Snapshot,
+    sources: &super::prepare::SourceStatus,
+    ids: &[u64],
+) -> Option<Vec<u64>> {
+    let ids: Vec<u64> = ids
+        .iter()
+        .filter_map(|id| snap.object(*id))
+        .filter(|o| o.link.is_some() && !sources.broken(o.id))
+        .map(|o| o.id)
+        .collect();
+    (!ids.is_empty()).then_some(ids)
+}
+
 /// The id of the selected object when it is the only one and an image.
 pub fn single_raster(snap: &Snapshot) -> Option<u64> {
-    match snap.selected().collect::<Vec<_>>().as_slice() {
-        [o] if o.raster => Some(o.id),
+    let ids: Vec<u64> = snap.selection.iter().copied().collect();
+    single_raster_of(snap, &ids)
+}
+
+/// The id in `ids` when it is the only one and an image.
+pub fn single_raster_of(snap: &Snapshot, ids: &[u64]) -> Option<u64> {
+    match ids {
+        [id] => snap.object(*id).filter(|o| o.raster).map(|o| o.id),
         _ => None,
     }
 }
@@ -180,8 +202,21 @@ pub fn single_raster(snap: &Snapshot) -> Option<u64> {
 /// The selected object when it is the only one, as the Copies dialog for
 /// it with the settings used last.
 pub fn copies_dialog(snap: &Snapshot, last: CopiesSettings) -> Option<CopiesDialog> {
-    match snap.selected().collect::<Vec<_>>().as_slice() {
-        [o] => Some(CopiesDialog::new(snap.doc_id, o.id, o.name.clone(), last)),
+    let ids: Vec<u64> = snap.selection.iter().copied().collect();
+    copies_dialog_for(snap, &ids, last)
+}
+
+/// The Copies dialog for `ids` when it is one object.
+pub fn copies_dialog_for(
+    snap: &Snapshot,
+    ids: &[u64],
+    last: CopiesSettings,
+) -> Option<CopiesDialog> {
+    match ids {
+        [id] => {
+            let o = snap.object(*id)?;
+            Some(CopiesDialog::new(snap.doc_id, o.id, o.name.clone(), last))
+        }
         _ => None,
     }
 }
@@ -327,7 +362,7 @@ pub fn show(
                     run(actions, "tools.test_patterns", json!({}));
                 }
                 if tool(ui, Icon::Duplicate, "Duplicate", any, "Copy the selection") {
-                    run(actions, "object.duplicate", json!({ "ids": selected }));
+                    actions.push(duplicate_action(doc_id, &selected));
                 }
                 let copies = copies_dialog(snap, st.copies_last);
                 if tool(
@@ -344,7 +379,7 @@ pub fn show(
                     st.copies = copies;
                 }
                 if tool(ui, Icon::Delete, "Delete", any, "Delete the selection") {
-                    run(actions, "object.delete", json!({ "ids": selected }));
+                    actions.push(delete_action(doc_id, &selected));
                 }
                 let ids = reload_ids(snap);
                 if tool(
@@ -355,7 +390,7 @@ pub fn show(
                     "Read the linked files again (the selection, or all)",
                 ) && let Some(ids) = ids
                 {
-                    run(actions, "object.reload", json!({ "ids": ids }));
+                    actions.push(reload_action(doc_id, ids));
                 }
             }
             RibbonTab::Arrange => arrange(ui, st, snap, actions),
@@ -392,6 +427,99 @@ pub fn show(
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
         search_box(ui, snap, st, actions);
     });
+}
+
+/// The `object.rotate` of a rotate button, about each object or the group.
+pub(crate) fn rotate_action(doc_id: u64, ids: &[u64], degrees: f64, each: bool) -> Action {
+    Action::run(
+        doc_id,
+        "object.rotate",
+        json!({ "ids": ids, "degrees": degrees, "about": about(each) }),
+    )
+}
+
+/// The `object.mirror` of a mirror button; `axis` is "horizontal" or
+/// "vertical".
+pub(crate) fn mirror_action(doc_id: u64, ids: &[u64], axis: &str, each: bool) -> Action {
+    Action::run(
+        doc_id,
+        "object.mirror",
+        json!({ "ids": ids, "axis": axis, "about": about(each) }),
+    )
+}
+
+fn about(each: bool) -> &'static str {
+    if each { "each" } else { "group" }
+}
+
+/// `(mode, label)` of the Align items.
+pub(crate) const ALIGN_MODES: [(&str, &str); 6] = [
+    ("left", "Left"),
+    ("hcenter", "Centre"),
+    ("right", "Right"),
+    ("top", "Top"),
+    ("vcenter", "Middle"),
+    ("bottom", "Bottom"),
+];
+
+/// The `arrange.align` of an Align item.
+pub(crate) fn align_action(doc_id: u64, ids: &[u64], mode: &str, to_area: bool) -> Action {
+    let to = if to_area { "cutting_area" } else { "selection" };
+    Action::run(
+        doc_id,
+        "arrange.align",
+        json!({ "ids": ids, "mode": mode, "relative_to": to }),
+    )
+}
+
+/// The items inside an Align menu: what to align to, then the six modes.
+/// Used by the ribbon and the context menu.
+pub(crate) fn align_items(
+    ui: &mut Ui,
+    to_area: &mut bool,
+    doc_id: u64,
+    ids: &[u64],
+    actions: &mut Vec<Action>,
+) {
+    ui.radio_value(to_area, false, "To the selection");
+    ui.radio_value(to_area, true, "To the cutting area");
+    ui.separator();
+    for (mode, text) in ALIGN_MODES {
+        if ui.button(text).clicked() {
+            actions.push(align_action(doc_id, ids, mode, *to_area));
+            ui.close();
+        }
+    }
+}
+
+/// `(label, axis)` of the Distribute commands.
+pub(crate) const DISTRIBUTE: [(&str, &str); 2] = [
+    ("Distribute horizontally", "horizontal"),
+    ("Distribute vertically", "vertical"),
+];
+
+/// The `arrange.distribute` of a Distribute button.
+pub(crate) fn distribute_action(doc_id: u64, ids: &[u64], axis: &str) -> Action {
+    Action::run(
+        doc_id,
+        "arrange.distribute",
+        json!({ "ids": ids, "axis": axis }),
+    )
+}
+
+/// The `object.duplicate` of the Duplicate button.
+pub(crate) fn duplicate_action(doc_id: u64, ids: &[u64]) -> Action {
+    Action::run(doc_id, "object.duplicate", json!({ "ids": ids }))
+}
+
+/// The `object.delete` of the Delete button.
+pub(crate) fn delete_action(doc_id: u64, ids: &[u64]) -> Action {
+    Action::run(doc_id, "object.delete", json!({ "ids": ids }))
+}
+
+/// The `object.reload` of the Reload button for `ids`.
+pub(crate) fn reload_action(doc_id: u64, ids: Vec<u64>) -> Action {
+    Action::run(doc_id, "object.reload", json!({ "ids": ids }))
 }
 
 fn arrange(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Vec<Action>) {
@@ -476,7 +604,6 @@ fn arrange(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Ve
     }
     ui.separator();
     // Several objects turn and flip as one group, or each on its own.
-    let about = if f.each { "each" } else { "group" };
     if let Some(d) = number_field(
         ui,
         "rotate-by",
@@ -486,40 +613,20 @@ fn arrange(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Ve
         None,
         any,
     ) {
-        run(
-            actions,
-            "object.rotate",
-            json!({ "ids": ids, "degrees": d, "about": about }),
-        );
+        actions.push(rotate_action(doc_id, &ids, d, f.each));
     }
     if super::icon_button(ui, Icon::RotateLeft, "Rotate -90", any).clicked() {
-        run(
-            actions,
-            "object.rotate",
-            json!({ "ids": ids, "degrees": -90.0, "about": about }),
-        );
+        actions.push(rotate_action(doc_id, &ids, -90.0, f.each));
     }
     if super::icon_button(ui, Icon::Rotate, "Rotate +90", any).clicked() {
-        run(
-            actions,
-            "object.rotate",
-            json!({ "ids": ids, "degrees": 90.0, "about": about }),
-        );
+        actions.push(rotate_action(doc_id, &ids, 90.0, f.each));
     }
     ui.separator();
     if super::icon_button(ui, Icon::Mirror, "Mirror horizontally", any).clicked() {
-        run(
-            actions,
-            "object.mirror",
-            json!({ "ids": ids, "axis": "horizontal", "about": about }),
-        );
+        actions.push(mirror_action(doc_id, &ids, "horizontal", f.each));
     }
     if super::icon_button(ui, Icon::MirrorVertical, "Mirror vertically", any).clicked() {
-        run(
-            actions,
-            "object.mirror",
-            json!({ "ids": ids, "axis": "vertical", "about": about }),
-        );
+        actions.push(mirror_action(doc_id, &ids, "vertical", f.each));
     }
     let several = ids.len() > 1;
     let hint = if several {
@@ -539,31 +646,7 @@ fn arrange(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Ve
     let align_to_area = &mut st.fields.align_to_area;
     ui.add_enabled_ui(any, |ui| {
         ui.menu_button("Align", |ui| {
-            ui.radio_value(align_to_area, false, "To the selection");
-            ui.radio_value(align_to_area, true, "To the cutting area");
-            ui.separator();
-            for (mode, text) in [
-                ("left", "Left"),
-                ("hcenter", "Centre"),
-                ("right", "Right"),
-                ("top", "Top"),
-                ("vcenter", "Middle"),
-                ("bottom", "Bottom"),
-            ] {
-                if ui.button(text).clicked() {
-                    let to = if *align_to_area {
-                        "cutting_area"
-                    } else {
-                        "selection"
-                    };
-                    run(
-                        actions,
-                        "arrange.align",
-                        json!({ "ids": ids, "mode": mode, "relative_to": to }),
-                    );
-                    ui.close();
-                }
-            }
+            align_items(ui, align_to_area, doc_id, &ids, actions);
         });
     });
     ui.separator();
@@ -574,28 +657,22 @@ fn arrange(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Ve
     } else {
         " Select 3 or more objects first."
     };
-    for (icon, name, axis, hint) in [
+    for (icon, (name, axis), hint) in [
         (
             Icon::DistributeHorizontal,
-            "Distribute horizontally",
-            "horizontal",
+            DISTRIBUTE[0],
             "Equal gaps from left to right. The outer objects stay put.",
         ),
         (
             Icon::DistributeVertical,
-            "Distribute vertically",
-            "vertical",
+            DISTRIBUTE[1],
             "Equal gaps from top to bottom. The outer objects stay put.",
         ),
     ] {
         if super::icon_button_hint(ui, icon, name, three, &format!("{name}: {hint}{need}"))
             .clicked()
         {
-            run(
-                actions,
-                "arrange.distribute",
-                json!({ "ids": ids, "axis": axis }),
-            );
+            actions.push(distribute_action(doc_id, &ids, axis));
         }
     }
     ui.separator();

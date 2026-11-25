@@ -4,6 +4,7 @@
 pub mod about;
 pub mod app_bar;
 pub mod canvas;
+pub mod context_menu;
 pub mod cut;
 pub mod debug;
 pub mod files;
@@ -232,7 +233,7 @@ pub enum Action {
     Reveal(PathBuf),
     /// Ask for a capture fixture and show it in the Debug panel.
     OpenCapture,
-    /// Open the Profiles window (Settings button, Preferences menu, Cmd+,).
+    /// Open the Profiles window (Settings button, Settings menu item, Cmd+,).
     ShowProfiles,
     /// A save, delete or preference change from the Profiles window.
     Profiles(profiles_window::Request),
@@ -1214,12 +1215,14 @@ impl FlatCraftApp {
     }
 }
 
-/// A dialog that owns the keyboard is open: About, Shortcuts, Trace, unsaved changes
+/// A dialog that owns the keyboard is open: About, Shortcuts, Trace, Rename, Copies, unsaved changes
 /// or the agent's pending send.
 pub fn modal_open(app: &FlatCraftApp) -> bool {
     app.ui.about.open
         || app.ui.show_shortcuts
         || app.ui.trace.is_some()
+        || app.ui.prepare.rename.is_some()
+        || app.ui.prepare.copies.is_some()
         || app.ui.unsaved.is_some()
         || lock(&app.session).pending_send().is_some()
 }
@@ -1349,8 +1352,9 @@ fn dropped_files(ctx: &egui::Context, t: &Tokens, actions: &mut Vec<Action>) {
 
 /// Prepare's keys, unless a text field (or another widget) has the
 /// keyboard or a menu is open (Escape closes that first): Cmd+A (Ctrl+A)
-/// selects every visible object, the arrow keys nudge the selection (see
-/// [`canvas::nudge_keys`]), Delete removes it and Escape clears it.
+/// selects every visible object, Cmd+I imports, Cmd+D duplicates the
+/// selection, the arrow keys nudge it (see [`canvas::nudge_keys`]), Delete
+/// removes it and Escape clears it. The keys come from [`help::SHORTCUTS`].
 fn prepare_keys(
     ctx: &egui::Context,
     snap: &prepare::Snapshot,
@@ -1361,38 +1365,32 @@ fn prepare_keys(
     if ctx.egui_wants_keyboard_input() || egui::Popup::is_any_open(ctx) {
         return;
     }
-    let select_all = ctx.input_mut(|i| {
-        i.consume_shortcut(&egui::KeyboardShortcut::new(
-            egui::Modifiers::COMMAND,
-            egui::Key::A,
-        ))
-    });
+    let select_all = help::pressed(ctx, help::PrepareKey::SelectAll);
     if select_all {
-        let ids: Vec<u64> = snap
-            .objects
-            .iter()
-            .filter(|o| o.visible)
-            .map(|o| o.id)
-            .collect();
-        actions.push(Action::run(
-            snap.doc_id,
-            "object.select",
-            json!({ "ids": ids }),
-        ));
+        actions.push(context_menu::select_all_action(snap));
+        return;
+    }
+    if help::pressed(ctx, help::PrepareKey::Import) {
+        actions.push(Action::Import {
+            doc_id: snap.doc_id,
+        });
         return;
     }
     if snap.selection.is_empty() {
         return;
     }
-    canvas::nudge_keys(ctx, snap, st, now, actions);
-    let (delete, escape) = ctx.input_mut(|i| {
-        (
-            i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
-        )
-    });
     let ids: Vec<u64> = snap.selection.iter().copied().collect();
+    if help::pressed(ctx, help::PrepareKey::Duplicate) {
+        actions.push(Action::run(
+            snap.doc_id,
+            "object.duplicate",
+            json!({ "ids": ids }),
+        ));
+        return;
+    }
+    canvas::nudge_keys(ctx, snap, st, now, actions);
+    let delete = help::pressed(ctx, help::PrepareKey::Delete);
+    let escape = help::pressed(ctx, help::PrepareKey::ClearSelection);
     if delete {
         actions.push(Action::run(
             snap.doc_id,

@@ -6,6 +6,7 @@
 use egui::{RichText, Ui};
 use serde_json::json;
 
+use super::context_menu;
 use super::icons::{self, Icon};
 use super::prepare::{ObjView, PrepareState, Snapshot};
 use super::theme::Tokens;
@@ -26,13 +27,12 @@ fn badge(ui: &mut Ui, icon: Icon, name: &str, colour: egui::Color32) {
 
 pub fn show(
     ui: &mut Ui,
-    st: &PrepareState,
+    st: &mut PrepareState,
     snap: &Snapshot,
     t: &Tokens,
     actions: &mut Vec<Action>,
 ) {
     let doc_id = snap.doc_id;
-    let src = &st.sources;
     ui.label(RichText::new("Objects").font(fonts::semibold(14.0)));
     ui.add_space(t.spacing / 2.0);
     if snap.objects.is_empty() {
@@ -75,6 +75,11 @@ pub fn show(
                         };
                         actions.push(Action::run(doc_id, "object.select", json!({ "ids": ids })));
                     }
+                    if row.secondary_clicked() {
+                        st.context = Some(context_menu::target(snap, Some(o.id), actions));
+                    }
+                    row.context_menu(|ui| context_menu::show(ui, snap, st, actions));
+                    let src = &st.sources;
                     if src.changed.contains(&o.id) {
                         badge(ui, Icon::Reload, "Source file changed", t.accent_prepare);
                     } else if src.missing.contains(&o.id) {
@@ -89,11 +94,7 @@ pub fn show(
                             (Icon::EyeOff, format!("Show {}", o.name))
                         };
                         if icon_button(ui, icon, &name, true).clicked() {
-                            actions.push(Action::run(
-                                doc_id,
-                                "object.set_visible",
-                                json!({ "ids": [o.id], "visible": !o.visible }),
-                            ));
+                            actions.push(set_visible_action(doc_id, &[o.id], !o.visible));
                         }
                         let (hint, name) = if o.cut_enabled {
                             ("Skip cutting", format!("Skip cutting {}", o.name))
@@ -124,6 +125,15 @@ pub fn show(
         ui.separator();
         details(ui, o, st, snap, t, actions);
     }
+}
+
+/// The `object.set_visible` of the eye button and the Hide and Show items.
+pub fn set_visible_action(doc_id: u64, ids: &[u64], visible: bool) -> Action {
+    Action::run(
+        doc_id,
+        "object.set_visible",
+        json!({ "ids": ids, "visible": visible }),
+    )
 }
 
 /// The action that flips whether `o` is cut: skip it if it is cut, cut it

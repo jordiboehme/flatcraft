@@ -102,6 +102,33 @@ pub fn menu(ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     }
 }
 
+/// The name of the Settings item: the shortcut row and the macOS menu use it.
+pub const SETTINGS_LABEL: &str = "Settings...";
+
+/// What a Prepare key does. [`SHORTCUTS`] names the key, the handlers in
+/// `prepare_keys`, `canvas::nudge_keys` and `canvas::pointer` ask the table
+/// for it, so the sheet and the handlers cannot drift apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrepareKey {
+    SelectAll,
+    Import,
+    Duplicate,
+    /// The arrow keys, see [`NUDGE_KEYS`].
+    Nudge,
+    Delete,
+    ClearSelection,
+    /// Held while dragging.
+    Pan,
+}
+
+/// The arrow keys of [`PrepareKey::Nudge`] (the table lists them as one row).
+pub const NUDGE_KEYS: [Key; 4] = [
+    Key::ArrowLeft,
+    Key::ArrowRight,
+    Key::ArrowUp,
+    Key::ArrowDown,
+];
+
 /// One keyboard shortcut of the window.
 pub struct Shortcut {
     pub modifiers: Modifiers,
@@ -110,6 +137,8 @@ pub struct Shortcut {
     /// The action it runs, for the document it is pressed in. `None` for
     /// the Prepare keys, which [`super::prepare_keys`] handles.
     pub run: Option<fn(u64) -> Action>,
+    /// What a Prepare key does, `None` for the global keys.
+    pub prepare: Option<PrepareKey>,
     /// On macOS the menu bar owns this key, not the key handler.
     pub menu_on_macos: bool,
 }
@@ -133,16 +162,23 @@ const fn global(
         key,
         what,
         run: Some(run),
+        prepare: None,
         menu_on_macos,
     }
 }
 
-const fn prepare(modifiers: Modifiers, key: Key, what: &'static str) -> Shortcut {
+const fn prepare(
+    modifiers: Modifiers,
+    key: Key,
+    what: &'static str,
+    action: PrepareKey,
+) -> Shortcut {
     Shortcut {
         modifiers,
         key,
         what,
         run: None,
+        prepare: Some(action),
         menu_on_macos: false,
     }
 }
@@ -150,7 +186,7 @@ const fn prepare(modifiers: Modifiers, key: Key, what: &'static str) -> Shortcut
 /// Every shortcut the app has. The key handler runs the entries with a
 /// `run`, in this order (a Shift variant before its plain key), and the
 /// shortcuts sheet lists all of them.
-pub const SHORTCUTS: [Shortcut; 13] = [
+pub const SHORTCUTS: [Shortcut; 16] = [
     global(
         CMD_SHIFT,
         Key::S,
@@ -161,20 +197,82 @@ pub const SHORTCUTS: [Shortcut; 13] = [
     global(CMD, Key::S, "Save", |d| Action::Save { doc_id: d }, false),
     global(CMD, Key::O, "Open", |_| Action::OpenDialog, false),
     global(CMD, Key::N, "New project", |_| Action::NewProject, false),
-    global(CMD, Key::Comma, "Settings", |_| Action::ShowProfiles, true),
+    global(
+        CMD,
+        Key::Comma,
+        SETTINGS_LABEL,
+        |_| Action::ShowProfiles,
+        true,
+    ),
     global(CMD_SHIFT, Key::Z, "Redo", Action::Redo, true),
     global(CMD, Key::Y, "Redo", Action::Redo, true),
     global(CMD, Key::Z, "Undo", Action::Undo, true),
-    prepare(CMD, Key::A, "Select all objects"),
+    prepare(CMD, Key::A, "Select all objects", PrepareKey::SelectAll),
+    prepare(CMD, Key::I, "Import a design", PrepareKey::Import),
+    prepare(
+        CMD,
+        Key::D,
+        "Duplicate the selection",
+        PrepareKey::Duplicate,
+    ),
     prepare(
         Modifiers::NONE,
         Key::ArrowLeft,
         "Nudge the selection by 1 mm (Shift 10 mm, Alt 0.1 mm)",
+        PrepareKey::Nudge,
     ),
-    prepare(Modifiers::NONE, Key::Delete, "Delete the selection"),
-    prepare(Modifiers::NONE, Key::Backspace, "Delete the selection"),
-    prepare(Modifiers::NONE, Key::Escape, "Clear the selection"),
+    prepare(
+        Modifiers::NONE,
+        Key::Delete,
+        "Delete the selection",
+        PrepareKey::Delete,
+    ),
+    prepare(
+        Modifiers::NONE,
+        Key::Backspace,
+        "Delete the selection",
+        PrepareKey::Delete,
+    ),
+    prepare(
+        Modifiers::NONE,
+        Key::Escape,
+        "Clear the selection",
+        PrepareKey::ClearSelection,
+    ),
+    prepare(
+        Modifiers::NONE,
+        Key::Space,
+        "Pan the canvas (hold it and drag, or drag with the middle button)",
+        PrepareKey::Pan,
+    ),
 ];
+
+/// The rows of [`SHORTCUTS`] for a Prepare key.
+fn rows(action: PrepareKey) -> impl Iterator<Item = &'static Shortcut> {
+    SHORTCUTS.iter().filter(move |s| s.prepare == Some(action))
+}
+
+/// Consumes the keys of a Prepare key from this frame's input. True if one
+/// of them was pressed.
+pub fn pressed(ctx: &egui::Context, action: PrepareKey) -> bool {
+    ctx.input_mut(|i| {
+        let mut hit = false;
+        for s in rows(action) {
+            hit |= i.consume_shortcut(&KeyboardShortcut::new(s.modifiers, s.key));
+        }
+        hit
+    })
+}
+
+/// The key hint of a Prepare key for menus ("Cmd+D"), from the table.
+pub fn hint(action: PrepareKey) -> String {
+    rows(action).next().map(Shortcut::keys).unwrap_or_default()
+}
+
+/// The key that is held to pan with the pointer.
+pub fn pan_key() -> Key {
+    rows(PrepareKey::Pan).next().map_or(Key::Space, |s| s.key)
+}
 
 impl Shortcut {
     /// "Cmd+Shift+S" on macOS, "Ctrl+Shift+S" elsewhere.
@@ -194,6 +292,8 @@ impl Shortcut {
             Key::Comma => ",",
             Key::ArrowLeft => "Arrow keys",
             Key::Escape => "Esc",
+            Key::Delete => "Del",
+            Key::Space => "Space",
             other => other.name(),
         });
         s

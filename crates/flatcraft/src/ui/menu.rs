@@ -1,4 +1,4 @@
-//! The macOS menu bar: About (FlatCraft's own dialog), Preferences, Quit,
+//! The macOS menu bar: About (FlatCraft's own dialog), Settings, Quit,
 //! Edit with Undo and Redo, and Help.
 
 use std::sync::mpsc;
@@ -7,7 +7,7 @@ use muda::accelerator::{Accelerator, Code, Modifiers};
 use muda::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 
 use super::Action;
-use super::help::HelpItem;
+use super::help::{self, HelpItem};
 
 const ABOUT: &str = "flatcraft.about";
 const PREFERENCES: &str = "flatcraft.preferences";
@@ -36,7 +36,7 @@ impl AppMenu {
             &PredefinedMenuItem::separator(),
             &MenuItem::with_id(
                 PREFERENCES,
-                "Preferences...",
+                help::SETTINGS_LABEL,
                 true,
                 Some(Accelerator::new(Modifiers::META, Code::Comma)),
             ),

@@ -189,7 +189,7 @@ fn every_global_shortcut_has_a_handler() {
 /// Every Prepare key in the table does what the sheet says.
 #[test]
 fn every_prepare_key_does_what_the_sheet_says() {
-    for s in SHORTCUTS.iter().filter(|s| s.run.is_none()) {
+    for s in SHORTCUTS.iter().filter(|s| s.prepare.is_some()) {
         let dir = tempfile::tempdir().unwrap();
         let sess = session(&dir);
         let id = import_square(&sess);
@@ -207,7 +207,9 @@ fn every_prepare_key_does_what_the_sheet_says() {
         let selection = || sess.lock().unwrap().doc().selection.len();
         let objects = || sess.lock().unwrap().doc().document.objects.len();
         select(vec![id]);
-        let mut h = harness(&dir, sess.clone(), false);
+        let picker = common::FakePicker::default();
+        let p = picker.clone();
+        let mut h = common::harness_with(&dir, sess.clone(), move |app| app.with_file_picker(p));
         to_prepare(&mut h);
         let undo_before = common::undo_len(&sess);
         let who = format!("{} {}", s.keys(), s.what);
@@ -215,6 +217,10 @@ fn every_prepare_key_does_what_the_sheet_says() {
         h.run();
         match s.key {
             Key::A => assert_eq!(selection(), 2, "{who}"),
+            Key::D => assert_eq!(objects(), 3, "{who}"),
+            Key::I => assert_eq!(picker.requests.lock().unwrap().len(), 1, "{who}"),
+            // Held while dragging; see `space_drag_pans_the_canvas`.
+            Key::Space => continue,
             Key::ArrowLeft => assert!(common::undo_len(&sess) > undo_before, "{who}"),
             Key::Delete | Key::Backspace => assert_eq!(objects(), 1, "{who}"),
             Key::Escape => assert_eq!(selection(), 0, "{who}"),
@@ -232,4 +238,70 @@ fn no_em_dash_in_the_help_texts() {
         assert!(!s.what.contains('\u{2014}'));
     }
     let _ = Modifiers::NONE;
+}
+
+/// Global and Prepare rows are told apart by exactly one of the two fields.
+#[test]
+fn every_row_is_global_or_prepare() {
+    for s in &SHORTCUTS {
+        assert!(s.run.is_some() != s.prepare.is_some(), "{}", s.what);
+    }
+}
+
+/// The arrow keys of the Nudge row are the keys the handler reads.
+#[test]
+fn the_nudge_row_lists_the_nudge_keys() {
+    let row = SHORTCUTS
+        .iter()
+        .find(|s| s.prepare == Some(help::PrepareKey::Nudge))
+        .unwrap();
+    assert!(help::NUDGE_KEYS.contains(&row.key));
+    assert_eq!(help::NUDGE_KEYS.len(), 4);
+}
+
+#[test]
+fn the_sheet_lists_the_space_drag_pan_and_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(&dir, session(&dir), false);
+    app_mut(&mut h).ui.show_shortcuts = true;
+    h.run();
+    h.get_by_label("Space");
+    h.get_by_label("Pan the canvas (hold it and drag, or drag with the middle button)");
+    h.get_by_label("Settings...");
+    assert_eq!(help::pan_key(), Key::Space);
+}
+
+/// Holding the pan key and dragging moves the view, not the object.
+#[test]
+fn space_drag_pans_the_canvas() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let mut h = harness(&dir, s, false);
+    to_prepare(&mut h);
+    let before = app(&h).ui.prepare.view;
+    let from = app(&h).ui.prepare.canvas_rect.center();
+    h.hover_at(from);
+    h.run();
+    h.event(egui::Event::Key {
+        key: help::pan_key(),
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run();
+    h.drag_at(from);
+    h.run();
+    for t in [0.5, 1.0] {
+        h.hover_at(from + egui::vec2(60.0, 20.0) * t);
+        h.run();
+    }
+    h.drop_at(from + egui::vec2(60.0, 20.0));
+    h.run();
+    let moved = app(&h).ui.prepare.view.offset - before.offset;
+    assert!(
+        (moved.x - 60.0).abs() < 1.0 && (moved.y - 20.0).abs() < 1.0,
+        "{moved:?}"
+    );
 }

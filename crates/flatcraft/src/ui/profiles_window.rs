@@ -1,6 +1,6 @@
 //! The Profiles window: plotter and material presets, the mats of each
 //! plotter, and the app preferences. It opens from the Settings button and
-//! the macOS Preferences menu (Cmd+,).
+//! the macOS Settings menu item (Cmd+,).
 //!
 //! System presets are read-only; "Save as user preset..." makes a user
 //! preset that inherits from them. The widgets only edit a draft in

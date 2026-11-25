@@ -8,6 +8,7 @@ use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2};
 use flatcraft_device::MediaKind;
 use serde_json::json;
 
+use super::context_menu;
 use super::prepare::{Drag, NUDGE_BURST, Nudge, ObjView, PrepareState, Snapshot};
 use super::theme::Tokens;
 use super::{Action, fonts};
@@ -246,6 +247,17 @@ pub fn show(
         Sense::click_and_drag(),
     );
     pointer(ui, &resp, snap, st, actions);
+    if resp.secondary_clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        // The same hit test as the left click.
+        st.context = Some(match hit_test(snap, &st.view, p) {
+            Hit::Object(id) => context_menu::target(snap, Some(id), actions),
+            Hit::Handle(_) => snap.selection.iter().copied().collect(),
+            Hit::Nothing => context_menu::target(snap, None, actions),
+        });
+    }
+    resp.context_menu(|ui| context_menu::show(ui, snap, st, actions));
 
     let painter = ui.painter_at(rect);
     let view = st.view;
@@ -584,7 +596,11 @@ pub(crate) fn draw_rulers(painter: &egui::Painter, rect: Rect, view: &CanvasView
 /// 0.1 mm with Alt (Option), else 1 mm. `None` for keys that are not
 /// arrows and for Cmd or Ctrl with an arrow, which are left to others.
 fn nudge_step(key: egui::Key, modifiers: egui::Modifiers) -> Option<kurbo::Vec2> {
-    if modifiers.command || modifiers.ctrl || modifiers.mac_cmd {
+    if modifiers.command
+        || modifiers.ctrl
+        || modifiers.mac_cmd
+        || !super::help::NUDGE_KEYS.contains(&key)
+    {
         return None;
     }
     let mm = if modifiers.shift {
@@ -767,7 +783,7 @@ fn pointer(
 ) {
     let (space, shift, wheels, zoom, hover) = ui.input(|i| {
         (
-            i.key_down(egui::Key::Space),
+            i.key_down(super::help::pan_key()),
             i.modifiers.shift,
             wheel_events(&i.raw.events),
             i.zoom_delta(),
