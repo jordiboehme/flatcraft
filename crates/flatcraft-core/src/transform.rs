@@ -4,15 +4,39 @@ use kurbo::{Affine, Point, Rect};
 use serde::{Deserialize, Serialize};
 
 /// Placement of an object on the mat, in millimetres and degrees.
+///
+/// JSON writes a non-finite number as null. Such a field loads as NaN, so
+/// `project.open` can name the broken object instead of the whole file
+/// failing to parse.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Transform {
+    #[serde(deserialize_with = "lenient_point")]
     pub center_mm: Point,
+    #[serde(deserialize_with = "lenient_f64")]
     pub scale_x: f64,
+    #[serde(deserialize_with = "lenient_f64")]
     pub scale_y: f64,
     /// Degrees, clockwise on screen (y points down).
+    #[serde(deserialize_with = "lenient_f64")]
     pub rotation_deg: f64,
     /// Mirrors along x, applied after scaling and before rotation.
     pub mirror: bool,
+}
+
+fn lenient_f64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+    Ok(Option::<f64>::deserialize(d)?.unwrap_or(f64::NAN))
+}
+
+fn lenient_point<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Point, D::Error> {
+    #[derive(Deserialize)]
+    struct P {
+        #[serde(deserialize_with = "lenient_f64")]
+        x: f64,
+        #[serde(deserialize_with = "lenient_f64")]
+        y: f64,
+    }
+    let p = P::deserialize(d)?;
+    Ok(Point::new(p.x, p.y))
 }
 
 impl Default for Transform {

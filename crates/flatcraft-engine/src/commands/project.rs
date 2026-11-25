@@ -333,6 +333,15 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
         }
         other => CommandError::Failed(other.to_string()),
     })?;
+    for o in &document.objects {
+        if !transform_is_valid(&o.transform) {
+            return Err(CommandError::Failed(format!(
+                "cannot open {}: the transform of '{}' is broken (its position, scale or rotation is not a usable number). Fix or remove that object in the project file.",
+                p.path.display(),
+                o.name
+            )));
+        }
+    }
     let mut warnings = Vec::new();
     for o in &mut document.objects {
         if !o.cut.is_valid() {
@@ -367,15 +376,32 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
             }
         };
         if let Some((paths, frame)) = rebuilt {
-            if o.local_bounds == Rect::ZERO && o.frame == Rect::ZERO {
-                // A project from before the saved bounds: the transform
-                // was made against these same bounds.
-                o.set_geometry(paths);
-                o.frame = frame;
-            } else {
+            let saved = o.local_bounds != Rect::ZERO || o.frame != Rect::ZERO;
+            let mut anchored = None;
+            if saved && rect_is_sane(o.local_bounds) && rect_is_sane(o.frame) {
                 // The saved bounds and frame are what the transform was
                 // made against: keep the frame in place, as reload does.
-                o.set_geometry_anchored(paths, frame);
+                let mut a = o.clone();
+                a.set_geometry_anchored(paths.clone(), frame);
+                let c = a.transform.center_mm;
+                if c.x.is_finite() && c.y.is_finite() {
+                    anchored = Some(a);
+                }
+            }
+            match anchored {
+                Some(a) => *o = a,
+                None => {
+                    if saved {
+                        warnings.push(format!(
+                            "{}: the saved position data is broken; the object is placed by its shapes, as in older projects",
+                            o.name
+                        ));
+                    }
+                    // A project from before the saved bounds: the
+                    // transform was made against the rebuilt bounds.
+                    o.set_geometry(paths);
+                    o.frame = frame;
+                }
             }
         }
     }
@@ -399,6 +425,29 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
         "objects": objects,
         "warnings": warnings,
     }))
+}
+
+/// Largest coordinate a saved rectangle may have, mm.
+const MAX_SAVED_MM: f64 = 1e6;
+
+/// A saved `local_bounds` or `frame`: finite, ordered and within 1 km.
+fn rect_is_sane(r: Rect) -> bool {
+    [r.x0, r.y0, r.x1, r.y1]
+        .iter()
+        .all(|v| v.is_finite() && v.abs() <= MAX_SAVED_MM)
+        && r.x0 <= r.x1
+        && r.y0 <= r.y1
+}
+
+/// A transform that can place an object: a finite centre and rotation,
+/// finite non-zero scales.
+fn transform_is_valid(t: &flatcraft_core::transform::Transform) -> bool {
+    let scale_ok = |v: f64| v.is_finite() && v != 0.0;
+    t.center_mm.x.is_finite()
+        && t.center_mm.y.is_finite()
+        && scale_ok(t.scale_x)
+        && scale_ok(t.scale_y)
+        && t.rotation_deg.is_finite()
 }
 
 command!(

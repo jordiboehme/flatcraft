@@ -1303,6 +1303,83 @@ fn project_open_keeps_the_svg_page_frame_when_the_shapes_change() {
     }
 }
 
+/// A project file with one SVG object; `extra` is spliced into the
+/// object (for example saved bounds) and `transform` replaces the default.
+fn hand_written_project(
+    dir: &tempfile::TempDir,
+    extra: &str,
+    transform: &str,
+) -> std::path::PathBuf {
+    use base64::Engine as _;
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><rect x="10" y="10" width="10" height="20"/></svg>"#;
+    let bytes = base64::engine::general_purpose::STANDARD.encode(svg);
+    let text = format!(
+        r#"{{"format_version":1,"objects":[{{"id":1,"name":"box","source":{{"Svg":{{"name":"box.svg","bytes":"{bytes}"}}}},"transform":{transform},"visible":true{extra}}}],"job":{{"plotter_id":"cameo2","material_id":"cardstock","media_id":"a4","speed":null,"force":null,"passes":null}},"next_id":2}}"#
+    );
+    let path = dir.path().join("hand.flatcraft");
+    std::fs::write(&path, text).unwrap();
+    path
+}
+
+const PLAIN_TRANSFORM: &str = r#"{"center_mm":{"x":50.0,"y":60.0},"scale_x":1.0,"scale_y":1.0,"rotation_deg":0.0,"mirror":false}"#;
+
+/// Projects from before the saved bounds: the transform is relative to
+/// the centre of the rebuilt shapes, as it always was.
+#[test]
+fn project_open_without_saved_bounds_keeps_the_old_placement() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = hand_written_project(&dir, "", PLAIN_TRANSFORM);
+    let mut s = session(&dir);
+    let r = run(&mut s, "project.open", json!({ "path": path }));
+    assert!(r["warnings"].as_array().unwrap().is_empty(), "{r}");
+    let b = placed_bounds(&s, 1);
+    assert!(
+        close(b.x0, 45.0) && close(b.y0, 50.0) && close(b.x1, 55.0) && close(b.y1, 70.0),
+        "{b:?}"
+    );
+}
+
+/// Saved bounds that cannot be right are not used: the object opens as
+/// in an older project, with a warning.
+#[test]
+fn project_open_ignores_broken_saved_bounds() {
+    let dir = tempfile::tempdir().unwrap();
+    let extra = r#","local_bounds_mm":{"x0":10.0,"y0":10.0,"x1":20.0,"y1":30.0},"frame_mm":{"x0":1e308,"y0":0.0,"x1":100.0,"y1":100.0}"#;
+    let path = hand_written_project(&dir, extra, PLAIN_TRANSFORM);
+    let mut s = session(&dir);
+    let r = run(&mut s, "project.open", json!({ "path": path }));
+    let w = r["warnings"].to_string();
+    assert!(w.contains("box: the saved position data is broken"), "{w}");
+    let b = placed_bounds(&s, 1);
+    assert!(
+        close(b.x0, 45.0) && close(b.y0, 50.0) && close(b.x1, 55.0) && close(b.y1, 70.0),
+        "{b:?}"
+    );
+}
+
+#[test]
+fn project_open_refuses_a_broken_transform() {
+    let dir = tempfile::tempdir().unwrap();
+    for transform in [
+        r#"{"center_mm":{"x":50.0,"y":60.0},"scale_x":0.0,"scale_y":1.0,"rotation_deg":0.0,"mirror":false}"#,
+        // NaN, as JSON writes it
+        r#"{"center_mm":{"x":null,"y":60.0},"scale_x":1.0,"scale_y":1.0,"rotation_deg":0.0,"mirror":false}"#,
+        r#"{"center_mm":{"x":50.0,"y":60.0},"scale_x":1.0,"scale_y":1.0,"rotation_deg":null,"mirror":false}"#,
+    ] {
+        let path = hand_written_project(&dir, "", transform);
+        let mut s = session(&dir);
+        let e = s
+            .execute("project.open", json!({ "path": path }), Origin::User)
+            .unwrap_err();
+        let text = e.to_string();
+        assert!(
+            text.contains("'box'") && text.contains("transform"),
+            "{text}"
+        );
+        assert_eq!(s.doc().document.objects.len(), 0);
+    }
+}
+
 #[test]
 fn big_raster_reports_the_downscale_and_wording_follows_invert() {
     let dir = tempfile::tempdir().unwrap();
