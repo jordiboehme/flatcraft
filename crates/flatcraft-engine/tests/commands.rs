@@ -404,7 +404,11 @@ fn rename_changes_one_name_and_undoes() {
     // The same name again is no undo step.
     let steps = s.doc().undo.undo_len();
     run(&mut s, "object.rename", json!({ "id": a, "name": long }));
-    run(&mut s, "object.rename", json!({ "id": a, "name": format!(" {long} ") }));
+    run(
+        &mut s,
+        "object.rename",
+        json!({ "id": a, "name": format!(" {long} ") }),
+    );
     assert_eq!(s.doc().undo.undo_len(), steps);
     assert!(
         s.execute(
