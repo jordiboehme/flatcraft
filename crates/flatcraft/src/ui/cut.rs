@@ -14,13 +14,20 @@ use std::sync::Arc;
 use egui::{Align2, Color32, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use flatcraft_device::TransportSpec;
 use flatcraft_engine::CommandError;
-use flatcraft_engine::job::{JobInput, JobResult, build_input, file_output_dir};
+use flatcraft_engine::job::{JobInput, JobResult, build_input, file_output_dir, summary};
 
 use super::canvas::{self, CanvasView};
 use super::prepare::Snapshot;
 use super::theme::Tokens;
 use super::timeline::{self, Timeline};
 use super::{Action, FlatCraftApp, fonts, person_text, settings};
+
+/// Where a label sits from its start point, in points.
+const LABEL_OFFSET: Vec2 = Vec2::new(5.0, -4.0);
+/// Rough size of label text at the label font: width per character and
+/// line height, in points.
+const LABEL_CHAR_W: f32 = 6.0;
+const LABEL_H: f32 = 11.0;
 
 /// Order numbers and arrows are left out above this many toolpaths.
 const MAX_LABELLED: usize = 500;
@@ -366,7 +373,7 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
 }
 
 fn passes_text(job: &JobResult) -> String {
-    let passes = job.plan.toolpaths.iter().map(|t| t.pass).max().unwrap_or(0);
+    let passes = summary(job).passes;
     if passes == 1 {
         "1 pass".into()
     } else {
@@ -431,6 +438,7 @@ fn draw_toolpaths(
     let travel = contrast.gamma_multiply(0.7);
     let font = fonts::medium(10.0);
     let mut at = kurbo::Point::ZERO;
+    let mut starts: Vec<(usize, Pos2)> = Vec::new();
     for (i, tp) in paths.iter().take(visible).enumerate() {
         let Some(first) = tp.points.first().copied() else {
             continue;
@@ -455,16 +463,57 @@ fn draw_toolpaths(
                 let dir = (*next - start).normalized();
                 painter.arrow(start + dir * 4.0, dir * 12.0, Stroke::new(1.5, contrast));
             }
-            painter.text(
-                start + Vec2::new(5.0, -4.0),
-                Align2::LEFT_BOTTOM,
-                (i + 1).to_string(),
-                font.clone(),
-                contrast,
-            );
+            starts.push((i + 1, start));
         }
         at = *tp.points.last().unwrap_or(&first);
     }
+    for l in place_labels(&starts) {
+        painter.text(l.at, Align2::LEFT_BOTTOM, l.text, font.clone(), contrast);
+    }
+}
+
+/// An order number label: its bottom-left corner and its text.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Label {
+    /// The start point the label belongs to.
+    pub start: Pos2,
+    pub at: Pos2,
+    pub text: String,
+}
+
+/// Where the order numbers go. Starts within 1 point of each other share
+/// one label ("6, 17"); a label that would cover another moves below it.
+pub fn place_labels(starts: &[(usize, Pos2)]) -> Vec<Label> {
+    fn bounds(at: Pos2, text: &str) -> Rect {
+        Rect::from_min_max(
+            Pos2::new(at.x, at.y - LABEL_H),
+            Pos2::new(at.x + LABEL_CHAR_W * text.len() as f32, at.y),
+        )
+    }
+    let mut out: Vec<Label> = Vec::new();
+    for (n, start) in starts {
+        if let Some(l) = out.iter_mut().find(|l| l.start.distance(*start) <= 1.0) {
+            l.text.push_str(&format!(", {n}"));
+            continue;
+        }
+        let text = n.to_string();
+        let mut at = *start + LABEL_OFFSET;
+        // Each move puts the label below one it covered, so this ends
+        // after at most one move per placed label.
+        for _ in 0..=out.len() {
+            let mine = bounds(at, &text);
+            match out.iter().find(|l| bounds(l.at, &l.text).intersects(mine)) {
+                Some(l) => at.y = l.at.y + LABEL_H + 1.0,
+                None => break,
+            }
+        }
+        out.push(Label {
+            start: *start,
+            at,
+            text,
+        });
+    }
+    out
 }
 
 /// Screen points of a toolpath without repeated points. egui's tessellator
@@ -484,6 +533,39 @@ fn screen_polyline(view: &CanvasView, points: &[kurbo::Point]) -> Vec<Pos2> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn label_box(l: &Label) -> Rect {
+        Rect::from_min_max(
+            Pos2::new(l.at.x, l.at.y - LABEL_H),
+            Pos2::new(l.at.x + LABEL_CHAR_W * l.text.len() as f32, l.at.y),
+        )
+    }
+
+    #[test]
+    fn same_start_gives_one_merged_label() {
+        let p = Pos2::new(100.0, 100.0);
+        let labels = place_labels(&[(6, p), (17, p + Vec2::new(0.4, 0.3))]);
+        assert_eq!(labels.len(), 1, "{labels:?}");
+        assert_eq!(labels[0].text, "6, 17");
+    }
+
+    #[test]
+    fn close_labels_do_not_cover_each_other() {
+        let labels = place_labels(&[
+            (1, Pos2::new(100.0, 100.0)),
+            (2, Pos2::new(104.0, 101.0)),
+            (3, Pos2::new(102.0, 99.0)),
+        ]);
+        assert_eq!(labels.len(), 3);
+        for (i, a) in labels.iter().enumerate() {
+            for b in &labels[i + 1..] {
+                assert!(!label_box(a).intersects(label_box(b)), "{a:?} covers {b:?}");
+            }
+        }
+        // Far apart labels stay next to their start.
+        let far = place_labels(&[(1, Pos2::ZERO), (2, Pos2::new(200.0, 0.0))]);
+        assert_eq!(far[1].at, Pos2::new(200.0, 0.0) + LABEL_OFFSET);
+    }
 
     #[test]
     fn repeated_points_are_dropped() {

@@ -402,8 +402,9 @@ fn plotter(s: &Session) -> Result<PlotterProfile, CommandError> {
         .map_err(profile_error)
 }
 
-/// The dialog summary of a built job.
-pub(crate) fn summary(result: &JobResult) -> JobSummary {
+/// The summary of a built job, for the confirmation dialog and the Cut
+/// workspace.
+pub fn summary(result: &JobResult) -> JobSummary {
     JobSummary {
         toolpaths: result.plan.toolpaths.len(),
         cut_mm: result.plan.cut_mm,
