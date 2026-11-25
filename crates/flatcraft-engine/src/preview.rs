@@ -148,6 +148,12 @@ fn line_colour(mat: [u8; 3]) -> [u8; 3] {
     flatcraft_core::colour::contrast_colour(mat)
 }
 
+/// The colour of the order numbers and the H at the origin: the mat's
+/// contrast colour, so they read on dark mats too.
+fn label_colour(mat: [u8; 3]) -> [u8; 3] {
+    flatcraft_core::colour::contrast_colour(mat)
+}
+
 fn failed(what: &str) -> CommandError {
     CommandError::Failed(format!("cannot draw the preview: {what}"))
 }
@@ -241,7 +247,8 @@ pub fn render_png(s: &Session, kind: PreviewKind, max_px: u32) -> Result<Vec<u8>
             let cut = paint(color(0x1f, 0x4f, 0xb4));
             let travel = paint(color(0x88, 0x8e, 0x99));
             let start = paint(color(0xd6, 0x28, 0x28));
-            let label = paint(color(0x11, 0x11, 0x11));
+            let [tr, tg, tb] = label_colour(media.color);
+            let label = paint(color(tr, tg, tb));
             let cut_stroke = Stroke {
                 width: px(1.5) as f32,
                 line_join: LineJoin::Round,
@@ -300,5 +307,13 @@ mod tests {
         assert_eq!(line_colour([0x80, 0x80, 0x80]), [0x1B, 0x1E, 0x22]);
         assert_eq!(line_colour([0x20, 0x20, 0x20]), [0xF4, 0xF5, 0xF7]);
         assert_eq!(line_colour([0xF4, 0xF1, 0xEA]), [0x1B, 0x1E, 0x22]);
+    }
+
+    /// Numbers and the H must read on a dark mat too.
+    #[test]
+    fn path_labels_read_on_a_dark_mat() {
+        let dark = [0x20, 0x22, 0x26];
+        assert_eq!(label_colour(dark), [0xF4, 0xF5, 0xF7]);
+        assert_eq!(label_colour([0xF4, 0xF1, 0xEA]), [0x1B, 0x1E, 0x22]);
     }
 }

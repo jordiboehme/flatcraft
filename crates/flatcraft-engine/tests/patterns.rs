@@ -462,12 +462,16 @@ fn path_preview_labels_the_travel_from_the_origin() {
     let oy = mat["grid"]["origin_y_mm"].as_f64().unwrap() * scale;
     let png = render_png(&s, PreviewKind::Path, max_px).unwrap();
     let img = image::load_from_memory(&png).unwrap().to_rgba8();
-    // Label pixels (near black) within 30 px right of and below the origin.
+    // Label pixels (the mat's contrast colour) within 30 px right of and
+    // below the origin.
+    let hex = mat["color"].as_str().unwrap();
+    let byte = |k: usize| u8::from_str_radix(&hex[1 + 2 * k..3 + 2 * k], 16).unwrap();
+    let want = flatcraft_core::colour::contrast_colour([byte(0), byte(1), byte(2)]);
     let label = (0..30u32)
         .flat_map(|dy| (0..30u32).map(move |dx| (dx, dy)))
         .filter(|&(dx, dy)| {
             let p = img.get_pixel(ox as u32 + dx, oy as u32 + dy).0;
-            p[0] < 0x20 && p[1] < 0x20 && p[2] < 0x20
+            (0..3).all(|c| p[c].abs_diff(want[c]) <= 2)
         })
         .count();
     assert!(label > 0, "no label at the origin ({ox}, {oy})");
