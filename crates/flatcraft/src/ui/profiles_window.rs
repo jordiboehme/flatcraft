@@ -567,6 +567,9 @@ impl Form<'_> {
         let at = paint_text(ui, "", ui.visuals().text_color(), dot);
         let r = ui.checkbox(v, label);
         set_name(ui, &r, &self.name(label, key));
+        if let Some(setting) = setting_of(key) {
+            super::groups::card(&r, label, setting.card(), None, false);
+        }
         self.mark(ui, label, at.union(r.rect));
         ui.end_row();
     }
@@ -578,6 +581,7 @@ fn setting_of(key: &str) -> Option<Setting> {
         "speed" | "speed_range" => Setting::Speed,
         "force" | "force_range" => Setting::Force,
         "passes" | "passes_range" => Setting::Passes,
+        "reverse_alternate_passes" => Setting::ReverseAlternatePasses,
         "overcut_mm" => Setting::Overcut,
         "blade_offset_mm" => Setting::BladeOffset,
         "knife_compensation" => Setting::KnifeCompensation,
@@ -2020,6 +2024,16 @@ mod tests {
             let m = store.material(&m.id).unwrap();
             assert_eq!(material_problems(&m), Vec::<String>::new(), "{}", m.id);
         }
+    }
+
+    #[test]
+    fn reverse_alternate_passes_has_a_hover_card() {
+        let card = setting_of("reverse_alternate_passes")
+            .expect("the checkbox has a hover card")
+            .card();
+        assert!(card.contains("every second pass"), "{card}");
+        assert!(card.contains("lift"), "{card}");
+        assert!(!card.contains('\u{2014}'), "{card}");
     }
 
     #[test]

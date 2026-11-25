@@ -1031,6 +1031,7 @@ pub enum Setting {
     Speed,
     Force,
     Passes,
+    ReverseAlternatePasses,
     Overcut,
     BladeOffset,
     Keep,
@@ -1047,7 +1048,7 @@ pub enum Setting {
 }
 
 impl Setting {
-    pub const ALL: [Setting; 24] = [
+    pub const ALL: [Setting; 25] = [
         Setting::Width,
         Setting::Height,
         Setting::ScalePercent,
@@ -1059,6 +1060,7 @@ impl Setting {
         Setting::Speed,
         Setting::Force,
         Setting::Passes,
+        Setting::ReverseAlternatePasses,
         Setting::Overcut,
         Setting::BladeOffset,
         Setting::Keep,
@@ -1110,6 +1112,9 @@ impl Setting {
             }
             Setting::Passes => {
                 "How often the plotter cuts each line. Thick material may need 2 or 3 passes."
+            }
+            Setting::ReverseAlternatePasses => {
+                "Cuts every second pass the other way round, which can help with thick or fibrous material. With it on, closed shapes lift the blade between passes, because the blade cannot turn around while it is down. With it off, closed shapes are cut in one go, round and round without lifting."
             }
             Setting::Overcut => {
                 "Overcut: the blade cuts a little past the start, so the shape closes cleanly and the piece comes off the mat."

@@ -12,7 +12,9 @@ use crate::plan::Toolpath;
 /// The passes of the ordered `paths`, with the overcut on closed rings.
 ///
 /// - Closed, no reverse: one toolpath with `laps = passes`. The ring runs
-///   `passes` times without lifting, then `overcut_mm` once.
+///   `passes` times without lifting, then `overcut_mm` once. With
+///   `passes = 1` this is one toolpath with `laps = 1` and the overcut once,
+///   the same as before chaining.
 /// - Closed, reverse: `passes` lifted laps as in [`separate`].
 /// - Open: `passes` toolpaths in a row, each a new start. With
 ///   `reverse_alternate`, even passes run in reverse.

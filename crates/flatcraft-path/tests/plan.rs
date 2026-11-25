@@ -248,6 +248,58 @@ fn unchained_closed_passes_are_lifted_laps() {
 }
 
 #[test]
+fn reversed_even_passes_exit_where_the_last_pass_really_ends() {
+    // The order predicts the exit of a ring cut with an even number of
+    // reversed passes: the entry, coming back along the first edge. This
+    // ties the prediction to the planned points, so moving the overcut in
+    // `passes` breaks it.
+    let mut s = settings();
+    s.overcut_mm = 0.5;
+    s.passes = 2;
+    s.reverse_alternate_passes = true;
+    let input = [
+        placed(1, rect_path(10.0, 10.0, 10.0, 10.0)),
+        placed(2, rect_path(40.0, 10.0, 10.0, 10.0)),
+    ];
+    let out = plan(&input, &s).unwrap();
+    assert_eq!(out.toolpaths.len(), 4);
+    let (first, last) = (&out.toolpaths[0], &out.toolpaths[1]);
+    assert_eq!(last.source, first.source);
+    assert_eq!((first.pass, last.pass), (1, 2));
+    let p0 = first.points[0];
+    let n = last.points.len();
+    let end = last.points[n - 1];
+    // The last pass ends at the entry P0, not at the overcut end.
+    assert_eq!(end, p0);
+    assert_ne!(end, *first.points.last().unwrap());
+    // The predicted exit is that real end, with the real last heading.
+    let unit = flatcraft_path::order::Unit::new(first, &s);
+    let entry = unit
+        .candidates
+        .iter()
+        .find(|e| e.at == p0)
+        .expect("the entry is a candidate");
+    assert_eq!(entry.exit, end);
+    let real = (end - last.points[n - 2]).normalize();
+    assert!(
+        (entry.exit_heading - real).hypot() < 1e-12,
+        "{:?} != {real:?}",
+        entry.exit_heading
+    );
+    // The travel to the next ring starts at that real end.
+    let next = &out.toolpaths[2];
+    assert_ne!(next.source, first.source);
+    let legs: Vec<f64> = out
+        .toolpaths
+        .windows(2)
+        .map(|w| w[0].points.last().unwrap().distance(w[1].points[0]))
+        .collect();
+    assert_eq!(legs[1], p0.distance(next.points[0]));
+    let travel = s.home.distance(p0) + legs.iter().sum::<f64>();
+    assert!((out.travel_mm - travel).abs() < 1e-9, "{}", out.travel_mm);
+}
+
+#[test]
 fn circle_becomes_closed_polygon() {
     let c = Circle::new((100.0, 100.0), 10.0).to_path(0.001);
     let out = plan(&[placed(1, c)], &settings()).unwrap();
