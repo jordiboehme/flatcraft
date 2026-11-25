@@ -210,6 +210,20 @@ fn into_kept_is_measured_globally() {
 }
 
 #[test]
+fn open_path_inside_a_piece_is_not_into_kept() {
+    // A score line inside a piece: its own cut is not kept material, and
+    // neither is a cut of another object.
+    let s = SimSettings::float(0.0);
+    let piece = closed(square(0.0, 0.0, 20.0), 1);
+    for object in [1, 2] {
+        let line = Toolpath::new(pts(&[(5.0, 10.0), (15.0, 10.0)]), false, source(object));
+        let (_, m, _) = sim(&[line, piece.clone()], Point::new(5.0, 10.0), &s);
+        assert_eq!(m.max_into_kept_mm, 0.0, "object {object}");
+        assert_eq!(m.grade, Grade::Good, "object {object}: {:?}", m.worst_spots);
+    }
+}
+
+#[test]
 fn kept_material_with_two_laps_is_still_kept() {
     // Ruling F3: two chained laps must not cancel the ring to waste.
     let s = SimSettings::float(0.0);

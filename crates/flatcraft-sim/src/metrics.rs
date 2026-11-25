@@ -114,7 +114,8 @@ pub struct JobMetrics {
     pub max_corner_deviation_mm: f64,
     /// Over all down samples, waste included: the largest distance to the
     /// nearest cut of a tip that lies in kept material more than
-    /// `uncut_eps_mm` from any cut.
+    /// `uncut_eps_mm` from any cut. A cut is a closed ring or an open
+    /// `Cut` path.
     pub max_into_kept_mm: f64,
     pub max_twist_deg: f64,
     pub max_start_deviation_mm: f64,
@@ -451,14 +452,23 @@ pub fn measure(
         dev[k] = deviation as f32;
 
         if kept.is_clear(x.tip, eps) && kept.is_kept(x.tip) {
-            let depth = kept.distance_to_cut(x.tip);
-            max_into_kept = max_into_kept.max(depth);
-            spots.push(Spot {
-                at: x.tip,
-                deviation_mm: depth,
-                toolpath: i,
-                kind: SpotKind::IntoKept,
-            });
+            // `KeptMaterial` knows only the closed rings. An open cut (a
+            // score line inside a piece) is a cut too, not kept material.
+            let to_open_cut = if classes[k] == Class::Waste {
+                deviation
+            } else {
+                intended.nearest(x.tip, |_| true, 0.0)
+            };
+            let depth = kept.distance_to_cut(x.tip).min(to_open_cut);
+            if depth > eps {
+                max_into_kept = max_into_kept.max(depth);
+                spots.push(Spot {
+                    at: x.tip,
+                    deviation_mm: depth,
+                    toolpath: i,
+                    kind: SpotKind::IntoKept,
+                });
+            }
         }
         if x.pushed && !(prev.pushed && prev.down && prev.toolpath == i) {
             per[i].pushed += 1;
