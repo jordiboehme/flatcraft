@@ -248,6 +248,18 @@ pub fn build_input(input: &JobInput) -> Result<JobResult, CommandError> {
     }
 
     let passes = job.passes.unwrap_or(material.passes);
+    let [lo, hi] = plotter.passes_range;
+    if passes < lo.max(1) || passes > hi {
+        let from = if job.passes.is_some() {
+            "The pass override"
+        } else {
+            "The material"
+        };
+        return Err(CommandError::Refused(format!(
+            "{from} asks for {passes} passes, but this plotter takes {} to {hi}. Set passes in the job settings or pick another material.",
+            lo.max(1)
+        )));
+    }
     let pipeline = PipelineSettings {
         cutting_area: area,
         flatten_tolerance_mm: plotter.flatten_tolerance_mm,

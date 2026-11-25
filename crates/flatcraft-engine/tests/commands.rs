@@ -1586,3 +1586,26 @@ fn group_scale_keeps_the_layout_about_one_anchor() {
         .unwrap_err();
     assert!(matches!(e, CommandError::InvalidParams(_)), "{e}");
 }
+
+#[test]
+fn a_material_with_too_many_passes_is_refused_at_job_build() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("materials")).unwrap();
+    std::fs::write(
+        dir.path().join("materials/many.toml"),
+        "id = \"many\"\nname = \"Many\"\ninherits = \"vinyl\"\npasses = 25\n",
+    )
+    .unwrap();
+    let mut s = session(&dir);
+    import(&mut s, 20.0, 20.0);
+    run(&mut s, "job.set_material", json!({ "id": "many" }));
+    let e = s
+        .execute("job.preview", json!({}), Origin::User)
+        .unwrap_err();
+    assert!(matches!(e, CommandError::Refused(_)), "{e}");
+    let text = e.to_string();
+    assert!(text.contains("25") && text.contains("1 to 20"), "{text}");
+    // An override inside the range is fine.
+    run(&mut s, "job.set_overrides", json!({ "passes": 2 }));
+    run(&mut s, "job.preview", json!({}));
+}
