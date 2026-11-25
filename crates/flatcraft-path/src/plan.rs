@@ -8,7 +8,8 @@ use kurbo::{BezPath, PathEl, Point, Rect, Vec2};
 
 use flatcraft_core::geometry::RingDirection;
 
-use crate::containment::{self, KeepMode};
+use crate::containment::{self, KeepMode, KeptMaterial};
+use crate::knife::{self, Compensation, CornerMode};
 use crate::strategy::StrategySettings;
 use crate::{clean, flatten, order, passes};
 
@@ -57,6 +58,14 @@ pub struct PipelineSettings {
     /// Paths shorter than this are dropped and counted in
     /// [`CutPlan::dropped_short`]. The engine uses half a device step.
     pub min_cut_mm: f64,
+    /// Where the knife is steered: the tip path as it is ([`Compensation::Tip`],
+    /// the plotter's firmware compensates) or host-compensated axis runs.
+    pub compensation: Compensation,
+    /// What host compensation does at a corner ([`knife::apply`]).
+    pub corner_mode: CornerMode,
+    /// A stroke cut first to turn the blade to a known heading. M2 never
+    /// sets it from the engine.
+    pub alignment_stroke: Option<AlignmentStroke>,
 }
 
 /// The default flatten and join tolerance, in millimetres.
@@ -71,8 +80,9 @@ pub const DEFAULT_MIN_CUT_MM: f64 = 0.025;
 impl PipelineSettings {
     /// The spec defaults for `cutting_area` with travel from `home`: 0.01 mm
     /// tolerances, 0.5 mm overcut, one pass, chained closed passes,
-    /// counter-clockwise rings, no feed bands, the Quality strategy and a
-    /// 0.025 mm shortest cut.
+    /// counter-clockwise rings, no feed bands, the Quality strategy, a
+    /// 0.025 mm shortest cut, tip compensation, arcs at corners and no
+    /// alignment stroke.
     pub fn with_defaults(cutting_area: Rect, home: Point) -> Self {
         Self {
             cutting_area,
@@ -88,6 +98,9 @@ impl PipelineSettings {
             start_heading: ASSUMED_START_HEADING,
             strategy: StrategySettings::default(),
             min_cut_mm: DEFAULT_MIN_CUT_MM,
+            compensation: Compensation::Tip,
+            corner_mode: CornerMode::Arc,
+            alignment_stroke: None,
         }
     }
 }
@@ -229,10 +242,19 @@ pub struct CutPlan {
     pub toolpaths: Vec<Toolpath>,
     /// Sum of travel distances, starting from the device home.
     pub travel_mm: f64,
-    /// Total blade-down length, including overcut and repeated passes.
+    /// Total blade-down length of the axis runs, including overcut,
+    /// repeated passes and the waste moves of host compensation.
     pub cut_mm: f64,
     /// Where the first travel move starts (`PipelineSettings::home`).
     pub home: Point,
+    /// Where the head (the axis) is after the last toolpath: the last point
+    /// of its last axis run. A later plan that goes on from here uses it as
+    /// its `home`.
+    pub end: Point,
+    /// The blade heading after the last toolpath: the direction of its last
+    /// move. A later plan that goes on from here uses it as its
+    /// `start_heading`.
+    pub end_heading: Vec2,
     pub compensation: AppliedCompensation,
     /// Paths left out because they are shorter than
     /// `PipelineSettings::min_cut_mm`.
@@ -249,6 +271,10 @@ pub enum SettingsField {
     CuttingArea,
     Home,
     MinCut,
+    /// A host compensation or corner mode value.
+    Knife,
+    /// The alignment stroke.
+    AlignmentStroke,
 }
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -290,6 +316,22 @@ fn validate(s: &PipelineSettings) -> Result<(), PlanError> {
     for v in [s.home.x, s.home.y] {
         if !v.is_finite() {
             return bad(F::Home, v);
+        }
+    }
+    if let Some(v) = knife::invalid_value(s) {
+        return bad(F::Knife, v);
+    }
+    if let Some(a) = s.alignment_stroke {
+        for v in [a.start.x, a.start.y, a.direction.x, a.direction.y] {
+            if !v.is_finite() {
+                return bad(F::AlignmentStroke, v);
+            }
+        }
+        if a.direction.hypot() == 0.0 {
+            return bad(F::AlignmentStroke, 0.0);
+        }
+        if !(a.length_mm.is_finite() && a.length_mm > 0.0) {
+            return bad(F::AlignmentStroke, a.length_mm);
         }
     }
     let a = s.cutting_area;
@@ -345,6 +387,12 @@ fn invalid_settings_message(field: SettingsField, value: f64) -> String {
         ),
         F::Home => format!("The home position must have finite coordinates (got {value})."),
         F::MinCut => format!("The shortest cut must be a number of at least 0 mm (got {value})."),
+        F::Knife => format!(
+            "The knife settings must be finite numbers: offsets, radii and overshoot of at least 0 mm, angles from 0 to 180 degrees and a step above 0 (got {value})."
+        ),
+        F::AlignmentStroke => format!(
+            "The alignment stroke must have a finite start, a direction and a length above 0 mm (got {value})."
+        ),
     }
 }
 
@@ -375,6 +423,9 @@ fn format_ids(ids: &[ObjectId]) -> String {
 /// 7. order
 /// 8. passes and overcut: chained laps on closed rings, the overcut after
 ///    the last lap ([`passes::chain`])
+/// 9. knife: the alignment stroke and host compensation ([`knife::apply`]),
+///    with the job's kept material built from the first lap of each
+///    ordered `Cut` ring (Ruling F3)
 pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanError> {
     validate(s)?;
     let flat: Vec<BezPath> = input
@@ -438,13 +489,15 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
 
     // Ruling M2-P13: every toolpath's keep side comes from the containment
     // tree. Every object is Pieces until Task 29 supplies the real modes.
+    // One closure for the keep sides and the kept material, so Task 29
+    // changes one place.
     let mode_of = |_: ObjectId| KeepMode::Pieces;
     let tree = containment::build(&toolpaths);
     for (i, t) in toolpaths.iter_mut().enumerate() {
         t.keep = containment::keep_side(&tree, i, t.closed, mode_of(t.source.object));
     }
     let toolpaths = order::order(toolpaths, &tree, s.home, s);
-    let toolpaths = if s.chain_closed_passes {
+    let mut toolpaths = if s.chain_closed_passes {
         passes::chain(
             toolpaths,
             s.passes,
@@ -460,14 +513,33 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
         )
     };
 
-    let cut_mm = toolpaths.iter().map(|t| clean::length(&t.points)).sum();
+    // Ruling F3: `from_toolpaths` reads `lap()` of pass 1, never `points`,
+    // so chained laps and passes never cancel a ring.
+    let kept = KeptMaterial::from_toolpaths(
+        &toolpaths,
+        mode_of,
+        s.cutting_area,
+        knife::WASTE_CLEARANCE_MM,
+    );
+    let compensation = knife::apply(&mut toolpaths, s, &kept, s.start_heading);
+    let (end, end_heading) = knife::end_state(&toolpaths, s.home, s.start_heading);
+
+    // Blade-down axis length: the points themselves without host
+    // compensation.
+    let cut_mm = toolpaths
+        .iter()
+        .flat_map(Toolpath::runs)
+        .map(|r| clean::length(&r.points))
+        .sum();
     let travel_mm = travel_mm(&toolpaths, s.home);
     Ok(CutPlan {
         toolpaths,
         travel_mm,
         cut_mm,
         home: s.home,
-        compensation: AppliedCompensation::Tip,
+        end,
+        end_heading,
+        compensation,
         dropped_short,
     })
 }
