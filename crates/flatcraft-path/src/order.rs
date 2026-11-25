@@ -15,6 +15,7 @@
 //! neighbour lists and picks every entry again with the exact [`entry_dp`],
 //! within an evaluation [`BUDGET`]. No move puts a child after its parent.
 
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 
 use kurbo::{Point, Rect, Vec2};
@@ -337,7 +338,7 @@ pub fn construct_with_stats(
         if s.strategy.crossing_penalty {
             for c in &mut scored {
                 let at = units[c.1].candidates[c.2].at;
-                c.0 += CROSSING_PENALTY_MM * cuts.crossings(head, at, &mut stats) as f64;
+                c.0 += CROSSING_PENALTY_MM * cuts.crossings(head, at, c.1, &mut stats) as f64;
             }
         }
         let pick = scored
@@ -367,7 +368,7 @@ pub fn construct_with_stats(
         }
         if s.strategy.crossing_penalty {
             for (a, b) in units[u].segments() {
-                cuts.insert(a, b);
+                cuts.insert(a, b, u);
             }
         }
         if let Some(p) = parent(u) {
@@ -436,6 +437,16 @@ pub struct ImproveStats {
     pub or_opt_moves: u64,
     /// Entry DP runs that changed an entry.
     pub entry_dp_changes: u32,
+    /// With `crossing_penalty`: stretches of changed entries the DP
+    /// applied (each is scored with its crossings on its own).
+    pub entry_dp_runs: u64,
+    /// Cut segments tested for a crossing (with `crossing_penalty`): the
+    /// joins of each move that passed the cost screen, the joins of each
+    /// DP run and each round's join cache. Not in the budget.
+    pub crossing_tests: u64,
+    /// Moves and DP runs that were not applied because of their
+    /// crossings (or, for a DP run, because they gained nothing).
+    pub crossing_rejections: u64,
 }
 
 /// The cost of `tour` from `start` under [`cost`], without the crossing
@@ -453,6 +464,59 @@ pub fn tour_cost(units: &[Unit], tour: &[Placement], start: Point, s: &PipelineS
         }
     }
     total
+}
+
+/// Every cut segment of `units`, for the improvement's crossing test.
+fn all_cuts(units: &[Unit]) -> CutIndex {
+    let mut cuts = CutIndex::default();
+    for (k, u) in units.iter().enumerate() {
+        for (a, b) in u.segments() {
+            cuts.insert(a, b, k);
+        }
+    }
+    cuts
+}
+
+/// The head and blade heading after `from` (the start for `None`).
+fn head_after(units: &[Unit], from: Option<Placement>, start: Point) -> (Point, Vec2) {
+    match from.and_then(|p| units[p.unit].candidates.get(p.candidate)) {
+        Some(e) => (e.exit, e.exit_heading),
+        None => (start, ASSUMED_START_HEADING),
+    }
+}
+
+/// The finished cuts crossed by every travel of `tour`, counted against
+/// `cuts` as [`improve`] counts them.
+fn crossings_in(
+    units: &[Unit],
+    tour: &[Placement],
+    start: Point,
+    cuts: &mut CutIndex,
+    stats: &mut ConstructStats,
+) -> usize {
+    let (mut head, mut count) = (start, 0);
+    for p in tour {
+        if let Some(e) = units[p.unit].candidates.get(p.candidate) {
+            count += cuts.crossings(head, e.at, p.unit, stats);
+            head = e.exit;
+        }
+    }
+    count
+}
+
+/// How many cut segments of `units` the travels of `tour` cross, more
+/// than 1e-6 mm from their ends: the crossing term [`improve`] scores with
+/// [`CROSSING_PENALTY_MM`]. Every cut counts, not only the finished ones,
+/// so a travel is scored the same wherever its move puts it; only the cuts
+/// of the unit the travel goes to are left out, as in [`construct`].
+pub fn tour_crossings(units: &[Unit], tour: &[Placement], start: Point) -> usize {
+    crossings_in(
+        units,
+        tour,
+        start,
+        &mut all_cuts(units),
+        &mut ConstructStats::default(),
+    )
 }
 
 /// True when every child in `tree` comes before its parent and, with
@@ -486,11 +550,31 @@ pub fn respects_precedence(
 /// exact: no other choice of entries gives a lower [`tour_cost`]. The tour
 /// changes only when the cost drops. Returns the edges evaluated.
 pub fn entry_dp(units: &[Unit], tour: &mut [Placement], start: Point, s: &PipelineSettings) -> u64 {
-    let layers: Vec<usize> = (0..tour.len())
+    let (chosen, evaluations) = entry_dp_choice(units, tour, start, s);
+    if tour_cost(units, &chosen, start, s) < tour_cost(units, tour, start, s) {
+        tour.copy_from_slice(&chosen);
+    }
+    evaluations
+}
+
+/// The positions of `tour` whose unit has candidates: the layers of the
+/// [`entry_dp`], and the travels a tour makes.
+fn layers(units: &[Unit], tour: &[Placement]) -> Vec<usize> {
+    (0..tour.len())
         .filter(|&k| !units[tour[k].unit].candidates.is_empty())
-        .collect();
+        .collect()
+}
+
+/// The entries the [`entry_dp`] picks for `tour`, and the edges evaluated.
+fn entry_dp_choice(
+    units: &[Unit],
+    tour: &[Placement],
+    start: Point,
+    s: &PipelineSettings,
+) -> (Vec<Placement>, u64) {
+    let layers = layers(units, tour);
     let Some(&last) = layers.last() else {
-        return 0;
+        return (tour.to_vec(), 0);
     };
     let mut evaluations = 0u64;
     let mut back: Vec<Vec<u32>> = Vec::with_capacity(layers.len());
@@ -531,10 +615,82 @@ pub fn entry_dp(units: &[Unit], tour: &mut [Placement], start: Point, s: &Pipeli
         chosen[k].candidate = pick;
         pick = back[li][pick] as usize;
     }
-    if tour_cost(units, &chosen, start, s) < tour_cost(units, tour, start, s) {
-        tour.copy_from_slice(&chosen);
+    (chosen, evaluations)
+}
+
+/// Apply the entries of `chosen` (the [`entry_dp_choice`] for `tour`) run
+/// by run, scoring crossings against `cuts`. A run is a stretch of layers
+/// whose entry changed; it changes only the travels into its layers and
+/// into the layer after it, so runs are independent. A run is applied when
+/// its cost gain is above [`MIN_GAIN_MM`] and still positive with
+/// [`CROSSING_PENALTY_MM`] per crossing. Returns the change of the crossing
+/// count.
+fn apply_dp_runs(
+    units: &[Unit],
+    tour: &mut [Placement],
+    chosen: &[Placement],
+    start: Point,
+    s: &PipelineSettings,
+    cuts: &mut CutIndex,
+    stats: &mut ImproveStats,
+) -> i64 {
+    let layers = layers(units, tour);
+    // Runs are independent, so every run is scored against the old tour.
+    let old = tour.to_vec();
+    // The cost and crossings of the travel into layer `li`, with
+    // `chosen`'s placements at the layers where `new` holds.
+    let mut join = |li: usize, new: &dyn Fn(usize) -> bool, stats: &mut ImproveStats| {
+        let place = |lj: usize| {
+            let k = layers[lj];
+            if new(lj) { chosen[k] } else { old[k] }
+        };
+        let to = place(li);
+        let (head, heading) = match li.checked_sub(1) {
+            Some(lp) => {
+                let e = &units[place(lp).unit].candidates[place(lp).candidate];
+                (e.exit, e.exit_heading)
+            }
+            None => (start, ASSUMED_START_HEADING),
+        };
+        let u = &units[to.unit];
+        let e = &u.candidates[to.candidate];
+        let mut cs = ConstructStats::default();
+        let crossed = cuts.crossings(head, e.at, to.unit, &mut cs);
+        stats.crossing_tests += cs.crossing_tests;
+        (cost(head, heading, u, e, s), crossed as i64)
+    };
+    let changed = |lj: usize| old[layers[lj]] != chosen[layers[lj]];
+    let mut delta = 0i64;
+    let mut li = 0;
+    while li < layers.len() {
+        if !changed(li) {
+            li += 1;
+            continue;
+        }
+        let first = li;
+        while li < layers.len() && changed(li) {
+            li += 1;
+        }
+        let run = first..li;
+        let last_join = li.min(layers.len() - 1);
+        let (mut gain, mut crossed) = (0.0, 0i64);
+        for lj in first..=last_join {
+            let (old_cost, old_crossed) = join(lj, &|_| false, stats);
+            let (new_cost, new_crossed) = join(lj, &|x| run.contains(&x), stats);
+            gain += old_cost - new_cost;
+            crossed += new_crossed - old_crossed;
+        }
+        if gain > MIN_GAIN_MM && gain - CROSSING_PENALTY_MM * crossed as f64 > MIN_GAIN_MM {
+            for lj in run {
+                tour[layers[lj]] = chosen[layers[lj]];
+            }
+            delta += crossed;
+            stats.entry_dp_runs += 1;
+        } else {
+            stats.crossing_rejections += 1;
+        }
     }
-    evaluations
+    delta
 }
 
 /// The edges [`entry_dp`] evaluates on `tour`.
@@ -561,8 +717,19 @@ fn entry_dp_edges(units: &[Unit], tour: &[Placement]) -> u64 {
 /// near). Reversing a run flips its open paths; a ring keeps its entry, so
 /// its exit state stays the same. A move that puts a child after its parent
 /// (or, with `outlines_last`, mixes roots and inner units) is never applied,
-/// and a move is applied only when its exact cost change, without the
-/// crossing term, is negative. `s.strategy.budget` caps the evaluations;
+/// and a move is applied only when its exact cost change is negative.
+///
+/// With `crossing_penalty` (ruling F6), a move that passes that screen also
+/// counts the cut segments its new travels cross (every cut of the job
+/// except the target unit's own, as [`tour_crossings`] and [`construct`]
+/// count them), and it is applied only when its gain with
+/// [`CROSSING_PENALTY_MM`] per crossing is still positive. The DP result is
+/// applied run by run: each stretch of changed entries is scored the same
+/// way on its own. The crossing tests are paid per move that passed the
+/// screen, per DP run and for each round's join cache, never per
+/// evaluation; they are counted in `crossing_tests`, not in the budget.
+/// A round counts as a gain only when the cost with the crossing term
+/// drops. `s.strategy.budget` caps the evaluations;
 /// when it runs out, the best tour so far is kept. A tour that already
 /// breaks precedence keeps its order, and the DP still runs.
 pub fn improve(
@@ -599,27 +766,53 @@ pub fn improve(
     } else {
         Vec::new()
     };
+    let cuts = (s.strategy.crossing_penalty && s.strategy.rounds > 0)
+        .then(|| RefCell::new(all_cuts(units)));
     for _ in 0..s.strategy.rounds {
         stats.rounds += 1;
         let before = tour_cost(units, tour, start, s);
+        // The change of the crossing count in this round.
+        let mut crossed = 0i64;
         let mut spent = false;
         if searchable {
-            let mut search = Search::new(units, tree, start, s, std::mem::take(tour), &mut stats);
+            let mut search = Search::new(
+                units,
+                tree,
+                start,
+                s,
+                cuts.as_ref(),
+                std::mem::take(tour),
+                &mut stats,
+            );
             spent = !search.run(&neighbours);
+            search.flush();
+            crossed += search.crossed;
             *tour = search.tour;
         }
         if s.strategy.entry_dp && !spent {
             let edges = entry_dp_edges(units, tour);
             if stats.evaluations + edges <= budget {
-                let old = tour.clone();
-                stats.evaluations += entry_dp(units, tour, start, s);
-                stats.entry_dp_changes += u32::from(*tour != old);
+                match &cuts {
+                    None => {
+                        let old = tour.clone();
+                        stats.evaluations += entry_dp(units, tour, start, s);
+                        stats.entry_dp_changes += u32::from(*tour != old);
+                    }
+                    Some(cuts) => {
+                        let (chosen, evaluations) = entry_dp_choice(units, tour, start, s);
+                        stats.evaluations += evaluations;
+                        let runs = stats.entry_dp_runs;
+                        let index = &mut cuts.borrow_mut();
+                        crossed += apply_dp_runs(units, tour, &chosen, start, s, index, &mut stats);
+                        stats.entry_dp_changes += u32::from(stats.entry_dp_runs > runs);
+                    }
+                }
             } else {
                 spent = true;
             }
         }
         debug_assert!(!searchable || respects_precedence(tour, tree, s.strategy.outlines_last));
-        let after = tour_cost(units, tour, start, s);
+        let after = tour_cost(units, tour, start, s) + CROSSING_PENALTY_MM * crossed as f64;
         if spent || after >= before - MIN_GAIN_MM {
             break;
         }
@@ -739,6 +932,26 @@ impl Sums {
     }
 }
 
+/// One kind of join value per tour position, with prefix sums.
+#[derive(Default)]
+struct Joins {
+    /// `edge[k]`: the value into position k (from the start for k = 0).
+    edge: Vec<f64>,
+    /// `back[k]`: the value between positions k - 1 and k when both are
+    /// reversed and run the other way (0 for k = 0).
+    back: Vec<f64>,
+    edge_sum: Sums,
+    back_sum: Sums,
+}
+
+/// What a join is measured in: the [`cost`], or the cuts its travel
+/// crosses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Cost,
+    Crossings,
+}
+
 /// A range minimum over positions, for the 2-opt precedence check.
 #[derive(Default)]
 struct MinTree {
@@ -819,16 +1032,18 @@ struct Search<'a> {
     s: &'a PipelineSettings,
     start: Point,
     stats: &'a mut ImproveStats,
+    /// Every cut of the job, when crossings are scored.
+    cuts: Option<&'a RefCell<CutIndex>>,
+    /// Crossing tests not yet added to `stats`.
+    crossing_tests: Cell<u64>,
+    /// The change of the crossing count by the applied moves.
+    crossed: i64,
     tour: Vec<Placement>,
     pos: Vec<usize>,
-    /// `edge[k]`: the cost into position k (from the start for k = 0).
-    edge: Vec<f64>,
-    /// `back[k]`: the cost between positions k - 1 and k when both are
-    /// reversed and run the other way (0 for k = 0).
-    back: Vec<f64>,
-    /// Prefix sums of `edge` and `back`.
-    edge_sum: Sums,
-    back_sum: Sums,
+    /// The [`cost`] of each join.
+    costs: Joins,
+    /// The cuts each join's travel crosses (empty without `cuts`).
+    crossings: Joins,
     /// The position of each position's parent (`usize::MAX` for a root).
     parent_at: MinTree,
     /// With `outlines_last`: the first root position.
@@ -841,6 +1056,7 @@ impl<'a> Search<'a> {
         tree: &'a ContainmentTree,
         start: Point,
         s: &'a PipelineSettings,
+        cuts: Option<&'a RefCell<CutIndex>>,
         tour: Vec<Placement>,
         stats: &'a mut ImproveStats,
     ) -> Self {
@@ -854,11 +1070,12 @@ impl<'a> Search<'a> {
             s,
             start,
             stats,
+            cuts,
+            crossing_tests: Cell::new(0),
+            crossed: 0,
             pos: vec![0; units.len()],
-            edge: Vec::new(),
-            back: Vec::new(),
-            edge_sum: Sums::default(),
-            back_sum: Sums::default(),
+            costs: Joins::default(),
+            crossings: Joins::default(),
             parent_at: MinTree::default(),
             roots_from,
             tour,
@@ -870,8 +1087,10 @@ impl<'a> Search<'a> {
     /// Fill the caches for the whole tour.
     fn rebuild(&mut self) {
         let n = self.tour.len();
-        self.edge = vec![0.0; n];
-        self.back = vec![0.0; n];
+        for joins in [&mut self.costs, &mut self.crossings] {
+            joins.edge = vec![0.0; n];
+            joins.back = vec![0.0; n];
+        }
         self.parent_at.rebuild(&vec![usize::MAX; n]);
         self.refresh(0, n, &[]);
     }
@@ -890,35 +1109,45 @@ impl<'a> Search<'a> {
         for k in lo..hi {
             self.pos[self.tour[k].unit] = k;
         }
-        let old_edge = self.edge[lo..hi].to_vec();
-        let old_back = self.back[lo..hi].to_vec();
-        for k in lo..(hi + 1).min(n) {
-            let kept = (k > lo && k < hi && !src.is_empty())
-                .then(|| {
-                    let ((a, ra), (b, rb)) = (src[k - 1 - lo], src[k - lo]);
-                    if !ra && !rb && b == a + 1 {
-                        Some((old_edge[b - lo], old_back[b - lo]))
-                    } else if ra && rb && a == b + 1 {
-                        Some((old_back[a - lo], old_edge[a - lo]))
-                    } else {
-                        None
-                    }
-                })
-                .flatten();
-            let (edge, back) = kept.unwrap_or_else(|| {
-                let prev = k.checked_sub(1).map(|j| self.tour[j]);
-                let back = match prev {
-                    Some(p) => self.cost(Some(self.flip(self.tour[k])), self.flip(p)),
-                    None => 0.0,
-                };
-                (self.cost(prev, self.tour[k]), back)
-            });
-            self.edge[k] = edge;
-            self.back[k] = back;
+        let kinds: &[Kind] = if self.cuts.is_some() {
+            &[Kind::Cost, Kind::Crossings]
+        } else {
+            &[Kind::Cost]
+        };
+        for &kind in kinds {
+            let joins = self.joins(kind);
+            let old_edge = joins.edge[lo..hi].to_vec();
+            let old_back = joins.back[lo..hi].to_vec();
+            for k in lo..(hi + 1).min(n) {
+                let kept = (k > lo && k < hi && !src.is_empty())
+                    .then(|| {
+                        let ((a, ra), (b, rb)) = (src[k - 1 - lo], src[k - lo]);
+                        if !ra && !rb && b == a + 1 {
+                            Some((old_edge[b - lo], old_back[b - lo]))
+                        } else if ra && rb && a == b + 1 {
+                            Some((old_back[a - lo], old_edge[a - lo]))
+                        } else {
+                            None
+                        }
+                    })
+                    .flatten();
+                let (edge, back) = kept.unwrap_or_else(|| {
+                    let prev = k.checked_sub(1).map(|j| self.tour[j]);
+                    let back = match prev {
+                        Some(p) => self.join(kind, Some(self.flip(self.tour[k])), self.flip(p)),
+                        None => 0.0,
+                    };
+                    (self.join(kind, prev, self.tour[k]), back)
+                });
+                let joins = self.joins_mut(kind);
+                joins.edge[k] = edge;
+                joins.back[k] = back;
+            }
+            let changed = (hi + 1).min(n);
+            let joins = self.joins_mut(kind);
+            joins.edge_sum.update(&joins.edge, lo, changed);
+            joins.back_sum.update(&joins.back, lo, changed);
         }
-        let changed = (hi + 1).min(n);
-        self.edge_sum.update(&self.edge, lo, changed);
-        self.back_sum.update(&self.back, lo, changed);
         for k in lo..hi {
             let u = self.tour[k].unit;
             let at = self.parent(u).map_or(usize::MAX, |q| self.pos[q]);
@@ -931,6 +1160,42 @@ impl<'a> Search<'a> {
 
     fn parent(&self, u: usize) -> Option<usize> {
         self.tree.parent.get(u).copied().flatten()
+    }
+
+    fn joins(&self, kind: Kind) -> &Joins {
+        match kind {
+            Kind::Cost => &self.costs,
+            Kind::Crossings => &self.crossings,
+        }
+    }
+
+    fn joins_mut(&mut self, kind: Kind) -> &mut Joins {
+        match kind {
+            Kind::Cost => &mut self.costs,
+            Kind::Crossings => &mut self.crossings,
+        }
+    }
+
+    /// The value of going on to `to` after `from` (the start for `None`).
+    fn join(&self, kind: Kind, from: Option<Placement>, to: Placement) -> f64 {
+        match (kind, self.cuts) {
+            (Kind::Cost, _) => self.cost(from, to),
+            (Kind::Crossings, None) => 0.0,
+            (Kind::Crossings, Some(cuts)) => {
+                let (head, _) = head_after(self.units, from, self.start);
+                let at = self.units[to.unit].candidates[to.candidate].at;
+                let mut cs = ConstructStats::default();
+                let n = cuts.borrow_mut().crossings(head, at, to.unit, &mut cs);
+                self.crossing_tests
+                    .set(self.crossing_tests.get() + cs.crossing_tests);
+                n as f64
+            }
+        }
+    }
+
+    /// Add the pending crossing tests to the stats.
+    fn flush(&mut self) {
+        self.stats.crossing_tests += self.crossing_tests.take();
     }
 
     /// `p` cut the other way: an open path from its other end. A ring
@@ -973,7 +1238,7 @@ impl<'a> Search<'a> {
     /// looks better is better.
     fn min_gain(&self) -> f64 {
         let n = self.tour.len();
-        let total = self.edge_sum.upto(n).abs() + self.back_sum.upto(n).abs();
+        let total = self.costs.edge_sum.upto(n).abs() + self.costs.back_sum.upto(n).abs();
         MIN_GAIN_MM.max(4.0 * n as f64 * f64::EPSILON * total)
     }
 
@@ -1041,17 +1306,19 @@ impl<'a> Search<'a> {
         }
     }
 
-    /// The cost change of `m`, from the cached edges.
-    fn delta(&self, m: Move) -> f64 {
+    /// The change of `kind` under `m`, from the cached joins and the new
+    /// joins.
+    fn delta(&self, kind: Kind, m: Move) -> f64 {
         let n = self.tour.len();
+        let joins = self.joins(kind);
         match m {
             Move::Reverse { i, j } => {
-                let mut old = self.edge_sum.upto(j + 1) - self.edge_sum.upto(i);
-                let mut new = self.cost(self.prev(i), self.flip(self.tour[j]))
-                    + (self.back_sum.upto(j + 1) - self.back_sum.upto(i + 1));
+                let mut old = joins.edge_sum.upto(j + 1) - joins.edge_sum.upto(i);
+                let mut new = self.join(kind, self.prev(i), self.flip(self.tour[j]))
+                    + (joins.back_sum.upto(j + 1) - joins.back_sum.upto(i + 1));
                 if j + 1 < n {
-                    old += self.edge[j + 1];
-                    new += self.cost(Some(self.flip(self.tour[i])), self.tour[j + 1]);
+                    old += joins.edge[j + 1];
+                    new += self.join(kind, Some(self.flip(self.tour[i])), self.tour[j + 1]);
                 }
                 new - old
             }
@@ -1066,24 +1333,24 @@ impl<'a> Search<'a> {
                     (
                         self.flip(self.tour[end - 1]),
                         self.flip(self.tour[i]),
-                        self.back_sum.upto(end) - self.back_sum.upto(i + 1),
+                        joins.back_sum.upto(end) - joins.back_sum.upto(i + 1),
                     )
                 } else {
                     (
                         self.tour[i],
                         self.tour[end - 1],
-                        self.edge_sum.upto(end) - self.edge_sum.upto(i + 1),
+                        joins.edge_sum.upto(end) - joins.edge_sum.upto(i + 1),
                     )
                 };
-                let mut old = self.edge_sum.upto(end) - self.edge_sum.upto(i);
-                let mut new = self.cost(self.prev(slot), first) + inner;
+                let mut old = joins.edge_sum.upto(end) - joins.edge_sum.upto(i);
+                let mut new = self.join(kind, self.prev(slot), first) + inner;
                 if end < n {
-                    old += self.edge[end];
-                    new += self.cost(self.prev(i), self.tour[end]);
+                    old += joins.edge[end];
+                    new += self.join(kind, self.prev(i), self.tour[end]);
                 }
                 if slot < n {
-                    old += self.edge[slot];
-                    new += self.cost(Some(last), self.tour[slot]);
+                    old += joins.edge[slot];
+                    new += self.join(kind, Some(last), self.tour[slot]);
                 }
                 new - old
             }
@@ -1132,8 +1399,19 @@ impl<'a> Search<'a> {
         if !self.spend() {
             return None;
         }
-        if self.delta(m) >= -self.min_gain() {
+        let gain = -self.delta(Kind::Cost, m);
+        if gain <= self.min_gain() {
             return Some(false);
+        }
+        // Only a move that passed the screen pays for its crossing tests.
+        if self.cuts.is_some() {
+            let crossed = self.delta(Kind::Crossings, m);
+            if gain - CROSSING_PENALTY_MM * crossed <= self.min_gain() {
+                self.stats.crossing_rejections += 1;
+                return Some(false);
+            }
+            // Sums of whole counts: exact.
+            self.crossed += crossed as i64;
         }
         let (lo, hi, seq) = self.rewrite(m);
         touched.clear();
@@ -1410,10 +1688,52 @@ impl EntryGrid {
 /// The finished cuts, in [`GRID_CELL_MM`] cells, for the crossing test.
 #[derive(Debug, Default)]
 struct CutIndex {
-    segs: Vec<(Point, Point)>,
+    /// Each cut and the unit it belongs to.
+    segs: Vec<(Point, Point, usize)>,
     cells: HashMap<(i64, i64), Vec<u32>>,
     stamp: Vec<u32>,
     query: u32,
+    /// The box of every indexed cut.
+    bounds: Option<Rect>,
+}
+
+/// The part of `a`-`b` inside `r` (Liang-Barsky), or `None` when the
+/// segment misses `r`. An end inside `r` is kept as it is.
+fn clip(a: Point, b: Point, r: Rect) -> Option<(Point, Point)> {
+    let d = b - a;
+    let (mut t0, mut t1) = (0.0f64, 1.0f64);
+    for (p, q) in [
+        (-d.x, a.x - r.x0),
+        (d.x, r.x1 - a.x),
+        (-d.y, a.y - r.y0),
+        (d.y, r.y1 - a.y),
+    ] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return None;
+            }
+        } else {
+            let t = q / p;
+            if p < 0.0 {
+                t0 = t0.max(t);
+            } else {
+                t1 = t1.min(t);
+            }
+        }
+    }
+    if t0 > t1 {
+        return None;
+    }
+    let at = |t: f64| {
+        if t <= 0.0 {
+            a
+        } else if t >= 1.0 {
+            b
+        } else {
+            a + d * t
+        }
+    };
+    Some((at(t0), at(t1)))
 }
 
 /// The cells along `a`-`b`, in pieces of half a cell, so a long diagonal
@@ -1435,13 +1755,15 @@ fn cells_along(a: Point, b: Point, mut visit: impl FnMut((i64, i64))) {
 }
 
 impl CutIndex {
-    fn insert(&mut self, a: Point, b: Point) {
+    fn insert(&mut self, a: Point, b: Point, unit: usize) {
         if !(a.is_finite() && b.is_finite()) {
             return;
         }
         let id = self.segs.len() as u32;
-        self.segs.push((a, b));
+        self.segs.push((a, b, unit));
         self.stamp.push(0);
+        let r = Rect::from_points(a, b);
+        self.bounds = Some(self.bounds.map_or(r, |old| old.union(r)));
         let cells = &mut self.cells;
         cells_along(a, b, |c| {
             let ids = cells.entry(c).or_default();
@@ -1453,24 +1775,32 @@ impl CutIndex {
         });
     }
 
-    /// How many finished cuts the travel `a`-`b` properly crosses, away
-    /// from its ends.
-    fn crossings(&mut self, a: Point, b: Point, stats: &mut ConstructStats) -> usize {
-        if self.segs.is_empty() || !(a.is_finite() && b.is_finite()) {
+    /// How many cuts the travel `a`-`b` into unit `to` properly crosses,
+    /// away from its ends. The cuts of `to` itself never count: they are
+    /// not cut yet when the head travels to it. Only the part of the travel inside the cuts' box
+    /// walks the cells, so a travel from a far start stays cheap.
+    fn crossings(&mut self, a: Point, b: Point, to: usize, stats: &mut ConstructStats) -> usize {
+        if !(a.is_finite() && b.is_finite()) {
             return 0;
         }
+        let Some(bounds) = self.bounds else {
+            return 0;
+        };
+        let Some((ca, cb)) = clip(a, b, bounds.inflate(1.0, 1.0)) else {
+            return 0;
+        };
         self.query += 1;
         let query = self.query;
         let mut count = 0;
         let (segs, cells, stamp) = (&self.segs, &self.cells, &mut self.stamp);
-        cells_along(a, b, |c| {
+        cells_along(ca, cb, |c| {
             for &id in cells.get(&c).into_iter().flatten() {
                 let id = id as usize;
                 if stamp[id] != query {
                     stamp[id] = query;
                     stats.crossing_tests += 1;
-                    let (q1, q2) = segs[id];
-                    count += usize::from(crosses(a, b, q1, q2));
+                    let (q1, q2, unit) = segs[id];
+                    count += usize::from(unit != to && crosses(a, b, q1, q2));
                 }
             }
         });
@@ -2014,10 +2344,12 @@ mod tests {
     }
 
     /// Six squares of different sizes on a zigzag, every corner a waste
-    /// corner, in a fixed order.
+    /// corner, then an L piece (its concave corner is on the kept side, so
+    /// entering there pays the kept-side penalty) and an open line, in a
+    /// fixed order.
     fn dp_job() -> (Vec<Unit>, Vec<Placement>, PipelineSettings) {
         let s = settings(CutStrategy::Quality);
-        let units: Vec<Unit> = (0..6)
+        let mut units: Vec<Unit> = (0..6)
             .map(|k| {
                 let (x, y) = (15.0 * k as f64, if k % 2 == 0 { 0.0 } else { 12.0 });
                 let side = 3.0 + k as f64;
@@ -2030,28 +2362,57 @@ mod tests {
             assert_eq!(u.candidates.len(), 4);
             assert!(u.candidates.iter().all(|c| c.waste_corner));
         }
-        (units, placements(&[0, 1, 2, 3, 4, 5]), s)
+        let l_pts = [
+            (90.0, 0.0),
+            (100.0, 0.0),
+            (100.0, 4.0),
+            (94.0, 4.0),
+            (94.0, 10.0),
+            (90.0, 10.0),
+            (90.0, 0.0),
+        ];
+        let mut l = tp(6, &l_pts, true);
+        l.keep = KeepSide::Inside;
+        let l = Unit::new(&l, &s);
+        assert_eq!(l.candidates.len(), 6);
+        assert_eq!(l.candidates.iter().filter(|c| !c.waste_corner).count(), 1);
+        units.push(l);
+        let line = Unit::new(&tp(7, &[(105.0, 12.0), (112.0, 15.0)], false), &s);
+        assert_eq!(line.candidates.len(), 2);
+        units.push(line);
+        (units, placements(&[0, 1, 2, 3, 4, 5, 6, 7]), s)
     }
 
     #[test]
     fn entry_dp_is_exact() {
         let (units, mut tour, s) = dp_job();
         let start = p(-5.0, 3.0);
+        let counts: Vec<usize> = units.iter().map(|u| u.candidates.len()).collect();
         let mut best = f64::INFINITY;
         let mut trial = tour.clone();
-        for code in 0..4usize.pow(6) {
-            for (k, pl) in trial.iter_mut().enumerate() {
-                pl.candidate = code / 4usize.pow(k as u32) % 4;
+        // Brute force: 4^6 for the squares, times 6 for the L and 2 for
+        // the line.
+        let all: usize = counts.iter().product();
+        assert_eq!(all, 4usize.pow(6) * 6 * 2);
+        for code in 0..all {
+            let mut rest = code;
+            for (pl, &c) in trial.iter_mut().zip(&counts) {
+                pl.candidate = rest % c;
+                rest /= c;
             }
             best = best.min(tour_cost(&units, &trial, start, &s));
         }
         let first = tour_cost(&units, &tour, start, &s);
         assert!(first > best + 1.0, "not vacuous: {first} vs {best}");
         let evaluations = entry_dp(&units, &mut tour, start, &s);
-        assert_eq!(evaluations, 4 + 5 * 16);
+        let edges = counts[0] + counts.windows(2).map(|w| w[0] * w[1]).sum::<usize>();
+        assert_eq!(evaluations, edges as u64);
+        assert_eq!(evaluations, 4 + 5 * 16 + 4 * 6 + 6 * 2);
         let got = tour_cost(&units, &tour, start, &s);
         assert!((got - best).abs() < 1e-9, "{got} vs {best}");
-        assert_eq!(unit_order(&tour), vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(unit_order(&tour), vec![0, 1, 2, 3, 4, 5, 6, 7]);
+        // The L is not entered at its kept-side corner.
+        assert!(units[6].candidates[tour[6].candidate].waste_corner);
     }
 
     #[test]
@@ -2059,12 +2420,13 @@ mod tests {
         // Ruling F6. The order is already right, so only the DP can lower
         // the cost, by changing entries.
         let (units, tour, mut s) = dp_job();
+        let n = units.len();
         let tree = ContainmentTree {
-            parent: vec![None; 6],
-            children: vec![Vec::new(); 6],
-            roots: (0..6).collect(),
-            depth: vec![0; 6],
-            own_depth: vec![0; 6],
+            parent: vec![None; n],
+            children: vec![Vec::new(); n],
+            roots: (0..n).collect(),
+            depth: vec![0; n],
+            own_depth: vec![0; n],
         };
         let start = p(-5.0, 3.0);
         let mut on = tour.clone();
@@ -2082,7 +2444,10 @@ mod tests {
     #[test]
     fn order_budget_bounds_large_jobs() {
         // The guard is the evaluation count (Ruling F30); the timing twin
-        // below is ignored.
+        // below is ignored. The crossing tests are paid only per move that
+        // passed the cost screen, per DP run and per round's join cache:
+        // measured 711k (142 n) here and 4.1M (207 n, the budget binds)
+        // for 20000 squares. One test per evaluation would be about 2700 n.
         let n = 5000;
         let s = settings(CutStrategy::Quality);
         let (paths, tree) = prepared(random_squares(n));
@@ -2093,6 +2458,8 @@ mod tests {
         let after = tour_cost(&units, &tour, Point::ZERO, &s);
         eprintln!("{stats:?}: {before} -> {after}");
         assert!(stats.evaluations <= BUDGET, "{stats:?}");
+        assert!(stats.crossing_tests <= 300 * n as u64, "{stats:?}");
+        assert!(stats.crossing_rejections > 0, "{stats:?}");
         assert!(respects_precedence(&tour, &tree, false));
         assert!(after < before, "{before} -> {after}");
     }
@@ -2127,22 +2494,46 @@ mod tests {
         assert!(tour_cost(&units, &tour, Point::ZERO, &s) <= before);
     }
 
+    /// Rings, open lines and L pieces (kind 0, 1 and 2) in random boxes.
+    fn shapes() -> impl Strategy<Value = Vec<(f64, f64, f64, f64, u8)>> {
+        proptest::collection::vec(
+            (
+                0.0f64..200.0,
+                0.0f64..200.0,
+                1.0f64..120.0,
+                1.0f64..120.0,
+                prop_oneof![6 => Just(0u8), 2 => Just(1u8), 2 => Just(2u8)],
+            ),
+            1..40,
+        )
+    }
+
     proptest! {
         #[test]
         fn improvement_never_increases_cost_and_keeps_precedence(
-            rects in rects(),
+            shapes in shapes(),
             strategy in 0usize..3,
             start in (-50.0f64..250.0, -50.0f64..250.0),
         ) {
-            let paths: Vec<Toolpath> = rects
+            let paths: Vec<Toolpath> = shapes
                 .iter()
                 .enumerate()
-                .map(|(i, &(x, y, w, h, open))| {
-                    if open {
-                        tp(i as u64, &[(x, y), (x + w / 4.0, y + h / 4.0)], false)
-                    } else {
-                        ring(i as u64, x, y, x + w, y + h)
-                    }
+                .map(|(i, &(x, y, w, h, kind))| match kind {
+                    0 => ring(i as u64, x, y, x + w, y + h),
+                    1 => tp(i as u64, &[(x, y), (x + w / 4.0, y + h / 4.0)], false),
+                    _ => tp(
+                        i as u64,
+                        &[
+                            (x, y),
+                            (x + w, y),
+                            (x + w, y + h / 2.0),
+                            (x + w / 2.0, y + h / 2.0),
+                            (x + w / 2.0, y + h),
+                            (x, y + h),
+                            (x, y),
+                        ],
+                        true,
+                    ),
                 })
                 .collect();
             let (paths, tree) = prepared(paths);
@@ -2161,6 +2552,12 @@ mod tests {
             }
             let after = tour_cost(&units, &tour, start, &s);
             prop_assert!(after <= before + 1e-9, "{} -> {}", before, after);
+            // With the crossing term too.
+            let full = |t: &[Placement], cost: f64| {
+                cost + CROSSING_PENALTY_MM * tour_crossings(&units, t, start) as f64
+            };
+            let (full_before, full_after) = (full(&built, before), full(&tour, after));
+            prop_assert!(full_after <= full_before + 1e-9, "{} -> {}", full_before, full_after);
             // The same input gives the same tour.
             let mut again = built.clone();
             improve(&units, &mut again, &tree, start, &s);

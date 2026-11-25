@@ -884,9 +884,10 @@ fn with_defaults_uses_the_spec_defaults() {
 
 /// Wall-clock check (Ruling F30) of the whole pipeline on a large, dense
 /// job (20000 overlapping squares): run by hand or by the quality bench.
-/// Measured 0.6 to 1.1 s locally before the order improvement (Task 6) and
-/// about 1.5 s with it (Apple silicon, test profile, on a busy machine), so
-/// the bound is the plan's 3 s.
+/// Measured 0.6 to 1.1 s locally before the order improvement (Task 6),
+/// 1.25 to 1.6 s with it, and 1.5 to 1.9 s once the improvement scores
+/// crossings (Apple silicon, test profile, load about 50; single runs right
+/// after a build reached 3 to 4 s), so the bound is the plan's 3 s.
 #[test]
 #[ignore = "wall-clock perf check, run by hand or by the quality bench"]
 fn plan_of_20000_squares_is_fast() {
