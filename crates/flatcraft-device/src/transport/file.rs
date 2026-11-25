@@ -11,7 +11,8 @@
 //! Every file is then written to a temp file of its own (see
 //! `flatcraft_core::fsio::write_temp_for`) and renamed over its empty
 //! placeholder, so a half-written file never shows up under its real name.
-//! Leftover temp files never block a name.
+//! A crash before the renames can leave empty placeholders; an empty job
+//! file is never a job. Leftover temp files never block a name.
 
 use std::path::{Path, PathBuf};
 
@@ -171,7 +172,8 @@ impl Transport for FileTransport {
 
         std::fs::create_dir_all(&self.dir).map_err(|e| io_error("create", &self.dir, e))?;
         let [bytes_path, txt_path, log_path] = self.take_targets(name)?;
-        // The job file goes last: once it exists, its listing and log exist too.
+        // The job file is filled last: once it has its bytes, its listing
+        // and log are complete too. Until then it is an empty placeholder.
         write_all_atomic(&[
             (&txt_path, listing.as_bytes()),
             (&log_path, jsonl.as_bytes()),
