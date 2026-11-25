@@ -1,6 +1,6 @@
 //! The Objects panel: one row per object with its kind, name, a mark for
-//! linked copies, file status and an eye to show or hide it and scissors to skip its cut. Below the
-//! list, the details of a single selected object with its linked copies
+//! linked copies, file status, an eye to show or hide it and scissors to
+//! skip its cut. Below the list, the details of a single selected object with its linked copies
 //! and its linked file.
 
 use egui::{RichText, Ui};
@@ -53,7 +53,7 @@ pub fn show(
                     };
                     badge(ui, icon, kind, t.text_dim);
                     let selected = snap.selection.contains(&o.id);
-                    let name = if o.visible {
+                    let name = if o.visible && o.cut_enabled {
                         RichText::new(&o.name)
                     } else {
                         RichText::new(&o.name).color(t.text_dim)
@@ -100,7 +100,18 @@ pub fn show(
                         } else {
                             ("Cut again", format!("Cut again {}", o.name))
                         };
-                        if icon_button_hint(ui, Icon::Cut, &name, true, hint).clicked() {
+                        let resp = icon_button_hint(ui, Icon::Cut, &name, true, hint);
+                        if !o.cut_enabled {
+                            // Dimmed and struck through: the state at a glance.
+                            let r = resp.rect.shrink(4.0);
+                            ui.painter()
+                                .rect_filled(resp.rect, 2.0, t.bg.gamma_multiply(0.55));
+                            ui.painter().line_segment(
+                                [r.left_bottom(), r.right_top()],
+                                egui::Stroke::new(1.5, t.text_dim),
+                            );
+                        }
+                        if resp.clicked() {
                             actions.push(toggle_cut(snap, o));
                         }
                     });

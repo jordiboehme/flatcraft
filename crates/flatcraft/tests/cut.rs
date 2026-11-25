@@ -514,3 +514,30 @@ fn last_sent_belongs_to_the_active_document() {
     wait_for_source_check(&mut h);
     assert!(h.query_by_label(&sent).is_some());
 }
+
+#[test]
+fn skipped_objects_are_left_out_of_the_cut_preview() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    run(
+        &s,
+        "object.import_svg",
+        json!({ "svg": THREE_SVG, "name": "three" }),
+    );
+    let extra = run(
+        &s,
+        "object.import_svg",
+        json!({ "svg": THREE_SVG, "name": "spare" }),
+    );
+    let mut h = harness(&dir, s.clone(), false);
+    to_cut(&mut h);
+    stage(&mut h, "Path");
+    assert_eq!(app(&h).ui.cut.timeline.total, 6);
+    run(
+        &s,
+        "object.set_cut",
+        json!({ "ids": [extra["id"]], "cut": false }),
+    );
+    h.run();
+    assert_eq!(app(&h).ui.cut.timeline.total, 3);
+}

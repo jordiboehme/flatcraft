@@ -581,7 +581,7 @@ command!(
     mutates: true,
     params: SetCutParams,
     run: run_set_cut,
-    description: "Skips or restores cutting of objects. A skipped object (cut false) stays visible but is left out of the job, with a warning. Linked copies (see object.copies) each keep their own setting. An empty ids list means the current selection. Returns {ids, cut}.",
+    description: "Skips or restores cutting of objects. A skipped object (cut false) stays visible but is left out of the job, with a warning. Linked copies (see object.copies) each keep their own setting, and copies and duplicates start with the flag of the object they were made from. An empty ids list means the current selection. Returns {ids, cut}.",
 );
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -747,6 +747,7 @@ fn run_copies(s: &mut Session, p: CopiesParams, _: Origin) -> Result<Value, Comm
     // Measured once: a copy's bounds are the original's, moved.
     let measured = placed_bounds(original);
     let visible = original.visible;
+    let cut_enabled = original.cut_enabled;
     let b = measured.unwrap_or_else(|| placed_bounds_or_center(original));
     let (step_x, step_y) = (b.width() + p.gap_mm, b.height() + p.gap_mm);
     let mut new_ids = Vec::with_capacity(p.count as usize);
@@ -766,6 +767,7 @@ fn run_copies(s: &mut Session, p: CopiesParams, _: Origin) -> Result<Value, Comm
         }
         if let (Some(area), Some(m)) = (area, measured)
             && visible
+            && cut_enabled
             && !inside(m + offset, area)
         {
             outside.push(new_id);

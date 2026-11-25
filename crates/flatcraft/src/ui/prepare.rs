@@ -830,14 +830,14 @@ impl Snapshot {
         })
     }
 
-    /// Visible objects that are not inside the cutting area.
+    /// Visible objects that are cut and not inside the cutting area.
     pub fn outside_area(&self) -> usize {
         let Some(a) = self.area else {
             return 0;
         };
         self.objects
             .iter()
-            .filter(|o| o.visible)
+            .filter(|o| o.visible && o.cut_enabled)
             .filter_map(ObjView::bounds)
             .filter(|b| !flatcraft_engine::commands::inside(*b, a))
             .count()

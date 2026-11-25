@@ -231,13 +231,24 @@ pub fn render_png(s: &Session, kind: PreviewKind, max_px: u32) -> Result<Vec<u8>
                 for cp in o.placed_paths() {
                     let c = cp.color.unwrap_or([0x22, 0x26, 0x2e]);
                     if let Some(p) = to_skia(&cp.path) {
+                        // A skipped object is dimmed and dashed, as in the app.
+                        let (alpha, dash) = if o.cut_enabled {
+                            (255, None)
+                        } else {
+                            (
+                                115,
+                                StrokeDash::new(vec![px(5.0) as f32, px(4.0) as f32], 0.0),
+                            )
+                        };
                         let stroke = Stroke {
                             width: px(1.5) as f32,
                             line_join: LineJoin::Round,
                             line_cap: LineCap::Round,
+                            dash,
                             ..Stroke::default()
                         };
-                        pm.stroke_path(&p, &paint(color(c[0], c[1], c[2])), &stroke, mat, None);
+                        let ink = paint(Color::from_rgba8(c[0], c[1], c[2], alpha));
+                        pm.stroke_path(&p, &ink, &stroke, mat, None);
                     }
                 }
             }
