@@ -80,7 +80,10 @@ pub fn harness_sized(
         );
     let ctx = h.ctx.clone();
     fonts::install(&ctx);
-    let mut app = FlatCraftApp::new(&ctx, s, dir.path().to_path_buf());
+    // Home's pictures are drawn within the frame: a worker that finishes
+    // at a random frame would make every test that starts on Home racy.
+    // The Home tests that check the worker turn this off.
+    let mut app = FlatCraftApp::new(&ctx, s, dir.path().to_path_buf()).with_inline_pictures(true);
     if !worker_delay().is_zero() {
         let repaint = ctx.clone();
         app = app.with_source_check(move |session| {

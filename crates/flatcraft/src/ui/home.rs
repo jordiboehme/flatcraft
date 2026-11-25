@@ -126,6 +126,7 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, actions: &mut Vec<Action>) {
 }
 
 fn page(ui: &mut Ui, app: &mut FlatCraftApp, t: &Tokens, width: f32, actions: &mut Vec<Action>) {
+    app.ui.home.collect(ui.ctx());
     ui.label(
         RichText::new(TITLE)
             .font(fonts::semibold(26.0))
@@ -155,7 +156,13 @@ fn page(ui: &mut Ui, app: &mut FlatCraftApp, t: &Tokens, width: f32, actions: &m
     ui.add_space(28.0);
 
     heading(ui, t, "Recent");
-    recent(ui, app, t, actions);
+    let mut missing = Vec::new();
+    recent(ui, app, t, &mut missing, actions);
+    ui.add_space(28.0);
+
+    heading(ui, t, "Samples");
+    samples(ui, app, t, width, &mut missing, actions);
+    start_worker(app, ui.ctx(), missing);
 }
 
 /// A section heading: small, dim capitals.
@@ -284,6 +291,37 @@ pub fn render_project(
         .map_err(|e| e.to_string())
 }
 
+/// A sample's picture: its project text drawn like a project file, larger.
+/// Samples are the same for the whole run, so each is drawn once per
+/// process and kept in memory; they are small and quick to draw, so they
+/// are not written to the cache folder.
+fn render_text(profiles: &flatcraft_device::ProfileStore, text: &str) -> Result<Vec<u8>, String> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static DRAWN: OnceLock<Mutex<HashMap<String, Vec<u8>>>> = OnceLock::new();
+    let key = flatcraft_engine::thumbnails::text_version(text);
+    let drawn = DRAWN.get_or_init(Mutex::default);
+    if let Some(png) = drawn.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return Ok(png.clone());
+    }
+    let png = draw_text(profiles, text)?;
+    drawn
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, png.clone());
+    Ok(png)
+}
+
+fn draw_text(profiles: &flatcraft_device::ProfileStore, text: &str) -> Result<Vec<u8>, String> {
+    let doc = flatcraft_engine::commands::project::load_rebuilt_str(profiles, text, "the sample")
+        .map_err(|e| e.to_string())?;
+    let plotter = profiles
+        .plotter(&doc.job.plotter_id)
+        .map_err(|e| e.to_string())?;
+    flatcraft_engine::preview::render_document_png(&plotter, &doc, SAMPLE_PX)
+        .map_err(|e| e.to_string())
+}
+
 /// A picture on the page.
 #[derive(Clone)]
 pub enum Thumb {
@@ -379,28 +417,42 @@ fn texture(ctx: &egui::Context, id: &str, png: &[u8]) -> Option<egui::TextureHan
     ))
 }
 
-/// The picture of `path` at `version`: from memory, from the cache, or
-/// queued for the worker (`missing`).
+/// What a picture is drawn from.
+#[derive(Debug, Clone)]
+enum Source {
+    /// A project file, with [`FlatCraftApp::thumbnailer`].
+    File(PathBuf),
+    /// A sample's project text.
+    Text(&'static str),
+}
+
+/// A picture to draw: id, version and what it is drawn from.
+type Wanted = (String, String, Source);
+
+/// The picture `id` at `version`: from memory, from the cache, or queued
+/// for the worker (`missing`).
 fn thumb_for(
     app: &mut FlatCraftApp,
     ctx: &egui::Context,
-    path: &Path,
+    id: String,
     version: &str,
-    missing: &mut Vec<(String, String, PathBuf)>,
+    source: Source,
+    missing: &mut Vec<Wanted>,
 ) -> Thumb {
-    let id = flatcraft_engine::thumbnails::project_id(path);
     if let Some((v, t)) = app.ui.home.thumbs.get(&id)
         && v == version
     {
         return t.clone();
     }
-    let thumb = match flatcraft_engine::thumbnails::cached(&app.config_dir, &id, version)
-        .and_then(|png| texture(ctx, &id, &png))
-    {
+    let on_disk = match source {
+        Source::File(_) => flatcraft_engine::thumbnails::cached(&app.config_dir, &id, version),
+        Source::Text(_) => None,
+    };
+    let thumb = match on_disk.and_then(|png| texture(ctx, &id, &png)) {
         Some(tex) => Thumb::Ready(tex),
         None if app.ui.home.busy() => return Thumb::Pending,
         None => {
-            missing.push((id.clone(), version.to_string(), path.to_path_buf()));
+            missing.push((id.clone(), version.to_string(), source));
             Thumb::Pending
         }
     };
@@ -413,32 +465,46 @@ fn thumb_for(
 
 /// Starts a worker that draws `missing` and stores each picture in the
 /// cache.
-fn start_worker(
-    app: &mut FlatCraftApp,
-    ctx: &egui::Context,
-    missing: Vec<(String, String, PathBuf)>,
-) {
+fn start_worker(app: &mut FlatCraftApp, ctx: &egui::Context, missing: Vec<Wanted>) {
     if missing.is_empty() {
         return;
     }
-    let (tx, rx) = std::sync::mpsc::channel();
     let profiles = lock(&app.session).profiles.clone();
     let draw = app.thumbnailer.clone();
     let config = app.config_dir.clone();
+    let paint = move |id: &str, version: &str, source: &Source| {
+        let result = match source {
+            Source::File(path) => draw(&profiles, path),
+            Source::Text(text) => render_text(&profiles, text),
+        };
+        // Project pictures go to the cache folder; sample pictures are
+        // kept in memory only (see `render_text`).
+        if let (Ok(png), Source::File(_)) = (&result, source)
+            && let Err(e) = flatcraft_engine::thumbnails::store(&config, id, version, png)
+        {
+            eprintln!("warning: cannot store the picture {id}: {e}");
+        }
+        result
+    };
+    if app.inline_pictures {
+        // Tests: drawn in this frame, so no worker wakes the window later.
+        for (id, version, source) in missing {
+            let result = paint(&id, &version, &source);
+            let thumb = match result.as_deref().map(|png| texture(ctx, &id, png)) {
+                Ok(Some(tex)) => Thumb::Ready(tex),
+                _ => Thumb::Failed,
+            };
+            app.ui.home.thumbs.insert(id, (version, thumb));
+        }
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
     let repaint = ctx.clone();
     app.ui.home.drawing = missing.len();
     app.ui.home.job = Some(rx);
     std::thread::spawn(move || {
-        for (id, version, path) in missing {
-            let result = draw(&profiles, &path);
-            if let Ok(png) = &result
-                && let Err(e) = flatcraft_engine::thumbnails::store(&config, &id, &version, png)
-            {
-                eprintln!(
-                    "warning: cannot store the picture of {}: {e}",
-                    path.display()
-                );
-            }
+        for (id, version, source) in missing {
+            let result = paint(&id, &version, &source);
             if tx.send((id, version, result)).is_err() {
                 return;
             }
@@ -502,9 +568,14 @@ struct Row {
 }
 
 /// The recent projects, newest first.
-fn recent(ui: &mut Ui, app: &mut FlatCraftApp, t: &Tokens, actions: &mut Vec<Action>) {
+fn recent(
+    ui: &mut Ui,
+    app: &mut FlatCraftApp,
+    t: &Tokens,
+    missing: &mut Vec<Wanted>,
+    actions: &mut Vec<Action>,
+) {
     let ctx = ui.ctx().clone();
-    app.ui.home.collect(&ctx);
     let rows: Vec<Row> = {
         let s = lock(&app.session);
         let open: Vec<(PathBuf, u64)> = s
@@ -555,7 +626,6 @@ fn recent(ui: &mut Ui, app: &mut FlatCraftApp, t: &Tokens, actions: &mut Vec<Act
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let home_dir = std::env::home_dir();
-    let mut missing = Vec::new();
     let width = ui.available_width();
     egui::Frame::new()
         .fill(t.panel)
@@ -571,14 +641,14 @@ fn recent(ui: &mut Ui, app: &mut FlatCraftApp, t: &Tokens, actions: &mut Vec<Act
                     ui.painter().hline(x, y, egui::Stroke::new(1.0, t.border));
                 }
                 row.version = flatcraft_engine::thumbnails::project_version(&row.path);
-                let thumb = row
-                    .version
-                    .clone()
-                    .map(|v| thumb_for(app, &ctx, &row.path, &v, &mut missing));
+                let thumb = row.version.clone().map(|v| {
+                    let id = flatcraft_engine::thumbnails::project_id(&row.path);
+                    let source = Source::File(row.path.clone());
+                    thumb_for(app, &ctx, id, &v, source, missing)
+                });
                 recent_row(ui, t, &row, thumb, now, home_dir.as_deref(), actions);
             }
         });
-    start_worker(app, &ctx, missing);
     if total > SHOWN_RECENT {
         ui.add_space(8.0);
         let (label, hint) = if app.ui.home.show_all {
@@ -826,6 +896,189 @@ fn trunc(text: &str, font: egui::FontId, colour: Color32, width: f32) -> egui::t
     job
 }
 
+// ---------------------------------------------------------------- samples
+
+/// The larger side of a sample picture, in pixels.
+pub const SAMPLE_PX: u32 = 320;
+/// The height of the picture on a sample card.
+const SAMPLE_PICTURE: f32 = 170.0;
+/// The height of a sample card.
+pub const SAMPLE_CARD_HEIGHT: f32 = SAMPLE_PICTURE + 72.0;
+/// A sample card is never narrower than this while there are 4 columns.
+const SAMPLE_CARD_MIN: f32 = 220.0;
+
+/// A sample project built into the app: an original design made for
+/// FlatCraft, bundled under MPL-2.0 (`assets/samples`).
+pub struct Sample {
+    /// The file name in `assets/samples`, without ".flatcraft".
+    pub id: &'static str,
+    /// The card title, also its accessible name.
+    pub title: &'static str,
+    /// The one sentence on the card.
+    pub sentence: &'static str,
+    /// The hover card.
+    pub hint: &'static str,
+    /// The project text.
+    pub text: &'static str,
+}
+
+macro_rules! sample_text {
+    ($id:literal) => {
+        include_str!(concat!("../../../../assets/samples/", $id, ".flatcraft"))
+    };
+}
+
+/// The samples, in order.
+pub const SAMPLES: [Sample; 4] = [
+    Sample {
+        id: "sticker-sheet",
+        title: "Sticker sheet",
+        sentence: "Twelve daisies as linked copies in a rectangular pattern.",
+        hint: "Opens a copy of a sticker sheet: one daisy and 11 linked copies in a grid. Linked copies share their shape, size and cut options, so a change to one changes them all. Try Scale on one of them.",
+        text: sample_text!("sticker-sheet"),
+    },
+    Sample {
+        id: "stencil",
+        title: "Stencil",
+        sentence: "The letters CUT fall out of a sheet you paint through.",
+        hint: "Opens a copy of a stencil: a sheet with the letters C, U and T. The letters fall out and the sheet with the holes is your stencil. The letters have no closed inner parts, so nothing falls out that you need.",
+        text: sample_text!("stencil"),
+    },
+    Sample {
+        id: "gift-tags",
+        title: "Gift tags",
+        sentence: "Six tags in a circular pattern, each with a hole for the ribbon.",
+        hint: "Opens a copy of six gift tags, made as linked copies in a circular pattern. Each tag has a hole: the hole is cut before the tag, so the paper stays in place while the blade works.",
+        text: sample_text!("gift-tags"),
+    },
+    Sample {
+        id: "window-star",
+        title: "Window star",
+        sentence: "Paper cut work with 25 inner shapes, cut from the inside out.",
+        hint: "Opens a copy of an eight-point window star with 25 inner shapes. FlatCraft cuts every inner shape before the outline around it. See the order in the Cut workspace, on the Path stage.",
+        text: sample_text!("window-star"),
+    },
+];
+
+/// The picture id of a sample.
+pub fn sample_id(sample: &Sample) -> String {
+    format!("sample:{}", sample.id)
+}
+
+/// The sample cards.
+fn samples(
+    ui: &mut Ui,
+    app: &mut FlatCraftApp,
+    t: &Tokens,
+    width: f32,
+    missing: &mut Vec<Wanted>,
+    actions: &mut Vec<Action>,
+) {
+    let ctx = ui.ctx().clone();
+    let thumbs: Vec<Thumb> = SAMPLES
+        .iter()
+        .map(|x| {
+            let version = flatcraft_engine::thumbnails::text_version(x.text);
+            thumb_for(
+                app,
+                &ctx,
+                sample_id(x),
+                &version,
+                Source::Text(x.text),
+                missing,
+            )
+        })
+        .collect();
+    let cols = columns(width, SAMPLE_CARD_MIN, &[4, 2, 1]);
+    card_grid(
+        ui,
+        width,
+        cols,
+        SAMPLE_CARD_HEIGHT,
+        SAMPLES.len(),
+        |ui, i, size| {
+            let sample = &SAMPLES[i];
+            let resp = sample_card(ui, t, sample, &thumbs[i], size);
+            groups::card(&resp, sample.title, sample.hint, None, false);
+            if resp.clicked() {
+                actions.push(Action::OpenSample(i));
+            }
+        },
+    );
+}
+
+/// One sample card: the picture of the mat, the title and the sentence.
+fn sample_card(
+    ui: &mut Ui,
+    t: &Tokens,
+    sample: &Sample,
+    thumb: &Thumb,
+    size: Vec2,
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, sample.title));
+    if !ui.is_rect_visible(rect) {
+        return resp;
+    }
+    card_frame(ui, t, rect, &resp);
+    let painter = ui.painter();
+    let pic = Rect::from_min_size(
+        rect.min + Vec2::splat(1.0),
+        Vec2::new(rect.width() - 2.0, SAMPLE_PICTURE),
+    );
+    painter.rect_filled(
+        pic,
+        egui::CornerRadius {
+            nw: t.ribbon_radius,
+            ne: t.ribbon_radius,
+            sw: 0,
+            se: 0,
+        },
+        t.rail,
+    );
+    if let Thumb::Ready(tex) = thumb {
+        let [w, h] = tex.size();
+        let room = pic.shrink(10.0);
+        let s = (room.width() / w as f32).min(room.height() / h as f32);
+        let img = Rect::from_center_size(room.center(), Vec2::new(w as f32 * s, h as f32 * s));
+        painter.image(
+            tex.id(),
+            img,
+            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+        painter.rect_stroke(
+            img,
+            0,
+            egui::Stroke::new(1.0, t.border),
+            egui::StrokeKind::Outside,
+        );
+    }
+    painter.hline(
+        pic.x_range(),
+        pic.bottom(),
+        egui::Stroke::new(1.0, t.border),
+    );
+    let x = rect.left() + 14.0;
+    let text_w = rect.width() - 28.0;
+    let title = painter.layout(
+        sample.title.to_string(),
+        fonts::semibold(14.0),
+        t.text,
+        text_w,
+    );
+    let line = painter.layout(
+        sample.sentence.to_string(),
+        egui::FontId::proportional(12.0),
+        t.text_dim,
+        text_w,
+    );
+    let top = pic.bottom() + 12.0;
+    painter.galley(egui::pos2(x, top), title.clone(), t.text);
+    painter.galley(egui::pos2(x, top + title.size().y + 3.0), line, t.text_dim);
+    resp
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -880,6 +1133,13 @@ mod tests {
         let mut all = vec![TITLE.to_string(), SUBTITLE.to_string()];
         for c in &NEW_CARDS {
             all.extend([c.title.to_string(), (c.line)(), c.hint.to_string()]);
+        }
+        for x in &SAMPLES {
+            all.extend([
+                x.title.to_string(),
+                x.sentence.to_string(),
+                x.hint.to_string(),
+            ]);
         }
         for s in all {
             assert!(!s.contains('\u{2014}'), "em-dash in {s}");

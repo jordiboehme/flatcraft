@@ -404,7 +404,7 @@ pub(crate) fn rebuild(
 ) -> Result<Rebuilt, ImportError> {
     match source {
         Source::Svg { .. } => {
-            let import = import_svg(bytes, fonts::system_fonts())?;
+            let import = import_svg(bytes, fonts::fonts_for(bytes))?;
             Ok(Rebuilt {
                 frame: import.page_frame_mm,
                 warnings: import.warnings.iter().map(warning_text).collect(),

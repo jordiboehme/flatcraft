@@ -39,6 +39,11 @@ pub fn project_version(path: &Path) -> Option<String> {
     Some(format!("{ns}-{}", m.len()))
 }
 
+/// The version of a picture drawn from text (a sample): its hash.
+pub fn text_version(text: &str) -> String {
+    sha256_hex(text.as_bytes())[..16].to_string()
+}
+
 fn prefix(id: &str) -> String {
     sha256_hex(id.as_bytes())[..16].to_string()
 }

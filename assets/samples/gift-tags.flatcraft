@@ -1,0 +1,129 @@
+{
+  "format_version": 2,
+  "job": {
+    "force": null,
+    "material_id": "copy-paper",
+    "media_id": "mat-12x12",
+    "passes": null,
+    "plotter_id": "file-output-gpgl-cameo2",
+    "speed": null,
+    "strategy": "quality"
+  },
+  "link_groups": [
+    {
+      "cut": {
+        "auto_threshold_mm": 0.5,
+        "mode": "object_outlines",
+        "strokes": "auto"
+      },
+      "frame_mm": {
+        "x0": 0.0,
+        "x1": 300.00000228881834,
+        "y0": 0.0,
+        "y1": 300.00000228881834
+      },
+      "id": 1,
+      "local_bounds_mm": {
+        "x0": 132.00000165303547,
+        "x1": 168.00000063578287,
+        "y0": 30.000001843770345,
+        "y1": 92.00000457763672
+      },
+      "scale_x": 1.0,
+      "scale_y": 1.0,
+      "source": {
+        "Svg": {
+          "bytes": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMDBtbSIgaGVpZ2h0PSIzMDBtbSIgdmlld0JveD0iMCAwIDMwMCAzMDAiPjxwYXRoIGQ9Ik0xNDMuMDAwLDMwLjAwMCBMMTU3LjAwMCwzMC4wMDAgTDE2OC4wMDAsNDEuMDAwIEwxNjguMDAwLDkyLjAwMCBMMTMyLjAwMCw5Mi4wMDAgTDEzMi4wMDAsNDEuMDAwIFoiLz48Y2lyY2xlIGN4PSIxNTAuMDAwIiBjeT0iNDAuMDAwIiByPSIzLjUwMCIvPjwvc3ZnPg==",
+          "name": "Gift tag"
+        }
+      }
+    }
+  ],
+  "next_id": 7,
+  "objects": [
+    {
+      "id": 1,
+      "link_group": 1,
+      "name": "Gift tag",
+      "transform": {
+        "center_mm": {
+          "x": 150.00000114440917,
+          "y": 61.00000321070353
+        },
+        "mirror": false,
+        "rotation_deg": 0.0
+      },
+      "visible": true
+    },
+    {
+      "id": 2,
+      "link_group": 1,
+      "name": "Gift tag",
+      "transform": {
+        "center_mm": {
+          "x": 227.0762587284688,
+          "y": 105.50000259643917
+        },
+        "mirror": false,
+        "rotation_deg": 60.0
+      },
+      "visible": true
+    },
+    {
+      "id": 3,
+      "link_group": 1,
+      "name": "Gift tag",
+      "transform": {
+        "center_mm": {
+          "x": 227.07625758405965,
+          "y": 194.49999938573563
+        },
+        "mirror": false,
+        "rotation_deg": 120.0
+      },
+      "visible": true
+    },
+    {
+      "id": 4,
+      "link_group": 1,
+      "name": "Gift tag",
+      "transform": {
+        "center_mm": {
+          "x": 149.99999885559083,
+          "y": 238.99999678929646
+        },
+        "mirror": false,
+        "rotation_deg": 180.0
+      },
+      "visible": true
+    },
+    {
+      "id": 5,
+      "link_group": 1,
+      "name": "Gift tag",
+      "transform": {
+        "center_mm": {
+          "x": 72.92374127153123,
+          "y": 194.49999740356085
+        },
+        "mirror": false,
+        "rotation_deg": 240.0
+      },
+      "visible": true
+    },
+    {
+      "id": 6,
+      "link_group": 1,
+      "name": "Gift tag",
+      "transform": {
+        "center_mm": {
+          "x": 72.92374241594038,
+          "y": 105.50000061426435
+        },
+        "mirror": false,
+        "rotation_deg": 300.0
+      },
+      "visible": true
+    }
+  ]
+}

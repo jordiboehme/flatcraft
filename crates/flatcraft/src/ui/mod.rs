@@ -250,6 +250,9 @@ pub enum Action {
     /// Home: ask where a recent project that moved went, open it there and
     /// put it in the old one's place.
     LocateRecent(PathBuf),
+    /// Home: open the sample with this index in [`home::SAMPLES`] as a new
+    /// untitled document.
+    OpenSample(usize),
     /// Home: switch to the open document with this id, in this workspace.
     ShowOpen(u64, Workspace),
     /// The "+" tab: always a new document.
@@ -358,6 +361,10 @@ pub struct FlatCraftApp {
     /// Draws the picture of a project file for Home (on a worker thread);
     /// tests replace it.
     pub thumbnailer: home::Thumbnailer,
+    /// Home draws its pictures within the frame instead of on a worker
+    /// thread. Tests turn it on, so no worker wakes the window at a random
+    /// frame; see [`Self::with_inline_pictures`].
+    pub inline_pictures: bool,
     /// Whether the system asks for reduced motion (the toasts then draw
     /// no countdown ring); tests replace it.
     pub reduce_motion: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
@@ -407,6 +414,7 @@ impl FlatCraftApp {
             reduce_motion: std::sync::Arc::new(toasts::system_reduce_motion),
             wall_clock: std::sync::Arc::new(std::time::SystemTime::now),
             thumbnailer: std::sync::Arc::new(home::render_project),
+            inline_pictures: false,
             #[cfg(target_os = "macos")]
             menu: None,
         }
@@ -437,6 +445,13 @@ impl FlatCraftApp {
         + 'static,
     ) -> Self {
         self.thumbnailer = std::sync::Arc::new(f);
+        self
+    }
+
+    /// Draws Home's pictures within the frame (`true`) or on a worker
+    /// thread (tests).
+    pub fn with_inline_pictures(mut self, on: bool) -> Self {
+        self.inline_pictures = on;
         self
     }
 
@@ -932,6 +947,27 @@ impl FlatCraftApp {
                 self.open_project(&path);
             }
             Action::RemoveRecent(path) => self.remove_recent(&path),
+            Action::OpenSample(i) => {
+                let Some(sample) = home::SAMPLES.get(i) else {
+                    return;
+                };
+                let result = flatcraft_engine::commands::project::open_text(
+                    &mut lock(&self.session),
+                    sample.text,
+                    sample.title,
+                );
+                match result {
+                    Ok(v) => {
+                        for w in v["warnings"].as_array().into_iter().flatten() {
+                            if let Some(w) = w.as_str() {
+                                self.toast(Toast::warning(w.to_string()));
+                            }
+                        }
+                        self.ui.workspace = Workspace::Prepare;
+                    }
+                    Err(e) => self.toast(Toast::error(person_text(&e))),
+                }
+            }
             Action::LocateRecent(old) => {
                 let req = files::FileRequest {
                     title: format!("Locate {}", display_name(&old)),

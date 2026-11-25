@@ -307,7 +307,7 @@ fn pictures_are_drawn_once_cached_and_refreshed_on_save() {
     let calls = Arc::new(AtomicUsize::new(0));
     let counted = calls.clone();
     let mut h = harness_with(&dir, s.clone(), move |a| {
-        a.with_thumbnailer(move |p, f| {
+        a.with_inline_pictures(false).with_thumbnailer(move |p, f| {
             counted.fetch_add(1, Ordering::SeqCst);
             flatcraft::ui::home::render_project(p, f)
         })
@@ -334,7 +334,7 @@ fn pictures_are_drawn_once_cached_and_refreshed_on_save() {
     let calls2 = Arc::new(AtomicUsize::new(0));
     let counted2 = calls2.clone();
     let mut h2 = harness_with(&dir, s.clone(), move |a| {
-        a.with_thumbnailer(move |p, f| {
+        a.with_inline_pictures(false).with_thumbnailer(move |p, f| {
             counted2.fetch_add(1, Ordering::SeqCst);
             flatcraft::ui::home::render_project(p, f)
         })
@@ -363,6 +363,7 @@ fn pictures_are_drawn_once_cached_and_refreshed_on_save() {
     assert_ne!(v1, v2);
     let png2 = flatcraft_engine::thumbnails::cached(dir.path(), &id, &v2).unwrap();
     assert_ne!(png, png2, "the picture shows the moved square");
+    assert!(flatcraft_engine::thumbnails::cached(dir.path(), &id, &v1).is_none());
     assert_eq!(cached_pictures(dir.path()).len(), 1);
     assert_eq!(
         calls.load(Ordering::SeqCst),
@@ -410,7 +411,7 @@ fn the_recent_list_keeps_more_than_the_menu_shows() {
     let s = session(&dir);
     let mut h = harness_with(&dir, s.clone(), |a| a);
     let ctx = h.ctx.clone();
-    for i in 0..30 {
+    for i in 0..flatcraft::ui::MAX_RECENT + 2 {
         let p = dir.path().join(format!("p{i:02}.flatcraft"));
         s.lock()
             .unwrap()

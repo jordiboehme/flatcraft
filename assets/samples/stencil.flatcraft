@@ -1,0 +1,53 @@
+{
+  "format_version": 1,
+  "job": {
+    "force": null,
+    "material_id": "copy-paper",
+    "media_id": "mat-12x12",
+    "passes": null,
+    "plotter_id": "file-output-gpgl-cameo2",
+    "speed": null,
+    "strategy": "quality"
+  },
+  "next_id": 2,
+  "objects": [
+    {
+      "cut": {
+        "auto_threshold_mm": 0.5,
+        "mode": "object_outlines",
+        "strokes": "auto"
+      },
+      "frame_mm": {
+        "x0": 0.0,
+        "x1": 300.00000228881834,
+        "y0": 0.0,
+        "y1": 300.00000228881834
+      },
+      "id": 1,
+      "local_bounds_mm": {
+        "x0": 30.000001843770345,
+        "x1": 270.00000851949056,
+        "y0": 100.00000076293945,
+        "y1": 203.99999961853027
+      },
+      "name": "Stencil",
+      "source": {
+        "Svg": {
+          "bytes": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMDBtbSIgaGVpZ2h0PSIzMDBtbSIgdmlld0JveD0iMCAwIDMwMCAzMDAiPjxyZWN0IHg9IjMwIiB5PSIxMDAiIHdpZHRoPSIyNDAiIGhlaWdodD0iMTA0IiByeD0iOCIvPjxwYXRoIGQ9Ik01NS4wMDAsMTIwLjAwMCBMMTA1LjAwMCwxMjAuMDAwIEwxMDUuMDAwLDEzNC4wMDAgTDY5LjAwMCwxMzQuMDAwIEw2OS4wMDAsMTcwLjAwMCBMMTA1LjAwMCwxNzAuMDAwIEwxMDUuMDAwLDE4NC4wMDAgTDU1LjAwMCwxODQuMDAwIFoiLz48cGF0aCBkPSJNMTI1LjAwMCwxMjAuMDAwIEwxMzkuMDAwLDEyMC4wMDAgTDEzOS4wMDAsMTcwLjAwMCBMMTYxLjAwMCwxNzAuMDAwIEwxNjEuMDAwLDEyMC4wMDAgTDE3NS4wMDAsMTIwLjAwMCBMMTc1LjAwMCwxODQuMDAwIEwxMjUuMDAwLDE4NC4wMDAgWiIvPjxwYXRoIGQ9Ik0xOTUuMDAwLDEyMC4wMDAgTDI0NS4wMDAsMTIwLjAwMCBMMjQ1LjAwMCwxMzQuMDAwIEwyMjcuMDAwLDEzNC4wMDAgTDIyNy4wMDAsMTg0LjAwMCBMMjEzLjAwMCwxODQuMDAwIEwyMTMuMDAwLDEzNC4wMDAgTDE5NS4wMDAsMTM0LjAwMCBaIi8+PC9zdmc+",
+          "name": "Stencil"
+        }
+      },
+      "transform": {
+        "center_mm": {
+          "x": 150.00000518163046,
+          "y": 152.00000019073485
+        },
+        "mirror": false,
+        "rotation_deg": 0.0,
+        "scale_x": 1.0,
+        "scale_y": 1.0
+      },
+      "visible": true
+    }
+  ]
+}

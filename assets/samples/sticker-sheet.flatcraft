@@ -1,0 +1,213 @@
+{
+  "format_version": 2,
+  "job": {
+    "force": null,
+    "material_id": "copy-paper",
+    "media_id": "mat-12x12",
+    "passes": null,
+    "plotter_id": "file-output-gpgl-cameo2",
+    "speed": null,
+    "strategy": "quality"
+  },
+  "link_groups": [
+    {
+      "cut": {
+        "auto_threshold_mm": 0.5,
+        "mode": "object_outlines",
+        "strokes": "auto"
+      },
+      "frame_mm": {
+        "x0": 0.0,
+        "x1": 300.00000228881834,
+        "y0": 0.0,
+        "y1": 300.00000228881834
+      },
+      "id": 1,
+      "local_bounds_mm": {
+        "x0": 34.99999945958455,
+        "x1": 75.00000057220458,
+        "y0": 55.0000020345052,
+        "y1": 94.99999910990397
+      },
+      "scale_x": 1.0,
+      "scale_y": 1.0,
+      "source": {
+        "Svg": {
+          "bytes": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMDBtbSIgaGVpZ2h0PSIzMDBtbSIgdmlld0JveD0iMCAwIDMwMCAzMDAiPjxwYXRoIGQ9Ik01NS4wMDAsNTUuMDAwIEw1NS41MjIsNTUuMDcyIEw1Ni4wMzMsNTUuMjg2IEw1Ni41MjQsNTUuNjMzIEw1Ni45ODcsNTYuMDk3IEw1Ny40MTUsNTYuNjU4IEw1Ny44MDQsNTcuMjk0IEw1OC4xNTUsNTcuOTc2IEw1OC40NjksNTguNjc4IEw1OC43NTIsNTkuMzcxIEw1OS4wMTIsNjAuMDI4IEw1OS4yNTgsNjAuNjI1IEw1OS41MDMsNjEuMTQwIEw1OS43NjAsNjEuNTU5IEw2MC4wNDEsNjEuODY5IEw2MC4zNTgsNjIuMDY2IEw2MC43MjEsNjIuMTUwIEw2MS4xMzksNjIuMTMwIEw2MS42MTYsNjIuMDE1IEw2Mi4xNTQsNjEuODI0IEw2Mi43NTAsNjEuNTc3IEw2My4zOTgsNjEuMjk2IEw2NC4wODgsNjEuMDA2IEw2NC44MDcsNjAuNzMxIEw2NS41MzcsNjAuNDk3IEw2Ni4yNjIsNjAuMzIzIEw2Ni45NjIsNjAuMjI4IEw2Ny42MTcsNjAuMjI4IEw2OC4yMDksNjAuMzMwIEw2OC43MjIsNjAuNTQwIEw2OS4xNDIsNjAuODU4IEw2OS40NjAsNjEuMjc4IEw2OS42NzAsNjEuNzkxIEw2OS43NzIsNjIuMzgzIEw2OS43NzIsNjMuMDM4IEw2OS42NzcsNjMuNzM4IEw2OS41MDMsNjQuNDYzIEw2OS4yNjksNjUuMTkzIEw2OC45OTQsNjUuOTEyIEw2OC43MDQsNjYuNjAyIEw2OC40MjMsNjcuMjUwIEw2OC4xNzYsNjcuODQ2IEw2Ny45ODUsNjguMzg0IEw2Ny44NzAsNjguODYxIEw2Ny44NTAsNjkuMjc5IEw2Ny45MzQsNjkuNjQyIEw2OC4xMzEsNjkuOTU5IEw2OC40NDEsNzAuMjQwIEw2OC44NjAsNzAuNDk3IEw2OS4zNzUsNzAuNzQyIEw2OS45NzIsNzAuOTg4IEw3MC42MjksNzEuMjQ4IEw3MS4zMjIsNzEuNTMxIEw3Mi4wMjQsNzEuODQ1IEw3Mi43MDYsNzIuMTk2IEw3My4zNDIsNzIuNTg1IEw3My45MDMsNzMuMDEzIEw3NC4zNjcsNzMuNDc2IEw3NC43MTQsNzMuOTY3IEw3NC45MjgsNzQuNDc4IEw3NS4wMDAsNzUuMDAwIEw3NC45MjgsNzUuNTIyIEw3NC43MTQsNzYuMDMzIEw3NC4zNjcsNzYuNTI0IEw3My45MDMsNzYuOTg3IEw3My4zNDIsNzcuNDE1IEw3Mi43MDYsNzcuODA0IEw3Mi4wMjQsNzguMTU1IEw3MS4zMjIsNzguNDY5IEw3MC42MjksNzguNzUyIEw2OS45NzIsNzkuMDEyIEw2OS4zNzUsNzkuMjU4IEw2OC44NjAsNzkuNTAzIEw2OC40NDEsNzkuNzYwIEw2OC4xMzEsODAuMDQxIEw2Ny45MzQsODAuMzU4IEw2Ny44NTAsODAuNzIxIEw2Ny44NzAsODEuMTM5IEw2Ny45ODUsODEuNjE2IEw2OC4xNzYsODIuMTU0IEw2OC40MjMsODIuNzUwIEw2OC43MDQsODMuMzk4IEw2OC45OTQsODQuMDg4IEw2OS4yNjksODQuODA3IEw2OS41MDMsODUuNTM3IEw2OS42NzcsODYuMjYyIEw2OS43NzIsODYuOTYyIEw2OS43NzIsODcuNjE3IEw2OS42NzAsODguMjA5IEw2OS40NjAsODguNzIyIEw2OS4xNDIsODkuMTQyIEw2OC43MjIsODkuNDYwIEw2OC4yMDksODkuNjcwIEw2Ny42MTcsODkuNzcyIEw2Ni45NjIsODkuNzcyIEw2Ni4yNjIsODkuNjc3IEw2NS41MzcsODkuNTAzIEw2NC44MDcsODkuMjY5IEw2NC4wODgsODguOTk0IEw2My4zOTgsODguNzA0IEw2Mi43NTAsODguNDIzIEw2Mi4xNTQsODguMTc2IEw2MS42MTYsODcuOTg1IEw2MS4xMzksODcuODcwIEw2MC43MjEsODcuODUwIEw2MC4zNTgsODcuOTM0IEw2MC4wNDEsODguMTMxIEw1OS43NjAsODguNDQxIEw1OS41MDMsODguODYwIEw1OS4yNTgsODkuMzc1IEw1OS4wMTIsODkuOTcyIEw1OC43NTIsOTAuNjI5IEw1OC40NjksOTEuMzIyIEw1OC4xNTUsOTIuMDI0IEw1Ny44MDQsOTIuNzA2IEw1Ny40MTUsOTMuMzQyIEw1Ni45ODcsOTMuOTAzIEw1Ni41MjQsOTQuMzY3IEw1Ni4wMzMsOTQuNzE0IEw1NS41MjIsOTQuOTI4IEw1NS4wMDAsOTUuMDAwIEw1NC40NzgsOTQuOTI4IEw1My45NjcsOTQuNzE0IEw1My40NzYsOTQuMzY3IEw1My4wMTMsOTMuOTAzIEw1Mi41ODUsOTMuMzQyIEw1Mi4xOTYsOTIuNzA2IEw1MS44NDUsOTIuMDI0IEw1MS41MzEsOTEuMzIyIEw1MS4yNDgsOTAuNjI5IEw1MC45ODgsODkuOTcyIEw1MC43NDIsODkuMzc1IEw1MC40OTcsODguODYwIEw1MC4yNDAsODguNDQxIEw0OS45NTksODguMTMxIEw0OS42NDIsODcuOTM0IEw0OS4yNzksODcuODUwIEw0OC44NjEsODcuODcwIEw0OC4zODQsODcuOTg1IEw0Ny44NDYsODguMTc2IEw0Ny4yNTAsODguNDIzIEw0Ni42MDIsODguNzA0IEw0NS45MTIsODguOTk0IEw0NS4xOTMsODkuMjY5IEw0NC40NjMsODkuNTAzIEw0My43MzgsODkuNjc3IEw0My4wMzgsODkuNzcyIEw0Mi4zODMsODkuNzcyIEw0MS43OTEsODkuNjcwIEw0MS4yNzgsODkuNDYwIEw0MC44NTgsODkuMTQyIEw0MC41NDAsODguNzIyIEw0MC4zMzAsODguMjA5IEw0MC4yMjgsODcuNjE3IEw0MC4yMjgsODYuOTYyIEw0MC4zMjMsODYuMjYyIEw0MC40OTcsODUuNTM3IEw0MC43MzEsODQuODA3IEw0MS4wMDYsODQuMDg4IEw0MS4yOTYsODMuMzk4IEw0MS41NzcsODIuNzUwIEw0MS44MjQsODIuMTU0IEw0Mi4wMTUsODEuNjE2IEw0Mi4xMzAsODEuMTM5IEw0Mi4xNTAsODAuNzIxIEw0Mi4wNjYsODAuMzU4IEw0MS44NjksODAuMDQxIEw0MS41NTksNzkuNzYwIEw0MS4xNDAsNzkuNTAzIEw0MC42MjUsNzkuMjU4IEw0MC4wMjgsNzkuMDEyIEwzOS4zNzEsNzguNzUyIEwzOC42NzgsNzguNDY5IEwzNy45NzYsNzguMTU1IEwzNy4yOTQsNzcuODA0IEwzNi42NTgsNzcuNDE1IEwzNi4wOTcsNzYuOTg3IEwzNS42MzMsNzYuNTI0IEwzNS4yODYsNzYuMDMzIEwzNS4wNzIsNzUuNTIyIEwzNS4wMDAsNzUuMDAwIEwzNS4wNzIsNzQuNDc4IEwzNS4yODYsNzMuOTY3IEwzNS42MzMsNzMuNDc2IEwzNi4wOTcsNzMuMDEzIEwzNi42NTgsNzIuNTg1IEwzNy4yOTQsNzIuMTk2IEwzNy45NzYsNzEuODQ1IEwzOC42NzgsNzEuNTMxIEwzOS4zNzEsNzEuMjQ4IEw0MC4wMjgsNzAuOTg4IEw0MC42MjUsNzAuNzQyIEw0MS4xNDAsNzAuNDk3IEw0MS41NTksNzAuMjQwIEw0MS44NjksNjkuOTU5IEw0Mi4wNjYsNjkuNjQyIEw0Mi4xNTAsNjkuMjc5IEw0Mi4xMzAsNjguODYxIEw0Mi4wMTUsNjguMzg0IEw0MS44MjQsNjcuODQ2IEw0MS41NzcsNjcuMjUwIEw0MS4yOTYsNjYuNjAyIEw0MS4wMDYsNjUuOTEyIEw0MC43MzEsNjUuMTkzIEw0MC40OTcsNjQuNDYzIEw0MC4zMjMsNjMuNzM4IEw0MC4yMjgsNjMuMDM4IEw0MC4yMjgsNjIuMzgzIEw0MC4zMzAsNjEuNzkxIEw0MC41NDAsNjEuMjc4IEw0MC44NTgsNjAuODU4IEw0MS4yNzgsNjAuNTQwIEw0MS43OTEsNjAuMzMwIEw0Mi4zODMsNjAuMjI4IEw0My4wMzgsNjAuMjI4IEw0My43MzgsNjAuMzIzIEw0NC40NjMsNjAuNDk3IEw0NS4xOTMsNjAuNzMxIEw0NS45MTIsNjEuMDA2IEw0Ni42MDIsNjEuMjk2IEw0Ny4yNTAsNjEuNTc3IEw0Ny44NDYsNjEuODI0IEw0OC4zODQsNjIuMDE1IEw0OC44NjEsNjIuMTMwIEw0OS4yNzksNjIuMTUwIEw0OS42NDIsNjIuMDY2IEw0OS45NTksNjEuODY5IEw1MC4yNDAsNjEuNTU5IEw1MC40OTcsNjEuMTQwIEw1MC43NDIsNjAuNjI1IEw1MC45ODgsNjAuMDI4IEw1MS4yNDgsNTkuMzcxIEw1MS41MzEsNTguNjc4IEw1MS44NDUsNTcuOTc2IEw1Mi4xOTYsNTcuMjk0IEw1Mi41ODUsNTYuNjU4IEw1My4wMTMsNTYuMDk3IEw1My40NzYsNTUuNjMzIEw1My45NjcsNTUuMjg2IEw1NC40NzgsNTUuMDcyIFoiLz48L3N2Zz4=",
+          "name": "Daisy"
+        }
+      }
+    }
+  ],
+  "next_id": 13,
+  "objects": [
+    {
+      "id": 1,
+      "link_group": 1,
+      "name": "Daisy",
+      "transform": {
+        "center_mm": {
+          "x": 55.00000001589457,
+          "y": 75.00000057220458
+        },
+        "mirror": false,
+        "rotation_deg": 0.0
+      },
+      "visible": true
+    },
+    {
+      "id": 2,
+      "link_group": 1,
+      "name": "Daisy",
+      "transform": {
+        "center_mm": {
+          "x": 117.00000112851461,
+          "y": 75.00000057220458
+        },
+        "mirror": false,
+        "rotation_deg": 0.0
+      },
+      "visible": true
+    },
+    {
+      "id": 3,
+      "link_group": 1,
+      "name": "Daisy",
+      "transform": {
+        "center_mm": {
+          "x": 179.00000224113464,
+          "y": 75.00000057220458
+        },
+        "mirror": false,
+        "rotation_deg": 0.0
+      },
+      "visible": true
+    },
+    {
+      "id": 4,
+      "link_group": 1,
+      "name": "Daisy",
+      "transform": {
+        "center_mm": {
+          "x": 241.00000335375466,
+          "y": 75.00000057220458
+        },
+        "mirror": false,
+        "rotation_deg": 0.0
+      },
+      "visible": true
+    },
+    {
+      "id": 5,
+      "link_group": 1,
+      "name": "Daisy",
+      "transform": {
+        "center_mm": {
+          "x": 55.00000001589457,
+          "y": 136.99999764760335
+        },
+        "mirror": false,
+        "rotation_deg": 0.0
+      },
+      "visible": true
+    },
+    {
+      "id": 6,
+      "link_group": 1,
+      "name": "Daisy",
+      "transform": {
+        "center_mm": {
+          "x": 117.00000112851461,
+          "y": 136.99999764760335
+        },
+        "mirror": false,
+        "rotation_deg": 0.0
+      },
+      "visible": true
+    },
+    {
+      "id": 7,
+      "link_group": 1,
+      "name": "Daisy",
+      "transform": {
+        "center_mm": {
+          "x": 179.00000224113464,
+          "y": 136.99999764760335
+        },
+        "mirror": false,
+        "rotation_deg": 0.0
+      },
+      "visible": true
+    },
+    {
+      "id": 8,
+      "link_group": 1,
+      "name": "Daisy",
+      "transform": {
+        "center_mm": {
+          "x": 241.00000335375466,
+          "y": 136.99999764760335
+        },
+        "mirror": false,
+        "rotation_deg": 0.0
+      },
+      "visible": true
+    },
+    {
+      "id": 9,
+      "link_group": 1,
+      "name": "Daisy",
+      "transform": {
+        "center_mm": {
+          "x": 55.00000001589457,
+          "y": 198.99999472300212
+        },
+        "mirror": false,
+        "rotation_deg": 0.0
+      },
+      "visible": true
+    },
+    {
+      "id": 10,
+      "link_group": 1,
+      "name": "Daisy",
+      "transform": {
+        "center_mm": {
+          "x": 117.00000112851461,
+          "y": 198.99999472300212
+        },
+        "mirror": false,
+        "rotation_deg": 0.0
+      },
+      "visible": true
+    },
+    {
+      "id": 11,
+      "link_group": 1,
+      "name": "Daisy",
+      "transform": {
+        "center_mm": {
+          "x": 179.00000224113464,
+          "y": 198.99999472300212
+        },
+        "mirror": false,
+        "rotation_deg": 0.0
+      },
+      "visible": true
+    },
+    {
+      "id": 12,
+      "link_group": 1,
+      "name": "Daisy",
+      "transform": {
+        "center_mm": {
+          "x": 241.00000335375466,
+          "y": 198.99999472300212
+        },
+        "mirror": false,
+        "rotation_deg": 0.0
+      },
+      "visible": true
+    }
+  ]
+}
