@@ -28,24 +28,20 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// The session with the presets in `<config_dir>/profiles` and the stored
-/// preferences.
+/// preferences. It watches the preferences file, because another FlatCraft
+/// process (a window or a headless `flatcraft mcp`) may change it.
 fn load_session(config_dir: PathBuf, has_ui: bool) -> anyhow::Result<SharedSession> {
     let profiles = ProfileStore::load(&config_dir.join("profiles"))
         .context("cannot load the plotter and material profiles")?;
     let prefs = Preferences::load(&config_dir);
-    Ok(Arc::new(Mutex::new(Session::new(
-        profiles, prefs, has_ui, config_dir,
-    ))))
+    let mut session = Session::new(profiles, prefs, has_ui, config_dir);
+    session.watch_prefs_file();
+    Ok(Arc::new(Mutex::new(session)))
 }
 
 /// `flatcraft mcp`: no window, the server on the main thread.
 fn run_headless(config_dir: PathBuf) -> anyhow::Result<()> {
     let session = load_session(config_dir, false)?;
-    // A window of another FlatCraft process may change the preferences.
-    session
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .watch_prefs_file();
     stdio::serve(session, Arc::new(|| {}))
 }
 

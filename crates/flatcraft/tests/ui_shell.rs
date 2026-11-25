@@ -189,6 +189,31 @@ fn open_adds_to_recent_projects() {
 }
 
 #[test]
+fn a_recent_project_save_keeps_what_another_window_stored() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let path = dir.path().join("coasters.flatcraft");
+    s.lock()
+        .unwrap()
+        .execute("project.save", json!({ "path": path }), Origin::User)
+        .unwrap();
+    let mut h = harness(&dir, session(&dir), false);
+    // Another FlatCraft window turns on auto reload after this one started.
+    let other = session(&dir);
+    other
+        .lock()
+        .unwrap()
+        .update_prefs(|p| p.auto_reload = true)
+        .unwrap();
+    let ctx = h.ctx.clone();
+    app_mut(&mut h).apply(&ctx, vec![Action::Open(path.clone())]);
+    let stored = Preferences::load(dir.path());
+    assert_eq!(stored.recent_projects, [path]);
+    assert!(stored.auto_reload, "the other window's change survives");
+}
+
+#[test]
 fn close_targets_the_document_by_id() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);

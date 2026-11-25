@@ -797,17 +797,17 @@ impl FlatCraftApp {
         }
     }
 
-    /// Puts the project first in the recent list and stores the preferences.
+    /// Puts the project first in the recent list and stores it. Only the
+    /// recent list changes: the file is read again first, so a preference
+    /// another FlatCraft process stored meanwhile is kept.
     fn remember_recent(&mut self, path: &Path) {
         let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-        let result = {
-            let mut s = lock(&self.session);
-            let recent = &mut s.prefs.recent_projects;
+        let result = lock(&self.session).update_prefs(|p| {
+            let recent = &mut p.recent_projects;
             recent.retain(|p| p != &path);
             recent.insert(0, path);
             recent.truncate(MAX_RECENT);
-            s.prefs.save(&self.config_dir)
-        };
+        });
         if let Err(e) = result {
             self.toast(Toast::error(format!(
                 "Cannot store the recent projects: {e}"
@@ -909,6 +909,7 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
         (s.doc().id(), open)
     };
     app.ui.number_documents(&open);
+    refresh_prefs(&ctx, app);
     shortcuts(&ctx, active, &mut actions);
     dropped_files(&ctx, &app.tokens, &mut actions);
     let focused = ctx.input(|i| {
@@ -979,6 +980,20 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     if app.agent {
         // Keeps the agent pill current.
         ctx.request_repaint_after(Duration::from_secs(1));
+    }
+}
+
+/// Picks up preferences another FlatCraft process stored (at most once a
+/// second, see `Session::refresh_prefs`) and applies a changed theme.
+fn refresh_prefs(ctx: &egui::Context, app: &mut FlatCraftApp) {
+    let now = (app.clock)();
+    let theme = {
+        let mut s = lock(&app.session);
+        s.refresh_prefs(now).then_some(s.prefs.theme)
+    };
+    if let Some(theme) = theme {
+        app.tokens = Tokens::for_theme(theme);
+        theme::apply(ctx, &app.tokens);
     }
 }
 

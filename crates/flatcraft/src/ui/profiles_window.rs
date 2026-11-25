@@ -2029,19 +2029,16 @@ fn set_pref(app: &mut FlatCraftApp, ctx: &egui::Context, change: PrefsChange) {
         PrefsChange::Theme(t) => Some(*t),
         _ => None,
     };
-    let result = {
-        let mut s = lock(&app.session);
-        let p = &mut s.prefs;
-        match change {
-            PrefsChange::AllowAgentCuts(v) => p.allow_agent_cuts = v,
-            PrefsChange::Theme(v) => p.theme = v,
-            PrefsChange::DefaultPlotter(v) => p.default_plotter = v,
-            PrefsChange::DefaultMaterial(v) => p.default_material = v,
-            PrefsChange::OutputDir(v) => p.output_dir = v,
-            PrefsChange::AutoReload(v) => p.auto_reload = v,
-        }
-        s.prefs.save(&app.config_dir)
-    };
+    // Only the touched field changes; the file is read again first, so a
+    // preference another FlatCraft process stored meanwhile is kept.
+    let result = lock(&app.session).update_prefs(|p| match change {
+        PrefsChange::AllowAgentCuts(v) => p.allow_agent_cuts = v,
+        PrefsChange::Theme(v) => p.theme = v,
+        PrefsChange::DefaultPlotter(v) => p.default_plotter = v,
+        PrefsChange::DefaultMaterial(v) => p.default_material = v,
+        PrefsChange::OutputDir(v) => p.output_dir = v,
+        PrefsChange::AutoReload(v) => p.auto_reload = v,
+    });
     if let Some(theme) = theme {
         app.tokens = Tokens::for_theme(theme);
         theme::apply(ctx, &app.tokens);
