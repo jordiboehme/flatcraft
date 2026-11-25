@@ -1,7 +1,7 @@
 //! Import (file dialog and drag-and-drop) and the Trace dialog.
 //!
-//! The Trace dialog copies the image bytes and the trace settings of one
-//! raster object when it opens, under one short lock. Previews are traced
+//! The Trace dialog takes the image bytes (shared, not copied) and the
+//! trace settings of one raster object when it opens, under one short lock. Previews are traced
 //! on a worker thread that never touches the session: a change waits
 //! [`DEBOUNCE_S`] for the next one, then goes out as a job with a new
 //! generation number, and results of older generations are dropped. Apply
@@ -178,7 +178,7 @@ fn thumbnail(bytes: &[u8]) -> Option<egui::ColorImage> {
 
 /// What the worker needs besides its channels.
 struct WorkerInput {
-    bytes: Arc<Vec<u8>>,
+    bytes: Arc<[u8]>,
     blade_offset_mm: f64,
     tracer: Tracer,
     /// Set when the dialog closes: nothing more is decoded or traced.
@@ -294,7 +294,7 @@ pub struct TraceSource {
     pub doc_id: u64,
     pub id: u64,
     pub name: String,
-    pub bytes: Vec<u8>,
+    pub bytes: Arc<[u8]>,
     pub settings: TraceSettings,
     pub blade_offset_mm: f64,
     /// Taken from the object's own bytes, not the copy.
@@ -357,7 +357,7 @@ impl TraceDialog {
         let (reply_tx, replies) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let input = WorkerInput {
-            bytes: Arc::new(src.bytes),
+            bytes: src.bytes,
             blade_offset_mm: src.blade_offset_mm,
             tracer,
             cancel: cancel.clone(),
@@ -760,7 +760,7 @@ mod tests {
             doc_id: 1,
             id: 1,
             name: "x".into(),
-            bytes: Vec::new(),
+            bytes: Arc::from(Vec::new()),
             settings: TraceSettings::default(),
             blade_offset_mm: 0.25,
             rev: SourceRev::of(&[], &TraceSettings::default(), &Arc::default()),
@@ -796,7 +796,7 @@ mod tests {
             doc_id: 1,
             id: 1,
             name: "x".into(),
-            bytes: Vec::new(),
+            bytes: Arc::from(Vec::new()),
             settings: TraceSettings::default(),
             blade_offset_mm: 0.25,
             rev: SourceRev::of(&[], &TraceSettings::default(), &Arc::default()),

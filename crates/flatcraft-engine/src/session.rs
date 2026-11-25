@@ -280,7 +280,8 @@ impl DocState {
     }
 }
 
-/// Compares embedded sources, the expensive part (up to 50 MB of bytes).
+/// Compares embedded sources, the expensive part (up to 50 MB of bytes;
+/// shared bytes compare by pointer first).
 fn same_source(a: &flatcraft_core::document::Source, b: &flatcraft_core::document::Source) -> bool {
     #[cfg(test)]
     tests::SOURCE_COMPARES.with(|n| n.set(n.get() + 1));
@@ -670,7 +671,7 @@ mod tests {
                 name.into(),
                 Source::Svg {
                     name: name.into(),
-                    bytes: vec![7; 1000],
+                    bytes: vec![7; 1000].into(),
                 },
                 Vec::new(),
             );

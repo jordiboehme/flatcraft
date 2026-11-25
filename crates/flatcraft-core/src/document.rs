@@ -47,29 +47,35 @@ mod base64_bytes {
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD;
     use serde::{Deserialize, Deserializer, Serializer};
+    use std::sync::Arc;
 
-    pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(bytes: &Arc<[u8]>, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(&STANDARD.encode(bytes))
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Arc<[u8]>, D::Error> {
         let text = String::deserialize(d)?;
-        STANDARD.decode(text).map_err(serde::de::Error::custom)
+        STANDARD
+            .decode(text)
+            .map(Arc::from)
+            .map_err(serde::de::Error::custom)
     }
 }
 
-/// Original imported file, kept so the project is self-contained.
+/// Original imported file, kept so the project is self-contained. The bytes
+/// are shared (`Arc`), so undo snapshots and duplicates do not copy them;
+/// replace them as a whole, never change them in place.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Source {
     Svg {
         name: String,
         #[serde(with = "base64_bytes")]
-        bytes: Vec<u8>,
+        bytes: Arc<[u8]>,
     },
     Raster {
         name: String,
         #[serde(with = "base64_bytes")]
-        bytes: Vec<u8>,
+        bytes: Arc<[u8]>,
         trace: TraceSettings,
     },
 }

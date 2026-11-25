@@ -51,7 +51,7 @@ fn object(path: BezPath, paint: Paint, cut: CutOptions) -> Object {
         "t".into(),
         Source::Svg {
             name: "t.svg".into(),
-            bytes: vec![],
+            bytes: Vec::new().into(),
         },
         vec![CutPath {
             path,

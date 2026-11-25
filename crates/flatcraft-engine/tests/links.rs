@@ -277,7 +277,7 @@ fn reload_raster_retraces_with_stored_settings() {
     match &o.source {
         Source::Raster { trace, bytes, .. } => {
             assert!(trace.invert, "the stored trace settings are kept");
-            assert_eq!(bytes, &std::fs::read(&file).unwrap());
+            assert_eq!(&bytes[..], &std::fs::read(&file).unwrap()[..]);
         }
         other => panic!("{other:?}"),
     }

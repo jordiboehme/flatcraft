@@ -125,7 +125,10 @@ pub(crate) fn add_svg(
     let id = add_object(
         s,
         name.clone(),
-        Source::Svg { name, bytes },
+        Source::Svg {
+            name,
+            bytes: bytes.into(),
+        },
         import.paths,
         import.page_frame_mm,
     )?;
@@ -185,7 +188,7 @@ fn add_raster(
         name.clone(),
         Source::Raster {
             name,
-            bytes,
+            bytes: bytes.into(),
             trace: settings,
         },
         t.paths,

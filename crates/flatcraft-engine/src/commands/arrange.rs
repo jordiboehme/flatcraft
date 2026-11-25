@@ -208,7 +208,7 @@ mod tests {
             "line".into(),
             Source::Svg {
                 name: "line".into(),
-                bytes: Vec::new(),
+                bytes: Vec::new().into(),
             },
             vec![CutPath {
                 path,

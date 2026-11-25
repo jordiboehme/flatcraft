@@ -37,7 +37,7 @@ fn roundtrip_keeps_sources_and_transforms() {
         "one".into(),
         Source::Svg {
             name: "one.svg".into(),
-            bytes: b"<svg/>".to_vec(),
+            bytes: b"<svg/>".to_vec().into(),
         },
         vec![square(10.0)],
     );
@@ -45,7 +45,7 @@ fn roundtrip_keeps_sources_and_transforms() {
         "two".into(),
         Source::Raster {
             name: "two.png".into(),
-            bytes: vec![0, 1, 2, 255],
+            bytes: vec![0, 1, 2, 255].into(),
             trace: TraceSettings {
                 threshold: Some(100),
                 ..TraceSettings::default()
@@ -93,7 +93,7 @@ fn unknown_fields_are_tolerated() {
         "x".into(),
         Source::Svg {
             name: "x.svg".into(),
-            bytes: vec![],
+            bytes: Vec::new().into(),
         },
         vec![],
     );
@@ -149,7 +149,7 @@ fn placed_paths_apply_transform() {
         "sq".into(),
         Source::Svg {
             name: "sq.svg".into(),
-            bytes: vec![],
+            bytes: Vec::new().into(),
         },
         vec![square(10.0)],
     );
@@ -165,7 +165,7 @@ fn load_clamps_next_id() {
     let mut doc = Document::new(job());
     let svg = || Source::Svg {
         name: "x.svg".into(),
-        bytes: vec![],
+        bytes: Vec::new().into(),
     };
     doc.add("a".into(), svg(), vec![]);
     doc.add("b".into(), svg(), vec![]);
@@ -188,7 +188,7 @@ fn ids_stay_unique_after_remove() {
     let mut doc = Document::new(job());
     let svg = || Source::Svg {
         name: "x.svg".into(),
-        bytes: vec![],
+        bytes: Vec::new().into(),
     };
     doc.add("a".into(), svg(), vec![]);
     let second = doc.add("b".into(), svg(), vec![]);
@@ -243,7 +243,7 @@ fn link_roundtrips_and_a_broken_link_loads_as_none() {
         "one".into(),
         Source::Svg {
             name: "one".into(),
-            bytes: b"<svg/>".to_vec(),
+            bytes: b"<svg/>".to_vec().into(),
         },
         vec![square(10.0)],
     );
@@ -274,7 +274,7 @@ fn anchored_geometry_keeps_the_frame_on_the_mat() {
         "sq".into(),
         Source::Svg {
             name: "sq".into(),
-            bytes: vec![],
+            bytes: Vec::new().into(),
         },
         vec![square(10.0)],
     );
@@ -303,4 +303,50 @@ fn anchored_geometry_keeps_the_frame_on_the_mat() {
     assert_eq!(o.anchor_frame(), Rect::new(0.0, 0.0, 100.0, 100.0));
     o.frame = Rect::ZERO;
     assert_eq!(o.anchor_frame(), o.local_bounds);
+}
+
+#[test]
+fn undo_snapshots_share_the_source_bytes() {
+    let mut doc = Document::new(job());
+    doc.add(
+        "big".into(),
+        Source::Svg {
+            name: "big.svg".into(),
+            bytes: vec![7u8; 4096].into(),
+        },
+        vec![square(10.0)],
+    );
+    let mut undo = UndoStack::new(10);
+    undo.record(doc.clone());
+    let snapshot = undo.undo(doc.clone()).unwrap();
+    let bytes = |d: &Document| match &d.objects[0].source {
+        Source::Svg { bytes, .. } | Source::Raster { bytes, .. } => bytes.clone(),
+    };
+    assert!(std::sync::Arc::ptr_eq(&bytes(&doc), &bytes(&snapshot)));
+}
+
+#[test]
+fn source_bytes_round_trip_byte_identically() {
+    let mut doc = Document::new(job());
+    doc.add(
+        "one".into(),
+        Source::Raster {
+            name: "one.png".into(),
+            bytes: (0..=255u8).collect::<Vec<_>>().into(),
+            trace: TraceSettings::default(),
+        },
+        vec![],
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("p.flatcraft");
+    project::save(&doc, &path).unwrap();
+    let first = std::fs::read(&path).unwrap();
+    // The bytes are stored as one base64 string, as before.
+    let v: serde_json::Value = serde_json::from_slice(&first).unwrap();
+    assert!(v["objects"][0]["source"]["Raster"]["bytes"].is_string());
+    let loaded = project::load(&path).unwrap();
+    assert_eq!(loaded.objects[0].source, doc.objects[0].source);
+    let again = dir.path().join("q.flatcraft");
+    project::save(&loaded, &again).unwrap();
+    assert_eq!(std::fs::read(&again).unwrap(), first);
 }

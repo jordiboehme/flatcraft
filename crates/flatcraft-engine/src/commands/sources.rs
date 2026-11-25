@@ -503,7 +503,7 @@ fn reload_one(
         warnings.push(format!("{who}: {w}"));
     }
     match &mut o.source {
-        Source::Svg { bytes, .. } | Source::Raster { bytes, .. } => *bytes = file.bytes,
+        Source::Svg { bytes, .. } | Source::Raster { bytes, .. } => *bytes = file.bytes.into(),
     }
     o.set_geometry_anchored(rebuilt.paths, rebuilt.frame);
     o.link = Some(link);

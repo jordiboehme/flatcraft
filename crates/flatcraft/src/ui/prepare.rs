@@ -284,7 +284,7 @@ impl ShapeInput {
             name: String::new(),
             source: Source::Svg {
                 name: String::new(),
-                bytes: Vec::new(),
+                bytes: Vec::new().into(),
             },
             transform: self.transform,
             visible: true,
