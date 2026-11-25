@@ -44,10 +44,19 @@ const FIELD_MARGIN: egui::Vec2 = egui::vec2(4.0, 2.0);
 /// is: 4 digits and 2 decimals, more than any mat.
 const WIDEST_MM: &str = "-0000.00";
 
+/// The widest value the Angle field shows: 3 digits and 2 decimals.
+const WIDEST_DEG: &str = "000.00";
+
 /// A short number field of the Position and size group.
 struct NumberField<'a> {
     field: SizeField,
     label: &'a str,
+    /// An icon shown instead of the label text.
+    icon: Option<Icon>,
+    /// Shown greyed while the field is empty ("Mixed").
+    hint: &'a str,
+    /// The widest value it shows as wide as it is.
+    widest: &'a str,
     /// Its accessible name and card title.
     name: &'a str,
     setting: Setting,
@@ -64,6 +73,7 @@ impl SizeField {
             SizeField::Width => "scale-width",
             SizeField::Height => "scale-height",
             SizeField::Percent => "scale-percent",
+            SizeField::Angle => "rotation-angle",
         }
     }
 
@@ -79,6 +89,7 @@ impl SizeField {
             SizeField::Width => &mut f.width,
             SizeField::Height => &mut f.height,
             SizeField::Percent => &mut f.percent,
+            SizeField::Angle => &mut f.angle,
         }
     }
 }
@@ -113,14 +124,31 @@ fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) {
         }
     }
     let why = (!nf.enabled).then_some("Select something first.");
-    let l = ui.label(nf.label);
+    let l = match nf.icon {
+        Some(icon) => {
+            let tex = super::icons::texture(ui.ctx(), icon, LABEL_ICON);
+            let mut img = egui::Image::from_texture(egui::load::SizedTexture::new(
+                tex.id(),
+                egui::Vec2::splat(LABEL_ICON),
+            ))
+            .sense(egui::Sense::hover());
+            if !nf.enabled {
+                img = img.tint(ui.visuals().weak_text_color());
+            }
+            let r = ui.add(img);
+            r.widget_info(|| WidgetInfo::labeled(Role::Label, nf.enabled, nf.label));
+            r
+        }
+        None => ui.label(nf.label),
+    };
     groups::card(&l, nf.name, nf.setting.card(), why, false);
     let buf = nf.field.buf(fields);
-    let width = field_width(ui, buf).max(field_width(ui, WIDEST_MM));
+    let width = field_width(ui, buf).max(field_width(ui, nf.widest));
     let resp = ui.add_enabled(
         nf.enabled,
         egui::TextEdit::singleline(buf)
             .id(id)
+            .hint_text(nf.hint)
             .margin(egui::Margin::symmetric(
                 FIELD_MARGIN.x as i8,
                 FIELD_MARGIN.y as i8,
@@ -204,6 +232,8 @@ fn size_action(f: &Fields, edit: &FieldEdit, v: f64) -> Option<Action> {
     let single = ids.len() == 1;
     let params = match edit.field {
         SizeField::X => json!({ "ids": ids, "x_mm": v }),
+        // Every object gets the angle, each about its own centre.
+        SizeField::Angle => json!({ "ids": ids, "angle_deg": v }),
         SizeField::Y => json!({ "ids": ids, "y_mm": v }),
         SizeField::Percent if v > 0.0 => {
             // Each object scales about its own centre when the switch is on.
@@ -224,6 +254,7 @@ fn size_action(f: &Fields, edit: &FieldEdit, v: f64) -> Option<Action> {
     };
     let command = match edit.field {
         SizeField::X | SizeField::Y => "object.move",
+        SizeField::Angle => "object.rotate",
         _ => "object.scale",
     };
     Some(Action::RunIn {
@@ -832,14 +863,15 @@ fn switch(
     resp
 }
 
-/// The Position and size group: X, Y, W, H, % and Keep aspect, with its
+/// The Position and size group: X, Y, W, H, %, Angle and Keep aspect, with its
 /// title under them. It has no actions and never collapses.
 fn size_group(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
     let def = GroupId::Size.def();
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = groups::GROUP_GAP;
         // Three columns of two rows: X above Y, W above H, and % above
-        // Keep aspect. Each is a grid, so the labels line up.
+        // the Angle; each is a grid, so the labels line up. Keep aspect
+        // is the fourth column.
         let top = groups::pins_row(ui, |ui| {
             // Two rows fill the pins row's height, so the columns start at
             // its top (a grid does not centre itself in a row).
@@ -861,7 +893,8 @@ fn size_group(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
                         .num_columns(2)
                         .min_col_width(0.0)
                         .spacing(SIZE_GRID_GAP)
-                        .show(ui, |ui| size_scale(ui, mode, cx));
+                        .show(ui, |ui| size_scale(ui, cx));
+                    ui.vertical(|ui| keep_aspect(ui, mode, cx));
                 },
             );
             linked_note(ui, mode, cx);
@@ -905,6 +938,9 @@ fn size_xy(ui: &mut Ui, cx: &mut Cx) {
         let nf = NumberField {
             field,
             label,
+            icon: None,
+            hint: "",
+            widest: WIDEST_MM,
             name,
             setting,
             current: value.map(mm).unwrap_or_default(),
@@ -938,6 +974,9 @@ fn size_wh(ui: &mut Ui, cx: &mut Cx) {
         let nf = NumberField {
             field,
             label,
+            icon: None,
+            hint: "",
+            widest: WIDEST_MM,
             name,
             setting,
             current: value.map(mm).unwrap_or_default(),
@@ -948,13 +987,37 @@ fn size_wh(ui: &mut Ui, cx: &mut Cx) {
     }
 }
 
+/// The Angle under the %, with the rotate icon as its label.
+fn size_angle(ui: &mut Ui, cx: &mut Cx) {
+    let any = !cx.snap.selection.is_empty();
+    let current = canvas::live_angle(cx.snap, cx.st)
+        .map(mm)
+        .unwrap_or_default();
+    let nf = NumberField {
+        field: SizeField::Angle,
+        label: "Angle",
+        icon: Some(Icon::Rotate),
+        // Turned different ways: no one angle to show.
+        hint: if any { "Mixed" } else { "" },
+        widest: WIDEST_DEG,
+        name: "Angle (degrees)",
+        setting: Setting::Angle,
+        current,
+        enabled: any,
+    };
+    number_field(ui, nf, cx);
+    ui.end_row();
+}
+
+/// The size of an icon that labels a field.
+const LABEL_ICON: f32 = 12.0;
+
 /// Room between the cells of the group's columns.
 const SIZE_GRID_GAP: egui::Vec2 = egui::vec2(4.0, 4.0);
 
-/// The third column: % above Keep aspect, which sits under the field.
-fn size_scale(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
-    let ids: Vec<u64> = cx.snap.selection.iter().copied().collect();
-    let any = !ids.is_empty();
+/// The third column: % above the Angle.
+fn size_scale(ui: &mut Ui, cx: &mut Cx) {
+    let any = !cx.snap.selection.is_empty();
     let current = if any {
         mm(canvas::live_percent(cx.st).unwrap_or(100.0))
     } else {
@@ -963,6 +1026,9 @@ fn size_scale(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
     let nf = NumberField {
         field: SizeField::Percent,
         label: "%",
+        icon: None,
+        hint: "",
+        widest: WIDEST_MM,
         name: "Scale (%)",
         setting: Setting::ScalePercent,
         current,
@@ -970,8 +1036,13 @@ fn size_scale(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
     };
     number_field(ui, nf, cx);
     ui.end_row();
-    // No label of its own: the switch sits under the % field.
-    ui.allocate_exact_size(egui::Vec2::ZERO, egui::Sense::hover());
+    size_angle(ui, cx);
+}
+
+/// The fourth column: Keep aspect, at the top.
+fn keep_aspect(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
+    let ids: Vec<u64> = cx.snap.selection.iter().copied().collect();
+    let any = !ids.is_empty();
     let f = &mut cx.st.fields;
     let forced = canvas::aspect_lock(cx.snap, &ids).filter(|_| any);
     // With linked copies selected the card says how they follow.
@@ -1002,7 +1073,6 @@ fn size_scale(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
             (!any).then_some("Select something first."),
         );
     }
-    ui.end_row();
 }
 
 /// "Scales all N linked copies" after the columns, when it applies.

@@ -3227,3 +3227,76 @@ fn a_group_free_scale_refuses_linked_copies_turned_two_ways() {
         json!({ "ids": [a, b], "width_mm": 200.0, "keep_aspect": false, "group": true }),
     );
 }
+
+#[test]
+fn rotate_to_an_absolute_angle_turns_each_about_its_centre() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = import(&mut s, 20.0, 10.0);
+    let b = import(&mut s, 30.0, 10.0);
+    run(&mut s, "object.move", json!({ "ids": [b], "dx_mm": 60.0 }));
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [a], "degrees": 30.0 }),
+    );
+    let centre = |s: &Session, id: u64| s.doc().document.get(ObjectId(id)).unwrap().transform;
+    let (ca, cb) = (centre(&s, a).center_mm, centre(&s, b).center_mm);
+    let steps = s.doc().undo.undo_len();
+    // -45 is 315 clockwise; both get it, each about its own centre.
+    let r = run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [a, b], "angle_deg": -45.0 }),
+    );
+    assert_eq!(r["objects"].as_array().unwrap().len(), 2);
+    assert_eq!(s.doc().undo.undo_len(), steps + 1);
+    for (id, c) in [(a, ca), (b, cb)] {
+        let t = centre(&s, id);
+        assert!(close(t.rotation_deg, 315.0), "{t:?}");
+        assert!(
+            close(t.center_mm.x, c.x) && close(t.center_mm.y, c.y),
+            "{t:?}"
+        );
+    }
+    // The same angle again changes nothing and adds no undo step.
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [a, b], "angle_deg": 315.0 }),
+    );
+    assert_eq!(s.doc().undo.undo_len(), steps + 1);
+    // about: each is allowed.
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [a], "angle_deg": 370.0, "about": "each" }),
+    );
+    assert!(close(centre(&s, a).rotation_deg, 10.0));
+}
+
+#[test]
+fn rotate_needs_exactly_one_of_degrees_and_angle() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = import(&mut s, 20.0, 10.0);
+    for params in [
+        json!({ "ids": [a] }),
+        json!({ "ids": [a], "degrees": 10.0, "angle_deg": 20.0 }),
+        json!({ "ids": [a], "angle_deg": 20.0, "about": "group" }),
+        json!({ "ids": [a], "angle_deg": "north" }),
+    ] {
+        let e = s
+            .execute("object.rotate", params.clone(), Origin::User)
+            .unwrap_err();
+        assert!(matches!(e, CommandError::InvalidParams(_)), "{params}: {e}");
+    }
+    // Relative still works, with the default about.
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [a], "degrees": 10.0 }),
+    );
+    let t = s.doc().document.get(ObjectId(a)).unwrap().transform;
+    assert!(close(t.rotation_deg, 10.0));
+}

@@ -6,9 +6,11 @@
 
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2};
 use flatcraft_device::MediaKind;
+use flatcraft_engine::placement;
 use serde_json::json;
 
 use super::context_menu;
+use super::help::{self, PrepareKey};
 use super::prepare::{Drag, NUDGE_BURST, Nudge, ObjView, PrepareState, Snapshot};
 use super::theme::Tokens;
 use super::{Action, fonts};
@@ -26,6 +28,12 @@ pub const RULER: f32 = 18.0;
 pub const HANDLE: f32 = 4.0;
 /// Pick distance around a handle, in points.
 pub const HANDLE_PICK: f32 = 7.0;
+/// How far from a corner the rotate zone reaches, in points: from the end
+/// of the handle's pick area out to 14 points past the handle's edge, and
+/// only outside the selection box.
+pub const ROTATE_REACH: f32 = HANDLE + 14.0;
+/// The steps of a turn with Shift held, in degrees.
+pub const SNAP_DEG: f64 = 15.0;
 
 /// Pan and zoom of the mat canvas.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -113,8 +121,31 @@ enum Hit {
     /// top-right, bottom-right, bottom-left), then the middles of the sides
     /// (top, right, bottom, left).
     Handle(usize),
+    /// The rotate zone just outside corner `0..4` of the selection box.
+    Rotate(usize),
     Object(u64),
     Nothing,
+}
+
+/// What the pointer looks like over a hit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Look {
+    /// The resize cursor of handle `i`.
+    Resize(usize),
+    /// The painted rotate cursor.
+    Rotate,
+    Plain,
+}
+
+/// The look of the pointer over `hit` with `mods` held: a corner handle
+/// with Cmd (macOS) or Ctrl held rotates, so it shows the rotate cursor.
+fn look(hit: Hit, mods: egui::Modifiers) -> Look {
+    match hit {
+        Hit::Handle(i) if i < 4 && help::held(mods, PrepareKey::RotateOnCorner) => Look::Rotate,
+        Hit::Handle(i) => Look::Resize(i),
+        Hit::Rotate(_) => Look::Rotate,
+        Hit::Object(_) | Hit::Nothing => Look::Plain,
+    }
 }
 
 /// The anchor names `object.scale` takes, in handle order.
@@ -183,7 +214,164 @@ pub fn live_box(snap: &Snapshot, st: &PrepareState) -> Option<kurbo::Rect> {
     Some(match &st.drag {
         Some(Drag::Move { start, current, .. }) => b + (*current - *start),
         Some(d @ Drag::Scale { .. }) => drag_stretch(d).map_or(b, |s| s.apply(b)),
+        Some(d @ Drag::Rotate { ids, .. }) => drag_turn(d)
+            .and_then(|a| turned_box(snap, ids, a))
+            .unwrap_or(b),
         _ => b,
+    })
+}
+
+/// The box of the objects `ids` placed with the extra affine `a`: the box
+/// of their turned outlines.
+fn turned_box(snap: &Snapshot, ids: &[u64], a: kurbo::Affine) -> Option<kurbo::Rect> {
+    ids.iter()
+        .filter_map(|id| snap.object(*id))
+        .filter_map(|o| {
+            let place = a * kurbo::Affine::translate(o.transform.center_mm.to_vec2());
+            let mut pts = o.shape.lines.iter().flat_map(|l| l.points.iter());
+            let first = pts.next().map(|p| place * *p);
+            match first {
+                Some(f) => Some(pts.fold(kurbo::Rect::from_points(f, f), |r, p| {
+                    r.union_pt(place * *p)
+                })),
+                // No outline (yet): the turned box.
+                None => o.bounds().map(|b| a.transform_rect_bbox(b)),
+            }
+        })
+        .reduce(|a, b| a.union(b))
+}
+
+/// The angle the Angle field shows: the rotation all selected objects
+/// share, plus the turn of a rotate drag, in [0, 360). `None` while they
+/// are turned different ways (the field says Mixed) or nothing is
+/// selected.
+pub fn live_angle(snap: &Snapshot, st: &PrepareState) -> Option<f64> {
+    let common = common_angle(snap.selected().map(|o| o.transform.rotation_deg))?;
+    let turn = match &st.drag {
+        Some(d @ Drag::Rotate { .. }) => rotate_delta_of(d).unwrap_or(0.0),
+        _ => 0.0,
+    };
+    Some(normalise_deg(common + turn))
+}
+
+/// The one angle of `angles`, if they are all the same (359.9999 counts as
+/// 0); `None` for none or different ones.
+pub fn common_angle(mut angles: impl Iterator<Item = f64>) -> Option<f64> {
+    let first = angles.next()?;
+    angles
+        .all(|a| wrap_180(a - first).abs() < 1e-6)
+        .then_some(first)
+}
+
+/// `deg` in [0, 360), with a value that would show as 360.00 as 0.
+pub fn normalise_deg(deg: f64) -> f64 {
+    let r = deg.rem_euclid(360.0);
+    // + 0.0 turns -0.0 into 0.0.
+    if 360.0 - r < 0.005 { 0.0 } else { r + 0.0 }
+}
+
+/// `deg` in (-180, 180].
+fn wrap_180(deg: f64) -> f64 {
+    let r = deg.rem_euclid(360.0);
+    if r > 180.0 { r - 360.0 } else { r }
+}
+
+/// The turn of a rotate drag from `start` to `current` about `pivot`, in
+/// degrees clockwise on screen (y down), in (-180, 180]. With `snap` the
+/// result snaps to [`SNAP_DEG`] steps: the angle of the one object turned
+/// (`base`), or the turn itself for several (`base` None).
+pub fn rotate_delta(
+    pivot: kurbo::Point,
+    start: kurbo::Point,
+    current: kurbo::Point,
+    base: Option<f64>,
+    snap: bool,
+) -> f64 {
+    // atan2 grows clockwise on screen, because y points down.
+    let angle = |p: kurbo::Point| (p - pivot).atan2().to_degrees();
+    let d = wrap_180(angle(current) - angle(start));
+    if !snap {
+        return d;
+    }
+    let step = |v: f64| (v / SNAP_DEG).round() * SNAP_DEG;
+    match base {
+        Some(b) => wrap_180(step(b + d) - b),
+        None => wrap_180(step(d)),
+    }
+}
+
+/// The turn of a rotate drag so far, in degrees.
+fn rotate_delta_of(d: &Drag) -> Option<f64> {
+    match d {
+        Drag::Rotate {
+            pivot,
+            start,
+            current,
+            base,
+            snap,
+            ..
+        } => Some(rotate_delta(*pivot, *start, *current, *base, *snap)),
+        _ => None,
+    }
+}
+
+/// The affine of a rotate drag so far: the turn about its pivot.
+fn drag_turn(d: &Drag) -> Option<kurbo::Affine> {
+    let deg = rotate_delta_of(d)?;
+    let Drag::Rotate { pivot, .. } = d else {
+        return None;
+    };
+    let p = pivot.to_vec2();
+    Some(
+        kurbo::Affine::translate(p)
+            * kurbo::Affine::rotate(deg.to_radians())
+            * kurbo::Affine::translate(-p),
+    )
+}
+
+/// A rotate drag of the selection that starts at `start` (mm): one
+/// object turns about its own centre, several about the mean of their
+/// centres, as `object.rotate` does.
+fn rotate_drag(snap: &Snapshot, start: kurbo::Point) -> Option<Drag> {
+    let ids: Vec<u64> = snap.selection.iter().copied().collect();
+    let objects: Vec<&ObjView> = ids.iter().filter_map(|id| snap.object(*id)).collect();
+    let centres: Vec<kurbo::Point> = objects.iter().map(|o| o.transform.center_mm).collect();
+    let pivot = placement::mean_centre(&centres)?;
+    let base = match objects.as_slice() {
+        [one] => Some(one.transform.rotation_deg),
+        _ => None,
+    };
+    Some(Drag::Rotate {
+        doc_id: snap.doc_id,
+        ids,
+        pivot,
+        start,
+        current: start,
+        base,
+        snap: false,
+    })
+}
+
+/// The `object.rotate` a rotate drag sends when it ends, if it turned
+/// anything: one object gets its new angle, several turn as one group.
+fn rotate_action(d: &Drag) -> Option<Action> {
+    let Drag::Rotate {
+        doc_id, ids, base, ..
+    } = d
+    else {
+        return None;
+    };
+    let deg = rotate_delta_of(d)?;
+    if deg.abs() <= 1e-9 {
+        return None;
+    }
+    Some(match base {
+        Some(b) => Action::run(
+            *doc_id,
+            "object.rotate",
+            json!({ "ids": ids, "angle_deg": normalise_deg(b + deg) }),
+        ),
+        None => super::ribbon::rotate_action(*doc_id, ids, deg, false),
     })
 }
 
@@ -353,6 +541,15 @@ fn hit_test(snap: &Snapshot, view: &CanvasView, at: Pos2) -> Hit {
                 return Hit::Handle(i);
             }
         }
+        // Then the rotate zone, just outside a corner. A handle always wins
+        // inside its own pick area (above).
+        if !screen.contains(at) {
+            for (i, c) in handle_points(b).into_iter().take(4).enumerate() {
+                if view.mm_to_screen(c).distance(at) <= ROTATE_REACH {
+                    return Hit::Rotate(i);
+                }
+            }
+        }
     }
     let mm = view.screen_to_mm(at);
     let slack = f64::from(3.0 / view.px_per_mm);
@@ -393,6 +590,8 @@ fn drag_preview(drag: Option<&Drag>, snap: &Snapshot, id: u64) -> Option<kurbo::
                 .any(|i| snap.object(*i).is_some_and(|m| m.link_group == Some(group)))
                 .then(|| own.affine())
         }
+        // Linked copies keep their own rotation: only the turned objects.
+        d @ Drag::Rotate { ids, .. } if ids.contains(&id) => drag_turn(d),
         _ => None,
     }
 }
@@ -422,6 +621,7 @@ pub fn show(
     actions: &mut Vec<Action>,
 ) {
     st.canvas_rect = rect;
+    st.rotate_cursor = None;
     if st.view_doc != Some(snap.doc_id) {
         st.view_doc = Some(snap.doc_id);
         st.fit_pending = true;
@@ -448,7 +648,7 @@ pub fn show(
         // The same hit test as the left click.
         st.context = Some(match hit_test(snap, &st.view, p) {
             Hit::Object(id) => context_menu::target(snap, Some(id), actions),
-            Hit::Handle(_) => snap.selection.iter().copied().collect(),
+            Hit::Handle(_) | Hit::Rotate(_) => snap.selection.iter().copied().collect(),
             Hit::Nothing => context_menu::target(snap, None, actions),
         });
     }
@@ -482,6 +682,33 @@ pub fn show(
     if st.show_rulers {
         draw_rulers(&painter, rect, &view, t);
     }
+    if let Some(at) = st.rotate_cursor {
+        rotate_cursor(ui, at, t);
+    }
+}
+
+/// egui has no rotate cursor: it hides the pointer and paints a turning
+/// arrow at `at`, on top of everything.
+fn rotate_cursor(ui: &Ui, at: Pos2, t: &Tokens) {
+    ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(
+        egui::Order::Tooltip,
+        egui::Id::unique("flatcraft-rotate-cursor"),
+    ));
+    let size = 14.0;
+    painter.circle(
+        at,
+        size * 0.5 + 3.0,
+        t.panel.gamma_multiply(0.9),
+        Stroke::new(1.0, t.border),
+    );
+    let tex = super::icons::texture_colored(ui.ctx(), super::icons::Icon::Rotate, size, t.text);
+    painter.image(
+        tex.id(),
+        Rect::from_center_size(at, Vec2::splat(size)),
+        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+        Color32::WHITE,
+    );
 }
 
 /// The mat colour, falling back to paper.
@@ -702,7 +929,8 @@ fn link_badge(ui: &mut Ui, r: Rect, snap: &Snapshot, contrast: Color32) {
     };
     let size = super::ICON_SIZE * 0.8;
     let at = Rect::from_min_size(
-        r.right_top() + Vec2::new(HANDLE_PICK + 2.0, -size - HANDLE_PICK - 2.0),
+        // Past the rotate zone of the corner, so it never covers it.
+        r.right_top() + Vec2::new(ROTATE_REACH + 2.0, -size - ROTATE_REACH - 2.0),
         Vec2::splat(size),
     );
     if !ui.clip_rect().intersects(at) {
@@ -738,30 +966,37 @@ fn draw_selection(
     Some(r)
 }
 
-/// Over a handle (and not dragging): its resize cursor and its card.
-fn handle_card(ui: &Ui, resp: &egui::Response, snap: &Snapshot, st: &PrepareState) {
+/// Over a handle or the rotate zone (and not dragging): its cursor and
+/// its card.
+fn handle_card(ui: &Ui, resp: &egui::Response, snap: &Snapshot, st: &mut PrepareState) {
     if st.drag.is_some() {
         return;
     }
     let Some(at) = resp.hover_pos() else { return };
-    let Hit::Handle(i) = hit_test(snap, &st.view, at) else {
-        return;
+    let hit = hit_test(snap, &st.view, at);
+    match look(hit, ui.input(|i| i.modifiers)) {
+        Look::Resize(i) => ui.ctx().set_cursor_icon(handle_cursor(i)),
+        Look::Rotate => st.rotate_cursor = Some(at),
+        Look::Plain => {}
+    }
+    let (title, card, why) = match hit {
+        Hit::Handle(i) => {
+            let ids: Vec<u64> = snap.selection.iter().copied().collect();
+            let title = if i < 4 {
+                "Corner handle"
+            } else {
+                "Side handle"
+            };
+            (
+                title,
+                super::tools::Setting::ScaleHandle.card(),
+                aspect_lock(snap, &ids),
+            )
+        }
+        Hit::Rotate(_) => ("Rotate", super::tools::Setting::RotateZone.card(), None),
+        Hit::Object(_) | Hit::Nothing => return,
     };
-    ui.ctx().set_cursor_icon(handle_cursor(i));
-    let ids: Vec<u64> = snap.selection.iter().copied().collect();
-    let why = aspect_lock(snap, &ids);
-    let title = if i < 4 {
-        "Corner handle"
-    } else {
-        "Side handle"
-    };
-    super::groups::card(
-        resp,
-        title,
-        super::tools::Setting::ScaleHandle.card(),
-        why,
-        false,
-    );
+    super::groups::card(resp, title, card, why, false);
 }
 
 /// The resize cursor of a handle.
@@ -1038,7 +1273,7 @@ fn pointer(
 ) {
     let (space, shift, mods, wheels, zoom, hover) = ui.input(|i| {
         (
-            i.key_down(super::help::pan_key()),
+            i.key_down(help::pan_key()),
             i.modifiers.shift,
             i.modifiers,
             wheel_events(&i.raw.events),
@@ -1072,7 +1307,12 @@ fn pointer(
             .or(resp.interact_pointer_pos())
             .unwrap_or_default();
         let mm = st.view.screen_to_mm(origin);
-        st.drag = match hit_test(snap, &st.view, origin) {
+        let hit = hit_test(snap, &st.view, origin);
+        st.drag = match hit {
+            // The rotate zone, or a corner with Cmd (macOS) or Ctrl held.
+            Hit::Rotate(_) | Hit::Handle(_) if look(hit, mods) == Look::Rotate => {
+                rotate_drag(snap, mm)
+            }
             Hit::Handle(i) => {
                 let b = selection_box(snap).expect("a handle needs a selection");
                 let ids: Vec<u64> = snap.selection.iter().copied().collect();
@@ -1103,7 +1343,7 @@ fn pointer(
                 })
             }
             // A selection frame; Shift adds what it touches.
-            Hit::Nothing => Some(Drag::Frame {
+            Hit::Rotate(_) | Hit::Nothing => Some(Drag::Frame {
                 doc_id,
                 start: mm,
                 current: mm,
@@ -1114,7 +1354,10 @@ fn pointer(
     if let Some(p) = resp.interact_pointer_pos() {
         let mm = st.view.screen_to_mm(p);
         if let Some(
-            Drag::Move { current, .. } | Drag::Scale { current, .. } | Drag::Frame { current, .. },
+            Drag::Move { current, .. }
+            | Drag::Scale { current, .. }
+            | Drag::Rotate { current, .. }
+            | Drag::Frame { current, .. },
         ) = &mut st.drag
         {
             *current = mm;
@@ -1122,11 +1365,16 @@ fn pointer(
     }
     // Shift and Option count while the handle is dragged, up to the drop.
     if let Some(Drag::Scale { flip, centre, .. }) = &mut st.drag {
-        *flip = super::help::held(mods, super::help::PrepareKey::FlipKeepAspect);
-        *centre = super::help::held(mods, super::help::PrepareKey::ScaleFromCentre);
+        *flip = help::held(mods, PrepareKey::FlipKeepAspect);
+        *centre = help::held(mods, PrepareKey::ScaleFromCentre);
     }
     if let Some(Drag::Scale { handle, .. }) = &st.drag {
         ui.ctx().set_cursor_icon(handle_cursor(*handle));
+    }
+    // Shift snaps the turn while rotating, up to the drop.
+    if let Some(Drag::Rotate { snap, .. }) = &mut st.drag {
+        *snap = help::held(mods, PrepareKey::SnapAngle);
+        st.rotate_cursor = resp.interact_pointer_pos().or(hover);
     }
     if resp.drag_stopped() {
         match st.drag.take() {
@@ -1147,6 +1395,11 @@ fn pointer(
             }
             Some(d @ Drag::Scale { .. }) => {
                 if let Some(a) = scale_action(&d) {
+                    actions.push(a);
+                }
+            }
+            Some(d @ Drag::Rotate { .. }) => {
+                if let Some(a) = rotate_action(&d) {
                     actions.push(a);
                 }
             }
@@ -1184,7 +1437,7 @@ fn pointer(
                 ids
             }
             Hit::Object(id) => vec![id],
-            Hit::Handle(_) => return,
+            Hit::Handle(_) | Hit::Rotate(_) => return,
             Hit::Nothing if shift => return,
             Hit::Nothing => Vec::new(),
         };
@@ -1322,5 +1575,59 @@ mod tests {
         // Past the fixed side it does not mirror.
         let s = stretch(b, 5, kurbo::Point::new(-30.0, 10.0), false, false);
         assert_eq!(s.fx, MIN_FACTOR);
+    }
+
+    #[test]
+    fn a_turn_grows_clockwise_on_screen() {
+        let o = kurbo::Point::new(0.0, 0.0);
+        let right = kurbo::Point::new(10.0, 0.0);
+        let below = kurbo::Point::new(0.0, 10.0);
+        // From the right of the pivot to below it is a quarter turn
+        // clockwise with y down.
+        assert!((rotate_delta(o, right, below, None, false) - 90.0).abs() < 1e-9);
+        assert!((rotate_delta(o, below, right, None, false) + 90.0).abs() < 1e-9);
+        // Past half a turn it goes the short way.
+        let up_left = kurbo::Point::new(-10.0, -1.0);
+        assert!(rotate_delta(o, right, up_left, None, false) < 0.0);
+    }
+
+    #[test]
+    fn shift_snaps_the_angle_of_one_and_the_turn_of_several() {
+        let o = kurbo::Point::new(0.0, 0.0);
+        let at = |deg: f64| {
+            let r = deg.to_radians();
+            kurbo::Point::new(r.cos() * 10.0, r.sin() * 10.0)
+        };
+        let start = at(0.0);
+        // One object at 10 degrees, turned 52: 62 snaps to 60.
+        assert!((rotate_delta(o, start, at(52.0), Some(10.0), true) - 50.0).abs() < 1e-9);
+        // Several: the turn itself snaps, 52 to 45.
+        assert!((rotate_delta(o, start, at(52.0), None, true) - 45.0).abs() < 1e-9);
+        // Without Shift nothing snaps.
+        assert!((rotate_delta(o, start, at(52.0), Some(10.0), false) - 52.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn angles_are_shown_in_0_to_360() {
+        assert_eq!(normalise_deg(-30.0), 330.0);
+        assert_eq!(normalise_deg(360.0), 0.0);
+        assert_eq!(normalise_deg(359.999), 0.0);
+        assert_eq!(normalise_deg(-0.0).to_string(), "0");
+        assert_eq!(common_angle([10.0, 10.0].into_iter()), Some(10.0));
+        assert_eq!(common_angle([0.0, 359.999_999_9].into_iter()), Some(0.0));
+        assert_eq!(common_angle([10.0, 20.0].into_iter()), None);
+        assert_eq!(common_angle(std::iter::empty()), None);
+    }
+
+    #[test]
+    fn the_pointer_looks_like_what_a_drag_does() {
+        let cmd = help::drag_modifiers(help::Os::CURRENT, PrepareKey::RotateOnCorner);
+        let none = egui::Modifiers::NONE;
+        assert_eq!(look(Hit::Rotate(2), none), Look::Rotate);
+        assert_eq!(look(Hit::Handle(2), none), Look::Resize(2));
+        assert_eq!(look(Hit::Handle(2), cmd), Look::Rotate);
+        // A side handle never rotates.
+        assert_eq!(look(Hit::Handle(5), cmd), Look::Resize(5));
+        assert_eq!(look(Hit::Object(1), cmd), Look::Plain);
     }
 }

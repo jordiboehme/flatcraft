@@ -246,7 +246,7 @@ fn the_painted_active_tab_opens_into_the_panel() {
 }
 
 #[test]
-fn the_position_and_size_group_has_three_columns() {
+fn the_position_and_size_group_has_four_columns() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let a = import_square(&s);
@@ -260,6 +260,7 @@ fn the_position_and_size_group_has_three_columns() {
         let w = node_rect(&h, Role::TextInput, "Width (mm)");
         let hh = node_rect(&h, Role::TextInput, "Height (mm)");
         let pct = node_rect(&h, Role::TextInput, "Scale (%)");
+        let angle = node_rect(&h, Role::TextInput, "Angle (degrees)");
         let keep = node_rect(&h, Role::CheckBox, "Keep aspect");
         // Column 1: X above Y, the fields lined up.
         assert!(x.bottom() <= y.top(), "{width}: {x:?} {y:?}");
@@ -268,10 +269,13 @@ fn the_position_and_size_group_has_three_columns() {
         assert!(w.left() > x.right(), "{width}");
         assert!(w.bottom() <= hh.top(), "{width}: {w:?} {hh:?}");
         assert_eq!(w.left(), hh.left(), "{width}");
-        // Column 3: % above Keep aspect, which sits under the field.
+        // Column 3: % above the Angle, the fields lined up.
         assert!(pct.left() > w.right(), "{width}");
-        assert!(pct.bottom() <= keep.top(), "{width}: {pct:?} {keep:?}");
-        assert_eq!(keep.left(), pct.left(), "{width}");
+        assert!(pct.bottom() <= angle.top(), "{width}: {pct:?} {angle:?}");
+        assert_eq!(angle.left(), pct.left(), "{width}");
+        // Column 4: Keep aspect, at the top.
+        assert!(keep.left() > pct.right(), "{width}");
+        assert!(keep.top() < angle.top(), "{width}: {keep:?} {angle:?}");
         // The labels line up too.
         let wl = h.get_by_label("W").rect();
         let hl = h.get_by_label("H").rect();
@@ -279,8 +283,11 @@ fn the_position_and_size_group_has_three_columns() {
         let xl = h.get_by_label("X").rect();
         let yl = h.get_by_label("Y").rect();
         assert_eq!(xl.left(), yl.left(), "{width}");
+        let pl = h.get_by_label("%").rect();
+        let al = h.get_by_role_and_label(Role::Label, "Angle").rect();
+        assert_eq!(pl.left(), al.left(), "{width}");
         // Everything inside the pins row, above the group's title.
-        for r in [x, y, w, hh, pct, keep] {
+        for r in [x, y, w, hh, pct, angle, keep] {
             assert!(
                 r.top() >= l.tools.top() && r.bottom() <= l.tools.top() + BIG_HEIGHT,
                 "{width}: {r:?} not in the pins row of {:?}",

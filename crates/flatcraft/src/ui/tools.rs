@@ -9,6 +9,8 @@
 //! plain words, with any technical term explained. A dimmed action says
 //! why it cannot run and what to do ([`Tool::blocked`]).
 
+use std::sync::LazyLock;
+
 use serde_json::json;
 
 use super::arrange::{self, PanelKind};
@@ -1016,6 +1018,15 @@ pub fn trim_number(v: f64) -> String {
 
 // ---------------------------------------------------------------- settings
 
+/// The cards that name drag modifiers, from this system's table (see
+/// [`super::help::drag_modifiers`]).
+static HANDLE_CARD: LazyLock<String> =
+    LazyLock::new(|| super::help::handle_card(super::help::Os::CURRENT));
+static ROTATE_CARD: LazyLock<String> =
+    LazyLock::new(|| super::help::rotate_card(super::help::Os::CURRENT));
+static ANGLE_CARD: LazyLock<String> =
+    LazyLock::new(|| super::help::angle_card(super::help::Os::CURRENT));
+
 /// A setting or field that is not an action. Each has a hover card in
 /// plain words, like the actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1025,9 +1036,11 @@ pub enum Setting {
     Width,
     Height,
     ScalePercent,
+    Angle,
     KeepAspect,
     KeepAspectLinked,
     ScaleHandle,
+    RotateZone,
     EachObject,
     Search,
     CutMode,
@@ -1093,15 +1106,17 @@ pub enum Setting {
 }
 
 impl Setting {
-    pub const ALL: [Setting; 70] = [
+    pub const ALL: [Setting; 72] = [
         Setting::PositionX,
         Setting::PositionY,
         Setting::Width,
         Setting::Height,
         Setting::ScalePercent,
+        Setting::Angle,
         Setting::KeepAspect,
         Setting::KeepAspectLinked,
         Setting::ScaleHandle,
+        Setting::RotateZone,
         Setting::EachObject,
         Setting::Search,
         Setting::CutMode,
@@ -1191,12 +1206,9 @@ impl Setting {
             Setting::KeepAspectLinked => {
                 "On: width and height change together, so the shape does not get squashed, in the fields and with the handles on the mat. Off: change one without the other. Hold Shift while you drag a handle to get the opposite for that drag. Linked copies share one shape: stretching one stretches every copy along its own sides, so a copy turned by 90 degrees stretches the other way on the mat. Unlink copies first if they should not follow."
             }
-            Setting::ScaleHandle if cfg!(target_os = "linux") => {
-                "Drag to resize the selection. A corner changes width and height, a side only its own, unless Keep aspect is on. Hold Shift to get the opposite of Keep aspect for this drag, and Alt to grow from the centre instead of the far side. Some desktops use Alt-drag to move windows: if so, change that key in your desktop settings."
-            }
-            Setting::ScaleHandle => {
-                "Drag to resize the selection. A corner changes width and height, a side only its own, unless Keep aspect is on. Hold Shift to get the opposite of Keep aspect for this drag, and Option (Alt on Windows) to grow from the centre instead of the far side."
-            }
+            Setting::ScaleHandle => HANDLE_CARD.as_str(),
+            Setting::RotateZone => ROTATE_CARD.as_str(),
+            Setting::Angle => ANGLE_CARD.as_str(),
             Setting::EachObject => {
                 "On: rotate, mirror and the % field work on each selected object about its own centre. Off: the selection moves as one piece, like Voltron."
             }

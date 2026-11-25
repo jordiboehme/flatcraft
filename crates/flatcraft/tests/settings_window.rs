@@ -598,3 +598,23 @@ fn the_panel_choices_are_explained_once() {
     );
     assert!(h.query_by_label_contains("Stays open at every").is_none());
 }
+
+/// The Keyboard page lists the drag modifiers from the same table as the
+/// Help sheet, with this system's key names.
+#[test]
+fn the_keyboard_page_lists_the_drag_modifiers() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    open(&mut h, "Shortcuts");
+    let (option, cmd) = if cfg!(target_os = "macos") {
+        ("Option+drag", "Cmd+drag")
+    } else {
+        ("Alt+drag", "Ctrl+drag")
+    };
+    h.get_by_label(option);
+    h.get_by_label(cmd);
+    h.get_by_label("While dragging a corner handle: rotate instead of resize");
+    h.get_by_label("Drag just outside a corner of the selection: rotate it");
+    h.get_by_label("While rotating: turn in 15 degree steps");
+}

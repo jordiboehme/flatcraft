@@ -125,6 +125,110 @@ pub enum PrepareKey {
     /// Held while dragging a handle of the selection: it scales about the
     /// centre instead of the opposite corner or side.
     ScaleFromCentre,
+    /// Dragging just outside a corner of the selection rotates it (no key).
+    RotateZone,
+    /// Held when a corner handle drag starts: it rotates instead.
+    RotateOnCorner,
+    /// Held while rotating: the angle snaps to 15 degree steps.
+    SnapAngle,
+}
+
+/// The systems FlatCraft names keys for. Each has its own table of drag
+/// modifiers ([`drag_modifiers`]); the window uses [`Os::CURRENT`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Os {
+    MacOs,
+    Windows,
+    Linux,
+}
+
+impl Os {
+    pub const ALL: [Os; 3] = [Os::MacOs, Os::Windows, Os::Linux];
+
+    /// The system this build runs on (any other Unix counts as Linux).
+    pub const CURRENT: Os = if cfg!(target_os = "macos") {
+        Os::MacOs
+    } else if cfg!(target_os = "windows") {
+        Os::Windows
+    } else {
+        Os::Linux
+    };
+}
+
+/// The modifiers held while dragging on the canvas, per system, following
+/// each system's convention: Shift keeps or frees proportions and snaps
+/// angles everywhere; Option (macOS) or Alt scales from the centre; Cmd
+/// (macOS, as in Keynote and Sketch) or Ctrl (Windows, Linux) on a corner
+/// rotates. The rotate zone needs no key. Key rows get `NONE`.
+pub const fn drag_modifiers(os: Os, action: PrepareKey) -> Modifiers {
+    match action {
+        PrepareKey::FlipKeepAspect | PrepareKey::SnapAngle => Modifiers::SHIFT,
+        PrepareKey::ScaleFromCentre => Modifiers::ALT,
+        PrepareKey::RotateOnCorner => match os {
+            Os::MacOs => Modifiers::MAC_CMD,
+            Os::Windows | Os::Linux => Modifiers::CTRL,
+        },
+        _ => Modifiers::NONE,
+    }
+}
+
+/// The names of the modifiers `m` on `os`, joined by "+": "Cmd", "Option",
+/// "Ctrl", "Alt", "Shift". The fonts have no key symbols, so they are
+/// words.
+pub fn modifier_names(m: Modifiers, os: Os) -> String {
+    let mac = os == Os::MacOs;
+    let mut names = Vec::new();
+    if mac && (m.command || m.mac_cmd) {
+        names.push("Cmd");
+    }
+    if m.ctrl || (!mac && m.command) {
+        names.push("Ctrl");
+    }
+    if m.shift {
+        names.push("Shift");
+    }
+    if m.alt {
+        names.push(if mac { "Option" } else { "Alt" });
+    }
+    names.join("+")
+}
+
+/// The name of the key of a drag action on `os` ("Option", "Ctrl").
+fn drag_key(os: Os, action: PrepareKey) -> String {
+    modifier_names(drag_modifiers(os, action), os)
+}
+
+/// The hover card of the corner and side handles on `os`.
+pub fn handle_card(os: Os) -> String {
+    let centre = drag_key(os, PrepareKey::ScaleFromCentre);
+    let flip = drag_key(os, PrepareKey::FlipKeepAspect);
+    let rotate = drag_key(os, PrepareKey::RotateOnCorner);
+    let mut s = format!(
+        "Drag to resize the selection. A corner changes width and height, a side only its own, unless Keep aspect is on. Hold {flip} to get the opposite of Keep aspect for this drag, and {centre} to grow from the centre instead of the far side. Hold {rotate} when you start dragging a corner to rotate instead, like a dial."
+    );
+    if os == Os::Linux {
+        s.push_str(&format!(
+            " Some desktops use {centre}-drag to move windows: if so, change that key in your desktop settings."
+        ));
+    }
+    s
+}
+
+/// The hover card of the rotate zone just outside a corner on `os`.
+pub fn rotate_card(os: Os) -> String {
+    let rotate = drag_key(os, PrepareKey::RotateOnCorner);
+    let snap = drag_key(os, PrepareKey::SnapAngle);
+    format!(
+        "Drag to rotate the selection about its centre, clockwise or the other way round. Hold {snap} to turn in 15 degree steps. You can also hold {rotate} and drag a corner handle, or type the angle in Position and size."
+    )
+}
+
+/// The hover card of the Angle field on `os`.
+pub fn angle_card(os: Os) -> String {
+    let rotate = drag_key(os, PrepareKey::RotateOnCorner);
+    format!(
+        "How far the selection is turned, in degrees clockwise (0 to 360). Type an angle to turn each selected object about its own centre; with several objects turned different ways the field says Mixed. It counts when you leave the field (Tab, Enter or a click elsewhere); Esc puts the old value back. To turn by hand, drag just outside a corner, or hold {rotate} and drag a corner."
+    )
 }
 
 /// The arrow keys of [`PrepareKey::Nudge`] (the table lists them as one row).
@@ -247,10 +351,11 @@ const fn prepare(
     }
 }
 
-/// A row for modifiers held while dragging a handle of the selection.
-const fn while_dragging(modifiers: Modifiers, what: &'static str, action: PrepareKey) -> Shortcut {
+/// A row for modifiers held while dragging on the canvas; the modifiers
+/// come from this system's [`drag_modifiers`].
+const fn while_dragging(what: &'static str, action: PrepareKey) -> Shortcut {
     Shortcut {
-        modifiers,
+        modifiers: drag_modifiers(Os::CURRENT, action),
         trigger: Trigger::Drag,
         what,
         run: None,
@@ -264,7 +369,7 @@ const fn while_dragging(modifiers: Modifiers, what: &'static str, action: Prepar
 /// Every shortcut the app has. The key handler runs the entries with a
 /// `run`, in this order (a Shift variant before its plain key), and the
 /// shortcuts sheet lists all of them.
-pub const SHORTCUTS: [Shortcut; 22] = [
+pub const SHORTCUTS: [Shortcut; 25] = [
     global(
         CMD_SHIFT,
         Key::S,
@@ -347,14 +452,24 @@ pub const SHORTCUTS: [Shortcut; 22] = [
         PrepareKey::Pan,
     ),
     while_dragging(
-        Modifiers::SHIFT,
+        "Drag just outside a corner of the selection: rotate it",
+        PrepareKey::RotateZone,
+    ),
+    while_dragging(
         "While dragging a handle: the opposite of Keep aspect, for this drag",
         PrepareKey::FlipKeepAspect,
     ),
     while_dragging(
-        Modifiers::ALT,
         "While dragging a handle: scale from the centre",
         PrepareKey::ScaleFromCentre,
+    ),
+    while_dragging(
+        "While dragging a corner handle: rotate instead of resize",
+        PrepareKey::RotateOnCorner,
+    ),
+    while_dragging(
+        "While rotating: turn in 15 degree steps",
+        PrepareKey::SnapAngle,
     ),
 ];
 
@@ -363,15 +478,18 @@ fn rows(action: PrepareKey) -> impl Iterator<Item = &'static Shortcut> {
     SHORTCUTS.iter().filter(move |s| s.prepare == Some(action))
 }
 
-/// Whether the modifiers of a drag row of the table (Shift, Option) are
-/// held in `now`.
+/// Whether the modifiers of a drag row of the table (Shift, Option, Cmd
+/// or Ctrl) are held in `now`. A row without modifiers (the rotate zone)
+/// is never held.
 pub fn held(now: Modifiers, action: PrepareKey) -> bool {
     rows(action).any(|s| {
         let m = s.modifiers;
         s.is_drag()
+            && !m.is_none()
             && (!m.shift || now.shift)
             && (!m.alt || now.alt)
             && (!m.command || now.command)
+            && (!m.mac_cmd || now.mac_cmd)
             && (!m.ctrl || now.ctrl)
     })
 }
@@ -422,23 +540,14 @@ pub fn pan_key() -> Key {
 impl Shortcut {
     /// "Cmd+Shift+S" on macOS, "Ctrl+Shift+S" elsewhere.
     pub fn keys(&self) -> String {
-        let mut s = String::new();
-        if self.modifiers.command {
-            s.push_str(if cfg!(target_os = "macos") {
-                "Cmd+"
-            } else {
-                "Ctrl+"
-            });
-        }
-        if self.modifiers.shift {
-            s.push_str("Shift+");
-        }
-        if self.modifiers.alt {
-            s.push_str(if cfg!(target_os = "macos") {
-                "Option+"
-            } else {
-                "Alt+"
-            });
+        self.keys_on(Os::CURRENT)
+    }
+
+    /// Its keys with the names of `os`.
+    pub fn keys_on(&self, os: Os) -> String {
+        let mut s = modifier_names(self.modifiers, os);
+        if !s.is_empty() {
+            s.push('+');
         }
         let key = match self.trigger {
             Trigger::Key(key) => key,

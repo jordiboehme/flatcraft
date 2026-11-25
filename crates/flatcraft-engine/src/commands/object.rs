@@ -1498,11 +1498,15 @@ pub struct RotateParams {
     /// Object ids; empty means the current selection.
     #[serde(default)]
     pub ids: Vec<u64>,
-    /// Angle in degrees, clockwise on screen, added to the current rotation.
-    pub degrees: f64,
-    /// group (default): turn the objects as one group about their common centre, the mean of their centres. each: turn each about its own centre. One object turns about its own centre either way.
+    /// Angle in degrees, clockwise on screen, added to the current rotation. Give this or angle_deg.
     #[serde(default)]
-    pub about: About,
+    pub degrees: Option<f64>,
+    /// Absolute angle in degrees, clockwise on screen: every object gets this rotation, each about its own centre (kept in [0, 360)). Give this or degrees.
+    #[serde(default)]
+    pub angle_deg: Option<f64>,
+    /// group (default): turn the objects as one group about their common centre, the mean of their centres. each: turn each about its own centre. One object turns about its own centre either way. With angle_deg only each is allowed.
+    #[serde(default)]
+    pub about: Option<About>,
 }
 
 /// The centre a group rotate or mirror of `ids` turns about: the mean of
@@ -1528,14 +1532,46 @@ fn centres(doc: &Document, ids: &[ObjectId]) -> Vec<Point> {
 
 fn run_rotate(s: &mut Session, p: RotateParams, _: Origin) -> Result<Value, CommandError> {
     let ids = resolve_ids(s, &p.ids)?;
+    let about = p.about.unwrap_or_default();
+    // A relative turn, or an absolute angle that each object gets about
+    // its own centre.
+    let (degrees, absolute) = match (p.degrees, p.angle_deg) {
+        (Some(d), None) => (d, false),
+        (None, Some(a)) if about == About::Each || p.about.is_none() => (a, true),
+        (None, Some(_)) => {
+            return Err(CommandError::InvalidParams(
+                "angle_deg turns each object about its own centre; leave out about or use about: each"
+                    .into(),
+            ));
+        }
+        _ => {
+            return Err(CommandError::InvalidParams(
+                "give degrees for a relative turn or angle_deg for an absolute angle, not both"
+                    .into(),
+            ));
+        }
+    };
+    if !degrees.is_finite() {
+        return Err(CommandError::InvalidParams(
+            "the angle must be a finite number".into(),
+        ));
+    }
     let doc = &mut s.doc_mut().document;
     // The window's ghost preview uses the same function.
-    let turned = placement::rotated_centres(&centres(doc, &ids), p.degrees, p.about == About::Each);
+    let turned = if absolute {
+        centres(doc, &ids)
+    } else {
+        placement::rotated_centres(&centres(doc, &ids), degrees, about == About::Each)
+    };
     let mut out = Vec::new();
     for (id, centre) in ids.iter().zip(turned) {
         let t = &mut object_mut(doc, *id)?.transform;
         t.center_mm = centre;
-        t.rotation_deg = normalize_deg(t.rotation_deg + p.degrees);
+        t.rotation_deg = if absolute {
+            normalize_deg(degrees)
+        } else {
+            normalize_deg(t.rotation_deg + degrees)
+        };
         out.push(json!({
             "id": id.0,
             "rotation_deg": t.rotation_deg,
@@ -1552,7 +1588,7 @@ command!(
     mutates: true,
     params: RotateParams,
     run: run_rotate,
-    description: "Rotates objects by degrees, relative to their current rotation, in one undo step. Positive is clockwise on screen (y points down). about: group | each, default group. With group, several objects turn as one group about their common centre, the mean of the selected objects' centres: each centre turns about that point and each object's own rotation grows by the angle, so the layout turns with them (the window does this for a multi-selection). With each, every object turns about its own centre and the centres stay. One object turns about its own centre either way. Positions in mm, origin the 0,0 of the grid printed on the mat. Linked copies (see object.copies) keep their own rotation: only the objects in ids turn. The stored rotation is kept in [0, 360). An empty ids list means the current selection. Returns {objects: [{id, rotation_deg, center_mm: [x, y]}]}.",
+    description: "Rotates objects in one undo step: by degrees, relative to their current rotation, or to angle_deg, an absolute angle every object gets about its own centre (the window's Angle field does this; give one of the two). Positive is clockwise on screen (y points down). about (only with degrees): group | each, default group. With group, several objects turn as one group about their common centre, the mean of the selected objects' centres: each centre turns about that point and each object's own rotation grows by the angle, so the layout turns with them (the window does this for a multi-selection). With each, every object turns about its own centre and the centres stay. One object turns about its own centre either way. Positions in mm, origin the 0,0 of the grid printed on the mat. Linked copies (see object.copies) keep their own rotation: only the objects in ids turn. The stored rotation is kept in [0, 360). An empty ids list means the current selection. Returns {objects: [{id, rotation_deg, center_mm: [x, y]}]}.",
 );
 
 // ---------------------------------------------------------------- mirror

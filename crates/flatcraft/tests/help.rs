@@ -331,31 +331,137 @@ fn space_drag_pans_the_canvas() {
     );
 }
 
-/// Shift and Option (Alt) while dragging a handle are rows of the table,
-/// and the canvas asks the table for them.
+/// The drag modifiers (Shift, Option or Alt, Cmd or Ctrl, and the rotate
+/// zone) are rows of the table, and the canvas asks the table for them.
 #[test]
 fn the_sheet_lists_the_handle_modifiers() {
+    use help::Os;
+    use help::PrepareKey::{
+        FlipKeepAspect, RotateOnCorner, RotateZone, ScaleFromCentre, SnapAngle,
+    };
     let drags: Vec<_> = SHORTCUTS.iter().filter(|s| s.is_drag()).collect();
-    assert_eq!(drags.len(), 2);
-    let option = if cfg!(target_os = "macos") {
-        "Option+drag"
+    assert_eq!(drags.len(), 5);
+    let (option, cmd) = if cfg!(target_os = "macos") {
+        ("Option+drag", "Cmd+drag")
     } else {
-        "Alt+drag"
+        ("Alt+drag", "Ctrl+drag")
     };
     let keys: Vec<String> = drags.iter().map(|s| s.keys()).collect();
-    assert_eq!(keys, ["Shift+drag".to_string(), option.to_string()]);
-    use help::PrepareKey::{FlipKeepAspect, ScaleFromCentre};
+    assert_eq!(
+        keys,
+        ["drag", "Shift+drag", option, cmd, "Shift+drag"].map(String::from)
+    );
+    // The rows hold the modifiers of this system's table.
+    for s in &drags {
+        let action = s.prepare.unwrap();
+        assert_eq!(
+            s.modifiers,
+            help::drag_modifiers(Os::CURRENT, action),
+            "{}",
+            s.what
+        );
+    }
     assert!(help::held(Modifiers::SHIFT, FlipKeepAspect));
     assert!(!help::held(Modifiers::NONE, FlipKeepAspect));
     assert!(!help::held(Modifiers::SHIFT, ScaleFromCentre));
     assert!(help::held(Modifiers::ALT, ScaleFromCentre));
+    assert!(help::held(Modifiers::SHIFT, SnapAngle));
+    let rotate = help::drag_modifiers(Os::CURRENT, RotateOnCorner);
+    assert!(help::held(rotate, RotateOnCorner));
+    assert!(!help::held(Modifiers::ALT, RotateOnCorner));
+    // The rotate zone needs no key: it is never "held".
+    assert!(!help::held(Modifiers::NONE, RotateZone));
     // A drag row is never taken for a key press.
     assert!(drags.iter().all(|s| s.run.is_none()));
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(&dir, session(&dir), false);
     app_mut(&mut h).ui.show_shortcuts = true;
     h.run();
-    h.get_by_label("Shift+drag");
+    assert_eq!(h.get_all_by_label("Shift+drag").count(), 2);
     h.get_by_label(option);
+    h.get_by_label(cmd);
     h.get_by_label("While dragging a handle: scale from the centre");
+    h.get_by_label("Drag just outside a corner of the selection: rotate it");
+    h.get_by_label("While dragging a corner handle: rotate instead of resize");
+    h.get_by_label("While rotating: turn in 15 degree steps");
+}
+
+/// One table per system names the drag modifiers. The tests read all
+/// three, whatever system runs them.
+#[test]
+fn each_system_has_its_own_drag_modifiers() {
+    use help::Os;
+    use help::PrepareKey::{
+        FlipKeepAspect, RotateOnCorner, RotateZone, ScaleFromCentre, SnapAngle,
+    };
+    let name = |os, k| help::modifier_names(help::drag_modifiers(os, k), os);
+    assert_eq!(name(Os::MacOs, RotateOnCorner), "Cmd");
+    assert_eq!(name(Os::Windows, RotateOnCorner), "Ctrl");
+    assert_eq!(name(Os::Linux, RotateOnCorner), "Ctrl");
+    assert_eq!(name(Os::MacOs, ScaleFromCentre), "Option");
+    assert_eq!(name(Os::Windows, ScaleFromCentre), "Alt");
+    assert_eq!(name(Os::Linux, ScaleFromCentre), "Alt");
+    for os in Os::ALL {
+        assert_eq!(name(os, FlipKeepAspect), "Shift");
+        assert_eq!(name(os, SnapAngle), "Shift");
+        assert_eq!(name(os, RotateZone), "");
+        // Scale from the centre and rotate never share a key.
+        assert_ne!(
+            help::drag_modifiers(os, ScaleFromCentre),
+            help::drag_modifiers(os, RotateOnCorner)
+        );
+    }
+    // The Mac table uses the Command key itself, the others Ctrl.
+    assert!(help::drag_modifiers(Os::MacOs, RotateOnCorner).mac_cmd);
+    assert!(help::drag_modifiers(Os::Windows, RotateOnCorner).ctrl);
+    assert!(help::drag_modifiers(Os::Linux, RotateOnCorner).ctrl);
+}
+
+/// The hover cards of the handles, the rotate zone and the Angle field
+/// name the keys of each system, from the same table.
+#[test]
+fn the_cards_name_the_keys_of_each_system() {
+    use help::Os;
+    for os in Os::ALL {
+        let cards = [
+            help::handle_card(os),
+            help::rotate_card(os),
+            help::angle_card(os),
+        ];
+        for c in &cards {
+            assert!(!c.contains('\u{2014}'), "{c}");
+        }
+        let (centre, rotate, other) = match os {
+            Os::MacOs => ("Option", "Cmd", ["Alt", "Ctrl"]),
+            _ => ("Alt", "Ctrl", ["Option", "Cmd"]),
+        };
+        assert!(
+            cards[0].contains(centre) && cards[0].contains(rotate),
+            "{}",
+            cards[0]
+        );
+        assert!(cards[0].contains("Shift"), "{}", cards[0]);
+        assert!(
+            cards[1].contains(rotate) && cards[1].contains("15 degree"),
+            "{}",
+            cards[1]
+        );
+        assert!(
+            cards[2].contains(rotate) && cards[2].contains("clockwise"),
+            "{}",
+            cards[2]
+        );
+        for c in &cards {
+            for word in other {
+                assert!(!c.contains(word), "{os:?}: {c}");
+            }
+        }
+        // Linux desktops often take Alt-drag for moving windows.
+        assert_eq!(
+            cards[0].contains("desktop settings"),
+            os == Os::Linux,
+            "{}",
+            cards[0]
+        );
+    }
 }

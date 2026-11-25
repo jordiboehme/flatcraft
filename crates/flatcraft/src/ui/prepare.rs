@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use egui::{Rect, RichText, Ui};
+use egui::{Pos2, Rect, RichText, Ui};
 use flatcraft_core::document::{CutOptions, JobSettings, Object, Source};
 use flatcraft_core::geometry::CutPath;
 use flatcraft_core::transform::Transform;
@@ -81,6 +81,24 @@ pub enum Drag {
         flip: bool,
         /// Option (Alt) is held: it scales about the centre.
         centre: bool,
+    },
+    /// A turn of the selection: from the rotate zone just outside a corner,
+    /// or a corner handle with Cmd (macOS) or Ctrl held. One object turns
+    /// about its own centre, several about the mean of their centres, as
+    /// `object.rotate` does. See `canvas::rotate_delta`.
+    Rotate {
+        doc_id: u64,
+        ids: Vec<u64>,
+        /// The point it turns about, in mm.
+        pivot: kurbo::Point,
+        /// The pointer when the drag began, and now, in mm.
+        start: kurbo::Point,
+        current: kurbo::Point,
+        /// The rotation of the one object turned (Shift snaps its angle),
+        /// `None` for several (Shift snaps the turn).
+        base: Option<f64>,
+        /// Shift is held: 15 degree steps.
+        snap: bool,
     },
     /// A selection frame drawn from the empty canvas. On release it selects
     /// the visible objects whose placed bounds it touches; with `add`
@@ -154,6 +172,8 @@ pub enum SizeField {
     Width,
     Height,
     Percent,
+    /// The rotation in degrees, clockwise.
+    Angle,
 }
 
 /// The number field being edited: it applies when it loses the focus.
@@ -180,6 +200,9 @@ pub struct Fields {
     pub width: String,
     pub height: String,
     pub percent: String,
+    /// The rotation in degrees; empty while the selection is turned
+    /// different ways (the field says Mixed).
+    pub angle: String,
     pub keep_aspect: bool,
     /// Rotate and mirror each object about its own centre instead of the
     /// selection as one group.
@@ -199,6 +222,7 @@ impl Default for Fields {
             width: String::new(),
             height: String::new(),
             percent: String::new(),
+            angle: String::new(),
             keep_aspect: true,
             each: false,
             align_to_area: false,
@@ -268,6 +292,9 @@ pub struct PrepareState {
     pub popup_was_open: bool,
     /// The objects the open context menu works on (see `context_menu`).
     pub context: Option<Vec<u64>>,
+    /// Where the canvas painted its rotate cursor last frame (egui has no
+    /// rotate cursor, so it hides the pointer and paints one), if it did.
+    pub rotate_cursor: Option<Pos2>,
     /// The open Rename dialog.
     pub rename: Option<RenameDialog>,
     /// Where the ribbon drew its tab row, its panel and its tools row,
@@ -341,6 +368,7 @@ impl Default for PrepareState {
             text_focus_elsewhere: false,
             popup_was_open: false,
             context: None,
+            rotate_cursor: None,
             rename: None,
             ribbon_layout: None,
         }
