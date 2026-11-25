@@ -381,6 +381,11 @@ fn a_failed_save_leaves_the_old_file() {
     bigger.add("Two".into(), svg("two.svg", b"<svg/>"), vec![]);
     // The folder is read-only: the temp file cannot be made.
     std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555)).unwrap();
+    // Root ignores the mode: then there is nothing to test here.
+    if std::fs::write(folder.join("probe"), b"x").is_ok() {
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
     let result = project::save(&bigger, &path);
     std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert!(result.is_err());
