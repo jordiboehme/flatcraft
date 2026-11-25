@@ -250,12 +250,19 @@ pub struct ConstructStats {
 /// A unit is ready when all its children in `tree` are placed; with
 /// `outlines_last` a root is ready only when every other unit is placed.
 /// Each step searches the entry grid in growing rings of cells around the
-/// head. The ready units in the first ring that holds one, and in the ring
-/// after it (a Chebyshev point there can still be nearer), are scored with
-/// all their candidates by [`cost`]. The best [`CROSSING_CHECKS`] then get
-/// [`CROSSING_PENALTY_MM`] per finished cut their travel crosses, and the
-/// cheapest wins, ties to the lower unit and candidate index. The head and
-/// heading move to the entry's exit state.
+/// head. Every ready unit found is scored with all its candidates by
+/// [`cost`], and the search goes on while a farther ring could still hold a
+/// cheaper one: every cost term is at least 0, so a cost is at least its
+/// travel, and the search is exact for travel, turn and kept side. The best
+/// [`CROSSING_CHECKS`] then get [`CROSSING_PENALTY_MM`] per finished cut
+/// their travel crosses, and the cheapest wins, ties to the lower unit and
+/// candidate index. The head and heading move to the entry's exit state.
+///
+/// Crossings here count every finished cut segment the travel crosses,
+/// more than 1e-6 mm from its ends. The simulator's `travel_crossings`
+/// counts crossing travels instead, with a keep-off of twice the blade
+/// offset, so the two numbers can differ. That is a design choice: the
+/// order wants a cost that grows with each cut crossed.
 pub fn construct(
     units: &[Unit],
     tree: &ContainmentTree,
@@ -303,13 +310,18 @@ pub fn construct_with_stats(
     while out.len() < n {
         query += 1;
         found.clear();
-        grid.search(head, &mut seen, query, &mut found, &mut stats);
         scored.clear();
-        for &u in &found {
-            for (ci, e) in units[u].candidates.iter().enumerate() {
-                scored.push((cost(head, heading, &units[u], e, s), u, ci));
+        let mut best = f64::INFINITY;
+        grid.search(head, &mut seen, query, &mut found, &mut stats, |new| {
+            for &u in new {
+                for (ci, e) in units[u].candidates.iter().enumerate() {
+                    let c = cost(head, heading, &units[u], e, s);
+                    best = best.min(c);
+                    scored.push((c, u, ci));
+                }
             }
-        }
+            best
+        });
         stats.scored += scored.len() as u64;
         let by_cost = |a: &(f64, usize, usize), b: &(f64, usize, usize)| {
             a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2))
@@ -329,9 +341,13 @@ pub fn construct_with_stats(
             .min_by(|a, b| by_cost(a, b))
             .map(|c| (c.1, c.2));
         let (u, ci) = pick.unwrap_or_else(|| {
-            // Only reachable when a unit has no usable entry point (no
-            // points, or not finite): place the first one left as it is.
-            let u = (0..n).find(|&u| !placed[u]).expect("a unit is left");
+            // Only reachable when a ready unit has no usable entry point (no
+            // points, or not finite): place the first ready one as it is.
+            // A unit whose children wait is never taken while one is ready.
+            let u = (0..n)
+                .find(|&u| !placed[u] && ready(u, &waiting, nonroots_left))
+                .or_else(|| (0..n).find(|&u| !placed[u]))
+                .expect("a unit is left");
             (u, 0)
         });
 
@@ -472,9 +488,11 @@ impl EntryGrid {
         }
     }
 
-    /// Push onto `found` each unit with an entry in the first ring of cells
-    /// around `head` that holds one, or in the ring after it. `seen` and
-    /// `query` keep each unit once.
+    /// Push onto `found` the ready units around `head`, ring by ring, and
+    /// hand each ring's new units to `score`, which returns the best cost
+    /// so far. The search stops before a ring whose cells all lie at least
+    /// that far away, so no cheaper unit is missed. `seen` and `query` keep
+    /// each unit once.
     fn search(
         &self,
         head: Point,
@@ -482,6 +500,7 @@ impl EntryGrid {
         query: u32,
         found: &mut Vec<usize>,
         stats: &mut ConstructStats,
+        mut score: impl FnMut(&[usize]) -> f64,
     ) {
         let (c1, r1) = (self.c0 + self.cols - 1, self.r0 + self.rows - 1);
         // A head far outside (a home metres away) is pulled in to a fixed
@@ -503,9 +522,12 @@ impl EntryGrid {
             .max(hr - r1)
             .max(0);
         let k_max = (hc - self.c0).max(c1 - hc).max(hr - self.r0).max(r1 - hr);
-        let mut hit: Option<i64> = None;
+        let mut best = f64::INFINITY;
+        let mut scored_up_to = 0;
         for k in k_min..=k_max {
-            if hit.is_some_and(|h| k > h + 1) {
+            // A cell k rings away lies more than k - 1 cells from the head
+            // (Chebyshev), and every cost is at least the travel.
+            if k >= 1 && best <= (k - 1) as f64 * self.cell {
                 break;
             }
             for row in (hr - k).max(self.r0)..=(hr + k).min(r1) {
@@ -529,8 +551,9 @@ impl EntryGrid {
                         .for_each(&mut visit);
                 }
             }
-            if hit.is_none() && !found.is_empty() {
-                hit = Some(k);
+            if found.len() > scored_up_to {
+                best = score(&found[scored_up_to..]);
+                scored_up_to = found.len();
             }
         }
     }
@@ -846,6 +869,61 @@ mod tests {
     }
 
     #[test]
+    fn a_far_waste_corner_does_not_hide_a_nearer_unit() {
+        // The head is 1 mm from the L's concave corner, which is on the kept
+        // side (+1000). The L's nearest waste corner is 51 mm away, a
+        // square's corner 15 mm. The search must keep going past the rings
+        // around the concave corner and find the square.
+        let s = settings(CutStrategy::Quality);
+        let l = tp(
+            1,
+            &[
+                (0.0, 0.0),
+                (200.0, 0.0),
+                (200.0, 50.0),
+                (50.0, 50.0),
+                (50.0, 200.0),
+                (0.0, 200.0),
+                (0.0, 0.0),
+            ],
+            true,
+        );
+        let square = ring(2, 66.0, 66.0, 76.0, 76.0);
+        let out = run(vec![l, square], p(51.0, 51.0), &s);
+        assert_eq!(ids(&out), vec![2, 1]);
+        assert_eq!(out[0].points[0], p(66.0, 66.0));
+        // The L is still entered at a waste corner afterwards.
+        assert_ne!(out[1].points[0], p(50.0, 50.0));
+    }
+
+    #[test]
+    fn the_fallback_never_takes_a_parent_before_its_child() {
+        // The child has no entry point, so the grid never finds it; the
+        // parent waits for it. The fallback must place the child first.
+        let s = settings(CutStrategy::Quality);
+        let (paths, _) = prepared(vec![ring(1, 0.0, 0.0, 10.0, 10.0)]);
+        let units = vec![
+            Unit::new(&paths[0], &s),
+            Unit {
+                points: Vec::new(),
+                closed: false,
+                candidates: Vec::new(),
+                has_waste_corner: false,
+            },
+        ];
+        let tree = ContainmentTree {
+            parent: vec![None, Some(0)],
+            children: vec![vec![1], vec![]],
+            roots: vec![0],
+            depth: vec![0, 1],
+            own_depth: vec![0, 1],
+        };
+        let tour = construct(&units, &tree, Point::ZERO, &s);
+        let order: Vec<usize> = tour.iter().map(|pl| pl.unit).collect();
+        assert_eq!(order, vec![1, 0]);
+    }
+
+    #[test]
     fn crossing_penalty_avoids_travel_over_a_finished_cut() {
         // After the square, the line on the right is nearer (12 mm) but the
         // travel to it runs through the square and crosses its right side
@@ -933,8 +1011,9 @@ mod tests {
     }
 
     /// Wall-clock check (Ruling F30): run by hand or by the quality bench.
-    /// Measured 0.09 to 0.39 s locally (Apple silicon, test profile, on a
-    /// busy machine), so the bound is 1.2 s, not the plan's 3 s.
+    /// Measured 0.33 to 0.40 s locally with the exact stop rule (Apple
+    /// silicon, test profile, on a busy machine), so the bound is 1.2 s,
+    /// not the plan's 3 s.
     #[test]
     #[ignore = "wall-clock perf check, run by hand or by the quality bench"]
     fn nn_of_20000_squares_is_fast_in_debug() {
