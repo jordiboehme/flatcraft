@@ -74,17 +74,11 @@ impl Preferences {
         })
     }
 
-    /// Writes the preferences atomically (temp file, then rename).
+    /// Writes the preferences crash-safely (temp file, sync, rename).
     pub fn save(&self, config_dir: &Path) -> io::Result<()> {
         std::fs::create_dir_all(config_dir)?;
         let text = toml::to_string_pretty(self).map_err(io::Error::other)?;
-        let path = config_dir.join(FILE_NAME);
-        let tmp = config_dir.join(format!("{FILE_NAME}.tmp"));
-        let result = std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, &path));
-        if result.is_err() {
-            let _ = std::fs::remove_file(&tmp);
-        }
-        result
+        flatcraft_device::fsio::write_atomic(&config_dir.join(FILE_NAME), text.as_bytes())
     }
 }
 

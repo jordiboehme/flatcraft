@@ -198,9 +198,9 @@ pub fn validate_media(id: &str, p: &PlotterProfile) -> Result<(), ProfileError> 
                 reason: format!("mat id '{}' is used twice", m.id),
             });
         }
-        m.validate().map_err(|reason| ProfileError::Invalid {
+        m.validate().map_err(|e| ProfileError::Invalid {
             id: id.to_string(),
-            reason,
+            reason: e.to_string(),
         })?;
     }
     Ok(())
@@ -224,6 +224,10 @@ fn validate_id(id: &str) -> Result<(), ProfileError> {
                 .into(),
         })
     }
+}
+
+fn own_keys(t: &Table, kind: Kind, out: &mut Vec<String>) {
+    flatten_keys("", t, kind.replace_keys(), out);
 }
 
 fn flatten_keys(prefix: &str, t: &Table, replace_keys: &[&str], out: &mut Vec<String>) {
@@ -528,6 +532,25 @@ impl ProfileStore {
         Vec::new()
     }
 
+    fn modified(&self, kind: Kind, id: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(e) = self.map(kind).get(id).filter(|e| !e.system) {
+            own_keys(&e.table, kind, &mut out);
+            out.sort();
+        }
+        out
+    }
+
+    /// Sorted dotted keys the user plotter preset `id` sets itself.
+    pub fn modified_plotter_fields(&self, id: &str) -> Vec<String> {
+        self.modified(Kind::Plotter, id)
+    }
+
+    /// Sorted dotted keys the user material preset `id` sets itself.
+    pub fn modified_material_fields(&self, id: &str) -> Vec<String> {
+        self.modified(Kind::Material, id)
+    }
+
     fn save<T: Serialize + DeserializeOwned>(
         &mut self,
         kind: Kind,
@@ -617,14 +640,9 @@ impl ProfileStore {
         };
         fs::create_dir_all(&dir).map_err(|e| io(&dir, e))?;
         let path = dir.join(format!("{id}.toml"));
-        // Temp file, then rename: a crash mid-write never leaves a broken
-        // preset, which would stop the next start.
-        let tmp = dir.join(format!("{id}.toml.tmp"));
-        let written = fs::write(&tmp, text).and_then(|()| fs::rename(&tmp, &path));
-        if let Err(e) = written {
-            let _ = fs::remove_file(&tmp);
-            return Err(io(&path, e));
-        }
+        // A crash mid-write must never leave a broken preset: that would
+        // stop the next start.
+        crate::fsio::write_atomic(&path, text.as_bytes()).map_err(|e| io(&path, e))?;
         self.map_mut(kind).insert(
             id.to_string(),
             Entry {

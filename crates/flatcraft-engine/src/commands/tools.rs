@@ -31,23 +31,15 @@ pub struct TestPatternsParams {
     pub svg_path: Option<PathBuf>,
 }
 
-/// Writes `text` to `path` through a temporary file next to it, then renames.
+/// Writes `text` to `path` crash-safely (temp file, sync, rename).
 fn write_atomic(path: &Path, text: &str) -> Result<(), CommandError> {
-    let name = path
-        .file_name()
-        .ok_or_else(|| CommandError::InvalidParams("svg_path has no file name".into()))?;
-    let mut tmp_name = name.to_os_string();
-    tmp_name.push(".tmp");
-    let tmp = path.with_file_name(tmp_name);
-    let fail =
-        |e: std::io::Error| CommandError::Failed(format!("cannot write {}: {e}", path.display()));
-    // A write that fails half way (disk full) must not leave the temp file.
-    std::fs::write(&tmp, text)
-        .and_then(|()| std::fs::rename(&tmp, path))
-        .map_err(|e| {
-            let _ = std::fs::remove_file(&tmp);
-            fail(e)
-        })
+    if path.file_name().is_none() {
+        return Err(CommandError::InvalidParams(
+            "svg_path has no file name".into(),
+        ));
+    }
+    flatcraft_device::fsio::write_atomic(path, text.as_bytes())
+        .map_err(|e| CommandError::Failed(format!("cannot write {}: {e}", path.display())))
 }
 
 fn run_test_patterns(

@@ -80,48 +80,85 @@ pub struct Grid {
     pub height_mm: f64,
 }
 
+/// The mat field a [`MediaError`] is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaField {
+    Width,
+    Height,
+    OriginX,
+    OriginY,
+    GridWidth,
+    GridHeight,
+}
+
+/// Why a mat is invalid, and which field to fix. `reason` reads on its own
+/// ("the grid size must be above 0"); the full text names the mat.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[error("mat '{id}': {reason}")]
+pub struct MediaError {
+    pub id: String,
+    pub field: MediaField,
+    pub reason: String,
+}
+
 impl Media {
     /// Checks the sizes: all finite, physical size above 0, grid origin from 0, grid size above
-    /// 0, and the grid inside the physical mat.
-    pub fn validate(&self) -> Result<(), String> {
+    /// 0, and the grid inside the physical mat. The error names the first field to fix.
+    pub fn validate(&self) -> Result<(), MediaError> {
+        use MediaField as F;
         let g = &self.grid;
-        let all = [
-            self.width_mm,
-            self.height_mm,
-            g.origin_x_mm,
-            g.origin_y_mm,
-            g.width_mm,
-            g.height_mm,
+        let fields = [
+            (F::Width, self.width_mm),
+            (F::Height, self.height_mm),
+            (F::OriginX, g.origin_x_mm),
+            (F::OriginY, g.origin_y_mm),
+            (F::GridWidth, g.width_mm),
+            (F::GridHeight, g.height_mm),
         ];
-        let id = &self.id;
-        if [self.width_mm, self.height_mm, g.width_mm, g.height_mm]
+        let err = |field, reason: String| {
+            Err(MediaError {
+                id: self.id.clone(),
+                field,
+                reason,
+            })
+        };
+        let sizes = [F::Width, F::Height, F::GridWidth, F::GridHeight];
+        if let Some((f, _)) = fields
             .iter()
-            .any(|v| *v > MAX_SIZE_MM)
+            .find(|(f, v)| sizes.contains(f) && *v > MAX_SIZE_MM)
         {
-            return Err(format!(
-                "mat '{id}': sizes above {MAX_SIZE_MM} mm are not supported"
-            ));
+            return err(
+                *f,
+                format!("sizes above {MAX_SIZE_MM} mm are not supported"),
+            );
         }
-        if all.iter().any(|v| !v.is_finite()) {
-            return Err(format!(
-                "mat '{id}': every size and origin must be a finite number"
-            ));
+        if let Some((f, _)) = fields.iter().find(|(_, v)| !v.is_finite()) {
+            return err(*f, "every size and origin must be a finite number".into());
         }
-        if self.width_mm <= 0.0 || self.height_mm <= 0.0 {
-            return Err(format!("mat '{id}': the physical size must be above 0"));
+        if self.width_mm <= 0.0 {
+            return err(F::Width, "the physical size must be above 0".into());
         }
-        if g.origin_x_mm < 0.0 || g.origin_y_mm < 0.0 {
-            return Err(format!("mat '{id}': the grid origin must not be negative"));
+        if self.height_mm <= 0.0 {
+            return err(F::Height, "the physical size must be above 0".into());
         }
-        if g.width_mm <= 0.0 || g.height_mm <= 0.0 {
-            return Err(format!("mat '{id}': the grid size must be above 0"));
+        if g.origin_x_mm < 0.0 {
+            return err(F::OriginX, "the grid origin must not be negative".into());
         }
-        if g.origin_x_mm + g.width_mm > self.width_mm
-            || g.origin_y_mm + g.height_mm > self.height_mm
-        {
-            return Err(format!(
-                "mat '{id}': the grid (origin plus size) must lie inside the physical mat"
-            ));
+        if g.origin_y_mm < 0.0 {
+            return err(F::OriginY, "the grid origin must not be negative".into());
+        }
+        if g.width_mm <= 0.0 {
+            return err(F::GridWidth, "the grid size must be above 0".into());
+        }
+        if g.height_mm <= 0.0 {
+            return err(F::GridHeight, "the grid size must be above 0".into());
+        }
+        let outside = "the grid (origin plus size) must lie inside the physical mat";
+        if g.origin_x_mm + g.width_mm > self.width_mm {
+            return err(F::GridWidth, outside.into());
+        }
+        if g.origin_y_mm + g.height_mm > self.height_mm {
+            return err(F::GridHeight, outside.into());
         }
         Ok(())
     }

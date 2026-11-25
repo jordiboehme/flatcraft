@@ -764,3 +764,58 @@ fn validate_media_is_public() {
     p.media[0].grid.origin_y_mm = 100.0;
     assert!(flatcraft_device::store::validate_media(&p.id.clone(), &p).is_err());
 }
+
+#[test]
+fn media_errors_name_their_field() {
+    use flatcraft_device::MediaField as F;
+    type Case = (F, Box<dyn Fn(&mut Media)>);
+    let cases: Vec<Case> = vec![
+        (F::Width, Box::new(|m| m.width_mm = -1.0)),
+        (F::Height, Box::new(|m| m.height_mm = f64::NAN)),
+        (F::OriginX, Box::new(|m| m.grid.origin_x_mm = -0.1)),
+        (F::OriginY, Box::new(|m| m.grid.origin_y_mm = -0.1)),
+        (F::GridWidth, Box::new(|m| m.grid.width_mm = 0.0)),
+        (F::GridHeight, Box::new(|m| m.grid.height_mm = 20_000.0)),
+        (F::GridWidth, Box::new(|m| m.grid.origin_x_mm = 10.0)),
+        (F::GridHeight, Box::new(|m| m.grid.origin_y_mm = 0.5)),
+    ];
+    for (field, f) in cases {
+        let mut m = mat("a");
+        f(&mut m);
+        let e = m.validate().unwrap_err();
+        assert_eq!(e.field, field, "{e}");
+        assert!(e.to_string().starts_with("mat 'a': "), "{e}");
+        assert!(!e.reason.starts_with("mat"), "{}", e.reason);
+    }
+}
+
+#[test]
+fn write_atomic_replaces_and_leaves_no_temp() {
+    let d = tempdir().unwrap();
+    let path = d.path().join("a.toml");
+    flatcraft_device::fsio::write_atomic(&path, b"one").unwrap();
+    flatcraft_device::fsio::write_atomic(&path, b"two").unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), "two");
+    let names: Vec<_> = fs::read_dir(d.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["a.toml"]);
+    // A path in a missing folder fails and leaves nothing behind.
+    assert!(flatcraft_device::fsio::write_atomic(&d.path().join("no/a.toml"), b"x").is_err());
+}
+
+#[test]
+fn modified_fields_by_kind_when_ids_are_shared() {
+    let (_d, mut s) = store();
+    let mut p = s.plotter("silhouette-cameo-2").unwrap();
+    p.id = "shared".into();
+    p.scale_x = 1.01;
+    s.save_user_plotter(&p, "silhouette-cameo-2").unwrap();
+    let mut m = s.material("vinyl").unwrap();
+    m.id = "shared".into();
+    m.passes = 3;
+    s.save_user_material(&m, "vinyl").unwrap();
+    assert_eq!(s.modified_plotter_fields("shared"), ["scale_x"]);
+    assert_eq!(s.modified_material_fields("shared"), ["passes"]);
+}
