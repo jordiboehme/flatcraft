@@ -61,9 +61,9 @@ pub const GROUPS: [GroupDef; 8] = [
     GroupDef {
         id: GroupId::Size,
         tab: RibbonTab::Layout,
-        title: "Size",
+        title: "Position and size",
         icon: Icon::Scale,
-        description: "The width and height of the selection in millimetres, or its scale in percent. Type a number and press Enter.",
+        description: "Where the selection sits on the mat and how big it is, in millimetres, or its scale in percent. Type a number, then press Tab or Enter or click elsewhere. Esc puts the old value back.",
     },
     GroupDef {
         id: GroupId::Arrange,
@@ -1020,10 +1020,13 @@ pub fn trim_number(v: f64) -> String {
 /// plain words, like the actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Setting {
+    PositionX,
+    PositionY,
     Width,
     Height,
     ScalePercent,
     KeepAspect,
+    ScaleHandle,
     EachObject,
     Search,
     CutMode,
@@ -1089,11 +1092,14 @@ pub enum Setting {
 }
 
 impl Setting {
-    pub const ALL: [Setting; 66] = [
+    pub const ALL: [Setting; 69] = [
+        Setting::PositionX,
+        Setting::PositionY,
         Setting::Width,
         Setting::Height,
         Setting::ScalePercent,
         Setting::KeepAspect,
+        Setting::ScaleHandle,
         Setting::EachObject,
         Setting::Search,
         Setting::CutMode,
@@ -1162,17 +1168,26 @@ impl Setting {
     /// any term explained.
     pub fn card(self) -> &'static str {
         match self {
+            Setting::PositionX => {
+                "How far the left edge of the selection is from the 0 of the grid printed on the mat, in millimetres. Type a number to move the selection there. It counts when you leave the field (Tab, Enter or a click elsewhere); Esc puts the old value back."
+            }
+            Setting::PositionY => {
+                "How far the top edge of the selection is from the 0 of the grid printed on the mat, in millimetres (down is more). Type a number to move the selection there. It counts when you leave the field (Tab, Enter or a click elsewhere); Esc puts the old value back."
+            }
             Setting::Width => {
-                "The width of the selection in millimetres. Type a number and press Enter."
+                "The width of the selection in millimetres. Type a number, then press Tab or Enter or click elsewhere. Esc puts the old value back."
             }
             Setting::Height => {
-                "The height of the selection in millimetres. Type a number and press Enter."
+                "The height of the selection in millimetres. Type a number, then press Tab or Enter or click elsewhere. Esc puts the old value back."
             }
             Setting::ScalePercent => {
-                "Scale the selection: 200 makes it twice as big, 50 half as big. Type a number and press Enter. With Each object on, every object grows or shrinks about its own centre."
+                "Scale the selection: 200 makes it twice as big, 50 half as big. Type a number, then press Tab or Enter or click elsewhere. With Each object on, every object grows or shrinks about its own centre."
             }
             Setting::KeepAspect => {
-                "On: width and height change together, so the shape does not get squashed. Off: change one without the other."
+                "On: width and height change together, so the shape does not get squashed, in the fields and with the handles on the mat. Off: change one without the other. Hold Shift while you drag a handle to get the opposite for that drag."
+            }
+            Setting::ScaleHandle => {
+                "Drag to resize the selection. A corner changes width and height, a side only its own, unless Keep aspect is on. Hold Shift to get the opposite of Keep aspect for this drag, and Option (Alt on Windows and Linux) to grow from the centre instead of the far side."
             }
             Setting::EachObject => {
                 "On: rotate, mirror and the % field work on each selected object about its own centre. Off: the selection moves as one piece, like Voltron."

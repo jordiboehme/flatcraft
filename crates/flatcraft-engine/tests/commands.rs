@@ -2995,3 +2995,87 @@ fn a_reopened_svgz_keeps_its_text() {
     let png = flatcraft_engine::preview::render_document_png(&plotter, &doc, 128).unwrap();
     assert_eq!(&png[1..4], b"PNG");
 }
+
+#[test]
+fn move_to_x_or_y_sets_the_top_left_corner() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 40.0, 20.0);
+    let before = state_bounds(&mut s, id);
+    // X alone keeps Y.
+    run(&mut s, "object.move", json!({ "ids": [id], "x_mm": 12.5 }));
+    let b = state_bounds(&mut s, id);
+    assert!(close(b.x0, 12.5) && close(b.y0, before.y0), "{b:?}");
+    run(&mut s, "object.move", json!({ "ids": [id], "y_mm": 7.0 }));
+    let b = state_bounds(&mut s, id);
+    assert!(close(b.x0, 12.5) && close(b.y0, 7.0), "{b:?}");
+    // A rotated object: the box of the rotated shape.
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [id], "degrees": 30.0 }),
+    );
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [id], "x_mm": 30.0, "y_mm": 40.0 }),
+    );
+    let b = state_bounds(&mut s, id);
+    assert!(close(b.x0, 30.0) && close(b.y0, 40.0), "{b:?}");
+    // Not with a relative move or a centre.
+    for bad in [
+        json!({ "ids": [id], "x_mm": 1.0, "dx_mm": 1.0 }),
+        json!({ "ids": [id], "y_mm": 1.0, "center_mm": [0.0, 0.0] }),
+    ] {
+        assert!(matches!(
+            s.execute("object.move", bad, Origin::User),
+            Err(CommandError::InvalidParams(_))
+        ));
+    }
+}
+
+#[test]
+fn move_to_x_moves_a_multi_selection_as_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = import(&mut s, 20.0, 20.0);
+    let b = import(&mut s, 20.0, 20.0);
+    run(&mut s, "object.move", json!({ "ids": [b], "dx_mm": 50.0 }));
+    let (ba, bb) = (state_bounds(&mut s, a), state_bounds(&mut s, b));
+    let undo = s.doc().undo.undo_len();
+    run(&mut s, "object.move", json!({ "ids": [a, b], "x_mm": 5.0 }));
+    assert_eq!(s.doc().undo.undo_len(), undo + 1, "one undo step");
+    let (na, nb) = (state_bounds(&mut s, a), state_bounds(&mut s, b));
+    assert!(close(na.x0, 5.0), "{na:?}");
+    assert!(close(nb.x0 - na.x0, bb.x0 - ba.x0), "the layout stays");
+    assert!(close(na.y0, ba.y0) && close(nb.y0, bb.y0));
+}
+
+#[test]
+fn a_side_anchor_keeps_the_middle_of_that_side() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 40.0, 20.0);
+    let b = state_bounds(&mut s, id);
+    run(
+        &mut s,
+        "object.scale",
+        json!({ "ids": [id], "factor": 2.0, "anchor": "left" }),
+    );
+    let n = state_bounds(&mut s, id);
+    assert!(
+        close(n.x0, b.x0) && close(n.center().y, b.center().y),
+        "{n:?}"
+    );
+    assert!(close(n.width(), 80.0), "{n:?}");
+    run(
+        &mut s,
+        "object.scale",
+        json!({ "ids": [id], "factor": 0.5, "anchor": "bottom" }),
+    );
+    let m = state_bounds(&mut s, id);
+    assert!(
+        close(m.y1, n.y1) && close(m.center().x, n.center().x),
+        "{m:?}"
+    );
+}

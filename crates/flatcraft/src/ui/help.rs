@@ -119,6 +119,12 @@ pub enum PrepareKey {
     ClearSelection,
     /// Held while dragging.
     Pan,
+    /// Held while dragging a handle of the selection: the opposite of
+    /// Keep aspect for that drag.
+    FlipKeepAspect,
+    /// Held while dragging a handle of the selection: it scales about the
+    /// centre instead of the opposite corner or side.
+    ScaleFromCentre,
 }
 
 /// The arrow keys of [`PrepareKey::Nudge`] (the table lists them as one row).
@@ -147,6 +153,9 @@ pub struct Shortcut {
     /// Only the macOS menu bar has this key (Windows and Linux have no such
     /// row and no handler).
     pub mac_only: bool,
+    /// Only the modifiers count, held while dragging a handle; `key` is
+    /// not used (see [`held`]).
+    pub drag: bool,
 }
 
 impl Shortcut {
@@ -197,6 +206,7 @@ const fn global(
         menu_on_macos,
         tool: None,
         mac_only: false,
+        drag: false,
     }
 }
 
@@ -215,13 +225,23 @@ const fn prepare(
         menu_on_macos: false,
         tool: None,
         mac_only: false,
+        drag: false,
+    }
+}
+
+/// A row for modifiers held while dragging a handle of the selection.
+const fn while_dragging(modifiers: Modifiers, what: &'static str, action: PrepareKey) -> Shortcut {
+    Shortcut {
+        drag: true,
+        // The key is not used: a drag row has none.
+        ..prepare(modifiers, Key::Space, what, action)
     }
 }
 
 /// Every shortcut the app has. The key handler runs the entries with a
 /// `run`, in this order (a Shift variant before its plain key), and the
 /// shortcuts sheet lists all of them.
-pub const SHORTCUTS: [Shortcut; 20] = [
+pub const SHORTCUTS: [Shortcut; 22] = [
     global(
         CMD_SHIFT,
         Key::S,
@@ -303,11 +323,34 @@ pub const SHORTCUTS: [Shortcut; 20] = [
         "Pan the canvas (hold it and drag, or drag with the middle button)",
         PrepareKey::Pan,
     ),
+    while_dragging(
+        Modifiers::SHIFT,
+        "While dragging a handle: the opposite of Keep aspect, for this drag",
+        PrepareKey::FlipKeepAspect,
+    ),
+    while_dragging(
+        Modifiers::ALT,
+        "While dragging a handle: scale from the centre",
+        PrepareKey::ScaleFromCentre,
+    ),
 ];
 
 /// The rows of [`SHORTCUTS`] for a Prepare key.
 fn rows(action: PrepareKey) -> impl Iterator<Item = &'static Shortcut> {
     SHORTCUTS.iter().filter(move |s| s.prepare == Some(action))
+}
+
+/// Whether the modifiers of a drag row of the table (Shift, Option) are
+/// held in `now`.
+pub fn held(now: Modifiers, action: PrepareKey) -> bool {
+    rows(action).any(|s| {
+        let m = s.modifiers;
+        s.drag
+            && (!m.shift || now.shift)
+            && (!m.alt || now.alt)
+            && (!m.command || now.command)
+            && (!m.ctrl || now.ctrl)
+    })
 }
 
 /// Consumes the keys of a Prepare key from this frame's input. True if one
@@ -317,6 +360,9 @@ pub fn pressed(ctx: &egui::Context, action: PrepareKey) -> bool {
     ctx.input_mut(|i| {
         let mut hit = false;
         for s in rows(action) {
+            if s.drag {
+                continue;
+            }
             let at = i.events.iter().position(|e| {
                 matches!(e, egui::Event::Key { key, pressed: true, modifiers, .. }
                     if *key == s.key && modifiers.matches_exact(s.modifiers))
@@ -363,6 +409,17 @@ impl Shortcut {
         }
         if self.modifiers.shift {
             s.push_str("Shift+");
+        }
+        if self.modifiers.alt {
+            s.push_str(if cfg!(target_os = "macos") {
+                "Option+"
+            } else {
+                "Alt+"
+            });
+        }
+        if self.drag {
+            s.push_str("drag");
+            return s;
         }
         s.push_str(match self.key {
             Key::Comma => ",",

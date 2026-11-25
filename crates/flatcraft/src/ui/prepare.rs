@@ -60,17 +60,27 @@ pub enum Drag {
         start: kurbo::Point,
         current: kurbo::Point,
     },
-    /// A corner handle of the selection box. Several objects scale as one
-    /// group (`object.scale` with `group`).
+    /// A handle of the selection box. Several objects scale as one group
+    /// (`object.scale` with `group`). See `canvas::Stretch`.
     Scale {
         doc_id: u64,
         ids: Vec<u64>,
-        /// 0 top-left, 1 top-right, 2 bottom-right, 3 bottom-left.
-        corner_index: usize,
-        corner: kurbo::Point,
-        /// The opposite corner, which stays where it is.
-        anchor: kurbo::Point,
+        /// 0..4 the corners (top-left, top-right, bottom-right,
+        /// bottom-left), 4..8 the middles of the sides (top, right,
+        /// bottom, left).
+        handle: usize,
+        /// The selection box when the drag began.
+        start: kurbo::Rect,
         current: kurbo::Point,
+        /// Keep aspect when the drag began.
+        keep: bool,
+        /// Width and height may change apart: one object, turned by a
+        /// multiple of 90 degrees.
+        free: bool,
+        /// Shift is held: the opposite of `keep` for this drag.
+        flip: bool,
+        /// Option (Alt) is held: it scales about the centre.
+        centre: bool,
     },
     /// A selection frame drawn from the empty canvas. On release it selects
     /// the visible objects whose placed bounds it touches; with `add`
@@ -136,9 +146,34 @@ impl SourceStatus {
     }
 }
 
+/// A number field of the Position and size group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SizeField {
+    X,
+    Y,
+    Width,
+    Height,
+    Percent,
+}
+
+/// The number field being edited: it applies when it loses the focus.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldEdit {
+    pub field: SizeField,
+    /// The text it showed when the editing began. An unchanged text
+    /// applies nothing.
+    pub shown: String,
+    /// The document and the objects selected when the editing began.
+    pub doc_id: u64,
+    pub ids: Vec<u64>,
+}
+
 /// Edit buffers of the ribbon's number fields.
 #[derive(Debug, Clone)]
 pub struct Fields {
+    /// The top-left corner of the selection box, in mm from the grid's 0,0.
+    pub x: String,
+    pub y: String,
     pub width: String,
     pub height: String,
     pub percent: String,
@@ -149,11 +184,15 @@ pub struct Fields {
     /// Align to the cutting area instead of the selection.
     pub align_to_area: bool,
     pub search: String,
+    /// The field being edited, if any.
+    pub editing: Option<FieldEdit>,
 }
 
 impl Default for Fields {
     fn default() -> Self {
         Self {
+            x: String::new(),
+            y: String::new(),
             width: String::new(),
             height: String::new(),
             percent: String::new(),
@@ -161,6 +200,7 @@ impl Default for Fields {
             each: false,
             align_to_area: false,
             search: String::new(),
+            editing: None,
         }
     }
 }

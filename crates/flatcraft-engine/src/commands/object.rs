@@ -1117,8 +1117,12 @@ pub struct MoveParams {
     pub dx_mm: Option<f64>,
     /// Relative move along y in mm (down is positive).
     pub dy_mm: Option<f64>,
-    /// Absolute target [x, y] in mm for the centre of the objects' common bounding box. Do not combine with dx_mm/dy_mm.
+    /// Absolute target [x, y] in mm for the centre of the objects' common bounding box. Do not combine with dx_mm/dy_mm or x_mm/y_mm.
     pub center_mm: Option<[f64; 2]>,
+    /// Absolute target in mm for the left edge of the objects' common bounding box (of the placed, rotated shapes). A missing y_mm keeps the box's top where it is. Do not combine with dx_mm/dy_mm or center_mm.
+    pub x_mm: Option<f64>,
+    /// Absolute target in mm for the top edge of the objects' common bounding box. A missing x_mm keeps the box's left edge where it is.
+    pub y_mm: Option<f64>,
     /// Merges this move into the undo step of the move just before it when that one had the same key and the same ids and nothing else changed the document in between. For a burst of small moves (arrow-key nudges) that the person undoes as one.
     pub coalesce_key: Option<String>,
 }
@@ -1126,29 +1130,42 @@ pub struct MoveParams {
 fn run_move(s: &mut Session, p: MoveParams, _: Origin) -> Result<Value, CommandError> {
     let ids = resolve_ids(s, &p.ids)?;
     let relative = p.dx_mm.is_some() || p.dy_mm.is_some();
-    let delta = match (relative, p.center_mm) {
-        (true, Some(_)) => {
+    let corner = p.x_mm.is_some() || p.y_mm.is_some();
+    let common = |s: &Session| {
+        let doc = &s.doc().document;
+        ids.iter()
+            .filter_map(|id| doc.get(*id))
+            .map(placed_bounds_or_center)
+            .reduce(|a, b| a.union(b))
+            .unwrap_or(Rect::ZERO)
+    };
+    let delta = match (relative, p.center_mm, corner) {
+        (false, None, false) => {
             return Err(CommandError::InvalidParams(
-                "give either dx_mm/dy_mm or center_mm, not both".into(),
+                "give dx_mm/dy_mm for a relative move, or center_mm or x_mm/y_mm for an absolute one"
+                    .into(),
             ));
         }
-        (false, None) => {
-            return Err(CommandError::InvalidParams(
-                "give dx_mm/dy_mm for a relative move or center_mm for an absolute one".into(),
-            ));
+        (true, None, false) => Vec2::new(p.dx_mm.unwrap_or(0.0), p.dy_mm.unwrap_or(0.0)),
+        (false, Some([x, y]), false) => Point::new(x, y) - common(s).center(),
+        (false, None, true) => {
+            let b = common(s);
+            Vec2::new(
+                p.x_mm.map_or(0.0, |x| x - b.x0),
+                p.y_mm.map_or(0.0, |y| y - b.y0),
+            )
         }
-        (true, None) => Vec2::new(p.dx_mm.unwrap_or(0.0), p.dy_mm.unwrap_or(0.0)),
-        (false, Some([x, y])) => {
-            let doc = &s.doc().document;
-            let group = ids
-                .iter()
-                .filter_map(|id| doc.get(*id))
-                .map(placed_bounds_or_center)
-                .reduce(|a, b| a.union(b))
-                .unwrap_or(Rect::ZERO);
-            Point::new(x, y) - group.center()
+        _ => {
+            return Err(CommandError::InvalidParams(
+                "give only one of dx_mm/dy_mm, center_mm and x_mm/y_mm".into(),
+            ));
         }
     };
+    if !(delta.x.is_finite() && delta.y.is_finite()) {
+        return Err(CommandError::InvalidParams(
+            "the target must be a finite number".into(),
+        ));
+    }
     let doc = &mut s.doc_mut().document;
     for id in &ids {
         translate(object_mut(doc, *id)?, delta);
@@ -1166,7 +1183,7 @@ command!(
     mutates: true,
     params: MoveParams,
     run: run_move,
-    description: "Moves objects. Either relative with dx_mm and dy_mm (a missing one is 0), or absolute with center_mm [x, y], which puts the centre of the objects' common bounding box there. Units mm, origin the 0,0 of the grid printed on the mat, x right, y down. Each move is one undo step, except with coalesce_key: a move with the same key and the same ids as the move just before it, with no other change of the document in between, joins that move's undo step (the window's arrow-key nudges do this). A burst that ends where it started leaves no undo step. An empty ids list means the current selection. Returns {ids, moved_by_mm: [dx, dy]}.",
+    description: "Moves objects. Either relative with dx_mm and dy_mm (a missing one is 0), or absolute: center_mm [x, y] puts the centre of the objects' common bounding box there, and x_mm and/or y_mm put its top-left corner there (the box of the placed, rotated shapes, as the window's X and Y fields show it; a missing one keeps that edge). Several objects move as one, so their layout stays. Units mm, origin the 0,0 of the grid printed on the mat, x right, y down. Each move is one undo step, except with coalesce_key: a move with the same key and the same ids as the move just before it, with no other change of the document in between, joins that move's undo step (the window's arrow-key nudges do this). A burst that ends where it started leaves no undo step. An empty ids list means the current selection. Returns {ids, moved_by_mm: [dx, dy]}.",
 );
 
 // ---------------------------------------------------------------- scale
@@ -1180,6 +1197,14 @@ pub enum Anchor {
     TopRight,
     BottomLeft,
     BottomRight,
+    /// The middle of the top edge.
+    Top,
+    /// The middle of the bottom edge.
+    Bottom,
+    /// The middle of the left edge.
+    Left,
+    /// The middle of the right edge.
+    Right,
 }
 
 impl Anchor {
@@ -1190,6 +1215,10 @@ impl Anchor {
             Anchor::TopRight => Point::new(r.x1, r.y0),
             Anchor::BottomLeft => Point::new(r.x0, r.y1),
             Anchor::BottomRight => Point::new(r.x1, r.y1),
+            Anchor::Top => Point::new(r.center().x, r.y0),
+            Anchor::Bottom => Point::new(r.center().x, r.y1),
+            Anchor::Left => Point::new(r.x0, r.center().y),
+            Anchor::Right => Point::new(r.x1, r.center().y),
         }
     }
 }
@@ -1410,7 +1439,7 @@ command!(
     mutates: true,
     params: ScaleParams,
     run: run_scale,
-    description: "Scales each object on its own (one undo step for all), or with group true all of them as one group about one anchor of their common bounding box, so their layout stays (the canvas does this for a multi-selection). Either a uniform factor, or width_mm and/or height_mm for the placed bounding box in mm. keep_aspect (default true) scales uniformly: with one size given it follows that size, with both it fits inside them. With keep_aspect false only the given sides change; this needs a rotation that is a multiple of 90 degrees. anchor (center, top_left, top_right, bottom_left, bottom_right; default center) is the point of each bounding box that stays fixed. Origin the 0,0 of the grid printed on the mat, y down. With strokes on auto (see object.set_cut_options), scaling can move a stroke across the 0.5 mm threshold and change how it is cut. Linked copies (see object.copies) share the scale: scaling one scales all members of its group in the same undo step, and each other member keeps its own centre, rotation and mirror; a group with several members in ids scales once, by its first member there. An empty ids list means the current selection. Returns {ids}.",
+    description: "Scales each object on its own (one undo step for all), or with group true all of them as one group about one anchor of their common bounding box, so their layout stays (the canvas does this for a multi-selection). Either a uniform factor, or width_mm and/or height_mm for the placed bounding box in mm. keep_aspect (default true) scales uniformly: with one size given it follows that size, with both it fits inside them. With keep_aspect false only the given sides change; this needs a rotation that is a multiple of 90 degrees. anchor (center, top_left, top_right, bottom_left, bottom_right, or the middle of one edge: top, bottom, left, right; default center) is the point of each bounding box that stays fixed. Origin the 0,0 of the grid printed on the mat, y down. With strokes on auto (see object.set_cut_options), scaling can move a stroke across the 0.5 mm threshold and change how it is cut. Linked copies (see object.copies) share the scale: scaling one scales all members of its group in the same undo step, and each other member keeps its own centre, rotation and mirror; a group with several members in ids scales once, by its first member there. An empty ids list means the current selection. Returns {ids}.",
 );
 
 // ---------------------------------------------------------------- rotate

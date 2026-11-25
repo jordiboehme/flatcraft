@@ -246,7 +246,7 @@ fn the_painted_active_tab_opens_into_the_panel() {
 }
 
 #[test]
-fn the_size_group_has_two_columns() {
+fn the_position_and_size_group_has_three_columns() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let a = import_square(&s);
@@ -255,15 +255,20 @@ fn the_size_group_has_two_columns() {
         let mut h = rig(&dir, s.clone(), width);
         show_tab(&mut h, RibbonTab::Layout);
         let l = layout(&h);
+        let x = node_rect(&h, Role::TextInput, "X (mm)");
+        let y = node_rect(&h, Role::TextInput, "Y (mm)");
         let w = node_rect(&h, Role::TextInput, "Width (mm)");
         let hh = node_rect(&h, Role::TextInput, "Height (mm)");
         let pct = node_rect(&h, Role::TextInput, "Scale (%)");
         let keep = node_rect(&h, Role::CheckBox, "Keep aspect");
-        // Column 1: W above H, the fields lined up.
+        // Column 1: X above Y, the fields lined up.
+        assert!(x.bottom() <= y.top(), "{width}: {x:?} {y:?}");
+        assert_eq!(x.left(), y.left(), "{width}");
+        // Column 2, right of it: W above H.
+        assert!(w.left() > x.right(), "{width}");
         assert!(w.bottom() <= hh.top(), "{width}: {w:?} {hh:?}");
         assert_eq!(w.left(), hh.left(), "{width}");
-        // Column 2, right of it: % above Keep aspect, which sits under the
-        // field.
+        // Column 3: % above Keep aspect, which sits under the field.
         assert!(pct.left() > w.right(), "{width}");
         assert!(pct.bottom() <= keep.top(), "{width}: {pct:?} {keep:?}");
         assert_eq!(keep.left(), pct.left(), "{width}");
@@ -271,8 +276,11 @@ fn the_size_group_has_two_columns() {
         let wl = h.get_by_label("W").rect();
         let hl = h.get_by_label("H").rect();
         assert_eq!(wl.left(), hl.left(), "{width}");
-        // Everything inside the pins row, above the "Size" title.
-        for r in [w, hh, pct, keep] {
+        let xl = h.get_by_label("X").rect();
+        let yl = h.get_by_label("Y").rect();
+        assert_eq!(xl.left(), yl.left(), "{width}");
+        // Everything inside the pins row, above the group's title.
+        for r in [x, y, w, hh, pct, keep] {
             assert!(
                 r.top() >= l.tools.top() && r.bottom() <= l.tools.top() + BIG_HEIGHT,
                 "{width}: {r:?} not in the pins row of {:?}",

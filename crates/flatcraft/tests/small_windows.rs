@@ -66,6 +66,8 @@ fn find<'a>(h: &'a AppHarness, role: Role, name: &str) -> Vec<egui_kittest::Node
 fn fields(tab: &str) -> Vec<(Role, &'static str)> {
     match tab {
         "Layout" => vec![
+            (Role::TextInput, "X (mm)"),
+            (Role::TextInput, "Y (mm)"),
             (Role::TextInput, "Width (mm)"),
             (Role::TextInput, "Height (mm)"),
             (Role::CheckBox, "Keep aspect"),

@@ -213,6 +213,10 @@ fn every_prepare_key_does_what_the_sheet_says() {
         to_prepare(&mut h);
         let undo_before = common::undo_len(&sess);
         let who = format!("{} {}", s.keys(), s.what);
+        // Held while dragging a handle; see `tests/position_size.rs`.
+        if s.drag {
+            continue;
+        }
         h.key_press_modifiers(s.modifiers, s.key);
         h.run();
         match s.key {
@@ -327,4 +331,33 @@ fn space_drag_pans_the_canvas() {
         (moved.x - 60.0).abs() < 1.0 && (moved.y - 20.0).abs() < 1.0,
         "{moved:?}"
     );
+}
+
+/// Shift and Option (Alt) while dragging a handle are rows of the table,
+/// and the canvas asks the table for them.
+#[test]
+fn the_sheet_lists_the_handle_modifiers() {
+    let drags: Vec<_> = SHORTCUTS.iter().filter(|s| s.drag).collect();
+    assert_eq!(drags.len(), 2);
+    let option = if cfg!(target_os = "macos") {
+        "Option+drag"
+    } else {
+        "Alt+drag"
+    };
+    let keys: Vec<String> = drags.iter().map(|s| s.keys()).collect();
+    assert_eq!(keys, ["Shift+drag".to_string(), option.to_string()]);
+    use help::PrepareKey::{FlipKeepAspect, ScaleFromCentre};
+    assert!(help::held(Modifiers::SHIFT, FlipKeepAspect));
+    assert!(!help::held(Modifiers::NONE, FlipKeepAspect));
+    assert!(!help::held(Modifiers::SHIFT, ScaleFromCentre));
+    assert!(help::held(Modifiers::ALT, ScaleFromCentre));
+    // A drag row is never taken for a key press.
+    assert!(drags.iter().all(|s| s.run.is_none()));
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(&dir, session(&dir), false);
+    app_mut(&mut h).ui.show_shortcuts = true;
+    h.run();
+    h.get_by_label("Shift+drag");
+    h.get_by_label(option);
+    h.get_by_label("While dragging a handle: scale from the centre");
 }

@@ -109,23 +109,62 @@ pub fn rgb(c: [u8; 3]) -> Color32 {
 /// What the canvas found under the pointer.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Hit {
-    /// Corner `0..4` (top-left, top-right, bottom-right, bottom-left) of
-    /// the selection box.
+    /// Handle `0..8` of the selection box: the corners (top-left,
+    /// top-right, bottom-right, bottom-left), then the middles of the sides
+    /// (top, right, bottom, left).
     Handle(usize),
     Object(u64),
     Nothing,
 }
 
-/// The corner names `object.scale` takes, in handle order.
-const CORNERS: [&str; 4] = ["top_left", "top_right", "bottom_right", "bottom_left"];
+/// The anchor names `object.scale` takes, in handle order.
+const ANCHORS: [&str; 8] = [
+    "top_left",
+    "top_right",
+    "bottom_right",
+    "bottom_left",
+    "top",
+    "right",
+    "bottom",
+    "left",
+];
 
-fn corners(r: kurbo::Rect) -> [kurbo::Point; 4] {
+/// The handle points of a box: the corners, then the middles of the sides
+/// (see [`Hit::Handle`]).
+fn handle_points(r: kurbo::Rect) -> [kurbo::Point; 8] {
+    let c = r.center();
     [
         kurbo::Point::new(r.x0, r.y0),
         kurbo::Point::new(r.x1, r.y0),
         kurbo::Point::new(r.x1, r.y1),
         kurbo::Point::new(r.x0, r.y1),
+        kurbo::Point::new(c.x, r.y0),
+        kurbo::Point::new(r.x1, c.y),
+        kurbo::Point::new(c.x, r.y1),
+        kurbo::Point::new(r.x0, c.y),
     ]
+}
+
+/// The handle across the box from `handle`.
+fn opposite(handle: usize) -> usize {
+    if handle < 4 {
+        (handle + 2) % 4
+    } else {
+        4 + (handle - 4 + 2) % 4
+    }
+}
+
+/// A side of the box shorter than this on screen has no middle handle:
+/// it would crowd the corners.
+const SIDE_HANDLE_MIN: f32 = 4.0 * HANDLE_PICK;
+
+/// Whether handle `i` is shown for a box of `screen` size.
+fn handle_shown(i: usize, screen: Rect) -> bool {
+    match i {
+        4 | 6 => screen.width() >= SIDE_HANDLE_MIN,
+        5 | 7 => screen.height() >= SIDE_HANDLE_MIN,
+        _ => true,
+    }
 }
 
 /// The common box of the selected objects, in mm.
@@ -137,21 +176,155 @@ pub fn selection_box(snap: &Snapshot) -> Option<kurbo::Rect> {
         .reduce(|a, b| a.union(b))
 }
 
-/// The factor a corner drag scales by: the pointer projected onto the
-/// diagonal from the fixed corner.
+/// The selection box as it is right now: during a drag, where the drag
+/// has it. The Position and size fields and the selection frame show it.
+pub fn live_box(snap: &Snapshot, st: &PrepareState) -> Option<kurbo::Rect> {
+    let b = selection_box(snap)?;
+    Some(match &st.drag {
+        Some(Drag::Move { start, current, .. }) => b + (*current - *start),
+        Some(d @ Drag::Scale { .. }) => drag_stretch(d).map_or(b, |s| s.apply(b)),
+        _ => b,
+    })
+}
+
+/// The scale in percent a handle drag has reached, when it keeps the
+/// shape.
+pub fn live_percent(st: &PrepareState) -> Option<f64> {
+    st.drag
+        .as_ref()
+        .and_then(drag_stretch)
+        .filter(Stretch::uniform)
+        .map(|s| s.fx * 100.0)
+}
+
+/// Whether width and height of these objects can change apart: one
+/// object, turned by a multiple of 90 degrees (`object.scale` refuses
+/// other angles, and a group keeps its shape).
+pub fn free_aspect(snap: &Snapshot, ids: &[u64]) -> bool {
+    match ids {
+        [id] => snap.object(*id).is_some_and(|o| {
+            let q = o.transform.rotation_deg / 90.0;
+            (q - q.round()).abs() < 1e-9
+        }),
+        _ => false,
+    }
+}
+
+/// The factor a corner drag scales by when it keeps the shape: the pointer
+/// projected onto the diagonal from the fixed point.
 fn corner_factor(anchor: kurbo::Point, corner: kurbo::Point, pointer: kurbo::Point) -> f64 {
     let d = corner - anchor;
     let len2 = d.hypot2();
     if len2 <= 1e-12 {
         return 1.0;
     }
-    ((pointer - anchor).dot(d) / len2).max(0.01)
+    ((pointer - anchor).dot(d) / len2).max(MIN_FACTOR)
+}
+
+/// The smallest factor a handle drag gives: a drag past the fixed point
+/// does not mirror.
+const MIN_FACTOR: f64 = 0.01;
+
+/// What a handle drag does: the factors along x and y about a fixed point.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Stretch {
+    pub fx: f64,
+    pub fy: f64,
+    pub anchor: kurbo::Point,
+    /// The `object.scale` anchor of the fixed point.
+    pub anchor_name: &'static str,
+}
+
+impl Stretch {
+    pub fn uniform(&self) -> bool {
+        (self.fx - self.fy).abs() < 1e-12
+    }
+
+    pub fn affine(&self) -> kurbo::Affine {
+        let a = self.anchor.to_vec2();
+        kurbo::Affine::translate(a)
+            * kurbo::Affine::scale_non_uniform(self.fx, self.fy)
+            * kurbo::Affine::translate(-a)
+    }
+
+    pub fn apply(&self, r: kurbo::Rect) -> kurbo::Rect {
+        self.affine().transform_rect_bbox(r)
+    }
+}
+
+/// The stretch of a drag of `handle` of the box `start` to `pointer`.
+/// `keep` keeps the shape; `centre` scales about the centre instead of
+/// the opposite corner or side. A corner changes both sides, a side only
+/// its own unless the shape is kept.
+pub fn stretch(
+    start: kurbo::Rect,
+    handle: usize,
+    pointer: kurbo::Point,
+    keep: bool,
+    centre: bool,
+) -> Stretch {
+    let points = handle_points(start);
+    let grip = points[handle];
+    let (anchor, anchor_name) = if centre {
+        (start.center(), "center")
+    } else {
+        let o = opposite(handle);
+        (points[o], ANCHORS[o])
+    };
+    let along = |p: f64, g: f64, a: f64| {
+        if (g - a).abs() <= 1e-9 {
+            1.0
+        } else {
+            ((p - a) / (g - a)).max(MIN_FACTOR)
+        }
+    };
+    let fx = along(pointer.x, grip.x, anchor.x);
+    let fy = along(pointer.y, grip.y, anchor.y);
+    let (fx, fy) = match (handle, keep) {
+        (0..=3, true) => {
+            let f = corner_factor(anchor, grip, pointer);
+            (f, f)
+        }
+        (0..=3, false) => (fx, fy),
+        (5 | 7, true) => (fx, fx),
+        (5 | 7, false) => (fx, 1.0),
+        (_, true) => (fy, fy),
+        (_, false) => (1.0, fy),
+    };
+    Stretch {
+        fx,
+        fy,
+        anchor,
+        anchor_name,
+    }
+}
+
+/// The stretch of a handle drag so far, with its modifiers.
+fn drag_stretch(d: &Drag) -> Option<Stretch> {
+    match d {
+        Drag::Scale {
+            handle,
+            start,
+            current,
+            keep,
+            free,
+            flip,
+            centre,
+            ..
+        } => {
+            let keep = !*free || (*keep != *flip);
+            Some(stretch(*start, *handle, *current, keep, *centre))
+        }
+        _ => None,
+    }
 }
 
 fn hit_test(snap: &Snapshot, view: &CanvasView, at: Pos2) -> Hit {
     if let Some(b) = selection_box(snap) {
-        for (i, c) in corners(b).into_iter().enumerate() {
-            if view.mm_to_screen(c).distance(at) <= HANDLE_PICK {
+        let screen = view.rect_to_screen(b);
+        // The corners first: they win where handles overlap.
+        for (i, c) in handle_points(b).into_iter().enumerate() {
+            if handle_shown(i, screen) && view.mm_to_screen(c).distance(at) <= HANDLE_PICK {
                 return Hit::Handle(i);
             }
         }
@@ -173,11 +346,6 @@ fn hit_test(snap: &Snapshot, view: &CanvasView, at: Pos2) -> Hit {
 /// shows the linked copies of the scaled objects that are not dragged:
 /// they take the scale and keep their own centre, as `object.scale` does.
 fn drag_preview(drag: Option<&Drag>, snap: &Snapshot, id: u64) -> Option<kurbo::Affine> {
-    let about = |c: kurbo::Point, f: f64| {
-        kurbo::Affine::translate(c.to_vec2())
-            * kurbo::Affine::scale(f)
-            * kurbo::Affine::translate(-c.to_vec2())
-    };
     match drag? {
         Drag::Move {
             ids,
@@ -185,22 +353,20 @@ fn drag_preview(drag: Option<&Drag>, snap: &Snapshot, id: u64) -> Option<kurbo::
             current,
             ..
         } if ids.contains(&id) => Some(kurbo::Affine::translate(*current - *start)),
-        Drag::Scale {
-            ids,
-            anchor,
-            corner,
-            current,
-            ..
-        } => {
-            let f = corner_factor(*anchor, *corner, *current);
+        d @ Drag::Scale { ids, .. } => {
+            let st = drag_stretch(d)?;
             if ids.contains(&id) {
-                return Some(about(*anchor, f));
+                return Some(st.affine());
             }
             let o = snap.object(id)?;
             let group = o.link_group?;
+            let own = Stretch {
+                anchor: o.transform.center_mm,
+                ..st
+            };
             ids.iter()
                 .any(|i| snap.object(*i).is_some_and(|m| m.link_group == Some(group)))
-                .then(|| about(o.transform.center_mm, f))
+                .then(|| own.affine())
         }
         _ => None,
     }
@@ -250,6 +416,7 @@ pub fn show(
         Sense::click_and_drag(),
     );
     pointer(ui, &resp, snap, st, actions);
+    handle_card(ui, &resp, snap, st);
     if resp.secondary_clicked()
         && let Some(p) = resp.interact_pointer_pos()
     {
@@ -534,27 +701,56 @@ fn draw_selection(
     st: &PrepareState,
     pick: Color32,
 ) -> Option<Rect> {
-    let mut b = selection_box(snap)?;
-    if let Some(Drag::Move { start, current, .. }) = &st.drag {
-        b = b + (*current - *start);
-    }
-    if let Some(d @ Drag::Scale { ids, .. }) = &st.drag
-        && let Some(a) = ids.first().and_then(|id| drag_preview(Some(d), snap, *id))
-    {
-        b = a.transform_rect_bbox(b);
-    }
+    let b = live_box(snap, st)?;
     let r = st.view.rect_to_screen(b);
     painter.rect_stroke(r, 0.0, Stroke::new(1.5, pick), egui::StrokeKind::Outside);
-    for c in [
-        r.left_top(),
-        r.right_top(),
-        r.right_bottom(),
-        r.left_bottom(),
-    ] {
-        let h = Rect::from_center_size(c, Vec2::splat(HANDLE * 2.0));
-        painter.rect_filled(h, 1.0, pick);
+    for (i, c) in handle_points(b).into_iter().enumerate() {
+        if handle_shown(i, r) {
+            let h = Rect::from_center_size(st.view.mm_to_screen(c), Vec2::splat(HANDLE * 2.0));
+            painter.rect_filled(h, 1.0, pick);
+        }
     }
     Some(r)
+}
+
+/// Over a handle (and not dragging): its resize cursor and its card.
+fn handle_card(ui: &Ui, resp: &egui::Response, snap: &Snapshot, st: &PrepareState) {
+    if st.drag.is_some() {
+        return;
+    }
+    let Some(at) = resp.hover_pos() else { return };
+    let Hit::Handle(i) = hit_test(snap, &st.view, at) else {
+        return;
+    };
+    ui.ctx().set_cursor_icon(handle_cursor(i));
+    let ids: Vec<u64> = snap.selection.iter().copied().collect();
+    let why = (!free_aspect(snap, &ids)).then_some(if ids.len() > 1 {
+        "Several objects always scale together and keep their shape, so Shift does nothing here."
+    } else {
+        "This object is turned by an angle that is not a multiple of 90 degrees, so it always keeps its shape and Shift does nothing here."
+    });
+    let title = if i < 4 {
+        "Corner handle"
+    } else {
+        "Side handle"
+    };
+    super::groups::card(
+        resp,
+        title,
+        super::tools::Setting::ScaleHandle.card(),
+        why,
+        false,
+    );
+}
+
+/// The resize cursor of a handle.
+fn handle_cursor(i: usize) -> egui::CursorIcon {
+    match i {
+        0 | 2 => egui::CursorIcon::ResizeNwSe,
+        1 | 3 => egui::CursorIcon::ResizeNeSw,
+        4 | 6 => egui::CursorIcon::ResizeVertical,
+        _ => egui::CursorIcon::ResizeHorizontal,
+    }
 }
 
 /// A tick step in mm that keeps ticks at least `min_px` apart.
@@ -819,10 +1015,11 @@ fn pointer(
     st: &mut PrepareState,
     actions: &mut Vec<Action>,
 ) {
-    let (space, shift, wheels, zoom, hover) = ui.input(|i| {
+    let (space, shift, mods, wheels, zoom, hover) = ui.input(|i| {
         (
             i.key_down(super::help::pan_key()),
             i.modifiers.shift,
+            i.modifiers,
             wheel_events(&i.raw.events),
             i.zoom_delta(),
             i.pointer.hover_pos(),
@@ -857,14 +1054,17 @@ fn pointer(
         st.drag = match hit_test(snap, &st.view, origin) {
             Hit::Handle(i) => {
                 let b = selection_box(snap).expect("a handle needs a selection");
-                let c = corners(b);
+                let ids: Vec<u64> = snap.selection.iter().copied().collect();
                 Some(Drag::Scale {
                     doc_id,
-                    ids: snap.selection.iter().copied().collect(),
-                    corner_index: i,
-                    corner: c[i],
-                    anchor: c[(i + 2) % 4],
-                    current: c[i],
+                    free: free_aspect(snap, &ids),
+                    ids,
+                    handle: i,
+                    start: b,
+                    current: handle_points(b)[i],
+                    keep: st.fields.keep_aspect,
+                    flip: false,
+                    centre: false,
                 })
             }
             Hit::Object(id) => {
@@ -899,6 +1099,14 @@ fn pointer(
             *current = mm;
         }
     }
+    // Shift and Option count while the handle is dragged, up to the drop.
+    if let Some(Drag::Scale { flip, centre, .. }) = &mut st.drag {
+        *flip = super::help::held(mods, super::help::PrepareKey::FlipKeepAspect);
+        *centre = super::help::held(mods, super::help::PrepareKey::ScaleFromCentre);
+    }
+    if let Some(Drag::Scale { handle, .. }) = &st.drag {
+        ui.ctx().set_cursor_icon(handle_cursor(*handle));
+    }
     if resp.drag_stopped() {
         match st.drag.take() {
             Some(Drag::Move {
@@ -916,26 +1124,9 @@ fn pointer(
                     ));
                 }
             }
-            Some(Drag::Scale {
-                doc_id,
-                ids,
-                corner_index,
-                corner,
-                anchor,
-                current,
-            }) => {
-                let f = corner_factor(anchor, corner, current);
-                if (f - 1.0).abs() > 1e-9 {
-                    actions.push(Action::run(
-                        doc_id,
-                        "object.scale",
-                        json!({
-                            "ids": ids,
-                            "factor": f,
-                            "anchor": CORNERS[(corner_index + 2) % 4],
-                            "group": ids.len() > 1,
-                        }),
-                    ));
+            Some(d @ Drag::Scale { .. }) => {
+                if let Some(a) = scale_action(&d) {
+                    actions.push(a);
                 }
             }
             Some(Drag::Frame {
@@ -978,6 +1169,40 @@ fn pointer(
         };
         actions.push(Action::run(doc_id, "object.select", json!({ "ids": ids })));
     }
+}
+
+/// The `object.scale` a handle drag sends when it ends, if it changed
+/// anything: one factor when it keeps the shape (several objects as one
+/// group), else the new width and height of the one object.
+fn scale_action(d: &Drag) -> Option<Action> {
+    let Drag::Scale {
+        doc_id, ids, start, ..
+    } = d
+    else {
+        return None;
+    };
+    let s = drag_stretch(d)?;
+    if (s.fx - 1.0).abs() <= 1e-9 && (s.fy - 1.0).abs() <= 1e-9 {
+        return None;
+    }
+    let params = if s.uniform() {
+        json!({
+            "ids": ids,
+            "factor": s.fx,
+            "anchor": s.anchor_name,
+            "group": ids.len() > 1,
+        })
+    } else {
+        let mut p = json!({ "ids": ids, "keep_aspect": false, "anchor": s.anchor_name });
+        if (s.fx - 1.0).abs() > 1e-9 {
+            p["width_mm"] = json!(start.width() * s.fx);
+        }
+        if (s.fy - 1.0).abs() > 1e-9 {
+            p["height_mm"] = json!(start.height() * s.fy);
+        }
+        p
+    };
+    Some(Action::run(*doc_id, "object.scale", params))
 }
 
 #[cfg(test)]
@@ -1034,5 +1259,42 @@ mod tests {
         let c = kurbo::Point::new(50.0, 50.0);
         assert!((corner_factor(a, c, kurbo::Point::new(75.0, 75.0)) - 1.5).abs() < 1e-12);
         assert!((corner_factor(a, c, kurbo::Point::new(-10.0, -10.0)) - 0.01).abs() < 1e-12);
+    }
+
+    #[test]
+    fn handles_face_their_opposites() {
+        assert_eq!(
+            (0..8).map(opposite).collect::<Vec<_>>(),
+            [2, 3, 0, 1, 6, 7, 4, 5]
+        );
+        for i in 0..8 {
+            assert!(!ANCHORS[opposite(i)].is_empty());
+        }
+    }
+
+    #[test]
+    fn a_stretch_follows_keep_aspect_and_the_handle() {
+        let b = kurbo::Rect::new(0.0, 0.0, 40.0, 20.0);
+        let p = kurbo::Point::new(60.0, 30.0);
+        // Bottom-right corner, free: both sides follow the pointer.
+        let s = stretch(b, 2, p, false, false);
+        assert_eq!((s.fx, s.fy, s.anchor_name), (1.5, 1.5, "top_left"));
+        let s = stretch(b, 2, kurbo::Point::new(60.0, 20.0), false, false);
+        assert_eq!((s.fx, s.fy), (1.5, 1.0));
+        // The right side, free: only the width.
+        let s = stretch(b, 5, kurbo::Point::new(80.0, 99.0), false, false);
+        assert_eq!((s.fx, s.fy, s.anchor_name), (2.0, 1.0, "left"));
+        // The right side, kept: both, about the middle of the left side.
+        let s = stretch(b, 5, kurbo::Point::new(80.0, 99.0), true, false);
+        assert_eq!((s.fx, s.fy), (2.0, 2.0));
+        assert_eq!(s.apply(b), kurbo::Rect::new(0.0, -10.0, 80.0, 30.0));
+        // From the centre: the half-size grows to the pointer.
+        let s = stretch(b, 5, kurbo::Point::new(40.0, 10.0), false, true);
+        assert_eq!((s.fx, s.anchor_name), (1.0, "center"));
+        let s = stretch(b, 5, kurbo::Point::new(60.0, 10.0), false, true);
+        assert_eq!(s.apply(b), kurbo::Rect::new(-20.0, 0.0, 60.0, 20.0));
+        // Past the fixed side it does not mirror.
+        let s = stretch(b, 5, kurbo::Point::new(-30.0, 10.0), false, false);
+        assert_eq!(s.fx, MIN_FACTOR);
     }
 }

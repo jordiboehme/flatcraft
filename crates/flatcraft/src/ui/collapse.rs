@@ -5,8 +5,8 @@
 //! tooltip), then Tile (only its tile, whose list holds every action; a
 //! group without a tile, like the Cut bar's steps, moves into a "»" button
 //! at the right end, which lists it with icons and labels, [`Mode::List`]).
-//! A group with the keep rule (the ribbon's Size) goes to Icons but never
-//! to a tile.
+//! A group with the keep rule (the ribbon's Position and size) goes to
+//! Icons but never to a tile.
 //!
 //! The order of the steps is the table [`steps`] (rightmost movable group
 //! first). After every step the bar checks the fit and stops at the first
@@ -19,10 +19,11 @@
 //! | 3..  | every other group, right to left (keep groups too) | Icons |
 //! | then | every other movable group, right to left | Tile |
 //!
-//! For Add, Edit, Size (keep), Arrange and Linked files: Linked files
-//! Icons, Linked files Tile, Arrange Icons, Size Icons, Edit Icons, Add
-//! Icons, Arrange Tile, Edit Tile, Add Tile. So the group that is the
-//! least used folds first, and a group at the left keeps its labels longest.
+//! For Add, Edit, Position and size (keep), Arrange and Linked files:
+//! Linked files Icons, Linked files Tile, Arrange Icons, Position and size
+//! Icons, Edit Icons, Add Icons, Arrange Tile, Edit Tile, Add Tile. So the
+//! group that is the least used folds first, and a group at the left keeps
+//! its labels longest.
 //!
 //! The widths are measured from what was drawn, never guessed, and a
 //! tile's width comes from the function that sizes the tile: a level that
@@ -413,7 +414,8 @@ pub fn level(ctx: &egui::Context, id: Id) -> Option<Level> {
 mod tests {
     use super::*;
 
-    // Add, Edit, Size (keep), Arrange, Linked files, like the Layout tab.
+    // Add, Edit, Position and size (keep, "Size" here), Arrange, Linked
+    // files, like the Layout tab.
     const KEEP: [bool; 5] = [false, false, true, false, false];
     const FULLS: [f32; 5] = [150.0, 100.0, 120.0, 140.0, 90.0];
     const ICONS: [f32; 5] = [100.0, 70.0, 120.0, 60.0, 50.0];

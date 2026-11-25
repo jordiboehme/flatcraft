@@ -8,10 +8,11 @@ use flatcraft_engine::registry;
 use serde_json::json;
 
 use super::Action;
+use super::canvas;
 use super::collapse::{self, Group, Mode};
 use super::groups::{self, Cx, Extras};
 use super::icons::Icon;
-use super::prepare::{PrepareState, RibbonTab, Snapshot};
+use super::prepare::{FieldEdit, Fields, PrepareState, RibbonTab, SizeField, Snapshot};
 use super::rails::SidePanel;
 use super::settings::set_name;
 use super::theme::Tokens;
@@ -43,32 +44,66 @@ const FIELD_MARGIN: egui::Vec2 = egui::vec2(4.0, 2.0);
 /// is: 4 digits and 2 decimals, more than any mat.
 const WIDEST_MM: &str = "-0000.00";
 
-/// A short number field. Shows `current` while it is not being edited and
-/// returns the typed number when Enter is pressed. It is always as wide as
-/// its text, and at least as wide as [`WIDEST_MM`], so no digit is cut.
-#[allow(clippy::too_many_arguments)]
-fn number_field(
-    ui: &mut Ui,
-    id_salt: &str,
-    label: &str,
-    name: &str,
+/// A short number field of the Position and size group.
+struct NumberField<'a> {
+    field: SizeField,
+    label: &'a str,
+    /// Its accessible name and card title.
+    name: &'a str,
     setting: Setting,
-    buf: &mut String,
-    current: Option<String>,
+    /// What it shows while it is not being edited.
+    current: String,
     enabled: bool,
-) -> Option<f64> {
-    let id = ui.make_persistent_id(id_salt);
-    if !ui.memory(|m| m.has_focus(id))
-        && let Some(c) = current
-    {
-        *buf = c;
+}
+
+impl SizeField {
+    fn id_salt(self) -> &'static str {
+        match self {
+            SizeField::X => "position-x",
+            SizeField::Y => "position-y",
+            SizeField::Width => "scale-width",
+            SizeField::Height => "scale-height",
+            SizeField::Percent => "scale-percent",
+        }
     }
-    let why = (!enabled).then_some("Select something first.");
-    let l = ui.label(label);
-    groups::card(&l, name, setting.card(), why, false);
+
+    /// Its widget id, the same wherever the group is drawn.
+    fn id(self) -> egui::Id {
+        egui::Id::unique(("flatcraft-size-field", self.id_salt()))
+    }
+
+    fn buf(self, f: &mut Fields) -> &mut String {
+        match self {
+            SizeField::X => &mut f.x,
+            SizeField::Y => &mut f.y,
+            SizeField::Width => &mut f.width,
+            SizeField::Height => &mut f.height,
+            SizeField::Percent => &mut f.percent,
+        }
+    }
+}
+
+/// Draws a number field. It shows `current` while it is not being edited
+/// and never overwrites what the person types. The typed value counts when
+/// the field loses the focus (Tab, Shift-Tab, Enter, a click elsewhere),
+/// see [`finish_edit`]; Escape puts the shown value back. It is always as
+/// wide as its text, and at least as wide as [`WIDEST_MM`], so no digit is
+/// cut.
+fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) {
+    let id = nf.field.id();
+    let focused = ui.memory(|m| m.has_focus(id));
+    let fields = &mut cx.st.fields;
+    let editing = fields.editing.as_ref().is_some_and(|e| e.field == nf.field);
+    if !focused && !editing {
+        *nf.field.buf(fields) = nf.current.clone();
+    }
+    let why = (!nf.enabled).then_some("Select something first.");
+    let l = ui.label(nf.label);
+    groups::card(&l, nf.name, nf.setting.card(), why, false);
+    let buf = nf.field.buf(fields);
     let width = field_width(ui, buf).max(field_width(ui, WIDEST_MM));
     let resp = ui.add_enabled(
-        enabled,
+        nf.enabled,
         egui::TextEdit::singleline(buf)
             .id(id)
             .margin(egui::Margin::symmetric(
@@ -78,12 +113,90 @@ fn number_field(
             .desired_width(width)
             .min_size(egui::vec2(width, 0.0)),
     );
-    set_name(ui, &resp, name);
-    groups::card(&resp, name, setting.card(), why, false);
-    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-        return buf.trim().replace(',', ".").parse::<f64>().ok();
+    set_name(ui, &resp, nf.name);
+    groups::card(&resp, nf.name, nf.setting.card(), why, false);
+    if resp.has_focus() {
+        if !editing {
+            // Another field still editing lost the focus in this pass.
+            finish_edit(ui, cx);
+            cx.st.fields.editing = Some(FieldEdit {
+                field: nf.field,
+                shown: nf.current,
+                doc_id: cx.snap.doc_id,
+                ids: cx.snap.selection.iter().copied().collect(),
+            });
+        }
+    } else if editing {
+        finish_edit(ui, cx);
     }
-    None
+}
+
+/// Ends the editing of the field that lost the focus: Escape puts its
+/// shown text back, a changed number is applied as one command.
+fn finish_edit(ui: &Ui, cx: &mut Cx) {
+    let Some(edit) = cx.st.fields.editing.take() else {
+        return;
+    };
+    let buf = edit.field.buf(&mut cx.st.fields);
+    let typed = buf.trim().replace(',', ".");
+    let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+    if escape || typed == edit.shown.trim() {
+        *buf = edit.shown.clone();
+        return;
+    }
+    let Ok(v) = typed.parse::<f64>() else {
+        *buf = edit.shown.clone();
+        return;
+    };
+    if edit.ids.is_empty() || edit.doc_id != cx.snap.doc_id || !v.is_finite() {
+        return;
+    }
+    if let Some(a) = size_action(cx.snap, &cx.st.fields, &edit, v) {
+        cx.actions.push(a);
+    }
+}
+
+/// The command a typed value of a Position and size field runs.
+fn size_action(snap: &Snapshot, f: &Fields, edit: &FieldEdit, v: f64) -> Option<Action> {
+    let ids = &edit.ids;
+    let doc_id = edit.doc_id;
+    let have = snap
+        .objects
+        .iter()
+        .filter(|o| ids.contains(&o.id))
+        .filter_map(super::prepare::ObjView::bounds)
+        .reduce(|a, b| a.union(b));
+    let single = ids.len() == 1;
+    let params = match edit.field {
+        SizeField::X => json!({ "ids": ids, "x_mm": v }),
+        SizeField::Y => json!({ "ids": ids, "y_mm": v }),
+        SizeField::Percent if v > 0.0 => {
+            // Each object scales about its own centre when the switch is on.
+            json!({ "ids": ids, "factor": v / 100.0, "group": !single && !f.each })
+        }
+        SizeField::Width | SizeField::Height if v > 0.0 => {
+            let (key, have) = if edit.field == SizeField::Width {
+                ("width_mm", have.map(|b| b.width()))
+            } else {
+                ("height_mm", have.map(|b| b.height()))
+            };
+            if single {
+                let keep = f.keep_aspect || !canvas::free_aspect(snap, ids);
+                json!({ "ids": ids, key: v, "keep_aspect": keep })
+            } else {
+                // Several objects: one factor from the common box, which
+                // scales as one group so its layout stays.
+                let have = have.filter(|h| *h > 1e-9)?;
+                json!({ "ids": ids, "factor": v / have, "group": true })
+            }
+        }
+        _ => return None,
+    };
+    let command = match edit.field {
+        SizeField::X | SizeField::Y => "object.move",
+        _ => "object.scale",
+    };
+    Some(Action::run(doc_id, command, params))
 }
 
 /// What the search box does with a command.
@@ -559,7 +672,7 @@ fn signature(tab: RibbonTab, cx: &Cx) -> u64 {
     if tab == RibbonTab::Layout {
         cx.snap.linked_reach().hash(&mut h);
         let f = &cx.st.fields;
-        for text in [&f.width, &f.height, &f.percent] {
+        for text in [&f.x, &f.y, &f.width, &f.height, &f.percent] {
             text.chars().count().max(WIDEST_MM.len()).hash(&mut h);
         }
     }
@@ -685,14 +798,22 @@ fn switch(
     resp
 }
 
-/// The Size group: W, H, Keep aspect and %, with its title under them. It
-/// has no actions and never collapses.
+/// The Position and size group: X, Y, W, H, % and Keep aspect, with its
+/// title under them. It has no actions and never collapses.
 fn size_group(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
     let def = GroupId::Size.def();
+    // A field that lost the focus to something outside the group (a click
+    // on the canvas) applies its value now.
+    if let Some(e) = &cx.st.fields.editing {
+        let id = e.field.id();
+        if !ui.memory(|m| m.has_focus(id)) {
+            finish_edit(ui, cx);
+        }
+    }
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = groups::GROUP_GAP;
-        // Two columns of two rows: W above H, and % above Keep aspect.
-        // Each is a grid, so the labels line up.
+        // Three columns of two rows: X above Y, W above H, and % above
+        // Keep aspect. Each is a grid, so the labels line up.
         let top = groups::pins_row(ui, |ui| {
             // Two rows fill the pins row's height, so the columns start at
             // its top (a grid does not centre itself in a row).
@@ -700,6 +821,11 @@ fn size_group(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
                 egui::vec2(ui.available_width(), groups::BIG_HEIGHT),
                 egui::Layout::left_to_right(egui::Align::Min),
                 |ui| {
+                    egui::Grid::new("flatcraft-size-xy")
+                        .num_columns(2)
+                        .min_col_width(0.0)
+                        .spacing(SIZE_GRID_GAP)
+                        .show(ui, |ui| size_xy(ui, cx));
                     egui::Grid::new("flatcraft-size-wh")
                         .num_columns(2)
                         .min_col_width(0.0)
@@ -730,94 +856,107 @@ fn size_group(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
     });
 }
 
-fn size_wh(ui: &mut Ui, cx: &mut Cx) {
-    let snap = cx.snap;
-    let doc_id = snap.doc_id;
-    let ids: Vec<u64> = snap.selection.iter().copied().collect();
-    let any = !ids.is_empty();
-    let single = ids.len() == 1;
-    let b = super::canvas::selection_box(snap);
-    let f = &mut cx.st.fields;
-    let w = number_field(
-        ui,
-        "scale-width",
-        "W",
-        "Width (mm)",
-        Setting::Width,
-        &mut f.width,
-        Some(b.map(|b| mm(b.width())).unwrap_or_default()),
-        any,
-    );
-    ui.end_row();
-    let h = number_field(
-        ui,
-        "scale-height",
-        "H",
-        "Height (mm)",
-        Setting::Height,
-        &mut f.height,
-        Some(b.map(|b| mm(b.height())).unwrap_or_default()),
-        any,
-    );
-    ui.end_row();
-    for (target, key, have) in [
-        (w, "width_mm", b.map(|b| b.width())),
-        (h, "height_mm", b.map(|b| b.height())),
+/// The first column: X above Y, the top-left corner of the selection box.
+fn size_xy(ui: &mut Ui, cx: &mut Cx) {
+    let any = !cx.snap.selection.is_empty();
+    let b = canvas::live_box(cx.snap, cx.st);
+    for (field, label, name, setting, value) in [
+        (
+            SizeField::X,
+            "X",
+            "X (mm)",
+            Setting::PositionX,
+            b.map(|b| b.x0),
+        ),
+        (
+            SizeField::Y,
+            "Y",
+            "Y (mm)",
+            Setting::PositionY,
+            b.map(|b| b.y0),
+        ),
     ] {
-        let Some(target) = target.filter(|v| *v > 0.0) else {
-            continue;
+        let nf = NumberField {
+            field,
+            label,
+            name,
+            setting,
+            current: value.map(mm).unwrap_or_default(),
+            enabled: any,
         };
-        if single {
-            cx.actions.push(Action::run(
-                doc_id,
-                "object.scale",
-                json!({ "ids": ids, key: target, "keep_aspect": f.keep_aspect }),
-            ));
-        } else if let Some(have) = have.filter(|h| *h > 1e-9) {
-            // Several objects: one factor from the common box, which
-            // scales as one group so its layout stays.
-            cx.actions.push(Action::run(
-                doc_id,
-                "object.scale",
-                json!({ "ids": ids, "factor": target / have, "group": true }),
-            ));
-        }
+        number_field(ui, nf, cx);
+        ui.end_row();
     }
 }
 
-/// Room between the cells of the Size group's columns.
+/// The second column: W above H.
+fn size_wh(ui: &mut Ui, cx: &mut Cx) {
+    let any = !cx.snap.selection.is_empty();
+    let b = canvas::live_box(cx.snap, cx.st);
+    for (field, label, name, setting, value) in [
+        (
+            SizeField::Width,
+            "W",
+            "Width (mm)",
+            Setting::Width,
+            b.map(|b| b.width()),
+        ),
+        (
+            SizeField::Height,
+            "H",
+            "Height (mm)",
+            Setting::Height,
+            b.map(|b| b.height()),
+        ),
+    ] {
+        let nf = NumberField {
+            field,
+            label,
+            name,
+            setting,
+            current: value.map(mm).unwrap_or_default(),
+            enabled: any,
+        };
+        number_field(ui, nf, cx);
+        ui.end_row();
+    }
+}
+
+/// Room between the cells of the group's columns.
 const SIZE_GRID_GAP: egui::Vec2 = egui::vec2(4.0, 4.0);
 
-/// The second column: % above Keep aspect, which sits under the field.
+/// The third column: % above Keep aspect, which sits under the field.
 fn size_scale(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
-    let snap = cx.snap;
-    let doc_id = snap.doc_id;
-    let ids: Vec<u64> = snap.selection.iter().copied().collect();
+    let ids: Vec<u64> = cx.snap.selection.iter().copied().collect();
     let any = !ids.is_empty();
-    let single = ids.len() == 1;
-    let f = &mut cx.st.fields;
-    if let Some(p) = number_field(
-        ui,
-        "scale-percent",
-        "%",
-        "Scale (%)",
-        Setting::ScalePercent,
-        &mut f.percent,
-        Some(if any { "100.00".into() } else { String::new() }),
-        any,
-    ) && p > 0.0
-    {
-        // Each object scales about its own centre when the switch is on.
-        cx.actions.push(Action::run(
-            doc_id,
-            "object.scale",
-            json!({ "ids": ids, "factor": p / 100.0, "group": !single && !f.each }),
-        ));
-    }
+    let current = if any {
+        mm(canvas::live_percent(cx.st).unwrap_or(100.0))
+    } else {
+        String::new()
+    };
+    let nf = NumberField {
+        field: SizeField::Percent,
+        label: "%",
+        name: "Scale (%)",
+        setting: Setting::ScalePercent,
+        current,
+        enabled: any,
+    };
+    number_field(ui, nf, cx);
     ui.end_row();
     // No label of its own: the switch sits under the % field.
     ui.allocate_exact_size(egui::Vec2::ZERO, egui::Sense::hover());
-    if ids.len() > 1 {
+    let f = &mut cx.st.fields;
+    let forced = if ids.len() > 1 {
+        Some("Several objects always scale together and keep their shape.")
+    } else if any && !canvas::free_aspect(cx.snap, &ids) {
+        Some(
+            "This object is turned by an angle that is not a multiple of 90 degrees, so it always keeps its shape. Turn it straight to change width and height apart.",
+        )
+    } else {
+        None
+    };
+    if let Some(why) = forced {
         let mut on = true;
         switch(
             ui,
@@ -826,7 +965,7 @@ fn size_scale(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
             Icon::KeepAspect,
             "Keep aspect",
             Setting::KeepAspect,
-            Some("Several objects always scale together and keep their shape."),
+            Some(why),
         );
     } else {
         switch(
