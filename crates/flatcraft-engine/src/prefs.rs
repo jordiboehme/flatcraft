@@ -18,6 +18,18 @@ pub enum Theme {
     System,
 }
 
+/// What the person chose for a side panel: nothing yet (the panel follows
+/// the window width), collapsed to its rail, or open. A choice wins over
+/// the width until the person uses the opposite control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PanelUser {
+    #[default]
+    None,
+    Collapsed,
+    Open,
+}
+
 /// The theme of a preferences file that has no `theme` key. Only builds
 /// that knew just Dark wrote such files, so they keep Dark; a new install
 /// has no file and gets [`Theme::System`] from `Preferences::default`.
@@ -59,6 +71,13 @@ pub struct Preferences {
     /// The gap the one-click Auto arrange leaves between objects, in mm.
     /// The Auto arrange panel stores it on OK. Only the window writes it.
     pub auto_arrange_spacing_mm: f64,
+    /// What the person chose for the Prepare Objects panel, the Prepare
+    /// Cut and Job panel and the Cut workspace's stage panel. Only the
+    /// window writes them (UI preferences); no registry command reads or
+    /// changes them.
+    pub panel_objects: PanelUser,
+    pub panel_settings: PanelUser,
+    pub panel_stage: PanelUser,
 }
 
 /// Every id `ribbon_pins` can hold, in the order of the ribbon's table
@@ -248,6 +267,9 @@ impl Default for Preferences {
             rotate_each: false,
             ribbon_pins: default_ribbon_pins(),
             auto_arrange_spacing_mm: DEFAULT_AUTO_SPACING_MM,
+            panel_objects: PanelUser::None,
+            panel_settings: PanelUser::None,
+            panel_stage: PanelUser::None,
         }
     }
 }

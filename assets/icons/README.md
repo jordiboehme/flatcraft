@@ -58,6 +58,8 @@ https://raw.githubusercontent.com/lucide-icons/lucide/1.79.0/icons/<name>.svg, u
 | Pin to the ribbon | pin |
 | Unpin from the ribbon | pin-off |
 | Drop-down | chevron-down |
+| Chevron left (collapse or open a side panel) | chevron-left |
+| Chevron right (collapse or open a side panel) | chevron-right |
 | Align left | align-start-vertical |
 | Align centre | align-center-vertical |
 | Align right | align-end-vertical |

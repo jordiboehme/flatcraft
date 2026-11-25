@@ -9,6 +9,7 @@ use serde_json::json;
 use super::context_menu;
 use super::icons::{self, Icon};
 use super::prepare::{ObjView, PrepareState, Snapshot};
+use super::rails::{Side, SidePanel};
 use super::theme::Tokens;
 use super::{Action, ICON_SIZE, fonts, icon_button, icon_button_hint};
 
@@ -33,7 +34,9 @@ pub fn show(
     actions: &mut Vec<Action>,
 ) {
     let doc_id = snap.doc_id;
-    ui.label(RichText::new("Objects").font(fonts::semibold(14.0)));
+    if super::rails::header(ui, SidePanel::Objects, Side::Left, "Objects") {
+        st.panels.set_collapsed(SidePanel::Objects, true);
+    }
     ui.add_space(t.spacing / 2.0);
     if snap.objects.is_empty() {
         ui.label(

@@ -12,6 +12,7 @@ use super::collapse::{self, Group, Mode};
 use super::groups::{self, Cx, Extras};
 use super::icons::Icon;
 use super::prepare::{PrepareState, RibbonTab, Snapshot};
+use super::rails::SidePanel;
 use super::settings::set_name;
 use super::tools::{self, GroupId, Setting, Tool};
 
@@ -290,7 +291,7 @@ fn pick(hit: Hit, cx: &mut Cx) {
         Hit::Command { id, .. } => match search_target(id, cx.snap.doc_id) {
             Some(SearchTarget::Run) => cx.actions.push(Action::run(cx.snap.doc_id, id, json!({}))),
             Some(SearchTarget::Tab(tab)) => cx.st.tab = tab,
-            Some(SearchTarget::Settings) => cx.st.show_settings = true,
+            Some(SearchTarget::Settings) => cx.st.panels.set_collapsed(SidePanel::Settings, false),
             Some(SearchTarget::Action(a)) => cx.actions.push(a),
             None => {}
         },

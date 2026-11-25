@@ -331,8 +331,10 @@ fn view_items_show_their_state_as_check_marks() {
         let p = &mut app_mut(&mut h).ui.prepare;
         p.show_grid = true;
         p.show_rulers = false;
-        p.show_objects = true;
-        p.show_settings = false;
+        p.panels
+            .set_collapsed(flatcraft::ui::rails::SidePanel::Objects, false);
+        p.panels
+            .set_collapsed(flatcraft::ui::rails::SidePanel::Settings, true);
     }
     let m = model_of(&mut h, &[]);
     assert_eq!(tool(&m, "view.grid").checked, Some(true));
@@ -1016,7 +1018,7 @@ fn effects(f: &Fixture) -> String {
         "{doc} {docs} {requests} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {commands}",
         a.ui.workspace,
         (p.rename.is_some(), p.panel.is_some(), p.fit_pending),
-        (p.show_grid, p.show_rulers, p.show_objects, p.show_settings),
+        (p.show_grid, p.show_rulers, p.panels.clone()),
         a.ui.about.open,
         a.ui.show_shortcuts,
         a.ui.show_profiles,

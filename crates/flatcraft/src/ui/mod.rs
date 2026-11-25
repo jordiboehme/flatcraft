@@ -22,6 +22,7 @@ pub mod menu_model;
 pub mod objects;
 pub mod prepare;
 pub mod profiles_window;
+pub mod rails;
 pub mod ribbon;
 pub mod rng;
 pub mod settings;
@@ -173,6 +174,9 @@ pub enum Action {
     /// Store the "Each object" switch of the Arrange tab in the
     /// preferences, so the next start has it as it was.
     RememberEach(bool),
+    /// Store what the person chose for the side panels (Objects, Cut and
+    /// Job, Cut stage) in the preferences.
+    RememberPanels([flatcraft_engine::prefs::PanelUser; 3]),
     /// Store the spacing of the Auto arrange panel in the preferences, for
     /// the next panel and the one-click Auto arrange.
     RememberSpacing(f64),
@@ -320,9 +324,13 @@ pub struct FlatCraftApp {
 impl FlatCraftApp {
     /// Installs the fonts and the theme of the preferences on `ctx`.
     pub fn new(ctx: &egui::Context, session: SharedSession, config_dir: PathBuf) -> Self {
-        let (theme, rotate_each) = {
+        let (theme, rotate_each, panels) = {
             let s = lock(&session);
-            (s.prefs.theme, s.prefs.rotate_each)
+            (
+                s.prefs.theme,
+                s.prefs.rotate_each,
+                rails::Panels::from_prefs(&s.prefs),
+            )
         };
         let tokens = Tokens::for_theme(theme, ctx.system_theme());
         fonts::install(ctx);
@@ -333,6 +341,7 @@ impl FlatCraftApp {
         ctx.options_mut(|o| o.max_passes = std::num::NonZeroUsize::new(3).expect("3 > 0"));
         let mut ui = UiState::default();
         ui.prepare.fields.each = rotate_each;
+        ui.prepare.panels = panels;
         Self {
             session,
             config_dir,
@@ -948,6 +957,12 @@ impl FlatCraftApp {
                     )));
                 }
             }
+            Action::RememberPanels(users) => {
+                let result = lock(&self.session).update_prefs(|p| rails::Panels::write(users, p));
+                if let Err(e) = result {
+                    self.toast(Toast::error(format!("Cannot store the panel choices: {e}")));
+                }
+            }
             Action::RememberSpacing(mm) => {
                 let result = lock(&self.session).update_prefs(|p| p.auto_arrange_spacing_mm = mm);
                 if let Err(e) = result {
@@ -1304,6 +1319,7 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     app.ui.number_documents(&open);
     guard_close(&ctx, app);
     refresh_prefs(&ctx, app);
+    app.ui.prepare.panels.window_w = ctx.content_rect().width();
     // A dialog keeps the keys: Escape closes or cancels it, and Delete or
     // Cmd+Z must not change the document behind it.
     let modal = modal_open(app);
@@ -1396,6 +1412,9 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     pending_modal(&ctx, app, &mut actions);
     unsaved_modal(&ctx, app, &mut actions);
 
+    if let Some(users) = app.ui.prepare.panels.take_changed() {
+        actions.push(Action::RememberPanels(users));
+    }
     // What a click changed shows in the menu bar next frame.
     if !actions.is_empty() {
         ctx.request_repaint();

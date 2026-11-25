@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 
 use super::icons::Icon;
 use super::prepare::{Eleven, Override, PrepareState, Snapshot};
+use super::rails::{Side, SidePanel};
 use super::theme::Tokens;
 use super::tools::Setting;
 use super::{Action, fonts, icon_button};
@@ -132,7 +133,9 @@ pub fn show(
         actions.push(Action::run(doc_id, cmd, params));
     };
 
-    ui.label(RichText::new("Cut").font(fonts::semibold(14.0)));
+    if super::rails::header(ui, SidePanel::Settings, Side::Right, "Cut") {
+        st.panels.set_collapsed(SidePanel::Settings, true);
+    }
     let selected: Vec<_> = snap.selected().collect();
     if selected.is_empty() {
         ui.label(RichText::new("Select an object to choose what is cut.").color(t.text_dim));

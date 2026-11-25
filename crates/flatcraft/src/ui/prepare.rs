@@ -21,6 +21,7 @@ use serde_json::json;
 
 use super::arrange::{self, ArrangePanel, PanelValues};
 use super::canvas::{self, CanvasView};
+use super::rails::{self, Side, SidePanel};
 use super::theme::Tokens;
 use super::{Action, FlatCraftApp, lock, objects, settings};
 
@@ -185,8 +186,8 @@ pub struct PrepareState {
     /// The canvas area of the last frame, in points.
     pub canvas_rect: Rect,
     pub tab: RibbonTab,
-    pub show_objects: bool,
-    pub show_settings: bool,
+    /// Which side panels are collapsed (see `rails`).
+    pub panels: super::rails::Panels,
     pub show_grid: bool,
     pub show_rulers: bool,
     pub fields: Fields,
@@ -276,8 +277,7 @@ impl Default for PrepareState {
             view_doc: None,
             canvas_rect: Rect::NOTHING,
             tab: RibbonTab::default(),
-            show_objects: true,
-            show_settings: true,
+            panels: super::rails::Panels::default(),
             show_grid: true,
             show_rulers: true,
             fields: Fields::default(),
@@ -1114,17 +1114,26 @@ impl FlatCraftApp {
 /// Draws the panels and the canvas of Prepare.
 pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut Vec<Action>) {
     let t = app.tokens;
-    let mut show_objects = app.ui.prepare.show_objects;
-    egui::Panel::left("flatcraft-objects")
-        .resizable(true)
-        .default_size(240.0)
-        .frame(egui::Frame::new().fill(t.panel).inner_margin(t.spacing))
-        .show_collapsible(ui, &mut show_objects, |ui| {
-            objects::show(ui, &mut app.ui.prepare, snap, &t, actions);
-        });
-    app.ui.prepare.show_objects = show_objects;
-
     arrange::keep_or_close(&mut app.ui.prepare, snap);
+    app.ui.prepare.panels.arrange_open = app.ui.prepare.panel.is_some();
+    if app.ui.prepare.panels.collapsed(SidePanel::Objects) {
+        let summary = rails::objects_summary(snap);
+        if rails::show_rail(ui, SidePanel::Objects, Side::Left, &t, &summary) {
+            app.ui
+                .prepare
+                .panels
+                .set_collapsed(SidePanel::Objects, false);
+        }
+    } else {
+        egui::Panel::left("flatcraft-objects")
+            .resizable(true)
+            .default_size(240.0)
+            .frame(egui::Frame::new().fill(t.panel).inner_margin(t.spacing))
+            .show(ui, |ui| {
+                objects::show(ui, &mut app.ui.prepare, snap, &t, actions);
+            });
+    }
+
     if app.ui.prepare.panel.is_some() {
         let shown = egui::Panel::right("flatcraft-arrange-panel")
             .resizable(false)
@@ -1138,15 +1147,23 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
         app.ui.prepare.panel_rect = None;
     }
 
-    let mut show_settings = app.ui.prepare.show_settings;
-    egui::Panel::right("flatcraft-settings")
-        .resizable(true)
-        .default_size(260.0)
-        .frame(egui::Frame::new().fill(t.panel).inner_margin(t.spacing))
-        .show_collapsible(ui, &mut show_settings, |ui| {
-            settings::show(ui, &mut app.ui.prepare, snap, &t, actions);
-        });
-    app.ui.prepare.show_settings = show_settings;
+    if app.ui.prepare.panels.collapsed(SidePanel::Settings) {
+        let summary = rails::settings_summary(snap, rails::snapshot_dot(snap));
+        if rails::show_rail(ui, SidePanel::Settings, Side::Right, &t, &summary) {
+            app.ui
+                .prepare
+                .panels
+                .set_collapsed(SidePanel::Settings, false);
+        }
+    } else {
+        egui::Panel::right("flatcraft-settings")
+            .resizable(true)
+            .default_size(260.0)
+            .frame(egui::Frame::new().fill(t.panel).inner_margin(t.spacing))
+            .show(ui, |ui| {
+                settings::show(ui, &mut app.ui.prepare, snap, &t, actions);
+            });
+    }
 
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(t.bg))

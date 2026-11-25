@@ -59,6 +59,8 @@ pub enum Icon {
     Pin,
     PinOff,
     ChevronDown,
+    ChevronLeft,
+    ChevronRight,
     AlignLeft,
     AlignCentre,
     AlignRight,
@@ -93,7 +95,7 @@ macro_rules! svg {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 67] = [
+    pub const ALL: [Icon; 69] = [
         Icon::Import,
         Icon::Trace,
         Icon::Duplicate,
@@ -144,6 +146,8 @@ impl Icon {
         Icon::Pin,
         Icon::PinOff,
         Icon::ChevronDown,
+        Icon::ChevronLeft,
+        Icon::ChevronRight,
         Icon::AlignLeft,
         Icon::AlignCentre,
         Icon::AlignRight,
@@ -234,6 +238,8 @@ impl Icon {
             Icon::Pin => svg!("pin"),
             Icon::PinOff => svg!("pin-off"),
             Icon::ChevronDown => svg!("chevron-down"),
+            Icon::ChevronLeft => svg!("chevron-left"),
+            Icon::ChevronRight => svg!("chevron-right"),
             Icon::AlignLeft => svg!("align-start-vertical"),
             Icon::AlignCentre => svg!("align-center-vertical"),
             Icon::AlignRight => svg!("align-end-vertical"),

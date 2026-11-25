@@ -16,6 +16,7 @@ use super::canvas::{CanvasView, PX_PER_MM_100};
 use super::help::PrepareKey;
 use super::icons::Icon;
 use super::prepare::{PrepareState, RibbonTab, Snapshot};
+use super::rails::SidePanel;
 use super::{Action, ribbon};
 
 /// A group of the ribbon.
@@ -903,8 +904,8 @@ impl Tool {
         Some(match self.act {
             Act::Grid => st.show_grid,
             Act::Rulers => st.show_rulers,
-            Act::ObjectsPanel => st.show_objects,
-            Act::SettingsPanel => st.show_settings,
+            Act::ObjectsPanel => !st.panels.collapsed(SidePanel::Objects),
+            Act::SettingsPanel => !st.panels.collapsed(SidePanel::Settings),
             Act::DebugPanel => show_debug,
             _ => return None,
         })
@@ -986,8 +987,8 @@ impl Tool {
             }
             Act::Grid => st.show_grid = !st.show_grid,
             Act::Rulers => st.show_rulers = !st.show_rulers,
-            Act::ObjectsPanel => st.show_objects = !st.show_objects,
-            Act::SettingsPanel => st.show_settings = !st.show_settings,
+            Act::ObjectsPanel => st.panels.toggle(SidePanel::Objects),
+            Act::SettingsPanel => st.panels.toggle(SidePanel::Settings),
             Act::DebugPanel => *show_debug = !*show_debug,
         }
     }

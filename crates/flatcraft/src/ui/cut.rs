@@ -19,6 +19,7 @@ use flatcraft_engine::job::{JobInput, JobResult, build_input, file_output_dir, s
 use super::canvas::{self, CanvasView};
 use super::collapse::{self, Group, Mode};
 use super::prepare::Snapshot;
+use super::rails::{self, Side, SidePanel};
 use super::theme::Tokens;
 use super::timeline::{self, Timeline};
 use super::{Action, FlatCraftApp, fonts, person_text, settings};
@@ -273,15 +274,26 @@ fn stages(ui: &mut Ui, mode: Mode, st: &mut CutState) {
 /// Draws the Cut workspace.
 pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut Vec<Action>) {
     let t = app.tokens;
-    egui::Panel::right("flatcraft-cut-stage")
-        .resizable(true)
-        .default_size(280.0)
-        .frame(egui::Frame::new().fill(t.panel).inner_margin(t.spacing))
-        .show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                stage_panel(ui, app, snap, actions);
+    if app.ui.prepare.panels.collapsed(SidePanel::Stage) {
+        let dot = match &app.ui.cut.plan {
+            Some(plan) => rails::plan_dot(plan),
+            None => rails::snapshot_dot(snap),
+        };
+        let summary = rails::stage_summary(app.ui.cut.stage, dot);
+        if rails::show_rail(ui, SidePanel::Stage, Side::Right, &t, &summary) {
+            app.ui.prepare.panels.set_collapsed(SidePanel::Stage, false);
+        }
+    } else {
+        egui::Panel::right("flatcraft-cut-stage")
+            .resizable(true)
+            .default_size(280.0)
+            .frame(egui::Frame::new().fill(t.panel).inner_margin(t.spacing))
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    stage_panel(ui, app, snap, actions);
+                });
             });
-        });
+    }
     egui::Panel::bottom("flatcraft-timeline")
         .frame(egui::Frame::new().fill(t.panel).inner_margin(t.spacing))
         .show(ui, |ui| {
@@ -300,10 +312,6 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
                 app.ui.prepare.show_grid,
             );
         });
-}
-
-fn heading(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).font(fonts::semibold(14.0)));
 }
 
 /// The plan's problem in a red box, in the words of the refusal.
@@ -353,7 +361,10 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
     let t = app.tokens;
     let st = &app.ui.cut;
     let stage = st.stage;
-    heading(ui, &format!("{}. {}", stage.number(), stage.name()));
+    let title = format!("{}. {}", stage.number(), stage.name());
+    if rails::header(ui, SidePanel::Stage, Side::Right, &title) {
+        app.ui.prepare.panels.set_collapsed(SidePanel::Stage, true);
+    }
     ui.add_space(t.spacing / 2.0);
     match stage {
         Stage::Device => {

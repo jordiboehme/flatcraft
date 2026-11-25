@@ -18,6 +18,10 @@ pub struct Tokens {
     /// Amber, the colour of the Cut workspace.
     pub accent_cut: Color32,
     pub danger: Color32,
+    /// The rail dot of a job that is ready to cut.
+    pub ok: Color32,
+    /// The rail dot of a job with warnings.
+    pub warn: Color32,
     /// Icons: the paper shapes (the things that get cut) are filled with
     /// `icon_paper` and outlined with `icon_cut`, the part that tells what
     /// happens is `icon_accent`, the rest `icon_ink`.
@@ -44,6 +48,8 @@ impl Tokens {
             accent_prepare: Color32::from_rgb(0x2B, 0xB3, 0xA3),
             accent_cut: Color32::from_rgb(0xF2, 0xA3, 0x3A),
             danger: Color32::from_rgb(0xE5, 0x48, 0x4D),
+            ok: Color32::from_rgb(0x46, 0xC2, 0x7A),
+            warn: Color32::from_rgb(0xE8, 0xB2, 0x3A),
             icon_paper: Color32::from_rgb(0xF3, 0xEC, 0xDD),
             // Darker than the Cut accent, so the line shows on the paper.
             icon_cut: Color32::from_rgb(0xE8, 0x89, 0x2E),
@@ -65,6 +71,8 @@ impl Tokens {
             accent_prepare: Color32::from_rgb(0x2B, 0xB3, 0xA3),
             accent_cut: Color32::from_rgb(0xF2, 0xA3, 0x3A),
             danger: Color32::from_rgb(0xC8, 0x2E, 0x34),
+            ok: Color32::from_rgb(0x2F, 0x9E, 0x5B),
+            warn: Color32::from_rgb(0xD9, 0x9A, 0x1E),
             icon_paper: Color32::from_rgb(0xFB, 0xF4, 0xE4),
             icon_cut: Color32::from_rgb(0xD9, 0x78, 0x2A),
             icon_accent: Color32::from_rgb(0x0F, 0x8A, 0x7E),
