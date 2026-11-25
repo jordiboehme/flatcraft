@@ -105,12 +105,17 @@ fn linked_files_folds_first() {
         h.run();
         let level = collapse::level(&h.ctx, ribbon::bar_id());
         // The modes of Add, Edit, Size (keep), Arrange and Linked files.
-        let keep = [false, false, true, false, false];
+        let keep: Vec<bool> = tools::groups_of(RibbonTab::Layout)
+            .map(|g| g.id == GroupId::Size)
+            .collect();
         let level = level.expect("the ribbon was drawn");
         let modes = collapse::modes(&keep, level);
         assert_eq!(modes[4], Mode::Collapsed, "{width}: Linked files is a tile");
         assert_ne!(modes[2], Mode::Collapsed, "{width}: Size is never a tile");
         if width == 1100.0 {
+            // Add and Edit keep their labels.
+            assert_eq!(modes[0], Mode::Full, "{width}: Add");
+            assert_eq!(modes[1], Mode::Full, "{width}: Edit");
             // Arrange is one of the most used groups: it stays on the bar.
             assert_ne!(modes[3], Mode::Collapsed, "{width}: {level:?}");
             assert!(matches!(level, Level::Folded(_)), "{level:?}");

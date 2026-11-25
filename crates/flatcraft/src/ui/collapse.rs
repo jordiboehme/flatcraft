@@ -179,12 +179,21 @@ pub fn row_width(m: &Measures, modes: &[Mode]) -> Option<f32> {
     Some(parts.iter().sum::<f32>() + m.gap * parts.len().saturating_sub(1) as f32)
 }
 
-/// The place of a level on the ladder: Full, Measure, Folded(1..).
+/// The place of a level on the ladder: Full 0, Measure 1, Folded(n) n + 1.
 fn rank(level: Level) -> usize {
     match level {
         Level::Full => 0,
         Level::Measure => 1,
-        Level::Folded(n) => n,
+        Level::Folded(n) => n + 1,
+    }
+}
+
+/// The level at a place on the ladder (see [`rank`]).
+fn at_rank(r: usize) -> Level {
+    match r {
+        0 => Level::Full,
+        1 => Level::Measure,
+        r => Level::Folded(r - 1),
     }
 }
 
@@ -219,7 +228,7 @@ pub fn next_level(level: Level, drawn: f32, m: &Measures) -> Level {
         if rank(fit) > rank(level) || (level == Level::Full && fit == Level::Measure) {
             return fit;
         }
-        return Level::Folded((rank(level) + 1).min(n));
+        return at_rank((rank(level) + 1).min(n + 1));
     }
     // The measuring pass is never a resting level: go to the state the
     // measures pick.
@@ -542,6 +551,16 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_stale_step_down_from_measure_goes_to_the_first_fold() {
+        // The measures claim the measuring pass fits although it did not
+        // (drawn is wider than the budget): the next level is Folded(1).
+        let mm = mk(10_000.0);
+        assert_eq!(next_level(Level::Measure, 20_000.0, &mm), Level::Folded(1));
+        assert_eq!(next_level(Level::Full, 20_000.0, &mm), Level::Measure);
+        assert_eq!(rank(Level::Measure) + 1, rank(Level::Folded(1)));
     }
 
     #[test]
