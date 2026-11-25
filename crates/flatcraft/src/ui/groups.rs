@@ -80,6 +80,19 @@ pub fn card(resp: &Response, title: &str, description: &str, reason: Option<&str
     }
 }
 
+/// A card next to the pointer, for a part of a large widget (a handle on
+/// the canvas): a card placed by the widget's rect would sit far away.
+pub fn card_at_pointer(resp: &Response, title: &str, description: &str, reason: Option<&str>) {
+    for tip in [
+        egui::Tooltip::for_enabled(resp),
+        egui::Tooltip::for_disabled(resp),
+    ] {
+        let mut tip = tip;
+        tip.popup = tip.popup.at_pointer();
+        tip.show(|ui| card_ui(ui, title, description, reason));
+    }
+}
+
 /// The contents of a card.
 pub fn card_ui(ui: &mut Ui, title: &str, description: &str, reason: Option<&str>) {
     ui.set_max_width(280.0);

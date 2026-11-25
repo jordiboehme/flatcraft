@@ -695,7 +695,7 @@ fn rotate_cursor(ui: &Ui, at: Pos2, t: &Tokens) {
         egui::Order::Tooltip,
         egui::Id::unique("flatcraft-rotate-cursor"),
     ));
-    let size = 14.0;
+    let size = 16.0;
     painter.circle(
         at,
         size * 0.5 + 3.0,
@@ -996,7 +996,7 @@ fn handle_card(ui: &Ui, resp: &egui::Response, snap: &Snapshot, st: &mut Prepare
         Hit::Rotate(_) => ("Rotate", super::tools::Setting::RotateZone.card(), None),
         Hit::Object(_) | Hit::Nothing => return,
     };
-    super::groups::card(resp, title, card, why, false);
+    super::groups::card_at_pointer(resp, title, card, why);
 }
 
 /// The resize cursor of a handle.
