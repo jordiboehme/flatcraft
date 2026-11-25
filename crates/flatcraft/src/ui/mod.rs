@@ -1229,6 +1229,22 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     }
 }
 
+impl FlatCraftApp {
+    /// The menu bar's actions that may run now. The menu lives outside
+    /// egui, so a dialog does not block it: while one is open (see
+    /// [`modal_open`]) only Quit goes through, which asks about unsaved
+    /// changes itself.
+    pub fn menu_gate(&self, actions: Vec<Action>) -> Vec<Action> {
+        if !modal_open(self) {
+            return actions;
+        }
+        actions
+            .into_iter()
+            .filter(|a| matches!(a, Action::Quit))
+            .collect()
+    }
+}
+
 /// A dialog that owns the keyboard is open: About, Trace, unsaved changes
 /// or the agent's pending send.
 pub fn modal_open(app: &FlatCraftApp) -> bool {
@@ -1515,6 +1531,7 @@ impl eframe::App for FlatCraftApp {
             let active = lock(&self.session).doc().id();
             let actions = self.menu.as_ref().map(|m| m.actions(active));
             if let Some(actions) = actions {
+                let actions = self.menu_gate(actions);
                 self.apply(ctx, actions);
             }
         }

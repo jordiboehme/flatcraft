@@ -226,13 +226,23 @@ pub struct Eleven {
 }
 
 impl Eleven {
-    /// The attempt is still what the snapshot shows.
+    /// The attempt is still what the snapshot shows: same document,
+    /// plotter and material, and the speed the job cuts at (the override,
+    /// else the material's speed) is still the clamped value.
     pub fn current(&self, snap: &Snapshot) -> bool {
         self.doc_id == snap.doc_id
             && self.plotter_id == snap.job.plotter_id
             && self.material_id == snap.job.material_id
-            && snap.job.speed.map(u32::from) == Some(self.speed)
+            && effective_speed(snap) == Some(self.speed)
     }
+}
+
+/// The speed the job cuts at: the override, else the material's own.
+fn effective_speed(snap: &Snapshot) -> Option<u32> {
+    snap.job
+        .speed
+        .or(snap.material.as_ref().map(|m| m.speed))
+        .map(u32::from)
 }
 
 /// What the Copies dialog asks for.

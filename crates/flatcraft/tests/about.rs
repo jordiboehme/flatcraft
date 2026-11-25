@@ -567,3 +567,58 @@ fn keys_do_not_reach_prepare_under_the_pending_send_dialog() {
     assert_eq!((objects(&s), selection(&s)), (2, 1));
     assert!(s.lock().unwrap().pending_send().is_some());
 }
+
+#[test]
+fn eleven_shows_when_the_material_speed_is_already_the_maximum() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    {
+        let mut g = s.lock().unwrap();
+        let parent = g.doc().document.job.material_id.clone();
+        let mut m = g.profiles.material(&parent).unwrap();
+        m.id = "full-throttle".into();
+        m.name = "Full throttle".into();
+        m.speed = 10;
+        m.overrides.clear();
+        g.profiles.save_user_material(&m, &parent).unwrap();
+        g.execute(
+            "job.set_material",
+            serde_json::json!({ "id": "full-throttle" }),
+            flatcraft_engine::session::Origin::User,
+        )
+        .unwrap();
+    }
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    type_speed(&mut h, "Speed", "11");
+    // Clamped to the material's own speed: no override, no command.
+    assert_eq!(speed(&s), None);
+    h.get_by_label(flatcraft::ui::settings::ELEVEN);
+}
+
+#[test]
+fn the_menu_waits_while_a_dialog_is_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, s.clone(), false);
+    let doc = s.lock().unwrap().doc().id();
+    let menu = || {
+        vec![
+            Action::ShowAbout,
+            Action::ShowProfiles,
+            Action::Undo(doc),
+            Action::Redo(doc),
+            Action::Quit,
+        ]
+    };
+    assert_eq!(app(&h).menu_gate(menu()), menu());
+    open_about(&mut h);
+    assert_eq!(app(&h).menu_gate(menu()), vec![Action::Quit]);
+    app_mut(&mut h).ui.about.close();
+    h.run();
+    import_square(&s);
+    act(&mut h, Action::Close(doc));
+    assert!(app(&h).ui.unsaved.is_some());
+    assert_eq!(app(&h).menu_gate(menu()), vec![Action::Quit]);
+}
