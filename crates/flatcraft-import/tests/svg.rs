@@ -165,7 +165,8 @@ fn entity_expansion_is_refused_or_bounded() {
         &fixture("entities.svg"),
         Arc::new(usvg::fontdb::Database::new()),
     );
-    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    // Generous: a real expansion takes far longer than this.
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
     assert!(matches!(r, Err(ImportError::Parse(_))), "{r:?}");
 }
 

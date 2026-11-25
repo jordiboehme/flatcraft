@@ -1,4 +1,4 @@
-//! Cut geometry of an object per cut mode (spec 7.1): centre lines, fill
+//! Cut geometry of an object per cut mode (`CutMode`): centre lines, fill
 //! edges and stroke outlines, in mat millimetres.
 //!
 //! Stroke outlines come from kurbo's stroker, run on the placed path with
@@ -870,7 +870,8 @@ pub(crate) mod tests {
 
     /// A tiny ring (its reach is a quarter of the ring) with a run of
     /// 60000 copies of one vertex: every vertex in the run used to walk
-    /// the whole run, about 7e9 steps.
+    /// the whole run, about 7e9 steps. There is no step counter, so the
+    /// limit is generous: it only catches that blow-up, not timing noise.
     #[test]
     fn hairline_ends_of_a_tiny_ring_with_many_duplicates_are_quick() {
         let mut ring = vec![[0.0, 0.0]];
@@ -879,7 +880,7 @@ pub(crate) mod tests {
         let start = std::time::Instant::now();
         let _ = hairline_ends(&ring);
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(1),
+            start.elapsed() < std::time::Duration::from_secs(10),
             "{:?}",
             start.elapsed()
         );

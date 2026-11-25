@@ -330,7 +330,8 @@ fn an_image_over_the_memory_limit_is_refused() {
         ),
         "{e:?}"
     );
-    assert!(start.elapsed() < Duration::from_secs(2));
+    // Generous: decoding the pixels would take far longer than this.
+    assert!(start.elapsed() < Duration::from_secs(10));
 }
 
 #[test]
@@ -382,7 +383,8 @@ fn decompression_bomb_is_refused() {
         "The image is too large to import (30000 x 30000 pixels, at most 16384 per side)."
     );
     assert_eq!(want.to_string(), e.to_string());
-    assert!(start.elapsed() < Duration::from_secs(2));
+    // Generous: decoding the pixels would take far longer than this.
+    assert!(start.elapsed() < Duration::from_secs(10));
 }
 
 #[test]

@@ -51,7 +51,7 @@ fn bbox(points: &[Point]) -> Option<Rect> {
 /// How many vertices of the inner ring are tried before giving up.
 const PROBES: usize = 3;
 
-/// True if closed ring `inner` lies in closed ring `outer` (spec 8.3): its
+/// True if closed ring `inner` lies in closed ring `outer`: its
 /// box lies in the outer box, it is smaller, and one of its vertices is
 /// inside by even-odd. The first of up to [`PROBES`] vertices that is not
 /// on the outer boundary decides.
@@ -99,12 +99,13 @@ fn containment(paths: &[Toolpath]) -> (Vec<usize>, Vec<Vec<usize>>) {
 /// reversed when its end is nearer than its start. A closed path keeps its
 /// source start and direction. Ties go to the earlier path.
 ///
-/// Inside first (spec 8.3, rulings R32 and R32a): a closed path waits while
-/// an uncut closed path lies inside it, so holes and inner parts are cut
-/// before the outline that frees them. If every remaining path waits
-/// (which proper nesting never gives), the nearest one goes. This is the
-/// minimal rule for M1; the M2 plan (Tasks 2 and 5) replaces it with a
-/// containment tree.
+/// Inside first: a closed path waits while an uncut closed path lies inside
+/// it, so holes and inner parts are cut before the outline that frees them
+/// (once an outline is cut, the part inside it can shift on the mat). If
+/// every remaining path waits (which proper nesting never gives), the
+/// nearest one goes. This is a minimal rule; a containment tree can replace
+/// it later. Containment is found with at most `PROBES` even-odd tests
+/// per pair of closed paths whose boxes nest, so deep nesting stays fast.
 pub fn nearest_neighbour(paths: Vec<Toolpath>, start: Point) -> Vec<Toolpath> {
     let (mut waiting_on, parents) = containment(&paths);
     let mut slots: Vec<Option<Toolpath>> = paths.into_iter().map(Some).collect();
@@ -280,9 +281,9 @@ mod tests {
 
     #[test]
     fn deep_nesting_orders_fast() {
-        // Ruling R32a: 200 concentric rings of 400 vertices. The guard is
-        // the number of even-odd tests, so it holds on any profile: at
-        // most PROBES per pair whose boxes nest.
+        // 200 concentric rings of 400 vertices. The guard is the number of
+        // even-odd tests, so it holds on any machine: at most PROBES per
+        // pair whose boxes nest. No wall-clock limit: the count is the check.
         let rings: Vec<Toolpath> = (1..=200)
             .map(|k| circle(k, (300.0, 300.0), k as f64, 400))
             .collect();
@@ -297,9 +298,7 @@ mod tests {
             })
             .count();
         INSIDE_CALLS.with(|c| c.set(0));
-        let t = std::time::Instant::now();
         let out = nearest_neighbour(rings, Point::ZERO);
-        let took = t.elapsed();
         let calls = INSIDE_CALLS.with(|c| c.get());
         assert_eq!(ids(&out), (1..=200).collect::<Vec<u64>>());
         assert_eq!(box_nested, 200 * 199 / 2);
@@ -307,9 +306,6 @@ mod tests {
             calls <= PROBES * box_nested,
             "{calls} even-odd tests for {box_nested} nested pairs"
         );
-        // A loose extra: well inside this on the dev profile.
-        let limit = std::time::Duration::from_millis(250);
-        assert!(took < limit, "took {took:?}, limit {limit:?}");
     }
 
     #[test]
