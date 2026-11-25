@@ -17,6 +17,7 @@ use flatcraft_engine::placement;
 use kurbo::{Affine, Point, Rect, Vec2};
 use serde_json::json;
 
+use super::collapse::Mode;
 use super::help::{self, PrepareKey};
 use super::icons::{self, Icon};
 use super::prepare::{ObjView, PrepareState, Snapshot};
@@ -645,6 +646,7 @@ fn number(
         egui::DragValue::new(value)
             .range(range)
             .speed(0.1)
+            .min_decimals(2)
             .max_decimals(3)
             .suffix(suffix),
     );
@@ -922,16 +924,28 @@ fn pick(cmd: ArrangeCmd, snap: &Snapshot, st: &mut PrepareState, actions: &mut V
     }
 }
 
-/// The "Arrange" drop-down, then the pinned items: big buttons first, then
-/// the directions as small icon buttons, grouped.
-pub fn group(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Vec<Action>) {
+/// The "Arrange" drop-down button. Icon-only, it keeps its chevron and its
+/// name. It never moves into the overflow list, because search opens its
+/// drop-down ([`reveal`]).
+pub fn dropdown_button(
+    ui: &mut Ui,
+    mode: Mode,
+    st: &mut PrepareState,
+    snap: &Snapshot,
+    actions: &mut Vec<Action>,
+) {
     let config = egui::containers::menu::MenuConfig::new()
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
-    let button = egui::Button::image_and_text(image(ui, Icon::Arrange), "Arrange")
-        .right_text(small_image(ui, Icon::ChevronDown));
-    let resp = ui
-        .add(button)
-        .on_hover_text("Every arrange command. Pin your favourites to the ribbon.");
+    let button = match mode {
+        Mode::Icons => egui::Button::image(image(ui, Icon::Arrange).alt_text("Arrange")),
+        Mode::Full | Mode::List => {
+            egui::Button::image_and_text(image(ui, Icon::Arrange), "Arrange")
+        }
+    }
+    .right_text(small_image(ui, Icon::ChevronDown));
+    let resp = ui.add(button);
+    set_name(ui, &resp, "Arrange");
+    let resp = resp.on_hover_text("Every arrange command. Pin your favourites to the ribbon.");
     // Like egui's MenuButton, but search can open it too.
     let open = if std::mem::take(&mut st.arrange_open) {
         Some(egui::SetOpenCommand::Bool(true))
@@ -946,15 +960,59 @@ pub fn group(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut 
                 .with_tag_value(egui::containers::menu::MenuConfig::MENU_CONFIG_TAG, config),
         )
         .show(|ui| dropdown(ui, st, snap, actions));
-    let pins = pinned(snap);
-    for cmd in pins.iter().copied().filter(|c| c.big()) {
+}
+
+/// The pinned commands with a big button (Move / Copy, Rotate, the
+/// patterns, Auto arrange). Icon-only they drop their label; in the
+/// overflow list they are rows.
+pub fn big_pins(
+    ui: &mut Ui,
+    mode: Mode,
+    st: &mut PrepareState,
+    snap: &Snapshot,
+    actions: &mut Vec<Action>,
+) {
+    for cmd in pinned(snap).into_iter().filter(|c| c.big()) {
         let label = cmd.label().trim_end_matches("...");
         let tip = cmd.tooltip(snap, st.fields.align_to_area);
-        if big_button(ui, cmd.icon(), label, cmd.blocked(snap).is_none(), &tip).clicked() {
+        let on = cmd.blocked(snap).is_none();
+        let clicked = match mode {
+            Mode::List => ribbon::button(ui, mode, cmd.icon(), label, on, None, &tip).clicked(),
+            Mode::Full | Mode::Icons => {
+                let tip = if mode == Mode::Icons {
+                    format!("{label}\n{tip}")
+                } else {
+                    tip
+                };
+                big_button(ui, cmd.icon(), label, mode == Mode::Full, on, &tip).clicked()
+            }
+        };
+        if clicked {
             pick(cmd, snap, st, actions);
         }
     }
-    let small: Vec<ArrangeCmd> = pins.into_iter().filter(|c| !c.big()).collect();
+}
+
+/// The pinned directions as small icon buttons, in two rows when there
+/// are more than three; in the overflow list they are rows with labels.
+pub fn small_pins(
+    ui: &mut Ui,
+    mode: Mode,
+    st: &mut PrepareState,
+    snap: &Snapshot,
+    actions: &mut Vec<Action>,
+) {
+    let small: Vec<ArrangeCmd> = pinned(snap).into_iter().filter(|c| !c.big()).collect();
+    if mode == Mode::List {
+        for cmd in small {
+            let tip = cmd.tooltip(snap, st.fields.align_to_area);
+            let on = cmd.blocked(snap).is_none();
+            if ribbon::button(ui, mode, cmd.icon(), cmd.label(), on, None, &tip).clicked() {
+                pick(cmd, snap, st, actions);
+            }
+        }
+        return;
+    }
     if small.is_empty() {
         return;
     }
@@ -980,17 +1038,29 @@ pub fn group(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut 
 /// tab.
 pub const BIG_HEIGHT: f32 = 48.0;
 
-/// A big ribbon button: a 24 pt icon above a small label. Its accessible
-/// name is the label.
-fn big_button(ui: &mut Ui, icon: Icon, label: &str, enabled: bool, hint: &str) -> egui::Response {
+/// A big ribbon button: a 24 pt icon above a small label (only the icon
+/// when `show_label` is off). Its accessible name is the label.
+fn big_button(
+    ui: &mut Ui,
+    icon: Icon,
+    label: &str,
+    show_label: bool,
+    enabled: bool,
+    hint: &str,
+) -> egui::Response {
     const ICON: f32 = 24.0;
     let resp = ui
         .add_enabled_ui(enabled, |ui| {
             let font = egui::TextStyle::Small.resolve(ui.style());
+            let text = if show_label { label } else { "" };
             let galley =
                 ui.painter()
-                    .layout_no_wrap(label.to_string(), font, egui::Color32::PLACEHOLDER);
-            let width = (galley.size().x + 12.0).max(BIG_HEIGHT);
+                    .layout_no_wrap(text.to_string(), font, egui::Color32::PLACEHOLDER);
+            let width = if show_label {
+                (galley.size().x + 12.0).max(BIG_HEIGHT)
+            } else {
+                ICON + 12.0
+            };
             let (rect, resp) =
                 ui.allocate_exact_size(egui::vec2(width, BIG_HEIGHT), egui::Sense::click());
             let on = ui.is_enabled();
@@ -1009,8 +1079,13 @@ fn big_button(ui: &mut Ui, icon: Icon, label: &str, enabled: bool, hint: &str) -
                     );
                 }
                 let tex = icons::texture(ui.ctx(), icon, ICON);
+                let icon_y = if show_label {
+                    rect.top() + 4.0 + ICON / 2.0
+                } else {
+                    rect.center().y
+                };
                 let icon_rect = egui::Rect::from_center_size(
-                    egui::pos2(rect.center().x, rect.top() + 4.0 + ICON / 2.0),
+                    egui::pos2(rect.center().x, icon_y),
                     egui::Vec2::splat(ICON),
                 );
                 // A disabled Ui fades what its painter draws.

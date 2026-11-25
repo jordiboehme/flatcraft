@@ -17,6 +17,7 @@ use flatcraft_engine::CommandError;
 use flatcraft_engine::job::{JobInput, JobResult, build_input, file_output_dir, summary};
 
 use super::canvas::{self, CanvasView};
+use super::collapse::{self, Group, Mode};
 use super::prepare::Snapshot;
 use super::theme::Tokens;
 use super::timeline::{self, Timeline};
@@ -185,35 +186,85 @@ pub fn send_label(snap: &Snapshot) -> String {
 // ---------------------------------------------------------------- stage bar
 
 /// The stage bar replaces the ribbon in Cut: steps 1 to 4 in the Cut
-/// accent, and the Debug panel toggle at the right.
+/// accent, and the Debug panel toggle at the right. The toggle is drawn
+/// first, so the steps get the room that is left; when they do not fit,
+/// they show only their numbers (the name is their accessible name and
+/// their tooltip).
 pub fn stage_bar(ui: &mut Ui, st: &mut CutState, show_debug: &mut bool, t: &Tokens) {
-    ui.scope(|ui| {
-        let v = ui.visuals_mut();
-        v.selection.bg_fill = t.accent_cut.gamma_multiply(0.35);
-        v.selection.stroke = Stroke::new(1.0, t.accent_cut);
-        for stage in Stage::ALL {
-            let on = st.stage == stage;
-            let text = RichText::new(format!("{}  {}", stage.number(), stage.name()))
-                .font(fonts::medium(13.0));
-            let r = ui
-                .add_enabled(stage.enabled(), egui::Button::selectable(on, text))
-                .on_disabled_hover_text(SIMULATE_HINT);
-            r.widget_info(|| {
-                egui::WidgetInfo::selected(
-                    egui::accesskit::Role::Tab,
-                    stage.enabled(),
-                    on,
-                    stage.name(),
+    let full = ui.available_rect_before_wrap();
+    let debug = ui
+        .scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(full)
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+            |ui| {
+                super::ribbon::toggle(
+                    ui,
+                    Mode::Full,
+                    super::icons::Icon::Debug,
+                    "Debug panel",
+                    show_debug,
                 )
-            });
-            if r.clicked() && stage.enabled() {
-                st.stage = stage;
+            },
+        )
+        .response
+        .rect;
+    let gap = ui.spacing().item_spacing.x;
+    let mut rest = full;
+    rest.set_right((debug.left() - gap).max(full.left()));
+    let height = ui.spacing().interact_size.y;
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(rest)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            let v = ui.visuals_mut();
+            v.selection.bg_fill = t.accent_cut.gamma_multiply(0.35);
+            v.selection.stroke = Stroke::new(1.0, t.accent_cut);
+            let groups = [Group {
+                title: "Stages",
+                keep: false,
+                draw: stages,
+            }];
+            collapse::show(ui, bar_id(), 0, height, &groups, st);
+        },
+    );
+}
+
+/// The id of the stage bar, for [`collapse::level`].
+pub fn bar_id() -> egui::Id {
+    egui::Id::unique("flatcraft-stage-bar")
+}
+
+fn stages(ui: &mut Ui, mode: Mode, st: &mut CutState) {
+    for stage in Stage::ALL {
+        let on = st.stage == stage;
+        let text = match mode {
+            Mode::Icons => format!("{}", stage.number()),
+            Mode::Full | Mode::List => format!("{}  {}", stage.number(), stage.name()),
+        };
+        let text = RichText::new(text).font(fonts::medium(13.0));
+        let mut r = ui
+            .add_enabled(stage.enabled(), egui::Button::selectable(on, text))
+            .on_disabled_hover_text(SIMULATE_HINT);
+        if mode == Mode::Icons && stage.enabled() {
+            r = r.on_hover_text(stage.name());
+        }
+        r.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::accesskit::Role::Tab,
+                stage.enabled(),
+                on,
+                stage.name(),
+            )
+        });
+        if r.clicked() && stage.enabled() {
+            st.stage = stage;
+            if mode == Mode::List {
+                ui.close();
             }
         }
-    });
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        super::ribbon::toggle(ui, super::icons::Icon::Debug, "Debug panel", show_debug);
-    });
+    }
 }
 
 // ---------------------------------------------------------------- layout

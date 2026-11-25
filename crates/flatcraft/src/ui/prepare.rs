@@ -30,7 +30,7 @@ pub const CHECK_INTERVAL: Duration = Duration::from_secs(2);
 const DRAW_TOLERANCE_MM: f64 = 0.02;
 
 /// The ribbon tabs of Prepare.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum RibbonTab {
     #[default]
     Home,

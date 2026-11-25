@@ -88,7 +88,7 @@ fn run_window(
         .with_title("FlatCraft")
         .with_app_id(APP_ID)
         .with_inner_size([1280.0, 800.0])
-        .with_min_inner_size([800.0, 520.0]);
+        .with_min_inner_size(flatcraft::ui::MIN_WINDOW);
     match eframe::icon_data::from_png_bytes(ICON_PNG) {
         Ok(icon) => viewport = viewport.with_icon(icon),
         Err(e) => eprintln!("warning: cannot load the app icon: {e}"),

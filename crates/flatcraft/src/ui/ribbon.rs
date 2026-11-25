@@ -4,45 +4,90 @@
 use egui::accesskit::Role;
 use egui::{Ui, WidgetInfo};
 use flatcraft_engine::registry;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use super::arrange::{self, PanelKind};
 use super::canvas::{CanvasView, PX_PER_MM_100};
+use super::collapse::{self, Group, Mode};
 use super::icons::{self, Icon};
 use super::prepare::{PrepareState, RibbonTab, Snapshot};
 use super::settings::set_name;
 use super::{Action, ICON_SIZE};
 
-/// A button with an icon and a text.
-fn tool(ui: &mut Ui, icon: Icon, text: &str, enabled: bool, hint: &str) -> bool {
+fn icon_image(ui: &Ui, icon: Icon) -> egui::Image<'static> {
     let tex = icons::texture(ui.ctx(), icon, ICON_SIZE);
-    let image = egui::Image::from_texture(egui::load::SizedTexture::new(
+    egui::Image::from_texture(egui::load::SizedTexture::new(
         tex.id(),
         egui::Vec2::splat(ICON_SIZE),
-    ));
-    ui.add_enabled(enabled, egui::Button::image_and_text(image, text))
-        .on_hover_text(hint)
-        .on_disabled_hover_text(hint)
-        .clicked()
+    ))
+}
+
+/// A ribbon button: icon and text, or only the icon (`Mode::Icons`, the
+/// text is its accessible name and leads its tooltip), or a row of the
+/// overflow list (`Mode::List`, which closes the list when clicked).
+/// `selected` makes it a toggle.
+pub(crate) fn button(
+    ui: &mut Ui,
+    mode: Mode,
+    icon: Icon,
+    text: &str,
+    enabled: bool,
+    selected: Option<bool>,
+    hint: &str,
+) -> egui::Response {
+    let image = icon_image(ui, icon);
+    let mut b = match mode {
+        Mode::Icons => egui::Button::image(image.alt_text(text)),
+        Mode::Full | Mode::List => egui::Button::image_and_text(image, text),
+    };
+    if let Some(on) = selected {
+        b = b.selected(on);
+    }
+    let resp = ui.add_enabled(enabled, b);
+    let hint = if mode == Mode::Icons && hint != text {
+        format!("{text}\n{hint}")
+    } else {
+        hint.to_string()
+    };
+    let resp = resp.on_hover_text(&hint).on_disabled_hover_text(&hint);
+    if mode == Mode::List && selected.is_none() && resp.clicked() {
+        ui.close();
+    }
+    resp
+}
+
+/// A button with an icon and a text.
+fn tool(ui: &mut Ui, mode: Mode, icon: Icon, text: &str, enabled: bool, hint: &str) -> bool {
+    button(ui, mode, icon, text, enabled, None, hint).clicked()
 }
 
 /// A toggle with an icon and a text.
-pub(crate) fn toggle(ui: &mut Ui, icon: Icon, text: &str, on: &mut bool) {
-    let tex = icons::texture(ui.ctx(), icon, ICON_SIZE);
-    let image = egui::Image::from_texture(egui::load::SizedTexture::new(
-        tex.id(),
-        egui::Vec2::splat(ICON_SIZE),
-    ));
-    if ui
-        .add(egui::Button::image_and_text(image, text).selected(*on))
-        .clicked()
-    {
+pub(crate) fn toggle(ui: &mut Ui, mode: Mode, icon: Icon, text: &str, on: &mut bool) {
+    if button(ui, mode, icon, text, true, Some(*on), text).clicked() {
         *on = !*on;
     }
 }
 
+/// The width a field needs to show `text` whole, with its frame.
+pub(crate) fn field_width(ui: &Ui, text: &str) -> f32 {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), font, egui::Color32::PLACEHOLDER);
+    // The frame's margin on both sides, and room for the text cursor.
+    galley.size().x + 2.0 * FIELD_MARGIN.x + 4.0
+}
+
+/// The inner margin of the ribbon's number fields.
+const FIELD_MARGIN: egui::Vec2 = egui::vec2(4.0, 2.0);
+
+/// The widest value a millimetre field of the ribbon shows as wide as it
+/// is: 4 digits and 2 decimals, more than any mat.
+const WIDEST_MM: &str = "-0000.00";
+
 /// A short number field. Shows `current` while it is not being edited and
-/// returns the typed number when Enter is pressed.
+/// returns the typed number when Enter is pressed. It is always as wide as
+/// its text, and at least as wide as [`WIDEST_MM`], so no digit is cut.
 fn number_field(
     ui: &mut Ui,
     id_salt: &str,
@@ -59,9 +104,17 @@ fn number_field(
         *buf = c;
     }
     ui.label(label).on_hover_text(name);
+    let width = field_width(ui, buf).max(field_width(ui, WIDEST_MM));
     let resp = ui.add_enabled(
         enabled,
-        egui::TextEdit::singleline(buf).id(id).desired_width(52.0),
+        egui::TextEdit::singleline(buf)
+            .id(id)
+            .margin(egui::Margin::symmetric(
+                FIELD_MARGIN.x as i8,
+                FIELD_MARGIN.y as i8,
+            ))
+            .desired_width(width)
+            .min_size(egui::vec2(width, 0.0)),
     );
     set_name(ui, &resp, name);
     let resp = resp.on_hover_text(name);
@@ -329,7 +382,25 @@ fn mm(v: f64) -> String {
     format!("{v:.2}")
 }
 
-/// The tools of the current tab, then the search box at the right.
+/// Width of the search box.
+pub const SEARCH_WIDTH: f32 = 200.0;
+
+/// What the ribbon's groups draw with.
+pub(crate) struct Cx<'a> {
+    pub st: &'a mut PrepareState,
+    pub snap: &'a Snapshot,
+    pub show_debug: &'a mut bool,
+    pub actions: &'a mut Vec<Action>,
+}
+
+/// The id of the ribbon's tool bar, for [`collapse::level`].
+pub fn bar_id() -> egui::Id {
+    egui::Id::unique("flatcraft-ribbon-tools")
+}
+
+/// The tab row with the search box at its right, and below them the tools
+/// of the current tab across the whole width. The search box is drawn
+/// first and never moves, so it is always reachable.
 pub fn show(
     ui: &mut Ui,
     st: &mut PrepareState,
@@ -337,127 +408,247 @@ pub fn show(
     show_debug: &mut bool,
     actions: &mut Vec<Action>,
 ) {
-    ui.vertical(|ui| {
-        ui.horizontal(|ui| tabs(ui, st));
-        ui.horizontal(|ui| {
+    let full = ui.available_rect_before_wrap();
+    let search = ui
+        .scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(full)
+                .layout(egui::Layout::right_to_left(egui::Align::Min)),
+            |ui| search_box(ui, snap, st, actions),
+        )
+        .response
+        .rect;
+    let gap = ui.spacing().item_spacing.x;
+    let tab_row = egui::Rect::from_min_max(
+        full.min,
+        egui::pos2((search.left() - gap).max(full.left()), full.bottom()),
+    );
+    let tabs_rect = ui
+        .scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(tab_row)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| tabs(ui, st),
+        )
+        .response
+        .rect;
+    let top = tabs_rect.bottom().max(search.bottom()) + ui.spacing().item_spacing.y;
+    let tools = egui::Rect::from_min_max(egui::pos2(full.left(), top), full.max);
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(tools)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
             // As tall as the Arrange tab's big buttons on every tab, so
             // the ribbon does not jump.
             ui.set_min_height(arrange::BIG_HEIGHT);
-            tools(ui, st, snap, show_debug, actions);
-        });
-    });
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-        search_box(ui, snap, st, actions);
-    });
+            let groups = groups(st.tab, snap);
+            let sig = signature(st.tab, snap);
+            let mut cx = Cx {
+                st,
+                snap,
+                show_debug,
+                actions,
+            };
+            collapse::show(ui, bar_id(), sig, arrange::BIG_HEIGHT, &groups, &mut cx);
+        },
+    );
 }
 
-/// The tools of the current tab.
-fn tools(
-    ui: &mut Ui,
-    st: &mut PrepareState,
-    snap: &Snapshot,
-    show_debug: &mut bool,
-    actions: &mut Vec<Action>,
-) {
-    let doc_id = snap.doc_id;
-    let run = |actions: &mut Vec<Action>, cmd: &'static str, params: Value| {
-        actions.push(Action::run(doc_id, cmd, params));
-    };
-    let any = !snap.selection.is_empty();
-    let selected: Vec<u64> = snap.selection.iter().copied().collect();
-    match st.tab {
-        RibbonTab::Home => {
-            if tool(
-                ui,
-                Icon::Import,
-                "Import",
-                true,
-                "Import an SVG or an image",
-            ) {
-                actions.push(Action::Import { doc_id });
-            }
-            let raster = single_raster(snap);
-            if tool(
-                ui,
-                Icon::Trace,
-                "Trace",
-                raster.is_some(),
-                "Trace the selected image with your own settings",
-            ) && let Some(id) = raster
-            {
-                actions.push(Action::TraceDialog { doc_id, id });
-            }
-            if tool(
-                ui,
-                Icon::TestPatterns,
-                "Test patterns",
-                true,
-                "Add the test sheet. Cut it first on a new machine.",
-            ) {
-                run(actions, "tools.test_patterns", json!({}));
-            }
-            if tool(ui, Icon::Duplicate, "Duplicate", any, "Copy the selection") {
-                actions.push(duplicate_action(doc_id, &selected));
-            }
-            let one = selected.len() == 1;
-            if tool(
-                ui,
-                Icon::Copies,
-                "Copies...",
-                one,
-                if one {
-                    "Many copies of one object in columns and rows. Sticker sheet, engage!"
-                } else {
-                    "Many copies of one object in columns and rows. Select one object first."
-                },
-            ) {
-                arrange::open(st, snap, PanelKind::RectangularPattern);
-            }
-            if tool(ui, Icon::Delete, "Delete", any, "Delete the selection") {
-                actions.push(delete_action(doc_id, &selected));
-            }
-            let ids = reload_ids(snap);
-            if tool(
-                ui,
-                Icon::Reload,
-                "Reload",
-                ids.is_some(),
-                "Read the linked files again (the selection, or all)",
-            ) && let Some(ids) = ids
-            {
-                actions.push(reload_action(doc_id, ids));
-            }
-        }
-        RibbonTab::Arrange => arrange(ui, st, snap, actions),
-        RibbonTab::View => {
-            if tool(ui, Icon::ZoomFit, "Zoom to fit", true, "Show the whole mat") {
-                st.fit_pending = true;
-            }
-            if tool(
-                ui,
-                Icon::ZoomActual,
-                "Zoom 100%",
-                true,
-                "About real size on a typical screen",
-            ) {
-                let at = st.canvas_rect.center();
-                let f = PX_PER_MM_100 / st.view.px_per_mm;
-                let mut v: CanvasView = st.view;
-                v.zoom_about(at, f);
-                st.view = v;
-            }
-            toggle(ui, Icon::Grid, "Grid", &mut st.show_grid);
-            toggle(ui, Icon::Ruler, "Rulers", &mut st.show_rulers);
-            toggle(ui, Icon::PanelLeft, "Objects panel", &mut st.show_objects);
-            toggle(
-                ui,
-                Icon::PanelRight,
-                "Settings panel",
-                &mut st.show_settings,
-            );
-            toggle(ui, Icon::Debug, "Debug panel", show_debug);
-        }
+/// What the widths of the tools depend on, besides the window.
+fn signature(tab: RibbonTab, snap: &Snapshot) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    tab.hash(&mut h);
+    if tab == RibbonTab::Arrange {
+        snap.arrange_pins.hash(&mut h);
+        snap.linked_reach().hash(&mut h);
     }
+    h.finish()
+}
+
+/// The groups of a tab, left to right.
+fn groups(tab: RibbonTab, snap: &Snapshot) -> Vec<Group<Cx<'_>>> {
+    let g = |title, keep, draw: fn(&mut Ui, Mode, &mut Cx)| Group { title, keep, draw };
+    match tab {
+        RibbonTab::Home => vec![
+            g("Add", false, home_add),
+            g("Edit", false, home_edit),
+            g("Linked files", false, home_files),
+        ],
+        RibbonTab::Arrange => {
+            let pins = arrange::pinned(snap);
+            let mut v = vec![
+                g("Size", false, arrange_size),
+                // Search opens its drop-down, so it stays on the ribbon.
+                g("Arrange", true, |ui, mode, cx| {
+                    arrange::dropdown_button(ui, mode, cx.st, cx.snap, cx.actions)
+                }),
+            ];
+            if pins.iter().any(|c| c.big()) {
+                v.push(g("Pinned", false, |ui, mode, cx| {
+                    arrange::big_pins(ui, mode, cx.st, cx.snap, cx.actions)
+                }));
+            }
+            if pins.iter().any(|c| !c.big()) {
+                v.push(g("Pinned directions", false, |ui, mode, cx| {
+                    arrange::small_pins(ui, mode, cx.st, cx.snap, cx.actions)
+                }));
+            }
+            v.push(g("Rotate and mirror", false, arrange_each));
+            v
+        }
+        RibbonTab::View => vec![
+            g("Zoom", false, view_zoom),
+            g("Show", false, view_show),
+            g("Panels", false, view_panels),
+        ],
+    }
+}
+
+fn home_add(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
+    let doc_id = cx.snap.doc_id;
+    if tool(
+        ui,
+        mode,
+        Icon::Import,
+        "Import",
+        true,
+        "Import an SVG or an image",
+    ) {
+        cx.actions.push(Action::Import { doc_id });
+    }
+    let raster = single_raster(cx.snap);
+    if tool(
+        ui,
+        mode,
+        Icon::Trace,
+        "Trace",
+        raster.is_some(),
+        "Trace the selected image with your own settings",
+    ) && let Some(id) = raster
+    {
+        cx.actions.push(Action::TraceDialog { doc_id, id });
+    }
+    if tool(
+        ui,
+        mode,
+        Icon::TestPatterns,
+        "Test patterns",
+        true,
+        "Add the test sheet. Cut it first on a new machine.",
+    ) {
+        cx.actions
+            .push(Action::run(doc_id, "tools.test_patterns", json!({})));
+    }
+}
+
+fn home_edit(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
+    let doc_id = cx.snap.doc_id;
+    let selected: Vec<u64> = cx.snap.selection.iter().copied().collect();
+    let any = !selected.is_empty();
+    if tool(
+        ui,
+        mode,
+        Icon::Duplicate,
+        "Duplicate",
+        any,
+        "Copy the selection",
+    ) {
+        cx.actions.push(duplicate_action(doc_id, &selected));
+    }
+    let one = selected.len() == 1;
+    if tool(
+        ui,
+        mode,
+        Icon::Copies,
+        "Copies...",
+        one,
+        if one {
+            "Many copies of one object in columns and rows. Sticker sheet, engage!"
+        } else {
+            "Many copies of one object in columns and rows. Select one object first."
+        },
+    ) {
+        arrange::open(cx.st, cx.snap, PanelKind::RectangularPattern);
+    }
+    if tool(
+        ui,
+        mode,
+        Icon::Delete,
+        "Delete",
+        any,
+        "Delete the selection",
+    ) {
+        cx.actions.push(delete_action(doc_id, &selected));
+    }
+}
+
+fn home_files(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
+    let ids = reload_ids(cx.snap);
+    if tool(
+        ui,
+        mode,
+        Icon::Reload,
+        "Reload",
+        ids.is_some(),
+        "Read the linked files again (the selection, or all)",
+    ) && let Some(ids) = ids
+    {
+        cx.actions.push(reload_action(cx.snap.doc_id, ids));
+    }
+}
+
+fn view_zoom(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
+    let st = &mut *cx.st;
+    if tool(
+        ui,
+        mode,
+        Icon::ZoomFit,
+        "Zoom to fit",
+        true,
+        "Show the whole mat",
+    ) {
+        st.fit_pending = true;
+    }
+    if tool(
+        ui,
+        mode,
+        Icon::ZoomActual,
+        "Zoom 100%",
+        true,
+        "About real size on a typical screen",
+    ) {
+        let at = st.canvas_rect.center();
+        let f = PX_PER_MM_100 / st.view.px_per_mm;
+        let mut v: CanvasView = st.view;
+        v.zoom_about(at, f);
+        st.view = v;
+    }
+}
+
+fn view_show(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
+    toggle(ui, mode, Icon::Grid, "Grid", &mut cx.st.show_grid);
+    toggle(ui, mode, Icon::Ruler, "Rulers", &mut cx.st.show_rulers);
+}
+
+fn view_panels(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
+    let st = &mut *cx.st;
+    toggle(
+        ui,
+        mode,
+        Icon::PanelLeft,
+        "Objects panel",
+        &mut st.show_objects,
+    );
+    toggle(
+        ui,
+        mode,
+        Icon::PanelRight,
+        "Settings panel",
+        &mut st.show_settings,
+    );
+    toggle(ui, mode, Icon::Debug, "Debug panel", cx.show_debug);
 }
 
 /// The `object.rotate` of a rotate button, about each object or the group.
@@ -553,17 +744,55 @@ pub(crate) fn reload_action(doc_id: u64, ids: Vec<u64>) -> Action {
     Action::run(doc_id, "object.reload", json!({ "ids": ids }))
 }
 
-fn arrange(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Vec<Action>) {
-    let doc_id = snap.doc_id;
-    let run = |actions: &mut Vec<Action>, cmd: &'static str, params: Value| {
-        actions.push(Action::run(doc_id, cmd, params));
+/// A checkbox; icon-only it drops its text, which stays its accessible
+/// name and leads its tooltip.
+fn checkbox(
+    ui: &mut Ui,
+    mode: Mode,
+    on: &mut bool,
+    text: &str,
+    enabled: bool,
+    hint: &str,
+) -> egui::Response {
+    let resp = if mode == Mode::Icons {
+        let r = ui.add_enabled(enabled, egui::Checkbox::without_text(on));
+        set_name(ui, &r, text);
+        r
+    } else {
+        ui.add_enabled(enabled, egui::Checkbox::new(on, text))
     };
+    let hint = match (mode, hint.is_empty()) {
+        (Mode::Icons, true) => text.to_string(),
+        (Mode::Icons, false) => format!("{text}\n{hint}"),
+        _ => hint.to_string(),
+    };
+    if hint.is_empty() {
+        resp
+    } else {
+        resp.on_hover_text(&hint).on_disabled_hover_text(&hint)
+    }
+}
+
+/// The size fields: W, H, Keep aspect and %. In the overflow list they
+/// stack in rows.
+fn arrange_size(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
+    if mode == Mode::List {
+        ui.horizontal(|ui| size_wh(ui, cx));
+        ui.horizontal(|ui| size_rest(ui, mode, cx));
+    } else {
+        size_wh(ui, cx);
+        size_rest(ui, mode, cx);
+    }
+}
+
+fn size_wh(ui: &mut Ui, cx: &mut Cx) {
+    let snap = cx.snap;
+    let doc_id = snap.doc_id;
     let ids: Vec<u64> = snap.selection.iter().copied().collect();
     let any = !ids.is_empty();
     let single = ids.len() == 1;
     let b = super::canvas::selection_box(snap);
-    let f = &mut st.fields;
-
+    let f = &mut cx.st.fields;
     let w = number_field(
         ui,
         "scale-width",
@@ -590,27 +819,42 @@ fn arrange(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Ve
             continue;
         };
         if single {
-            run(
-                actions,
+            cx.actions.push(Action::run(
+                doc_id,
                 "object.scale",
                 json!({ "ids": ids, key: target, "keep_aspect": f.keep_aspect }),
-            );
+            ));
         } else if let Some(have) = have.filter(|h| *h > 1e-9) {
             // Several objects: one factor from the common box, which
             // scales as one group so its layout stays.
-            run(
-                actions,
+            cx.actions.push(Action::run(
+                doc_id,
                 "object.scale",
                 json!({ "ids": ids, "factor": target / have, "group": true }),
-            );
+            ));
         }
     }
+}
+
+fn size_rest(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
+    let snap = cx.snap;
+    let doc_id = snap.doc_id;
+    let ids: Vec<u64> = snap.selection.iter().copied().collect();
+    let any = !ids.is_empty();
+    let single = ids.len() == 1;
+    let f = &mut cx.st.fields;
     if ids.len() > 1 {
         let mut on = true;
-        ui.add_enabled(false, egui::Checkbox::new(&mut on, "Keep aspect"))
-            .on_disabled_hover_text("Several objects scale together, keeping their shape.");
+        checkbox(
+            ui,
+            mode,
+            &mut on,
+            "Keep aspect",
+            false,
+            "Several objects scale together, keeping their shape.",
+        );
     } else {
-        ui.add_enabled(any, egui::Checkbox::new(&mut f.keep_aspect, "Keep aspect"));
+        checkbox(ui, mode, &mut f.keep_aspect, "Keep aspect", any, "");
     }
     if let Some(p) = number_field(
         ui,
@@ -622,35 +866,44 @@ fn arrange(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Ve
         any,
     ) && p > 0.0
     {
-        run(
-            actions,
+        cx.actions.push(Action::run(
+            doc_id,
             "object.scale",
             json!({ "ids": ids, "factor": p / 100.0, "group": !single }),
-        );
+        ));
     }
     // Linked copies share the scale.
     if let Some(n) = snap.linked_reach() {
-        ui.label(egui::RichText::new(format!("Scales all {n} linked copies")).weak())
-            .on_hover_text("Linked copies share the scale. Each keeps its own place.");
+        let text = format!("Scales all {n} linked copies");
+        let hint = "Linked copies share the scale. Each keeps its own place.";
+        if mode == Mode::Icons {
+            let r = ui
+                .add(
+                    icon_image(ui, Icon::Linked)
+                        .tint(ui.visuals().weak_text_color())
+                        .sense(egui::Sense::hover()),
+                )
+                .on_hover_text(format!("{text}. {hint}"));
+            r.widget_info(|| WidgetInfo::labeled(Role::Label, true, &text));
+        } else {
+            ui.label(egui::RichText::new(text).weak())
+                .on_hover_text(hint);
+        }
     }
-    ui.separator();
-    arrange::group(ui, st, snap, actions);
-    ui.separator();
+}
+
+/// The "Each object" switch for Rotate and Mirror.
+fn arrange_each(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
     // Several objects turn and flip as one group, or each on its own.
-    let several = ids.len() > 1;
+    let several = cx.snap.selection.len() > 1;
     let hint = if several {
         "Rotate and mirror each object about its own centre. Off: the selection turns as one, like Voltron."
     } else {
         "Rotate and mirror each object about its own centre. Select several objects first."
     };
-    let f = &mut st.fields;
-    if ui
-        .add_enabled(several, egui::Checkbox::new(&mut f.each, "Each object"))
-        .on_hover_text(hint)
-        .on_disabled_hover_text(hint)
-        .changed()
-    {
-        actions.push(Action::RememberEach(f.each));
+    let f = &mut cx.st.fields;
+    if checkbox(ui, mode, &mut f.each, "Each object", several, hint).changed() {
+        cx.actions.push(Action::RememberEach(f.each));
     }
 }
 

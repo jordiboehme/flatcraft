@@ -5,6 +5,7 @@ pub mod about;
 pub mod app_bar;
 pub mod arrange;
 pub mod canvas;
+pub mod collapse;
 pub mod context_menu;
 pub mod cut;
 pub mod debug;
@@ -312,6 +313,10 @@ impl FlatCraftApp {
         let tokens = Tokens::for_theme(theme, ctx.system_theme());
         fonts::install(ctx);
         theme::apply(ctx, &tokens, theme == Theme::System);
+        // A tool bar that collapses or expands discards the pass it measured
+        // in (see `collapse`): up to two steps in one frame, so the person
+        // never sees a half-collapsed bar.
+        ctx.options_mut(|o| o.max_passes = std::num::NonZeroUsize::new(3).expect("3 > 0"));
         let mut ui = UiState::default();
         ui.prepare.fields.each = rotate_each;
         Self {
@@ -1075,6 +1080,10 @@ pub fn display_name(path: &Path) -> String {
 
 /// Size of icons in buttons, in points.
 pub const ICON_SIZE: f32 = 18.0;
+
+/// The smallest window (logical points). The ribbon, the app bar and the
+/// Cut bar are tested at this width: nothing is cut off or out of reach.
+pub const MIN_WINDOW: [f32; 2] = [900.0, 600.0];
 
 /// An icon-only button. `name` is its accessible name and its tooltip.
 pub fn icon_button(ui: &mut egui::Ui, icon: Icon, name: &str, enabled: bool) -> egui::Response {

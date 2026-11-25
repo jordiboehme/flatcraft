@@ -55,8 +55,19 @@ pub fn harness_steps(
     max_steps: u64,
     setup: impl FnOnce(FlatCraftApp) -> FlatCraftApp,
 ) -> AppHarness {
+    harness_sized(dir, s, [1400.0, 900.0], max_steps, setup)
+}
+
+/// Like [`harness_steps`], with a window of `size` points.
+pub fn harness_sized(
+    dir: &tempfile::TempDir,
+    s: SharedSession,
+    size: [f32; 2],
+    max_steps: u64,
+    setup: impl FnOnce(FlatCraftApp) -> FlatCraftApp,
+) -> AppHarness {
     let mut h = Harness::builder()
-        .with_size([1400.0, 900.0])
+        .with_size(size)
         .with_max_steps(max_steps)
         .with_context_setup(fonts::install)
         .build_ui_state(
