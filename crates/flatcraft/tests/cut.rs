@@ -84,7 +84,8 @@ fn send_writes_file_from_stage_4() {
     assert_eq!(written, app(&h).ui.cut.job().unwrap().job.bytes);
     let toast = app(&h).ui.toasts.last().cloned().unwrap();
     assert!(toast.text.starts_with("Sent!"), "{}", toast.text);
-    assert!(toast.text.contains(".gpgl.txt"), "{}", toast.text);
+    let detail = toast.detail.clone().unwrap_or_default();
+    assert!(detail.contains(".gpgl.txt"), "{detail}");
     let gpgl = toast.reveal.clone().unwrap();
     assert_eq!(gpgl.extension().unwrap(), "gpgl");
     let label = flatcraft::ui::files::reveal_label();

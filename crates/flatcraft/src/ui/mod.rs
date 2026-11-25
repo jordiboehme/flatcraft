@@ -323,6 +323,9 @@ pub struct FlatCraftApp {
     /// [`app_bar::viewport`]): it leaves room for the traffic lights and
     /// moves the window. Tests turn it on with [`Self::with_title_bar`].
     pub title_bar: bool,
+    /// Whether the system asks for reduced motion (the toasts then draw
+    /// no countdown ring); tests replace it.
+    pub reduce_motion: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
     /// The macOS menu bar; it must live as long as the app.
     #[cfg(target_os = "macos")]
     menu: Option<menu::AppMenu>,
@@ -365,9 +368,16 @@ impl FlatCraftApp {
             rng: rng::XorShift::default(),
             injected: Vec::new(),
             title_bar: cfg!(target_os = "macos"),
+            reduce_motion: std::sync::Arc::new(toasts::system_reduce_motion),
             #[cfg(target_os = "macos")]
             menu: None,
         }
+    }
+
+    /// Replaces the system's reduced-motion setting.
+    pub fn with_reduce_motion(mut self, f: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        self.reduce_motion = std::sync::Arc::new(f);
+        self
     }
 
     /// Whether the app bar is the window's title bar (see
@@ -1216,11 +1226,19 @@ impl FlatCraftApp {
         // About one send in five, the toast quotes Star Wars instead.
         let punch = self.rng.one_in(PUNCH_IT_ODDS);
         let Some(first) = files.first().cloned() else {
-            self.toast(Toast::info(if punch { PUNCH_IT } else { "Sent. Ship it!" }));
+            self.toast(Toast::success(if punch {
+                PUNCH_IT
+            } else {
+                "Sent. Ship it!"
+            }));
             return;
         };
         if punch {
-            self.toast(Toast::info(PUNCH_IT).with_reveal(first));
+            self.toast(
+                Toast::success(PUNCH_IT)
+                    .with_detail(first.display().to_string())
+                    .with_reveal(first),
+            );
             return;
         }
         let names: Vec<String> = files.iter().map(|f| display_name(f)).collect();
@@ -1229,16 +1247,22 @@ impl FlatCraftApp {
             .map(|d| d.display().to_string())
             .unwrap_or_default();
         self.toast(
-            Toast::info(format!("Sent! Wrote {} to {dir}", names.join(", "))).with_reveal(first),
+            Toast::success("Sent! Ship it!")
+                .with_detail(format!("Wrote {} to {dir}", names.join(", ")))
+                .with_reveal(first),
         );
     }
 
     fn saved(&mut self, result: &Value) {
         if let Some(path) = result["path"].as_str() {
             let path = PathBuf::from(path);
-            let name = display_name(&path);
             self.remember_recent(&path);
-            self.toast(Toast::info(format!("Saved {name}")));
+            let full = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
+            self.toast(
+                Toast::success("Saved")
+                    .with_detail(full.display().to_string())
+                    .with_reveal(full),
+            );
         }
     }
 
@@ -1464,11 +1488,29 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
 
     let now = (app.clock)();
     app.check_sources(&ctx, now);
-    if let Some(next) = toasts::prune(&mut app.ui.toasts, now) {
+    let next = toasts::prune(&mut app.ui.toasts, now);
+    let reduce = !app.ui.toasts.is_empty() && (app.reduce_motion)();
+    let t = app.tokens;
+    let events = toasts::show(&ctx, &mut app.ui.toasts, &t, now, reduce);
+    // Repaint often only while a countdown ring moves; otherwise when the
+    // next toast expires.
+    if !reduce && app.ui.toasts.iter().any(Toast::running) {
+        ctx.request_repaint_after(Duration::from_millis(33));
+    } else if let Some(next) = next {
         ctx.request_repaint_after(next);
     }
-    if let Some(file) = toasts::show(&ctx, &app.ui.toasts, &app.tokens) {
-        app.apply(&ctx, vec![Action::Reveal(file)]);
+    let mut closed: Vec<usize> = Vec::new();
+    for e in events {
+        match e {
+            toasts::Event::Reveal(file) => app.apply(&ctx, vec![Action::Reveal(file)]),
+            toasts::Event::Close(i) => closed.push(i),
+        }
+    }
+    closed.sort_unstable();
+    for i in closed.into_iter().rev() {
+        if i < app.ui.toasts.len() {
+            app.ui.toasts.remove(i);
+        }
     }
     if app.agent {
         // Keeps the agent pill current.

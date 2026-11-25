@@ -1,33 +1,74 @@
-//! Short messages in the corner of the window. Each one expires after 4 s,
-//! or after 10 s when it has a "Show in Finder" link.
+//! Short messages in the bottom-right corner, stacked with the newest at
+//! the bottom. Each card has a coloured status dot, a title and an
+//! optional detail line (a full path, wrapped, never cut), and a × at the
+//! top right with a thin ring that shrinks over the toast's lifetime.
+//!
+//! Info and success toasts stay 5 s, warnings 8 s, errors until closed
+//! (no ring). Hovering a toast pauses its clock. A toast with a file
+//! (a saved project, a written job) shows that file in Finder or Explorer
+//! when clicked. With reduced motion the ring is not drawn; the lifetime
+//! stays the same.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-/// How long a toast stays visible.
-pub const LIFETIME: Duration = Duration::from_secs(4);
-/// How long a toast with a link stays visible, so there is time to click.
-pub const LINK_LIFETIME: Duration = Duration::from_secs(10);
+use egui::{Color32, RichText};
+
+use super::icons::{self, Icon};
+use super::theme::Tokens;
+
+/// How long an info or a success toast stays visible.
+pub const LIFETIME: Duration = Duration::from_secs(5);
+/// How long a warning stays visible.
+pub const WARNING_LIFETIME: Duration = Duration::from_secs(8);
+
+/// Width of a toast card.
+pub const WIDTH: f32 = 340.0;
+/// The accessible name of a toast's × button.
+pub const CLOSE_NAME: &str = "Close message";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToastKind {
     Info,
+    Success,
     Warning,
     Error,
 }
 
+impl ToastKind {
+    fn color(self, t: &Tokens) -> Color32 {
+        match self {
+            ToastKind::Info => t.accent_prepare,
+            ToastKind::Success => t.ok,
+            ToastKind::Warning => t.warn,
+            ToastKind::Error => t.danger,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Toast {
+    /// The title.
     pub text: String,
+    /// The line under the title, if any (a full path, say).
+    pub detail: Option<String>,
     pub kind: ToastKind,
     pub created: Instant,
-    /// A file the toast's "Show in Finder" link reveals.
+    /// A file a click on the toast shows in the file manager.
     pub reveal: Option<PathBuf>,
+    /// How long the pointer rested on it before, which does not count.
+    pub paused: Duration,
+    /// The pointer rests on it since then.
+    pub hovered_since: Option<Instant>,
 }
 
 impl Toast {
     pub fn info(text: impl Into<String>) -> Self {
         Self::new(text, ToastKind::Info)
+    }
+
+    pub fn success(text: impl Into<String>) -> Self {
+        Self::new(text, ToastKind::Success)
     }
 
     pub fn warning(text: impl Into<String>) -> Self {
@@ -41,103 +82,350 @@ impl Toast {
     fn new(text: impl Into<String>, kind: ToastKind) -> Self {
         Self {
             text: text.into(),
+            detail: None,
             kind,
             created: Instant::now(),
             reveal: None,
+            paused: Duration::ZERO,
+            hovered_since: None,
         }
     }
 
-    /// Adds a "Show in Finder" link that reveals `file`.
+    /// Adds the line under the title.
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    /// A click on the toast shows `file` in the file manager.
     pub fn with_reveal(mut self, file: PathBuf) -> Self {
         self.reveal = Some(file);
         self
     }
 
-    pub fn lifetime(&self) -> Duration {
-        if self.reveal.is_some() {
-            LINK_LIFETIME
-        } else {
-            LIFETIME
+    /// How long it stays; `None` for an error, which stays until closed.
+    pub fn lifetime(&self) -> Option<Duration> {
+        match self.kind {
+            ToastKind::Info | ToastKind::Success => Some(LIFETIME),
+            ToastKind::Warning => Some(WARNING_LIFETIME),
+            ToastKind::Error => None,
         }
     }
 
+    /// How long it has been shown at `now`, without the time the pointer
+    /// rested on it.
+    pub fn age(&self, now: Instant) -> Duration {
+        let resting = self
+            .hovered_since
+            .map_or(Duration::ZERO, |h| now.saturating_duration_since(h));
+        now.saturating_duration_since(self.created)
+            .saturating_sub(self.paused + resting)
+    }
+
+    /// Time left at `now`; `None` for a toast that stays.
+    pub fn left(&self, now: Instant) -> Option<Duration> {
+        self.lifetime().map(|l| l.saturating_sub(self.age(now)))
+    }
+
     pub fn expired(&self, now: Instant) -> bool {
-        now.saturating_duration_since(self.created) >= self.lifetime()
+        self.left(now).is_some_and(|l| l.is_zero())
+    }
+
+    /// The pointer rests on it from `now` (`true`) or left it.
+    pub fn set_hovered(&mut self, hovered: bool, now: Instant) {
+        match (hovered, self.hovered_since) {
+            (true, None) => self.hovered_since = Some(now),
+            (false, Some(since)) => {
+                self.paused += now.saturating_duration_since(since);
+                self.hovered_since = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// Its clock runs now: it has a lifetime and the pointer is elsewhere.
+    pub fn running(&self) -> bool {
+        self.lifetime().is_some() && self.hovered_since.is_none()
     }
 }
 
 /// Removes the expired toasts and returns how long until the next one
-/// expires, if any are left.
+/// expires, if any has a running clock.
 pub fn prune(toasts: &mut Vec<Toast>, now: Instant) -> Option<Duration> {
     toasts.retain(|t| !t.expired(now));
     toasts
         .iter()
-        .map(|t| {
-            t.lifetime()
-                .saturating_sub(now.saturating_duration_since(t.created))
-        })
+        .filter(|t| t.running())
+        .filter_map(|t| t.left(now))
         .min()
 }
 
-/// Draws the toasts in the bottom-right corner. Returns the file of a
-/// clicked "Show in Finder" link.
+/// What the person did with the toasts this frame.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Event {
+    /// Show this file in the file manager.
+    Reveal(PathBuf),
+    /// Close the toast at this index.
+    Close(usize),
+}
+
+/// Draws the toasts in the bottom-right corner, oldest at the top, and
+/// tracks which one the pointer rests on. `reduce_motion` leaves out the
+/// rings. Returns what was clicked.
 pub fn show(
     ctx: &egui::Context,
-    toasts: &[Toast],
-    tokens: &super::theme::Tokens,
-) -> Option<PathBuf> {
+    toasts: &mut [Toast],
+    t: &Tokens,
+    now: Instant,
+    reduce_motion: bool,
+) -> Vec<Event> {
+    let mut events = Vec::new();
     if toasts.is_empty() {
-        return None;
+        return events;
     }
-    let mut clicked = None;
-    let links = toasts.iter().any(|t| t.reveal.is_some());
     egui::Area::new(egui::Id::unique("flatcraft-toasts"))
         .anchor(
             egui::Align2::RIGHT_BOTTOM,
-            egui::vec2(-tokens.spacing * 2.0, -tokens.spacing * 2.0),
+            egui::vec2(-t.spacing * 2.0, -t.spacing * 2.0),
         )
         .order(egui::Order::Foreground)
-        .interactable(links)
         .show(ctx, |ui| {
-            for t in toasts {
-                let stroke = match t.kind {
-                    ToastKind::Info => tokens.accent_prepare,
-                    ToastKind::Warning => tokens.accent_cut,
-                    ToastKind::Error => tokens.danger,
-                };
-                egui::Frame::new()
-                    .fill(tokens.surface)
-                    .stroke(egui::Stroke::new(1.0, stroke))
-                    .corner_radius(tokens.radius)
-                    .inner_margin(tokens.spacing)
-                    .show(ui, |ui| {
-                        ui.set_max_width(360.0);
-                        ui.label(&t.text);
-                        if let Some(file) = &t.reveal
-                            && ui.link(super::files::reveal_label()).clicked()
-                        {
-                            clicked = Some(file.clone());
-                        }
-                    });
+            ui.spacing_mut().item_spacing.y = t.spacing;
+            for (i, toast) in toasts.iter_mut().enumerate() {
+                let (event, hovered) = card(ui, toast, i, t, now, reduce_motion);
+                toast.set_hovered(hovered, now);
+                events.extend(event);
             }
         });
-    clicked
+    events
 }
+
+/// One toast card. Returns its event and whether the pointer is on it.
+fn card(
+    ui: &mut egui::Ui,
+    toast: &Toast,
+    index: usize,
+    t: &Tokens,
+    now: Instant,
+    reduce_motion: bool,
+) -> (Option<Event>, bool) {
+    const X: f32 = 20.0;
+    let pad = 10.0;
+    let frame = egui::Frame::new()
+        .fill(t.panel)
+        .stroke(egui::Stroke::new(1.0, t.border))
+        .corner_radius(t.ribbon_radius)
+        .inner_margin(egui::Margin::same(pad as i8))
+        .shadow(egui::Shadow {
+            offset: [0, 2],
+            blur: 8,
+            spread: 0,
+            color: Color32::from_black_alpha(40),
+        });
+    // The whole card is the click target of a toast with a file; it is
+    // laid out first, so the × on top of it wins its own clicks.
+    let bg = ui.painter().add(egui::Shape::Noop);
+    let inner = frame.show(ui, |ui| {
+        ui.set_width(WIDTH - 2.0 * pad);
+        ui.horizontal_top(|ui| {
+            let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 18.0), egui::Sense::hover());
+            ui.painter()
+                .circle_filled(dot.center(), 4.0, toast.kind.color(t));
+            ui.vertical(|ui| {
+                ui.set_max_width(WIDTH - 2.0 * pad - 10.0 - X - 2.0 * ui.spacing().item_spacing.x);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(&toast.text)
+                            .font(super::fonts::semibold(14.0))
+                            .color(t.text),
+                    )
+                    .wrap(),
+                );
+                if let Some(detail) = &toast.detail {
+                    // Wrapped anywhere, so a long path is shown whole.
+                    let mut job = egui::text::LayoutJob::simple(
+                        detail.clone(),
+                        egui::TextStyle::Small.resolve(ui.style()),
+                        t.text_dim,
+                        ui.available_width(),
+                    );
+                    job.wrap.break_anywhere = true;
+                    ui.add(egui::Label::new(job));
+                }
+            });
+        });
+    });
+    let rect = inner.response.rect;
+    let id = egui::Id::unique(("flatcraft-toast", index));
+    let body = ui.interact(rect, id, egui::Sense::click());
+    let mut event = None;
+    if let Some(file) = &toast.reveal {
+        let label = super::files::reveal_label();
+        body.widget_info(|| egui::WidgetInfo::labeled(egui::accesskit::Role::Button, true, label));
+        let body = body
+            .clone()
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(label);
+        if body.clicked() {
+            event = Some(Event::Reveal(file.clone()));
+        }
+    }
+    if body.hovered() {
+        ui.painter().set(
+            bg,
+            egui::Shape::rect_filled(rect, t.ribbon_radius, t.surface.gamma_multiply(0.4)),
+        );
+    }
+    // The × with its countdown ring.
+    let x_rect = egui::Rect::from_center_size(
+        egui::pos2(
+            rect.right() - pad - X / 2.0 + 2.0,
+            rect.top() + pad + X / 2.0 - 1.0,
+        ),
+        egui::Vec2::splat(X),
+    );
+    let x = ui.interact(x_rect, id.with("close"), egui::Sense::click());
+    x.widget_info(|| egui::WidgetInfo::labeled(egui::accesskit::Role::Button, true, CLOSE_NAME));
+    if x.hovered() {
+        ui.painter()
+            .circle_filled(x_rect.center(), X / 2.0, t.surface);
+    }
+    let tex = icons::texture_colored(ui.ctx(), Icon::Close, 12.0, t.text_dim);
+    egui::Image::from_texture(egui::load::SizedTexture::new(
+        tex.id(),
+        egui::Vec2::splat(12.0),
+    ))
+    .paint_at(
+        ui,
+        egui::Rect::from_center_size(x_rect.center(), egui::Vec2::splat(12.0)),
+    );
+    if let (Some(life), Some(left)) = (toast.lifetime(), toast.left(now))
+        && !reduce_motion
+    {
+        let fraction = left.as_secs_f32() / life.as_secs_f32();
+        ring(
+            ui,
+            x_rect.center(),
+            X / 2.0 - 1.0,
+            fraction,
+            toast.kind.color(t),
+        );
+    }
+    if x.clicked() {
+        event = Some(Event::Close(index));
+    }
+    let hovered = body.hovered() || x.hovered() || ui.rect_contains_pointer(rect);
+    (event, hovered)
+}
+
+/// The part of a ring that is left: from the top, clockwise.
+fn ring(ui: &egui::Ui, center: egui::Pos2, radius: f32, fraction: f32, color: Color32) {
+    let fraction = fraction.clamp(0.0, 1.0);
+    if fraction <= 0.0 {
+        return;
+    }
+    let steps = (48.0 * fraction).ceil().max(2.0) as usize;
+    let sweep = std::f32::consts::TAU * fraction;
+    let points: Vec<egui::Pos2> = (0..=steps)
+        .map(|i| {
+            let a = -std::f32::consts::FRAC_PI_2 + sweep * i as f32 / steps as f32;
+            center + radius * egui::vec2(a.cos(), a.sin())
+        })
+        .collect();
+    ui.painter()
+        .add(egui::Shape::line(points, egui::Stroke::new(1.5, color)));
+}
+
+/// Whether the operating system asks for reduced motion (macOS: the
+/// Accessibility setting "Reduce motion"). Elsewhere it is off.
+///
+/// The answer is cached and read again on a worker thread at most every
+/// [`MOTION_REFRESH`], so the window never waits for the system (the
+/// first question can take a moment while AppKit loads).
+pub fn system_reduce_motion() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use std::sync::Mutex;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static REDUCE: AtomicBool = AtomicBool::new(false);
+        static ASKED: Mutex<Option<Instant>> = Mutex::new(None);
+        let mut asked = ASKED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if asked.is_none_or(|at| at.elapsed() >= MOTION_REFRESH) {
+            *asked = Some(Instant::now());
+            let spawned = std::thread::Builder::new()
+                .name("reduce-motion".into())
+                .spawn(|| {
+                    let on = objc2_app_kit::NSWorkspace::sharedWorkspace()
+                        .accessibilityDisplayShouldReduceMotion();
+                    REDUCE.store(on, Ordering::Relaxed);
+                });
+            // Without a thread the last answer stays.
+            drop(spawned);
+        }
+        REDUCE.load(Ordering::Relaxed)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+/// How often [`system_reduce_motion`] asks the system again.
+pub const MOTION_REFRESH: Duration = Duration::from_secs(5);
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn toasts_expire_after_four_seconds() {
-        let mut toasts = vec![Toast::info("saved")];
-        let t0 = toasts[0].created;
+    fn lifetimes_per_kind() {
+        let t0 = Instant::now();
+        let mut toasts = vec![
+            Toast::info("info"),
+            Toast::success("Saved"),
+            Toast::warning("careful"),
+            Toast::error("broken"),
+        ];
+        for t in &mut toasts {
+            t.created = t0;
+        }
+        assert_eq!(toasts[0].lifetime(), Some(Duration::from_secs(5)));
+        assert_eq!(toasts[1].lifetime(), Some(Duration::from_secs(5)));
+        assert_eq!(toasts[2].lifetime(), Some(Duration::from_secs(8)));
+        assert_eq!(toasts[3].lifetime(), None);
         assert_eq!(
-            prune(&mut toasts, t0 + Duration::from_millis(3900)),
+            prune(&mut toasts, t0 + Duration::from_millis(4900)),
             Some(Duration::from_millis(100))
         );
+        assert_eq!(toasts.len(), 4);
+        assert_eq!(
+            prune(&mut toasts, t0 + LIFETIME),
+            Some(Duration::from_secs(3))
+        );
+        assert_eq!(toasts.len(), 2, "info and success are gone");
+        assert_eq!(prune(&mut toasts, t0 + WARNING_LIFETIME), None);
         assert_eq!(toasts.len(), 1);
-        assert_eq!(prune(&mut toasts, t0 + LIFETIME), None);
-        assert!(toasts.is_empty());
+        // An error stays.
+        assert_eq!(prune(&mut toasts, t0 + Duration::from_secs(3600)), None);
+        assert_eq!(toasts[0].text, "broken");
+    }
+
+    #[test]
+    fn hovering_pauses_the_clock() {
+        let t0 = Instant::now();
+        let mut t = Toast::info("saved");
+        t.created = t0;
+        let s = Duration::from_secs;
+        t.set_hovered(true, t0 + s(2));
+        // Ten seconds of resting: the clock stands at 2 s.
+        assert_eq!(t.age(t0 + s(12)), s(2));
+        assert!(!t.expired(t0 + s(12)));
+        let mut v = vec![t.clone()];
+        assert_eq!(prune(&mut v, t0 + s(12)), None, "no timer while resting");
+        t.set_hovered(false, t0 + s(12));
+        assert_eq!(t.left(t0 + s(12)), Some(s(3)));
+        assert!(t.expired(t0 + s(15)));
     }
 }

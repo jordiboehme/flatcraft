@@ -663,7 +663,7 @@ fn toasts_expire_by_the_window_clock() {
     h.run();
     assert!(
         app(&h).ui.toasts.is_empty(),
-        "expired after 4 s on the clock"
+        "expired after 5 s on the clock"
     );
 }
 
