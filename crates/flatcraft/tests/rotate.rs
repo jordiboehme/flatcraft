@@ -206,6 +206,10 @@ fn hovering_the_rotate_zone_shows_the_rotate_cursor_and_its_card() {
     h.run();
     assert_eq!(cursor(&h), CursorIcon::None, "the painted rotate cursor");
     assert!(app(&h).ui.prepare.rotate_cursor.is_some());
+    // Its card, with this system's keys.
+    h.run();
+    h.get_by_label("Rotate");
+    h.get_by_label(&help::rotate_card(Os::CURRENT));
     // On the handle itself: the resize cursor.
     h.hover_at(mm(&v, 70.0, 70.0));
     h.run();
@@ -669,4 +673,56 @@ fn the_rotate_card_opens_away_from_the_selection() {
             "corner {i}: {card:?} {at:?}"
         );
     }
+}
+
+#[test]
+fn a_typed_angle_applies_to_its_document_when_the_document_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, id, mut h, _) = square(&dir);
+    let first = s.lock().unwrap().doc().id();
+    let before = undo_len(&s);
+    type_text(&mut h, ANGLE, "30");
+    h.get_by_role_and_label(Role::Button, "New document")
+        .click();
+    h.run();
+    h.run();
+    let g = s.lock().unwrap();
+    assert_eq!(g.docs.len(), 2);
+    assert_ne!(g.doc().id(), first, "the new document is active");
+    let a = &g.docs[g.doc_index(first).unwrap()];
+    assert_eq!(
+        a.undo.undo_len(),
+        before + 1,
+        "one undo step in its document"
+    );
+    let t = a.document.get(ObjectId(id)).unwrap().transform;
+    assert!(near(t.rotation_deg, 30.0), "{t:?}");
+    drop(g);
+    assert!(fields(&h).editing.is_none());
+}
+
+#[test]
+fn a_typed_angle_counts_before_a_save_click() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let path = dir.path().join("turned.flatcraft");
+    let picker = common::FakePicker::answering([path.clone()]);
+    let mut h = common::harness_with(&dir, s.clone(), |a| a.with_file_picker(picker.clone()));
+    to_prepare(&mut h);
+    h.get_by_role_and_label(Role::Tab, "Layout").click();
+    h.run();
+    type_text(&mut h, ANGLE, "30");
+    h.get_all_by_role_and_label(Role::Button, "Save")
+        .next()
+        .unwrap()
+        .click();
+    h.run();
+    let doc = flatcraft_engine::commands::project::load_rebuilt(
+        &flatcraft_device::ProfileStore::load(&dir.path().join("profiles")).unwrap(),
+        &path,
+    )
+    .unwrap();
+    assert!(near(doc.objects[0].transform.rotation_deg, 30.0));
+    assert!(!s.lock().unwrap().doc().dirty, "saved after the change");
 }
