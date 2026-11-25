@@ -328,6 +328,45 @@ pub struct ShapeCache {
     builder: ShapeBuilder,
     jobs: Option<mpsc::Sender<ShapeJob>>,
     done: Option<mpsc::Receiver<ShapeDone>>,
+    /// The worker died (or could not start): shapes are built inline.
+    dead: bool,
+}
+
+/// The worker loop: takes every job waiting and builds only the newest one
+/// per object, so a burst of scales builds the last shape, not each step.
+fn shape_worker(
+    rx: &mpsc::Receiver<ShapeJob>,
+    tx: &mpsc::Sender<ShapeDone>,
+    builder: &ShapeBuilder,
+) {
+    while let Ok(first) = rx.recv() {
+        let mut batch = vec![first];
+        batch.extend(rx.try_iter());
+        let mut newest: Vec<ShapeJob> = Vec::new();
+        for job in batch {
+            match newest
+                .iter_mut()
+                .find(|j| (j.doc_id, j.id) == (job.doc_id, job.id))
+            {
+                Some(slot) => *slot = job,
+                None => newest.push(job),
+            }
+        }
+        for job in newest {
+            let shape = Arc::new(builder(&job.input));
+            let reply = ShapeDone {
+                doc_id: job.doc_id,
+                id: job.id,
+                key: job.input.key(),
+                geometry: job.input.geometry.clone(),
+                shape,
+            };
+            if tx.send(reply).is_err() {
+                return;
+            }
+            job.ctx.request_repaint();
+        }
+    }
 }
 
 impl Default for ShapeCache {
@@ -338,6 +377,7 @@ impl Default for ShapeCache {
             builder: Arc::new(build_shape),
             jobs: None,
             done: None,
+            dead: false,
         }
     }
 }
@@ -367,6 +407,8 @@ impl ShapeCache {
         self.builder = Arc::new(f);
         self.jobs = None;
         self.done = None;
+        self.pending.clear();
+        self.dead = false;
     }
 
     /// The cached shape of an object, whatever transform it was built for.
@@ -387,18 +429,47 @@ impl ShapeCache {
         }
     }
 
-    /// Takes the shapes the worker finished.
+    /// Takes the shapes the worker finished. A worker that died is
+    /// dropped with what it was building, so those shapes are asked for
+    /// again (and built inline, see `submit`).
     fn collect(&mut self) {
         let Some(done) = &self.done else { return };
-        while let Ok(d) = done.try_recv() {
-            if self.pending.get(&(d.doc_id, d.id)) == Some(&d.key) {
-                self.pending.remove(&(d.doc_id, d.id));
+        loop {
+            match done.try_recv() {
+                Ok(d) => {
+                    if self.pending.get(&(d.doc_id, d.id)) == Some(&d.key) {
+                        self.pending.remove(&(d.doc_id, d.id));
+                    }
+                    self.docs
+                        .entry(d.doc_id)
+                        .or_default()
+                        .insert(d.id, (d.key, d.geometry, d.shape));
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.worker_died();
+                    break;
+                }
             }
-            self.docs
-                .entry(d.doc_id)
-                .or_default()
-                .insert(d.id, (d.key, d.geometry, d.shape));
         }
+    }
+
+    /// Forgets a dead worker and what it was building.
+    fn worker_died(&mut self) {
+        self.jobs = None;
+        self.done = None;
+        self.pending.clear();
+        self.dead = true;
+    }
+
+    /// Builds a shape on this thread.
+    fn build_inline(&mut self, job: ShapeJob) {
+        let key = job.input.key();
+        let shape = Arc::new(build_shape(&job.input));
+        self.docs
+            .entry(job.doc_id)
+            .or_default()
+            .insert(job.id, (key, job.input.geometry, shape));
     }
 
     /// Hands a shape to the worker, unless it is being built already. The
@@ -408,43 +479,33 @@ impl ShapeCache {
         if self.pending.get(&(job.doc_id, job.id)) == Some(&key) {
             return;
         }
+        if self.dead {
+            self.build_inline(job);
+            return;
+        }
         if self.jobs.is_none() {
             let (jobs, rx) = mpsc::channel::<ShapeJob>();
             let (tx, done) = mpsc::channel();
             let builder = self.builder.clone();
             let spawned = std::thread::Builder::new()
                 .name("shape-cache".into())
-                .spawn(move || {
-                    for job in rx {
-                        let shape = Arc::new(builder(&job.input));
-                        let reply = ShapeDone {
-                            doc_id: job.doc_id,
-                            id: job.id,
-                            key: job.input.key(),
-                            geometry: job.input.geometry.clone(),
-                            shape,
-                        };
-                        if tx.send(reply).is_err() {
-                            break;
-                        }
-                        job.ctx.request_repaint();
-                    }
-                });
+                .spawn(move || shape_worker(&rx, &tx, &builder));
             if spawned.is_err() {
                 // No thread: build it here rather than never.
-                let shape = Arc::new(build_shape(&job.input));
-                self.docs
-                    .entry(job.doc_id)
-                    .or_default()
-                    .insert(job.id, (key, job.input.geometry, shape));
+                self.dead = true;
+                self.build_inline(job);
                 return;
             }
             self.jobs = Some(jobs);
             self.done = Some(done);
         }
         self.pending.insert((job.doc_id, job.id), key);
-        if let Some(jobs) = &self.jobs {
-            let _ = jobs.send(job);
+        if let Some(jobs) = &self.jobs
+            && let Err(mpsc::SendError(job)) = jobs.send(job)
+        {
+            // The worker died: build inline from now on.
+            self.worker_died();
+            self.build_inline(job);
         }
     }
 

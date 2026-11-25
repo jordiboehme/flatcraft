@@ -944,6 +944,108 @@ fn source_checks_hash_on_a_worker_thread() {
     );
 }
 
+fn zigzag(s: &SharedSession) -> u64 {
+    s.lock()
+        .unwrap()
+        .execute(
+            "object.import_svg",
+            json!({ "svg": zigzag_svg(9000), "name": "zigzag" }),
+            Origin::User,
+        )
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap()
+}
+
+fn wait_built(h: &mut AppHarness, doc: u64, id: u64) {
+    let start = std::time::Instant::now();
+    while app(h).ui.prepare.cache.building() > 0 || app(h).ui.prepare.cache.shape(doc, id).is_none()
+    {
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "never built"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        h.run();
+    }
+}
+
+#[test]
+fn the_shape_worker_builds_only_the_newest_shape() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let id = zigzag(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    let builds = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (release, gate) = std::sync::mpsc::channel::<()>();
+    let gate = std::sync::Mutex::new(gate);
+    let count = builds.clone();
+    app_mut(&mut h).ui.prepare.cache.set_builder(move |input| {
+        let _ = gate.lock().unwrap().recv();
+        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        flatcraft::ui::prepare::build_shape(input)
+    });
+    to_prepare(&mut h);
+    let doc = s.lock().unwrap().doc().id();
+    // Two more scales while the first build waits.
+    for f in [1.5, 1.2] {
+        s.lock()
+            .unwrap()
+            .execute(
+                "object.scale",
+                json!({ "ids": [id], "factor": f }),
+                Origin::User,
+            )
+            .unwrap();
+        h.run();
+    }
+    for _ in 0..3 {
+        let _ = release.send(());
+    }
+    wait_built(&mut h, doc, id);
+    assert_eq!(
+        builds.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "the first shape and the newest one, not the one in between"
+    );
+}
+
+#[test]
+fn a_dead_shape_worker_falls_back_to_building_inline() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let id = zigzag(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    app_mut(&mut h)
+        .ui
+        .prepare
+        .cache
+        .set_builder(|_| panic!("the worker dies"));
+    to_prepare(&mut h);
+    let doc = s.lock().unwrap().doc().id();
+    let start = std::time::Instant::now();
+    loop {
+        s.lock()
+            .unwrap()
+            .execute(
+                "object.scale",
+                json!({ "ids": [id], "factor": 1.01 }),
+                Origin::User,
+            )
+            .unwrap();
+        h.run();
+        if app(&h).ui.prepare.cache.shape(doc, id).is_some() {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "never built"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(app(&h).ui.prepare.cache.building(), 0);
+}
+
 #[test]
 fn pills_stay_clear_of_the_cutting_area_corner() {
     let dir = tempfile::tempdir().unwrap();
