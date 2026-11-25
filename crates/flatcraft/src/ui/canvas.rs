@@ -400,9 +400,9 @@ pub fn aspect_lock(snap: &Snapshot, ids: &[u64]) -> Option<&'static str> {
         .any(|o| quarter(o.transform.rotation_deg).is_none())
     {
         return Some(if objects.len() > 1 {
-            "One of these objects is turned by an angle that is not a multiple of 90 degrees, so they keep their shape. Turn it to 0, 90, 180 or 270 degrees with Rotate in Arrange to change width and height apart."
+            "One of these objects is turned by an angle that is not a multiple of 90 degrees, so they keep their shape. Type 0, 90, 180 or 270 in the Angle field of Position and size to change width and height apart."
         } else {
-            "This object is turned by an angle that is not a multiple of 90 degrees, so it keeps its shape. Turn it to 0, 90, 180 or 270 degrees with Rotate in Arrange to change width and height apart."
+            "This object is turned by an angle that is not a multiple of 90 degrees, so it keeps its shape. Type 0, 90, 180 or 270 in the Angle field of Position and size to change width and height apart."
         });
     }
     let crossed = objects.iter().any(|a| {
