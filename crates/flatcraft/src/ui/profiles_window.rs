@@ -213,7 +213,7 @@ fn mats_in_use(s: &flatcraft_engine::session::Session) -> Vec<(String, String)> 
         .collect();
     out.push((
         s.prefs.default_plotter.clone(),
-        flatcraft_engine::session::DEFAULT_MEDIA.to_string(),
+        s.default_media(&s.prefs.default_plotter),
     ));
     out
 }

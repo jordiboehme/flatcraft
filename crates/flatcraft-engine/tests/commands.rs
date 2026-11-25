@@ -2130,3 +2130,22 @@ fn a_broken_preferences_file_is_kept_as_a_backup_before_a_save() {
     Preferences::default().save(dir.path()).unwrap();
     assert_eq!(backups(dir.path()).len(), 2);
 }
+
+#[test]
+fn new_documents_start_on_a_mat_the_default_plotter_has() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let base = s.prefs.default_plotter.clone();
+    assert_eq!(s.doc().document.job.media_id, "mat-12x12");
+    let mut p = s.profiles.plotter(&base).unwrap();
+    p.id = "no-square-mat".into();
+    p.name = "No square mat".into();
+    p.media.retain(|m| m.id != "mat-12x12");
+    let first = p.media[0].id.clone();
+    s.profiles.save_user_plotter(&p, &base).unwrap();
+    s.prefs.default_plotter = "no-square-mat".into();
+    run(&mut s, "document.new", json!({}));
+    assert_eq!(s.doc().document.job.media_id, first);
+    let st = run(&mut s, "document.state", json!({}));
+    assert!(st["warnings"].as_array().unwrap().is_empty(), "{st}");
+}

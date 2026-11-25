@@ -673,7 +673,7 @@ fn saving_without_a_mat_in_use_is_refused() {
     save_as_my_cameo(&mut h);
     let file = dir.path().join("profiles/plotters/my-cameo.toml");
     let before = std::fs::read_to_string(&file).unwrap();
-    // The default device starts new documents on mat-12x12.
+    // The default device starts new documents on its default mat, mat-12x12.
     s.lock().unwrap().prefs.default_plotter = "my-cameo".into();
     let mut p = store(&s).plotter("my-cameo").unwrap();
     p.media.retain(|m| m.id != "mat-12x12");

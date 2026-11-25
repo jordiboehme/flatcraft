@@ -90,7 +90,8 @@ impl PendingSend {
     }
 }
 
-/// Media used by new documents.
+/// Media new documents start on when the plotter lists it (see
+/// [`Session::default_media`]).
 pub const DEFAULT_MEDIA: &str = "mat-12x12";
 
 /// One open document with its selection and undo history.
@@ -358,7 +359,7 @@ struct PrefsWatch {
 
 impl Session {
     /// Starts with one empty document that uses the preference defaults and
-    /// the media `mat-12x12`.
+    /// the default mat ([`Session::default_media`]).
     pub fn new(
         profiles: ProfileStore,
         prefs: Preferences,
@@ -383,12 +384,27 @@ impl Session {
         s
     }
 
+    /// The mat new documents on `plotter_id` start on: [`DEFAULT_MEDIA`]
+    /// when the plotter lists it (hidden mats are not listed), else the
+    /// plotter's first mat. [`DEFAULT_MEDIA`] when the plotter is unknown
+    /// or has no mat.
+    pub fn default_media(&self, plotter_id: &str) -> String {
+        let Ok(p) = self.profiles.plotter(plotter_id) else {
+            return DEFAULT_MEDIA.to_string();
+        };
+        p.media
+            .iter()
+            .find(|m| m.id == DEFAULT_MEDIA)
+            .or_else(|| p.media.first())
+            .map_or_else(|| DEFAULT_MEDIA.to_string(), |m| m.id.clone())
+    }
+
     /// A fresh, empty document with the default job settings.
     pub fn new_doc_state(&self) -> DocState {
         DocState::new(Document::new(JobSettings {
             plotter_id: self.prefs.default_plotter.clone(),
             material_id: self.prefs.default_material.clone(),
-            media_id: DEFAULT_MEDIA.to_string(),
+            media_id: self.default_media(&self.prefs.default_plotter),
             speed: None,
             force: None,
             passes: None,
