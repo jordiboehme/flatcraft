@@ -1245,7 +1245,7 @@ pub struct ScaleParams {
     /// Point of the bounding box that stays fixed (default center).
     #[serde(default)]
     pub anchor: Anchor,
-    /// Scale the objects as one group (default false): the common bounding box of all of them scales about its anchor point, so their layout stays. width_mm and height_mm then set the size of that common box; keep_aspect must stay true.
+    /// Scale the objects as one group (default false): the common bounding box of all of them scales about its anchor point, so their layout stays. width_mm and height_mm then set the size of that common box; with keep_aspect false they change apart, which needs every object turned by a multiple of 90 degrees.
     #[serde(default)]
     pub group: bool,
 }
@@ -1343,15 +1343,13 @@ fn scale_one(
             o.transform.scale_y *= fy;
         } else {
             // Screen axes map to local axes only at multiples of 90 degrees.
-            let quarter = o.transform.rotation_deg / 90.0;
-            let k = quarter.round();
-            if (quarter - k).abs() > 1e-9 {
+            let Some(odd) = odd_quarter(o.transform.rotation_deg) else {
                 return Err(CommandError::InvalidParams(format!(
                     "object {} is rotated by {} degrees; width and height can only be set separately at multiples of 90 degrees. Use keep_aspect or a factor",
                     id.0, o.transform.rotation_deg
                 )));
-            }
-            if (k as i64).rem_euclid(2) == 1 {
+            };
+            if odd {
                 o.transform.scale_x *= fy;
                 o.transform.scale_y *= fx;
             } else {
@@ -1363,8 +1361,17 @@ fn scale_one(
     Ok(())
 }
 
-/// `object.scale` with `group`: one uniform factor for all objects about
-/// the anchor of their common bounding box.
+/// Whether a rotation is an odd multiple of 90 degrees (the local axes
+/// swap on screen), or `None` when it is no multiple of 90 degrees.
+fn odd_quarter(deg: f64) -> Option<bool> {
+    let quarter = deg / 90.0;
+    let k = quarter.round();
+    ((quarter - k).abs() <= 1e-9).then_some((k as i64).rem_euclid(2) == 1)
+}
+
+/// `object.scale` with `group`: the common bounding box of all objects
+/// scales about its anchor, by one factor, or by a factor along x and one
+/// along y when every object is straight.
 fn scale_group(
     s: &mut Session,
     ids: &[ObjectId],
@@ -1373,11 +1380,6 @@ fn scale_group(
     height: Option<f64>,
     p: &ScaleParams,
 ) -> Result<Value, CommandError> {
-    if !p.keep_aspect {
-        return Err(CommandError::InvalidParams(
-            "a group scales with its proportions kept: leave keep_aspect true".into(),
-        ));
-    }
     let doc = &mut s.doc_mut().document;
     let group_box = |doc: &Document| -> Result<Rect, CommandError> {
         let mut out: Option<Rect> = None;
@@ -1400,23 +1402,58 @@ fn scale_group(
         ))),
         Some(t) => Ok(Some(t / have)),
     };
-    let f = match factor {
-        Some(f) => f,
-        None => match (
-            ratio(width, old.width(), "width")?,
-            ratio(height, old.height(), "height")?,
-        ) {
-            (Some(a), Some(b)) => a.min(b),
-            (Some(a), None) | (None, Some(a)) => a,
-            (None, None) => 1.0,
-        },
+    let (fx, fy) = match factor {
+        Some(f) => (f, f),
+        None => {
+            let rw = ratio(width, old.width(), "width")?;
+            let rh = ratio(height, old.height(), "height")?;
+            if p.keep_aspect {
+                let f = match (rw, rh) {
+                    (Some(a), Some(b)) => a.min(b),
+                    (Some(a), None) | (None, Some(a)) => a,
+                    (None, None) => 1.0,
+                };
+                (f, f)
+            } else {
+                (rw.unwrap_or(1.0), rh.unwrap_or(1.0))
+            }
+        }
     };
-    let anchor = p.anchor.point(old);
+    // Width and height apart: every object must be straight, and linked
+    // copies in `ids` (which share one scale) turned the same way.
+    let mut odd = Vec::with_capacity(ids.len());
     for id in ids {
         let o = object_mut(doc, *id)?;
-        o.transform.scale_x *= f;
-        o.transform.scale_y *= f;
-        o.transform.center_mm = anchor + (o.transform.center_mm - anchor) * f;
+        let q = odd_quarter(o.transform.rotation_deg);
+        if fx != fy {
+            let Some(q) = q else {
+                return Err(CommandError::InvalidParams(format!(
+                    "object {} is turned by {} degrees; a group can change width and height apart only when every object is turned by a multiple of 90 degrees. Use keep_aspect or a factor",
+                    id.0, o.transform.rotation_deg
+                )));
+            };
+            let group = o.link_group;
+            if group.is_some()
+                && ids.iter().zip(&odd).any(|(other, oq)| {
+                    *oq != Some(q) && doc.get(*other).is_some_and(|m| m.link_group == group)
+                })
+            {
+                return Err(CommandError::InvalidParams(format!(
+                    "object {} is a linked copy turned another way than a copy of it in ids; they share one scale, so width and height cannot change apart. Use keep_aspect or a factor",
+                    id.0
+                )));
+            }
+        }
+        odd.push(q);
+    }
+    let anchor = p.anchor.point(old);
+    for (id, q) in ids.iter().zip(&odd) {
+        let o = object_mut(doc, *id)?;
+        let (sx, sy) = if *q == Some(true) { (fy, fx) } else { (fx, fy) };
+        o.transform.scale_x *= sx;
+        o.transform.scale_y *= sy;
+        let c = o.transform.center_mm - anchor;
+        o.transform.center_mm = anchor + Vec2::new(c.x * fx, c.y * fy);
     }
     // Linked copies outside `ids` take the scale and keep their centre.
     // Members inside scaled once each from the same scale, so they agree.
@@ -1439,7 +1476,7 @@ command!(
     mutates: true,
     params: ScaleParams,
     run: run_scale,
-    description: "Scales each object on its own (one undo step for all), or with group true all of them as one group about one anchor of their common bounding box, so their layout stays (the canvas does this for a multi-selection). Either a uniform factor, or width_mm and/or height_mm for the placed bounding box in mm. keep_aspect (default true) scales uniformly: with one size given it follows that size, with both it fits inside them. With keep_aspect false only the given sides change; this needs a rotation that is a multiple of 90 degrees. anchor (center, top_left, top_right, bottom_left, bottom_right, or the middle of one edge: top, bottom, left, right; default center) is the point of each bounding box that stays fixed. Origin the 0,0 of the grid printed on the mat, y down. With strokes on auto (see object.set_cut_options), scaling can move a stroke across the 0.5 mm threshold and change how it is cut. Linked copies (see object.copies) share the scale: scaling one scales all members of its group in the same undo step, and each other member keeps its own centre, rotation and mirror; a group with several members in ids scales once, by its first member there. An empty ids list means the current selection. Returns {ids}.",
+    description: "Scales each object on its own (one undo step for all), or with group true all of them as one group about one anchor of their common bounding box, so their layout stays (the canvas does this for a multi-selection). Either a uniform factor, or width_mm and/or height_mm for the placed bounding box in mm. keep_aspect (default true) scales uniformly: with one size given it follows that size, with both it fits inside them. With keep_aspect false only the given sides change; this needs a rotation that is a multiple of 90 degrees (with group, for every object, and linked copies in ids turned the same way). anchor (center, top_left, top_right, bottom_left, bottom_right, or the middle of one edge: top, bottom, left, right; default center) is the point of each bounding box that stays fixed. Origin the 0,0 of the grid printed on the mat, y down. With strokes on auto (see object.set_cut_options), scaling can move a stroke across the 0.5 mm threshold and change how it is cut. Linked copies (see object.copies) share the scale: scaling one scales all members of its group in the same undo step, and each other member keeps its own centre, rotation and mirror; a group with several members in ids scales once, by its first member there. An empty ids list means the current selection. Returns {ids}.",
 );
 
 // ---------------------------------------------------------------- rotate

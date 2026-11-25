@@ -48,8 +48,9 @@ impl Accel {
 
     fn of_row(row: &help::Shortcut) -> Option<Accel> {
         // Bare keys stay with the key handler (see the module docs).
+        let key = row.key()?;
         row.modifiers.command.then_some(Accel {
-            key: row.key,
+            key,
             shift: row.modifiers.shift,
             alt: row.modifiers.alt,
         })

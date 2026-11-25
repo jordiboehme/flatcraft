@@ -135,10 +135,20 @@ pub const NUDGE_KEYS: [Key; 4] = [
     Key::ArrowDown,
 ];
 
+/// What starts a shortcut besides its modifiers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trigger {
+    /// A key press.
+    Key(Key),
+    /// Dragging a handle of the selection: only the modifiers count, held
+    /// while dragging (see [`held`]).
+    Drag,
+}
+
 /// One keyboard shortcut of the window.
 pub struct Shortcut {
     pub modifiers: Modifiers,
-    pub key: Key,
+    pub trigger: Trigger,
     pub what: &'static str,
     /// The action it runs, for the document it is pressed in. `None` for
     /// the Prepare keys, which [`super::prepare_keys`] handles.
@@ -153,9 +163,6 @@ pub struct Shortcut {
     /// Only the macOS menu bar has this key (Windows and Linux have no such
     /// row and no handler).
     pub mac_only: bool,
-    /// Only the modifiers count, held while dragging a handle; `key` is
-    /// not used (see [`held`]).
-    pub drag: bool,
 }
 
 impl Shortcut {
@@ -169,6 +176,19 @@ impl Shortcut {
     const fn mac_only(mut self) -> Self {
         self.mac_only = true;
         self
+    }
+
+    /// Its key, `None` for a drag row.
+    pub fn key(&self) -> Option<Key> {
+        match self.trigger {
+            Trigger::Key(k) => Some(k),
+            Trigger::Drag => None,
+        }
+    }
+
+    /// Whether it is held while dragging a handle, not pressed.
+    pub fn is_drag(&self) -> bool {
+        self.trigger == Trigger::Drag
     }
 
     /// Whether a text field wants this key for its own text (undo and redo):
@@ -199,14 +219,13 @@ const fn global(
 ) -> Shortcut {
     Shortcut {
         modifiers,
-        key,
+        trigger: Trigger::Key(key),
         what,
         run: Some(run),
         prepare: None,
         menu_on_macos,
         tool: None,
         mac_only: false,
-        drag: false,
     }
 }
 
@@ -218,23 +237,27 @@ const fn prepare(
 ) -> Shortcut {
     Shortcut {
         modifiers,
-        key,
+        trigger: Trigger::Key(key),
         what,
         run: None,
         prepare: Some(action),
         menu_on_macos: false,
         tool: None,
         mac_only: false,
-        drag: false,
     }
 }
 
 /// A row for modifiers held while dragging a handle of the selection.
 const fn while_dragging(modifiers: Modifiers, what: &'static str, action: PrepareKey) -> Shortcut {
     Shortcut {
-        drag: true,
-        // The key is not used: a drag row has none.
-        ..prepare(modifiers, Key::Space, what, action)
+        modifiers,
+        trigger: Trigger::Drag,
+        what,
+        run: None,
+        prepare: Some(action),
+        menu_on_macos: false,
+        tool: None,
+        mac_only: false,
     }
 }
 
@@ -345,7 +368,7 @@ fn rows(action: PrepareKey) -> impl Iterator<Item = &'static Shortcut> {
 pub fn held(now: Modifiers, action: PrepareKey) -> bool {
     rows(action).any(|s| {
         let m = s.modifiers;
-        s.drag
+        s.is_drag()
             && (!m.shift || now.shift)
             && (!m.alt || now.alt)
             && (!m.command || now.command)
@@ -360,12 +383,10 @@ pub fn pressed(ctx: &egui::Context, action: PrepareKey) -> bool {
     ctx.input_mut(|i| {
         let mut hit = false;
         for s in rows(action) {
-            if s.drag {
-                continue;
-            }
+            let Some(want) = s.key() else { continue };
             let at = i.events.iter().position(|e| {
                 matches!(e, egui::Event::Key { key, pressed: true, modifiers, .. }
-                    if *key == s.key && modifiers.matches_exact(s.modifiers))
+                    if *key == want && modifiers.matches_exact(s.modifiers))
             });
             if let Some(at) = at {
                 i.events.remove(at);
@@ -378,7 +399,7 @@ pub fn pressed(ctx: &egui::Context, action: PrepareKey) -> bool {
 
 /// Whether `key` is one of the nudge keys of the table.
 pub fn is_nudge_key(key: Key) -> bool {
-    rows(PrepareKey::Nudge).any(|s| s.key == key)
+    rows(PrepareKey::Nudge).any(|s| s.key() == Some(key))
 }
 
 /// The key hint of a Prepare key for menus ("Cmd+D"), from the table.
@@ -386,14 +407,16 @@ pub fn hint(action: PrepareKey) -> String {
     // On a Mac the key that deletes is labelled Backspace (the delete key).
     let mac_delete = cfg!(target_os = "macos") && action == PrepareKey::Delete;
     rows(action)
-        .find(|s| !mac_delete || s.key == Key::Backspace)
+        .find(|s| !mac_delete || s.key() == Some(Key::Backspace))
         .map(Shortcut::keys)
         .unwrap_or_default()
 }
 
 /// The key that is held to pan with the pointer.
 pub fn pan_key() -> Key {
-    rows(PrepareKey::Pan).next().map_or(Key::Space, |s| s.key)
+    rows(PrepareKey::Pan)
+        .find_map(Shortcut::key)
+        .unwrap_or(Key::Space)
 }
 
 impl Shortcut {
@@ -417,11 +440,14 @@ impl Shortcut {
                 "Alt+"
             });
         }
-        if self.drag {
-            s.push_str("drag");
-            return s;
-        }
-        s.push_str(match self.key {
+        let key = match self.trigger {
+            Trigger::Key(key) => key,
+            Trigger::Drag => {
+                s.push_str("drag");
+                return s;
+            }
+        };
+        s.push_str(match key {
             Key::Comma => ",",
             Key::ArrowLeft => "Left",
             Key::ArrowRight => "Right",
@@ -451,7 +477,8 @@ pub fn run_shortcuts(ctx: &egui::Context, active: u64, actions: &mut Vec<Action>
             if field && s.field_key() {
                 continue;
             }
-            if i.consume_shortcut(&KeyboardShortcut::new(s.modifiers, s.key)) {
+            let Some(key) = s.key() else { continue };
+            if i.consume_shortcut(&KeyboardShortcut::new(s.modifiers, key)) {
                 actions.push(run(active));
             }
         }

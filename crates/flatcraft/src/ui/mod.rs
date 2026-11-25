@@ -1867,6 +1867,13 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
         arrange::keep_or_close(&mut app.ui.prepare, snap);
         app.ui.prepare.panels.arrange_open = app.ui.prepare.panel.is_some();
     }
+    if let Some(snap) = &snap {
+        // A typed size or position applies before anything else of this
+        // frame, also when its group left the screen.
+        let p = &mut app.ui.prepare;
+        let on_screen = workspace == Workspace::Prepare && p.tab == prepare::RibbonTab::Layout;
+        ribbon::finish_pending(&ctx, p, snap, on_screen, &mut actions);
+    }
     switcher::ribbon(ui, app, snap.as_ref(), &mut actions);
     if workspace != Workspace::Prepare {
         // The Trace dialog lives in Prepare.

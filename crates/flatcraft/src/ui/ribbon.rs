@@ -99,13 +99,15 @@ fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) {
     } else if editing {
         // Nothing typed yet (the focus came by Tab, say): it follows the
         // value, which a field applied in the same frame may have changed.
+        // It also follows the selection, so a Tab out of it never moves
+        // what was selected before.
         let shown = fields.editing.as_ref().map(|e| e.shown.clone());
-        if shown.as_deref() == Some(nf.field.buf(fields).as_str())
-            && shown.as_ref() != Some(&nf.current)
-        {
+        if shown.as_deref() == Some(nf.field.buf(fields).as_str()) {
             *nf.field.buf(fields) = nf.current.clone();
             if let Some(e) = fields.editing.as_mut() {
                 e.shown = nf.current.clone();
+                e.doc_id = cx.snap.doc_id;
+                e.ids = cx.snap.selection.iter().copied().collect();
             }
         }
     }
@@ -130,7 +132,7 @@ fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) {
     if resp.has_focus() {
         if !editing {
             // Another field still editing lost the focus in this pass.
-            finish_edit(ui, cx);
+            finish_edit(ui.ctx(), cx.st, cx.snap, cx.actions);
             cx.st.fields.editing = Some(FieldEdit {
                 field: nf.field,
                 shown: nf.current,
@@ -139,19 +141,41 @@ fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) {
             });
         }
     } else if editing {
-        finish_edit(ui, cx);
+        finish_edit(ui.ctx(), cx.st, cx.snap, cx.actions);
+    }
+}
+
+/// Once a frame, before the ribbon: ends the editing of a field that lost
+/// the focus outside the group (a click on the canvas, another ribbon
+/// tab), or whose group is not on screen (`on_screen` false: another tab
+/// or workspace), so its value applies at once and in order.
+pub fn finish_pending(
+    ctx: &egui::Context,
+    st: &mut PrepareState,
+    snap: &Snapshot,
+    on_screen: bool,
+    actions: &mut Vec<Action>,
+) {
+    let Some(e) = &st.fields.editing else { return };
+    if !on_screen || !ctx.memory(|m| m.has_focus(e.field.id())) {
+        finish_edit(ctx, st, snap, actions);
     }
 }
 
 /// Ends the editing of the field that lost the focus: Escape puts its
 /// shown text back, a changed number is applied as one command.
-fn finish_edit(ui: &Ui, cx: &mut Cx) {
-    let Some(edit) = cx.st.fields.editing.take() else {
+fn finish_edit(
+    ctx: &egui::Context,
+    st: &mut PrepareState,
+    snap: &Snapshot,
+    actions: &mut Vec<Action>,
+) {
+    let Some(edit) = st.fields.editing.take() else {
         return;
     };
-    let buf = edit.field.buf(&mut cx.st.fields);
+    let buf = edit.field.buf(&mut st.fields);
     let typed = buf.trim().replace(',', ".");
-    let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+    let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
     if escape || typed == edit.shown.trim() {
         *buf = edit.shown.clone();
         return;
@@ -160,11 +184,11 @@ fn finish_edit(ui: &Ui, cx: &mut Cx) {
         *buf = edit.shown.clone();
         return;
     };
-    if edit.ids.is_empty() || edit.doc_id != cx.snap.doc_id || !v.is_finite() {
+    if edit.ids.is_empty() || edit.doc_id != snap.doc_id || !v.is_finite() {
         return;
     }
-    if let Some(a) = size_action(cx.snap, &cx.st.fields, &edit, v) {
-        cx.actions.push(a);
+    if let Some(a) = size_action(snap, &st.fields, &edit, v) {
+        actions.push(a);
     }
 }
 
@@ -192,9 +216,13 @@ fn size_action(snap: &Snapshot, f: &Fields, edit: &FieldEdit, v: f64) -> Option<
             } else {
                 ("height_mm", have.map(|b| b.height()))
             };
+            let keep = f.keep_aspect || !canvas::free_aspect(snap, ids);
             if single {
-                let keep = f.keep_aspect || !canvas::free_aspect(snap, ids);
                 json!({ "ids": ids, key: v, "keep_aspect": keep })
+            } else if !keep {
+                // Several straight objects: only this side of the common
+                // box changes, and the layout stretches with it.
+                json!({ "ids": ids, key: v, "keep_aspect": false, "group": true })
             } else {
                 // Several objects: one factor from the common box, which
                 // scales as one group so its layout stays.
@@ -814,14 +842,6 @@ fn switch(
 /// title under them. It has no actions and never collapses.
 fn size_group(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
     let def = GroupId::Size.def();
-    // A field that lost the focus to something outside the group (a click
-    // on the canvas) applies its value now.
-    if let Some(e) = &cx.st.fields.editing {
-        let id = e.field.id();
-        if !ui.memory(|m| m.has_focus(id)) {
-            finish_edit(ui, cx);
-        }
-    }
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = groups::GROUP_GAP;
         // Three columns of two rows: X above Y, W above H, and % above
@@ -959,15 +979,7 @@ fn size_scale(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
     // No label of its own: the switch sits under the % field.
     ui.allocate_exact_size(egui::Vec2::ZERO, egui::Sense::hover());
     let f = &mut cx.st.fields;
-    let forced = if ids.len() > 1 {
-        Some("Several objects always scale together and keep their shape.")
-    } else if any && !canvas::free_aspect(cx.snap, &ids) {
-        Some(
-            "This object is turned by an angle that is not a multiple of 90 degrees, so it always keeps its shape. Turn it straight to change width and height apart.",
-        )
-    } else {
-        None
-    };
+    let forced = canvas::aspect_lock(cx.snap, &ids).filter(|_| any);
     if let Some(why) = forced {
         let mut on = true;
         switch(

@@ -465,11 +465,19 @@ fn looks_on(h: &AppHarness, r: egui::Rect) -> bool {
 
 #[test]
 fn a_dimmed_switch_that_is_on_does_not_look_active() {
-    // Icon-only (900 pt): Keep aspect is on and dimmed with 3 objects,
-    // Each object on and dimmed with 1 object.
+    // Keep aspect is on and dimmed with 3 objects, one of them turned by
+    // 30 degrees; Each object on and dimmed with 1 object.
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let ids: Vec<u64> = (0..3).map(|_| import_square(&s)).collect();
+    s.lock()
+        .unwrap()
+        .execute(
+            "object.rotate",
+            serde_json::json!({ "ids": [ids[2]], "degrees": 30.0 }),
+            flatcraft_engine::session::Origin::User,
+        )
+        .unwrap();
     select(&s, &ids);
     let mut h = harness_sized(&dir, s.clone(), [1400.0, 900.0], 8, |app| app);
     to_prepare(&mut h);

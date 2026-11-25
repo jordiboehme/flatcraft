@@ -197,17 +197,42 @@ pub fn live_percent(st: &PrepareState) -> Option<f64> {
         .map(|s| s.fx * 100.0)
 }
 
-/// Whether width and height of these objects can change apart: one
-/// object, turned by a multiple of 90 degrees (`object.scale` refuses
-/// other angles, and a group keeps its shape).
-pub fn free_aspect(snap: &Snapshot, ids: &[u64]) -> bool {
-    match ids {
-        [id] => snap.object(*id).is_some_and(|o| {
-            let q = o.transform.rotation_deg / 90.0;
-            (q - q.round()).abs() < 1e-9
-        }),
-        _ => false,
+/// Why the width and height of these objects cannot change apart, and
+/// what to do about it, or `None` when they can. `object.scale` changes
+/// them apart only for objects turned by a multiple of 90 degrees, and
+/// linked copies (which share one scale) must be turned the same way.
+pub fn aspect_lock(snap: &Snapshot, ids: &[u64]) -> Option<&'static str> {
+    let objects: Vec<_> = ids.iter().filter_map(|id| snap.object(*id)).collect();
+    let quarter = |deg: f64| {
+        let q = deg / 90.0;
+        ((q - q.round()).abs() < 1e-9).then(|| (q.round() as i64).rem_euclid(2) == 1)
+    };
+    if objects
+        .iter()
+        .any(|o| quarter(o.transform.rotation_deg).is_none())
+    {
+        return Some(if objects.len() > 1 {
+            "One of these objects is turned by an angle that is not a multiple of 90 degrees, so they keep their shape. Turn it to 0, 90, 180 or 270 degrees with Rotate in Arrange to change width and height apart."
+        } else {
+            "This object is turned by an angle that is not a multiple of 90 degrees, so it keeps its shape. Turn it to 0, 90, 180 or 270 degrees with Rotate in Arrange to change width and height apart."
+        });
     }
+    let crossed = objects.iter().any(|a| {
+        objects.iter().any(|b| {
+            a.link_group.is_some()
+                && a.link_group == b.link_group
+                && quarter(a.transform.rotation_deg) != quarter(b.transform.rotation_deg)
+        })
+    });
+    crossed.then_some(
+        "Linked copies here are turned different ways and share one scale, so they keep their shape. Select only copies turned the same way, or Unlink copies, to change width and height apart.",
+    )
+}
+
+/// Whether width and height of these objects can change apart (see
+/// [`aspect_lock`]).
+pub fn free_aspect(snap: &Snapshot, ids: &[u64]) -> bool {
+    !ids.is_empty() && aspect_lock(snap, ids).is_none()
 }
 
 /// The factor a corner drag scales by when it keeps the shape: the pointer
@@ -724,11 +749,7 @@ fn handle_card(ui: &Ui, resp: &egui::Response, snap: &Snapshot, st: &PrepareStat
     };
     ui.ctx().set_cursor_icon(handle_cursor(i));
     let ids: Vec<u64> = snap.selection.iter().copied().collect();
-    let why = (!free_aspect(snap, &ids)).then_some(if ids.len() > 1 {
-        "Several objects always scale together and keep their shape, so Shift does nothing here."
-    } else {
-        "This object is turned by an angle that is not a multiple of 90 degrees, so it always keeps its shape and Shift does nothing here."
-    });
+    let why = aspect_lock(snap, &ids);
     let title = if i < 4 {
         "Corner handle"
     } else {
@@ -1193,7 +1214,12 @@ fn scale_action(d: &Drag) -> Option<Action> {
             "group": ids.len() > 1,
         })
     } else {
-        let mut p = json!({ "ids": ids, "keep_aspect": false, "anchor": s.anchor_name });
+        let mut p = json!({
+            "ids": ids,
+            "keep_aspect": false,
+            "anchor": s.anchor_name,
+            "group": ids.len() > 1,
+        });
         if (s.fx - 1.0).abs() > 1e-9 {
             p["width_mm"] = json!(start.width() * s.fx);
         }

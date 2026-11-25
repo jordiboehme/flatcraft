@@ -1249,7 +1249,7 @@ fn search_reload_uses_the_selection() {
 }
 
 #[test]
-fn keep_aspect_is_fixed_for_several_objects() {
+fn keep_aspect_is_fixed_when_a_selected_object_is_turned() {
     use egui_kittest::kittest::NodeT as _;
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
@@ -1260,6 +1260,16 @@ fn keep_aspect_is_fixed_for_several_objects() {
     h.get_by_role_and_label(Role::Tab, "Layout").click();
     h.run();
     app_mut(&mut h).ui.prepare.fields.keep_aspect = false;
+    // Straight objects may stretch together; one turned by 30 degrees
+    // locks the shape.
+    s.lock()
+        .unwrap()
+        .execute(
+            "object.rotate",
+            json!({ "ids": [b], "degrees": 30.0 }),
+            Origin::User,
+        )
+        .unwrap();
     s.lock()
         .unwrap()
         .execute("object.select", json!({ "ids": [a, b] }), Origin::User)

@@ -552,9 +552,9 @@ fn no_shortcut_is_a_menu_key_and_run_by_the_key_handler() {
     let m = model_of(&mut h, &[]);
     let accels: Vec<_> = m.leaves().iter().filter_map(|l| l.accel).collect();
     for s in SHORTCUTS.iter().filter(|s| s.run.is_some()) {
-        let is_menu_key = accels
-            .iter()
-            .any(|a| a.key == s.key && a.shift == s.modifiers.shift && a.alt == s.modifiers.alt);
+        let is_menu_key = accels.iter().any(|a| {
+            Some(a.key) == s.key() && a.shift == s.modifiers.shift && a.alt == s.modifiers.alt
+        });
         assert_eq!(
             is_menu_key,
             s.menu_on_macos,
@@ -568,7 +568,7 @@ fn no_shortcut_is_a_menu_key_and_run_by_the_key_handler() {
             let mut actions = Vec::new();
             let input = egui::RawInput {
                 events: vec![egui::Event::Key {
-                    key: s.key,
+                    key: s.key().unwrap(),
                     physical_key: None,
                     pressed: true,
                     repeat: false,

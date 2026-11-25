@@ -1186,8 +1186,11 @@ impl Setting {
             Setting::KeepAspect => {
                 "On: width and height change together, so the shape does not get squashed, in the fields and with the handles on the mat. Off: change one without the other. Hold Shift while you drag a handle to get the opposite for that drag."
             }
+            Setting::ScaleHandle if cfg!(target_os = "linux") => {
+                "Drag to resize the selection. A corner changes width and height, a side only its own, unless Keep aspect is on. Hold Shift to get the opposite of Keep aspect for this drag, and Alt to grow from the centre instead of the far side. Some desktops use Alt-drag to move windows: if so, change that key in your desktop settings."
+            }
             Setting::ScaleHandle => {
-                "Drag to resize the selection. A corner changes width and height, a side only its own, unless Keep aspect is on. Hold Shift to get the opposite of Keep aspect for this drag, and Option (Alt on Windows and Linux) to grow from the centre instead of the far side."
+                "Drag to resize the selection. A corner changes width and height, a side only its own, unless Keep aspect is on. Hold Shift to get the opposite of Keep aspect for this drag, and Option (Alt on Windows) to grow from the centre instead of the far side."
             }
             Setting::EachObject => {
                 "On: rotate, mirror and the % field work on each selected object about its own centre. Off: the selection moves as one piece, like Voltron."

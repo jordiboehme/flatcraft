@@ -262,13 +262,110 @@ fn the_fields_follow_a_drag() {
 #[test]
 fn the_fields_follow_a_nudge() {
     let dir = tempfile::tempdir().unwrap();
-    let (_s, _id, mut h, v) = square(&dir);
-    // A click on the empty canvas gives the keys back to the window.
-    let _ = v;
+    let (_s, _id, mut h, _) = square(&dir);
+    // No field has the keys, so the arrow nudges the square by 1 mm.
     h.key_press(Key::ArrowRight);
     h.run();
     h.run();
     assert_eq!(fields(&h).x, "21.00");
+}
+
+#[test]
+fn option_without_keep_aspect_stretches_from_the_centre() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, id, mut h, v) = square(&dir);
+    set_keep(&mut h, false);
+    // From the centre: half-sizes 25 grow to 35 and 30.
+    drag(
+        &mut h,
+        mm(&v, 70.0, 70.0),
+        mm(&v, 80.0, 75.0),
+        Modifiers::ALT,
+    );
+    let b = bounds(&s, id);
+    assert!(
+        near(b.center().x, 45.0) && near(b.center().y, 45.0),
+        "{b:?}"
+    );
+    assert!(near(b.width(), 70.0) && near(b.height(), 60.0), "{b:?}");
+}
+
+/// Two straight squares, 10 mm apart, both selected; the rig around them.
+fn two_squares(dir: &tempfile::TempDir) -> (SharedSession, u64, u64, AppHarness, CanvasView) {
+    let s = session(dir);
+    let a = import_square(&s);
+    let b = import_square(&s);
+    run(&s, "object.move", json!({ "ids": [b], "dx_mm": 60.0 }));
+    run(&s, "object.select", json!({ "ids": [a, b] }));
+    let (h, v) = rig(dir, s.clone(), kurbo::Point::new(75.0, 45.0));
+    (s, a, b, h, v)
+}
+
+#[test]
+fn a_side_drag_stretches_two_straight_objects() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, a, b, mut h, v) = two_squares(&dir);
+    set_keep(&mut h, false);
+    let before = undo_len(&s);
+    // The right handle of the common box, 110 mm wide, out to 135 mm.
+    drag(
+        &mut h,
+        mm(&v, 130.0, 45.0),
+        mm(&v, 155.0, 45.0),
+        Modifiers::NONE,
+    );
+    assert_eq!(undo_len(&s), before + 1);
+    let (na, nb) = (bounds(&s, a), bounds(&s, b));
+    let f = 135.0 / 110.0;
+    assert!(near(na.x0, 20.0) && near(nb.x1, 155.0), "{na:?} {nb:?}");
+    assert!(
+        near(na.width(), 50.0 * f) && near(nb.x0, 20.0 + 60.0 * f),
+        "{na:?} {nb:?}"
+    );
+    assert!(
+        near(na.height(), 50.0) && near(nb.height(), 50.0),
+        "{na:?} {nb:?}"
+    );
+}
+
+#[test]
+fn a_typed_width_stretches_two_straight_objects() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, a, b, mut h, _) = two_squares(&dir);
+    set_keep(&mut h, false);
+    type_text(&mut h, "Width (mm)", "220");
+    h.key_press(Key::Enter);
+    h.run();
+    let (na, nb) = (bounds(&s, a), bounds(&s, b));
+    assert!(near(nb.x1 - na.x0, 220.0), "{na:?} {nb:?}");
+    assert!(
+        near(na.height(), 50.0) && near(nb.height(), 50.0),
+        "{na:?} {nb:?}"
+    );
+    // With Keep aspect on, it keeps the shape as before.
+    set_keep(&mut h, true);
+    type_text(&mut h, "Width (mm)", "110");
+    h.key_press(Key::Enter);
+    h.run();
+    let (na, nb) = (bounds(&s, a), bounds(&s, b));
+    assert!(near(nb.x1 - na.x0, 110.0), "{na:?} {nb:?}");
+    assert!(near(na.height(), 25.0), "{na:?}");
+}
+
+#[test]
+fn a_turned_object_locks_keep_aspect_for_the_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, a, _b, mut h, _) = two_squares(&dir);
+    run(
+        &s,
+        "object.rotate",
+        json!({ "ids": [a], "degrees": 30.0, "about": "each" }),
+    );
+    set_keep(&mut h, false);
+    let node = h.get_by_role_and_label(Role::CheckBox, "Keep aspect");
+    let n = egui_kittest::kittest::NodeT::accesskit_node(&node);
+    assert!(n.is_disabled());
+    assert_eq!(n.toggled(), Some(egui::accesskit::Toggled::True));
 }
 
 // ---------------------------------------------------------------- fields
@@ -356,13 +453,56 @@ fn tabbing_through_unchanged_fields_changes_nothing() {
     let before = undo_len(&s);
     h.get_by_label("X (mm)").click();
     h.run();
-    for _ in 0..5 {
+    let editing = |h: &AppHarness| fields(h).editing.map(|e| e.field);
+    let mut seen = vec![editing(&h)];
+    for _ in 0..4 {
         h.key_press(Key::Tab);
         h.run();
+        seen.push(editing(&h));
     }
+    use flatcraft::ui::prepare::SizeField::*;
+    assert_eq!(
+        seen,
+        [Some(X), Some(Y), Some(Width), Some(Height), Some(Percent)],
+        "the focus moved through every field"
+    );
     h.key_press(Key::Escape);
     h.run();
     assert_eq!(undo_len(&s), before, "no undo step for an unchanged value");
+}
+
+#[test]
+fn a_typed_value_applies_at_once_when_the_tab_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, id, mut h, _) = square(&dir);
+    let before = undo_len(&s);
+    type_text(&mut h, "Width (mm)", "80");
+    h.get_by_role_and_label(Role::Tab, "View").click();
+    h.run();
+    assert_eq!(undo_len(&s), before + 1);
+    assert!(near(bounds(&s, id).width(), 80.0));
+    assert!(fields(&h).editing.is_none());
+}
+
+#[test]
+fn a_tab_applies_to_the_selection_of_now() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, a, b, mut h, _) = two_squares(&dir);
+    run(&s, "object.select", json!({ "ids": [a] }));
+    h.run();
+    h.get_by_label("Width (mm)").click();
+    h.run();
+    // An agent selects the other square while the field has the focus.
+    run(&s, "object.select", json!({ "ids": [b] }));
+    h.run();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.run();
+    h.get_by_label("Width (mm)").type_text("80");
+    h.run();
+    h.key_press(Key::Tab);
+    h.run();
+    assert!(near(bounds(&s, a).width(), 50.0), "the old selection stays");
+    assert!(near(bounds(&s, b).width(), 80.0));
 }
 
 #[test]

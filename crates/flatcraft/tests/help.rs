@@ -172,7 +172,7 @@ fn every_global_shortcut_has_a_handler() {
         let mut actions = Vec::new();
         let input = egui::RawInput {
             events: vec![egui::Event::Key {
-                key: s.key,
+                key: s.key().expect("a global row has a key"),
                 physical_key: None,
                 pressed: true,
                 repeat: false,
@@ -214,12 +214,10 @@ fn every_prepare_key_does_what_the_sheet_says() {
         let undo_before = common::undo_len(&sess);
         let who = format!("{} {}", s.keys(), s.what);
         // Held while dragging a handle; see `tests/position_size.rs`.
-        if s.drag {
-            continue;
-        }
-        h.key_press_modifiers(s.modifiers, s.key);
+        let Some(key) = s.key() else { continue };
+        h.key_press_modifiers(s.modifiers, key);
         h.run();
-        match s.key {
+        match key {
             Key::A => assert_eq!(selection(), 2, "{who}"),
             Key::D => assert_eq!(objects(), 3, "{who}"),
             Key::I => assert_eq!(picker.requests.lock().unwrap().len(), 1, "{who}"),
@@ -260,7 +258,7 @@ fn the_nudge_rows_are_the_four_arrows() {
     let keys: Vec<Key> = SHORTCUTS
         .iter()
         .filter(|s| s.prepare == Some(help::PrepareKey::Nudge))
-        .map(|s| s.key)
+        .filter_map(|s| s.key())
         .collect();
     assert_eq!(
         keys,
@@ -337,7 +335,7 @@ fn space_drag_pans_the_canvas() {
 /// and the canvas asks the table for them.
 #[test]
 fn the_sheet_lists_the_handle_modifiers() {
-    let drags: Vec<_> = SHORTCUTS.iter().filter(|s| s.drag).collect();
+    let drags: Vec<_> = SHORTCUTS.iter().filter(|s| s.is_drag()).collect();
     assert_eq!(drags.len(), 2);
     let option = if cfg!(target_os = "macos") {
         "Option+drag"

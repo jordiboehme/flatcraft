@@ -2274,14 +2274,15 @@ fn group_scale_keeps_the_layout_about_one_anchor() {
     );
     let group2 = state_bounds(&mut s, a).union(state_bounds(&mut s, b));
     assert!(close(group2.width(), 100.0), "{group2:?}");
-    let e = s
-        .execute(
-            "object.scale",
-            json!({ "ids": [a, b], "width_mm": 50.0, "keep_aspect": false, "group": true }),
-            Origin::User,
-        )
-        .unwrap_err();
-    assert!(matches!(e, CommandError::InvalidParams(_)), "{e}");
+    // Both are straight (0 and 90 degrees): only the width changes.
+    run(
+        &mut s,
+        "object.scale",
+        json!({ "ids": [a, b], "width_mm": 50.0, "keep_aspect": false, "group": true }),
+    );
+    let group3 = state_bounds(&mut s, a).union(state_bounds(&mut s, b));
+    assert!(close(group3.width(), 50.0), "{group3:?}");
+    assert!(close(group3.height(), group2.height()), "{group3:?}");
 }
 
 #[test]
@@ -3077,5 +3078,79 @@ fn a_side_anchor_keeps_the_middle_of_that_side() {
     assert!(
         close(m.y1, n.y1) && close(m.center().x, n.center().x),
         "{m:?}"
+    );
+}
+
+#[test]
+fn a_straight_group_scales_width_and_height_apart() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = import(&mut s, 40.0, 20.0);
+    let b = import(&mut s, 40.0, 20.0);
+    let c = import(&mut s, 30.0, 10.0);
+    run(&mut s, "object.move", json!({ "ids": [b], "dx_mm": 60.0 }));
+    run(&mut s, "object.move", json!({ "ids": [c], "dy_mm": 50.0 }));
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [b], "degrees": 90.0, "about": "each" }),
+    );
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [c], "degrees": 180.0, "about": "each" }),
+    );
+    run(
+        &mut s,
+        "object.mirror",
+        json!({ "ids": [c], "axis": "horizontal", "about": "each" }),
+    );
+    let ids = [a, b, c];
+    let olds: Vec<Rect> = ids.iter().map(|i| state_bounds(&mut s, *i)).collect();
+    let all = olds.iter().copied().reduce(|x, y| x.union(y)).unwrap();
+    let undo = s.doc().undo.undo_len();
+    run(
+        &mut s,
+        "object.scale",
+        json!({
+            "ids": ids,
+            "width_mm": all.width() * 2.0,
+            "height_mm": all.height() * 0.5,
+            "keep_aspect": false,
+            "anchor": "top_left",
+            "group": true,
+        }),
+    );
+    assert_eq!(s.doc().undo.undo_len(), undo + 1);
+    for (id, old) in ids.iter().zip(&olds) {
+        let n = state_bounds(&mut s, *id);
+        let want = Rect::new(
+            all.x0 + (old.x0 - all.x0) * 2.0,
+            all.y0 + (old.y0 - all.y0) * 0.5,
+            all.x0 + (old.x1 - all.x0) * 2.0,
+            all.y0 + (old.y1 - all.y0) * 0.5,
+        );
+        assert!(
+            close(n.x0, want.x0)
+                && close(n.y0, want.y0)
+                && close(n.x1, want.x1)
+                && close(n.y1, want.y1),
+            "{id}: {n:?} want {want:?}"
+        );
+    }
+    // One object turned off a multiple of 90 degrees locks the group.
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [a], "degrees": 30.0, "about": "each" }),
+    );
+    let err = s.execute(
+        "object.scale",
+        json!({ "ids": ids, "width_mm": 300.0, "height_mm": 50.0, "keep_aspect": false, "group": true }),
+        Origin::User,
+    );
+    assert!(
+        matches!(err, Err(CommandError::InvalidParams(_))),
+        "{err:?}"
     );
 }
