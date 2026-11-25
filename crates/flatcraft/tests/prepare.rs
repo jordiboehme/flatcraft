@@ -1371,3 +1371,148 @@ fn no_source_check_during_a_drag() {
     wait_for_workers(&mut h);
     assert_eq!(app(&h).ui.prepare.sources.missing, [id]);
 }
+
+// ---------------------------------------------------------------- distribute and copies
+
+fn select(s: &SharedSession, ids: &[u64]) {
+    s.lock()
+        .unwrap()
+        .execute("object.select", json!({ "ids": ids }), Origin::User)
+        .unwrap();
+}
+
+/// Imports the square and moves it right by `dx` mm.
+fn square_at(s: &SharedSession, dx: f64) -> u64 {
+    let id = import_square(s);
+    s.lock()
+        .unwrap()
+        .execute(
+            "object.move",
+            json!({ "ids": [id], "dx_mm": dx }),
+            Origin::User,
+        )
+        .unwrap();
+    id
+}
+
+fn disabled(h: &AppHarness, label: &str) -> bool {
+    h.get_by_label(label).accesskit_node().is_disabled()
+}
+
+#[test]
+fn distribute_buttons_need_three_objects_and_are_one_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = square_at(&s, 0.0);
+    let b = square_at(&s, 60.0);
+    let c = square_at(&s, 200.0);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.run();
+    h.get_by_label("Distribute");
+    select(&s, &[a, b]);
+    h.run();
+    assert!(disabled(&h, "Distribute horizontally"));
+    assert!(disabled(&h, "Distribute vertically"));
+    select(&s, &[a, b, c]);
+    h.run();
+    assert!(!disabled(&h, "Distribute vertically"));
+    let before = undo_len(&s);
+    h.get_by_label("Distribute horizontally").click();
+    h.run();
+    wait_for_workers(&mut h);
+    assert_eq!(undo_len(&s), before + 1);
+    let x = |id| bounds(&s, id)["x0"].as_f64().unwrap();
+    let x1 = |id| bounds(&s, id)["x1"].as_f64().unwrap();
+    assert!(((x(b) - x1(a)) - (x(c) - x1(b))).abs() < 1e-9);
+}
+
+#[test]
+fn copies_dialog_makes_copies_in_one_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let b = import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    select(&s, &[a, b]);
+    h.run();
+    assert!(disabled(&h, "Copies..."), "one object at a time");
+    select(&s, &[a]);
+    h.run();
+    h.get_by_role_and_label(Role::Button, "Copies...").click();
+    h.run();
+    assert!(app(&h).ui.prepare.copies.is_some());
+    assert!(
+        disabled(&h, "Linked copies"),
+        "arrives with the next update"
+    );
+    assert!(disabled(&h, "Columns"), "only for a grid");
+    h.get_by_label("Grid").click();
+    h.run();
+    assert!(!disabled(&h, "Columns"));
+    h.get_by_role_and_label(Role::SpinButton, "Number of copies")
+        .click();
+    h.run();
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+    h.run();
+    h.event(Event::Text("7".into()));
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    let before = undo_len(&s);
+    h.get_by_role_and_label(Role::Button, "Make copies").click();
+    h.run();
+    wait_for_workers(&mut h);
+    assert_eq!(undo_len(&s), before + 1);
+    assert_eq!(s.lock().unwrap().doc().document.objects.len(), 2 + 7);
+    assert!(app(&h).ui.prepare.copies.is_none(), "the dialog closes");
+}
+
+#[test]
+fn copies_dialog_cancel_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    h.get_by_role_and_label(Role::Button, "Copies...").click();
+    h.run();
+    let before = undo_len(&s);
+    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    h.run();
+    assert!(app(&h).ui.prepare.copies.is_none());
+    assert_eq!(undo_len(&s), before);
+}
+
+#[test]
+fn search_finds_copies_and_distribute() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    // Copies last: its dialog is modal.
+    for (query, hit) in [
+        ("distrib", "Distribute (search)"),
+        ("copies", "Copies (search)"),
+    ] {
+        h.get_by_label("Search commands").click();
+        h.run();
+        h.get_by_label("Search commands").type_text(query);
+        h.run();
+        h.get_by_role_and_label(Role::Button, hit).click();
+        h.run();
+    }
+    assert!(
+        app(&h).ui.prepare.copies.is_some(),
+        "copies opens the dialog"
+    );
+    assert_eq!(
+        app(&h).ui.prepare.tab,
+        flatcraft::ui::prepare::RibbonTab::Arrange
+    );
+}

@@ -174,6 +174,35 @@ pub struct PrepareState {
     /// shows it at once and a quick switch does not check again.
     pub source_memory: HashMap<u64, SourceStatus>,
     pub cache: ShapeCache,
+    /// The open Copies dialog.
+    pub copies: Option<CopiesDialog>,
+}
+
+/// The Copies dialog: its object and the settings so far.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CopiesDialog {
+    pub doc_id: u64,
+    /// The object to copy.
+    pub id: u64,
+    pub name: String,
+    pub count: u32,
+    pub grid: bool,
+    pub columns: u32,
+    pub gap_mm: f64,
+}
+
+impl CopiesDialog {
+    pub fn new(doc_id: u64, id: u64, name: String) -> Self {
+        Self {
+            doc_id,
+            id,
+            name,
+            count: 3,
+            grid: false,
+            columns: 4,
+            gap_mm: 5.0,
+        }
+    }
 }
 
 impl Default for PrepareState {
@@ -196,6 +225,7 @@ impl Default for PrepareState {
             sources: SourceStatus::default(),
             source_memory: HashMap::new(),
             cache: ShapeCache::default(),
+            copies: None,
         }
     }
 }
@@ -993,6 +1023,108 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
             canvas::show(ui, rect, snap, &mut app.ui.prepare, &t, actions);
             pills(ui, rect, snap, &mut app.ui.prepare, &t, actions);
         });
+    copies_window(ui.ctx(), &mut app.ui.prepare.copies, snap, &t, actions);
+}
+
+/// The Copies dialog. It closes when its document is no longer shown or its
+/// object is gone.
+fn copies_window(
+    ctx: &egui::Context,
+    dialog: &mut Option<CopiesDialog>,
+    snap: &Snapshot,
+    t: &Tokens,
+    actions: &mut Vec<Action>,
+) {
+    use flatcraft_engine::commands::object::{LINKED_LATER, MAX_COPIES};
+    let Some(d) = dialog else {
+        return;
+    };
+    if d.doc_id != snap.doc_id || !snap.objects.iter().any(|o| o.id == d.id) {
+        *dialog = None;
+        return;
+    }
+    let mut close = false;
+    let modal = egui::Modal::new(egui::Id::unique("flatcraft-copies")).show(ctx, |ui| {
+        ui.set_width(320.0);
+        ui.label(RichText::new(format!("Copies of {}", d.name)).font(super::fonts::semibold(15.0)));
+        ui.add_space(t.spacing / 2.0);
+        egui::Grid::new("flatcraft-copies-grid")
+            .num_columns(2)
+            .spacing([t.spacing, t.spacing / 2.0])
+            .show(ui, |ui| {
+                settings::painted_label(ui, "Number of copies");
+                let r = ui.add(
+                    egui::DragValue::new(&mut d.count)
+                        .range(1..=MAX_COPIES)
+                        .speed(0.2),
+                );
+                settings::set_name(ui, &r, "Number of copies");
+                ui.end_row();
+
+                settings::painted_label(ui, "Layout");
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut d.grid, false, "Row")
+                        .on_hover_text("One row to the right of the original");
+                    ui.radio_value(&mut d.grid, true, "Grid").on_hover_text(
+                        "Rows to the right, then down. The original is the first cell.",
+                    );
+                });
+                ui.end_row();
+
+                settings::painted_label(ui, "Columns");
+                let r = ui.add_enabled(
+                    d.grid,
+                    egui::DragValue::new(&mut d.columns)
+                        .range(1..=MAX_COPIES)
+                        .speed(0.1),
+                );
+                settings::set_name(ui, &r, "Columns");
+                r.on_disabled_hover_text("Pick Grid to set the columns.");
+                ui.end_row();
+
+                settings::painted_label(ui, "Gap");
+                let r = ui.add(
+                    egui::DragValue::new(&mut d.gap_mm)
+                        .range(0.0..=1000.0)
+                        .speed(0.1)
+                        .max_decimals(2)
+                        .suffix(" mm"),
+                );
+                settings::set_name(ui, &r, "Gap (mm)");
+                ui.end_row();
+            });
+        let mut linked = false;
+        ui.add_enabled(false, egui::Checkbox::new(&mut linked, "Linked copies"))
+            .on_disabled_hover_text(LINKED_LATER);
+        ui.label(
+            RichText::new(
+                "Copies that land off the mat still arrive. The red pill tells you how many.",
+            )
+            .color(t.text_dim),
+        );
+        ui.add_space(t.spacing / 2.0);
+        ui.horizontal(|ui| {
+            if ui.button("Make copies").clicked() {
+                let layout = if d.grid {
+                    json!({ "grid": { "columns": d.columns } })
+                } else {
+                    json!("row")
+                };
+                actions.push(Action::run(
+                    d.doc_id,
+                    "object.copies",
+                    json!({ "id": d.id, "count": d.count, "layout": layout, "gap_mm": d.gap_mm }),
+                ));
+                close = true;
+            }
+            if ui.button("Cancel").clicked() {
+                close = true;
+            }
+        });
+    });
+    if close || modal.should_close() {
+        *dialog = None;
+    }
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {

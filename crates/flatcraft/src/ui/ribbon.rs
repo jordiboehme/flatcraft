@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use super::canvas::{CanvasView, PX_PER_MM_100};
 use super::icons::{self, Icon};
-use super::prepare::{PrepareState, RibbonTab, Snapshot};
+use super::prepare::{CopiesDialog, PrepareState, RibbonTab, Snapshot};
 use super::settings::set_name;
 use super::{Action, ICON_SIZE};
 
@@ -20,6 +20,21 @@ fn tool(ui: &mut Ui, icon: Icon, text: &str, enabled: bool, hint: &str) -> bool 
         egui::Vec2::splat(ICON_SIZE),
     ));
     ui.add_enabled(enabled, egui::Button::image_and_text(image, text))
+        .on_hover_text(hint)
+        .on_disabled_hover_text(hint)
+        .clicked()
+}
+
+/// An icon-only button whose accessible name is `name` and whose tooltip
+/// is `hint`.
+fn icon_tool(ui: &mut Ui, icon: Icon, name: &str, enabled: bool, hint: &str) -> bool {
+    let tex = icons::texture(ui.ctx(), icon, ICON_SIZE);
+    let image = egui::Image::from_texture(egui::load::SizedTexture::new(
+        tex.id(),
+        egui::Vec2::splat(ICON_SIZE),
+    ))
+    .alt_text(name);
+    ui.add_enabled(enabled, egui::Button::image(image))
         .on_hover_text(hint)
         .on_disabled_hover_text(hint)
         .clicked()
@@ -101,10 +116,10 @@ pub fn search_target(id: &str, doc_id: u64) -> Option<SearchTarget> {
         | "object.duplicate"
         | "arrange.auto"
         | "tools.test_patterns" => Run,
-        "object.retrace" => Tab(RibbonTab::Home),
-        "object.scale" | "object.rotate" | "object.mirror" | "arrange.align" => {
-            Tab(RibbonTab::Arrange)
-        }
+        // With one object selected, picking it opens the dialog (see `pick`).
+        "object.retrace" | "object.copies" => Tab(RibbonTab::Home),
+        "object.scale" | "object.rotate" | "object.mirror" | "arrange.align"
+        | "arrange.distribute" => Tab(RibbonTab::Arrange),
         "object.set_cut_options"
         | "job.set_plotter"
         | "job.set_material"
@@ -177,6 +192,14 @@ pub fn single_raster(snap: &Snapshot) -> Option<u64> {
     }
 }
 
+/// The selected object when it is the only one, as the Copies dialog for it.
+pub fn copies_dialog(snap: &Snapshot) -> Option<CopiesDialog> {
+    match snap.selected().collect::<Vec<_>>().as_slice() {
+        [o] => Some(CopiesDialog::new(snap.doc_id, o.id, o.name.clone())),
+        _ => None,
+    }
+}
+
 /// What picking a search hit does.
 fn pick(id: &'static str, snap: &Snapshot, st: &mut PrepareState, actions: &mut Vec<Action>) {
     if id == "object.reload" {
@@ -194,6 +217,13 @@ fn pick(id: &'static str, snap: &Snapshot, st: &mut PrepareState, actions: &mut 
             doc_id: snap.doc_id,
             id: o,
         });
+        return;
+    }
+    if id == "object.copies"
+        && let Some(d) = copies_dialog(snap)
+    {
+        // Like the ribbon button; else the Home tab shows where it is.
+        st.copies = Some(d);
         return;
     }
     match search_target(id, snap.doc_id) {
@@ -277,92 +307,98 @@ pub fn show(
     };
     let any = !snap.selection.is_empty();
     let selected: Vec<u64> = snap.selection.iter().copied().collect();
-    {
-        {
-            ui.vertical(|ui| {
-                ui.horizontal(|ui| tabs(ui, st));
-                ui.horizontal(|ui| match st.tab {
-                    RibbonTab::Home => {
-                        if tool(
-                            ui,
-                            Icon::Import,
-                            "Import",
-                            true,
-                            "Import an SVG or an image",
-                        ) {
-                            actions.push(Action::Import { doc_id });
-                        }
-                        let raster = single_raster(snap);
-                        if tool(
-                            ui,
-                            Icon::Trace,
-                            "Trace",
-                            raster.is_some(),
-                            "Trace the selected image with your own settings",
-                        ) && let Some(id) = raster
-                        {
-                            actions.push(Action::TraceDialog { doc_id, id });
-                        }
-                        if tool(
-                            ui,
-                            Icon::TestPatterns,
-                            "Test patterns",
-                            true,
-                            "Add the test sheet. Cut it first on a new machine.",
-                        ) {
-                            run(actions, "tools.test_patterns", json!({}));
-                        }
-                        if tool(ui, Icon::Duplicate, "Duplicate", any, "Copy the selection") {
-                            run(actions, "object.duplicate", json!({ "ids": selected }));
-                        }
-                        if tool(ui, Icon::Delete, "Delete", any, "Delete the selection") {
-                            run(actions, "object.delete", json!({ "ids": selected }));
-                        }
-                        let ids = reload_ids(snap);
-                        if tool(
-                            ui,
-                            Icon::Reload,
-                            "Reload",
-                            ids.is_some(),
-                            "Read the linked files again (the selection, or all)",
-                        ) && let Some(ids) = ids
-                        {
-                            run(actions, "object.reload", json!({ "ids": ids }));
-                        }
-                    }
-                    RibbonTab::Arrange => arrange(ui, st, snap, actions),
-                    RibbonTab::View => {
-                        if tool(ui, Icon::ZoomFit, "Zoom to fit", true, "Show the whole mat") {
-                            st.fit_pending = true;
-                        }
-                        if tool(
-                            ui,
-                            Icon::ZoomActual,
-                            "Zoom 100%",
-                            true,
-                            "About real size on a typical screen",
-                        ) {
-                            let at = st.canvas_rect.center();
-                            let f = PX_PER_MM_100 / st.view.px_per_mm;
-                            let mut v: CanvasView = st.view;
-                            v.zoom_about(at, f);
-                            st.view = v;
-                        }
-                        toggle(ui, Icon::Grid, "Grid", &mut st.show_grid);
-                        toggle(ui, Icon::Ruler, "Rulers", &mut st.show_rulers);
-                        toggle(ui, Icon::PanelLeft, "Objects panel", &mut st.show_objects);
-                        toggle(
-                            ui,
-                            Icon::PanelRight,
-                            "Settings panel",
-                            &mut st.show_settings,
-                        );
-                        toggle(ui, Icon::Debug, "Debug panel", show_debug);
-                    }
-                });
-            });
-        }
-    }
+    ui.vertical(|ui| {
+        ui.horizontal(|ui| tabs(ui, st));
+        ui.horizontal(|ui| match st.tab {
+            RibbonTab::Home => {
+                if tool(
+                    ui,
+                    Icon::Import,
+                    "Import",
+                    true,
+                    "Import an SVG or an image",
+                ) {
+                    actions.push(Action::Import { doc_id });
+                }
+                let raster = single_raster(snap);
+                if tool(
+                    ui,
+                    Icon::Trace,
+                    "Trace",
+                    raster.is_some(),
+                    "Trace the selected image with your own settings",
+                ) && let Some(id) = raster
+                {
+                    actions.push(Action::TraceDialog { doc_id, id });
+                }
+                if tool(
+                    ui,
+                    Icon::TestPatterns,
+                    "Test patterns",
+                    true,
+                    "Add the test sheet. Cut it first on a new machine.",
+                ) {
+                    run(actions, "tools.test_patterns", json!({}));
+                }
+                if tool(ui, Icon::Duplicate, "Duplicate", any, "Copy the selection") {
+                    run(actions, "object.duplicate", json!({ "ids": selected }));
+                }
+                let copies = copies_dialog(snap);
+                if tool(
+                    ui,
+                    Icon::Copies,
+                    "Copies...",
+                    copies.is_some(),
+                    "Many copies of one object in a row or a grid. Sticker sheet, engage!",
+                ) {
+                    st.copies = copies;
+                }
+                if tool(ui, Icon::Delete, "Delete", any, "Delete the selection") {
+                    run(actions, "object.delete", json!({ "ids": selected }));
+                }
+                let ids = reload_ids(snap);
+                if tool(
+                    ui,
+                    Icon::Reload,
+                    "Reload",
+                    ids.is_some(),
+                    "Read the linked files again (the selection, or all)",
+                ) && let Some(ids) = ids
+                {
+                    run(actions, "object.reload", json!({ "ids": ids }));
+                }
+            }
+            RibbonTab::Arrange => arrange(ui, st, snap, actions),
+            RibbonTab::View => {
+                if tool(ui, Icon::ZoomFit, "Zoom to fit", true, "Show the whole mat") {
+                    st.fit_pending = true;
+                }
+                if tool(
+                    ui,
+                    Icon::ZoomActual,
+                    "Zoom 100%",
+                    true,
+                    "About real size on a typical screen",
+                ) {
+                    let at = st.canvas_rect.center();
+                    let f = PX_PER_MM_100 / st.view.px_per_mm;
+                    let mut v: CanvasView = st.view;
+                    v.zoom_about(at, f);
+                    st.view = v;
+                }
+                toggle(ui, Icon::Grid, "Grid", &mut st.show_grid);
+                toggle(ui, Icon::Ruler, "Rulers", &mut st.show_rulers);
+                toggle(ui, Icon::PanelLeft, "Objects panel", &mut st.show_objects);
+                toggle(
+                    ui,
+                    Icon::PanelRight,
+                    "Settings panel",
+                    &mut st.show_settings,
+                );
+                toggle(ui, Icon::Debug, "Debug panel", show_debug);
+            }
+        });
+    });
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
         search_box(ui, snap, st, actions);
     });
@@ -518,6 +554,37 @@ fn arrange(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Ve
             }
         });
     });
+    ui.separator();
+    ui.label("Distribute");
+    let three = ids.len() >= 3;
+    let need = if three {
+        ""
+    } else {
+        " Select 3 or more objects first."
+    };
+    for (icon, name, axis, hint) in [
+        (
+            Icon::DistributeHorizontal,
+            "Distribute horizontally",
+            "horizontal",
+            "Equal gaps from left to right. The outer objects stay put.",
+        ),
+        (
+            Icon::DistributeVertical,
+            "Distribute vertically",
+            "vertical",
+            "Equal gaps from top to bottom. The outer objects stay put.",
+        ),
+    ] {
+        if icon_tool(ui, icon, name, three, &format!("{name}: {hint}{need}")) {
+            run(
+                actions,
+                "arrange.distribute",
+                json!({ "ids": ids, "axis": axis }),
+            );
+        }
+    }
+    ui.separator();
     if tool(
         ui,
         Icon::Arrange,
