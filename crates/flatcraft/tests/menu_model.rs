@@ -938,3 +938,151 @@ fn quit_with_a_pending_send_asks_first() {
     h.run();
     assert!(app(&h).ui.closing);
 }
+
+/// A document with a linked file that is gone, two squares, everything
+/// selected, and a way to see what a click did.
+struct Fixture {
+    _dir: tempfile::TempDir,
+    s: SharedSession,
+    h: AppHarness,
+    picker: common::FakePicker,
+    recent: Vec<PathBuf>,
+}
+
+fn fixture() -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let file = dir.path().join("link.svg");
+    std::fs::write(
+        &file,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="200mm" viewBox="0 0 200 200"><rect x="40" y="60" width="20" height="20"/></svg>"#,
+    )
+    .unwrap();
+    let linked = s
+        .lock()
+        .unwrap()
+        .execute("object.import", json!({ "path": file }), Origin::User)
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    // The file changed since the import, so Reload has something to read.
+    std::fs::write(
+        &file,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="200mm" viewBox="0 0 200 200"><rect x="40" y="60" width="25" height="25"/></svg>"#,
+    )
+    .unwrap();
+    let a = import_square(&s);
+    let b = import_square(&s);
+    // Not all selected: Select All has something to do.
+    let _ = b;
+    select(&s, &[linked, a]);
+    let picker = common::FakePicker::default();
+    let p = picker.clone();
+    let mut h = common::harness_with(&dir, s.clone(), |app| app.with_file_picker(p));
+    to_prepare(&mut h);
+    app_mut(&mut h).ui.prepare.sources.doc_id = s.lock().unwrap().doc().id();
+    app_mut(&mut h).ui.prepare.sources.missing.push(linked);
+    h.run();
+    // Not fitted and not at 100%, so both zoom items have something to do.
+    app_mut(&mut h).ui.prepare.view.px_per_mm = 5.0;
+    Fixture {
+        _dir: dir,
+        s,
+        h,
+        picker,
+        recent: vec![PathBuf::from("/nowhere/a.flatcraft")],
+    }
+}
+
+/// Everything a click can change, as one string.
+fn effects(f: &Fixture) -> String {
+    let a = app(&f.h);
+    let doc =
+        f.s.lock()
+            .unwrap()
+            .execute("document.state", json!({}), Origin::User)
+            .unwrap();
+    let docs = f.s.lock().unwrap().docs.len();
+    let commands =
+        f.h.output()
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map(|v| format!("{:?}", v.commands))
+            .unwrap_or_default();
+    let commands = format!("{commands} {:?}", f.h.output().platform_output.commands);
+    let p = &a.ui.prepare;
+    let requests = f.picker.requests.lock().unwrap().len();
+    format!(
+        "{doc} {docs} {requests} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {commands}",
+        a.ui.workspace,
+        (p.rename.is_some(), p.panel.is_some(), p.fit_pending),
+        (p.show_grid, p.show_rulers, p.show_objects, p.show_settings),
+        a.ui.about.open,
+        a.ui.show_shortcuts,
+        a.ui.show_profiles,
+        a.ui.unsaved,
+        a.ui.toasts.len(),
+        a.injected.len(),
+        p.view.px_per_mm,
+    )
+}
+
+/// A click on every enabled item does something: an action, a dialog, a
+/// request to the window or a changed state. A `Cmd` the click handler
+/// forgets (as Reconnect once was) shows up here.
+#[test]
+fn every_enabled_menu_item_does_something_when_clicked() {
+    let probe = fixture();
+    let mut h = probe.h;
+    let m = {
+        let ctx = h.ctx.clone();
+        let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+        let a = app(&h);
+        MenuModel::build(&MenuInput {
+            workspace: a.ui.workspace,
+            snap: Some(&snap),
+            prepare: &a.ui.prepare,
+            show_debug: false,
+            can_undo: true,
+            can_redo: false,
+            text_focused: false,
+            send_ready: false,
+            recent: &probe.recent,
+        })
+    };
+    let todo: Vec<Cmd> = m
+        .leaves()
+        .into_iter()
+        // The workspace we are in is checked: choosing it again changes nothing.
+        .filter(|l| l.enabled && l.cmd != Cmd::Workspace(Workspace::Prepare))
+        .map(|l| l.cmd.clone())
+        .collect();
+    assert!(todo.len() > 40, "{}", todo.len());
+    assert!(
+        todo.contains(&Cmd::Reconnect),
+        "the fixture has a broken link"
+    );
+    drop(h);
+    for cmd in todo {
+        let mut f = fixture();
+        let before = effects(&f);
+        let doc = f.s.lock().unwrap().doc().id();
+        let action = cmd
+            .action(doc, &f.recent)
+            .unwrap_or_else(|| panic!("{cmd:?}"));
+        let ctx = f.h.ctx.clone();
+        app_mut(&mut f.h).apply(&ctx, vec![action]);
+        f.h.run();
+        assert_ne!(effects(&f), before, "{cmd:?} did nothing");
+    }
+}
+
+#[test]
+fn reconnect_asks_for_the_moved_file() {
+    let mut f = fixture();
+    let ctx = f.h.ctx.clone();
+    app_mut(&mut f.h).apply(&ctx, vec![Action::Menu(Cmd::Reconnect)]);
+    let requests = f.picker.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].title, "Reconnect file");
+}

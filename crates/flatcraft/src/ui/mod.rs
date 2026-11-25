@@ -506,7 +506,8 @@ impl FlatCraftApp {
             | Cmd::Unlink
             | Cmd::ToggleCut
             | Cmd::ToggleHide
-            | Cmd::Rename => {
+            | Cmd::Rename
+            | Cmd::Reconnect => {
                 // The menu is dimmed outside Prepare; a late click does
                 // nothing. A text field keeps the keys of Duplicate, Import
                 // and Delete.
@@ -549,8 +550,21 @@ impl FlatCraftApp {
                 }
                 self.apply(ctx, actions);
             }
-            // The other items became their own actions.
-            _ => {}
+            // These became their own actions (`Cmd::action`). No `_` arm:
+            // a new command must be placed here or above.
+            Cmd::About
+            | Cmd::Settings
+            | Cmd::Quit
+            | Cmd::New
+            | Cmd::Open
+            | Cmd::OpenRecent(_)
+            | Cmd::NoRecent
+            | Cmd::Save
+            | Cmd::SaveAs
+            | Cmd::Close
+            | Cmd::SendToFile
+            | Cmd::Workspace(_)
+            | Cmd::Help(_) => {}
         }
     }
 
