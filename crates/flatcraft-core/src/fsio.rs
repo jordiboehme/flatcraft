@@ -3,7 +3,7 @@
 
 use std::fs::{self, File};
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -18,7 +18,31 @@ use std::time::Duration;
 /// share a temp file. Only the temp file this call created is removed when
 /// a step fails. Leftovers of crashed writes of other processes, older than
 /// [`STALE_TEMP`], are cleaned up first; nothing else is touched.
+///
+/// A file that exists keeps its permissions (unix mode). When `path` is a
+/// symbolic link, the file it points to is replaced and the link stays.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let target = resolve_links(path)?;
+    let keep = existing_permissions(&target);
+    let tmp = write_temp_for(&target, bytes, keep)?;
+    if let Err(e) = fs::rename(&tmp, &target) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    sync_parent(&target);
+    Ok(())
+}
+
+/// Writes `bytes` to a new temp file next to `path` (`.<name>.<pid>.<n>.tmp`,
+/// created new, synced) and returns its path, for a caller that renames it
+/// into place itself. Old leftovers of crashed writers are cleaned up first
+/// (see [`write_atomic`]). The file is removed again when writing fails.
+/// `permissions`, when given, are set on the temp file before it is synced.
+pub fn write_temp_for(
+    path: &Path,
+    bytes: &[u8],
+    permissions: Option<fs::Permissions>,
+) -> io::Result<PathBuf> {
     let name = path
         .file_name()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "the path has no file name"))?;
@@ -26,16 +50,51 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let (tmp, mut f) = create_temp(path, name)?;
     let written = (|| {
         f.write_all(bytes)?;
-        f.sync_all()?;
-        drop(f);
-        fs::rename(&tmp, path)
+        if let Some(p) = permissions {
+            f.set_permissions(p)?;
+        }
+        f.sync_all()
     })();
+    drop(f);
     if let Err(e) = written {
         let _ = fs::remove_file(&tmp);
         return Err(e);
     }
-    sync_parent(path);
-    Ok(())
+    Ok(tmp)
+}
+
+/// The permissions to keep when `path` is replaced: its unix mode. Elsewhere
+/// the new file gets the defaults.
+#[cfg(unix)]
+fn existing_permissions(path: &Path) -> Option<fs::Permissions> {
+    fs::metadata(path).ok().map(|m| m.permissions())
+}
+
+#[cfg(not(unix))]
+fn existing_permissions(_path: &Path) -> Option<fs::Permissions> {
+    None
+}
+
+/// Follows symbolic links at `path` (also a dangling one) to the file they
+/// name, so a write replaces that file and keeps the link.
+fn resolve_links(path: &Path) -> io::Result<PathBuf> {
+    let mut p = path.to_path_buf();
+    for _ in 0..40 {
+        match fs::symlink_metadata(&p) {
+            Ok(m) if m.file_type().is_symlink() => {
+                let next = fs::read_link(&p)?;
+                p = match p.parent() {
+                    Some(dir) if next.is_relative() => dir.join(next),
+                    _ => next,
+                };
+            }
+            _ => return Ok(p),
+        }
+    }
+    Err(io::Error::other(format!(
+        "too many symbolic links at {}",
+        path.display()
+    )))
 }
 
 /// A temp file of another process older than this is a leftover of a
@@ -103,7 +162,7 @@ fn temp_name(name: &std::ffi::OsStr, pid: u32, n: u64) -> std::ffi::OsString {
 
 /// Creates a new temp file next to `path` with a name no other writer uses:
 /// the process id and a counter.
-fn create_temp(path: &Path, name: &std::ffi::OsStr) -> io::Result<(std::path::PathBuf, File)> {
+fn create_temp(path: &Path, name: &std::ffi::OsStr) -> io::Result<(PathBuf, File)> {
     let pid = std::process::id();
     let mut last = None;
     for _ in 0..100 {
@@ -171,6 +230,48 @@ mod tests {
             .unwrap()
             .set_modified(SystemTime::now() - Duration::from_secs(secs))
             .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_replaced_file_keeps_its_permissions() {
+        let _serial = SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("a.toml");
+        fs::write(&path, "old").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        write_atomic(&path, b"new").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new");
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_file_is_written_through_the_link() {
+        let _serial = SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let d = tempfile::tempdir().unwrap();
+        let real_dir = d.path().join("real");
+        fs::create_dir(&real_dir).unwrap();
+        let real = real_dir.join("prefs.toml");
+        fs::write(&real, "old").unwrap();
+        let link = d.path().join("a.toml");
+        std::os::unix::fs::symlink("real/prefs.toml", &link).unwrap();
+        write_atomic(&link, b"new").unwrap();
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link stays a link"
+        );
+        assert_eq!(fs::read_to_string(&real).unwrap(), "new");
+        assert_eq!(fs::read_to_string(&link).unwrap(), "new");
     }
 
     #[test]
