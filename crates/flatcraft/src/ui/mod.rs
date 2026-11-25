@@ -1343,7 +1343,12 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     }
 
     let workspace = app.ui.workspace;
-    let wants_job = workspace == Workspace::Cut || app.ui.show_debug;
+    // A collapsed Cut and Job rail shows the job's state dot from the same
+    // plan the Cut workspace uses, so the two never disagree. `update`
+    // builds only when the input changed.
+    let rail_dot = workspace == Workspace::Prepare
+        && app.ui.prepare.panels.collapsed(rails::SidePanel::Settings);
+    let wants_job = workspace == Workspace::Cut || app.ui.show_debug || rail_dot;
     let snap = (workspace != Workspace::Home).then(|| prepare::snapshot_with(app, &ctx, wants_job));
     if let Some(snap) = &snap {
         app.ui.cut.update(snap);

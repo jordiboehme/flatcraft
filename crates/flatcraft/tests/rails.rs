@@ -556,3 +556,42 @@ fn the_ribbon_toggle_knows_about_an_open_arrange_panel_in_the_same_frame() {
     assert!(app(&h).ui.prepare.panels.arrange_open);
     assert_eq!(tool.selected(&app(&h).ui.prepare, false), Some(false));
 }
+
+const THIN_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="200mm" viewBox="0 0 200 200"><rect x="100" y="20" width="50" height="0.0001"/></svg>"#;
+
+/// The colour of the state dot painted in a rail, if one is there.
+fn dot_colour(h: &AppHarness) -> Option<egui::Color32> {
+    painted(h).into_iter().find_map(|s| match s {
+        Shape::Circle(c) if (c.radius - 4.5).abs() < 0.01 => Some(c.fill),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_collapsed_prepare_rail_shows_the_dot_of_the_cut_plan() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    run(
+        &s,
+        "object.import_svg",
+        json!({ "svg": THIN_SVG, "name": "thin" }),
+    );
+    let mut h = harness_sized(&dir, s, [1000.0, 900.0], 8, |a| a);
+    to_prepare(&mut h);
+    h.run();
+    assert!(rail_open(&h, "Cut and Job"));
+    let t = app(&h).tokens;
+    // The job builder warns that a filled path is too thin to cut.
+    let prepare = dot_colour(&h).expect("a dot on the collapsed rail");
+    assert_eq!(prepare, t.warn);
+    app_mut(&mut h).ui.workspace = Workspace::Cut;
+    h.run();
+    let sn = snap(&mut h);
+    assert_eq!(rails::job_dot(&sn, Some(&app(&h).ui.cut)), Dot::Warning);
+    // With the panel open Prepare does not build the job, the snapshot
+    // rule is used.
+    app_mut(&mut h).ui.workspace = Workspace::Prepare;
+    resize(&mut h, 1400.0);
+    assert!(collapse_button(&h, "Cut and Job"));
+}
