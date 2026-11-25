@@ -348,3 +348,12 @@ async fn check_sources_hashes_without_the_session_lock() {
         "the MCP check took the unlocked path"
     );
 }
+
+#[test]
+fn instructions_put_the_origin_on_the_mat_grid() {
+    let text = flatcraft_mcp::server::INSTRUCTIONS;
+    assert!(text.contains("grid"), "{text}");
+    assert!(text.contains("cutting_area_mm"), "{text}");
+    assert!(!text.contains("top-left corner of the media"), "{text}");
+    assert!(!text.contains('\u{2014}'), "no em-dash");
+}

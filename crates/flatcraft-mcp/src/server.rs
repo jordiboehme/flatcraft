@@ -17,7 +17,8 @@ use crate::{OnChange, SharedSession};
 
 /// What the server tells a connecting agent.
 pub const INSTRUCTIONS: &str = "FlatCraft prepares and sends cutting plotter jobs. \
-Every length is in millimetres. The origin is the top-left corner of the media, x runs right and y runs down. \
+Every length is in millimetres. The origin 0,0 is the 0,0 of the grid printed on the selected mat, x runs right and y runs down. \
+Objects must stay inside the cutting area, which the document tool (document.state) reports as cutting_area_mm. \
 Use list_commands to find commands, describe_command for the parameters of one, execute to run it, \
 document to read the state and preview to see the result as a PNG. \
 A USB cut started by an agent goes ahead only if the person turned on 'Allow agents to start cuts'. \
