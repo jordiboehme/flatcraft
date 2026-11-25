@@ -228,14 +228,43 @@ fn five_banner_clicks_run_the_knife_then_end_of_line() {
     h.get_by_label(about::BANNER_NAME).click();
     // The knife asks for frames while it moves, so step instead of settling.
     h.run_steps(2);
-    assert!(app(&h).ui.about.knife.is_some());
+    let (run, end) = {
+        let k = app(&h).ui.about.knife.as_ref().unwrap();
+        (k.run_secs, k.end_secs())
+    };
+    let started = *now.lock().unwrap();
+    let at = |s: f32| started + Duration::from_secs_f32(s);
     assert!(h.query_by_label(about::END_OF_LINE).is_none());
-    *now.lock().unwrap() += about::KNIFE_TIME / 2;
+    *now.lock().unwrap() = at(run / 2.0);
     h.run_steps(2);
     assert!(h.query_by_label(about::END_OF_LINE).is_none());
-    *now.lock().unwrap() += about::KNIFE_TIME;
-    // Done: no more frames are asked for, so the harness settles.
+    // Home: "End of line." fades in and stays.
+    *now.lock().unwrap() = at(run + 1.0);
+    h.run_steps(2);
+    h.get_by_label(about::END_OF_LINE);
+    // Five more clicks restart the knife.
+    for _ in 0..about::BANNER_CLICKS {
+        h.get_by_label(about::BANNER_NAME).click();
+        h.run_steps(2);
+    }
+    assert!(h.query_by_label(about::END_OF_LINE).is_none());
+    let restarted = app(&h).ui.about.knife.as_ref().unwrap().started;
+    assert_eq!(restarted, at(run + 1.0));
+    // After the fade-out the banner is back to normal: no knife, no text,
+    // and no more frames are asked for, so the harness settles.
+    *now.lock().unwrap() = restarted + Duration::from_secs_f32(end + 0.1);
     h.run();
+    assert!(app(&h).ui.about.knife.is_none());
+    assert!(h.query_by_label(about::END_OF_LINE).is_none());
+    // A new knife after it finished.
+    *now.lock().unwrap() = at(run + 1.0) + Duration::from_secs_f32(end + 0.1);
+    for _ in 0..about::BANNER_CLICKS {
+        h.get_by_label(about::BANNER_NAME).click();
+        h.run_steps(2);
+    }
+    assert!(app(&h).ui.about.knife.is_some());
+    *now.lock().unwrap() += Duration::from_secs_f32(run + 1.0);
+    h.run_steps(2);
     h.get_by_label(about::END_OF_LINE);
     // Closing and opening again starts over.
     app_mut(&mut h).ui.about.close();

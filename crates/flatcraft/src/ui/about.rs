@@ -2,7 +2,7 @@
 //! links, credits, a maker quote and the third-party licences. It also
 //! holds two easter eggs: the maker quote changes on every opening, and
 //! five clicks on the banner send a simulated knife along its dotted travel
-//! path.
+//! path, cutting the four shape outlines in order before it drives home.
 
 use std::time::{Duration, Instant};
 
@@ -75,39 +75,88 @@ pub fn version_line() -> String {
     format!("Version {} ({BUILD})", env!("CARGO_PKG_VERSION"))
 }
 
-/// Shown on the banner once the knife is through.
+/// Shown on the banner once the knife is home.
 pub const END_OF_LINE: &str = "End of line.";
 /// The accessible name of the banner.
 pub const BANNER_NAME: &str = "FlatCraft banner";
 /// Clicks on the banner that start the knife.
 pub const BANNER_CLICKS: u32 = 5;
-/// How long the knife takes along the path.
-pub const KNIFE_TIME: Duration = Duration::from_secs(3);
+/// How long "End of line." takes to fade in, stays and takes to fade out.
+pub const TEXT_FADE_IN: Duration = Duration::from_millis(400);
+pub const TEXT_HOLD: Duration = Duration::from_secs(3);
+pub const TEXT_FADE_OUT: Duration = Duration::from_millis(600);
 
 /// The banner image (2560 x 640 pixels, drawn on a 1280 x 320 grid).
 const BANNER_PNG: &[u8] = include_bytes!("../../../../assets/branding/banner.png");
 /// The banner's own coordinate grid (its HTML source).
 const BANNER_GRID: Vec2 = Vec2::new(1280.0, 320.0);
-/// The banner's dotted travel path, in banner units.
-const BANNER_PATH: [(f64, f64); 5] = [
-    (690.0, 300.0),
-    (814.0, 190.0),
-    (850.0, 140.0),
+
+// The geometry below is copied from assets/branding/banner.html, in its
+// 1280 x 320 space; the test `knife_geometry_is_the_banner_html` keeps
+// them in step.
+
+/// Where the dotted teal travel path starts (its first point).
+pub const TRAVEL_START: (f64, f64) = (690.0, 300.0);
+/// The circle (shape 1): centre and radius. Its cut starts and ends at
+/// the rightmost point, where the travel path meets it.
+pub const CIRCLE: (f64, f64, f64) = (770.0, 190.0, 44.0);
+/// The square (shape 2): x, y, width, height. The cut starts at x, y.
+pub const SQUARE: (f64, f64, f64, f64) = (850.0, 140.0, 80.0, 80.0);
+/// The star (shape 3), from its top point.
+pub const STAR: [(f64, f64); 10] = [
     (1030.0, 128.0),
-    (1130.0, 240.0),
+    (1042.93, 162.2),
+    (1079.45, 163.93),
+    (1050.92, 186.8),
+    (1060.56, 222.07),
+    (1030.0, 202.0),
+    (999.44, 222.07),
+    (1009.08, 186.8),
+    (980.55, 163.93),
+    (1017.07, 162.2),
 ];
-/// The banner's numbered badges 1 to 4. Badge k lights up when the knife
-/// reaches point k of the path.
-const BANNER_BADGES: [(f32, f32); 4] = [
+/// The F (shape 4), from its bottom-left corner.
+pub const LETTER_F: [(f64, f64); 10] = [
+    (1130.0, 240.0),
+    (1130.0, 130.0),
+    (1200.0, 130.0),
+    (1200.0, 152.0),
+    (1152.0, 152.0),
+    (1152.0, 176.0),
+    (1188.0, 176.0),
+    (1188.0, 196.0),
+    (1152.0, 196.0),
+    (1152.0, 240.0),
+];
+/// The numbered badges 1 to 4 (centres, radius 12). Badge k lights up
+/// when the outline of shape k is cut.
+pub const BADGES: [(f32, f32); 4] = [
     (728.0, 136.0),
     (890.0, 104.0),
     (970.0, 104.0),
     (1112.0, 104.0),
 ];
-/// Banner units per simulated millimetre: the path is about 56 mm long.
+const BADGE_RADIUS: f32 = 12.0;
+/// The text block's left edge (`left: 72px`).
+const TEXT_LEFT: f32 = 72.0;
+
+/// The knife's home, at the bottom left of the banner. The way home runs
+/// along the bottom edge, under the free space where "End of line." shows.
+pub const HOME: (f64, f64) = (24.0, 312.0);
+/// The corner the knife turns at on its way home from the F.
+const HOME_TURN: (f64, f64) = (1130.0, 312.0);
+/// "End of line.": its left edge and vertical centre, in the free space
+/// under the tagline and the line under it (which ends at about y 250),
+/// left of the travel path.
+const TEXT_AT: (f32, f32) = (TEXT_LEFT, 283.0);
+
+/// Banner units per simulated millimetre.
 const UNITS_PER_MM: f64 = 10.0;
-/// Every this many millimetres of the simulated tip, one trail point.
+/// Every this many millimetres of the simulated axis, one trail point.
 const TRAIL_STEP_MM: f64 = 0.4;
+/// Animation speeds, blade down and up, in mm (of the banner) per second.
+const CUT_SPEED: f64 = 70.0;
+const TRAVEL_SPEED: f64 = 220.0;
 /// The support buttons' colour (Ko-fi and PayPal).
 const PINK: Color32 = Color32::from_rgb(0xE2, 0x4A, 0x8D);
 const WIDTH: f32 = 560.0;
@@ -125,26 +174,99 @@ pub struct AboutState {
     pub knife: Option<Knife>,
 }
 
-/// The banner knife: the simulated blade tip, in banner units.
+/// One point of the knife's way, in banner units.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrailPoint {
+    pub at: Pos2,
+    /// Seconds from the start of the animation.
+    pub secs: f32,
+    /// The blade is down on the move into this point.
+    pub down: bool,
+    /// The shape (0 to 3) being cut or travelled to; `None` on the way
+    /// to the travel path and on the way home.
+    pub shape: Option<usize>,
+}
+
+/// The banner knife: the simulated blade tip and its timing.
 #[derive(Debug, Clone)]
 pub struct Knife {
     pub started: Instant,
-    /// The tip along the path and how far the axis had travelled there, in mm.
-    pub trail: Vec<(Pos2, f64)>,
-    /// Where on the path (axis travel in mm) each badge lights up.
-    pub badges: [f64; 4],
-    pub length_mm: f64,
+    pub trail: Vec<TrailPoint>,
+    /// When the cut of each shape starts and ends, in seconds.
+    pub cut_start: [f32; 4],
+    pub cut_end: [f32; 4],
+    /// When the knife is home.
+    pub run_secs: f32,
 }
 
 impl Knife {
-    /// The share of the path done at `now`, 0 to 1.
-    pub fn progress(&self, now: Instant) -> f32 {
-        let t = now.saturating_duration_since(self.started).as_secs_f32();
-        (t / KNIFE_TIME.as_secs_f32()).min(1.0)
+    fn secs(&self, now: Instant) -> f32 {
+        now.saturating_duration_since(self.started).as_secs_f32()
     }
 
-    pub fn done(&self, now: Instant) -> bool {
-        self.progress(now) >= 1.0
+    /// The knife is home.
+    pub fn home(&self, now: Instant) -> bool {
+        self.secs(now) >= self.run_secs
+    }
+
+    /// When everything has faded out.
+    pub fn end_secs(&self) -> f32 {
+        self.run_secs + (TEXT_FADE_IN + TEXT_HOLD + TEXT_FADE_OUT).as_secs_f32()
+    }
+
+    /// Everything has faded out: the banner is back to normal.
+    pub fn finished(&self, now: Instant) -> bool {
+        self.secs(now) >= self.end_secs()
+    }
+
+    /// The opacity of "End of line.": 0 until the knife is home, then it
+    /// fades in, stays and fades out.
+    pub fn text_alpha(&self, now: Instant) -> f32 {
+        let t = self.secs(now) - self.run_secs;
+        let fade_in = TEXT_FADE_IN.as_secs_f32();
+        let hold = TEXT_HOLD.as_secs_f32();
+        let out = TEXT_FADE_OUT.as_secs_f32();
+        if t < 0.0 {
+            0.0
+        } else if t < fade_in {
+            t / fade_in
+        } else if t < fade_in + hold {
+            1.0
+        } else {
+            (1.0 - (t - fade_in - hold) / out).clamp(0.0, 1.0)
+        }
+    }
+
+    /// The opacity of the cut lines and the lit badges: full until the
+    /// text fades out, then they fade out with it.
+    pub fn trail_alpha(&self, now: Instant) -> f32 {
+        let t = self.secs(now) - self.run_secs;
+        if t < (TEXT_FADE_IN + TEXT_HOLD).as_secs_f32() {
+            1.0
+        } else {
+            self.text_alpha(now)
+        }
+    }
+
+    /// The trail up to `secs`, ending at the knife's position then.
+    pub fn trail_at(&self, secs: f32) -> Vec<TrailPoint> {
+        let mut out = Vec::new();
+        for (i, p) in self.trail.iter().enumerate() {
+            if p.secs <= secs {
+                out.push(*p);
+                continue;
+            }
+            if let Some(prev) = i.checked_sub(1).map(|j| self.trail[j]) {
+                let f = (secs - prev.secs) / (p.secs - prev.secs).max(1e-6);
+                out.push(TrailPoint {
+                    at: prev.at.lerp(p.at, f.clamp(0.0, 1.0)),
+                    secs,
+                    ..*p
+                });
+            }
+            break;
+        }
+        out
     }
 }
 
@@ -179,46 +301,116 @@ impl AboutState {
     }
 }
 
-/// Simulates a 0.25 mm drag knife along the banner's dotted path.
-pub fn knife(now: Instant) -> Knife {
-    let points: Vec<Point> = BANNER_PATH
-        .iter()
-        .map(|&(x, y)| Point::new(x / UNITS_PER_MM, y / UNITS_PER_MM))
+fn mm((x, y): (f64, f64)) -> Point {
+    Point::new(x / UNITS_PER_MM, y / UNITS_PER_MM)
+}
+
+/// The four outlines as closed rings in mm, each starting (and ending)
+/// where the travel path meets it.
+pub fn outlines() -> [Vec<Point>; 4] {
+    let (cx, cy, r) = CIRCLE;
+    let circle = (0..=96)
+        .map(|i| {
+            let a = std::f64::consts::TAU * f64::from(i) / 96.0;
+            mm((cx + r * a.cos(), cy + r * a.sin()))
+        })
         .collect();
-    let mut badges = [0.0; 4];
-    let mut length_mm = 0.0;
-    for (i, w) in points.windows(2).enumerate() {
-        length_mm += w[0].distance(w[1]);
-        badges[i] = length_mm;
-    }
-    let path = Toolpath::new(
-        points.clone(),
-        false,
-        PathRef {
-            object: ObjectId(0),
-            path_index: 0,
-        },
-    );
-    let trace = simulate(&[path], points[0], &SimSettings::float(0.25));
+    let (x, y, w, h) = SQUARE;
+    let square = [(x, y), (x + w, y), (x + w, y + h), (x, y + h), (x, y)]
+        .into_iter()
+        .map(mm)
+        .collect();
+    let ring = |pts: &[(f64, f64)]| {
+        pts.iter()
+            .chain(pts.first())
+            .copied()
+            .map(mm)
+            .collect::<Vec<_>>()
+    };
+    [circle, square, ring(&STAR), ring(&LETTER_F)]
+}
+
+/// Simulates a 0.25 mm drag knife: from home to the start of the dotted
+/// travel path, then along it to each shape in turn (flatcraft_sim does
+/// the cuts and the travel between them), then home along the bottom.
+pub fn knife(now: Instant) -> Knife {
+    let paths: Vec<Toolpath> = outlines()
+        .into_iter()
+        .enumerate()
+        .map(|(i, points)| {
+            Toolpath::new(
+                points,
+                true,
+                PathRef {
+                    object: ObjectId(i as u64),
+                    path_index: 0,
+                },
+            )
+        })
+        .collect();
+    let start = mm(TRAVEL_START);
+    let trace = simulate(&paths, start, &SimSettings::float(0.25));
     let samples: Vec<_> = trace.iter().flat_map(|t| &t.samples).collect();
+
     let to_banner = |p: Point| Pos2::new((p.x * UNITS_PER_MM) as f32, (p.y * UNITS_PER_MM) as f32);
-    let mut trail: Vec<(Pos2, f64)> = Vec::new();
+    let mut trail = vec![TrailPoint {
+        at: to_banner(mm(HOME)),
+        secs: 0.0,
+        down: false,
+        shape: None,
+    }];
+    let mut secs = 0.0f64;
+    let mut last = mm(HOME);
+    let travel_to = |trail: &mut Vec<TrailPoint>, secs: &mut f64, last: &mut Point, p: Point| {
+        *secs += last.distance(p) / TRAVEL_SPEED;
+        *last = p;
+        trail.push(TrailPoint {
+            at: to_banner(p),
+            secs: *secs as f32,
+            down: false,
+            shape: None,
+        });
+    };
+    travel_to(&mut trail, &mut secs, &mut last, start);
+    // Along the simulation: time by the axis travel, blade down slower.
+    let mut prev_t = samples.first().map_or(0.0, |s| s.t_mm);
+    let mut kept_t = f64::NEG_INFINITY;
     for (i, s) in samples.iter().enumerate() {
-        let last = i + 1 == samples.len();
-        if !last
-            && trail
-                .last()
-                .is_some_and(|&(_, t)| s.t_mm - t < TRAIL_STEP_MM)
-        {
+        let speed = if s.down { CUT_SPEED } else { TRAVEL_SPEED };
+        secs += (s.t_mm - prev_t) / speed;
+        prev_t = s.t_mm;
+        let prev = trail.last().copied();
+        let changed = prev.is_some_and(|p| p.down != s.down || p.shape != Some(s.toolpath));
+        let end = i + 1 == samples.len();
+        if s.t_mm - kept_t < TRAIL_STEP_MM && !changed && !end {
             continue;
         }
-        trail.push((to_banner(s.tip), s.t_mm));
+        kept_t = s.t_mm;
+        trail.push(TrailPoint {
+            at: to_banner(s.tip),
+            secs: secs as f32,
+            down: s.down,
+            shape: Some(s.toolpath),
+        });
+    }
+    last = samples.last().map_or(start, |s| s.axis);
+    travel_to(&mut trail, &mut secs, &mut last, mm(HOME_TURN));
+    travel_to(&mut trail, &mut secs, &mut last, mm(HOME));
+
+    let mut cut_start = [f32::INFINITY; 4];
+    let mut cut_end = [0.0f32; 4];
+    for p in trail.iter().filter(|p| p.down) {
+        if let Some(k) = p.shape.filter(|k| *k < 4) {
+            cut_start[k] = cut_start[k].min(p.secs);
+            cut_end[k] = cut_end[k].max(p.secs);
+        }
     }
     Knife {
         started: now,
         trail,
-        badges,
-        length_mm,
+        cut_start,
+        cut_end,
+        run_secs: secs as f32,
     }
 }
 
@@ -329,54 +521,79 @@ fn banner(ui: &mut Ui, st: &mut AboutState, t: &Tokens, radius: CornerRadius, no
     if resp.clicked() {
         st.click_banner(now);
     }
+    if st.knife.as_ref().is_some_and(|k| k.finished(now)) {
+        // Faded out: the banner is back to normal and asks for no frames.
+        st.knife = None;
+    }
     let Some(knife) = &st.knife else {
         return;
     };
+    // Frames only while something moves or fades.
+    ui.ctx().request_repaint();
     let rect = resp.rect;
+    let scale = rect.width() / BANNER_GRID.x;
     let to_screen =
         |p: Pos2| rect.min + Vec2::new(p.x / BANNER_GRID.x, p.y / BANNER_GRID.y) * rect.size();
-    let progress = knife.progress(now);
-    let at_mm = f64::from(progress) * knife.length_mm;
+    let secs = now.saturating_duration_since(knife.started).as_secs_f32();
+    let fade = knife.trail_alpha(now);
     let painter = ui.painter_at(rect);
-    let trail: Vec<Pos2> = knife
-        .trail
-        .iter()
-        .take_while(|(_, mm)| *mm <= at_mm)
-        .map(|(p, _)| to_screen(*p))
-        .collect();
-    painter.add(egui::Shape::line(
-        trail.clone(),
-        egui::Stroke::new(2.0, t.accent_cut),
-    ));
-    for (badge, &(x, y)) in knife.badges.iter().zip(&BANNER_BADGES) {
-        if *badge <= at_mm {
+    let cut = egui::Stroke::new(2.0, t.accent_cut.gamma_multiply(fade));
+    let travel = egui::Stroke::new(1.0, t.accent_cut.gamma_multiply(0.35 * fade));
+    let trail = knife.trail_at(secs);
+    // Runs of the same kind (cut or travel) become one line each.
+    let mut i = 1;
+    while i < trail.len() {
+        let down = trail[i].down;
+        let mut line = vec![to_screen(trail[i - 1].at)];
+        while i < trail.len() && trail[i].down == down {
+            line.push(to_screen(trail[i].at));
+            i += 1;
+        }
+        painter.add(egui::Shape::line(line, if down { cut } else { travel }));
+    }
+    for (k, &(x, y)) in BADGES.iter().enumerate() {
+        if knife.cut_end[k] <= secs {
+            let c = to_screen(Pos2::new(x, y));
+            painter.circle_filled(
+                c,
+                BADGE_RADIUS * scale,
+                t.accent_cut.gamma_multiply(0.45 * fade),
+            );
             painter.circle_stroke(
-                to_screen(Pos2::new(x, y)),
-                16.0 * rect.width() / BANNER_GRID.x,
-                egui::Stroke::new(2.0, t.accent_cut),
+                c,
+                BADGE_RADIUS * scale + 1.0,
+                egui::Stroke::new(2.0, t.accent_cut.gamma_multiply(fade)),
             );
         }
     }
-    if let Some(&tip) = trail.last() {
-        painter.circle_filled(tip, 4.0, t.accent_cut);
-        painter.circle_stroke(tip, 6.0, egui::Stroke::new(1.0, Color32::WHITE));
+    if !knife.home(now)
+        && let Some(tip) = trail.last()
+    {
+        let p = to_screen(tip.at);
+        painter.circle_filled(p, 4.0, t.accent_cut);
+        painter.circle_stroke(p, 6.0, egui::Stroke::new(1.0, Color32::WHITE));
     }
-    if knife.done(now) {
-        let label = egui::Rect::from_center_size(
-            rect.left_bottom() + Vec2::new(rect.width() * 0.25, -rect.height() * 0.15),
-            Vec2::new(rect.width() * 0.4, 24.0),
+    let alpha = knife.text_alpha(now);
+    if alpha > 0.0 {
+        let galley = painter.layout_no_wrap(
+            END_OF_LINE.to_string(),
+            fonts::semibold(20.0),
+            t.accent_cut.gamma_multiply(alpha),
+        );
+        let left_mid = to_screen(Pos2::new(TEXT_AT.0, TEXT_AT.1));
+        let text = egui::Rect::from_min_size(
+            left_mid - Vec2::new(0.0, galley.size().y / 2.0),
+            galley.size(),
         );
         ui.put(
-            label,
+            text,
             egui::Label::new(
                 RichText::new(END_OF_LINE)
-                    .font(fonts::medium(16.0))
-                    .color(t.accent_cut),
-            ),
+                    .font(fonts::semibold(20.0))
+                    .color(t.accent_cut.gamma_multiply(alpha)),
+            )
+            .selectable(false),
         );
-    } else {
-        // Frames only while the knife moves.
-        ui.ctx().request_repaint();
     }
 }
 
@@ -469,16 +686,116 @@ mod tests {
     }
 
     #[test]
-    fn knife_follows_the_dotted_path() {
+    fn knife_cuts_the_shapes_in_order_and_ends_home() {
         let k = knife(Instant::now());
-        assert!(k.trail.len() > 50, "{}", k.trail.len());
-        let (start, _) = k.trail[0];
-        let (end, _) = *k.trail.last().unwrap();
-        // The tip trails the axis by the 0.25 mm offset (2.5 banner units).
-        assert!(start.distance(Pos2::new(690.0, 300.0)) < 3.0, "{start:?}");
-        assert!(end.distance(Pos2::new(1130.0, 240.0)) < 3.0, "{end:?}");
-        assert!(k.badges.windows(2).all(|w| w[0] < w[1]));
-        assert!((k.badges[3] - k.length_mm).abs() < 1e-9);
+        // Shape k is cut completely before shape k + 1 starts.
+        for w in 0..3 {
+            assert!(k.cut_start[w] < k.cut_end[w], "{k:?}");
+            assert!(k.cut_end[w] < k.cut_start[w + 1], "shape {w}");
+        }
+        // The F is cut: blade-down points run around its whole outline.
+        let f: Vec<Pos2> = k
+            .trail
+            .iter()
+            .filter(|p| p.down && p.shape == Some(3))
+            .map(|p| p.at)
+            .collect();
+        for &(x, y) in &LETTER_F {
+            let corner = Pos2::new(x as f32, y as f32);
+            let near = f
+                .iter()
+                .map(|p| p.distance(corner))
+                .fold(f32::MAX, f32::min);
+            // The tip trails the axis by 0.25 mm (2.5 banner units).
+            assert!(near < 6.0, "F corner {corner:?} not cut ({near})");
+        }
+        // Between the shapes the blade is up, along the dotted path.
+        let start = k.trail.iter().position(|p| p.shape.is_some()).unwrap();
+        assert!(k.trail[start].at.distance(Pos2::new(690.0, 300.0)) < 3.0);
+        // Home at the end, the blade up.
+        let end = k.trail.last().unwrap();
+        assert_eq!(end.at, Pos2::new(HOME.0 as f32, HOME.1 as f32));
+        assert!(!end.down);
+        assert!((end.secs - k.run_secs).abs() < 1e-3);
+        assert!(k.trail.windows(2).all(|w| w[0].secs <= w[1].secs));
+    }
+
+    #[test]
+    fn end_of_line_fades_in_and_out() {
+        let t0 = Instant::now();
+        let k = knife(t0);
+        let at = |s: f32| t0 + Duration::from_secs_f32(s);
+        assert_eq!(k.text_alpha(at(k.run_secs - 0.1)), 0.0);
+        assert!(k.text_alpha(at(k.run_secs + 0.2)) > 0.0);
+        assert!(k.text_alpha(at(k.run_secs + 0.2)) < 1.0);
+        assert_eq!(k.text_alpha(at(k.run_secs + 2.0)), 1.0);
+        assert_eq!(k.trail_alpha(at(k.run_secs + 2.0)), 1.0);
+        assert!(k.text_alpha(at(k.end_secs() - 0.1)) < 0.5);
+        assert!(!k.finished(at(k.end_secs() - 0.1)));
+        assert_eq!(k.text_alpha(at(k.end_secs() + 0.01)), 0.0);
+        assert!(k.finished(at(k.end_secs() + 0.01)));
+        // About 3 s of text, after a run of a few seconds.
+        assert!((2.0..8.0).contains(&k.run_secs), "{}", k.run_secs);
+    }
+
+    /// The constants are the banner's own geometry.
+    #[test]
+    fn knife_geometry_is_the_banner_html() {
+        let html = include_str!("../../../../assets/branding/banner.html");
+        let group = |open: &str| {
+            let i = html.find(open).unwrap_or_else(|| panic!("no {open}"));
+            let j = html[i..].find("</g>").unwrap() + i;
+            &html[i..j]
+        };
+        let n = |v: f64| format!("{v}");
+        let travel = group(r##"<g fill="none" stroke="#7FE0D2" stroke-opacity="0.6""##);
+        let pts = [
+            TRAVEL_START,
+            (CIRCLE.0 + CIRCLE.2, CIRCLE.1),
+            (SQUARE.0, SQUARE.1),
+            STAR[0],
+            LETTER_F[0],
+        ];
+        for w in pts.windows(2) {
+            let d = format!(
+                r#"<path d="M{} {} L{} {}">"#,
+                n(w[0].0),
+                n(w[0].1),
+                n(w[1].0),
+                n(w[1].1)
+            );
+            assert!(travel.contains(&d), "{d}");
+        }
+        let outlines = group(r##"<g fill="none" stroke="#F2A33A" stroke-opacity="0.6""##);
+        let (cx, cy, r) = CIRCLE;
+        let (x, y, w, h) = SQUARE;
+        let star: Vec<String> = STAR
+            .iter()
+            .map(|p| format!("{},{}", n(p.0), n(p.1)))
+            .collect();
+        let f: Vec<String> = LETTER_F
+            .iter()
+            .map(|p| format!("{} {}", n(p.0), n(p.1)))
+            .collect();
+        for want in [
+            format!(r#"<circle cx="{}" cy="{}" r="{}">"#, n(cx), n(cy), n(r)),
+            format!(
+                r#"<rect x="{}" y="{}" width="{}" height="{}">"#,
+                n(x),
+                n(y),
+                n(w),
+                n(h)
+            ),
+            format!(r#"<polygon points="{}">"#, star.join(" ")),
+            format!(r#"<path d="M{} Z">"#, f.join(" L")),
+        ] {
+            assert!(outlines.contains(&want), "{want}");
+        }
+        for (x, y) in BADGES {
+            let want = format!(r#"<circle cx="{x}" cy="{y}" r="{BADGE_RADIUS}""#);
+            assert!(html.contains(&want), "{want}");
+        }
+        assert!(html.contains(&format!("left: {TEXT_LEFT}px")));
     }
 
     #[test]
