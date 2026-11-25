@@ -546,7 +546,12 @@ impl Session {
             // Our own write is no news.
             w.stamp = Preferences::stamp(&self.config_dir);
         }
-        written
+        // A broken file was kept as a copy: the window says so.
+        written.map(|warning| {
+            if let Some(w) = warning {
+                self.note_prefs_warning(w);
+            }
+        })
     }
 
     /// The send that waits for confirmation in the GUI, if any.

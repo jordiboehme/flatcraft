@@ -95,22 +95,28 @@ impl Preferences {
 
     /// Writes the preferences crash-safely (temp file, sync, rename). A file
     /// there that does not parse is copied to `preferences.toml.bak-<time>`
-    /// first, so nothing the person wrote by hand is lost.
-    pub fn save(&self, config_dir: &Path) -> io::Result<()> {
+    /// first, so nothing the person wrote by hand is lost. Returns the
+    /// warning about that copy (also printed on stderr), for a window to
+    /// show.
+    pub fn save(&self, config_dir: &Path) -> io::Result<Option<String>> {
         std::fs::create_dir_all(config_dir)?;
         let path = config_dir.join(FILE_NAME);
+        let mut warning = None;
         if let Ok(text) = std::fs::read_to_string(&path)
             && toml::from_str::<Preferences>(&text).is_err()
         {
             let backup = back_up(config_dir, text.as_bytes())?;
-            eprintln!(
-                "warning: {} was broken. FlatCraft keeps a copy as {} and writes a new one.",
+            let w = format!(
+                "{} was broken. FlatCraft keeps a copy as {} and writes a new one.",
                 path.display(),
                 backup.display()
             );
+            eprintln!("warning: {w}");
+            warning = Some(w);
         }
         let text = toml::to_string_pretty(self).map_err(io::Error::other)?;
-        flatcraft_device::fsio::write_atomic(&path, text.as_bytes())
+        flatcraft_device::fsio::write_atomic(&path, text.as_bytes())?;
+        Ok(warning)
     }
 
     /// Changes only what `change` touches: re-reads the file, applies
@@ -118,12 +124,13 @@ impl Preferences {
     /// FlatCraft process stored meanwhile is kept. `current` (the caller's
     /// copy) is the base when the file is missing or cannot be read or
     /// parsed; a broken file is backed up by [`Preferences::save`]. The
-    /// returned copy holds the change even when writing failed.
+    /// returned copy holds the change even when writing failed. The result
+    /// carries the warning of [`Preferences::save`], if any.
     pub fn update(
         config_dir: &Path,
         current: &Preferences,
         change: impl FnOnce(&mut Preferences),
-    ) -> (Preferences, io::Result<()>) {
+    ) -> (Preferences, io::Result<Option<String>>) {
         let stored = config_dir
             .join(FILE_NAME)
             .try_exists()

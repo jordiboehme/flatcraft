@@ -2333,6 +2333,10 @@ fn a_broken_preferences_file_is_kept_as_a_backup_before_a_save() {
     s.update_prefs(|p| p.auto_reload = true).unwrap();
     let saved = backups(dir.path());
     assert_eq!(saved.len(), 1, "{saved:?}");
+    // The window hears about the copy, not only stderr.
+    let w = s.take_prefs_warning().expect("a warning about the copy");
+    let copy = saved[0].file_name().unwrap().to_string_lossy().into_owned();
+    assert!(w.contains(&copy), "{w}");
     assert_eq!(std::fs::read_to_string(&saved[0]).unwrap(), broken);
     let name = saved[0].file_name().unwrap().to_string_lossy().into_owned();
     assert!(!name.contains(':'), "{name}");
@@ -2340,6 +2344,7 @@ fn a_broken_preferences_file_is_kept_as_a_backup_before_a_save() {
     // The file is fine now, so the next save keeps no copy.
     s.update_prefs(|p| p.auto_reload = false).unwrap();
     assert_eq!(backups(dir.path()).len(), 1);
+    assert_eq!(s.take_prefs_warning(), None, "no copy, no warning");
     // A plain save backs up a broken file too.
     std::fs::write(&path, broken).unwrap();
     Preferences::default().save(dir.path()).unwrap();

@@ -590,3 +590,35 @@ fn a_theme_read_back_by_a_preference_save_is_applied() {
     h.run();
     assert_eq!(app(&h).tokens, Tokens::for_theme(Theme::Light));
 }
+
+/// Storing a preference over a broken file keeps a copy of it, and the
+/// window says where.
+#[test]
+fn a_backup_of_broken_preferences_shows_a_toast() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let path = dir.path().join("coasters.flatcraft");
+    s.lock()
+        .unwrap()
+        .execute("project.save", json!({ "path": path }), Origin::User)
+        .unwrap();
+    let mut h = harness(&dir, session(&dir), false);
+    std::fs::write(
+        dir.path().join(flatcraft_engine::prefs::FILE_NAME),
+        "allow_agent_cuts = [",
+    )
+    .unwrap();
+    let ctx = h.ctx.clone();
+    app_mut(&mut h).apply(&ctx, vec![Action::Open(path)]);
+    h.run();
+    assert!(
+        app(&h)
+            .ui
+            .toasts
+            .iter()
+            .any(|t| t.text.contains("keeps a copy as")),
+        "{:?}",
+        app(&h).ui.toasts
+    );
+}
