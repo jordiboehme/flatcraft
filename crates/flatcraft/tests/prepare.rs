@@ -1583,20 +1583,46 @@ fn panels_remember_the_last_values_that_ran() {
     assert_eq!(values(&mut h).rect.columns, 2);
 }
 
+/// The active document as the project file stores it, plus the
+/// selection: what Cancel must leave exactly as it was.
+fn document_bytes(s: &SharedSession) -> (String, Vec<u64>) {
+    let g = s.lock().unwrap();
+    let doc = flatcraft_core::project::to_value(&g.doc().document).unwrap();
+    let sel = g.doc().selection.iter().map(|i| i.0).collect();
+    (serde_json::to_string(&doc).unwrap(), sel)
+}
+
 #[test]
 fn cancel_close_and_escape_change_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let a = import_square(&s);
     let b = square_at(&s, 60.0);
-    select(&s, &[a, b]);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    let rev = revision(&s);
-    for label in ["Move / Copy...", "Rotate...", "Circular pattern..."] {
+    for (label, ids) in [
+        ("Move / Copy...", vec![a, b]),
+        ("Rotate...", vec![a, b]),
+        ("Rectangular pattern...", vec![a]),
+        ("Circular pattern...", vec![a, b]),
+    ] {
+        select(&s, &ids);
+        h.run();
+        let (before, rev, undo) = (document_bytes(&s), revision(&s), undo_len(&s));
         for how in [cancel_name().as_str(), "Close panel", "escape"] {
             open_panel(&mut h, label);
             assert!(app(&h).ui.prepare.panel.is_some(), "{label}");
+            // Edits that OK would use: Cancel drops them.
+            {
+                let v = values(&mut h);
+                v.move_copy.copy = true;
+                v.move_copy.count = 4;
+                v.rotate.degrees = 33.0;
+                v.rotate.each = true;
+                v.rect.columns = 5;
+                v.circular.count = 7;
+            }
+            h.run();
             if how == "escape" {
                 h.key_press(egui::Key::Escape);
             } else {
@@ -1605,18 +1631,112 @@ fn cancel_close_and_escape_change_nothing() {
             h.run();
             wait_for_workers(&mut h);
             assert!(app(&h).ui.prepare.panel.is_none(), "{label} {how}");
+            assert_eq!(document_bytes(&s), before, "{label} {how}");
             assert_eq!(revision(&s), rev, "{label} {how}");
-            assert_eq!(selection(&s), vec![a, b], "Escape keeps the selection");
+            assert_eq!(undo_len(&s), undo, "{label} {how}");
+            assert!(!app(&h).ui.prepare.fields.each, "{label} {how}");
         }
     }
+}
+
+#[test]
+fn escape_in_a_panel_field_closes_the_panel_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
     select(&s, &[a]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    open_panel(&mut h, "Move / Copy...");
+    h.get_by_role_and_label(Role::SpinButton, "X offset")
+        .click();
     h.run();
-    let rev = revision(&s);
-    open_panel(&mut h, "Rectangular pattern...");
+    assert!(h.ctx.egui_wants_keyboard_input(), "the field has the keys");
+    let before = document_bytes(&s);
     h.key_press(egui::Key::Escape);
     h.run();
-    assert!(app(&h).ui.prepare.panel.is_none());
-    assert_eq!(revision(&s), rev);
+    assert!(app(&h).ui.prepare.panel.is_none(), "one press closes it");
+    assert_eq!(document_bytes(&s), before, "and keeps the selection");
+    // Delete afterwards works on the canvas again: the field let go.
+    assert!(!h.ctx.egui_wants_keyboard_input());
+}
+
+#[test]
+fn search_reaches_arrange_commands_that_are_not_on_the_tab() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let b = square_at(&s, 60.0);
+    let c = square_at(&s, 200.0);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let search = |h: &mut AppHarness, query: &str, hit: &str| {
+        h.get_by_label("Search commands").click();
+        h.run();
+        h.get_by_label("Search commands").type_text(query);
+        h.run();
+        h.get_by_role_and_label(Role::Button, hit).click();
+        h.run();
+        h.run();
+    };
+    // Rotate opens its panel.
+    select(&s, &[a]);
+    h.run();
+    search(&mut h, "rotate", "Rotate (search)");
+    assert_eq!(
+        panel_kind(&h),
+        Some(flatcraft::ui::arrange::PanelKind::Rotate)
+    );
+    h.get_by_role_and_label(Role::Button, &cancel_name())
+        .click();
+    h.run();
+    // Mirror: unpinned, its items still show in the open drop-down.
+    let pins = |h: &mut AppHarness, keep: &[&str]| {
+        let keep: Vec<String> = keep.iter().map(|k| k.to_string()).collect();
+        s.lock()
+            .unwrap()
+            .update_prefs(|p| p.arrange_pins = keep)
+            .unwrap();
+        h.run();
+    };
+    pins(&mut h, &[]);
+    assert!(h.query_by_role_and_label(Role::Button, "Mirror").is_none());
+    search(&mut h, "mirror", "Mirror (search)");
+    assert_eq!(
+        app(&h).ui.prepare.tab,
+        flatcraft::ui::prepare::RibbonTab::Arrange
+    );
+    let undo = undo_len(&s);
+    h.get_by_label("Mirror horizontally").click();
+    h.run();
+    wait_for_workers(&mut h);
+    assert_eq!(undo_len(&s), undo + 1, "mirrored");
+    // Align: its items, To the cutting area among them.
+    search(&mut h, "align", "Align (search)");
+    h.get_by_label("To the cutting area").click();
+    h.run();
+    let undo = undo_len(&s);
+    h.get_by_label("Right").click();
+    h.run();
+    wait_for_workers(&mut h);
+    assert_eq!(undo_len(&s), undo + 1, "aligned");
+    // Distribute, with three objects.
+    s.lock()
+        .unwrap()
+        .execute(
+            "object.move",
+            json!({ "ids": [b], "dx_mm": 30.0 }),
+            Origin::User,
+        )
+        .unwrap();
+    select(&s, &[a, b, c]);
+    h.run();
+    search(&mut h, "distrib", "Distribute (search)");
+    let undo = undo_len(&s);
+    h.get_by_label("Distribute horizontally").click();
+    h.run();
+    wait_for_workers(&mut h);
+    assert_eq!(undo_len(&s), undo + 1, "distributed");
 }
 
 #[test]

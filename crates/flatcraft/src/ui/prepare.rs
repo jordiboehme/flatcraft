@@ -212,6 +212,11 @@ pub struct PrepareState {
     pub panel: Option<ArrangePanel>,
     /// The values of the last panel that ran, for the next one.
     pub panel_last: PanelValues,
+    /// Open the Arrange drop-down on the next frame (search asked for it).
+    pub arrange_open: bool,
+    /// The command whose items the open Arrange drop-down shows right
+    /// under its row (Mirror, Align or Distribute found by search).
+    pub arrange_reveal: Option<arrange::ArrangeCmd>,
     /// The objects the open context menu works on (see `context_menu`).
     pub context: Option<Vec<u64>>,
     /// The open Rename dialog.
@@ -280,6 +285,8 @@ impl Default for PrepareState {
             cache: ShapeCache::default(),
             panel: None,
             panel_last: PanelValues::default(),
+            arrange_open: false,
+            arrange_reveal: None,
             context: None,
             rename: None,
         }

@@ -609,7 +609,7 @@ fn fields(ui: &mut Ui, p: &mut ArrangePanel, snap: &Snapshot, each_now: bool) {
                 });
             ui.label(
                 RichText::new(
-                    "Instances count the original. 360 deg shares the circle out evenly.",
+                    "Instances count the original. Only a full turn (360 deg) shares the copies out evenly; a smaller angle puts the last copy at the end of the arc.",
                 )
                 .weak(),
             );
@@ -800,6 +800,14 @@ fn submenu(
     }
 }
 
+/// Shows the Arrange tab with the drop-down open and, for Mirror, Align
+/// and Distribute, their items under their row. Search uses it.
+pub fn reveal(st: &mut PrepareState, cmd: ArrangeCmd) {
+    st.tab = super::prepare::RibbonTab::Arrange;
+    st.arrange_open = true;
+    st.arrange_reveal = has_submenu(cmd).then_some(cmd);
+}
+
 /// Runs a command that has no submenu: opens its panel or runs it.
 fn pick(cmd: ArrangeCmd, snap: &Snapshot, st: &mut PrepareState, actions: &mut Vec<Action>) {
     if let Some(kind) = cmd.panel() {
@@ -822,11 +830,26 @@ pub fn group(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut 
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
     let button = egui::Button::image_and_text(image(ui, Icon::Arrange), "Arrange")
         .right_text(small_image(ui, Icon::ChevronDown));
-    egui::containers::menu::MenuButton::from_button(button)
-        .config(config)
-        .ui(ui, |ui| dropdown(ui, st, snap, actions))
-        .0
+    let resp = ui
+        .add(button)
         .on_hover_text("Every arrange command. Pin your favourites to the ribbon.");
+    // Like egui's MenuButton, but search can open it too.
+    let open = if std::mem::take(&mut st.arrange_open) {
+        Some(egui::SetOpenCommand::Bool(true))
+    } else {
+        resp.clicked().then_some(egui::SetOpenCommand::Toggle)
+    };
+    let shown = egui::Popup::menu(&resp)
+        .open_memory(open)
+        .close_behavior(config.close_behavior)
+        .info(
+            egui::UiStackInfo::new(egui::UiKind::Menu)
+                .with_tag_value(egui::containers::menu::MenuConfig::MENU_CONFIG_TAG, config),
+        )
+        .show(|ui| dropdown(ui, st, snap, actions));
+    if shown.is_none() {
+        st.arrange_reveal = None;
+    }
     for cmd in pinned(snap) {
         let blocked = cmd.blocked(snap);
         let hint = blocked.map_or_else(
@@ -972,6 +995,14 @@ fn dropdown(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut V
             }
         });
         ui.data_mut(|d| d.insert_temp(row_id, row.response.rect));
+        if st.arrange_reveal == Some(cmd) {
+            // Found by search: its items right here, no hover needed.
+            ui.add_enabled_ui(!snap.selection.is_empty(), |ui| {
+                ui.indent(("flatcraft-arrange-reveal", cmd.id()), |ui| {
+                    submenu(ui, cmd, snap, st, actions);
+                });
+            });
+        }
     }
     ui.separator();
     ui.label(

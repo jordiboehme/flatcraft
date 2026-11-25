@@ -1384,7 +1384,9 @@ fn prepare_keys(
     if ctx.egui_wants_keyboard_input() || egui::Popup::is_any_open(ctx) {
         return;
     }
-    // Escape closes an open Arrange panel first, and changes nothing.
+    // Escape closes an open Arrange panel first, and changes nothing. One
+    // press is enough while a panel field has the keys: egui drops the
+    // focus on Escape before this runs.
     if st.panel.is_some() && help::pressed(ctx, help::PrepareKey::ClearSelection) {
         st.panel = None;
         return;

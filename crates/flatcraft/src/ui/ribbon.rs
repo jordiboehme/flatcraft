@@ -208,12 +208,30 @@ pub fn single_raster_of(snap: &Snapshot, ids: &[u64]) -> Option<u64> {
 }
 
 /// The panel a search hit opens on this selection, if any: Copies opens
-/// the Rectangular pattern panel for one object, Circular pattern opens its
-/// panel for any selection.
+/// the Rectangular pattern panel for one object, Rotate and Circular
+/// pattern open theirs for any selection.
 fn search_panel(id: &str, snap: &Snapshot) -> Option<PanelKind> {
     match id {
         "object.copies" if snap.selection.len() == 1 => Some(PanelKind::RectangularPattern),
         "object.circular_copies" if !snap.selection.is_empty() => Some(PanelKind::CircularPattern),
+        "object.rotate" if !snap.selection.is_empty() => Some(PanelKind::Rotate),
+        _ => None,
+    }
+}
+
+/// The Arrange command a search hit shows in the open Arrange drop-down,
+/// since the tab may not show it (it is not pinned). Mirror, Align and
+/// Distribute show their items too.
+fn search_reveal(id: &str) -> Option<arrange::ArrangeCmd> {
+    use arrange::ArrangeCmd::*;
+    match id {
+        "object.mirror" => Some(Mirror),
+        "arrange.align" => Some(Align),
+        "arrange.distribute" => Some(Distribute),
+        // Without a selection their panel cannot run: the drop-down shows
+        // their row and says what is missing.
+        "object.rotate" => Some(Rotate),
+        "object.circular_copies" => Some(CircularPattern),
         _ => None,
     }
 }
@@ -240,6 +258,10 @@ fn pick(id: &'static str, snap: &Snapshot, st: &mut PrepareState, actions: &mut 
     if let Some(kind) = search_panel(id, snap) {
         // Like the ribbon buttons; else the tab shows where it is.
         arrange::open(st, snap, kind);
+        return;
+    }
+    if let Some(cmd) = search_reveal(id) {
+        arrange::reveal(st, cmd);
         return;
     }
     match search_target(id, snap.doc_id) {
