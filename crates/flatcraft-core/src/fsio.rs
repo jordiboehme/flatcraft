@@ -76,8 +76,11 @@ fn existing_permissions(_path: &Path) -> Option<fs::Permissions> {
 }
 
 /// Follows symbolic links at `path` (also a dangling one) to the file they
-/// name, so a write replaces that file and keeps the link.
-fn resolve_links(path: &Path) -> io::Result<PathBuf> {
+/// name, so a write replaces that file and keeps the link. Links in the
+/// folders above are left to the file system. Path checks that guard a
+/// write (like the agent limits) must look at this path, because it is the
+/// file [`write_atomic`] replaces.
+pub fn resolve_links(path: &Path) -> io::Result<PathBuf> {
     let mut p = path.to_path_buf();
     for _ in 0..40 {
         match fs::symlink_metadata(&p) {

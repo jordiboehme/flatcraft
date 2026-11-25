@@ -754,6 +754,41 @@ fn agent_cannot_save_into_config_dir() {
     assert!(inside.exists());
 }
 
+/// Saves follow a link at the target path to the file it names, so an
+/// agent's save through a link into the config dir must be refused, also
+/// when the link points to a file that does not exist yet.
+#[cfg(unix)]
+#[test]
+fn agent_cannot_save_through_a_link_into_the_config_dir() {
+    let config = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let mut s = session(&config);
+    let prefs = config.path().join("preferences.toml");
+    std::fs::write(&prefs, "theme = \"Light\"\n").unwrap();
+    let to_prefs = elsewhere.path().join("innocent.flatcraft");
+    std::os::unix::fs::symlink(&prefs, &to_prefs).unwrap();
+    let new_file = config.path().join("profiles").join("planted.toml");
+    let dangling = elsewhere.path().join("dangling.flatcraft");
+    std::os::unix::fs::symlink(&new_file, &dangling).unwrap();
+    let chained = elsewhere.path().join("chained.flatcraft");
+    std::os::unix::fs::symlink(&dangling, &chained).unwrap();
+    for path in [&to_prefs, &dangling, &chained] {
+        let e = s
+            .execute("project.save", json!({ "path": path }), Origin::Agent)
+            .unwrap_err();
+        assert!(
+            matches!(e, CommandError::Refused(_)),
+            "{}: {e}",
+            path.display()
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(&prefs).unwrap(),
+        "theme = \"Light\"\n"
+    );
+    assert!(!new_file.exists());
+}
+
 #[test]
 fn documents_new_switch_close() {
     let dir = tempfile::tempdir().unwrap();

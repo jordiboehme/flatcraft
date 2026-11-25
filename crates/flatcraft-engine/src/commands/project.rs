@@ -244,17 +244,27 @@ pub(crate) fn lexical(path: &Path) -> PathBuf {
     out
 }
 
-/// The path with symlinks resolved as far as the file system allows.
+/// The path with symlinks resolved as far as the file system allows: a link
+/// at the path itself is followed even when it dangles, because a save
+/// writes through it (`fsio::write_atomic`); then the longest part that
+/// exists is resolved and the rest is appended.
 pub(crate) fn resolved(path: &Path) -> PathBuf {
-    if let Ok(p) = path.canonicalize() {
-        return p;
+    let linked = flatcraft_device::fsio::resolve_links(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut base = linked.as_path();
+    let mut tail = Vec::new();
+    loop {
+        if let Ok(mut p) = base.canonicalize() {
+            p.extend(tail.iter().rev());
+            return p;
+        }
+        match (base.parent(), base.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name);
+                base = parent;
+            }
+            _ => return lexical(&linked),
+        }
     }
-    if let (Some(parent), Some(name)) = (path.parent(), path.file_name())
-        && let Ok(p) = parent.canonicalize()
-    {
-        return p.join(name);
-    }
-    lexical(path)
 }
 
 /// True if `path` is the config dir or lies inside it.
