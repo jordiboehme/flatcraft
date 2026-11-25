@@ -1,0 +1,1199 @@
+//! The one table of the ribbon: every action with its id, title, icon,
+//! group, description and what it runs, and every group with its title,
+//! icon and description. The ribbon, the group lists, the pins, search
+//! and the context menu all read their titles from here, so the words a
+//! person sees for one action are the same everywhere.
+//!
+//! The descriptions are the text of the hover cards. They follow the
+//! hints-for-beginners rule: what the thing does and when to use it, in
+//! plain words, with any technical term explained. A dimmed action says
+//! why it cannot run and what to do ([`Tool::blocked`]).
+
+use serde_json::json;
+
+use super::arrange::{self, PanelKind};
+use super::canvas::{CanvasView, PX_PER_MM_100};
+use super::help::PrepareKey;
+use super::icons::Icon;
+use super::prepare::{PrepareState, RibbonTab, Snapshot};
+use super::{Action, ribbon};
+
+/// A group of the ribbon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GroupId {
+    Add,
+    Edit,
+    Files,
+    Size,
+    Arrange,
+    Zoom,
+    Show,
+    Panels,
+}
+
+/// What the table says about a group.
+#[derive(Debug, Clone, Copy)]
+pub struct GroupDef {
+    pub id: GroupId,
+    pub tab: RibbonTab,
+    pub title: &'static str,
+    pub icon: Icon,
+    pub description: &'static str,
+}
+
+/// Every group, left to right on its tab.
+pub const GROUPS: [GroupDef; 8] = [
+    GroupDef {
+        id: GroupId::Add,
+        tab: RibbonTab::Home,
+        title: "Add",
+        icon: Icon::Plus,
+        description: "Bring designs onto the mat: SVG files, pictures to trace, or the test sheet.",
+    },
+    GroupDef {
+        id: GroupId::Edit,
+        tab: RibbonTab::Home,
+        title: "Edit",
+        icon: Icon::Pencil,
+        description: "Copy or remove what you selected. Undo takes back any step.",
+    },
+    GroupDef {
+        id: GroupId::Files,
+        tab: RibbonTab::Home,
+        title: "Linked files",
+        icon: Icon::Linked,
+        description: "An imported object stays linked to its file. Change the file in another app, then read it again here.",
+    },
+    GroupDef {
+        id: GroupId::Size,
+        tab: RibbonTab::Arrange,
+        title: "Size",
+        icon: Icon::Scale,
+        description: "The width and height of the selection in millimetres, or its scale in percent. Type a number and press Enter.",
+    },
+    GroupDef {
+        id: GroupId::Arrange,
+        tab: RibbonTab::Arrange,
+        title: "Arrange",
+        icon: Icon::Arrange,
+        description: "Move, turn, flip, line up and copy your objects. Pin the ones you use most to the ribbon.",
+    },
+    GroupDef {
+        id: GroupId::Zoom,
+        tab: RibbonTab::View,
+        title: "Zoom",
+        icon: Icon::ZoomIn,
+        description: "How close you look at the mat. It never changes what is cut.",
+    },
+    GroupDef {
+        id: GroupId::Show,
+        tab: RibbonTab::View,
+        title: "Show",
+        icon: Icon::Eye,
+        description: "Helpers drawn on the canvas to place things by eye. They are never cut.",
+    },
+    GroupDef {
+        id: GroupId::Panels,
+        tab: RibbonTab::View,
+        title: "Panels",
+        icon: Icon::Panels,
+        description: "Show or hide the side panels to make room for the mat.",
+    },
+];
+
+impl GroupId {
+    pub fn def(self) -> &'static GroupDef {
+        GROUPS
+            .iter()
+            .find(|g| g.id == self)
+            .expect("every group is in GROUPS")
+    }
+
+    /// The actions of the group, in table order.
+    pub fn tools(self) -> impl Iterator<Item = &'static Tool> {
+        TOOLS.iter().filter(move |t| t.group == self)
+    }
+}
+
+/// The groups of a tab, left to right.
+pub fn groups_of(tab: RibbonTab) -> impl Iterator<Item = &'static GroupDef> {
+    GROUPS.iter().filter(move |g| g.tab == tab)
+}
+
+/// An edge or centre line Align lines up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AlignMode {
+    Left,
+    Centre,
+    Right,
+    Top,
+    Middle,
+    Bottom,
+}
+
+impl AlignMode {
+    /// The `mode` of `arrange.align`.
+    pub fn param(self) -> &'static str {
+        match self {
+            AlignMode::Left => "left",
+            AlignMode::Centre => "hcenter",
+            AlignMode::Right => "right",
+            AlignMode::Top => "top",
+            AlignMode::Middle => "vcenter",
+            AlignMode::Bottom => "bottom",
+        }
+    }
+}
+
+/// What Align lines up with: the option of the Align rows. A pin keeps
+/// the option it was pinned with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AlignTo {
+    Selection,
+    Area,
+}
+
+impl AlignTo {
+    pub fn of(to_area: bool) -> Self {
+        if to_area {
+            AlignTo::Area
+        } else {
+            AlignTo::Selection
+        }
+    }
+
+    /// Its label in the list ("To the selection").
+    pub fn label(self) -> &'static str {
+        match self {
+            AlignTo::Selection => "To the selection",
+            AlignTo::Area => "To the cutting area",
+        }
+    }
+
+    /// Its short name in a pinned title ("Align left · cutting area").
+    pub fn short(self) -> &'static str {
+        match self {
+            AlignTo::Selection => "selection",
+            AlignTo::Area => "cutting area",
+        }
+    }
+}
+
+/// What an action does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Act {
+    Import,
+    Trace,
+    TestPatterns,
+    Duplicate,
+    Copies,
+    Delete,
+    Reload,
+    MoveCopy,
+    Rotate,
+    RotateLeft,
+    RotateRight,
+    MirrorHorizontal,
+    MirrorVertical,
+    Align(AlignMode, AlignTo),
+    DistributeHorizontal,
+    DistributeVertical,
+    RectangularPattern,
+    CircularPattern,
+    AutoArrangePanel,
+    AutoArrange,
+    ZoomFit,
+    Zoom100,
+    Grid,
+    Rulers,
+    ObjectsPanel,
+    SettingsPanel,
+    DebugPanel,
+}
+
+/// How a pinned action looks on the ribbon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Style {
+    /// Icon and text in one row (icon-only when the ribbon is short).
+    Wide,
+    /// A 24 pt icon above a small label.
+    Big,
+    /// A small icon button, in one or two rows.
+    Small,
+}
+
+/// A heading in a group's list, before the rows that belong to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Section {
+    Mirror,
+    Align,
+    Distribute,
+}
+
+impl Section {
+    pub fn title(self) -> &'static str {
+        match self {
+            Section::Mirror => "Mirror",
+            Section::Align => "Align",
+            Section::Distribute => "Distribute",
+        }
+    }
+
+    pub fn icon(self) -> Icon {
+        match self {
+            Section::Mirror => Icon::Mirror,
+            Section::Align => Icon::Align,
+            Section::Distribute => Icon::DistributeHorizontal,
+        }
+    }
+}
+
+/// One action of the ribbon.
+#[derive(Debug, Clone, Copy)]
+pub struct Tool {
+    /// Its pin id in the preferences (`ribbon_pins`).
+    pub id: &'static str,
+    pub act: Act,
+    pub title: &'static str,
+    pub icon: Icon,
+    pub group: GroupId,
+    /// What it does and when to use it, for its hover card.
+    pub description: &'static str,
+    pub style: Style,
+    pub section: Option<Section>,
+}
+
+const fn tool(
+    id: &'static str,
+    act: Act,
+    title: &'static str,
+    icon: Icon,
+    group: GroupId,
+    style: Style,
+    description: &'static str,
+) -> Tool {
+    Tool {
+        id,
+        act,
+        title,
+        icon,
+        group,
+        description,
+        style,
+        section: None,
+    }
+}
+
+const fn in_section(mut t: Tool, section: Section) -> Tool {
+    t.section = Some(section);
+    t
+}
+
+const fn align(
+    id: &'static str,
+    mode: AlignMode,
+    to: AlignTo,
+    title: &'static str,
+    icon: Icon,
+    description: &'static str,
+) -> Tool {
+    in_section(
+        tool(
+            id,
+            Act::Align(mode, to),
+            title,
+            icon,
+            GroupId::Arrange,
+            Style::Small,
+            description,
+        ),
+        Section::Align,
+    )
+}
+
+use AlignMode as M;
+use AlignTo::{Area, Selection};
+use GroupId as G;
+use Style::{Big, Small, Wide};
+
+/// Every action, in the order of the ribbon and of the lists. The ids are
+/// `flatcraft_engine::prefs::RIBBON_PIN_IDS`, in the same order.
+pub const TOOLS: [Tool; 38] = [
+    tool(
+        "import",
+        Act::Import,
+        "Import",
+        Icon::Import,
+        G::Add,
+        Wide,
+        "Bring an SVG design or a picture onto the mat. A picture gets traced into cut lines.",
+    ),
+    tool(
+        "trace",
+        Act::Trace,
+        "Trace",
+        Icon::Trace,
+        G::Add,
+        Wide,
+        "Turn the selected picture into cut lines with your own settings. Tracing follows the edges between dark and light.",
+    ),
+    tool(
+        "test_patterns",
+        Act::TestPatterns,
+        "Test patterns",
+        Icon::TestPatterns,
+        G::Add,
+        Wide,
+        "Add the test sheet: small shapes that show how well blade and settings cut. Cut it first on a new machine or material.",
+    ),
+    tool(
+        "duplicate",
+        Act::Duplicate,
+        "Duplicate",
+        Icon::Duplicate,
+        G::Edit,
+        Wide,
+        "Make one copy of the selection, a little to the side.",
+    ),
+    tool(
+        "copies",
+        Act::Copies,
+        "Copies...",
+        Icon::Copies,
+        G::Edit,
+        Wide,
+        "Many copies of one object in columns and rows. Sticker sheet, engage!",
+    ),
+    tool(
+        "delete",
+        Act::Delete,
+        "Delete",
+        Icon::Delete,
+        G::Edit,
+        Wide,
+        "Remove the selection from the mat. Undo brings it back.",
+    ),
+    tool(
+        "reload",
+        Act::Reload,
+        "Reload",
+        Icon::Reload,
+        G::Files,
+        Wide,
+        "Read the linked files again after you changed them in another app. Works on the selection, or on every linked object when nothing is selected.",
+    ),
+    tool(
+        "move_copy",
+        Act::MoveCopy,
+        "Move / Copy...",
+        Icon::Move,
+        G::Arrange,
+        Big,
+        "Move the selection by an exact distance in mm, or leave copies behind at every step.",
+    ),
+    tool(
+        "rotate",
+        Act::Rotate,
+        "Rotate...",
+        Icon::Rotate,
+        G::Arrange,
+        Big,
+        "Turn the selection by an exact angle in degrees. A positive angle turns clockwise.",
+    ),
+    tool(
+        "rotate.left",
+        Act::RotateLeft,
+        "Rotate -90",
+        Icon::RotateLeft,
+        G::Arrange,
+        Small,
+        "A quarter turn anticlockwise. With Each object on, every object turns about its own centre.",
+    ),
+    tool(
+        "rotate.right",
+        Act::RotateRight,
+        "Rotate +90",
+        Icon::Rotate,
+        G::Arrange,
+        Small,
+        "A quarter turn clockwise. With Each object on, every object turns about its own centre.",
+    ),
+    in_section(
+        tool(
+            "mirror.horizontal",
+            Act::MirrorHorizontal,
+            "Mirror horizontally",
+            Icon::Mirror,
+            G::Arrange,
+            Small,
+            "Flip left and right. Use it for iron-on vinyl, which is cut from the back.",
+        ),
+        Section::Mirror,
+    ),
+    in_section(
+        tool(
+            "mirror.vertical",
+            Act::MirrorVertical,
+            "Mirror vertically",
+            Icon::MirrorVertical,
+            G::Arrange,
+            Small,
+            "Flip top and bottom, like a reflection in a lake.",
+        ),
+        Section::Mirror,
+    ),
+    align(
+        "align.left.selection",
+        M::Left,
+        Selection,
+        "Align left",
+        Icon::AlignLeft,
+        "Moves the selected objects so their left edges line up with the leftmost one.",
+    ),
+    align(
+        "align.centre.selection",
+        M::Centre,
+        Selection,
+        "Align centre",
+        Icon::AlignCentre,
+        "Moves the selected objects so their centres sit on one vertical line, the middle of the selection.",
+    ),
+    align(
+        "align.right.selection",
+        M::Right,
+        Selection,
+        "Align right",
+        Icon::AlignRight,
+        "Moves the selected objects so their right edges line up with the rightmost one.",
+    ),
+    align(
+        "align.top.selection",
+        M::Top,
+        Selection,
+        "Align top",
+        Icon::AlignTop,
+        "Moves the selected objects so their top edges line up with the highest one.",
+    ),
+    align(
+        "align.middle.selection",
+        M::Middle,
+        Selection,
+        "Align middle",
+        Icon::Align,
+        "Moves the selected objects so their centres sit on one horizontal line, the middle of the selection.",
+    ),
+    align(
+        "align.bottom.selection",
+        M::Bottom,
+        Selection,
+        "Align bottom",
+        Icon::AlignBottom,
+        "Moves the selected objects so their bottom edges line up with the lowest one.",
+    ),
+    align(
+        "align.left.area",
+        M::Left,
+        Area,
+        "Align left",
+        Icon::AlignLeftArea,
+        "Moves the selection to the left edge of the cutting area, the part of the mat the blade can reach.",
+    ),
+    align(
+        "align.centre.area",
+        M::Centre,
+        Area,
+        "Align centre",
+        Icon::AlignCentreArea,
+        "Moves the selection to the middle of the cutting area, from left to right. The cutting area is the part of the mat the blade can reach.",
+    ),
+    align(
+        "align.right.area",
+        M::Right,
+        Area,
+        "Align right",
+        Icon::AlignRightArea,
+        "Moves the selection to the right edge of the cutting area, the part of the mat the blade can reach.",
+    ),
+    align(
+        "align.top.area",
+        M::Top,
+        Area,
+        "Align top",
+        Icon::AlignTopArea,
+        "Moves the selection to the top edge of the cutting area, the part of the mat the blade can reach.",
+    ),
+    align(
+        "align.middle.area",
+        M::Middle,
+        Area,
+        "Align middle",
+        Icon::AlignMiddleArea,
+        "Moves the selection to the middle of the cutting area, from top to bottom. The cutting area is the part of the mat the blade can reach.",
+    ),
+    align(
+        "align.bottom.area",
+        M::Bottom,
+        Area,
+        "Align bottom",
+        Icon::AlignBottomArea,
+        "Moves the selection to the bottom edge of the cutting area, the part of the mat the blade can reach.",
+    ),
+    in_section(
+        tool(
+            "distribute.horizontal",
+            Act::DistributeHorizontal,
+            "Distribute horizontally",
+            Icon::DistributeHorizontal,
+            G::Arrange,
+            Small,
+            "Equal gaps between 3 or more objects, from left to right. The two outer objects stay where they are.",
+        ),
+        Section::Distribute,
+    ),
+    in_section(
+        tool(
+            "distribute.vertical",
+            Act::DistributeVertical,
+            "Distribute vertically",
+            Icon::DistributeVertical,
+            G::Arrange,
+            Small,
+            "Equal gaps between 3 or more objects, from top to bottom. The two outer objects stay where they are.",
+        ),
+        Section::Distribute,
+    ),
+    tool(
+        "pattern.rectangular",
+        Act::RectangularPattern,
+        "Rectangular pattern...",
+        Icon::RectangularPattern,
+        G::Arrange,
+        Big,
+        "Copies of one object in columns and rows, with the gap you choose. Sticker sheet, engage!",
+    ),
+    tool(
+        "pattern.circular",
+        Act::CircularPattern,
+        "Circular pattern...",
+        Icon::CircularPattern,
+        G::Arrange,
+        Big,
+        "Copies around a centre point, like the numbers on a clock.",
+    ),
+    tool(
+        "auto_arrange.panel",
+        Act::AutoArrangePanel,
+        "Auto arrange...",
+        Icon::Arrange,
+        G::Arrange,
+        Big,
+        "Packs every visible object onto the cutting area in rows, Tetris style, with the gap you choose. A preview shows where they land.",
+    ),
+    tool(
+        "auto_arrange",
+        Act::AutoArrange,
+        "Auto arrange",
+        Icon::Arrange,
+        G::Arrange,
+        Big,
+        "Packs every visible object onto the cutting area in rows, Tetris style, in one click. It uses the gap you last chose in the Auto arrange panel.",
+    ),
+    tool(
+        "zoom.fit",
+        Act::ZoomFit,
+        "Zoom to fit",
+        Icon::ZoomFit,
+        G::Zoom,
+        Wide,
+        "Show the whole mat in the window.",
+    ),
+    tool(
+        "zoom.100",
+        Act::Zoom100,
+        "Zoom 100%",
+        Icon::ZoomActual,
+        G::Zoom,
+        Wide,
+        "About real size on a typical screen, to judge how big a design really is.",
+    ),
+    tool(
+        "view.grid",
+        Act::Grid,
+        "Grid",
+        Icon::Grid,
+        G::Show,
+        Wide,
+        "Show the grid printed on the mat, to place things by eye.",
+    ),
+    tool(
+        "view.rulers",
+        Act::Rulers,
+        "Rulers",
+        Icon::Ruler,
+        G::Show,
+        Wide,
+        "Show rulers in millimetres along the edges of the canvas.",
+    ),
+    tool(
+        "panel.objects",
+        Act::ObjectsPanel,
+        "Objects panel",
+        Icon::PanelLeft,
+        G::Panels,
+        Wide,
+        "The list of everything on the mat. Hide, skip, rename or pick objects there.",
+    ),
+    tool(
+        "panel.settings",
+        Act::SettingsPanel,
+        "Settings panel",
+        Icon::PanelRight,
+        G::Panels,
+        Wide,
+        "What is cut and how: cut mode, plotter, mat, material, speed and force.",
+    ),
+    tool(
+        "panel.debug",
+        Act::DebugPanel,
+        "Debug panel",
+        Icon::Debug,
+        G::Panels,
+        Wide,
+        "For the curious: what the app planned and what goes to the plotter. You do not need it to cut.",
+    ),
+];
+
+/// How an icon is coloured (Jordi's "Paper (crisp)" style): which of its
+/// SVG children (in file order) are paper, the shapes that get cut, filled
+/// with the paper colour and outlined with the cut colour, and which are
+/// the one accent part that tells what happens, in the accent colour.
+/// Every other child is ink. Every icon of an action, a group or a
+/// switch has an entry; the framed Align icons use their base icon's.
+pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 39] = [
+    (Icon::Import, &[2], &[0, 1]),
+    (Icon::Trace, &[], &[2]),
+    (Icon::TestPatterns, &[0], &[1]),
+    (Icon::Duplicate, &[0], &[1]),
+    (Icon::Copies, &[2], &[0, 1]),
+    (Icon::Delete, &[], &[0, 1]),
+    (Icon::Reload, &[], &[0, 1, 2, 3]),
+    (Icon::Move, &[], &[0, 1, 2, 3, 4, 5]),
+    (Icon::Rotate, &[], &[1]),
+    (Icon::RotateLeft, &[], &[1]),
+    (Icon::Mirror, &[4, 5], &[0, 1, 2, 3]),
+    (Icon::MirrorVertical, &[2, 3], &[0, 1, 4, 5]),
+    (Icon::AlignLeft, &[0, 1], &[2]),
+    (Icon::AlignCentre, &[1, 2, 3, 4], &[0]),
+    (Icon::AlignRight, &[0, 1], &[2]),
+    (Icon::AlignTop, &[0, 1], &[2]),
+    (Icon::Align, &[1, 2, 3, 4], &[0]),
+    (Icon::AlignBottom, &[0, 1], &[2]),
+    (Icon::DistributeHorizontal, &[0, 1], &[2, 3, 4, 5]),
+    (Icon::DistributeVertical, &[4, 5], &[0, 1, 2, 3]),
+    (Icon::RectangularPattern, &[0], &[1, 2]),
+    (Icon::CircularPattern, &[1], &[0]),
+    (Icon::Arrange, &[0, 2], &[1, 3]),
+    (Icon::ZoomFit, &[], &[0, 1, 2, 3]),
+    (Icon::ZoomActual, &[], &[0]),
+    (Icon::Grid, &[0], &[1, 2, 3, 4]),
+    (Icon::Ruler, &[0], &[1, 2, 3, 4]),
+    (Icon::PanelLeft, &[0], &[1]),
+    (Icon::PanelRight, &[0], &[1]),
+    (Icon::Debug, &[], &[0]),
+    (Icon::Plus, &[], &[0, 1]),
+    (Icon::Pencil, &[], &[1]),
+    (Icon::Linked, &[], &[0]),
+    (Icon::Scale, &[], &[1, 2, 3]),
+    (Icon::ZoomIn, &[], &[2, 3]),
+    (Icon::Eye, &[], &[1]),
+    (Icon::Panels, &[0], &[1, 2]),
+    (Icon::KeepAspect, &[0], &[1, 2]),
+    (Icon::EachObject, &[1], &[0]),
+];
+
+/// The paper and accent children of `icon` (see [`ICON_ROLES`]); `None`
+/// for icons drawn in one colour (the app bar's, the pin, the chevron).
+pub fn icon_roles(icon: Icon) -> Option<(&'static [usize], &'static [usize])> {
+    let icon = icon.framed_from().unwrap_or(icon);
+    ICON_ROLES
+        .iter()
+        .find(|(i, _, _)| *i == icon)
+        .map(|(_, paper, accent)| (*paper, *accent))
+}
+
+/// The action with this pin id.
+pub fn by_id(id: &str) -> Option<&'static Tool> {
+    TOOLS.iter().find(|t| t.id == id)
+}
+
+/// The action that does `act`.
+pub fn by_act(act: Act) -> &'static Tool {
+    TOOLS
+        .iter()
+        .find(|t| t.act == act)
+        .expect("every act is in TOOLS")
+}
+
+/// The pinned actions of a group, in table order.
+pub fn pinned(snap: &Snapshot, group: GroupId) -> Vec<&'static Tool> {
+    group
+        .tools()
+        .filter(|t| snap.ribbon_pins.iter().any(|p| p == t.id))
+        .collect()
+}
+
+impl Tool {
+    /// The option the action carries (what Align lines up with).
+    pub fn option(&self) -> Option<AlignTo> {
+        match self.act {
+            Act::Align(_, to) => Some(to),
+            _ => None,
+        }
+    }
+
+    /// The title with its option: "Align left · cutting area". It names a
+    /// pinned button and a search hit, where the option is not shown.
+    pub fn full_title(&self) -> String {
+        match self.option() {
+            Some(to) => format!("{} · {}", self.title, to.short()),
+            None => self.title.to_string(),
+        }
+    }
+
+    /// The label of a big button: the title without "...".
+    pub fn short_title(&self) -> &'static str {
+        self.title.trim_end_matches("...")
+    }
+
+    /// The accessible name of its pinned button.
+    pub fn button_name(&self) -> String {
+        match self.style {
+            Style::Big => self.short_title().to_string(),
+            _ => self.full_title(),
+        }
+    }
+
+    /// The accessible name of its row in the group's list.
+    pub fn row_name(&self) -> String {
+        format!("{} ({})", self.title, self.group.def().title)
+    }
+
+    /// The title line of its hover card. Auto arrange also names the gap
+    /// it runs with ("Auto arrange · 5 mm").
+    pub fn card_title(&self, snap: &Snapshot) -> String {
+        match self.act {
+            Act::AutoArrange => {
+                format!("{} · {} mm", self.title, trim_number(snap.auto_spacing_mm))
+            }
+            _ => self.full_title(),
+        }
+    }
+
+    /// Its keyboard shortcut, from `help::SHORTCUTS`.
+    pub fn shortcut(&self) -> Option<PrepareKey> {
+        match self.act {
+            Act::Import => Some(PrepareKey::Import),
+            Act::Duplicate => Some(PrepareKey::Duplicate),
+            Act::Delete => Some(PrepareKey::Delete),
+            _ => None,
+        }
+    }
+
+    /// The registry command the action runs, if any. Search lists the
+    /// action instead of the command.
+    pub fn command(&self) -> Option<&'static str> {
+        Some(match self.act {
+            Act::Import => "object.import",
+            Act::Trace => "object.retrace",
+            Act::TestPatterns => "tools.test_patterns",
+            Act::Duplicate => "object.duplicate",
+            Act::Copies | Act::RectangularPattern => "object.copies",
+            Act::Delete => "object.delete",
+            Act::Reload => "object.reload",
+            Act::MoveCopy => "object.move",
+            Act::Rotate | Act::RotateLeft | Act::RotateRight => "object.rotate",
+            Act::MirrorHorizontal | Act::MirrorVertical => "object.mirror",
+            Act::Align(..) => "arrange.align",
+            Act::DistributeHorizontal | Act::DistributeVertical => "arrange.distribute",
+            Act::CircularPattern => "object.circular_copies",
+            Act::AutoArrangePanel | Act::AutoArrange => "arrange.auto",
+            _ => return None,
+        })
+    }
+
+    /// Why the action cannot run now, as a full sentence that says what to
+    /// do, or `None` when it can.
+    pub fn blocked(&self, snap: &Snapshot) -> Option<&'static str> {
+        self.blocked_for(snap, snap.selection.len())
+    }
+
+    /// Like [`Self::blocked`], for `n` objects (the context menu works on
+    /// the objects it was opened for).
+    pub fn blocked_for(&self, snap: &Snapshot, n: usize) -> Option<&'static str> {
+        const SELECT: &str = "Select something first.";
+        match self.act {
+            Act::Import
+            | Act::TestPatterns
+            | Act::ZoomFit
+            | Act::Zoom100
+            | Act::Grid
+            | Act::Rulers
+            | Act::ObjectsPanel
+            | Act::SettingsPanel
+            | Act::DebugPanel => None,
+            Act::Trace => ribbon::single_raster(snap)
+                .is_none()
+                .then_some("Select one picture first. Only pictures can be traced."),
+            Act::Reload => ribbon::reload_ids(snap)
+                .is_none()
+                .then_some("Select an object imported from a file first. Only those have a file to read again."),
+            Act::Copies | Act::RectangularPattern => {
+                (n != 1).then_some("Select one object first. The pattern copies one object at a time.")
+            }
+            Act::Align(_, AlignTo::Selection) => {
+                (n < 2).then_some("Select 2 or more objects first. They line up with each other.")
+            }
+            Act::DistributeHorizontal | Act::DistributeVertical => {
+                (n < 3).then_some("Select 3 or more objects first.")
+            }
+            Act::AutoArrangePanel | Act::AutoArrange => snap
+                .objects
+                .is_empty()
+                .then_some("Import something first. There is nothing to arrange yet."),
+            Act::Duplicate
+            | Act::Delete
+            | Act::MoveCopy
+            | Act::Rotate
+            | Act::RotateLeft
+            | Act::RotateRight
+            | Act::MirrorHorizontal
+            | Act::MirrorVertical
+            | Act::Align(_, AlignTo::Area)
+            | Act::CircularPattern => (n == 0).then_some(SELECT),
+        }
+    }
+
+    /// On or off, for the actions that switch something.
+    pub fn selected(&self, st: &PrepareState, show_debug: bool) -> Option<bool> {
+        Some(match self.act {
+            Act::Grid => st.show_grid,
+            Act::Rulers => st.show_rulers,
+            Act::ObjectsPanel => st.show_objects,
+            Act::SettingsPanel => st.show_settings,
+            Act::DebugPanel => show_debug,
+            _ => return None,
+        })
+    }
+
+    /// Runs the action on the selection: pushes its command, opens its
+    /// panel or dialog, or switches what it switches. A blocked action
+    /// does nothing.
+    pub fn run(
+        &self,
+        snap: &Snapshot,
+        st: &mut PrepareState,
+        show_debug: &mut bool,
+        actions: &mut Vec<Action>,
+    ) {
+        if self.blocked(snap).is_some() {
+            return;
+        }
+        let doc_id = snap.doc_id;
+        let ids: Vec<u64> = snap.selection.iter().copied().collect();
+        let each = st.fields.each;
+        let push = |actions: &mut Vec<Action>, a: Action| actions.push(a);
+        match self.act {
+            Act::Import => push(actions, Action::Import { doc_id }),
+            Act::Trace => {
+                if let Some(id) = ribbon::single_raster(snap) {
+                    push(actions, Action::TraceDialog { doc_id, id });
+                }
+            }
+            Act::TestPatterns => push(
+                actions,
+                Action::run(doc_id, "tools.test_patterns", json!({})),
+            ),
+            Act::Duplicate => push(actions, ribbon::duplicate_action(doc_id, &ids)),
+            Act::Delete => push(actions, ribbon::delete_action(doc_id, &ids)),
+            Act::Reload => {
+                if let Some(ids) = ribbon::reload_ids(snap) {
+                    push(actions, ribbon::reload_action(doc_id, ids));
+                }
+            }
+            Act::Copies | Act::RectangularPattern => {
+                arrange::open(st, snap, PanelKind::RectangularPattern)
+            }
+            Act::MoveCopy => arrange::open(st, snap, PanelKind::MoveCopy),
+            Act::Rotate => arrange::open(st, snap, PanelKind::Rotate),
+            Act::CircularPattern => arrange::open(st, snap, PanelKind::CircularPattern),
+            Act::AutoArrangePanel => arrange::open(st, snap, PanelKind::AutoArrange),
+            Act::RotateLeft => push(actions, ribbon::rotate_action(doc_id, &ids, -90.0, each)),
+            Act::RotateRight => push(actions, ribbon::rotate_action(doc_id, &ids, 90.0, each)),
+            Act::MirrorHorizontal => push(
+                actions,
+                ribbon::mirror_action(doc_id, &ids, "horizontal", each),
+            ),
+            Act::MirrorVertical => push(
+                actions,
+                ribbon::mirror_action(doc_id, &ids, "vertical", each),
+            ),
+            // A pinned combination runs with its own option, whatever the
+            // list shows now.
+            Act::Align(mode, to) => push(
+                actions,
+                ribbon::align_action(doc_id, &ids, mode.param(), to == AlignTo::Area),
+            ),
+            Act::DistributeHorizontal => push(
+                actions,
+                ribbon::distribute_action(doc_id, &ids, "horizontal"),
+            ),
+            Act::DistributeVertical => {
+                push(actions, ribbon::distribute_action(doc_id, &ids, "vertical"))
+            }
+            Act::AutoArrange => push(actions, auto_arrange_action(snap)),
+            Act::ZoomFit => st.fit_pending = true,
+            Act::Zoom100 => {
+                let at = st.canvas_rect.center();
+                let f = PX_PER_MM_100 / st.view.px_per_mm;
+                let mut v: CanvasView = st.view;
+                v.zoom_about(at, f);
+                st.view = v;
+            }
+            Act::Grid => st.show_grid = !st.show_grid,
+            Act::Rulers => st.show_rulers = !st.show_rulers,
+            Act::ObjectsPanel => st.show_objects = !st.show_objects,
+            Act::SettingsPanel => st.show_settings = !st.show_settings,
+            Act::DebugPanel => *show_debug = !*show_debug,
+        }
+    }
+}
+
+/// The one-click Auto arrange, with the spacing of the preferences.
+pub fn auto_arrange_action(snap: &Snapshot) -> Action {
+    Action::run(
+        snap.doc_id,
+        "arrange.auto",
+        json!({ "spacing_mm": snap.auto_spacing_mm }),
+    )
+}
+
+/// "5", "2.5" or "0.25": a number without trailing zeros.
+pub fn trim_number(v: f64) -> String {
+    let s = format!("{v:.2}");
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+// ---------------------------------------------------------------- settings
+
+/// A setting or field that is not an action. Each has a hover card in
+/// plain words, like the actions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Setting {
+    Width,
+    Height,
+    ScalePercent,
+    KeepAspect,
+    EachObject,
+    Search,
+    CutMode,
+    Strokes,
+    Speed,
+    Force,
+    Passes,
+    Overcut,
+    BladeOffset,
+    Keep,
+    Threshold,
+    AutoThreshold,
+    Invert,
+    Despeckle,
+    CornerThreshold,
+    Smoothing,
+    MinFeature,
+    AutoMinFeature,
+    AutoArrangeSpacing,
+}
+
+impl Setting {
+    pub const ALL: [Setting; 23] = [
+        Setting::Width,
+        Setting::Height,
+        Setting::ScalePercent,
+        Setting::KeepAspect,
+        Setting::EachObject,
+        Setting::Search,
+        Setting::CutMode,
+        Setting::Strokes,
+        Setting::Speed,
+        Setting::Force,
+        Setting::Passes,
+        Setting::Overcut,
+        Setting::BladeOffset,
+        Setting::Keep,
+        Setting::Threshold,
+        Setting::AutoThreshold,
+        Setting::Invert,
+        Setting::Despeckle,
+        Setting::CornerThreshold,
+        Setting::Smoothing,
+        Setting::MinFeature,
+        Setting::AutoMinFeature,
+        Setting::AutoArrangeSpacing,
+    ];
+
+    /// The text of its hover card: what it does, when to change it, and
+    /// any term explained.
+    pub fn card(self) -> &'static str {
+        match self {
+            Setting::Width => {
+                "The width of the selection in millimetres. Type a number and press Enter."
+            }
+            Setting::Height => {
+                "The height of the selection in millimetres. Type a number and press Enter."
+            }
+            Setting::ScalePercent => {
+                "Scale the selection: 200 makes it twice as big, 50 half as big. Type a number and press Enter."
+            }
+            Setting::KeepAspect => {
+                "On: width and height change together, so the shape does not get squashed. Off: change one without the other."
+            }
+            Setting::EachObject => {
+                "On: rotate, mirror and the % field work on each selected object about its own centre. Off: the selection moves as one piece, like Voltron."
+            }
+            Setting::Search => {
+                "Type a few letters of what you want to do, then pick it from the list or press Enter."
+            }
+            Setting::CutMode => {
+                "Object outlines cuts only the outside shape of each object. All lines also cuts the lines inside it, like the holes in a letter O."
+            }
+            Setting::Strokes => {
+                "How a drawn line (a stroke) is cut. Centre line cuts along its middle. Outline cuts around its thickness. Auto picks one for each line."
+            }
+            Setting::Speed => {
+                "How fast the blade moves. Slower cuts are cleaner in thick or delicate material."
+            }
+            Setting::Force => {
+                "How hard the blade presses. Too little and the cut does not go through; too much and it cuts into the backing sheet."
+            }
+            Setting::Passes => {
+                "How often the plotter cuts each line. Thick material may need 2 or 3 passes."
+            }
+            Setting::Overcut => {
+                "Overcut: the blade cuts a little past the start, so the shape closes cleanly and the piece comes off the mat."
+            }
+            Setting::BladeOffset => {
+                "Blade offset: the tip of a drag blade trails behind the centre of the holder by this much. FlatCraft steers around corners to make up for it."
+            }
+            Setting::Keep => {
+                "What you keep after cutting. Pieces keeps the shapes, Stencil keeps the sheet with holes, Both keeps everything."
+            }
+            Setting::Threshold => {
+                "Tracing turns the picture into black and white first. Pixels darker than this become cut shapes."
+            }
+            Setting::AutoThreshold => {
+                "Let FlatCraft pick the threshold from the picture (Otsu's method). A good start for most pictures."
+            }
+            Setting::Invert => "Cut the light parts instead of the dark ones.",
+            Setting::Despeckle => {
+                "Specks smaller than this area are dropped, so dust and noise in the picture are not cut."
+            }
+            Setting::CornerThreshold => {
+                "Angles sharper than this stay sharp corners. Smaller values give more rounded shapes."
+            }
+            Setting::Smoothing => {
+                "How much the traced lines are smoothed. 0 follows the pixels, 10 gives the smoothest curves."
+            }
+            Setting::MinFeature => {
+                "Shapes thinner than this are dropped, because a blade cannot cut what it cannot turn in."
+            }
+            Setting::AutoMinFeature => {
+                "Use 6 times the blade offset of the plotter as the smallest shape."
+            }
+            Setting::AutoArrangeSpacing => {
+                "The gap left between objects, in millimetres. A pinned Auto arrange uses it too."
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_table_ids_are_the_preference_ids() {
+        let ids: Vec<&str> = TOOLS.iter().map(|t| t.id).collect();
+        assert_eq!(ids, flatcraft_engine::prefs::RIBBON_PIN_IDS);
+        for id in flatcraft_engine::prefs::default_ribbon_pins() {
+            assert!(by_id(&id).is_some(), "{id}");
+        }
+    }
+
+    #[test]
+    fn every_action_group_and_setting_has_an_icon_and_a_plain_card() {
+        let plain = |s: &str, what: &str| {
+            assert!(!s.trim().is_empty(), "{what} has no card text");
+            assert!(!s.contains('\u{2014}'), "{what} has an em-dash");
+            assert!(s.ends_with(['.', '!']), "{what}: full sentences");
+        };
+        for g in GROUPS {
+            plain(g.description, g.title);
+            assert!(!g.icon.svg().is_empty());
+            assert!(
+                g.id.tools().count() > 0 || g.id == GroupId::Size,
+                "{}",
+                g.title
+            );
+        }
+        for t in TOOLS {
+            plain(t.description, t.id);
+            assert!(!t.icon.svg().is_empty());
+            assert!(!t.title.contains('\u{2014}'));
+        }
+        for s in Setting::ALL {
+            plain(s.card(), &format!("{s:?}"));
+        }
+    }
+
+    #[test]
+    fn align_pins_carry_their_option_in_icon_and_title() {
+        for mode in [M::Left, M::Centre, M::Right, M::Top, M::Middle, M::Bottom] {
+            let sel = by_act(Act::Align(mode, Selection));
+            let area = by_act(Act::Align(mode, Area));
+            assert_eq!(sel.title, area.title);
+            assert_ne!(sel.icon, area.icon, "{mode:?}");
+            assert_eq!(area.icon.framed_from(), Some(sel.icon));
+            assert_ne!(sel.full_title(), area.full_title());
+            assert!(area.full_title().ends_with("· cutting area"));
+            assert!(area.id.ends_with(".area") && sel.id.ends_with(".selection"));
+        }
+    }
+
+    #[test]
+    fn every_action_icon_has_a_colour_role() {
+        let icons = TOOLS
+            .iter()
+            .map(|t| t.icon)
+            .chain(GROUPS.iter().map(|g| g.icon))
+            .chain([Icon::KeepAspect, Icon::EachObject]);
+        for icon in icons {
+            let (paper, accent) = icon_roles(icon).unwrap_or_else(|| panic!("{icon:?}"));
+            assert!(!accent.is_empty(), "{icon:?} has no accent part");
+            let n = super::super::icons::children(icon.framed_from().unwrap_or(icon)).len();
+            for i in paper.iter().chain(accent) {
+                assert!(*i < n, "{icon:?} has no child {i}");
+            }
+            assert!(
+                paper.iter().all(|p| !accent.contains(p)),
+                "{icon:?}: a child is paper and accent"
+            );
+        }
+    }
+
+    #[test]
+    fn numbers_lose_their_trailing_zeros() {
+        assert_eq!(trim_number(5.0), "5");
+        assert_eq!(trim_number(2.5), "2.5");
+        assert_eq!(trim_number(0.25), "0.25");
+    }
+}

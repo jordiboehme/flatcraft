@@ -8,14 +8,20 @@
 //!
 //! The menu holds no logic of its own: every item pushes the same
 //! [`Action`] as the ribbon or the Objects panel (see the helpers in
-//! `ribbon` and `objects`). Items that do not apply are left out. Key
-//! hints come from [`help::SHORTCUTS`].
+//! `ribbon` and `objects`), and an item that is a ribbon action takes its
+//! title, description and reason from the table in [`tools`]. An item
+//! that does not apply right now is shown dimmed, and its hover card says
+//! why; an item that can never apply to what was clicked (Trace again on a
+//! vector, Reload without a file) is left out. Key hints come from
+//! [`help::SHORTCUTS`].
 
 use egui::Ui;
 use serde_json::json;
 
+use super::groups;
 use super::help::{self, PrepareKey};
 use super::prepare::{PrepareState, RenameDialog, Snapshot};
+use super::tools::{self, Act, AlignTo, Tool};
 use super::{Action, arrange, objects, ribbon};
 
 /// One item of the menu.
@@ -50,16 +56,32 @@ pub enum Item {
 }
 
 impl Item {
+    /// The ribbon action the item is, if it is one.
+    pub fn tool(self) -> Option<&'static Tool> {
+        let act = match self {
+            Item::Duplicate => Act::Duplicate,
+            Item::Copies => Act::Copies,
+            Item::RotateLeft => Act::RotateLeft,
+            Item::RotateRight => Act::RotateRight,
+            Item::MirrorHorizontal => Act::MirrorHorizontal,
+            Item::MirrorVertical => Act::MirrorVertical,
+            Item::Delete => Act::Delete,
+            Item::Import => Act::Import,
+            Item::AutoArrange => Act::AutoArrange,
+            Item::ZoomToFit => Act::ZoomFit,
+            _ => return None,
+        };
+        Some(tools::by_act(act))
+    }
+
+    /// Its text: the table's title for a ribbon action.
     pub fn label(self) -> &'static str {
+        if let Some(t) = self.tool() {
+            return t.title;
+        }
         match self {
-            Item::Duplicate => "Duplicate",
-            Item::Copies => "Copies...",
             Item::LinkCopies => "Link copies",
             Item::UnlinkCopies => "Unlink",
-            Item::RotateLeft => "Rotate -90",
-            Item::RotateRight => "Rotate +90",
-            Item::MirrorHorizontal => "Mirror horizontally",
-            Item::MirrorVertical => "Mirror vertically",
             Item::Align => "Align",
             Item::Distribute => "Distribute",
             Item::Hide => "Hide",
@@ -70,24 +92,69 @@ impl Item {
             Item::TraceAgain => "Trace again...",
             Item::Reload => "Reload source",
             Item::Reconnect => "Reconnect source...",
-            Item::Delete => "Delete",
-            Item::Import => "Import...",
             Item::SelectAll => "Select all",
-            Item::AutoArrange => "Auto arrange",
-            Item::ZoomToFit => "Zoom to fit",
+            _ => unreachable!("the other items are ribbon actions"),
+        }
+    }
+
+    /// What it does, for its hover card: the table's description for a
+    /// ribbon action.
+    pub fn description(self) -> &'static str {
+        if let Some(t) = self.tool() {
+            return t.description;
+        }
+        match self {
+            Item::LinkCopies => {
+                "Make these copies of one design linked: they share the source, the cut options and the scale. Each keeps its own place."
+            }
+            Item::UnlinkCopies => {
+                "Make these objects independent again, so you can change one without the others."
+            }
+            Item::Align => {
+                "Line up the objects with each other or with the cutting area, the part of the mat the blade can reach."
+            }
+            Item::Distribute => {
+                "Equal gaps between 3 or more objects. The two outer objects stay where they are."
+            }
+            Item::Hide => "Hide the objects on the canvas. Hidden objects are not cut.",
+            Item::Show => "Show the hidden objects again, so they are cut.",
+            Item::SkipCutting => {
+                "Keep the objects on the mat but leave them out of the cut, for example a print you only trace around."
+            }
+            Item::CutAgain => "Cut these objects again with the rest.",
+            Item::Rename => "Give the object a name you will recognise in the Objects panel.",
+            Item::TraceAgain => "Trace the picture again with other settings.",
+            Item::Reload => "Read the linked file again after you changed it in another app.",
+            Item::Reconnect => "The linked file moved or is gone. Show FlatCraft where it is now.",
+            Item::SelectAll => "Select every visible object on the mat.",
+            _ => unreachable!("the other items are ribbon actions"),
         }
     }
 
     /// The key hint, from the shortcut table.
     pub fn hint(self) -> Option<String> {
         let key = match self {
-            Item::Duplicate => PrepareKey::Duplicate,
-            Item::Delete => PrepareKey::Delete,
-            Item::Import => PrepareKey::Import,
             Item::SelectAll => PrepareKey::SelectAll,
-            _ => return None,
+            _ => self.tool()?.shortcut()?,
         };
         Some(help::hint(key))
+    }
+
+    /// Why the item cannot run on `ids` now, as a sentence that says what
+    /// to do; `None` when it can. The ribbon actions give the table's
+    /// reason, so the ribbon and the menu say the same.
+    pub fn why(self, snap: &Snapshot, ids: &[u64]) -> Option<&'static str> {
+        let n = ids.len();
+        match self {
+            Item::Rename => (n > 1).then_some("Select only one object to rename it."),
+            Item::Align => None,
+            Item::Distribute => tools::by_act(Act::DistributeHorizontal).blocked_for(snap, n),
+            Item::SelectAll => snap
+                .objects
+                .is_empty()
+                .then_some("Import something first. There is nothing to select yet."),
+            _ => self.tool()?.blocked_for(snap, n),
+        }
     }
 }
 
@@ -121,25 +188,23 @@ pub fn target(snap: &Snapshot, clicked: Option<u64>, actions: &mut Vec<Action>) 
 }
 
 /// The items for `ids`, in groups (a separator goes between groups). No ids
-/// is the empty mat. Objects that are gone are ignored.
+/// is the empty mat. Objects that are gone are ignored. Items that do not
+/// apply right now are listed too ([`Item::why`] dims them); items that
+/// can never apply to these objects are not.
 pub fn items(snap: &Snapshot, st: &PrepareState, ids: &[u64]) -> Vec<Vec<Item>> {
     let objs: Vec<_> = ids.iter().filter_map(|id| snap.object(*id)).collect();
     let n = objs.len();
     let mut groups: Vec<Vec<Item>> = Vec::new();
     if n == 0 {
-        let mut g = vec![Item::Import];
-        if !snap.objects.is_empty() {
-            g.push(Item::SelectAll);
-            g.push(Item::AutoArrange);
-        }
-        g.push(Item::ZoomToFit);
-        return vec![g];
+        return vec![vec![
+            Item::Import,
+            Item::SelectAll,
+            Item::AutoArrange,
+            Item::ZoomToFit,
+        ]];
     }
 
-    let mut g = vec![Item::Duplicate];
-    if n == 1 {
-        g.push(Item::Copies);
-    }
+    let mut g = vec![Item::Duplicate, Item::Copies];
     let all_one_group =
         objs[0].link_group.is_some() && objs.iter().all(|o| o.link_group == objs[0].link_group);
     if n >= 2 && !all_one_group && objs.iter().all(|o| o.same_source(objs[0])) {
@@ -157,14 +222,7 @@ pub fn items(snap: &Snapshot, st: &PrepareState, ids: &[u64]) -> Vec<Vec<Item>> 
         Item::MirrorVertical,
     ]);
 
-    let mut g = Vec::new();
-    if n >= 2 {
-        g.push(Item::Align);
-    }
-    if n >= 3 {
-        g.push(Item::Distribute);
-    }
-    groups.push(g);
+    groups.push(vec![Item::Align, Item::Distribute]);
 
     let mut g = vec![if objs.iter().any(|o| o.visible) {
         Item::Hide
@@ -176,11 +234,9 @@ pub fn items(snap: &Snapshot, st: &PrepareState, ids: &[u64]) -> Vec<Vec<Item>> 
     } else {
         Item::CutAgain
     });
-    if n == 1 {
-        g.push(Item::Rename);
-        if objs[0].raster {
-            g.push(Item::TraceAgain);
-        }
+    g.push(Item::Rename);
+    if n == 1 && objs[0].raster {
+        g.push(Item::TraceAgain);
     }
     let src = &st.sources;
     if objs.iter().any(|o| o.link.is_some() && !src.broken(o.id)) {
@@ -220,7 +276,8 @@ pub fn show(ui: &mut Ui, snap: &Snapshot, st: &mut PrepareState, actions: &mut V
     }
 }
 
-/// Draws one item; true when it was used (the menu closes).
+/// Draws one item; true when it was used (the menu closes). An item
+/// that cannot run now is dimmed and its card gives the reason.
 fn draw(
     ui: &mut Ui,
     item: Item,
@@ -231,22 +288,33 @@ fn draw(
 ) -> bool {
     let doc_id = snap.doc_id;
     let each = st.fields.each;
+    let why = item.why(snap, ids);
     match item {
-        Item::Align => {
-            ui.menu_button(item.label(), |ui| {
-                ribbon::align_items(ui, &mut st.fields.align_to_area, doc_id, ids, actions);
-            });
-            return false;
-        }
-        Item::Distribute => {
-            ui.menu_button(item.label(), |ui| {
-                for (name, axis) in ribbon::DISTRIBUTE {
-                    if ui.button(name.trim_start_matches("Distribute ")).clicked() {
-                        actions.push(ribbon::distribute_action(doc_id, ids, axis));
+        Item::Align | Item::Distribute if why.is_none() => {
+            let r = ui.menu_button(item.label(), |ui| {
+                if item == Item::Align {
+                    let to_area = &mut st.fields.align_to_area;
+                    ui.radio_value(to_area, false, AlignTo::Selection.label());
+                    ui.radio_value(to_area, true, AlignTo::Area.label());
+                    ui.separator();
+                }
+                let to = AlignTo::of(st.fields.align_to_area);
+                let rows = tools::TOOLS.iter().filter(|t| match t.act {
+                    Act::Align(_, o) => item == Item::Align && o == to,
+                    Act::DistributeHorizontal | Act::DistributeVertical => item == Item::Distribute,
+                    _ => false,
+                });
+                for t in rows {
+                    let blocked = t.blocked_for(snap, ids.len());
+                    let r = ui.add_enabled(blocked.is_none(), egui::Button::new(t.title));
+                    groups::card(&r, &t.full_title(), t.description, blocked, true);
+                    if r.clicked() {
+                        actions.push(sub_action(t, doc_id, ids));
                         ui.close();
                     }
                 }
             });
+            groups::card(&r.response, item.label(), item.description(), None, true);
             return false;
         }
         _ => {}
@@ -255,7 +323,13 @@ fn draw(
     if let Some(hint) = item.hint() {
         button = button.shortcut_text(hint);
     }
-    if !ui.add(button).clicked() {
+    let r = ui.add_enabled(why.is_none(), button);
+    let title = match item.tool() {
+        Some(t) => t.card_title(snap),
+        None => item.label().to_string(),
+    };
+    groups::card(&r, &title, item.description(), why, true);
+    if !r.clicked() {
         return false;
     }
     let first = ids.first().and_then(|id| snap.object(*id));
@@ -264,9 +338,7 @@ fn draw(
         Item::Copies => {
             // The panel works on the selection, which is `ids` by now
             // (see `target`).
-            if ids.len() == 1 {
-                arrange::open(st, snap, arrange::PanelKind::RectangularPattern);
-            }
+            arrange::open(st, snap, arrange::PanelKind::RectangularPattern);
         }
         Item::LinkCopies => actions.push(Action::run(doc_id, "object.link", json!({ "ids": ids }))),
         Item::UnlinkCopies => actions.push(Action::run(
@@ -314,11 +386,23 @@ fn draw(
         Item::Delete => actions.push(ribbon::delete_action(doc_id, ids)),
         Item::Import => actions.push(Action::Import { doc_id }),
         Item::SelectAll => actions.push(select_all_action(snap)),
-        Item::AutoArrange => actions.push(Action::run(doc_id, "arrange.auto", json!({}))),
+        Item::AutoArrange => actions.push(tools::auto_arrange_action(snap)),
         Item::ZoomToFit => st.fit_pending = true,
-        Item::Align | Item::Distribute => unreachable!("submenus return above"),
+        // Dimmed submenus: a click does nothing.
+        Item::Align | Item::Distribute => return false,
     }
     true
+}
+
+/// The command of an Align or Distribute row of a submenu, on `ids`.
+fn sub_action(t: &Tool, doc_id: u64, ids: &[u64]) -> Action {
+    match t.act {
+        Act::Align(mode, to) => {
+            ribbon::align_action(doc_id, ids, mode.param(), to == AlignTo::Area)
+        }
+        Act::DistributeVertical => ribbon::distribute_action(doc_id, ids, "vertical"),
+        _ => ribbon::distribute_action(doc_id, ids, "horizontal"),
+    }
 }
 
 /// The `object.select` of Select all: every visible object. Cmd+A and the

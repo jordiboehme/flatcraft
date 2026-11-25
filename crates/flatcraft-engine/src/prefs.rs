@@ -50,87 +50,190 @@ pub struct Preferences {
     /// group. Only the window writes it (a UI preference, ruling R16); no
     /// registry command reads or changes it. Off by default.
     pub rotate_each: bool,
-    /// The Arrange commands pinned to the ribbon, by id (see
-    /// [`ARRANGE_PIN_IDS`]). Only the window writes it (a UI preference);
-    /// no registry command reads or changes it. A file without the key gets
-    /// [`default_arrange_pins`]; reading a file migrates old ids (see
-    /// [`migrate_arrange_pins`]).
-    pub arrange_pins: Vec<String>,
+    /// The ribbon actions pinned as buttons, by id (see
+    /// [`RIBBON_PIN_IDS`]), for every group on every tab. Only the window
+    /// writes it (a UI preference); no registry command reads or changes it.
+    /// A file without the key gets [`default_ribbon_pins`], or the migrated
+    /// `arrange_pins` of an earlier version (see [`Preferences::read`]).
+    pub ribbon_pins: Vec<String>,
+    /// The gap the one-click Auto arrange leaves between objects, in mm.
+    /// The Auto arrange panel stores it on OK. Only the window writes it.
+    pub auto_arrange_spacing_mm: f64,
 }
 
-/// Every id `arrange_pins` can hold: the commands with a button of their
-/// own, then each direction of Rotate, Mirror, Align and Distribute.
-pub const ARRANGE_PIN_IDS: [&str; 17] = [
+/// Every id `ribbon_pins` can hold, in the order of the ribbon's table
+/// (`flatcraft::ui::tools::TOOLS`). An Align id carries what it lines up
+/// with: `align.left.selection` and `align.left.area` are two pins.
+pub const RIBBON_PIN_IDS: [&str; 38] = [
+    "import",
+    "trace",
+    "test_patterns",
+    "duplicate",
+    "copies",
+    "delete",
+    "reload",
     "move_copy",
     "rotate",
-    "rotate_left",
-    "rotate_right",
-    "mirror_horizontal",
-    "mirror_vertical",
-    "align_left",
-    "align_hcenter",
-    "align_right",
-    "align_top",
-    "align_vcenter",
-    "align_bottom",
-    "distribute_horizontal",
-    "distribute_vertical",
-    "rectangular_pattern",
-    "circular_pattern",
+    "rotate.left",
+    "rotate.right",
+    "mirror.horizontal",
+    "mirror.vertical",
+    "align.left.selection",
+    "align.centre.selection",
+    "align.right.selection",
+    "align.top.selection",
+    "align.middle.selection",
+    "align.bottom.selection",
+    "align.left.area",
+    "align.centre.area",
+    "align.right.area",
+    "align.top.area",
+    "align.middle.area",
+    "align.bottom.area",
+    "distribute.horizontal",
+    "distribute.vertical",
+    "pattern.rectangular",
+    "pattern.circular",
+    "auto_arrange.panel",
     "auto_arrange",
+    "zoom.fit",
+    "zoom.100",
+    "view.grid",
+    "view.rulers",
+    "panel.objects",
+    "panel.settings",
+    "panel.debug",
 ];
 
-/// The pins of a new install: Move / Copy, Rectangular pattern, Rotate
-/// -90 and +90, and both Mirror directions.
-pub fn default_arrange_pins() -> Vec<String> {
-    [
-        "move_copy",
-        "rectangular_pattern",
-        "rotate_left",
-        "rotate_right",
-        "mirror_horizontal",
-        "mirror_vertical",
-    ]
-    .map(String::from)
-    .to_vec()
+/// The pins of the Home and View tabs of a new install: every button
+/// those tabs showed before pins existed.
+const HOME_VIEW_DEFAULTS: [&str; 14] = [
+    "import",
+    "trace",
+    "test_patterns",
+    "duplicate",
+    "copies",
+    "delete",
+    "reload",
+    "zoom.fit",
+    "zoom.100",
+    "view.grid",
+    "view.rulers",
+    "panel.objects",
+    "panel.settings",
+    "panel.debug",
+];
+
+/// The Arrange pins of a new install: Move / Copy, Rectangular pattern,
+/// Rotate -90 and +90, and both Mirror directions.
+const ARRANGE_DEFAULTS: [&str; 6] = [
+    "move_copy",
+    "pattern.rectangular",
+    "rotate.left",
+    "rotate.right",
+    "mirror.horizontal",
+    "mirror.vertical",
+];
+
+/// The pins of a new install: the buttons the ribbon showed before pins
+/// were there for every group, so nothing disappears.
+pub fn default_ribbon_pins() -> Vec<String> {
+    HOME_VIEW_DEFAULTS
+        .iter()
+        .chain(&ARRANGE_DEFAULTS)
+        .map(|s| s.to_string())
+        .collect()
 }
 
-/// Pins of an earlier version, made current: a whole-command pin of
-/// Mirror, Align or Distribute (`mirror`, `align`, `distribute`) becomes a
-/// pin of each of its directions. Unknown ids are dropped, and so are
-/// repeats; the order is kept. A list that only held unknown ids gets
-/// [`default_arrange_pins`], so an old file never empties the ribbon by
-/// accident; an empty list stays empty (the person unpinned everything).
-pub fn migrate_arrange_pins(pins: &[String]) -> Vec<String> {
+/// The ids an `arrange_pins` id of an earlier version (Task 33 and its
+/// first whole-command ids) pins now. `align_to_area` is what the old
+/// Align directions lined up with; an Align pin keeps that choice in its
+/// new id.
+fn old_arrange_id(old: &str, align_to_area: bool) -> Vec<String> {
+    let to = if align_to_area { "area" } else { "selection" };
+    let align = |m: &str| format!("align.{m}.{to}");
+    let all_align = || {
+        ["left", "centre", "right", "top", "middle", "bottom"]
+            .iter()
+            .map(|m| align(m))
+            .collect::<Vec<_>>()
+    };
+    let one = |s: &str| vec![s.to_string()];
+    match old {
+        "move_copy" => one("move_copy"),
+        "rotate" => one("rotate"),
+        "rotate_left" => one("rotate.left"),
+        "rotate_right" => one("rotate.right"),
+        "mirror_horizontal" => one("mirror.horizontal"),
+        "mirror_vertical" => one("mirror.vertical"),
+        "mirror" => vec!["mirror.horizontal".into(), "mirror.vertical".into()],
+        "align_left" => vec![align("left")],
+        "align_hcenter" => vec![align("centre")],
+        "align_right" => vec![align("right")],
+        "align_top" => vec![align("top")],
+        "align_vcenter" => vec![align("middle")],
+        "align_bottom" => vec![align("bottom")],
+        "align" => all_align(),
+        "distribute_horizontal" => one("distribute.horizontal"),
+        "distribute_vertical" => one("distribute.vertical"),
+        "distribute" => vec!["distribute.horizontal".into(), "distribute.vertical".into()],
+        "rectangular_pattern" => one("pattern.rectangular"),
+        "circular_pattern" => one("pattern.circular"),
+        // The old Auto arrange pin ran in one click, as `auto_arrange` does.
+        "auto_arrange" => one("auto_arrange"),
+        _ => Vec::new(),
+    }
+}
+
+/// The `arrange_pins` of an earlier version as ribbon pins of the Arrange
+/// tab. Unknown ids and repeats are dropped and the order is kept. A list
+/// that only held unknown ids gets the Arrange defaults, so an old file
+/// never empties the tab by accident; an empty list stays empty (the
+/// person unpinned everything). `align_to_area` is the Align choice the
+/// old pins ran with.
+pub fn migrate_arrange_pins(old: &[String], align_to_area: bool) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for pin in pins {
-        let ids: &[&str] = match pin.as_str() {
-            "mirror" => &["mirror_horizontal", "mirror_vertical"],
-            "align" => &[
-                "align_left",
-                "align_hcenter",
-                "align_right",
-                "align_top",
-                "align_vcenter",
-                "align_bottom",
-            ],
-            "distribute" => &["distribute_horizontal", "distribute_vertical"],
-            other => match ARRANGE_PIN_IDS.iter().find(|id| **id == other) {
-                Some(id) => std::slice::from_ref(id),
-                None => &[],
-            },
-        };
-        for id in ids {
-            if !out.iter().any(|o| o == id) {
-                out.push((*id).to_string());
-            }
+    for id in old.iter().flat_map(|o| old_arrange_id(o, align_to_area)) {
+        if !out.contains(&id) {
+            out.push(id);
         }
     }
-    if out.is_empty() && !pins.is_empty() {
-        return default_arrange_pins();
+    if out.is_empty() && !old.is_empty() {
+        return ARRANGE_DEFAULTS.map(String::from).to_vec();
     }
     out
 }
+
+/// Ribbon pins as stored: unknown ids and repeats are dropped, the order
+/// is kept. A list of only unknown ids gets [`default_ribbon_pins`]; an
+/// empty list stays empty.
+pub fn clean_ribbon_pins(pins: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for p in pins {
+        if RIBBON_PIN_IDS.contains(&p.as_str()) && !out.contains(p) {
+            out.push(p.clone());
+        }
+    }
+    if out.is_empty() && !pins.is_empty() {
+        return default_ribbon_pins();
+    }
+    out
+}
+
+/// The pins of a file written before `ribbon_pins` existed: the Home and
+/// View defaults (those tabs had no pins) plus its migrated
+/// `arrange_pins`. The old builds never stored what Align lined up with:
+/// every session started with "To the selection", so that is the choice
+/// the old Align pins keep.
+pub fn ribbon_pins_from_arrange(old: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = HOME_VIEW_DEFAULTS.map(String::from).to_vec();
+    out.extend(migrate_arrange_pins(old, false));
+    out
+}
+
+/// The spacing of Auto arrange until the person picks another one, as the
+/// engine's `arrange.auto` default.
+pub const DEFAULT_AUTO_SPACING_MM: f64 = 5.0;
 
 impl Default for Preferences {
     fn default() -> Self {
@@ -143,7 +246,8 @@ impl Default for Preferences {
             output_dir: None,
             auto_reload: false,
             rotate_each: false,
-            arrange_pins: default_arrange_pins(),
+            ribbon_pins: default_ribbon_pins(),
+            auto_arrange_spacing_mm: DEFAULT_AUTO_SPACING_MM,
         }
     }
 }
@@ -178,9 +282,25 @@ impl Preferences {
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
             Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
         };
-        let mut prefs: Self =
-            toml::from_str(&text).map_err(|e| format!("{} is broken: {e}", path.display()))?;
-        prefs.arrange_pins = migrate_arrange_pins(&prefs.arrange_pins);
+        let broken = |e: toml::de::Error| format!("{} is broken: {e}", path.display());
+        let table: toml::Table = toml::from_str(&text).map_err(broken)?;
+        let mut prefs: Self = Self::deserialize(table.clone()).map_err(broken)?;
+        let strings = |key: &str| -> Option<Vec<String>> {
+            table.get(key)?.as_array().map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+        };
+        prefs.ribbon_pins = match (strings("ribbon_pins"), strings("arrange_pins")) {
+            (Some(pins), _) => clean_ribbon_pins(&pins),
+            // A file of an earlier version: its Arrange pins move over.
+            (None, Some(old)) => ribbon_pins_from_arrange(&old),
+            (None, None) => default_ribbon_pins(),
+        };
+        if !(prefs.auto_arrange_spacing_mm.is_finite() && prefs.auto_arrange_spacing_mm >= 0.0) {
+            prefs.auto_arrange_spacing_mm = DEFAULT_AUTO_SPACING_MM;
+        }
         Ok(prefs)
     }
 

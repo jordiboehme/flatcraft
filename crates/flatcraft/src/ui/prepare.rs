@@ -212,8 +212,8 @@ pub struct PrepareState {
     pub panel: Option<ArrangePanel>,
     /// The values of the last panel that ran, for the next one.
     pub panel_last: PanelValues,
-    /// Open the Arrange drop-down on the next frame (search asked for it).
-    pub arrange_open: bool,
+    /// Open this group's list on the next frame (search asked for it).
+    pub open_group: Option<super::tools::GroupId>,
     /// The screen area of the open Arrange panel, last frame.
     pub panel_rect: Option<Rect>,
     /// At the end of the last frame a text field outside the Arrange panel
@@ -289,7 +289,7 @@ impl Default for PrepareState {
             cache: ShapeCache::default(),
             panel: None,
             panel_last: PanelValues::default(),
-            arrange_open: false,
+            open_group: None,
             panel_rect: None,
             text_focus_elsewhere: false,
             context: None,
@@ -731,8 +731,10 @@ pub struct Snapshot {
     /// Why the plotter or material preset cannot be used (a bad value).
     pub profile_problem: Option<String>,
     pub auto_reload: bool,
-    /// The Arrange commands pinned to the ribbon (preference ids).
-    pub arrange_pins: Vec<String>,
+    /// The ribbon actions pinned as buttons (preference ids).
+    pub ribbon_pins: Vec<String>,
+    /// The spacing of the one-click Auto arrange, in mm (preferences).
+    pub auto_spacing_mm: f64,
     /// The image or the trace settings of the Trace dialog's object
     /// changed since the dialog opened (an agent retraced or reloaded it).
     pub trace_source_changed: bool,
@@ -926,7 +928,8 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
             mat_warning,
             profile_problem,
             auto_reload: s.prefs.auto_reload,
-            arrange_pins: s.prefs.arrange_pins.clone(),
+            ribbon_pins: s.prefs.ribbon_pins.clone(),
+            auto_spacing_mm: s.prefs.auto_arrange_spacing_mm,
             trace_source_changed,
             job_input: want_job.then(|| match (&plotter, &material) {
                 (Some(p), Some(m)) => Ok(JobInput::from_parts(&st.document, p.clone(), m)),

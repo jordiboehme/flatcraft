@@ -64,6 +64,24 @@ pub enum Icon {
     AlignRight,
     AlignTop,
     AlignBottom,
+    /// "Edit" group.
+    Pencil,
+    /// "Zoom" group.
+    ZoomIn,
+    /// "Panels" group.
+    Panels,
+    /// The Keep aspect switch.
+    KeepAspect,
+    /// The Each object switch.
+    EachObject,
+    /// The Align directions "to the cutting area": the align icon inside a
+    /// small dashed frame, drawn at render time from the Lucide file.
+    AlignLeftArea,
+    AlignCentreArea,
+    AlignRightArea,
+    AlignTopArea,
+    AlignMiddleArea,
+    AlignBottomArea,
 }
 
 macro_rules! svg {
@@ -73,7 +91,7 @@ macro_rules! svg {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 55] = [
+    pub const ALL: [Icon; 66] = [
         Icon::Import,
         Icon::Trace,
         Icon::Duplicate,
@@ -129,10 +147,39 @@ impl Icon {
         Icon::AlignRight,
         Icon::AlignTop,
         Icon::AlignBottom,
+        Icon::Pencil,
+        Icon::ZoomIn,
+        Icon::Panels,
+        Icon::KeepAspect,
+        Icon::EachObject,
+        Icon::AlignLeftArea,
+        Icon::AlignCentreArea,
+        Icon::AlignRightArea,
+        Icon::AlignTopArea,
+        Icon::AlignMiddleArea,
+        Icon::AlignBottomArea,
     ];
 
-    /// The vendored Lucide SVG source.
+    /// The plain icon a framed "to the cutting area" icon is made from.
+    pub fn framed_from(self) -> Option<Icon> {
+        Some(match self {
+            Icon::AlignLeftArea => Icon::AlignLeft,
+            Icon::AlignCentreArea => Icon::AlignCentre,
+            Icon::AlignRightArea => Icon::AlignRight,
+            Icon::AlignTopArea => Icon::AlignTop,
+            Icon::AlignMiddleArea => Icon::Align,
+            Icon::AlignBottomArea => Icon::AlignBottom,
+            _ => return None,
+        })
+    }
+
+    /// The vendored Lucide source (of the base icon for a framed one).
     pub fn svg(self) -> &'static str {
+        self.framed_from().unwrap_or(self).lucide()
+    }
+
+    /// The vendored Lucide SVG source.
+    fn lucide(self) -> &'static str {
         match self {
             Icon::Import => svg!("import"),
             Icon::Trace => svg!("spline"),
@@ -189,21 +236,133 @@ impl Icon {
             Icon::AlignRight => svg!("align-end-vertical"),
             Icon::AlignTop => svg!("align-start-horizontal"),
             Icon::AlignBottom => svg!("align-end-horizontal"),
+            Icon::Pencil => svg!("pencil"),
+            Icon::ZoomIn => svg!("zoom-in"),
+            Icon::Panels => svg!("panels-top-left"),
+            Icon::KeepAspect => svg!("proportions"),
+            Icon::EachObject => svg!("ungroup"),
+            Icon::AlignLeftArea
+            | Icon::AlignCentreArea
+            | Icon::AlignRightArea
+            | Icon::AlignTopArea
+            | Icon::AlignMiddleArea
+            | Icon::AlignBottomArea => unreachable!("framed icons are built in svg()"),
         }
     }
 }
 
-/// The SVG with `currentColor` replaced by `color`, so resvg does not paint
-/// it black.
-pub fn tinted_svg(icon: Icon, color: Color32) -> String {
-    let hex = format!("#{:02x}{:02x}{:02x}", color.r(), color.g(), color.b());
-    icon.svg().replace("currentColor", &hex)
+/// The colours an icon is drawn in (see [`super::tools::ICON_ROLES`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Palette {
+    pub ink: Color32,
+    pub accent: Color32,
+    pub paper: Color32,
+    pub cut: Color32,
+}
+
+impl Palette {
+    /// The theme's icon colours.
+    pub fn of(t: &super::theme::Tokens) -> Self {
+        Self {
+            ink: t.icon_ink,
+            accent: t.icon_accent,
+            paper: t.icon_paper,
+            cut: t.icon_cut,
+        }
+    }
+
+    /// One colour for everything, no paper fill (a tinted icon).
+    pub fn mono(c: Color32) -> Self {
+        Self {
+            ink: c,
+            accent: c,
+            paper: Color32::TRANSPARENT,
+            cut: c,
+        }
+    }
+
+    fn is_mono(&self) -> bool {
+        self.paper == Color32::TRANSPARENT
+    }
+
+    fn key(&self) -> [u8; 16] {
+        let mut k = [0; 16];
+        for (i, c) in [self.ink, self.accent, self.paper, self.cut]
+            .iter()
+            .enumerate()
+        {
+            k[i * 4..i * 4 + 4].copy_from_slice(&c.to_array());
+        }
+        k
+    }
+}
+
+fn hex(c: Color32) -> String {
+    format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
+}
+
+/// The child elements of a vendored Lucide file, in file order (one per
+/// line in the files).
+pub fn children(icon: Icon) -> Vec<&'static str> {
+    let svg = icon.framed_from().unwrap_or(icon).lucide();
+    svg.lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with('<') && !l.starts_with("<svg") && !l.starts_with("</svg"))
+        .collect()
+}
+
+/// The icon in the "Paper (crisp)" style: square line ends and sharp
+/// joins; paper children filled with paper and outlined in the cut colour,
+/// accent children in the accent colour, the rest in ink, paper first so
+/// no fill covers a line. A framed icon is drawn at 60 % inside a dashed
+/// frame in the cut colour, the cutting area. The Lucide files are not
+/// changed, only their contents are wrapped.
+pub fn styled_svg(icon: Icon, pal: &Palette) -> String {
+    let base = icon.framed_from().unwrap_or(icon);
+    let src = base.lucide();
+    let open_end = src.find('>').expect("an svg element") + 1;
+    let root = src[..open_end]
+        .replace("stroke-linecap=\"round\"", "stroke-linecap=\"square\"")
+        .replace("stroke-linejoin=\"round\"", "stroke-linejoin=\"miter\"")
+        .replace("currentColor", &hex(pal.ink));
+    let (paper, accent) = if pal.is_mono() {
+        (&[][..], &[][..])
+    } else {
+        super::tools::icon_roles(base).unwrap_or((&[], &[]))
+    };
+    let kids = children(base);
+    let paint = |i: usize, el: &str| {
+        let attrs = if paper.contains(&i) {
+            format!(" fill=\"{}\" stroke=\"{}\"", hex(pal.paper), hex(pal.cut))
+        } else if accent.contains(&i) {
+            format!(" stroke=\"{}\"", hex(pal.accent))
+        } else {
+            format!(" stroke=\"{}\"", hex(pal.ink))
+        };
+        let tag_end = el.find([' ', '/', '>']).unwrap_or(el.len());
+        format!("{}{attrs}{}", &el[..tag_end], &el[tag_end..])
+    };
+    let mut body = String::new();
+    for (i, el) in kids.iter().enumerate().filter(|(i, _)| paper.contains(i)) {
+        body.push_str(&paint(i, el));
+    }
+    for (i, el) in kids.iter().enumerate().filter(|(i, _)| !paper.contains(i)) {
+        body.push_str(&paint(i, el));
+    }
+    if icon.framed_from().is_some() {
+        format!(
+            "{root}<rect x=\"1\" y=\"1\" width=\"22\" height=\"22\" stroke=\"{}\" stroke-width=\"1.5\" stroke-dasharray=\"3 2\" /><g transform=\"translate(4.8 4.8) scale(0.6)\">{body}</g></svg>",
+            hex(pal.cut)
+        )
+    } else {
+        format!("{root}{body}</svg>")
+    }
 }
 
 /// Renders the icon into a square image of `px` pixels.
-pub fn rasterize(icon: Icon, px: u32, color: Color32) -> ColorImage {
+pub fn rasterize(icon: Icon, px: u32, pal: &Palette) -> ColorImage {
     let px = px.max(1);
-    let svg = tinted_svg(icon, color);
+    let svg = styled_svg(icon, pal);
     let tree =
         usvg::Tree::from_str(&svg, &usvg::Options::default()).expect("vendored Lucide SVGs parse");
     let mut pixmap = tiny_skia::Pixmap::new(px, px).expect("icon size is not zero");
@@ -218,25 +377,33 @@ pub fn rasterize(icon: Icon, px: u32, color: Color32) -> ColorImage {
 #[derive(Clone, Default)]
 struct TextureCache(Arc<std::sync::Mutex<HashMap<CacheKey, TextureHandle>>>);
 
-/// Icon, size in pixels and RGBA colour.
-type CacheKey = (Icon, u32, [u8; 4]);
+/// Icon, size in pixels and the palette's colours.
+type CacheKey = (Icon, u32, [u8; 16]);
 
-/// The icon as a texture of `size` points in the theme's text colour. Cached
-/// per context, size, colour and pixel density.
+/// The icon as a texture of `size` points in the theme's icon colours.
+/// Cached per context, size, palette and pixel density.
 pub fn texture(ctx: &egui::Context, icon: Icon, size: f32) -> TextureHandle {
-    let color = ctx.global_style().visuals.text_color();
-    texture_colored(ctx, icon, size, color)
+    let t = if ctx.global_style().visuals.dark_mode {
+        super::theme::Tokens::dark()
+    } else {
+        super::theme::Tokens::light()
+    };
+    texture_with(ctx, icon, size, &Palette::of(&t))
 }
 
-/// Like [`texture`], in a given colour.
+/// Like [`texture`], in one given colour.
 pub fn texture_colored(
     ctx: &egui::Context,
     icon: Icon,
     size: f32,
     color: Color32,
 ) -> TextureHandle {
+    texture_with(ctx, icon, size, &Palette::mono(color))
+}
+
+fn texture_with(ctx: &egui::Context, icon: Icon, size: f32, pal: &Palette) -> TextureHandle {
     let px = (size * ctx.pixels_per_point()).round().max(1.0) as u32;
-    let key = (icon, px, color.to_array());
+    let key = (icon, px, pal.key());
     let cache = ctx.data_mut(|d| {
         d.get_temp_mut_or_default::<TextureCache>(egui::Id::unique("flatcraft-icons"))
             .clone()
@@ -249,7 +416,7 @@ pub fn texture_colored(
         .or_insert_with(|| {
             ctx.load_texture(
                 format!("icon-{icon:?}-{px}"),
-                rasterize(icon, px, color),
+                rasterize(icon, px, pal),
                 TextureOptions::LINEAR,
             )
         })
@@ -260,20 +427,67 @@ pub fn texture_colored(
 mod tests {
     use super::*;
 
+    const TEAL: Color32 = Color32::from_rgb(0x2B, 0xB3, 0xA3);
+
+    fn lit(img: &ColorImage) -> Vec<(u8, u8, u8)> {
+        img.pixels
+            .iter()
+            .filter(|p| p.a() == 255)
+            .map(|p| (p.r(), p.g(), p.b()))
+            .collect()
+    }
+
     #[test]
-    fn every_icon_parses_and_uses_the_given_colour() {
+    fn every_icon_parses_and_a_tinted_one_uses_the_given_colour() {
         for icon in Icon::ALL {
             assert!(icon.svg().contains("currentColor"), "{icon:?}");
-            let svg = tinted_svg(icon, Color32::from_rgb(0x2B, 0xB3, 0xA3));
-            assert!(!svg.contains("currentColor"));
-            let img = rasterize(icon, 24, Color32::from_rgb(0x2B, 0xB3, 0xA3));
-            let lit: Vec<_> = img.pixels.iter().filter(|p| p.a() == 255).collect();
+            assert!(!children(icon).is_empty(), "{icon:?}");
+            let img = rasterize(icon, 24, &Palette::mono(TEAL));
+            let lit = lit(&img);
             assert!(!lit.is_empty(), "{icon:?} rendered nothing");
             assert!(
-                lit.iter()
-                    .all(|p| (p.r(), p.g(), p.b()) == (0x2B, 0xB3, 0xA3)),
-                "{icon:?} is not in the theme colour"
+                lit.iter().all(|p| *p == (0x2B, 0xB3, 0xA3)),
+                "{icon:?} is not in the tint"
             );
+        }
+    }
+
+    #[test]
+    fn paper_icons_are_crisp_and_use_the_theme_roles() {
+        for t in [
+            super::super::theme::Tokens::dark(),
+            super::super::theme::Tokens::light(),
+        ] {
+            let pal = Palette::of(&t);
+            for icon in Icon::ALL {
+                let svg = styled_svg(icon, &pal);
+                assert!(svg.contains("stroke-linecap=\"square\""), "{icon:?}");
+                assert!(svg.contains("stroke-linejoin=\"miter\""), "{icon:?}");
+                assert!(usvg::Tree::from_str(&svg, &usvg::Options::default()).is_ok());
+                let Some((paper, accent)) = super::super::tools::icon_roles(icon) else {
+                    continue;
+                };
+                let img = rasterize(icon, 48, &pal);
+                let px = lit(&img);
+                let has = |c: Color32| px.contains(&(c.r(), c.g(), c.b()));
+                assert!(has(pal.accent), "{icon:?}: no accent pixels");
+                if !paper.is_empty() {
+                    assert!(has(pal.paper), "{icon:?}: no paper fill");
+                    assert!(has(pal.cut), "{icon:?}: no cut line");
+                }
+                assert!(!accent.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn rotate_arrows_are_teal() {
+        let pal = Palette::of(&super::super::theme::Tokens::light());
+        let teal = hex(pal.accent);
+        for (icon, head) in [(Icon::Rotate, "M21 3v5h-5"), (Icon::RotateLeft, "M3 3v5h5")] {
+            let svg = styled_svg(icon, &pal);
+            let want = format!("<path stroke=\"{teal}\" d=\"{head}\"");
+            assert!(svg.contains(&want), "{icon:?}: {svg}");
         }
     }
 }

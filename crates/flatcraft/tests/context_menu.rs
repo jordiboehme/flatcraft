@@ -205,6 +205,19 @@ fn shown(h: &AppHarness) -> Vec<Item> {
         .collect()
 }
 
+/// Whether the open menu shows `item` dimmed.
+fn dimmed(h: &AppHarness, item: Item) -> bool {
+    h.get_by_role(Role::Menu)
+        .get_by_label(&name(item))
+        .accesskit_node()
+        .is_disabled()
+}
+
+/// The dimmed items of the open menu, in order.
+fn dimmed_items(h: &AppHarness) -> Vec<Item> {
+    shown(h).into_iter().filter(|i| dimmed(h, *i)).collect()
+}
+
 fn click_item(h: &mut AppHarness, item: Item) {
     h.get_by_role(Role::Menu).get_by_label(&name(item)).click();
     h.run();
@@ -349,12 +362,16 @@ fn the_menu_of_one_object() {
             RotateRight,
             MirrorHorizontal,
             MirrorVertical,
+            Align,
+            Distribute,
             Hide,
             SkipCutting,
             Rename,
             Delete
         ]
     );
+    // Not now: shown dimmed, with the reason on hover.
+    assert_eq!(dimmed_items(&r.h), vec![Distribute]);
 }
 
 #[test]
@@ -368,17 +385,21 @@ fn the_menu_of_two_objects() {
         r.items(),
         vec![
             Duplicate,
+            Copies,
             LinkCopies,
             RotateLeft,
             RotateRight,
             MirrorHorizontal,
             MirrorVertical,
             Align,
+            Distribute,
             Hide,
             SkipCutting,
+            Rename,
             Delete
         ]
     );
+    assert_eq!(dimmed_items(&r.h), vec![Copies, Distribute, Rename]);
 }
 
 #[test]
@@ -392,7 +413,8 @@ fn the_menu_of_three_objects_adds_distribute() {
         items.contains(&Align) && items.contains(&Distribute),
         "{items:?}"
     );
-    assert!(!items.contains(&Rename) && !items.contains(&Copies));
+    // Rename and Copies are for one object: dimmed, not gone.
+    assert_eq!(dimmed_items(&r.h), vec![Copies, Rename]);
 }
 
 #[test]
@@ -489,13 +511,54 @@ fn the_menu_of_the_empty_mat() {
     let mut r = rig(2);
     right_click(&mut r.h, at_mm(&r.view, 200.0, 120.0));
     assert_eq!(r.items(), vec![Import, SelectAll, AutoArrange, ZoomToFit]);
-    // No objects: nothing to select or arrange.
+    assert!(dimmed_items(&r.h).is_empty());
+    // No objects: nothing to select or arrange, so those are dimmed.
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(&dir, session(&dir), false);
     to_prepare(&mut h);
     let rect = app(&h).ui.prepare.canvas_rect;
     right_click(&mut h, rect.center());
-    assert_eq!(shown(&h), vec![Import, ZoomToFit]);
+    assert_eq!(shown(&h), vec![Import, SelectAll, AutoArrange, ZoomToFit]);
+    assert_eq!(dimmed_items(&h), vec![SelectAll, AutoArrange]);
+}
+
+#[test]
+fn a_dimmed_item_says_why_and_does_nothing() {
+    let mut r = rig(2);
+    select(&r.s, &r.ids.clone());
+    r.h.run();
+    r.h.ctx
+        .global_style_mut(|s| s.interaction.tooltip_delay = 0.0);
+    r.right_click_object(0);
+    assert!(dimmed(&r.h, Distribute));
+    // Its card: the reason first, then what it does.
+    let at =
+        r.h.get_by_role(Role::Menu)
+            .get_by_label(&name(Distribute))
+            .rect()
+            .center();
+    r.h.hover_at(egui::pos2(at.x, at.y));
+    r.h.run();
+    r.h.run();
+    r.h.get_by_label("Select 3 or more objects first.");
+    r.h.get_by_label(Distribute.description());
+    let undo = undo_len(&r.s);
+    r.h.get_by_role(Role::Menu)
+        .get_by_role_and_label(Role::Button, &name(Distribute))
+        .click();
+    r.h.run();
+    assert_eq!(undo_len(&r.s), undo, "nothing ran");
+    // The titles of ribbon actions come from the table.
+    for item in [
+        Duplicate,
+        Copies,
+        RotateLeft,
+        MirrorVertical,
+        Delete,
+        AutoArrange,
+    ] {
+        assert_eq!(Some(item.label()), item.tool().map(|t| t.title));
+    }
 }
 
 #[test]
@@ -601,7 +664,7 @@ fn align_and_distribute_run_the_ribbon_commands() {
     let top = |r: &Rig, i: usize| object(&r.s, r.ids[i])["bounds_mm"]["y0"].as_f64().unwrap();
     assert!((top(&r, 1) - top(&r, 0)).abs() > 1.0);
     r.right_click_object(0);
-    click_sub(&mut r.h, Align, "Top");
+    click_sub(&mut r.h, Align, "Align top");
     assert!((top(&r, 1) - top(&r, 0)).abs() < 1e-6);
     assert!(!menu_open(&r.h));
     // Distribute: move the middle one sideways; the gaps become equal.
@@ -615,7 +678,7 @@ fn align_and_distribute_run_the_ribbon_commands() {
     let uneven = (left(&r, 1) - left(&r, 0)) - (left(&r, 2) - left(&r, 1));
     assert!(uneven.abs() > 1.0);
     r.right_click_object(0);
-    click_sub(&mut r.h, Distribute, "horizontally");
+    click_sub(&mut r.h, Distribute, "Distribute horizontally");
     let even = (left(&r, 1) - left(&r, 0)) - (left(&r, 2) - left(&r, 1));
     assert!(even.abs() < 1e-6, "{even}");
 }

@@ -224,6 +224,7 @@ pub fn stage_bar(ui: &mut Ui, st: &mut CutState, show_debug: &mut bool, t: &Toke
             let groups = [Group {
                 title: "Stages",
                 keep: false,
+                tile: None,
                 draw: stages,
             }];
             collapse::show(ui, bar_id(), 0, height, &groups, st);
@@ -240,7 +241,7 @@ fn stages(ui: &mut Ui, mode: Mode, st: &mut CutState) {
     for stage in Stage::ALL {
         let on = st.stage == stage;
         let text = match mode {
-            Mode::Icons => format!("{}", stage.number()),
+            Mode::Icons | Mode::Collapsed => format!("{}", stage.number()),
             Mode::Full | Mode::List => format!("{}  {}", stage.number(), stage.name()),
         };
         let text = RichText::new(text).font(fonts::medium(13.0));

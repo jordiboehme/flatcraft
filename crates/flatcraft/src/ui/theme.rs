@@ -18,6 +18,15 @@ pub struct Tokens {
     /// Amber, the colour of the Cut workspace.
     pub accent_cut: Color32,
     pub danger: Color32,
+    /// Icons: the paper shapes (the things that get cut) are filled with
+    /// `icon_paper` and outlined with `icon_cut`, the part that tells what
+    /// happens is `icon_accent`, the rest `icon_ink`.
+    pub icon_paper: Color32,
+    pub icon_cut: Color32,
+    pub icon_accent: Color32,
+    pub icon_ink: Color32,
+    /// Corner radius of the ribbon's buttons, groups and lists, in points.
+    pub ribbon_radius: u8,
     /// Corner radius in points.
     pub radius: u8,
     /// Base spacing in points.
@@ -35,6 +44,12 @@ impl Tokens {
             accent_prepare: Color32::from_rgb(0x2B, 0xB3, 0xA3),
             accent_cut: Color32::from_rgb(0xF2, 0xA3, 0x3A),
             danger: Color32::from_rgb(0xE5, 0x48, 0x4D),
+            icon_paper: Color32::from_rgb(0xF3, 0xEC, 0xDD),
+            // Darker than the Cut accent, so the line shows on the paper.
+            icon_cut: Color32::from_rgb(0xE8, 0x89, 0x2E),
+            icon_accent: Color32::from_rgb(0x35, 0xC9, 0xB9),
+            icon_ink: Color32::from_rgb(0xD5, 0xDE, 0xDB),
+            ribbon_radius: 2,
             radius: 6,
             spacing: 8.0,
         }
@@ -50,6 +65,11 @@ impl Tokens {
             accent_prepare: Color32::from_rgb(0x2B, 0xB3, 0xA3),
             accent_cut: Color32::from_rgb(0xF2, 0xA3, 0x3A),
             danger: Color32::from_rgb(0xC8, 0x2E, 0x34),
+            icon_paper: Color32::from_rgb(0xFB, 0xF4, 0xE4),
+            icon_cut: Color32::from_rgb(0xD9, 0x78, 0x2A),
+            icon_accent: Color32::from_rgb(0x0F, 0x8A, 0x7E),
+            icon_ink: Color32::from_rgb(0x33, 0x40, 0x3D),
+            ribbon_radius: 2,
             radius: 6,
             spacing: 8.0,
         }
@@ -146,9 +166,68 @@ fn install(ctx: &egui::Context, t: &Tokens) -> egui::Theme {
     theme
 }
 
+/// The ribbon's tighter look: small corners and less padding, so the
+/// groups use their room. Applied to the ribbon and to its lists.
+pub fn tight(style: &mut egui::Style) {
+    let t = if style.visuals.dark_mode {
+        Tokens::dark()
+    } else {
+        Tokens::light()
+    };
+    let radius = CornerRadius::same(t.ribbon_radius);
+    let v = &mut style.visuals;
+    v.menu_corner_radius = radius;
+    for w in [
+        &mut v.widgets.noninteractive,
+        &mut v.widgets.inactive,
+        &mut v.widgets.hovered,
+        &mut v.widgets.active,
+        &mut v.widgets.open,
+    ] {
+        w.corner_radius = radius;
+    }
+    style.spacing.button_padding = egui::vec2(t.spacing / 2.0, t.spacing / 4.0);
+}
+
+/// [`tight`] on top of egui's menu style, for the ribbon's lists.
+pub fn tight_menu(style: &mut egui::Style) {
+    egui::containers::menu::menu_style(style);
+    tight(style);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// WCAG relative luminance.
+    fn luminance(c: Color32) -> f64 {
+        let ch = |v: u8| {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * ch(c.r()) + 0.7152 * ch(c.g()) + 0.0722 * ch(c.b())
+    }
+
+    fn contrast(a: Color32, b: Color32) -> f64 {
+        let (x, y) = (luminance(a), luminance(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    #[test]
+    fn icon_colours_keep_contrast_in_both_themes() {
+        for t in [Tokens::dark(), Tokens::light()] {
+            // Lines against the panel the icons sit on: 3:1 for graphics.
+            for c in [t.icon_ink, t.icon_accent, t.icon_cut] {
+                assert!(contrast(c, t.panel) >= 3.0, "{c:?} on {:?}", t.panel);
+            }
+            // The cut line must show against the paper it outlines.
+            assert!(contrast(t.icon_cut, t.icon_paper) >= 2.0);
+        }
+    }
 
     #[test]
     fn token_values() {

@@ -1674,7 +1674,7 @@ fn search_reaches_arrange_commands_that_are_not_on_the_tab() {
     // Rotate opens its panel.
     select(&s, &[a]);
     h.run();
-    search(&mut h, "rotate", "Rotate (search)");
+    search(&mut h, "rotate", "Rotate... (search)");
     assert_eq!(
         panel_kind(&h),
         Some(flatcraft::ui::arrange::PanelKind::Rotate)
@@ -1682,12 +1682,12 @@ fn search_reaches_arrange_commands_that_are_not_on_the_tab() {
     h.get_by_role_and_label(Role::Button, &cancel_name())
         .click();
     h.run();
-    // Mirror: unpinned, its items still show in the open drop-down.
+    // Mirror: unpinned, search runs it from the table all the same.
     let pins = |h: &mut AppHarness, keep: &[&str]| {
         let keep: Vec<String> = keep.iter().map(|k| k.to_string()).collect();
         s.lock()
             .unwrap()
-            .update_prefs(|p| p.arrange_pins = keep)
+            .update_prefs(|p| p.ribbon_pins = keep)
             .unwrap();
         h.run();
     };
@@ -1696,26 +1696,30 @@ fn search_reaches_arrange_commands_that_are_not_on_the_tab() {
         h.query_by_role_and_label(Role::Button, "Mirror horizontally")
             .is_none()
     );
-    search(&mut h, "mirror", "Mirror (search)");
+    let undo = undo_len(&s);
+    search(&mut h, "mirror", "Mirror horizontally (search)");
+    wait_for_workers(&mut h);
+    assert_eq!(undo_len(&s), undo + 1, "mirrored");
+    // Align: each option is its own hit.
+    let undo = undo_len(&s);
+    search(
+        &mut h,
+        "align right cutting",
+        "Align right · cutting area (search)",
+    );
+    wait_for_workers(&mut h);
+    assert_eq!(undo_len(&s), undo + 1, "aligned");
+    // Distribute with one object cannot run: its list opens, with the
+    // row dimmed.
+    search(&mut h, "distrib", "Distribute horizontally (search)");
     assert_eq!(
         app(&h).ui.prepare.tab,
         flatcraft::ui::prepare::RibbonTab::Arrange
     );
-    let undo = undo_len(&s);
-    h.get_by_label("Mirror horizontally (Arrange)").click();
+    assert!(disabled(&h, "Distribute horizontally (Arrange)"));
+    h.key_press(egui::Key::Escape);
     h.run();
-    wait_for_workers(&mut h);
-    assert_eq!(undo_len(&s), undo + 1, "mirrored");
-    // Align: its items, To the cutting area among them.
-    search(&mut h, "align", "Align (search)");
-    h.get_by_label("To the cutting area").click();
-    h.run();
-    let undo = undo_len(&s);
-    h.get_by_label("Align right (Arrange)").click();
-    h.run();
-    wait_for_workers(&mut h);
-    assert_eq!(undo_len(&s), undo + 1, "aligned");
-    // Distribute, with three objects.
+    // With three objects it runs.
     s.lock()
         .unwrap()
         .execute(
@@ -1726,10 +1730,8 @@ fn search_reaches_arrange_commands_that_are_not_on_the_tab() {
         .unwrap();
     select(&s, &[a, b, c]);
     h.run();
-    search(&mut h, "distrib", "Distribute (search)");
     let undo = undo_len(&s);
-    h.get_by_label("Distribute horizontally (Arrange)").click();
-    h.run();
+    search(&mut h, "distrib", "Distribute horizontally (search)");
     wait_for_workers(&mut h);
     assert_eq!(undo_len(&s), undo + 1, "distributed");
 }
@@ -1983,55 +1985,47 @@ fn pins_round_trip_through_the_preferences() {
     }
     assert!(h.query_by_label("Circular pattern").is_none());
     open_arrange(&mut h);
-    h.get_by_label("Pinned commands show on the ribbon. Hover a row to pin or unpin it.");
-    let row = h
-        .get_by_label("Circular pattern... (Arrange)")
-        .rect()
-        .center();
-    h.hover_at(egui::pos2(row.x as f32, row.y as f32));
-    h.run();
-    h.run();
+    h.get_by_label(flatcraft::ui::groups::FOOTER);
+    let hover = |h: &mut AppHarness, row: &str| {
+        let at = h.get_by_label(row).rect().center();
+        h.hover_at(egui::pos2(at.x, at.y));
+        h.run();
+        h.run();
+    };
+    hover(&mut h, "Circular pattern... (Arrange)");
     h.get_by_label("Pin Circular pattern").click();
     h.run();
-    let stored = flatcraft_engine::prefs::Preferences::load(&app(&h).config_dir).arrange_pins;
+    let stored =
+        |h: &AppHarness| flatcraft_engine::prefs::Preferences::load(&app(h).config_dir).ribbon_pins;
     assert!(
-        stored.contains(&"circular_pattern".to_string()),
-        "{stored:?}"
+        stored(&h).contains(&"pattern.circular".to_string()),
+        "{:?}",
+        stored(&h)
     );
+    // The list is still open and the ribbon shows the new pin at once.
+    h.get_by_label(flatcraft::ui::groups::FOOTER);
     h.get_by_role_and_label(Role::Button, "Circular pattern");
     // Unpin one Mirror direction from its row, pin an Align direction;
-    // the menu stays open meanwhile.
+    // the list stays open meanwhile.
     for (row, toggle) in [
         ("Mirror vertically (Arrange)", "Unpin Mirror vertically"),
-        ("Align top (Arrange)", "Pin Align top"),
+        ("Align top (Arrange)", "Pin Align top · selection"),
     ] {
-        let at = h.get_by_label(row).rect().center();
-        h.hover_at(egui::pos2(at.x as f32, at.y as f32));
-        h.run();
-        h.run();
+        hover(&mut h, row);
         h.get_by_label(toggle).click();
         h.run();
     }
-    let stored = flatcraft_engine::prefs::Preferences::load(&app(&h).config_dir).arrange_pins;
-    assert_eq!(
-        stored,
-        [
-            "move_copy",
-            "rectangular_pattern",
-            "rotate_left",
-            "rotate_right",
-            "mirror_horizontal",
-            "circular_pattern",
-            "align_top"
-        ]
-    );
+    let mut want = flatcraft_engine::prefs::default_ribbon_pins();
+    want.retain(|p| p != "mirror.vertical");
+    want.extend(["pattern.circular".into(), "align.top.selection".into()]);
+    assert_eq!(stored(&h), want);
     h.key_press(egui::Key::Escape);
     h.run();
     assert!(
         h.query_by_role_and_label(Role::Button, "Mirror vertically")
             .is_none()
     );
-    h.get_by_role_and_label(Role::Button, "Align top");
+    h.get_by_role_and_label(Role::Button, "Align top · selection");
 }
 
 #[test]
@@ -2043,8 +2037,8 @@ fn search_finds_copies_and_distribute() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     for (query, hit) in [
-        ("distrib", "Distribute (search)"),
-        ("copies", "Copies (search)"),
+        ("distrib", "Distribute horizontally (search)"),
+        ("copies", "Copies... (search)"),
     ] {
         h.get_by_label("Search commands").click();
         h.run();
@@ -2693,15 +2687,10 @@ fn each_pinned_direction_runs_its_command_in_one_click() {
     s.lock()
         .unwrap()
         .update_prefs(|p| {
-            p.arrange_pins = flatcraft_engine::prefs::ARRANGE_PIN_IDS
+            p.ribbon_pins = flatcraft::ui::tools::TOOLS
                 .iter()
-                .filter(|id| {
-                    id.contains('_')
-                        && !id.ends_with("pattern")
-                        && **id != "move_copy"
-                        && **id != "auto_arrange"
-                })
-                .map(|id| id.to_string())
+                .filter(|t| t.style == flatcraft::ui::tools::Style::Small)
+                .map(|t| t.id.to_string())
                 .collect();
         })
         .unwrap();
@@ -2710,12 +2699,14 @@ fn each_pinned_direction_runs_its_command_in_one_click() {
     h.get_by_role_and_label(Role::Tab, "Arrange").click();
     h.run();
     let ids = json!([a, b, c]);
-    let align = |mode: &str| {
+    let align = |mode: &str, to: &str| {
         (
             "arrange.align",
-            json!({ "ids": ids, "mode": mode, "relative_to": "selection" }),
+            json!({ "ids": ids, "mode": mode, "relative_to": to }),
         )
     };
+    // The list shows the other option: a pin runs with its own.
+    app_mut(&mut h).ui.prepare.fields.align_to_area = true;
     let cases = [
         (
             "Rotate -90",
@@ -2745,12 +2736,27 @@ fn each_pinned_direction_runs_its_command_in_one_click() {
                 json!({ "ids": ids, "axis": "vertical", "about": "group" }),
             ),
         ),
-        ("Align left", align("left")),
-        ("Align centre", align("hcenter")),
-        ("Align right", align("right")),
-        ("Align top", align("top")),
-        ("Align middle", align("vcenter")),
-        ("Align bottom", align("bottom")),
+        ("Align left · selection", align("left", "selection")),
+        ("Align centre · selection", align("hcenter", "selection")),
+        ("Align right · selection", align("right", "selection")),
+        ("Align top · selection", align("top", "selection")),
+        ("Align middle · selection", align("vcenter", "selection")),
+        ("Align bottom · selection", align("bottom", "selection")),
+        ("Align left · cutting area", align("left", "cutting_area")),
+        (
+            "Align centre · cutting area",
+            align("hcenter", "cutting_area"),
+        ),
+        ("Align right · cutting area", align("right", "cutting_area")),
+        ("Align top · cutting area", align("top", "cutting_area")),
+        (
+            "Align middle · cutting area",
+            align("vcenter", "cutting_area"),
+        ),
+        (
+            "Align bottom · cutting area",
+            align("bottom", "cutting_area"),
+        ),
         (
             "Distribute horizontally",
             (

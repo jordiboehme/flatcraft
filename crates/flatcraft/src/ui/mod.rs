@@ -11,6 +11,7 @@ pub mod cut;
 pub mod debug;
 pub mod files;
 pub mod fonts;
+pub mod groups;
 pub mod help;
 pub mod home;
 pub mod icons;
@@ -27,6 +28,7 @@ pub mod switcher;
 pub mod theme;
 pub mod timeline;
 pub mod toasts;
+pub mod tools;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -168,8 +170,11 @@ pub enum Action {
     /// Store the "Each object" switch of the Arrange tab in the
     /// preferences, so the next start has it as it was.
     RememberEach(bool),
-    /// Pin an Arrange command to the ribbon, or unpin it, in the
-    /// preferences (`arrange_pins`, by [`arrange::ArrangeCmd::id`]).
+    /// Store the spacing of the Auto arrange panel in the preferences, for
+    /// the next panel and the one-click Auto arrange.
+    RememberSpacing(f64),
+    /// Pin a ribbon action, or unpin it, in the preferences
+    /// (`ribbon_pins`, by [`tools::Tool::id`]).
     SetPin {
         id: &'static str,
         pinned: bool,
@@ -789,11 +794,19 @@ impl FlatCraftApp {
                     )));
                 }
             }
+            Action::RememberSpacing(mm) => {
+                let result = lock(&self.session).update_prefs(|p| p.auto_arrange_spacing_mm = mm);
+                if let Err(e) = result {
+                    self.toast(Toast::error(format!(
+                        "Cannot store the Auto arrange spacing: {e}"
+                    )));
+                }
+            }
             Action::SetPin { id, pinned } => {
                 let result = lock(&self.session).update_prefs(|p| {
-                    p.arrange_pins.retain(|x| x != id);
+                    p.ribbon_pins.retain(|x| x != id);
                     if pinned {
-                        p.arrange_pins.push(id.to_string());
+                        p.ribbon_pins.push(id.to_string());
                     }
                 });
                 if let Err(e) = result {

@@ -1,5 +1,7 @@
 //! Small windows: the ribbon, the Cut bar and the app bar at 900, 1100,
-//! 1400 and 1920 points. Nothing is cut off or out of reach.
+//! 1400 and 1920 points. Nothing is cut off or out of reach: the ribbon's
+//! groups collapse from the right to their tiles, whose lists hold every
+//! action.
 
 mod common;
 
@@ -8,8 +10,9 @@ use egui::accesskit::Role;
 use egui::{Rect, Shape};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use flatcraft::ui::collapse::{self, Level};
+use flatcraft::ui::tools::{self, GroupId, Tool};
 use flatcraft::ui::{self, app_bar, ribbon};
-use flatcraft_engine::prefs::ARRANGE_PIN_IDS;
+use flatcraft_engine::prefs::RIBBON_PIN_IDS;
 use flatcraft_engine::session::Origin;
 use flatcraft_mcp::SharedSession;
 use serde_json::json;
@@ -34,7 +37,7 @@ fn pin(s: &SharedSession, pins: &[&str]) {
     let pins: Vec<String> = pins.iter().map(|p| p.to_string()).collect();
     s.lock()
         .unwrap()
-        .update_prefs(|p| p.arrange_pins = pins)
+        .update_prefs(|p| p.ribbon_pins = pins)
         .unwrap();
 }
 
@@ -44,55 +47,6 @@ fn search_rect(h: &AppHarness) -> Rect {
 
 fn window(h: &AppHarness) -> Rect {
     h.ctx.content_rect()
-}
-
-/// The names of a tab's tools, with the role to find each by.
-fn tools(tab: &str, pins: &[&str]) -> Vec<(Role, String)> {
-    let b = |n: &str| (Role::Button, n.to_string());
-    match tab {
-        "Home" => [
-            "Import",
-            "Trace",
-            "Test patterns",
-            "Duplicate",
-            "Copies...",
-            "Delete",
-            "Reload",
-        ]
-        .map(b)
-        .to_vec(),
-        "Arrange" => {
-            let mut v = vec![
-                (Role::TextInput, "Width (mm)".to_string()),
-                (Role::TextInput, "Height (mm)".to_string()),
-                (Role::CheckBox, "Keep aspect".to_string()),
-                (Role::TextInput, "Scale (%)".to_string()),
-                b("Arrange"),
-            ];
-            for cmd in ui::arrange::ArrangeCmd::ALL {
-                if pins.contains(&cmd.id()) {
-                    v.push(b(cmd.label().trim_end_matches(if cmd.big() {
-                        "..."
-                    } else {
-                        ""
-                    })));
-                }
-            }
-            v.push((Role::CheckBox, "Each object".to_string()));
-            v
-        }
-        _ => [
-            "Zoom to fit",
-            "Zoom 100%",
-            "Grid",
-            "Rulers",
-            "Objects panel",
-            "Settings panel",
-            "Debug panel",
-        ]
-        .map(b)
-        .to_vec(),
-    }
 }
 
 /// Whether the node is shown whole: inside the ribbon's margin (8 pt, the
@@ -108,51 +62,112 @@ fn find<'a>(h: &'a AppHarness, role: Role, name: &str) -> Vec<egui_kittest::Node
         .collect()
 }
 
-/// Checks every tool of the current tab: shown whole on the ribbon, or
-/// listed under "»". Returns how many were in the list.
-fn check_tab(h: &mut AppHarness, tab: &str, pins: &[&str], width: f32) -> usize {
-    let mut listed = Vec::new();
-    for (role, name) in tools(tab, pins) {
-        let found = find(h, role, &name);
-        assert!(found.len() <= 1, "{width}: {name} twice");
-        match found.first() {
-            Some(n) => assert!(
-                on_ribbon(h, n.rect()),
-                "{width} {tab}: {name} is cut off at {:?} (search at {:?})",
-                n.rect(),
-                search_rect(h)
-            ),
-            None => listed.push((role, name)),
-        }
+/// The fields and switches of a tab that are not actions.
+fn fields(tab: &str) -> Vec<(Role, &'static str)> {
+    match tab {
+        "Arrange" => vec![
+            (Role::TextInput, "Width (mm)"),
+            (Role::TextInput, "Height (mm)"),
+            (Role::CheckBox, "Keep aspect"),
+            (Role::TextInput, "Scale (%)"),
+        ],
+        _ => Vec::new(),
     }
-    if listed.is_empty() {
+}
+
+fn groups_of(tab: &str) -> Vec<GroupId> {
+    tools::GROUPS
+        .iter()
+        .filter(|g| g.tab.name() == tab && g.id != GroupId::Size)
+        .map(|g| g.id)
+        .collect()
+}
+
+/// Checks every action of the current tab: each group's button or tile is
+/// shown whole, a pinned button that is shown is whole, and the group's
+/// list has a row for every action (both Align options). Nothing is
+/// listed under a "»". Returns how many groups were tiles.
+fn check_tab(h: &mut AppHarness, tab: &str, width: f32) -> usize {
+    assert!(
+        h.query_by_label(collapse::MORE).is_none(),
+        "{width} {tab}: the ribbon needs no » list"
+    );
+    for (role, name) in fields(tab) {
+        let found = find(h, role, name);
+        assert_eq!(found.len(), 1, "{width} {tab}: {name}");
         assert!(
-            h.query_by_label(collapse::MORE).is_none(),
-            "{width} {tab}: a » with nothing in it"
+            on_ribbon(h, found[0].rect()),
+            "{width} {tab}: {name} is cut off"
         );
-        return 0;
     }
-    let more = h.get_by_label(collapse::MORE);
-    assert!(on_ribbon(h, more.rect()), "{width} {tab}: » is cut off");
-    more.click();
-    h.run();
-    for (role, name) in &listed {
-        let found = find(h, *role, name);
-        assert_eq!(
-            found.len(),
-            1,
-            "{width} {tab}: {name} is neither shown nor listed"
-        );
+    let mut tiles = 0;
+    for g in groups_of(tab) {
+        let def = g.def();
+        let found = find(h, Role::Button, def.title);
+        assert_eq!(found.len(), 1, "{width} {tab}: group {}", def.title);
         let r = found[0].rect();
         assert!(
-            window(h).contains_rect(r),
-            "{width} {tab}: {name} listed off-screen"
+            on_ribbon(h, r),
+            "{width} {tab}: {} is cut off at {r:?}",
+            def.title
         );
+        let pinned_shown = g
+            .tools()
+            .filter(|t| !find(h, Role::Button, &t.button_name()).is_empty())
+            .count();
+        if pinned_shown == 0 {
+            tiles += 1;
+        }
+        for t in g.tools() {
+            for n in find(h, Role::Button, &t.button_name()) {
+                assert!(
+                    on_ribbon(h, n.rect()),
+                    "{width} {tab}: {} is cut off",
+                    t.button_name()
+                );
+            }
+        }
+        // The list holds every action.
+        h.get_by_role_and_label(Role::Button, def.title).click();
+        h.run();
+        for to_area in [false, true] {
+            if g == GroupId::Arrange {
+                let option = if to_area {
+                    "To the cutting area"
+                } else {
+                    "To the selection"
+                };
+                h.get_by_label(option).click();
+                h.run();
+            }
+            let want: Vec<&Tool> = g
+                .tools()
+                .filter(|t| match t.option() {
+                    Some(o) => o == tools::AlignTo::of(to_area),
+                    None => true,
+                })
+                .collect();
+            for t in want {
+                let rows = find(h, Role::Button, &t.row_name());
+                assert_eq!(rows.len(), 1, "{width} {tab}: no row {}", t.row_name());
+                assert!(
+                    window(h).contains_rect(rows[0].rect()),
+                    "{width} {tab}: {} listed off-screen",
+                    t.row_name()
+                );
+            }
+        }
+        // "Each object" is on the tab, or in the list while the group is a
+        // tile.
+        if g == GroupId::Arrange {
+            let each = find(h, Role::CheckBox, "Each object");
+            assert_eq!(each.len(), 1, "{width} {tab}: Each object");
+            assert!(window(h).contains_rect(each[0].rect()));
+        }
+        h.key_press(egui::Key::Escape);
+        h.run();
     }
-    // Close the list.
-    h.get_by_label(collapse::MORE).click();
-    h.run();
-    listed.len()
+    tiles
 }
 
 fn show_tab(h: &mut AppHarness, tab: &str) {
@@ -161,9 +176,9 @@ fn show_tab(h: &mut AppHarness, tab: &str) {
 }
 
 #[test]
-fn every_ribbon_command_is_reachable_at_every_width() {
-    let all: Vec<&str> = ARRANGE_PIN_IDS.to_vec();
-    let defaults = flatcraft_engine::prefs::default_arrange_pins();
+fn every_ribbon_action_is_reachable_at_every_width() {
+    let all: Vec<&str> = RIBBON_PIN_IDS.to_vec();
+    let defaults = flatcraft_engine::prefs::default_ribbon_pins();
     let defaults: Vec<&str> = defaults.iter().map(String::as_str).collect();
     for width in WIDTHS {
         for pins in [&defaults[..], &all[..], &[][..]] {
@@ -174,88 +189,183 @@ fn every_ribbon_command_is_reachable_at_every_width() {
             select(&s, &[a, b]);
             pin(&s, pins);
             let mut h = sized(&dir, s.clone(), width);
-            let mut listed = 0;
             for tab in ["Home", "Arrange", "View"] {
                 show_tab(&mut h, tab);
                 assert!(
                     window(&h).contains_rect(search_rect(&h)),
                     "{width}: search off-screen"
                 );
-                listed += check_tab(&mut h, tab, pins, width);
-            }
-            if width >= 1920.0 {
-                assert_eq!(listed, 0, "{width}: nothing needs the » list");
+                let tiles = check_tab(&mut h, tab, width);
+                if width >= 1920.0 && !pins.is_empty() && pins.len() < all.len() {
+                    assert_eq!(tiles, 0, "{width} {tab}: nothing collapses");
+                }
             }
         }
     }
 }
 
 #[test]
-fn a_listed_tool_works_and_closes_the_list() {
+fn the_default_pins_are_the_buttons_the_ribbon_had() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let a = import_square(&s);
-    pin(&s, &ARRANGE_PIN_IDS);
+    select(&s, &[a]);
+    let mut h = sized(&dir, s, 1920.0);
+    let want = [
+        (
+            "Home",
+            &[
+                "Import",
+                "Trace",
+                "Test patterns",
+                "Duplicate",
+                "Copies...",
+                "Delete",
+                "Reload",
+            ][..],
+        ),
+        (
+            "Arrange",
+            &[
+                "Move / Copy",
+                "Rectangular pattern",
+                "Rotate -90",
+                "Rotate +90",
+                "Mirror horizontally",
+                "Mirror vertically",
+            ][..],
+        ),
+        (
+            "View",
+            &[
+                "Zoom to fit",
+                "Zoom 100%",
+                "Grid",
+                "Rulers",
+                "Objects panel",
+                "Settings panel",
+                "Debug panel",
+            ][..],
+        ),
+    ];
+    for (tab, names) in want {
+        show_tab(&mut h, tab);
+        let groups = groups_of(tab);
+        let mut shown: Vec<String> = tools::TOOLS
+            .iter()
+            .filter(|t| groups.contains(&t.group))
+            .map(|t| t.button_name())
+            .filter(|n| !find(&h, Role::Button, n).is_empty())
+            .collect();
+        shown.sort();
+        let mut names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+        names.sort();
+        assert_eq!(shown, names, "{tab}");
+    }
+}
+
+#[test]
+fn a_listed_action_works_and_closes_the_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    pin(&s, &RIBBON_PIN_IDS);
     select(&s, &[a]);
     let mut h = sized(&dir, s.clone(), 900.0);
     show_tab(&mut h, "Arrange");
     assert!(
         matches!(
             collapse::level(&h.ctx, ribbon::bar_id()),
-            Some(Level::Overflow(_))
+            Some(Level::Collapsed(_))
         ),
         "every pin does not fit 900 pt"
     );
-    h.get_by_label(collapse::MORE).click();
+    assert!(
+        h.query_by_role_and_label(Role::Button, "Mirror vertically")
+            .is_none(),
+        "the Arrange group is a tile"
+    );
+    h.get_by_role_and_label(Role::Button, "Arrange").click();
     h.run();
     let undo = undo_len(&s);
-    h.get_by_role_and_label(Role::Button, "Mirror vertically")
-        .click();
+    h.get_by_label("Mirror vertically (Arrange)").click();
     h.run();
     wait_for_workers(&mut h);
     assert_eq!(undo_len(&s), undo + 1, "mirrored from the list");
     assert!(
-        h.query_by_role_and_label(Role::Button, "Mirror vertically")
-            .is_none(),
+        h.query_by_label("Mirror vertically (Arrange)").is_none(),
         "the list closed"
     );
 }
 
 #[test]
-fn search_opens_the_arrange_drop_down_on_a_collapsed_ribbon() {
+fn search_opens_a_list_on_a_collapsed_ribbon() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let a = import_square(&s);
-    pin(&s, &ARRANGE_PIN_IDS);
+    pin(&s, &RIBBON_PIN_IDS);
     select(&s, &[a]);
     let mut h = sized(&dir, s.clone(), 900.0);
     show_tab(&mut h, "Home");
     h.get_by_label("Search commands").click();
     h.run();
-    h.get_by_label("Search commands").type_text("mirror");
+    h.get_by_label("Search commands").type_text("distribute");
     h.run();
-    h.get_by_role_and_label(Role::Button, "Mirror (search)")
+    // One object: Distribute cannot run, so search opens its list.
+    h.get_by_role_and_label(Role::Button, "Distribute vertically (search)")
         .click();
     h.run();
     assert!(
         matches!(
             collapse::level(&h.ctx, ribbon::bar_id()),
-            Some(Level::Overflow(_))
+            Some(Level::Collapsed(_))
         ),
         "the Arrange tab is collapsed at 900 pt with every pin"
+    );
+    assert!(
+        h.get_by_label("Distribute vertically (Arrange)")
+            .accesskit_node()
+            .is_disabled()
     );
     let undo = undo_len(&s);
     h.get_by_label("Mirror horizontally (Arrange)").click();
     h.run();
     wait_for_workers(&mut h);
-    assert_eq!(undo_len(&s), undo + 1, "mirrored from the drop-down");
+    assert_eq!(undo_len(&s), undo + 1, "mirrored from the list");
+}
+
+#[test]
+fn the_first_frame_after_a_tab_switch_already_fits() {
+    // Every level change is measured exactly, so one frame (with its three
+    // passes) settles: no pass that cannot be discarded is too wide.
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    pin(&s, &RIBBON_PIN_IDS);
+    select(&s, &[a]);
+    let mut h = sized(&dir, s, 900.0);
+    show_tab(&mut h, "Home");
+    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.step();
+    let level = collapse::level(&h.ctx, ribbon::bar_id());
+    assert!(matches!(level, Some(Level::Collapsed(_))), "{level:?}");
+    for g in groups_of("Arrange") {
+        let r = h.get_by_role_and_label(Role::Button, g.def().title).rect();
+        assert!(on_ribbon(&h, r), "{} at {r:?}", g.def().title);
+    }
+    h.step();
+    assert_eq!(
+        collapse::level(&h.ctx, ribbon::bar_id()),
+        level,
+        "the next frame keeps it"
+    );
 }
 
 #[test]
 fn resizing_settles_without_flipping() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
-    pin(&s, &ARRANGE_PIN_IDS);
+    pin(&s, &RIBBON_PIN_IDS);
     let mut h = sized(&dir, s, 1920.0);
     show_tab(&mut h, "Arrange");
     let wide = collapse::level(&h.ctx, ribbon::bar_id());
@@ -278,6 +388,41 @@ fn resizing_settles_without_flipping() {
     assert_eq!(seen.last().unwrap().1, wide, "{seen:?}");
     assert_eq!(seen[0].1, Some(Level::Full), "{seen:?}");
     assert_ne!(seen[5].1, Some(Level::Full), "{seen:?}");
+}
+
+#[test]
+fn a_field_that_shrinks_back_lets_the_ribbon_grow_again() {
+    // A long value widens the W field; once it is short again, the bar
+    // measures again and ends where it was, never stuck icon-only.
+    for width in WIDTHS {
+        let dir = tempfile::tempdir().unwrap();
+        let s = session(&dir);
+        let a = import_square(&s);
+        select(&s, &[a]);
+        let mut h = sized(&dir, s.clone(), width);
+        show_tab(&mut h, "Arrange");
+        wait_for_workers(&mut h);
+        let before = collapse::level(&h.ctx, ribbon::bar_id());
+        let scale = |h: &mut AppHarness, w: f64| {
+            s.lock()
+                .unwrap()
+                .execute(
+                    "object.scale",
+                    json!({ "ids": [a], "width_mm": w, "keep_aspect": false }),
+                    Origin::User,
+                )
+                .unwrap();
+            h.run();
+            wait_for_workers(h);
+        };
+        scale(&mut h, 98765.25);
+        scale(&mut h, 50.0);
+        assert_eq!(
+            collapse::level(&h.ctx, ribbon::bar_id()),
+            before,
+            "{width}: back where it was once the text is short"
+        );
+    }
 }
 
 /// Every text painted last frame with the clip rect it was painted in.
@@ -340,7 +485,7 @@ fn no_number_field_cuts_its_value() {
         wait_for_workers(&mut h);
         shown_whole(&h, "1250.25", width);
         shown_whole(&h, "50.00", width);
-        shown_whole(&h, "100", width);
+        shown_whole(&h, "100.00", width);
         // The panel fields, with their longest values.
         app_mut(&mut h).ui.prepare.panel_last.move_copy.dx_mm = -9999.99;
         app_mut(&mut h).ui.prepare.panel_last.rotate.degrees = -359.99;
@@ -385,6 +530,37 @@ fn the_cut_bar_fits_at_every_width() {
                 w.contains_rect(r) && r.max.x <= debug.min.x,
                 "{width}: {name} cut off at {r:?}"
             );
+        }
+    }
+}
+
+#[test]
+fn the_agent_pill_leaves_room_for_the_active_tab() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    new_documents(&s, 11);
+    let mut h = harness_sized(&dir, s.clone(), [900.0, 600.0], 8, |app| app.with_agent());
+    to_prepare(&mut h);
+    let pill = h.get_by_label("Agent idle").rect();
+    let settings = h.get_by_label("Settings").rect();
+    assert!(window(&h).contains_rect(pill), "pill off-screen");
+    for i in [0, 6, 11] {
+        let id = s.lock().unwrap().docs[i].id();
+        s.lock()
+            .unwrap()
+            .execute("document.switch", json!({ "doc_id": id }), Origin::User)
+            .ok();
+        h.run();
+        let name = format!("Untitled {}", i + 1);
+        let tab = h.get_by_role_and_label(Role::Button, &name).rect();
+        let right = pill.min.x.min(settings.min.x);
+        assert!(
+            window(&h).contains_rect(tab) && tab.max.x <= right,
+            "{name} at {tab:?}, the right side starts at {right}"
+        );
+        for n in ["New document", app_bar::ALL_DOCUMENTS] {
+            let r = h.get_by_label(n).rect();
+            assert!(r.max.x <= right, "{n} at {r:?}");
         }
     }
 }

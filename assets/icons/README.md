@@ -63,6 +63,14 @@ https://raw.githubusercontent.com/lucide-icons/lucide/1.79.0/icons/<name>.svg, u
 | Align right | align-end-vertical |
 | Align top | align-start-horizontal |
 | Align bottom | align-end-horizontal |
+| Edit group | pencil |
+| Zoom group | zoom-in |
+| Panels group | panels-top-left |
+| Keep aspect | proportions |
+| Each object | ungroup |
+
+The Align directions "to the cutting area" use the Align icons above. The app draws
+them smaller inside a dashed frame at render time; the files are not changed.
 
 The SVGs draw with currentColor. The app replaces it with the theme's text colour before
 resvg renders them.
