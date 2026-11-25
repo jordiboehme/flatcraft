@@ -162,6 +162,8 @@ pub enum Request {
     Delete(Kind, String),
     Prefs(PrefsChange),
     ChooseOutputFolder,
+    /// Read the user preset files again (after fixing a broken one).
+    ReloadPresets,
 }
 
 /// What the window reads from the session, copied under one lock.
@@ -371,6 +373,14 @@ pub fn show(ctx: &egui::Context, app: &mut FlatCraftApp, actions: &mut Vec<Actio
                     .color(t.danger),
                 )
                 .on_hover_text(d.path.display().to_string());
+            }
+            if !view.diagnostics.is_empty()
+                && ui
+                    .button("Reload presets")
+                    .on_hover_text("Fixed the file? Read the preset folder again.")
+                    .clicked()
+            {
+                actions.push(Action::Profiles(Request::ReloadPresets));
             }
             if st.leave.is_some() {
                 discard_banner(ui, st, &t);
@@ -1923,6 +1933,24 @@ pub fn apply(app: &mut FlatCraftApp, ctx: &egui::Context, req: Request) {
         }
         Request::Delete(kind, id) => delete(app, kind, &id),
         Request::Prefs(change) => set_pref(app, ctx, change),
+        Request::ReloadPresets => {
+            let result = lock(&app.session).profiles.reload();
+            match result {
+                Ok(()) => {
+                    // Load the selected presets again from the new store,
+                    // unless they hold unsaved edits.
+                    let st = &mut app.ui.profiles;
+                    if let Some(d) = st.plotter.as_ref().filter(|d| !d.changed()) {
+                        st.want_plotter = Some(d.id.clone());
+                    }
+                    if let Some(d) = st.material.as_ref().filter(|d| !d.changed()) {
+                        st.want_material = Some(d.id.clone());
+                    }
+                    app.toast(Toast::info("Presets reloaded."));
+                }
+                Err(e) => app.toast(Toast::error(format!("Cannot reload the presets: {e}"))),
+            }
+        }
         Request::ChooseOutputFolder => {
             let current = lock(&app.session).prefs.output_dir.clone();
             let req = files::FileRequest {

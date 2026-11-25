@@ -389,6 +389,16 @@ impl ProfileStore {
         self.cache.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Reads the user presets again (after the person fixed or removed a
+    /// file), keeping the system presets. Cached profiles are dropped and
+    /// the revision moves on.
+    pub fn reload(&mut self) -> Result<(), ProfileError> {
+        let revision = self.revision;
+        *self = Self::load(&self.user_dir)?;
+        self.revision = revision + 1;
+        Ok(())
+    }
+
     /// Counts the saves and deletes of this store. Resolved profiles are
     /// cached per revision.
     pub fn revision(&self) -> u64 {
@@ -727,7 +737,7 @@ impl ProfileStore {
             return Err(ProfileError::Invalid {
                 id: id.to_string(),
                 reason: format!(
-                    "A preset file with this name exists but can't be read: {}. Fix or remove it first.",
+                    "A preset file with this name exists but can't be read: {}. Fix or remove it first, then press Reload presets in the Profiles window.",
                     d.reason
                 ),
             });

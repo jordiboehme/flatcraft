@@ -515,6 +515,30 @@ fn an_out_of_range_preset_can_be_fixed_in_the_window() {
 }
 
 #[test]
+fn reload_presets_clears_a_fixed_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let plotters = dir.path().join("profiles/plotters");
+    std::fs::create_dir_all(&plotters).unwrap();
+    std::fs::write(plotters.join("fixme.toml"), "id = [").unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    open(&mut h, "Plotters");
+    h.get_by_label_contains("This preset file can't be read:");
+    std::fs::write(
+        plotters.join("fixme.toml"),
+        "id = \"fixme\"\nname = \"Fixed\"\ninherits = \"silhouette-cameo-2\"\n",
+    )
+    .unwrap();
+    click(&mut h, "Reload presets");
+    assert!(
+        h.query_by_label_contains("This preset file can't be read:")
+            .is_none()
+    );
+    assert!(store(&s).diagnostics().is_empty());
+    assert_eq!(store(&s).plotter("fixme").unwrap().name, "Fixed");
+}
+
+#[test]
 fn calibration_tab_says_what_comes() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
