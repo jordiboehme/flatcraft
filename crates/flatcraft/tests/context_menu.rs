@@ -376,7 +376,7 @@ fn the_menu_of_one_object() {
 }
 
 #[test]
-fn trace_again_with_several_objects_is_dimmed_and_link_says_why() {
+fn trace_again_with_several_objects_is_dimmed_and_link_follows_the_design() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let png = dir.path().join("ring.png");
@@ -404,13 +404,11 @@ fn trace_again_with_several_objects_is_dimmed_and_link_says_why() {
     assert_eq!(TraceAgain.why(&snap, &[pic]), None);
     // Only vectors: it can never apply, so it is left out.
     assert!(!flat(&[square]).contains(&TraceAgain));
-    // Link copies: one object, or two different designs, say why.
+    // Link copies: one object says why; different designs can never be
+    // linked, so it is left out.
+    assert!(flat(&[square]).contains(&LinkCopies));
     assert!(LinkCopies.why(&snap, &[square]).is_some());
-    assert!(
-        LinkCopies
-            .why(&snap, &both)
-            .is_some_and(|w| w.contains("copies of one design"))
-    );
+    assert!(!flat(&both).contains(&LinkCopies));
 }
 
 #[test]

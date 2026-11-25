@@ -378,16 +378,20 @@ pub fn rasterize(icon: Icon, px: u32, pal: &Palette) -> ColorImage {
     ColorImage::from_rgba_premultiplied([px as usize, px as usize], pixmap.data())
 }
 
-/// At small sizes (20 px and less) the 2-unit Lucide stroke becomes a
-/// whole number of pixels (16 px: 1, 20 px: 2), so lines are not blurred
-/// across two pixel rows. The Lucide geometry sits on a 24-unit grid, so
-/// line positions cannot all land on pixel edges at 16 or 20 px; only the
-/// widths are snapped.
+/// At small sizes (20 px and less) the 2-unit Lucide stroke snaps to a
+/// whole number of pixels, but only when that changes its width by 0.25 px
+/// or less, so no icon gets visibly heavier or lighter (18 px keeps its
+/// 1.5 px line). The Lucide geometry sits on a 24-unit grid, so line
+/// positions cannot all land on pixel edges; only widths are snapped.
 pub fn snap_strokes(svg: &str, px: u32) -> String {
     if px > 20 {
         return svg.to_string();
     }
-    let pixels = (2.0 * px as f32 / 24.0).round().max(1.0);
+    let width = 2.0 * px as f32 / 24.0;
+    let pixels = width.round().max(1.0);
+    if (pixels - width).abs() > 0.25 {
+        return svg.to_string();
+    }
     let units = pixels * 24.0 / px as f32;
     svg.replacen(
         "stroke-width=\"2\"",
@@ -503,17 +507,20 @@ mod tests {
     }
 
     #[test]
-    fn small_strokes_are_whole_pixels() {
-        let svg = Icon::Move.svg();
-        assert!(
-            snap_strokes(svg, 16).contains("stroke-width=\"1.5\""),
-            "1 px at 16"
-        );
-        assert!(
-            snap_strokes(svg, 20).contains("stroke-width=\"2.4\""),
-            "2 px at 20"
-        );
-        assert_eq!(snap_strokes(svg, 36), svg, "large sizes stay");
+    fn small_strokes_snap_only_when_the_width_hardly_changes() {
+        let pal = Palette::of(&super::super::theme::Tokens::light());
+        let svg = styled_svg(Icon::Move, &pal);
+        assert!(svg.contains("stroke-width=\"2\""));
+        // 18 px: 1.5 px would round to 2 px, a third heavier: unchanged.
+        assert_eq!(snap_strokes(&svg, 18), svg);
+        // 16 and 20 px: 1.33 and 1.67 px are 0.33 px from a whole pixel.
+        assert_eq!(snap_strokes(&svg, 16), svg);
+        assert_eq!(snap_strokes(&svg, 20), svg);
+        // 15 px: 1.25 px becomes 1 px (2 * 24 / 15 / 2 = 1.6 units).
+        assert!(snap_strokes(&svg, 15).contains("stroke-width=\"1.6\""));
+        // 12 px: already 1 px.
+        assert!(snap_strokes(&svg, 12).contains("stroke-width=\"2\""));
+        assert_eq!(snap_strokes(&svg, 36), svg, "large sizes stay");
     }
 
     #[test]
