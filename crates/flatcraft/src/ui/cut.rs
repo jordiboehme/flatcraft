@@ -198,7 +198,9 @@ pub fn send_label(snap: &Snapshot) -> String {
 /// they show only their numbers (the name is their accessible name and
 /// their tooltip).
 pub fn stage_bar(ui: &mut Ui, st: &mut CutState, show_debug: &mut bool, t: &Tokens) {
-    let full = ui.available_rect_before_wrap();
+    let mut full = ui.available_rect_before_wrap();
+    // One row tall, so the panel around it can be taller.
+    full.set_height(ui.spacing().interact_size.y);
     let debug = ui
         .scope_builder(
             egui::UiBuilder::new()
