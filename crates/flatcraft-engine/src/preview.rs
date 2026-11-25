@@ -190,9 +190,14 @@ pub fn render_png(s: &Session, kind: PreviewKind, max_px: u32) -> Result<Vec<u8>
     let mat = Transform::from_scale(sc, sc).pre_translate(ox, oy);
     let px = |n: f32| f64::from(n / sc); // pixel length in mm
 
-    // The physical mat in its own colour; the printed grid in a contrast colour on top.
+    // The mat margin in a darker shade of the mat colour, the cutting area in
+    // the mat colour itself, the printed grid in a contrast colour on top.
+    let [mr, mg, mb] = flatcraft_core::colour::margin_colour(media.color);
+    pm.fill(color(mr, mg, mb));
     let [r, g, b] = media.color;
-    pm.fill(color(r, g, b));
+    if let Some(p) = rect_path(area) {
+        pm.fill_path(&p, &paint(color(r, g, b)), FillRule::Winding, mat, None);
+    }
     let [lr, lg, lb] = line_colour(media.color);
     let mut grid_lines = PathBuilder::new();
     let (gw, gh) = (media.grid.width_mm as f32, media.grid.height_mm as f32);
@@ -236,7 +241,7 @@ pub fn render_png(s: &Session, kind: PreviewKind, max_px: u32) -> Result<Vec<u8>
                             (255, None)
                         } else {
                             (
-                                115,
+                                155,
                                 StrokeDash::new(vec![px(5.0) as f32, px(4.0) as f32], 0.0),
                             )
                         };

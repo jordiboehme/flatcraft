@@ -95,7 +95,9 @@ impl CanvasView {
 
 // ---------------------------------------------------------------- colours
 
-pub use flatcraft_core::colour::{contrast_colour, contrast_ratio, luminance, object_colour};
+pub use flatcraft_core::colour::{
+    contrast_colour, contrast_ratio, luminance, margin_colour, object_colour, selection_colour,
+};
 
 pub fn rgb(c: [u8; 3]) -> Color32 {
     Color32::from_rgb(c[0], c[1], c[2])
@@ -266,33 +268,38 @@ pub fn show(
         drag_preview(st.drag.as_ref(), snap, id)
     });
     if let Some(p) = &st.panel {
-        draw_ghosts(&painter, snap, &view, t, &super::arrange::ghosts(snap, p));
+        draw_ghosts(
+            &painter,
+            snap,
+            &view,
+            mat_rgb,
+            &super::arrange::ghosts(snap, p),
+        );
     }
-    draw_area(&painter, rect, snap, &view, t, contrast);
-    if let Some(r) = draw_selection(&painter, snap, st, contrast) {
+    draw_area(&painter, snap, &view, t, contrast);
+    if let Some(r) = draw_selection(&painter, snap, st, rgb(selection_colour(mat_rgb))) {
         link_badge(ui, r, snap, contrast);
     }
     if let Some(Drag::Frame { start, current, .. }) = &st.drag {
         let r = view.rect_to_screen(kurbo::Rect::from_points(*start, *current));
-        painter.rect_filled(r, 0.0, t.accent_prepare.gamma_multiply(0.12));
-        painter.rect_stroke(
-            r,
-            0.0,
-            Stroke::new(1.0, t.accent_prepare),
-            egui::StrokeKind::Middle,
-        );
+        let pick = rgb(selection_colour(mat_rgb));
+        painter.rect_filled(r, 0.0, pick.gamma_multiply(0.12));
+        painter.rect_stroke(r, 0.0, Stroke::new(1.0, pick), egui::StrokeKind::Middle);
     }
     if st.show_rulers {
         draw_rulers(&painter, rect, &view, t);
     }
 }
 
-/// The mat colour, falling back to the Cameo mat blue.
+/// The mat colour, falling back to paper.
 pub fn mat_rgb(snap: &Snapshot) -> [u8; 3] {
-    snap.mat.as_ref().map_or([0x8F, 0xA8, 0xB8], |m| m.color)
+    snap.mat
+        .as_ref()
+        .map_or(flatcraft_device::DEFAULT_MAT_COLOR, |m| m.color)
 }
 
-/// Fills the canvas, draws the mat in its colour and the printed grid.
+/// Fills the canvas, draws the mat (the margin in a darker shade of its
+/// colour, the cutting area in the mat colour itself) and the printed grid.
 /// Returns the mat colour and its contrast colour.
 pub(crate) fn draw_mat(
     painter: &egui::Painter,
@@ -306,7 +313,13 @@ pub(crate) fn draw_mat(
     let mat_rgb = mat_rgb(snap);
     let contrast = rgb(contrast_colour(mat_rgb));
     if let Some(m) = &snap.mat {
-        painter.rect_filled(view.rect_to_screen(snap.mat_rect(m)), 0.0, rgb(m.color));
+        painter.rect_filled(
+            view.rect_to_screen(snap.mat_rect(m)),
+            0.0,
+            rgb(margin_colour(m.color)),
+        );
+        let area = snap.area.unwrap_or_else(|| snap.mat_rect(m));
+        painter.rect_filled(view.rect_to_screen(area), 0.0, rgb(m.color));
         if show_grid {
             draw_grid(painter, view, m.grid.width_mm, m.grid.height_mm, contrast);
         }
@@ -332,7 +345,7 @@ pub(crate) fn draw_objects(
         if cut_preview && !o.cut_enabled {
             continue;
         }
-        let alpha = if o.cut_enabled { alpha } else { alpha * 0.45 };
+        let alpha = if o.cut_enabled { alpha } else { alpha * 0.6 };
         let base = kurbo::Affine::translate(o.transform.center_mm.to_vec2());
         let place = extra(o.id).map_or(base, |p| p * base);
         for line in &o.shape.lines {
@@ -361,8 +374,8 @@ pub(crate) fn draw_objects(
 }
 
 /// The colour of the ghost preview's dashes.
-pub fn ghost_colour(t: &Tokens) -> Color32 {
-    t.accent_prepare.gamma_multiply(0.6)
+pub fn ghost_colour(mat: [u8; 3]) -> Color32 {
+    rgb(selection_colour(mat)).gamma_multiply(0.8)
 }
 
 /// Draws the would-be objects of an open Arrange panel faintly: each
@@ -372,10 +385,10 @@ pub(crate) fn draw_ghosts(
     painter: &egui::Painter,
     snap: &Snapshot,
     view: &CanvasView,
-    t: &Tokens,
+    mat: [u8; 3],
     ghosts: &[(u64, kurbo::Affine)],
 ) {
-    let stroke = Stroke::new(1.0, ghost_colour(t));
+    let stroke = Stroke::new(1.0, ghost_colour(mat));
     for (id, place) in ghosts {
         let Some(o) = snap.object(*id) else {
             continue;
@@ -396,11 +409,9 @@ pub(crate) fn draw_ghosts(
     }
 }
 
-/// Dims everything outside the cutting area, shows the band of an
-/// uncalibrated mat and outlines the area.
+/// Shows the band of an uncalibrated mat and outlines the cutting area.
 pub(crate) fn draw_area(
     painter: &egui::Painter,
-    rect: Rect,
     snap: &Snapshot,
     view: &CanvasView,
     t: &Tokens,
@@ -408,10 +419,6 @@ pub(crate) fn draw_area(
 ) {
     if let Some(area) = snap.area {
         let a = view.rect_to_screen(area);
-        let dim = Color32::from_black_alpha(110);
-        for r in outside(rect, a) {
-            painter.rect_filled(r, 0.0, dim);
-        }
         let uncalibrated = snap
             .mat
             .as_ref()
@@ -524,7 +531,7 @@ fn draw_selection(
     painter: &egui::Painter,
     snap: &Snapshot,
     st: &PrepareState,
-    contrast: Color32,
+    pick: Color32,
 ) -> Option<Rect> {
     let mut b = selection_box(snap)?;
     if let Some(Drag::Move { start, current, .. }) = &st.drag {
@@ -536,12 +543,7 @@ fn draw_selection(
         b = a.transform_rect_bbox(b);
     }
     let r = st.view.rect_to_screen(b);
-    painter.rect_stroke(
-        r,
-        0.0,
-        Stroke::new(1.0, contrast),
-        egui::StrokeKind::Outside,
-    );
+    painter.rect_stroke(r, 0.0, Stroke::new(1.5, pick), egui::StrokeKind::Outside);
     for c in [
         r.left_top(),
         r.right_top(),
@@ -549,7 +551,7 @@ fn draw_selection(
         r.left_bottom(),
     ] {
         let h = Rect::from_center_size(c, Vec2::splat(HANDLE * 2.0));
-        painter.rect_filled(h, 1.0, contrast);
+        painter.rect_filled(h, 1.0, pick);
     }
     Some(r)
 }

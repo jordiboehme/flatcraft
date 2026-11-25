@@ -749,7 +749,7 @@ fn document_state_reports_mat() {
     assert_eq!(m["width_mm"].as_f64(), Some(304.8));
     assert_eq!(m["height_mm"].as_f64(), Some(330.2));
     assert_eq!(m["calibrated"], false);
-    assert_eq!(m["color"], "#8FA8B8");
+    assert_eq!(m["color"], "#FBF4E4");
     assert_eq!(m["grid"]["origin_x_mm"].as_f64(), Some(0.0));
     assert_eq!(m["grid"]["origin_y_mm"].as_f64(), Some(0.0));
     assert_eq!(m["grid"]["width_mm"].as_f64(), Some(304.8));
@@ -1985,6 +1985,7 @@ fn undo_and_redo_by_doc_id() {
 
 #[test]
 fn preview_fills_the_mat_with_its_color() {
+    use flatcraft_core::colour::{contrast_colour, margin_colour};
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let png = flatcraft_engine::preview::render_png(
@@ -1994,10 +1995,27 @@ fn preview_fills_the_mat_with_its_color() {
     )
     .unwrap();
     let img = image::load_from_memory(&png).unwrap().to_rgba8();
-    // a corner of the physical mat, outside the grid
+    let paper = flatcraft_device::PAPER_COLOR;
+    // A corner of the physical mat, outside the grid: the darker margin.
     let (w, h) = img.dimensions();
     let px = img.get_pixel(w / 2, h - 3);
-    assert_eq!(&px.0[..3], &[0x8F, 0xA8, 0xB8]);
+    assert_eq!(&px.0[..3], &margin_colour(paper));
+    // Somewhere in the cutting area between two grid lines (the grid is
+    // 10 mm; 512 px for 330 mm is about 1.55 px per mm): the mat colour.
+    let inside = (w / 4..w * 3 / 4)
+        .flat_map(|x| (h / 4..h * 3 / 4).map(move |y| (x, y)))
+        .filter(|&(x, y)| img.get_pixel(x, y).0[..3] == paper)
+        .count();
+    assert!(inside > 1000, "{inside} paper pixels in the cutting area");
+    // The grid lines are dark on paper (the canvas's contrast rule).
+    let dark = contrast_colour(paper);
+    let darker = (w / 4..w * 3 / 4)
+        .flat_map(|x| (h / 4..h * 3 / 4).map(move |y| (x, y)))
+        .any(|(x, y)| {
+            let p = img.get_pixel(x, y).0;
+            (0..3).all(|c| p[c] < paper[c]) && p[0].abs_diff(dark[0]) < 200
+        });
+    assert!(darker, "no grid line pixels");
 }
 
 #[test]

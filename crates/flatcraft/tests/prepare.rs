@@ -297,13 +297,45 @@ fn mat_colour_fills_canvas() {
         mat["height_mm"].as_f64().unwrap() / 2.0 - oy,
     );
     let at = app(&h).ui.prepare.view.mm_to_screen(centre);
-    let colour = Color32::from_rgb(0x8F, 0xA8, 0xB8);
-    assert_eq!(mat["color"], "#8FA8B8");
+    let colour = Color32::from_rgb(0xFB, 0xF4, 0xE4);
+    assert_eq!(mat["color"], "#FBF4E4");
     let hit = painted(&h).iter().any(|shape| match shape {
         Shape::Rect(r) => r.fill == colour && r.rect.contains(at),
         _ => false,
     });
     assert!(hit, "no mat-coloured rect at {at:?}");
+}
+
+#[test]
+fn mat_margin_is_a_darker_shade_and_the_area_is_the_mat_colour() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let paper = flatcraft_device::PAPER_COLOR;
+    let [mr, mg, mb] = flatcraft_core::colour::margin_colour(paper);
+    let margin = Color32::from_rgb(mr, mg, mb);
+    let shapes = painted(&h);
+    let fills: Vec<_> = shapes
+        .iter()
+        .filter_map(|shape| match shape {
+            Shape::Rect(r) => Some((r.fill, r.rect)),
+            _ => None,
+        })
+        .collect();
+    let mat = fills.iter().find(|(c, _)| *c == margin).expect("margin").1;
+    let area = fills
+        .iter()
+        .find(|(c, _)| *c == Color32::from_rgb(paper[0], paper[1], paper[2]))
+        .expect("area")
+        .1;
+    assert!(mat.contains_rect(area) && mat.area() > area.area());
+    // The cutting area carries no tint and no dimming overlay of its own.
+    assert!(
+        !fills
+            .iter()
+            .any(|(c, r)| *c == Color32::from_black_alpha(110) && r.intersects(area.shrink(2.0)))
+    );
 }
 
 #[test]
@@ -1916,7 +1948,7 @@ fn circular_panel_previews_exactly_what_ok_makes() {
 
 /// The end points of the ghost preview's dashes painted last frame.
 fn ghost_points(h: &AppHarness) -> Vec<egui::Pos2> {
-    let colour = flatcraft::ui::canvas::ghost_colour(&app(h).tokens);
+    let colour = flatcraft::ui::canvas::ghost_colour(flatcraft_device::DEFAULT_MAT_COLOR);
     painted(h)
         .into_iter()
         .filter_map(|s| match s {

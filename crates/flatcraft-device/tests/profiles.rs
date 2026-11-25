@@ -575,8 +575,8 @@ fn save_writes_only_changed_and_new_mats() {
 fn mat_color_defaults_roundtrips_and_validates() {
     let (_d, s) = store();
     let p = s.plotter("silhouette-cameo-2").unwrap();
-    assert_eq!(p.media[0].color, [0x8F, 0xA8, 0xB8]);
-    assert_eq!(p.media[2].color, [0xF4, 0xF1, 0xEA]);
+    assert_eq!(p.media[0].color, DEFAULT_MAT_COLOR);
+    assert_eq!(p.media[2].color, DEFAULT_NO_MAT_COLOR);
 
     // old files without color get the default of their kind
     let d = tempdir().unwrap();
@@ -1029,4 +1029,59 @@ fn the_device_home_is_the_media_corner_in_app_coordinates() {
     assert_eq!(home, kurbo::Point::new(m.width_mm - 10.0, -20.0));
     let dev = flatcraft_device::gpgl::quantize::to_device(home, &p, &m);
     assert_eq!((dev.x, dev.y), (0, 0));
+}
+
+#[test]
+fn built_in_mats_default_to_paper() {
+    let (_d, s) = store();
+    for info in s.plotters() {
+        let p = s.plotter(&info.id).unwrap();
+        for m in &p.media {
+            assert_eq!(m.color, PAPER_COLOR, "{} / {}", p.id, m.id);
+        }
+    }
+}
+
+#[test]
+fn old_factory_colours_move_to_paper_and_picked_colours_stay() {
+    let d = tempdir().unwrap();
+    write(
+        d.path(),
+        "plotters",
+        "mine",
+        "id = \"mine\"\nname = \"M\"\ninherits = \"silhouette-cameo-2\"\n\
+         media = [\n\
+         { id = \"old\", name = \"Old\", width_mm = 10.0, height_mm = 10.0, color = \"#8FA8B8\" },\n\
+         { id = \"oldlow\", name = \"Old\", width_mm = 10.0, height_mm = 10.0, color = \"#8fa8b8\" },\n\
+         { id = \"oldnomat\", name = \"N\", kind = \"NoMat\", width_mm = 10.0, height_mm = 10.0, color = \"#F4F1EA\" },\n\
+         { id = \"green\", name = \"Green\", width_mm = 10.0, height_mm = 10.0, color = \"#2E7D32\" },\n\
+         { id = \"mat-12x24\", name = \"Mat 12x24\", width_mm = 304.8, height_mm = 635.0, color = \"#336699\" }]\n",
+    );
+    let s = ProfileStore::load(d.path()).unwrap();
+    let p = s.plotter("mine").unwrap();
+    let get = |id: &str| p.media.iter().find(|m| m.id == id).unwrap().color;
+    assert_eq!(get("old"), PAPER_COLOR);
+    assert_eq!(get("oldlow"), PAPER_COLOR);
+    assert_eq!(get("oldnomat"), PAPER_COLOR);
+    assert_eq!(get("green"), [0x2E, 0x7D, 0x32]);
+    assert_eq!(get("mat-12x24"), [0x33, 0x66, 0x99]);
+    // A mat the user did not touch follows the built-in one.
+    assert_eq!(get("mat-12x12"), PAPER_COLOR);
+}
+
+#[test]
+fn a_user_plotter_that_inherits_follows_the_built_in_mat_colour() {
+    let d = tempdir().unwrap();
+    write(
+        d.path(),
+        "plotters",
+        "child",
+        "id = \"child\"\nname = \"Child\"\ninherits = \"silhouette-cameo-2\"\n",
+    );
+    let s = ProfileStore::load(d.path()).unwrap();
+    let parent = s.plotter("silhouette-cameo-2").unwrap();
+    let child = s.plotter("child").unwrap();
+    let colours = |p: &PlotterProfile| p.media.iter().map(|m| m.color).collect::<Vec<_>>();
+    assert_eq!(colours(&child), colours(&parent));
+    assert!(colours(&child).iter().all(|c| *c == PAPER_COLOR));
 }

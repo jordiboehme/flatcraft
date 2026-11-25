@@ -32,6 +32,25 @@ pub fn contrast_colour(mat: [u8; 3]) -> [u8; 3] {
     }
 }
 
+/// The mat margin (the part outside the cutting area): the mat colour a
+/// little darker, so the cutting area reads as the part that counts.
+pub fn margin_colour(mat: [u8; 3]) -> [u8; 3] {
+    mat.map(|c| (f64::from(c) * 0.88).round() as u8)
+}
+
+/// The colour of the selection box, its handles, the selection frame and
+/// the Arrange ghosts on `mat`: a teal that reads on light mats (the
+/// lighter teal on dark ones), and never the colour of the object outlines.
+pub fn selection_colour(mat: [u8; 3]) -> [u8; 3] {
+    const DEEP: [u8; 3] = [0x0A, 0x7A, 0x8F];
+    const BRIGHT: [u8; 3] = [0x35, 0xD6, 0xE6];
+    if contrast_ratio(mat, DEEP) >= contrast_ratio(mat, BRIGHT) {
+        DEEP
+    } else {
+        BRIGHT
+    }
+}
+
 /// An object's own colour if it reads on the mat (ratio at least 3), else
 /// the contrast colour.
 pub fn object_colour(own: Option<[u8; 3]>, mat: [u8; 3]) -> [u8; 3] {
@@ -46,9 +65,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn margin_is_darker_and_selection_reads_on_paper_and_dark() {
+        let paper = [0xFB, 0xF4, 0xE4];
+        let m = margin_colour(paper);
+        assert!(luminance(m) < luminance(paper));
+        assert!(contrast_ratio(m, paper) > 1.1);
+        for mat in [paper, [0x20, 0x22, 0x26]] {
+            let c = selection_colour(mat);
+            assert!(contrast_ratio(c, mat) >= 3.0, "{mat:?}");
+            assert_ne!(c, contrast_colour(mat));
+        }
+    }
+
+    #[test]
     fn contrast_follows_the_mat() {
         assert_eq!(contrast_colour([0xF4, 0xF1, 0xEA]), [0x1B, 0x1E, 0x22]);
         assert_eq!(contrast_colour([0x20, 0x20, 0x20]), [0xF4, 0xF5, 0xF7]);
+        // Dark grid lines on paper, light ones on a dark mat a person picks.
+        assert_eq!(contrast_colour([0xFB, 0xF4, 0xE4]), [0x1B, 0x1E, 0x22]);
+        assert_eq!(contrast_colour([0x2E, 0x3A, 0x4A]), [0xF4, 0xF5, 0xF7]);
         // Black on white is 21:1.
         assert!((contrast_ratio([0, 0, 0], [255, 255, 255]) - 21.0).abs() < 1e-9);
         // A light grey shape on a light mat falls back to the contrast colour.

@@ -15,7 +15,7 @@ pub use bytelog::{ByteLog, Dir, LogEntry};
 pub use profile::{
     AxisMapping, Capabilities, DEFAULT_MAT_COLOR, DEFAULT_NO_MAT_COLOR, GpglDialect, Grid,
     KnifeCompensation, MaterialOverride, MaterialProfile, Media, MediaError, MediaField, MediaKind,
-    PlotterProfile, Protocol, TransportSpec, UNCALIBRATED_MARGIN_MM,
+    PAPER_COLOR, PlotterProfile, Protocol, TransportSpec, UNCALIBRATED_MARGIN_MM,
 };
 pub use store::{PresetDiagnostic, PresetInfo, ProfileError, ProfileStore};
 pub use transport::{FileTransport, SendReport, Transport, TransportError};

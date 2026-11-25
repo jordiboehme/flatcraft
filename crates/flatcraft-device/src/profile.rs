@@ -184,10 +184,17 @@ pub struct Media {
     pub color: [u8; 3],
 }
 
-/// Default mat colour on the canvas.
-pub const DEFAULT_MAT_COLOR: [u8; 3] = [0x8F, 0xA8, 0xB8];
-/// Default colour of "No mat" on the canvas.
-pub const DEFAULT_NO_MAT_COLOR: [u8; 3] = [0xF4, 0xF1, 0xEA];
+/// The paper colour: a warm cream, the light value of the icon style's paper
+/// token. A mat is a physical object, so it looks the same in both app themes.
+pub const PAPER_COLOR: [u8; 3] = [0xFB, 0xF4, 0xE4];
+/// Default mat colour on the canvas: paper.
+pub const DEFAULT_MAT_COLOR: [u8; 3] = PAPER_COLOR;
+/// Default colour of "No mat" on the canvas: paper.
+pub const DEFAULT_NO_MAT_COLOR: [u8; 3] = PAPER_COLOR;
+/// The factory colours before paper (a blue-grey mat, a cream no-mat). A mat
+/// that still holds one of them takes the new default when it is read.
+const OLD_MAT_COLOR: [u8; 3] = [0x8F, 0xA8, 0xB8];
+const OLD_NO_MAT_COLOR: [u8; 3] = [0xF4, 0xF1, 0xEA];
 
 /// Colours as `#RRGGBB` strings.
 mod hex_color {
@@ -232,7 +239,11 @@ impl TryFrom<MediaFile> for Media {
 
     fn try_from(f: MediaFile) -> Result<Self, String> {
         let color = match &f.color {
-            Some(c) => hex_color::parse(c)?,
+            Some(c) => match (hex_color::parse(c)?, f.kind) {
+                (OLD_MAT_COLOR, MediaKind::Mat) => DEFAULT_MAT_COLOR,
+                (OLD_NO_MAT_COLOR, MediaKind::NoMat) => DEFAULT_NO_MAT_COLOR,
+                (own, _) => own,
+            },
             None if f.kind == MediaKind::NoMat => DEFAULT_NO_MAT_COLOR,
             None => DEFAULT_MAT_COLOR,
         };

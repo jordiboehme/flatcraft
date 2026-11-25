@@ -229,6 +229,13 @@ mod tests {
         }
     }
 
+    /// The mat is paper in both themes: the light value of the paper token.
+    #[test]
+    fn the_mat_is_the_light_paper() {
+        let [r, g, b] = flatcraft_device::PAPER_COLOR;
+        assert_eq!(Tokens::light().icon_paper, Color32::from_rgb(r, g, b));
+    }
+
     #[test]
     fn token_values() {
         let d = Tokens::dark();

@@ -494,7 +494,7 @@ fn cut_canvas(
             );
         }
     }
-    canvas::draw_area(&painter, rect, snap, &view, t, contrast);
+    canvas::draw_area(&painter, snap, &view, t, contrast);
     canvas::draw_rulers(&painter, rect, &view, t);
 }
 
