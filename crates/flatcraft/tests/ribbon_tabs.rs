@@ -172,7 +172,7 @@ fn the_switches_are_compact_and_inside_their_group() {
         .unwrap()
         .update_prefs(|p| p.ribbon_pins = RIBBON_PIN_IDS.iter().map(|s| s.to_string()).collect())
         .unwrap();
-    for width in [1400.0, 1920.0] {
+    for width in [1920.0, 2400.0] {
         let mut h = rig(&dir, s.clone(), width);
         show_tab(&mut h, RibbonTab::Layout);
         let l = layout(&h);

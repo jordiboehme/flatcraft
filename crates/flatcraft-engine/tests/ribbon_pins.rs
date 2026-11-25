@@ -15,7 +15,7 @@ fn write(dir: &tempfile::TempDir, text: &str) {
     std::fs::write(dir.path().join("preferences.toml"), text).unwrap();
 }
 
-/// What Home and View pin on a new install: every button they had.
+/// What the groups outside Arrange pin on a new install: every button they had.
 const HOME_VIEW: [&str; 14] = [
     "import",
     "trace",

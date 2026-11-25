@@ -1479,7 +1479,7 @@ fn distribute_buttons_need_three_objects_and_are_one_step() {
     assert!(((x(b) - x1(a)) - (x(c) - x1(b))).abs() < 1e-9);
 }
 
-/// Opens the Arrange drop-down of the Arrange tab.
+/// Opens the Arrange drop-down of the Layout tab.
 fn open_arrange(h: &mut AppHarness) {
     h.get_by_role_and_label(Role::Button, "Arrange").click();
     h.run();

@@ -471,7 +471,7 @@ fn a_dimmed_switch_that_is_on_does_not_look_active() {
     let s = session(&dir);
     let ids: Vec<u64> = (0..3).map(|_| import_square(&s)).collect();
     select(&s, &ids);
-    let mut h = harness_sized(&dir, s.clone(), [900.0, 600.0], 8, |app| app);
+    let mut h = harness_sized(&dir, s.clone(), [1400.0, 900.0], 8, |app| app);
     to_prepare(&mut h);
     show_tab(&mut h, "Layout");
     let keep = h.get_by_role_and_label(Role::CheckBox, "Keep aspect");

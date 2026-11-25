@@ -278,7 +278,7 @@ fn a_listed_action_works_and_closes_the_list() {
     assert!(
         matches!(
             collapse::level(&h.ctx, ribbon::bar_id()),
-            Some(Level::Collapsed(_))
+            Some(Level::Collapsed(_) | Level::Tiles(_))
         ),
         "every pin does not fit 900 pt"
     );
@@ -320,7 +320,7 @@ fn search_opens_a_list_on_a_collapsed_ribbon() {
     assert!(
         matches!(
             collapse::level(&h.ctx, ribbon::bar_id()),
-            Some(Level::Collapsed(_))
+            Some(Level::Collapsed(_) | Level::Tiles(_))
         ),
         "the Layout tab is collapsed at 900 pt with every pin"
     );
@@ -350,7 +350,10 @@ fn the_first_frame_after_a_tab_switch_already_fits() {
     h.get_by_role_and_label(Role::Tab, "Layout").click();
     h.step();
     let level = collapse::level(&h.ctx, ribbon::bar_id());
-    assert!(matches!(level, Some(Level::Collapsed(_))), "{level:?}");
+    assert!(
+        matches!(level, Some(Level::Collapsed(_) | Level::Tiles(_))),
+        "{level:?}"
+    );
     for g in groups_of("Layout") {
         let r = h.get_by_role_and_label(Role::Button, g.def().title).rect();
         assert!(on_ribbon(&h, r), "{} at {r:?}", g.def().title);

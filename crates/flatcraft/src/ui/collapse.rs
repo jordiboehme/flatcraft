@@ -2,10 +2,13 @@
 //! width shrinks it collapses in steps:
 //!
 //! 1. [`Level::Full`]: every group with icons and labels.
-//! 2. [`Level::Icons`]: icon-only buttons; each keeps its name as its
+//! 2. [`Level::Tiles`]: still with labels, but the last `k` groups collapse
+//!    (k = 1, 2, ...). Labels are never dropped while a group at the tail
+//!    could still fold.
+//! 3. [`Level::Icons`]: icon-only buttons; each keeps its name as its
 //!    accessible name and shows it in its tooltip.
-//! 3. [`Level::Collapsed`]: the groups that still do not fit collapse,
-//!    from the right. A group with a tile (the ribbon's groups) becomes
+//! 4. [`Level::Collapsed`]: icon-only, and the groups that still do not
+//!    fit collapse, from the right. A group with a tile (the ribbon's groups) becomes
 //!    only its tile, whose list holds every action; a group without one
 //!    (the Cut bar's steps) moves into a "»" button at the right end,
 //!    which lists it with icons and labels ([`Mode::List`]).
@@ -59,6 +62,8 @@ pub struct Group<C> {
 pub enum Level {
     #[default]
     Full,
+    /// With labels, and this many groups collapsed from the right.
+    Tiles(usize),
     Icons,
     /// Icon-only, with this many groups collapsed from the right.
     Collapsed(usize),
@@ -67,7 +72,7 @@ pub enum Level {
 impl Level {
     pub fn mode(self) -> Mode {
         match self {
-            Level::Full => Mode::Full,
+            Level::Full | Level::Tiles(_) => Mode::Full,
             _ => Mode::Icons,
         }
     }
@@ -86,6 +91,8 @@ struct State {
     level: Level,
     /// Width of the whole row at [`Level::Full`].
     full: Option<f32>,
+    /// Width of each group at [`Level::Full`].
+    fulls: Vec<Option<f32>>,
     /// Width of each group at [`Level::Icons`].
     icons: Vec<Option<f32>>,
     /// Room between two groups (the separator and its spacing).
@@ -99,6 +106,8 @@ pub struct Measures<'a> {
     pub budget: f32,
     /// Width of the row at [`Level::Full`], once measured.
     pub full: Option<f32>,
+    /// Width of each group at [`Level::Full`], once all are measured.
+    pub fulls: Option<&'a [f32]>,
     /// Width of each group at [`Level::Icons`], once all are measured.
     pub icons: Option<&'a [f32]>,
     pub gap: f32,
@@ -112,7 +121,7 @@ pub struct Measures<'a> {
 /// Which groups `level` collapses: `k` of those that may, from the right.
 pub fn hidden(keep: &[bool], level: Level) -> Vec<bool> {
     let mut out = vec![false; keep.len()];
-    if let Level::Collapsed(k) = level {
+    if let Level::Collapsed(k) | Level::Tiles(k) = level {
         let mut left = k;
         for i in (0..keep.len()).rev() {
             if left == 0 {
@@ -165,44 +174,69 @@ fn fitting_icons(m: &Measures, icons: &[f32], room: f32) -> Level {
     Level::Collapsed(movable(m))
 }
 
+/// The place of a level on the ladder: Full, Tiles(1..), Icons, Collapsed(1..).
+fn rank(m: &Measures, level: Level) -> usize {
+    let n = movable(m);
+    match level {
+        Level::Full => 0,
+        Level::Tiles(k) => k.min(n),
+        Level::Icons => n + 1,
+        Level::Collapsed(k) => n + 1 + k.min(n),
+    }
+}
+
+/// The level of a place on the ladder (the last one for a place beyond it).
+fn at_rank(m: &Measures, r: usize) -> Level {
+    let n = movable(m);
+    match r {
+        0 => Level::Full,
+        r if r <= n => Level::Tiles(r),
+        r if r == n + 1 => Level::Icons,
+        r => Level::Collapsed((r - n - 1).min(n)),
+    }
+}
+
+/// The fullest level on the ladder that fits `room`, from what is measured:
+/// Full, then Full with the last k groups as tiles, then Icons with the
+/// last k as tiles. Icons need their own measure; until it is there, the
+/// answer after the tiles is [`Level::Icons`], which measures it.
+pub fn choose_level(m: &Measures, room: f32) -> Level {
+    if m.full.is_some_and(|w| w <= room) {
+        return Level::Full;
+    }
+    if let Some(fulls) = m.fulls {
+        for k in 1..=movable(m) {
+            if icons_width(m, fulls, k) <= room {
+                return Level::Tiles(k);
+            }
+        }
+    }
+    match m.icons {
+        Some(icons) => fitting_icons(m, icons, room),
+        None => Level::Icons,
+    }
+}
+
 /// The level of the next pass, from the one just drawn and its measured
 /// width `drawn`.
 pub fn next_level(level: Level, drawn: f32, m: &Measures) -> Level {
-    let movable = movable(m);
     if drawn > m.budget + 0.5 {
-        // Step down.
-        return match (level, m.icons) {
-            (Level::Full, None) => Level::Icons,
-            (_, Some(icons)) => {
-                let fit = fitting_icons(m, icons, m.budget);
-                // A stale measure may claim the level just drawn fits.
-                match (level, fit) {
-                    (Level::Icons, Level::Icons) => Level::Collapsed(1.min(movable)),
-                    (Level::Collapsed(k), Level::Icons) => Level::Collapsed((k + 1).min(movable)),
-                    (Level::Collapsed(k), Level::Collapsed(j)) if j <= k => {
-                        Level::Collapsed((k + 1).min(movable))
-                    }
-                    (_, fit) => fit,
-                }
-            }
-            (_, None) => level,
-        };
-    }
-    // It fits: step up when a fuller level fits with room to spare.
-    let room = m.budget - MARGIN;
-    if level != Level::Full && m.full.is_some_and(|w| w <= room) {
-        return Level::Full;
-    }
-    if let (Level::Collapsed(k), Some(icons)) = (level, m.icons) {
-        let fit = fitting_icons(m, icons, room);
-        let better = match fit {
-            Level::Icons => true,
-            Level::Collapsed(j) => j < k,
-            Level::Full => false,
-        };
-        if better {
+        // Step down. A stale measure may claim the level just drawn fits:
+        // then go one place down the ladder.
+        let fit = choose_level(m, m.budget);
+        let (here, there) = (rank(m, level), rank(m, fit));
+        if there > here {
             return fit;
         }
+        if level == Level::Icons && m.icons.is_none() {
+            return level;
+        }
+        return at_rank(m, here + 1);
+    }
+    // It fits: step up when a fuller level fits with room to spare.
+    let fit = choose_level(m, m.budget - MARGIN);
+    if rank(m, fit) < rank(m, level) {
+        return fit;
     }
     level
 }
@@ -233,9 +267,10 @@ pub fn decide(level: Level, drawn: f32, m: &Measures, last_pass: bool) -> Level 
 /// widths): when it changes, the bar measures again from the top.
 pub fn show<C>(ui: &mut Ui, id: Id, sig: u64, height: f32, groups: &[Group<C>], cx: &mut C) {
     let mut st: State = ui.data(|d| d.get_temp(id)).unwrap_or_default();
-    if st.sig != sig || st.icons.len() != groups.len() {
+    if st.sig != sig || st.icons.len() != groups.len() || st.fulls.len() != groups.len() {
         st = State {
             sig,
+            fulls: vec![None; groups.len()],
             icons: vec![None; groups.len()],
             ..State::default()
         };
@@ -322,20 +357,25 @@ pub fn show<C>(ui: &mut Ui, id: Id, sig: u64, height: f32, groups: &[Group<C>], 
         st.gap = b_start - a_end;
     }
     let drawn = right - rect.left();
-    match st.level {
-        Level::Full => st.full = Some(drawn),
-        _ => {
-            for (slot, w) in st.icons.iter_mut().zip(&widths) {
-                if let Some(w) = w {
-                    *slot = Some(*w);
-                }
-            }
+    if st.level == Level::Full {
+        st.full = Some(drawn);
+    }
+    let slots = if st.level.mode() == Mode::Full {
+        &mut st.fulls
+    } else {
+        &mut st.icons
+    };
+    for (slot, w) in slots.iter_mut().zip(&widths) {
+        if let Some(w) = w {
+            *slot = Some(*w);
         }
     }
     let icons: Option<Vec<f32>> = st.icons.iter().copied().collect();
+    let fulls: Option<Vec<f32>> = st.fulls.iter().copied().collect();
     let m = Measures {
         budget,
         full: st.full,
+        fulls: fulls.as_deref(),
         icons: icons.as_deref(),
         gap: st.gap,
         more: more_w,
@@ -380,6 +420,7 @@ mod tests {
         Measures {
             budget,
             full,
+            fulls: None,
             icons,
             gap: 10.0,
             more: 20.0,
@@ -481,6 +522,7 @@ mod tests {
             let mm = m(budget, Some(500.0), Some(&icons), &KEEP);
             let width = |l: Level| match l {
                 Level::Full => 500.0,
+                Level::Tiles(_) => unreachable!("no full widths here"),
                 Level::Icons => icons_width(&mm, &icons, 0),
                 Level::Collapsed(k) => icons_width(&mm, &icons, k),
             };
@@ -508,6 +550,80 @@ mod tests {
                         "budget {budget}: {last:?} does not fit"
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn labels_stay_while_a_tail_group_can_still_fold() {
+        // Full widths 150 + 60 + 120 + 2 gaps = 350.
+        let fulls = [150.0, 60.0, 120.0];
+        let icons = [100.0, 50.0, 100.0];
+        let tiles = [Some(40.0), None, Some(30.0)];
+        let mk = |budget: f32| Measures {
+            fulls: Some(&fulls),
+            tiles: &tiles,
+            ..m(budget, Some(350.0), Some(&icons), &KEEP)
+        };
+        assert_eq!(choose_level(&mk(350.0), 350.0), Level::Full);
+        // 30 pt less: the last group folds, the labels stay.
+        assert_eq!(choose_level(&mk(320.0), 320.0), Level::Tiles(1));
+        assert_eq!(next_level(Level::Full, 350.0, &mk(320.0)), Level::Tiles(1));
+        // Both movable groups folded: 40 + 60 + 30 + 2 gaps = 150.
+        assert_eq!(choose_level(&mk(150.0), 150.0), Level::Tiles(2));
+        // Below that the labels go.
+        assert_eq!(choose_level(&mk(149.0), 149.0), Level::Collapsed(2));
+    }
+
+    #[test]
+    fn a_wider_budget_never_gives_a_more_folded_level() {
+        let fulls = [150.0, 60.0, 120.0];
+        let icons = [100.0, 50.0, 100.0];
+        let tiles = [Some(40.0), None, Some(30.0)];
+        let mut last = usize::MAX;
+        for budget in (50..500).map(|b| b as f32) {
+            let mm = Measures {
+                fulls: Some(&fulls),
+                tiles: &tiles,
+                ..m(budget, Some(350.0), Some(&icons), &KEEP)
+            };
+            let r = rank(&mm, choose_level(&mm, budget));
+            assert!(r <= last, "budget {budget}: rank {r} after {last}");
+            last = r;
+        }
+        assert_eq!(last, 0);
+    }
+
+    #[test]
+    fn the_ladder_with_tiles_settles_without_flipping() {
+        let fulls = [150.0, 60.0, 120.0];
+        let icons = [100.0, 50.0, 100.0];
+        let tiles = [Some(40.0), None, Some(30.0)];
+        for budget in (100..500).map(|b| b as f32) {
+            let mm = Measures {
+                fulls: Some(&fulls),
+                tiles: &tiles,
+                ..m(budget, Some(350.0), Some(&icons), &KEEP)
+            };
+            let width = |l: Level| match l {
+                Level::Full => 350.0,
+                Level::Tiles(k) => icons_width(&mm, &fulls, k),
+                Level::Icons => icons_width(&mm, &icons, 0),
+                Level::Collapsed(k) => icons_width(&mm, &icons, k),
+            };
+            for start in [
+                Level::Full,
+                Level::Tiles(2),
+                Level::Icons,
+                Level::Collapsed(2),
+            ] {
+                let mut l = start;
+                let mut seen = Vec::new();
+                for _ in 0..8 {
+                    seen.push(l);
+                    l = next_level(l, width(l), &mm);
+                }
+                assert_eq!(seen[6], seen[7], "budget {budget} from {start:?}: {seen:?}");
             }
         }
     }

@@ -170,9 +170,9 @@ pub const RIBBON_PIN_IDS: [&str; 38] = [
     "panel.debug",
 ];
 
-/// The pins of the Layout and View tabs of a new install: every button
-/// those tabs showed before pins existed.
-const HOME_VIEW_DEFAULTS: [&str; 14] = [
+/// The pins of a new install outside the Arrange group (Add, Edit, Linked
+/// files and View): every button they showed before pins existed.
+const NON_ARRANGE_DEFAULTS: [&str; 14] = [
     "import",
     "trace",
     "test_patterns",
@@ -203,7 +203,7 @@ const ARRANGE_DEFAULTS: [&str; 6] = [
 /// The pins of a new install: the buttons the ribbon showed before pins
 /// were there for every group, so nothing disappears.
 pub fn default_ribbon_pins() -> Vec<String> {
-    HOME_VIEW_DEFAULTS
+    NON_ARRANGE_DEFAULTS
         .iter()
         .chain(&ARRANGE_DEFAULTS)
         .map(|s| s.to_string())
@@ -285,13 +285,13 @@ pub fn clean_ribbon_pins(pins: &[String]) -> Vec<String> {
     out
 }
 
-/// The pins of a file written before `ribbon_pins` existed: the Home and
-/// View defaults (those tabs had no pins) plus its migrated
+/// The pins of a file written before `ribbon_pins` existed: the Add, Edit,
+/// Linked files and View defaults (those groups had no pins) plus its migrated
 /// `arrange_pins`. The old builds never stored what Align lined up with:
 /// every session started with "To the selection", so that is the choice
 /// the old Align pins keep.
 pub fn ribbon_pins_from_arrange(old: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = HOME_VIEW_DEFAULTS.map(String::from).to_vec();
+    let mut out: Vec<String> = NON_ARRANGE_DEFAULTS.map(String::from).to_vec();
     out.extend(migrate_arrange_pins(old, false));
     out
 }

@@ -10,6 +10,16 @@ use flatcraft::ui::collapse::{self, Level};
 use flatcraft::ui::prepare::RibbonTab;
 use flatcraft::ui::ribbon::{self, SearchTarget};
 use flatcraft::ui::tools::{self, GroupId};
+use flatcraft_engine::session::Origin;
+use flatcraft_mcp::SharedSession;
+use serde_json::json;
+
+fn select(s: &SharedSession, ids: &[u64]) {
+    s.lock()
+        .unwrap()
+        .execute("object.select", json!({ "ids": ids }), Origin::User)
+        .unwrap();
+}
 
 #[test]
 fn the_ribbon_has_a_layout_tab_and_a_view_tab() {
@@ -65,15 +75,6 @@ fn search_hits_for_add_edit_size_and_arrange_land_on_layout() {
 }
 
 #[test]
-fn a_saved_home_or_arrange_tab_loads_as_layout() {
-    assert_eq!(RibbonTab::from_saved("Home"), Some(RibbonTab::Layout));
-    assert_eq!(RibbonTab::from_saved("Arrange"), Some(RibbonTab::Layout));
-    assert_eq!(RibbonTab::from_saved("Layout"), Some(RibbonTab::Layout));
-    assert_eq!(RibbonTab::from_saved("View"), Some(RibbonTab::View));
-    assert_eq!(RibbonTab::from_saved("Nope"), None);
-}
-
-#[test]
 fn pins_stay_with_their_groups() {
     let move_copy = tools::TOOLS
         .iter()
@@ -93,16 +94,27 @@ fn at_1400_pt_no_group_of_layout_is_folded() {
 }
 
 #[test]
-fn linked_files_folds_first_at_900_pt() {
-    let dir = tempfile::tempdir().unwrap();
-    let s = session(&dir);
-    let mut h = harness_sized(&dir, s, [900.0, 600.0], 8, |app| app);
-    to_prepare(&mut h);
-    h.run();
-    assert_ne!(collapse::level(&h.ctx, ribbon::bar_id()), Some(Level::Full));
-    // Linked files is a tile; it is the last group, so the first to fold.
-    assert!(
-        h.query_by_role_and_label(Role::Button, "Linked files")
-            .is_some()
-    );
+fn linked_files_folds_first() {
+    for (width, height) in [(900.0, 600.0), (1100.0, 900.0)] {
+        let dir = tempfile::tempdir().unwrap();
+        let s = session(&dir);
+        let a = import_square(&s);
+        select(&s, &[a]);
+        let mut h = harness_sized(&dir, s, [width, height], 8, |app| app);
+        to_prepare(&mut h);
+        h.run();
+        let level = collapse::level(&h.ctx, ribbon::bar_id());
+        // The tail group is a tile: its tail is folded, the labels stay
+        // as long as that is enough.
+        match (width as u32, level) {
+            (1100, Some(Level::Tiles(k))) => assert!(k >= 1, "{level:?}"),
+            (900, Some(Level::Tiles(k) | Level::Collapsed(k))) => assert!(k >= 1, "{level:?}"),
+            _ => panic!("{width}: {level:?}"),
+        }
+        // Linked files is a tile, so its Reload button is not on the ribbon.
+        assert!(
+            h.query_by_role_and_label(Role::Button, "Reload").is_none(),
+            "{width}: Reload is on the ribbon"
+        );
+    }
 }

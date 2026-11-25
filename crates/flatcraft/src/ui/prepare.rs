@@ -41,16 +41,6 @@ pub enum RibbonTab {
 impl RibbonTab {
     pub const ALL: [RibbonTab; 2] = [RibbonTab::Layout, RibbonTab::View];
 
-    /// The tab a saved name stands for. The old Home and Arrange tabs are
-    /// Layout now; an unknown name is `None`.
-    pub fn from_saved(name: &str) -> Option<RibbonTab> {
-        match name {
-            "Layout" | "Home" | "Arrange" => Some(RibbonTab::Layout),
-            "View" => Some(RibbonTab::View),
-            _ => None,
-        }
-    }
-
     pub fn name(self) -> &'static str {
         match self {
             RibbonTab::Layout => "Layout",
