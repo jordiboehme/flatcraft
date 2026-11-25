@@ -49,7 +49,7 @@ fn disabled(h: &AppHarness, label: &str) -> bool {
 fn save_as_my_cameo(h: &mut AppHarness) {
     open(h, "Plotters");
     click(h, "Silhouette Cameo 2");
-    click(h, "Save as user preset...");
+    click(h, "Save as user preset…");
     // Enter in the name field creates it.
     type_into(h, "Preset name", "My Cameo");
 }
@@ -149,7 +149,7 @@ fn system_preset_fields_are_read_only() {
         }
         assert!(h.query_by_label("Save preset").is_none());
         assert!(h.query_by_label("Delete preset").is_none());
-        assert!(!disabled(&h, "Save as user preset..."));
+        assert!(!disabled(&h, "Save as user preset…"));
     }
     open(&mut h, "Materials");
     click(&mut h, "Vinyl");
@@ -350,7 +350,7 @@ fn material_override_saves_only_the_override() {
     let mut h = harness(&dir, &s);
     open(&mut h, "Materials");
     click(&mut h, "Copy Paper");
-    click(&mut h, "Save as user preset...");
+    click(&mut h, "Save as user preset…");
     h.get_by_label("Preset name").click();
     h.run();
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
@@ -422,7 +422,7 @@ fn save_as_refuses_a_taken_name() {
     let s = session(&dir);
     let mut h = harness(&dir, &s);
     save_as_my_cameo(&mut h);
-    click(&mut h, "Save as user preset...");
+    click(&mut h, "Save as user preset…");
     type_into(&mut h, "Preset name", "My Cameo");
     h.get_by_label("A preset with the id 'my-cameo' already exists. Pick another name.");
     assert_eq!(store(&s).plotters().len(), 3);
@@ -450,4 +450,47 @@ fn add_copy_rename_and_delete_own_mats() {
     let media = t["media"].as_array().unwrap();
     assert_eq!(media.len(), 1);
     assert_eq!(media[0]["id"].as_str(), Some("my-mat"));
+}
+
+#[test]
+fn invalid_field_blocks_save_and_save_as() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    save_as_my_cameo(&mut h);
+    let file = dir.path().join("profiles/plotters/my-cameo.toml");
+    let before = std::fs::read_to_string(&file).unwrap();
+    type_into(&mut h, "Scale x", "0");
+    h.get_by_label("The scale must be above 0.");
+    assert!(disabled(&h, "Save preset"));
+    assert!(disabled(&h, "Save as user preset…"));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+    assert_eq!(store(&s).plotters().len(), 3);
+}
+
+#[test]
+fn apply_refuses_an_invalid_preset() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    let mut p = store(&s).plotter("silhouette-cameo-2").unwrap();
+    p.id = "broken".into();
+    p.name = "Broken".into();
+    p.speed_range = [5, 2];
+    let req = flatcraft::ui::profiles_window::Request::SavePlotter {
+        profile: Box::new(p),
+        parent: "silhouette-cameo-2".into(),
+        new: true,
+    };
+    let ctx = h.ctx.clone();
+    app_mut(&mut h).apply(&ctx, vec![flatcraft::ui::Action::Profiles(req)]);
+    assert!(store(&s).plotter("broken").is_err());
+    assert!(!dir.path().join("profiles/plotters/broken.toml").exists());
+    assert!(
+        app(&h)
+            .ui
+            .toasts
+            .iter()
+            .any(|t| t.text.contains("speed range"))
+    );
 }

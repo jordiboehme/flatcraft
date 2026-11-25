@@ -2,7 +2,7 @@
 //! plotter, and the app preferences. It opens from the Settings button and
 //! the macOS Preferences menu (Cmd+,).
 //!
-//! System presets are read-only; "Save as user preset..." makes a user
+//! System presets are read-only; "Save as user preset…" makes a user
 //! preset that inherits from them. The widgets only edit a draft in
 //! [`ProfilesState`] and push [`Request`]s; [`apply`] writes presets and
 //! preferences under the session lock, one short step each, so the MCP
@@ -591,7 +591,14 @@ fn preset_buttons(
                 actions.push(Action::Profiles(save()));
             }
         }
-        if ui.button("Save as user preset...").clicked() {
+        // Save as writes too, so it waits for valid fields like Save.
+        if ui
+            .add_enabled(
+                problems.is_empty(),
+                egui::Button::new("Save as user preset…"),
+            )
+            .clicked()
+        {
             *st_save_as = Some(SaveAs {
                 kind: Some(kind),
                 name: format!("My {name}"),
@@ -1705,7 +1712,10 @@ pub fn apply(app: &mut FlatCraftApp, ctx: &egui::Context, req: Request) {
         } => {
             let result = {
                 let mut s = lock(&app.session);
-                if new && s.profiles.plotters().iter().any(|p| p.id == profile.id) {
+                let problems = plotter_problems(&profile);
+                if !problems.is_empty() {
+                    Err(problems.join(" "))
+                } else if new && s.profiles.plotters().iter().any(|p| p.id == profile.id) {
                     Err(format!(
                         "A preset with the id '{}' already exists.",
                         profile.id
@@ -1725,7 +1735,10 @@ pub fn apply(app: &mut FlatCraftApp, ctx: &egui::Context, req: Request) {
         } => {
             let result = {
                 let mut s = lock(&app.session);
-                if new && s.profiles.materials().iter().any(|p| p.id == profile.id) {
+                let problems = material_problems(&profile);
+                if !problems.is_empty() {
+                    Err(problems.join(" "))
+                } else if new && s.profiles.materials().iter().any(|p| p.id == profile.id) {
                     Err(format!(
                         "A preset with the id '{}' already exists.",
                         profile.id
@@ -1858,6 +1871,20 @@ mod tests {
         assert_eq!(parse_hex("336699"), Some([0x33, 0x66, 0x99]));
         assert_eq!(parse_hex("#3366"), None);
         assert_eq!(hex([0x33, 0x66, 0x99]), "#336699");
+    }
+
+    #[test]
+    fn system_presets_pass_the_checks() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = flatcraft_device::ProfileStore::load(dir.path()).unwrap();
+        for p in store.plotters() {
+            let p = store.plotter(&p.id).unwrap();
+            assert_eq!(plotter_problems(&p), Vec::<String>::new(), "{}", p.id);
+        }
+        for m in store.materials() {
+            let m = store.material(&m.id).unwrap();
+            assert_eq!(material_problems(&m), Vec::<String>::new(), "{}", m.id);
+        }
     }
 
     #[test]
