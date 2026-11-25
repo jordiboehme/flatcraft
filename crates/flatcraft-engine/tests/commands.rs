@@ -2034,3 +2034,99 @@ fn a_material_with_too_many_passes_is_refused_at_job_build() {
     run(&mut s, "job.set_overrides", json!({ "passes": 2 }));
     run(&mut s, "job.preview", json!({}));
 }
+
+// ---------------------------------------------------------------- preferences written by two sessions
+
+fn prefs_session(dir: &tempfile::TempDir) -> Session {
+    let profiles = ProfileStore::load(dir.path()).unwrap();
+    let prefs = Preferences::load(dir.path());
+    Session::new(profiles, prefs, true, dir.path().to_path_buf())
+}
+
+#[test]
+fn a_preference_change_survives_another_sessions_later_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = prefs_session(&dir);
+    let mut b = prefs_session(&dir);
+    a.update_prefs(|p| p.theme = flatcraft_engine::prefs::Theme::Light)
+        .unwrap();
+    // B still holds the old copy and stores a recent project.
+    let recent = dir.path().join("badge.flatcraft");
+    b.update_prefs(|p| p.recent_projects.insert(0, recent.clone()))
+        .unwrap();
+    let stored = Preferences::load(dir.path());
+    assert_eq!(stored.theme, flatcraft_engine::prefs::Theme::Light);
+    assert_eq!(stored.recent_projects, std::slice::from_ref(&recent));
+    assert_eq!(b.prefs, stored, "B gets the fresh copy");
+    // And the other way round.
+    a.update_prefs(|p| p.auto_reload = true).unwrap();
+    let stored = Preferences::load(dir.path());
+    assert_eq!(stored.recent_projects, [recent]);
+    assert!(stored.auto_reload);
+}
+
+#[test]
+fn an_unreadable_preferences_file_turns_agent_cuts_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("preferences.toml");
+    let stamp = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    let write = |text: &str, at: std::time::SystemTime| {
+        std::fs::write(&path, text).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(at)
+            .unwrap();
+    };
+    write("allow_agent_cuts = true\nauto_reload = true\n", stamp);
+    let mut s = prefs_session(&dir);
+    s.watch_prefs_file();
+    assert!(s.prefs.allow_agent_cuts);
+    write(
+        "allow_agent_cuts = [",
+        stamp + std::time::Duration::from_secs(60),
+    );
+    let t0 = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    assert!(!s.refresh_prefs(t0));
+    assert!(!s.prefs.allow_agent_cuts, "fails closed");
+    assert!(s.prefs.auto_reload, "the rest stays as read last");
+}
+
+fn backups(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut v: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("preferences.toml.bak-")
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn a_broken_preferences_file_is_kept_as_a_backup_before_a_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("preferences.toml");
+    let broken = "theme = \"Light\"\nallow_agent_cuts = [\n";
+    std::fs::write(&path, broken).unwrap();
+    let mut s = prefs_session(&dir);
+    s.update_prefs(|p| p.auto_reload = true).unwrap();
+    let saved = backups(dir.path());
+    assert_eq!(saved.len(), 1, "{saved:?}");
+    assert_eq!(std::fs::read_to_string(&saved[0]).unwrap(), broken);
+    let name = saved[0].file_name().unwrap().to_string_lossy().into_owned();
+    assert!(!name.contains(':'), "{name}");
+    assert!(Preferences::read(dir.path()).unwrap().auto_reload);
+    // The file is fine now, so the next save keeps no copy.
+    s.update_prefs(|p| p.auto_reload = false).unwrap();
+    assert_eq!(backups(dir.path()).len(), 1);
+    // A plain save backs up a broken file too.
+    std::fs::write(&path, broken).unwrap();
+    Preferences::default().save(dir.path()).unwrap();
+    assert_eq!(backups(dir.path()).len(), 2);
+}

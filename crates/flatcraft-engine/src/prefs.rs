@@ -79,12 +79,81 @@ impl Preferences {
         Some((m.modified().ok(), m.len()))
     }
 
-    /// Writes the preferences crash-safely (temp file, sync, rename).
+    /// Writes the preferences crash-safely (temp file, sync, rename). A file
+    /// there that does not parse is copied to `preferences.toml.bak-<time>`
+    /// first, so nothing the person wrote by hand is lost.
     pub fn save(&self, config_dir: &Path) -> io::Result<()> {
         std::fs::create_dir_all(config_dir)?;
+        let path = config_dir.join(FILE_NAME);
+        if let Ok(text) = std::fs::read_to_string(&path)
+            && toml::from_str::<Preferences>(&text).is_err()
+        {
+            let backup = back_up(config_dir, text.as_bytes())?;
+            eprintln!(
+                "warning: {} was broken. FlatCraft keeps a copy as {} and writes a new one.",
+                path.display(),
+                backup.display()
+            );
+        }
         let text = toml::to_string_pretty(self).map_err(io::Error::other)?;
-        flatcraft_device::fsio::write_atomic(&config_dir.join(FILE_NAME), text.as_bytes())
+        flatcraft_device::fsio::write_atomic(&path, text.as_bytes())
     }
+
+    /// Changes only what `change` touches: re-reads the file, applies
+    /// `change`, writes it and returns the fresh copy, so a change another
+    /// FlatCraft process stored meanwhile is kept. `current` (the caller's
+    /// copy) is the base when the file is missing or cannot be read or
+    /// parsed; a broken file is backed up by [`Preferences::save`]. The
+    /// returned copy holds the change even when writing failed.
+    pub fn update(
+        config_dir: &Path,
+        current: &Preferences,
+        change: impl FnOnce(&mut Preferences),
+    ) -> (Preferences, io::Result<()>) {
+        let stored = config_dir
+            .join(FILE_NAME)
+            .try_exists()
+            .unwrap_or(false)
+            .then(|| Self::read(config_dir).ok())
+            .flatten();
+        let mut fresh = stored.unwrap_or_else(|| current.clone());
+        change(&mut fresh);
+        let written = fresh.save(config_dir);
+        (fresh, written)
+    }
+}
+
+/// Copies a broken preferences file to `preferences.toml.bak-<UTC time>`
+/// (with `-2`, `-3` and so on when that name is taken) and returns the
+/// copy's path. The name has no `:`, so every file system takes it.
+fn back_up(config_dir: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
+    use std::io::Write;
+    let stamp = crate::commands::sources::compact_utc(std::time::SystemTime::now())
+        .unwrap_or_else(|| "unknown".into());
+    for n in 1..=100 {
+        let name = if n == 1 {
+            format!("{FILE_NAME}.bak-{stamp}")
+        } else {
+            format!("{FILE_NAME}.bak-{stamp}-{n}")
+        };
+        let path = config_dir.join(name);
+        match std::fs::File::options()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut f) => {
+                f.write_all(bytes)?;
+                f.sync_all()?;
+                return Ok(path);
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::other(
+        "no free name for a copy of the broken preferences",
+    ))
 }
 
 /// The config dir: `FLATCRAFT_CONFIG_DIR` if set, else the platform config dir

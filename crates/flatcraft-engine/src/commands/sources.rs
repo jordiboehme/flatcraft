@@ -357,6 +357,19 @@ pub(crate) fn rfc3339(t: SystemTime) -> Option<String> {
     ))
 }
 
+/// UTC time for a file name, like `20261124T100000Z`. `None` before 1970.
+pub(crate) fn compact_utc(t: SystemTime) -> Option<String> {
+    let secs = t.duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let (y, m, day) = civil_from_days(i64::try_from(secs / 86_400).ok()?);
+    let rem = secs % 86_400;
+    Some(format!(
+        "{y:04}{m:02}{day:02}T{:02}{:02}{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    ))
+}
+
 /// Year, month and day of a day count since 1970-01-01 (Howard Hinnant's
 /// days-to-civil algorithm, proleptic Gregorian calendar).
 fn civil_from_days(days: i64) -> (i64, u32, u32) {

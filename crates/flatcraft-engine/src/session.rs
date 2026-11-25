@@ -412,9 +412,10 @@ impl Session {
     }
 
     /// Re-read `preferences.toml` before commands when its modification time
-    /// or size changed, checked at most once per [`PREFS_CHECK_INTERVAL`]. For a
-    /// headless `flatcraft mcp`, so a change made in a FlatCraft window
-    /// reaches it. A GUI session owns its preferences and does not watch.
+    /// or size changed, checked at most once per [`PREFS_CHECK_INTERVAL`], so
+    /// a change made by another FlatCraft process (a window or a headless
+    /// `flatcraft mcp`) reaches this one. A window also calls
+    /// [`Session::refresh_prefs`] every frame.
     pub fn watch_prefs_file(&mut self) {
         self.prefs_watch = Some(PrefsWatch {
             last_check: None,
@@ -424,8 +425,9 @@ impl Session {
 
     /// Reloads the preferences when the file changed since the last look,
     /// at most once per [`PREFS_CHECK_INTERVAL`] at `now`. A file that cannot
-    /// be read or parsed (perhaps half written) keeps the preferences as
-    /// they are. Returns true if it reloaded them. Never writes the file.
+    /// be read or parsed keeps the preferences as they are, except that
+    /// agent cuts turn off (fail closed) until the file is fixed. Returns
+    /// true if it reloaded them. Never writes the file.
     pub fn refresh_prefs(&mut self, now: Instant) -> bool {
         let Some(w) = &mut self.prefs_watch else {
             return false;
@@ -449,10 +451,28 @@ impl Session {
                 true
             }
             Err(e) => {
-                eprintln!("warning: {e}. Keeping the preferences read before.");
+                eprintln!(
+                    "warning: {e}. Keeping the preferences read before, with agent cuts off until the file is fixed."
+                );
+                self.prefs.allow_agent_cuts = false;
                 false
             }
         }
+    }
+
+    /// Changes the preferences and stores them: re-reads the file, applies
+    /// `change` to the fresh copy and writes it (see
+    /// [`Preferences::update`]), so a change another FlatCraft process
+    /// stored meanwhile is kept. The session keeps the new preferences even
+    /// when writing failed. For the GUI; no registry command calls this.
+    pub fn update_prefs(&mut self, change: impl FnOnce(&mut Preferences)) -> std::io::Result<()> {
+        let (fresh, written) = Preferences::update(&self.config_dir, &self.prefs, change);
+        self.prefs = fresh;
+        if let Some(w) = &mut self.prefs_watch {
+            // Our own write is no news.
+            w.stamp = Preferences::stamp(&self.config_dir);
+        }
+        written
     }
 
     /// The send that waits for confirmation in the GUI, if any.
