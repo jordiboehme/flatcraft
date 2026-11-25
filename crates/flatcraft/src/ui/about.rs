@@ -381,7 +381,11 @@ pub fn knife(now: Instant) -> Knife {
         prev_t = s.t_mm;
         let prev = trail.last().copied();
         let changed = prev.is_some_and(|p| p.down != s.down || p.shape != Some(s.toolpath));
-        let end = i + 1 == samples.len();
+        // The last sample before the blade goes up or down (or the next
+        // shape starts) stays too, so a cut ends where it really ends.
+        let end = samples
+            .get(i + 1)
+            .is_none_or(|n| n.down != s.down || n.toolpath != s.toolpath);
         if s.t_mm - kept_t < TRAIL_STEP_MM && !changed && !end {
             continue;
         }
@@ -575,25 +579,27 @@ fn banner(ui: &mut Ui, st: &mut AboutState, t: &Tokens, radius: CornerRadius, no
     }
     let alpha = knife.text_alpha(now);
     if alpha > 0.0 {
-        let galley = painter.layout_no_wrap(
-            END_OF_LINE.to_string(),
-            fonts::semibold(20.0),
-            t.accent_cut.gamma_multiply(alpha),
-        );
+        // Left-aligned and vertically centred on TEXT_AT, in a band that
+        // ends before the travel path starts (x 690).
         let left_mid = to_screen(Pos2::new(TEXT_AT.0, TEXT_AT.1));
-        let text = egui::Rect::from_min_size(
-            left_mid - Vec2::new(0.0, galley.size().y / 2.0),
-            galley.size(),
+        let right = to_screen(Pos2::new(TRAVEL_START.0 as f32, TEXT_AT.1)).x;
+        let band = egui::Rect::from_min_max(
+            left_mid - Vec2::new(0.0, 20.0),
+            Pos2::new(right, left_mid.y + 20.0),
         );
-        ui.put(
-            text,
-            egui::Label::new(
-                RichText::new(END_OF_LINE)
-                    .font(fonts::semibold(20.0))
-                    .color(t.accent_cut.gamma_multiply(alpha)),
-            )
-            .selectable(false),
-        );
+        let builder = egui::UiBuilder::new()
+            .max_rect(band)
+            .layout(egui::Layout::left_to_right(egui::Align::Center));
+        ui.scope_builder(builder, |ui| {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(END_OF_LINE)
+                        .font(fonts::semibold(20.0))
+                        .color(t.accent_cut.gamma_multiply(alpha)),
+                )
+                .selectable(false),
+            );
+        });
     }
 }
 
@@ -718,6 +724,46 @@ mod tests {
         assert!(!end.down);
         assert!((end.secs - k.run_secs).abs() < 1e-3);
         assert!(k.trail.windows(2).all(|w| w[0].secs <= w[1].secs));
+    }
+
+    #[test]
+    fn every_cut_ends_as_a_cut() {
+        let k = knife(Instant::now());
+        // The simulation's last blade-down point of each shape, unthinned.
+        let paths: Vec<Toolpath> = outlines()
+            .into_iter()
+            .map(|p| {
+                Toolpath::new(
+                    p,
+                    true,
+                    PathRef {
+                        object: ObjectId(0),
+                        path_index: 0,
+                    },
+                )
+            })
+            .collect();
+        let trace = simulate(&paths, mm(TRAVEL_START), &SimSettings::float(0.25)).unwrap();
+        for shape in 0..4 {
+            let last = trace
+                .samples
+                .iter()
+                .rfind(|s| s.down && s.toolpath == shape)
+                .unwrap();
+            let want = Pos2::new(
+                (last.tip.x * UNITS_PER_MM) as f32,
+                (last.tip.y * UNITS_PER_MM) as f32,
+            );
+            let drawn = k
+                .trail
+                .iter()
+                .rfind(|p| p.down && p.shape == Some(shape))
+                .unwrap();
+            assert_eq!(drawn.at, want, "shape {shape}");
+            // The next point is travel: the cut is not drawn on into it.
+            let i = k.trail.iter().position(|p| p == drawn).unwrap();
+            assert!(!k.trail[i + 1].down, "shape {shape}");
+        }
     }
 
     #[test]
