@@ -136,6 +136,42 @@ fn eye_toggle_hides_object() {
 }
 
 #[test]
+fn scissors_toggle_skips_and_restores_cutting() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let id = import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let cut = || {
+        s.lock()
+            .unwrap()
+            .doc()
+            .document
+            .get(ObjectId(id))
+            .unwrap()
+            .cut_enabled
+    };
+    h.get_by_role_and_label(Role::Button, "Skip cutting square")
+        .click();
+    h.run();
+    assert!(!cut());
+    // Still shown.
+    assert!(
+        s.lock()
+            .unwrap()
+            .doc()
+            .document
+            .get(ObjectId(id))
+            .unwrap()
+            .visible
+    );
+    h.get_by_role_and_label(Role::Button, "Cut again square")
+        .click();
+    h.run();
+    assert!(cut());
+}
+
+#[test]
 fn settings_override_marks_modified() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);

@@ -189,6 +189,11 @@ pub struct Object {
     pub source: Source,
     pub transform: Transform,
     pub visible: bool,
+    /// False keeps the object visible but leaves it out of the cut. Per
+    /// copy, like `visible`. Projects from before this load as true, and
+    /// true is not written, so they save as they were.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub cut_enabled: bool,
     /// Projects from before cut options load with the defaults.
     #[serde(default)]
     pub cut: CutOptions,
@@ -220,7 +225,7 @@ pub struct Object {
     /// The group of linked copies this object belongs to. Members share
     /// the source (with the trace settings), the geometry, the cut options,
     /// the scale and the file link; each keeps its own position, rotation,
-    /// mirror, name and visibility.
+    /// mirror, name, visibility and whether it is cut.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_group: Option<GroupId>,
 }
@@ -244,6 +249,7 @@ impl Object {
             },
             transform,
             visible: true,
+            cut_enabled: true,
             cut,
             link: None,
             geometry,
@@ -332,7 +338,7 @@ impl Object {
     /// Takes the shared fields of `from` (see [`Object::shares_with`]) and
     /// keeps its own place: new geometry stays anchored to its frame, as a
     /// reload does, and a new scale keeps its own centre. Position,
-    /// rotation, mirror, name, visibility and group stay its own.
+    /// rotation, mirror, name, visibility, cut flag and group stay its own.
     pub fn take_shared(&mut self, from: &Object) {
         if !Arc::ptr_eq(&self.geometry, &from.geometry)
             || self.local_bounds != from.local_bounds
@@ -418,6 +424,7 @@ impl Document {
             source,
             transform: Transform::default(),
             visible: true,
+            cut_enabled: true,
             cut: CutOptions::default(),
             link: None,
             geometry: Arc::default(),
@@ -604,4 +611,12 @@ impl Document {
             }
         })
     }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }

@@ -295,6 +295,43 @@ fn scale_one_scales_all_and_each_keeps_its_centre() {
 }
 
 #[test]
+fn skipping_the_cut_is_per_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(dir.path());
+    let id = import_text(&mut s);
+    let all = linked(&mut s, id, 2);
+    run(
+        &mut s,
+        "object.set_cut",
+        json!({ "ids": [all[1]], "cut": false }),
+    );
+    assert!(obj(&s, all[0]).cut_enabled);
+    assert!(!obj(&s, all[1]).cut_enabled);
+    assert!(obj(&s, all[2]).cut_enabled);
+    // A shared edit does not spread the flag.
+    run(
+        &mut s,
+        "object.set_cut_options",
+        json!({ "ids": [all[0]], "mode": "all_lines" }),
+    );
+    assert!(!obj(&s, all[1]).cut_enabled);
+    assert!(obj(&s, all[2]).cut_enabled);
+    assert_shared(&s, &all);
+    // It survives a save and a load (format 2).
+    let path = dir.path().join("p.flatcraft");
+    run(&mut s, "project.save", json!({ "path": path }));
+    run(&mut s, "project.open", json!({ "path": path }));
+    let flags: Vec<bool> = s
+        .doc()
+        .document
+        .objects
+        .iter()
+        .map(|o| o.cut_enabled)
+        .collect();
+    assert_eq!(flags, vec![true, false, true]);
+}
+
+#[test]
 fn group_scale_scales_each_member_once() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = session(dir.path());

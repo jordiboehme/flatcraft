@@ -93,6 +93,8 @@ pub struct JobObject {
     pub id: ObjectId,
     pub name: String,
     pub visible: bool,
+    /// False leaves the object out of the cut; it stays visible.
+    pub cut_enabled: bool,
     pub transform: Transform,
     pub local_bounds: kurbo::Rect,
     pub cut: CutOptions,
@@ -107,6 +109,7 @@ impl PartialEq for JobObject {
         self.id == other.id
             && self.name == other.name
             && self.visible == other.visible
+            && self.cut_enabled == other.cut_enabled
             && self.transform == other.transform
             && self.local_bounds == other.local_bounds
             && self.cut == other.cut
@@ -134,6 +137,7 @@ impl JobInput {
                 id: o.id,
                 name: o.name.clone(),
                 visible: o.visible,
+                cut_enabled: o.cut_enabled,
                 transform: o.transform,
                 local_bounds: o.local_bounds,
                 cut: o.cut,
@@ -205,6 +209,13 @@ pub fn build_input(input: &JobInput) -> Result<JobResult, CommandError> {
         if !o.visible {
             warnings.push(format!(
                 "'{}' is hidden and will not be cut.",
+                one_line(&o.name)
+            ));
+            continue;
+        }
+        if !o.cut_enabled {
+            warnings.push(format!(
+                "'{}' is skipped and will not be cut.",
                 one_line(&o.name)
             ));
             continue;

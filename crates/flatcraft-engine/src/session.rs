@@ -335,6 +335,7 @@ fn same_except_links(a: &Document, b: &Document) -> bool {
             x.id == y.id
                 && x.name == y.name
                 && x.visible == y.visible
+                && x.cut_enabled == y.cut_enabled
                 && x.transform == y.transform
                 && x.cut == y.cut
                 && x.frame == y.frame

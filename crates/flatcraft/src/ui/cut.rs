@@ -420,7 +420,7 @@ fn cut_canvas(
     let (mat_rgb, contrast) = canvas::draw_mat(&painter, rect, snap, &view, show_grid, t);
     let job = st.job().filter(|_| st.stage != Stage::Device);
     let faded = if job.is_some() { 0.3 } else { 1.0 };
-    canvas::draw_objects(&painter, snap, &view, mat_rgb, faded, |_| None);
+    canvas::draw_objects(&painter, snap, &view, mat_rgb, faded, true, |_| None);
     if let Some(job) = &job {
         let visible = st.visible_toolpaths();
         let crowded = draw_toolpaths(

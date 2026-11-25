@@ -250,7 +250,7 @@ pub fn show(
     let painter = ui.painter_at(rect);
     let view = st.view;
     let (mat_rgb, contrast) = draw_mat(&painter, rect, snap, &view, st.show_grid, t);
-    draw_objects(&painter, snap, &view, mat_rgb, 1.0, |id| {
+    draw_objects(&painter, snap, &view, mat_rgb, 1.0, false, |id| {
         drag_preview(st.drag.as_ref(), snap, id)
     });
     draw_area(&painter, rect, snap, &view, t, contrast);
@@ -301,16 +301,23 @@ pub(crate) fn draw_mat(
 
 /// Draws the visible objects in their colours (contrast rule), each placed
 /// by its centre and an optional extra affine (a drag preview). `alpha`
-/// fades them (the Cut workspace draws toolpaths on top).
+/// fades them (the Cut workspace draws toolpaths on top). An object that is
+/// skipped (not cut) is drawn dimmed with a dashed outline, or not at all
+/// when `cut_preview` is set.
 pub(crate) fn draw_objects(
     painter: &egui::Painter,
     snap: &Snapshot,
     view: &CanvasView,
     mat_rgb: [u8; 3],
     alpha: f32,
+    cut_preview: bool,
     extra: impl Fn(u64) -> Option<kurbo::Affine>,
 ) {
     for o in snap.objects.iter().filter(|o| o.visible) {
+        if cut_preview && !o.cut_enabled {
+            continue;
+        }
+        let alpha = if o.cut_enabled { alpha } else { alpha * 0.45 };
         let base = kurbo::Affine::translate(o.transform.center_mm.to_vec2());
         let place = extra(o.id).map_or(base, |p| p * base);
         for line in &o.shape.lines {
@@ -321,7 +328,15 @@ pub(crate) fn draw_objects(
                 .map(|p| view.mm_to_screen(place * *p))
                 .collect();
             let stroke = Stroke::new(1.25, colour);
-            if line.closed {
+            if !o.cut_enabled {
+                let mut pts = pts;
+                if line.closed
+                    && let Some(first) = pts.first().copied()
+                {
+                    pts.push(first);
+                }
+                painter.extend(egui::Shape::dashed_line(&pts, stroke, 5.0, 4.0));
+            } else if line.closed {
                 painter.add(egui::Shape::closed_line(pts, stroke));
             } else {
                 painter.add(egui::Shape::line(pts, stroke));

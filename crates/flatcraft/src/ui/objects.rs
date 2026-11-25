@@ -1,5 +1,5 @@
 //! The Objects panel: one row per object with its kind, name, a mark for
-//! linked copies, file status and an eye to show or hide it. Below the
+//! linked copies, file status and an eye to show or hide it and scissors to skip its cut. Below the
 //! list, the details of a single selected object with its linked copies
 //! and its linked file.
 
@@ -9,7 +9,7 @@ use serde_json::json;
 use super::icons::{self, Icon};
 use super::prepare::{ObjView, PrepareState, Snapshot};
 use super::theme::Tokens;
-use super::{Action, ICON_SIZE, fonts, icon_button};
+use super::{Action, ICON_SIZE, fonts, icon_button, icon_button_hint};
 
 /// A small icon with an accessible name.
 fn badge(ui: &mut Ui, icon: Icon, name: &str, colour: egui::Color32) {
@@ -95,6 +95,14 @@ pub fn show(
                                 json!({ "ids": [o.id], "visible": !o.visible }),
                             ));
                         }
+                        let (hint, name) = if o.cut_enabled {
+                            ("Skip cutting", format!("Skip cutting {}", o.name))
+                        } else {
+                            ("Cut again", format!("Cut again {}", o.name))
+                        };
+                        if icon_button_hint(ui, Icon::Cut, &name, true, hint).clicked() {
+                            actions.push(toggle_cut(snap, o));
+                        }
                     });
                 });
             }
@@ -105,6 +113,23 @@ pub fn show(
         ui.separator();
         details(ui, o, st, snap, t, actions);
     }
+}
+
+/// The action that flips whether `o` is cut: skip it if it is cut, cut it
+/// again if it is skipped. When `o` is part of the selection the whole
+/// selection gets the new state, else only `o`. The Objects panel and the
+/// context menu both use it.
+pub fn toggle_cut(snap: &Snapshot, o: &ObjView) -> Action {
+    let ids: Vec<u64> = if snap.selection.contains(&o.id) {
+        snap.selection.iter().copied().collect()
+    } else {
+        vec![o.id]
+    };
+    Action::run(
+        snap.doc_id,
+        "object.set_cut",
+        json!({ "ids": ids, "cut": !o.cut_enabled }),
+    )
 }
 
 /// Name, kind, linked copies and linked file of one object.

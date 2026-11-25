@@ -46,6 +46,7 @@ static ALL: &[&dyn Command] = &[
     &sources::ObjectUnlink,
     &object::ObjectSelect,
     &object::ObjectSetVisible,
+    &object::ObjectSetCut,
     &object::ObjectDelete,
     &object::ObjectDuplicate,
     &object::ObjectCopies,

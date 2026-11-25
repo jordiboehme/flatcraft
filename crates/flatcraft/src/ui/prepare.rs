@@ -719,6 +719,8 @@ pub struct ObjView {
     pub name: String,
     pub raster: bool,
     pub visible: bool,
+    /// False: shown, but left out of the cut.
+    pub cut_enabled: bool,
     pub transform: Transform,
     pub cut: CutOptions,
     /// Last known path of the linked file.
@@ -926,6 +928,7 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
                 name: o.name.clone(),
                 raster: matches!(o.source, Source::Raster { .. }),
                 visible: o.visible,
+                cut_enabled: o.cut_enabled,
                 transform: o.transform,
                 cut: o.cut,
                 link: o.link.as_ref().map(|l| l.path.clone()),

@@ -557,6 +557,35 @@ command!(
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct SetCutParams {
+    /// Object ids; empty means the current selection.
+    #[serde(default)]
+    pub ids: Vec<u64>,
+    /// False skips the objects: they stay visible but are not cut.
+    pub cut: bool,
+}
+
+fn run_set_cut(s: &mut Session, p: SetCutParams, _: Origin) -> Result<Value, CommandError> {
+    let ids = resolve_ids(s, &p.ids)?;
+    let doc = &mut s.doc_mut().document;
+    for id in &ids {
+        object_mut(doc, *id)?.cut_enabled = p.cut;
+    }
+    Ok(json!({ "ids": ids_json(&ids), "cut": p.cut }))
+}
+
+command!(
+    ObjectSetCut,
+    id: "object.set_cut",
+    title: "Skip or cut",
+    mutates: true,
+    params: SetCutParams,
+    run: run_set_cut,
+    description: "Skips or restores cutting of objects. A skipped object (cut false) stays visible but is left out of the job, with a warning. Linked copies (see object.copies) each keep their own setting. An empty ids list means the current selection. Returns {ids, cut}.",
+);
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct IdsParams {
     /// Object ids; empty means the current selection.
     #[serde(default)]

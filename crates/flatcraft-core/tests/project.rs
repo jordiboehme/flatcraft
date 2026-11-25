@@ -350,3 +350,27 @@ fn source_bytes_round_trip_byte_identically() {
     project::save(&loaded, &again).unwrap();
     assert_eq!(std::fs::read(&again).unwrap(), first);
 }
+
+// ---------------------------------------------------------------- skip cutting
+
+#[test]
+fn old_project_loads_as_cut_and_saves_without_the_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.flatcraft");
+    std::fs::write(&path, project_with(OLD_OBJECT)).unwrap();
+    let mut doc = project::load(&path).unwrap();
+    assert!(doc.objects[0].cut_enabled);
+    assert_eq!(doc.format_version, 1);
+    project::save(&doc, &path).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(!text.contains("cut_enabled"), "{text}");
+    assert!(text.contains("\"format_version\": 1"), "{text}");
+
+    // A skipped object keeps its flag through a save, and format 1 stays.
+    doc.objects[0].cut_enabled = false;
+    project::save(&doc, &path).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("\"cut_enabled\": false"), "{text}");
+    assert!(text.contains("\"format_version\": 1"), "{text}");
+    assert!(!project::load(&path).unwrap().objects[0].cut_enabled);
+}

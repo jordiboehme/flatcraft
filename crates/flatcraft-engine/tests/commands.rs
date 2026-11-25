@@ -321,6 +321,45 @@ fn job_arrange_and_visibility_are_undoable() {
 }
 
 #[test]
+fn set_cut_skips_several_objects_and_undoes_in_one_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = import(&mut s, 50.0, 50.0);
+    let b = import(&mut s, 50.0, 50.0);
+    s.doc_mut().dirty = false;
+    // An agent may use it.
+    let r = s
+        .execute(
+            "object.set_cut",
+            json!({ "ids": [a, b], "cut": false }),
+            Origin::Agent,
+        )
+        .unwrap();
+    assert_eq!(r["cut"], false);
+    assert!(s.doc().dirty);
+    let cut = |s: &Session, id: u64| s.doc().document.get(ObjectId(id)).unwrap().cut_enabled;
+    assert!(!cut(&s, a) && !cut(&s, b));
+    // Still visible, and document.state says so.
+    let state = run(&mut s, "document.state", json!({}));
+    assert_eq!(state["objects"][0]["visible"], true);
+    assert_eq!(state["objects"][0]["cut_enabled"], false);
+    run(&mut s, "edit.undo", json!({}));
+    assert!(cut(&s, a) && cut(&s, b));
+    // An empty list means the selection.
+    run(&mut s, "object.select", json!({ "ids": [b] }));
+    run(&mut s, "object.set_cut", json!({ "ids": [], "cut": false }));
+    assert!(cut(&s, a) && !cut(&s, b));
+    let e = s
+        .execute(
+            "object.set_cut",
+            json!({ "ids": [999], "cut": false }),
+            Origin::Agent,
+        )
+        .unwrap_err();
+    assert!(!e.to_string().contains('\u{2014}'));
+}
+
+#[test]
 fn import_svgz_file() {
     use std::io::Write;
     let dir = tempfile::tempdir().unwrap();

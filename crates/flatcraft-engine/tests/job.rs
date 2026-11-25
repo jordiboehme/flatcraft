@@ -164,6 +164,53 @@ fn hidden_objects_are_not_cut_and_named_in_warnings() {
 }
 
 #[test]
+fn skipped_objects_are_not_cut_and_named_in_warnings() {
+    let d = dirs();
+    let mut s = session(&d);
+    import_square(&mut s, "shown");
+    let skipped = import_square(&mut s, "spare");
+    run(
+        &mut s,
+        "object.set_cut",
+        json!({ "ids": [skipped], "cut": false }),
+    );
+    let r = run(&mut s, "job.preview", json!({}));
+    assert_eq!(r["toolpaths"], 1);
+    let w = r["warnings"].to_string();
+    assert!(w.contains("'spare' is skipped and will not be cut."), "{w}");
+    // Cut again: both are cut and the warning is gone.
+    run(
+        &mut s,
+        "object.set_cut",
+        json!({ "ids": [skipped], "cut": true }),
+    );
+    let r = run(&mut s, "job.preview", json!({}));
+    assert_eq!(r["toolpaths"], 2);
+    assert!(!r["warnings"].to_string().contains("skipped"));
+}
+
+#[test]
+fn only_skipped_objects_give_nothing_to_cut() {
+    let d = dirs();
+    let mut s = session(&d);
+    let id = import_square(&mut s, "square");
+    run(
+        &mut s,
+        "object.set_cut",
+        json!({ "ids": [id], "cut": false }),
+    );
+    let e = s.execute("job.send", json!({}), Origin::User).unwrap_err();
+    assert_eq!(
+        e,
+        CommandError::Refused(
+            "Nothing to cut: no visible object has cut paths. 'square' is skipped and will not be cut."
+                .into()
+        )
+    );
+    assert!(files(d.out.path()).is_empty());
+}
+
+#[test]
 fn send_empty_document_is_refused_and_writes_nothing() {
     let d = dirs();
     let mut s = session(&d);
