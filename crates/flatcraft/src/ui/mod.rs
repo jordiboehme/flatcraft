@@ -257,7 +257,8 @@ pub struct FlatCraftApp {
     pub tracer: import_dialog::Tracer,
     /// Shows sent files in the file manager; tests replace it.
     pub revealer: Box<dyn files::Revealer>,
-    /// The monotonic clock pending sends expire by; tests replace it.
+    /// The monotonic clock that pending sends, toasts, the source-check
+    /// debounce and arrow-key bursts go by; tests replace it.
     pub clock: Clock,
     /// Runs a check of linked files on a worker thread; tests replace it.
     pub source_check: flatcraft_mcp::server::SourceChecker,
@@ -357,7 +358,9 @@ impl FlatCraftApp {
         }
     }
 
-    pub fn toast(&mut self, toast: Toast) {
+    /// Shows a toast. It ages by [`FlatCraftApp::clock`].
+    pub fn toast(&mut self, mut toast: Toast) {
+        toast.created = (self.clock)();
         self.ui.toasts.push(toast);
     }
 
@@ -1120,7 +1123,7 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
 
     app.apply(&ctx, actions);
 
-    let now = Instant::now();
+    let now = (app.clock)();
     app.check_sources(&ctx, now);
     if let Some(next) = toasts::prune(&mut app.ui.toasts, now) {
         ctx.request_repaint_after(next);

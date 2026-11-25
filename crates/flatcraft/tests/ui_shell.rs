@@ -622,3 +622,22 @@ fn a_backup_of_broken_preferences_shows_a_toast() {
         app(&h).ui.toasts
     );
 }
+
+/// Toasts age by the window's clock, so a test can let one expire.
+#[test]
+fn toasts_expire_by_the_window_clock() {
+    use flatcraft::ui::toasts::Toast;
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let now = std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+    let clock = now.clone();
+    let mut h = harness_with(&dir, s, move |a| {
+        a.with_clock(move || *clock.lock().unwrap())
+    });
+    app_mut(&mut h).toast(Toast::info("Great Scott!"));
+    h.run();
+    assert_eq!(app(&h).ui.toasts.len(), 1);
+    *now.lock().unwrap() += flatcraft::ui::toasts::LIFETIME;
+    h.run();
+    assert!(app(&h).ui.toasts.is_empty(), "expired after 4 s on the clock");
+}
