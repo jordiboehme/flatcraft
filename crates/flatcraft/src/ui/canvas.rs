@@ -1005,7 +1005,10 @@ fn handle_card(ui: &Ui, resp: &egui::Response, snap: &Snapshot, st: &mut Prepare
         Hit::Rotate(_) => ("Rotate", super::tools::Setting::RotateZone.card(), None),
         Hit::Object(_) | Hit::Nothing => return,
     };
-    super::groups::card_at_pointer(resp, title, card, why);
+    // At a top corner the card opens above the pointer, away from the
+    // selection.
+    let above = matches!(hit, Hit::Rotate(0 | 1) | Hit::Handle(0 | 1 | 4));
+    super::groups::card_at_pointer(resp, title, card, why, above);
 }
 
 /// The resize cursor of a handle.

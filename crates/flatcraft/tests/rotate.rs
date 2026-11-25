@@ -606,3 +606,67 @@ fn two_objects_with_one_angle_do_not_show_mixed() {
     h.run();
     assert!(!drawn(&h, "Mixed"));
 }
+
+/// The four corners of the square's box (top-left, top-right,
+/// bottom-right, bottom-left) and a point 12 pt out from each, in its zone.
+fn corner_zones(v: &CanvasView) -> [(Pos2, Pos2); 4] {
+    let d = 12.0 / 2f32.sqrt();
+    [
+        (mm(v, 20.0, 20.0), Vec2::new(-d, -d)),
+        (mm(v, 70.0, 20.0), Vec2::new(d, -d)),
+        (mm(v, 70.0, 70.0), Vec2::new(d, d)),
+        (mm(v, 20.0, 70.0), Vec2::new(-d, d)),
+    ]
+    .map(|(c, o)| (c, c + o))
+}
+
+#[test]
+fn every_corner_has_a_rotate_zone() {
+    for i in 0..4 {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, id, mut h, v) = square(&dir);
+        let (_, at) = corner_zones(&v)[i];
+        h.hover_at(at);
+        h.run();
+        h.run();
+        assert_eq!(cursor(&h), CursorIcon::None, "corner {i}");
+        turn(&mut h, at, mm(&v, 45.0, 45.0), 30.0, Modifiers::NONE);
+        let t = transform(&s, id);
+        assert!(near(t.rotation_deg, 30.0), "corner {i}: {t:?}");
+        assert!(near(t.center_mm.x, 45.0) && near(t.center_mm.y, 45.0));
+    }
+}
+
+#[test]
+fn the_rotate_card_opens_away_from_the_selection() {
+    for i in 0..4 {
+        let dir = tempfile::tempdir().unwrap();
+        let (_s, _id, mut h, v) = square(&dir);
+        let (_, at) = corner_zones(&v)[i];
+        h.hover_at(at);
+        for _ in 0..4 {
+            h.run();
+        }
+        let card = h.get_by_label(&help::rotate_card(Os::CURRENT)).rect();
+        let selection = egui::Rect::from_two_pos(mm(&v, 20.0, 20.0), mm(&v, 70.0, 70.0));
+        assert!(
+            !card.intersects(selection),
+            "corner {i}: {card:?} covers {selection:?}"
+        );
+        if i < 2 {
+            assert!(
+                card.bottom() <= at.y,
+                "corner {i}: above the pointer, {card:?}"
+            );
+        } else {
+            assert!(
+                card.top() >= at.y,
+                "corner {i}: below the pointer, {card:?}"
+            );
+        }
+        assert!(
+            card.distance_to_pos(at) < 60.0,
+            "corner {i}: {card:?} {at:?}"
+        );
+    }
+}
