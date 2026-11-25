@@ -33,8 +33,13 @@ fn main() -> anyhow::Result<()> {
 fn load_session(config_dir: PathBuf, has_ui: bool) -> anyhow::Result<SharedSession> {
     let profiles = ProfileStore::load(&config_dir.join("profiles"))
         .context("cannot load the plotter and material profiles")?;
-    let prefs = Preferences::load(&config_dir);
+    let (prefs, warning) = Preferences::load_reporting(&config_dir);
     let mut session = Session::new(profiles, prefs, has_ui, config_dir);
+    if let Some(w) = warning {
+        // stderr only: stdout is the MCP channel.
+        eprintln!("warning: {w}");
+        session.note_prefs_warning(w);
+    }
     session.watch_prefs_file();
     Ok(Arc::new(Mutex::new(session)))
 }

@@ -2093,6 +2093,82 @@ fn an_unreadable_preferences_file_turns_agent_cuts_off() {
     assert!(s.prefs.auto_reload, "the rest stays as read last");
 }
 
+/// A broken file is reported once per change of the file, not at every
+/// check, and the report waits for the window to take it.
+#[test]
+fn a_broken_preferences_file_is_reported_once() {
+    use std::time::{Duration, Instant, SystemTime};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(flatcraft_engine::prefs::FILE_NAME);
+    let write = |text: &str, secs: u64| {
+        std::fs::write(&path, text).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(SystemTime::now() + Duration::from_secs(secs))
+            .unwrap();
+    };
+    let mut s = prefs_session(&dir);
+    s.watch_prefs_file();
+    assert_eq!(s.take_prefs_warning(), None);
+    write("allow_agent_cuts = [", 60);
+    let t0 = Instant::now() + Duration::from_secs(5);
+    assert!(!s.refresh_prefs(t0));
+    let w = s.take_prefs_warning().expect("a warning");
+    assert!(w.contains("preferences.toml"), "{w}");
+    for n in 1..4 {
+        assert!(!s.refresh_prefs(t0 + Duration::from_millis(1100 * n)));
+        assert_eq!(s.take_prefs_warning(), None, "the same file, no news");
+    }
+    // Broken in another way: a new report.
+    write("allow_agent_cuts = [[", 120);
+    assert!(!s.refresh_prefs(t0 + Duration::from_secs(10)));
+    assert!(s.take_prefs_warning().is_some());
+    // Fixed: read, and no report.
+    write("auto_reload = true\n", 180);
+    assert!(s.refresh_prefs(t0 + Duration::from_secs(20)));
+    assert!(s.prefs.auto_reload);
+    assert_eq!(s.take_prefs_warning(), None);
+}
+
+/// A read that fails while the file itself stays the same (time and size)
+/// is tried again at the next check, not only after the next change.
+#[cfg(unix)]
+#[test]
+fn a_failed_preferences_read_is_retried() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant, SystemTime};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(flatcraft_engine::prefs::FILE_NAME);
+    let mut s = prefs_session(&dir);
+    s.watch_prefs_file();
+    std::fs::write(&path, "auto_reload = true\n").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(SystemTime::now() + Duration::from_secs(60))
+        .unwrap();
+    let mode =
+        |m: u32| std::fs::set_permissions(&path, std::fs::Permissions::from_mode(m)).unwrap();
+    mode(0o000);
+    if std::fs::read(&path).is_ok() {
+        // Root reads anyway; nothing to test here.
+        return;
+    }
+    let t0 = Instant::now() + Duration::from_secs(5);
+    assert!(!s.refresh_prefs(t0), "the read fails");
+    assert!(!s.prefs.auto_reload);
+    // Readable again; chmod changes neither the time nor the size.
+    mode(0o644);
+    assert!(
+        s.refresh_prefs(t0 + Duration::from_millis(1100)),
+        "the next check reads the file again"
+    );
+    assert!(s.prefs.auto_reload);
+}
+
 fn backups(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut v: Vec<_> = std::fs::read_dir(dir)
         .unwrap()

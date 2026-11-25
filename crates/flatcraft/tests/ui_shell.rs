@@ -511,3 +511,82 @@ fn save_as_suggests_the_current_file_name() {
         )
     );
 }
+
+/// A preferences file that breaks while the window runs is named in a
+/// warning toast, once, not only on stderr.
+#[test]
+fn a_broken_preferences_file_shows_a_toast_once() {
+    use flatcraft::ui::toasts::ToastKind;
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    s.lock().unwrap().watch_prefs_file();
+    let path = dir.path().join(flatcraft_engine::prefs::FILE_NAME);
+    std::fs::write(&path, "allow_agent_cuts = [").unwrap();
+    let mut h = harness(&dir, s, false);
+    h.run();
+    let warnings = |h: &common::AppHarness| {
+        app(h)
+            .ui
+            .toasts
+            .iter()
+            .filter(|t| t.kind == ToastKind::Warning)
+            .map(|t| t.text.clone())
+            .collect::<Vec<_>>()
+    };
+    let shown = warnings(&h);
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    assert!(shown[0].contains("preferences.toml"), "{shown:?}");
+    // A second later the file is still broken: no second toast.
+    let later = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    app_mut(&mut h).clock = std::sync::Arc::new(move || later);
+    h.run();
+    assert_eq!(warnings(&h).len(), 1);
+}
+
+/// The warning from loading the preferences at start reaches the window.
+#[test]
+fn the_start_up_preferences_warning_shows_a_toast() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    s.lock()
+        .unwrap()
+        .note_prefs_warning("preferences.toml is broken. Using default preferences.".into());
+    let mut h = harness(&dir, s, false);
+    h.run();
+    assert!(
+        app(&h)
+            .ui
+            .toasts
+            .iter()
+            .any(|t| t.text.contains("Using default preferences")),
+        "{:?}",
+        app(&h).ui.toasts
+    );
+}
+
+/// Storing the recent list re-reads the preferences file; a theme another
+/// window stored meanwhile reaches this window's colours too.
+#[test]
+fn a_theme_read_back_by_a_preference_save_is_applied() {
+    use flatcraft::ui::theme::Tokens;
+    use flatcraft_engine::prefs::Theme;
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let path = dir.path().join("coasters.flatcraft");
+    s.lock()
+        .unwrap()
+        .execute("project.save", json!({ "path": path }), Origin::User)
+        .unwrap();
+    let mut h = harness(&dir, session(&dir), false);
+    assert_eq!(app(&h).tokens, Tokens::for_theme(Theme::Dark));
+    session(&dir)
+        .lock()
+        .unwrap()
+        .update_prefs(|p| p.theme = Theme::Light)
+        .unwrap();
+    let ctx = h.ctx.clone();
+    app_mut(&mut h).apply(&ctx, vec![Action::Open(path)]);
+    h.run();
+    assert_eq!(app(&h).tokens, Tokens::for_theme(Theme::Light));
+}

@@ -53,10 +53,24 @@ impl Preferences {
     /// Loads the preferences. A missing file gives the defaults; a broken file
     /// gives the defaults and a warning on stderr.
     pub fn load(config_dir: &Path) -> Self {
-        Self::read(config_dir).unwrap_or_else(|e| {
-            eprintln!("warning: {e}. Using default preferences.");
-            Self::default()
-        })
+        let (prefs, warning) = Self::load_reporting(config_dir);
+        if let Some(w) = warning {
+            eprintln!("warning: {w}");
+        }
+        prefs
+    }
+
+    /// Like [`Preferences::load`], but hands the warning about a broken or
+    /// unreadable file to the caller instead of printing it, so a window
+    /// can show it ([`crate::session::Session::note_prefs_warning`]).
+    pub fn load_reporting(config_dir: &Path) -> (Self, Option<String>) {
+        match Self::read(config_dir) {
+            Ok(prefs) => (prefs, None),
+            Err(e) => (
+                Self::default(),
+                Some(format!("{e}. Using default preferences.")),
+            ),
+        }
     }
 
     /// Reads the preferences. A missing file gives the defaults; a file that

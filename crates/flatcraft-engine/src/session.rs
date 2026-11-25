@@ -345,16 +345,27 @@ pub struct Session {
     no_user_change: bool,
     /// Set by [`Session::watch_prefs_file`] (headless MCP).
     prefs_watch: Option<PrefsWatch>,
+    /// The last warning about a broken or unreadable preferences file that
+    /// nobody showed yet (see [`Session::take_prefs_warning`]).
+    prefs_warning: Option<String>,
 }
 
 /// How often a headless session looks at the preferences file.
 pub const PREFS_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Modification time and size of the preferences file (see
+/// [`Preferences::stamp`]).
+type PrefsStamp = Option<(Option<std::time::SystemTime>, u64)>;
+
 /// What a headless session knows about the preferences file.
 #[derive(Debug, Clone)]
 struct PrefsWatch {
     last_check: Option<Instant>,
-    stamp: Option<(Option<std::time::SystemTime>, u64)>,
+    /// The file as it was at the last successful read.
+    stamp: PrefsStamp,
+    /// The file as it was when a failed read was last reported, so a file
+    /// that stays broken is reported once, not every second.
+    warned: Option<PrefsStamp>,
 }
 
 impl Session {
@@ -379,6 +390,7 @@ impl Session {
             next_pending_id: 1,
             no_user_change: false,
             prefs_watch: None,
+            prefs_warning: None,
         };
         s.docs.push(s.new_doc_state());
         s
@@ -436,14 +448,31 @@ impl Session {
         self.prefs_watch = Some(PrefsWatch {
             last_check: None,
             stamp: Preferences::stamp(&self.config_dir),
+            warned: None,
         });
+    }
+
+    /// Keeps a warning about the preferences file for the window to show
+    /// (`main` hands over the one from loading at start). A newer warning
+    /// replaces an older one nobody showed yet.
+    pub fn note_prefs_warning(&mut self, text: String) {
+        self.prefs_warning = Some(text);
+    }
+
+    /// The warning about a broken or unreadable preferences file that was
+    /// not shown yet, if any. The window shows it as a toast.
+    pub fn take_prefs_warning(&mut self) -> Option<String> {
+        self.prefs_warning.take()
     }
 
     /// Reloads the preferences when the file changed since the last look,
     /// at most once per [`PREFS_CHECK_INTERVAL`] at `now`. A file that cannot
     /// be read or parsed keeps the preferences as they are, except that
-    /// agent cuts turn off (fail closed) until the file is fixed. Returns
-    /// true if it reloaded them. Never writes the file.
+    /// agent cuts turn off (fail closed) until the file is fixed; it is
+    /// read again at the next check, so a passing error heals by itself,
+    /// and reported once per change of the file (stderr and
+    /// [`Session::take_prefs_warning`]). Returns true if it reloaded them.
+    /// Never writes the file.
     pub fn refresh_prefs(&mut self, now: Instant) -> bool {
         let Some(w) = &mut self.prefs_watch else {
             return false;
@@ -458,19 +487,26 @@ impl Session {
         if stamp == w.stamp {
             return false;
         }
-        // Once per change of the file, also a broken one: fixing it changes
-        // the time or size again.
-        w.stamp = stamp;
+        // The stamp is taken before the read: a change in between only
+        // means one more read at the next check, never a missed one.
         match Preferences::read(&self.config_dir) {
             Ok(prefs) => {
+                w.stamp = stamp;
+                w.warned = None;
                 self.prefs = prefs;
                 true
             }
             Err(e) => {
-                eprintln!(
-                    "warning: {e}. Keeping the preferences read before, with agent cuts off until the file is fixed."
-                );
+                // The old stamp stays, so the next check reads again.
                 self.prefs.allow_agent_cuts = false;
+                if w.warned != Some(stamp) {
+                    w.warned = Some(stamp);
+                    let text = format!(
+                        "{e}. Keeping the preferences read before, with agent cuts off until the file is fixed."
+                    );
+                    eprintln!("warning: {text}");
+                    self.prefs_warning = Some(text);
+                }
                 false
             }
         }

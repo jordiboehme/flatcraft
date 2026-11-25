@@ -1187,16 +1187,24 @@ fn unsaved_modal(ctx: &egui::Context, app: &mut FlatCraftApp, actions: &mut Vec<
 }
 
 /// Picks up preferences another FlatCraft process stored (at most once a
-/// second, see `Session::refresh_prefs`) and applies a changed theme.
+/// second, see `Session::refresh_prefs`), applies the theme of the
+/// session's preferences when the colours differ (also after
+/// `Session::update_prefs` read back another window's theme) and shows a
+/// warning about a broken preferences file as a toast.
 fn refresh_prefs(ctx: &egui::Context, app: &mut FlatCraftApp) {
     let now = (app.clock)();
-    let theme = {
+    let (theme, warning) = {
         let mut s = lock(&app.session);
-        s.refresh_prefs(now).then_some(s.prefs.theme)
+        s.refresh_prefs(now);
+        (s.prefs.theme, s.take_prefs_warning())
     };
-    if let Some(theme) = theme {
-        app.tokens = Tokens::for_theme(theme);
+    let tokens = Tokens::for_theme(theme);
+    if tokens != app.tokens {
+        app.tokens = tokens;
         theme::apply(ctx, &app.tokens);
+    }
+    if let Some(w) = warning {
+        app.toast(Toast::warning(w));
     }
 }
 
