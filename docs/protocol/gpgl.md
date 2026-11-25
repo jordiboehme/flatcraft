@@ -7,6 +7,15 @@ projects was read or copied to write it.
 
 Status: provisional. Nothing here has been checked against our own USB captures yet.
 
+### Where the facts come from
+
+This document was written from research notes, not from code. But the research behind source
+key R also looked at other open-source projects for the Silhouette plotters (inkscape-silhouette,
+robocut and py_silhouette). We can't rule out that this research read parts of their source code.
+So we treat every fact from R as provisional, whatever its mark says. A fact counts only after our
+own USB capture of the vendor software confirms it. Before FlatCraft sends a job to a real plotter
+(milestone M3), the emitter relies only on confirmed facts.
+
 ## 0. How to read this document
 
 ### Confidence marks
@@ -25,7 +34,7 @@ way FlatCraft uses it is our choice.
 
 ### Source keys
 
-- R: FlatCraft protocol research note, 2026-11-24 (Crystalline
+- R: FlatCraft protocol research note, 2026-11-24 (a private note in our knowledge base, Crystalline
   `projects/flatcraft/flatcraft-cameo-2-usb-protocol-research`). It collects facts from the
   inkscape-silhouette docs (Commands.md, device list) and issues, robocut, py_silhouette, Sillinux
   and the Graphtec GP-GL manual.
