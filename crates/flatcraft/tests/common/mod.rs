@@ -69,7 +69,17 @@ pub fn harness_steps(
         );
     let ctx = h.ctx.clone();
     fonts::install(&ctx);
-    let app = FlatCraftApp::new(&ctx, s, dir.path().to_path_buf());
+    let mut app = FlatCraftApp::new(&ctx, s, dir.path().to_path_buf());
+    if !worker_delay().is_zero() {
+        app = app.with_source_check(|session| {
+            std::thread::sleep(worker_delay());
+            flatcraft_engine::commands::sources::check_unlocked(session)
+        });
+        app.ui.prepare.cache.set_builder(|input| {
+            std::thread::sleep(worker_delay());
+            ui::prepare::build_shape(input)
+        });
+    }
     *h.state_mut() = Some(setup(app));
     h.run();
     h
@@ -132,5 +142,35 @@ impl FilePicker for FakePicker {
 
     fn pick_folder(&mut self, req: &FileRequest) -> Option<PathBuf> {
         self.next(req)
+    }
+}
+
+/// A delay every source check and shape build waits first, from
+/// `FLATCRAFT_TEST_WORKER_DELAY_MS` (read only, never set by a test). It
+/// makes the workers as slow as a busy CI runner, so tests that do not
+/// wait for them properly fail locally too. Zero when unset.
+pub fn worker_delay() -> std::time::Duration {
+    let ms = std::env::var("FLATCRAFT_TEST_WORKER_DELAY_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    std::time::Duration::from_millis(ms)
+}
+
+/// Longest wait for the source check and the shape worker.
+pub const WORKER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Runs frames until no source check is in flight and the shape worker has
+/// nothing left to build. Fails after [`WORKER_TIMEOUT`].
+pub fn wait_for_workers(h: &mut AppHarness) {
+    let start = std::time::Instant::now();
+    h.run();
+    while app(h).source_check_job.is_some() || app(h).ui.prepare.cache.building() > 0 {
+        assert!(
+            start.elapsed() < WORKER_TIMEOUT,
+            "the source check or the shape worker did not finish within {WORKER_TIMEOUT:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        h.run();
     }
 }

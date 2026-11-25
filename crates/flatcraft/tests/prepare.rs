@@ -4,7 +4,10 @@ mod common;
 
 use std::path::Path;
 
-use common::{AppHarness, FakePicker, app, app_mut, harness, harness_with, import_square, session};
+use common::{
+    AppHarness, FakePicker, app, app_mut, harness, harness_with, import_square, session,
+    wait_for_workers, worker_delay,
+};
 use egui::accesskit::Role;
 use egui::{Color32, Event, Modifiers, Pos2, Shape, Vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
@@ -81,11 +84,13 @@ fn type_into(h: &mut AppHarness, label: &str, text: &str) {
     h.run();
 }
 
+/// Focuses the window, which starts a source check, and waits until the
+/// check is done.
 fn focus_window(h: &mut AppHarness) {
     h.event(Event::WindowFocused(false));
     h.run();
     h.event(Event::WindowFocused(true));
-    h.run();
+    wait_for_workers(h);
 }
 
 #[test]
@@ -720,8 +725,7 @@ fn switching_back_restores_link_status() {
     assert!(h.query_by_label("1 source file not found").is_none());
     h.get_by_role_and_label(Role::Button, "Untitled 1 *")
         .click();
-    h.run();
-    h.run();
+    wait_for_workers(&mut h);
     h.get_by_label("1 source file not found");
     h.get_by_label("Source file not found");
 }
@@ -744,7 +748,7 @@ fn agent_switching_in_a_loop_does_not_check_each_time() {
         .execute("document.new", json!({}), Origin::Agent)
         .unwrap();
     // The new document is checked once.
-    h.run();
+    wait_for_workers(&mut h);
     let first = app(&h).ui.prepare.sources.last_check;
     assert!(first.is_some());
     for _ in 0..3 {
@@ -833,15 +837,7 @@ fn huge_shapes_are_built_off_the_ui_thread() {
     assert_eq!(app(&h).ui.prepare.cache.building(), 1);
     assert!(app(&h).ui.prepare.cache.shape(doc, id).is_none());
     release.send(()).unwrap();
-    let start = std::time::Instant::now();
-    while app(&h).ui.prepare.cache.shape(doc, id).is_none() {
-        assert!(
-            start.elapsed() < std::time::Duration::from_secs(10),
-            "never built"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        h.run();
-    }
+    wait_built(&mut h, doc, id);
     assert_eq!(app(&h).ui.prepare.cache.building(), 0);
     let shape = app(&h).ui.prepare.cache.shape(doc, id).unwrap();
     assert!(!shape.lines.is_empty());
@@ -928,7 +924,11 @@ fn source_checks_hash_on_a_worker_thread() {
     let seen = threads.clone();
     let mut h = harness_with(&dir, s.clone(), move |app| {
         app.with_source_check(move |session| {
-            seen.lock().unwrap().push(std::thread::current().id());
+            let me = std::thread::current();
+            seen.lock()
+                .unwrap()
+                .push((me.id(), me.name().map(str::to_string)));
+            std::thread::sleep(worker_delay());
             flatcraft_engine::commands::sources::check_unlocked(session)
         })
     });
@@ -939,8 +939,14 @@ fn source_checks_hash_on_a_worker_thread() {
     let threads = threads.lock().unwrap();
     assert!(!threads.is_empty());
     assert!(
-        threads.iter().all(|t| *t != ui_thread),
+        threads.iter().all(|(t, _)| *t != ui_thread),
         "hashing ran on the UI thread"
+    );
+    assert!(
+        threads
+            .iter()
+            .all(|(_, name)| name.as_deref() == Some("source-check")),
+        "hashing ran on the source-check worker: {threads:?}"
     );
 }
 
@@ -958,16 +964,11 @@ fn zigzag(s: &SharedSession) -> u64 {
 }
 
 fn wait_built(h: &mut AppHarness, doc: u64, id: u64) {
-    let start = std::time::Instant::now();
-    while app(h).ui.prepare.cache.building() > 0 || app(h).ui.prepare.cache.shape(doc, id).is_none()
-    {
-        assert!(
-            start.elapsed() < std::time::Duration::from_secs(10),
-            "never built"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        h.run();
-    }
+    wait_for_workers(h);
+    assert!(
+        app(h).ui.prepare.cache.shape(doc, id).is_some(),
+        "never built"
+    );
 }
 
 #[test]
@@ -1366,7 +1367,6 @@ fn no_source_check_during_a_drag() {
     assert!(app(&h).ui.prepare.sources.missing.is_empty());
     assert!(app(&h).ui.prepare.sources.check_pending);
     h.drop_at(from + Vec2::new(30.0, 0.0));
-    h.run();
-    h.run();
+    wait_for_workers(&mut h);
     assert_eq!(app(&h).ui.prepare.sources.missing, [id]);
 }
