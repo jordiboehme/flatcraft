@@ -703,8 +703,24 @@ fn run_relink(s: &mut Session, p: RelinkParams, _: Origin) -> Result<Value, Comm
     };
     let mut warnings = Vec::new();
     let (mut reloaded, mut unchanged, mut failed) = (vec![], vec![], vec![]);
+    // Objects relinked so far, linked copies included.
+    let mut moved: Vec<ObjectId> = Vec::new();
     for (id, path) in &items {
-        match relink_one(s, *id, path, &mut warnings) {
+        if moved.contains(id) {
+            // Its group was relinked by an earlier item; a second path for
+            // the same shared link would undo that one.
+            let e = CommandError::InvalidParams(format!(
+                "object {} is a linked copy of an object this call relinked already",
+                id.0
+            ));
+            failed.push(json!({ "id": id.0, "path": path, "reason": e.to_string() }));
+            continue;
+        }
+        let outcome = relink_one(s, *id, path, &mut warnings);
+        if outcome.is_ok() {
+            moved.extend(s.doc().document.members(*id));
+        }
+        match outcome {
             // Linked copies share the link, so all members moved.
             Ok(true) => reloaded.extend(s.doc().document.members(*id)),
             Ok(false) => unchanged.extend(s.doc().document.members(*id)),
@@ -771,7 +787,7 @@ command!(
     mutates: true,
     params: RelinkParams,
     run: run_relink,
-    description: "Points an object's link to a file at a new location (after it was moved or renamed) and reloads it from there, keeping position, scale, rotation, mirror, cut options, name and visibility. An unlinked object gets a link. Linked copies (see object.copies) share the link, so relinking one relinks all members of its group, and all of them are listed. The file must exist and match the object's kind (.svg/.svgz for SVG objects, .png/.jpg/.jpeg/.webp/.gif for traced images); a file that cannot be read or parsed fails the call and changes nothing. One undo step. items: [{id, path}] instead of id and path relinks several objects in one undo step (for example the also_found list); an item that fails changes nothing and is listed in failed: [{id, path, reason}], the others are still relinked, and the call never fails because of an item (with one item too). Returns {reloaded: [id] (the content changed), unchanged: [id] (same content, only the link moved), also_found: [{id, path}] (other objects whose file is missing but whose file name exists in the new folder; relink them too, in one call with items), warnings: [text]}, plus failed with items.",
+    description: "Points an object's link to a file at a new location (after it was moved or renamed) and reloads it from there, keeping position, scale, rotation, mirror, cut options, name and visibility. An unlinked object gets a link. Linked copies (see object.copies) share the link, so relinking one relinks all members of its group, and all of them are listed; with items, a later item for another member of a group relinked earlier in the call is listed in failed. The file must exist and match the object's kind (.svg/.svgz for SVG objects, .png/.jpg/.jpeg/.webp/.gif for traced images); a file that cannot be read or parsed fails the call and changes nothing. One undo step. items: [{id, path}] instead of id and path relinks several objects in one undo step (for example the also_found list); an item that fails changes nothing and is listed in failed: [{id, path, reason}], the others are still relinked, and the call never fails because of an item (with one item too). Returns {reloaded: [id] (the content changed), unchanged: [id] (same content, only the link moved), also_found: [{id, path}] (other objects whose file is missing but whose file name exists in the new folder; relink them too, in one call with items), warnings: [text]}, plus failed with items.",
 );
 
 // ---------------------------------------------------------------- unlink

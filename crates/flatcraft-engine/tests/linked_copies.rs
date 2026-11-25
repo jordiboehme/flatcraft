@@ -741,7 +741,7 @@ fn save_and_open_keep_the_group_and_store_the_source_once() {
 }
 
 #[test]
-fn open_refuses_a_member_whose_group_is_missing_and_repairs_disagreeing_fields() {
+fn open_refuses_a_member_whose_group_is_missing_and_the_group_wins_over_its_own_fields() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = session(dir.path());
     let id = import_text(&mut s);
@@ -825,4 +825,38 @@ fn first_path_points(o: &Object) -> Vec<Point> {
         .iter()
         .filter_map(|e| e.end_point())
         .collect()
+}
+
+#[test]
+fn relink_items_relink_a_group_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(dir.path());
+    let file = dir.path().join("a/art.svg");
+    write(&file, svg(false, 0));
+    let id = import_file(&mut s, &file);
+    let all = linked(&mut s, id, 2);
+    let one = dir.path().join("b/art.svg");
+    let two = dir.path().join("c/art.svg");
+    write(&one, svg(true, 0));
+    write(&two, svg(false, 0));
+    let r = run(
+        &mut s,
+        "object.relink",
+        json!({ "items": [{ "id": all[0], "path": one }, { "id": all[2], "path": two }] }),
+    );
+    // Every member once; the second item would move the group again.
+    assert_eq!(ids(&r["reloaded"]), all, "{r}");
+    let failed = r["failed"].as_array().unwrap();
+    assert_eq!(failed.len(), 1, "{r}");
+    assert_eq!(failed[0]["id"], all[2]);
+    assert!(
+        failed[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("linked copy"),
+        "{r}"
+    );
+    for &m in &all {
+        assert_eq!(obj(&s, m).link.as_ref().unwrap().path, one);
+    }
 }
