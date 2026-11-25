@@ -19,8 +19,11 @@ pub const SWIVEL_MAX_DEG: f64 = 90.0;
 /// The first radius tried for the arc lead-in (pinned by Task 10).
 pub const HOLE_LEAD_IN_RADIUS_MM: f64 = 2.0;
 
-/// The angle between two axis points of an arc (pinned by Task 10).
-pub const ARC_STEP_DEG: f64 = 15.0;
+/// The angle between two axis points of an arc. Provisional: Task 10's
+/// `arc_step_choice` sweep must include 180 deg turns and may only pick a
+/// step that keeps every turn up to 180 deg within `ALGORITHM_LIMIT_MM`.
+/// At 10 deg a 180 deg pivot measures 0.0026 mm (15 deg measured 0.0058).
+pub const ARC_STEP_DEG: f64 = 10.0;
 
 /// The start error a lead-in aims for: the same value as
 /// `flatcraft_sim::ALGORITHM_LIMIT_MM`, which this crate cannot see.
@@ -75,10 +78,17 @@ pub const MIN_HOLE_LEAD_IN_RADIUS_MM: f64 = 0.5;
 /// Axis points closer than this are one point.
 const SAME_POINT_MM: f64 = 1e-9;
 
-/// The largest spacing of the samples of a waste check. At most twice
-/// [`WASTE_CLEARANCE_MM`], so a move that crosses a cut always has a
-/// sample within the clearance of it.
-const CHECK_STEP_MM: f64 = 0.05;
+/// The largest spacing of the samples of a waste check, along the planned
+/// tip path. It holds two guarantees for a move that crosses kept
+/// material at any angle:
+/// - Farther than 2d from the join, a crossed cut has a sample within
+///   `CHECK_STEP_MM / 2` of it, which is below [`WASTE_CLEARANCE_MM`], so
+///   the clearance test refuses the move.
+/// - Within 2d of the join, where a sample may touch kept material by up
+///   to [`ALGORITHM_LIMIT_MM`], a kept sliver at least
+///   `2 * ALGORITHM_LIMIT_MM + CHECK_STEP_MM` (0.03 mm) wide has a sample
+///   deeper than that in it, so the move is refused.
+const CHECK_STEP_MM: f64 = 0.02;
 
 /// Apply the knife stage to the ordered `paths` (after passes).
 ///
@@ -161,35 +171,52 @@ pub fn end_state(paths: &[Toolpath], home: Point, start_heading: Vec2) -> (Point
 /// `min_radius_mm`. The local radius at a vertex is
 /// `((|seg_in| + |seg_out|) / 2) / turn`, with the turn in radians. A run of
 /// neighbouring vertices below the limit (a flattened arc) is one spot, at
-/// half its length. A path that ends where it starts also has its start
-/// vertex checked. Used for warnings in every mode.
+/// half its length. A path that ends where it starts is a ring: its start
+/// vertex is checked too, and a run across the start is one spot. Used for
+/// warnings in every mode.
 pub fn min_radius_spots(points: &[Point], min_radius_mm: f64) -> Vec<Point> {
     let n = points.len();
     if n < 3 {
         return Vec::new();
     }
-    let ring = points[0] == points[n - 1];
-    let tight = |prev: Point, v: Point, next: Point| {
-        let (a, b) = (v - prev, next - v);
+    let ring = n > 3 && points[0] == points[n - 1];
+    // The vertices and their neighbours: every ring vertex, or the
+    // interior vertices of a polyline.
+    let m = if ring { n - 1 } else { n - 2 };
+    let vertex = |k: usize| if ring { k } else { k + 1 };
+    let at = |k: usize| points[vertex(k)];
+    let tight = |k: usize| {
+        let v = vertex(k);
+        let prev = if v == 0 { points[n - 2] } else { points[v - 1] };
+        let next = points[v + 1];
+        let (a, b) = (points[v] - prev, next - points[v]);
         let turn = a.cross(b).atan2(a.dot(b)).abs();
         turn > 0.0 && (a.hypot() + b.hypot()) / 2.0 / turn < min_radius_mm
     };
-    let mut spots = Vec::new();
-    if ring && n > 3 && tight(points[n - 2], points[0], points[1]) {
-        spots.push(points[0]);
+    let flags: Vec<bool> = (0..m).map(tight).collect();
+    if ring && flags.iter().all(|&f| f) {
+        return vec![halfway(points)];
     }
-    let mut j = 1;
-    while j < n - 1 {
-        if !tight(points[j - 1], points[j], points[j + 1]) {
-            j += 1;
-            continue;
+    // On a ring, start the scan after a vertex that is not tight, so a run
+    // never splits at the start.
+    let first = if ring {
+        flags.iter().position(|&f| !f).map_or(0, |k| k + 1)
+    } else {
+        0
+    };
+    let mut spots = Vec::new();
+    let mut run: Vec<Point> = Vec::new();
+    for q in 0..m {
+        let k = (first + q) % m;
+        if flags[k] {
+            run.push(at(k));
+        } else if !run.is_empty() {
+            spots.push(halfway(&run));
+            run.clear();
         }
-        let first = j;
-        while j + 1 < n - 1 && tight(points[j], points[j + 1], points[j + 2]) {
-            j += 1;
-        }
-        spots.push(halfway(&points[first..=j]));
-        j += 1;
+    }
+    if !run.is_empty() {
+        spots.push(halfway(&run));
     }
     spots
 }
@@ -377,7 +404,7 @@ impl Knife<'_> {
                 waste_corner: self.start_is_waste_corner(t, area, t0),
             }
         };
-        let closing = closing_vertex(t);
+        let (lead_end, closing) = lift_exempt(t);
 
         let mut runs = Vec::new();
         let mut run = Run::default();
@@ -392,12 +419,14 @@ impl Knife<'_> {
             let lift = match self.corner {
                 CornerMode::LiftOvershoot { overshoot_mm } => (t.closed
                     && turn.abs().to_degrees() >= CORNER_DEG
-                    && !(i + 1..=j).contains(&closing)
+                    && j < closing
+                    && lead_end.is_none_or(|end| i + 1 > end)
                     && waste_side(t.keep, area, ti, tj)
                     && self.overshoot_ok(v, ti, overshoot_mm))
                 .then_some(overshoot_mm),
                 CornerMode::Arc => None,
             };
+            let lift = lift.filter(|&e| self.in_area(v + (e + d) * ti));
             if let Some(e) = lift {
                 run.push(v + (e + d) * ti, WASTE_SEG);
                 runs.push(std::mem::take(&mut run).finish());
@@ -508,12 +537,27 @@ impl Knife<'_> {
         if !ok {
             return false;
         }
-        run.push(td + d * h, WASTE_SEG);
+        let mut moves = Run::default();
+        moves.push(td + d * h, WASTE_SEG);
         if theta - thr > 0.0 {
-            self.arc(run, td, h, h2, WASTE_SEG);
+            self.arc(&mut moves, td, h, h2, WASTE_SEG);
         }
-        run.push(a1, WASTE_SEG);
-        run.push(p0 + d * t0, WASTE_SEG);
+        moves.push(a1, WASTE_SEG);
+        self.take(run, moves, p0, t0)
+    }
+
+    /// Append the waste axis points `moves` and then `p0 + d * t0` to
+    /// `run`, if every one of `moves` lies in the cutting area: the device
+    /// addresses the axis, not the tip. Otherwise push nothing and return
+    /// false, so the next option is tried.
+    fn take(&self, run: &mut Run, moves: Run, p0: Point, t0: Vec2) -> bool {
+        if !moves.points.iter().all(|&q| self.in_area(q)) {
+            return false;
+        }
+        for q in moves.points {
+            run.push(q, WASTE_SEG);
+        }
+        run.push(p0 + self.d * t0, WASTE_SEG);
         true
     }
 
@@ -546,16 +590,18 @@ impl Knife<'_> {
                 if !ok {
                     continue;
                 }
-                run.push(td + d * h, WASTE_SEG);
-                self.arc(run, td, h, dir(quarter), WASTE_SEG);
+                let mut moves = Run::default();
+                moves.push(td + d * h, WASTE_SEG);
+                self.arc(&mut moves, td, h, dir(quarter), WASTE_SEG);
                 let step = hole_arc_step_deg(rho, self.hs.arc_step_deg);
                 let m = (90.0 / step).ceil().max(1.0) as usize;
                 for k in 1..m {
                     let a = quarter * (1.0 - k as f64 / m as f64);
-                    run.push(tip(a) + d * dir(a), WASTE_SEG);
+                    moves.push(tip(a) + d * dir(a), WASTE_SEG);
                 }
-                run.push(p0 + d * t0, WASTE_SEG);
-                return true;
+                if self.take(run, moves, p0, t0) {
+                    return true;
+                }
             }
             rho /= 2.0;
         }
@@ -614,39 +660,39 @@ pub fn hole_arc_step_deg(rho: f64, arc_step_deg: f64) -> f64 {
     arc_step_deg.min(2.0 * cos.acos().to_degrees())
 }
 
-/// The index in `points` of the closing vertex of a closed ring: the end
-/// of the last lap when the overcut follows it. `usize::MAX` when there is
-/// none (an open path, no overcut, or a reversed pass, whose lap ends the
-/// toolpath).
-fn closing_vertex(t: &Toolpath) -> usize {
+/// The vertices of a closed ring where LiftOvershoot does not apply, as
+/// `(lead_end, closing)` indices into `points`:
+///
+/// - Every vertex at or after `closing`, the end of the last lap when the
+///   overcut follows it (Ruling F7): the overcut stays in Arc mode, also
+///   where it runs past a short first segment. `usize::MAX` when there is
+///   none (an open path, no overcut, or a reversed pass, whose lap ends
+///   the toolpath).
+/// - In a reversed pass, which starts with its overcut stretch before the
+///   lap, every vertex up to and including `lead_end`, the lap start where
+///   the overcut joins the ring. `None` when the lap starts the toolpath.
+fn lift_exempt(t: &Toolpath) -> (Option<usize>, usize) {
     if !t.closed {
-        return usize::MAX;
+        return (None, usize::MAX);
     }
+    let lead_end = (t.lap_range.start > 0).then_some(t.lap_range.start);
     let lap = t.lap_range.len().saturating_sub(1);
     let end = t.lap_range.start + t.laps as usize * lap;
-    if end + 1 < t.points.len() {
+    let closing = if end + 1 < t.points.len() {
         end
     } else {
         usize::MAX
-    }
+    };
+    (lead_end, closing)
 }
 
 /// Whether the forward extension of `t_in` past a vertex where the path
 /// turns to `t_out` lies in waste, for a ring of signed area `area` kept
-/// on side `keep`: outside the ring at a convex vertex, inside it at a
-/// concave one (the rule of `rings::extension_in_waste`). An open path
-/// (`KeepSide::Both`) has no waste side.
+/// on side `keep` ([`rings::waste_extension`], the rule of
+/// `rings::extension_in_waste`). An open path (`KeepSide::Both`) has no
+/// waste side.
 fn waste_side(keep: KeepSide, area: f64, t_in: Vec2, t_out: Vec2) -> bool {
-    let cross = t_in.cross(t_out);
-    if cross == 0.0 || area == 0.0 {
-        return false;
-    }
-    let convex = (cross > 0.0) == (area > 0.0);
-    match keep {
-        KeepSide::Inside => convex,
-        KeepSide::Outside => !convex,
-        KeepSide::Both => false,
-    }
+    rings::waste_extension(t_in.cross(t_out), area, keep)
 }
 
 #[cfg(test)]
@@ -758,8 +804,9 @@ mod tests {
             let on: Vec<usize> = (0..run.points.len())
                 .filter(|&k| (run.points[k].distance(v) - D).abs() < 1e-9)
                 .collect();
-            // The segment end plus 90 / 15 arc points.
-            assert_eq!(on.len(), 7, "vertex {j}: {on:?}");
+            // The segment end plus 90 / ARC_STEP_DEG arc points.
+            let arc = (90.0 / ARC_STEP_DEG).ceil() as usize;
+            assert_eq!(on.len(), 1 + arc, "vertex {j}: {on:?}");
             assert!(on.iter().all(|&k| run.seg[k] == j as u32 - 1));
             for w in on.windows(2) {
                 let (a, b) = (run.points[w[0]] - v, run.points[w[1]] - v);
@@ -1014,6 +1061,59 @@ mod tests {
             );
             assert!(max_step.to_degrees() <= ARC_STEP_DEG + 1e-9);
         }
+    }
+
+    /// The vertex index where run `r` lifts: the end of its last path move.
+    fn lift_index(run: &AxisRun) -> usize {
+        let last = run.seg.iter().rposition(|&s| s != WASTE_SEG).unwrap();
+        run.seg[last] as usize + 1
+    }
+
+    /// Ruling F7: no lift inside the overcut, even where it runs past a
+    /// first segment shorter than itself.
+    #[test]
+    fn no_lift_inside_the_overcut() {
+        let mut ring = Toolpath::new(
+            vec![
+                p(10.0, 10.0),
+                p(10.3, 10.0),
+                p(10.3, 20.0),
+                p(10.0, 20.0),
+                p(10.0, 10.0),
+            ],
+            true,
+            source(),
+        );
+        ring.keep = KeepSide::Inside;
+        let ring = crate::passes::chain(vec![ring], 1, false, 0.5).remove(0);
+        // The overcut runs over the 0.3 mm first segment and its corner.
+        assert_eq!(ring.points.len(), 7);
+        let s = PipelineSettings {
+            corner_mode: CornerMode::LiftOvershoot { overshoot_mm: 0.1 },
+            ..host(0.0)
+        };
+        let out = applied(vec![ring], &s, Vec2::new(0.0, -1.0));
+        let runs = out[0].axis.as_ref().unwrap();
+        let lifts: Vec<usize> = runs[..runs.len() - 1].iter().map(lift_index).collect();
+        // The three lap corners after the start lift; the closing vertex
+        // (4) and the corner inside the overcut (5) do not.
+        assert_eq!(lifts, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn min_radius_run_across_a_ring_start_is_one_spot() {
+        // A square with one corner rounded at r = 0.2, closed. The ring
+        // starts in the middle of the tight arc.
+        let (corner, mid) = rounded_corner(0.2);
+        let arc: Vec<Point> = corner[1..corner.len() - 1].to_vec();
+        let k = arc.len() / 2;
+        let mut ring: Vec<Point> = arc[k..].to_vec();
+        ring.extend([p(50.2, 70.0), p(30.0, 70.0), p(30.0, 49.8)]);
+        ring.extend_from_slice(&arc[..k]);
+        ring.push(ring[0]);
+        let spots = min_radius_spots(&ring, 0.25);
+        assert_eq!(spots.len(), 1, "{spots:?}");
+        assert!(spots[0].distance(mid) <= 0.05, "{spots:?} vs {mid:?}");
     }
 
     /// A line, a 90 deg arc of radius `r` flattened at 0.01 mm, a line.

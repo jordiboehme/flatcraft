@@ -113,7 +113,17 @@ pub fn extension_in_waste(ring: &[Point], i: usize, keep: KeepSide) -> bool {
         return false;
     }
     let i = i % ring.len();
-    let (cross, area) = (corner_cross(ring, i), signed_area(ring));
+    waste_extension(corner_cross(ring, i), signed_area(ring), keep)
+}
+
+/// The rule behind [`extension_in_waste`], shared with the knife stage so
+/// the two cannot drift: at a vertex whose incoming and outgoing tangents
+/// have cross product `cross`, on a ring of signed area `area` kept on
+/// side `keep`, the forward extension of the incoming edge lies in waste.
+/// It lies outside the ring at a convex vertex (the turn has the sign of
+/// the area) and inside it at a concave one. A straight vertex, a ring
+/// with no area and `KeepSide::Both` give false.
+pub fn waste_extension(cross: f64, area: f64, keep: KeepSide) -> bool {
     if cross == 0.0 || area == 0.0 {
         return false;
     }

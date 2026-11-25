@@ -398,33 +398,237 @@ fn cell(kind: u8, x: f64, y: f64, size: f64, inset: f64, object: u64) -> Vec<Pla
     paths.into_iter().map(|b| placed(object, b)).collect()
 }
 
-proptest! {
-    #![proptest_config(fixed(24))]
+/// How a run starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Branch {
+    Swivel,
+    LeadIn,
+    HoleArc,
+}
 
-    #[test]
-    fn waste_moves_never_touch_kept_material(
-        cells in prop::collection::vec((0u8..5, 4.0..12.0f64, 0.0..1.0f64), 2..7),
-        start in 0.0..360.0f64,
-        lift in any::<bool>(),
-        passes in 1u32..3,
-    ) {
-        // A row of objects 0.5 mm apart, some with holes and pieces in
-        // their holes.
-        let mut input = Vec::new();
-        let mut x = 20.0;
-        for (k, &(kind, size, frac)) in cells.iter().enumerate() {
-            let inset = 0.5 + frac * (size / 4.0 - 0.5);
-            input.extend(cell(kind, x, 20.0, size, inset, k as u64 + 1));
-            x += size + 0.5;
-        }
-        let s = PipelineSettings {
-            start_heading: heading(start),
-            passes,
-            ..host(if lift { LIFT } else { CornerMode::Arc })
-        };
-        let (_, _, m) = planned(&input, &s);
-        prop_assert_eq!(m.max_into_kept_mm, 0.0);
+/// The alignment branch run `r` of `t` took: every alignment point on the
+/// circle of radius d round P0 is a swivel, a last move along t0 of at
+/// least 2d is a lead-in, anything else is the arc lead-in.
+fn branch(t: &Toolpath, r: usize) -> Branch {
+    let (p0, t0, at) = run_start(t, r);
+    let run = &runs(t)[r];
+    if run.points[..=at]
+        .iter()
+        .all(|q| (q.distance(p0) - D).abs() < 1e-9)
+    {
+        return Branch::Swivel;
     }
+    let last = run.points[at] - run.points[at - 1];
+    if last.cross(t0).abs() < 1e-9 && last.dot(t0) >= 2.0 * D - 1e-9 {
+        Branch::LeadIn
+    } else {
+        Branch::HoleArc
+    }
+}
+
+/// Random nestings plus neighbours 0.5 mm apart: no waste move touches
+/// kept material. The fixed cases reach both the lead-in and the arc
+/// lead-in, so the check is not vacuous for either.
+#[test]
+fn waste_moves_never_touch_kept_material() {
+    use proptest::test_runner::TestRunner;
+    let strategy = (
+        prop::collection::vec((0u8..5, 4.0..12.0f64, 0.0..1.0f64), 2..7),
+        0.0..360.0f64,
+        any::<bool>(),
+        1u32..3,
+    );
+    let seen = std::cell::RefCell::new(Vec::new());
+    let mut runner = TestRunner::new(fixed(24));
+    runner
+        .run(&strategy, |(cells, start, lift, passes)| {
+            // A row of objects 0.5 mm apart, some with holes and pieces in
+            // their holes.
+            let mut input = Vec::new();
+            let mut x = 20.0;
+            for (k, &(kind, size, frac)) in cells.iter().enumerate() {
+                let inset = 0.5 + frac * (size / 4.0 - 0.5);
+                input.extend(cell(kind, x, 20.0, size, inset, k as u64 + 1));
+                x += size + 0.5;
+            }
+            let s = PipelineSettings {
+                start_heading: heading(start),
+                passes,
+                ..host(if lift { LIFT } else { CornerMode::Arc })
+            };
+            let (out, _, m) = planned(&input, &s);
+            for t in &out.toolpaths {
+                for r in 0..runs(t).len() {
+                    seen.borrow_mut().push(branch(t, r));
+                }
+            }
+            prop_assert_eq!(m.max_into_kept_mm, 0.0);
+            Ok(())
+        })
+        .unwrap();
+    for b in [Branch::LeadIn, Branch::HoleArc, Branch::Swivel] {
+        assert!(seen.borrow().contains(&b), "no {b:?} in the fixed cases");
+    }
+}
+
+/// Reversed passes start on their overcut. The vertices inside it, up to
+/// the lap start, never lift, so no run is a short stub.
+#[test]
+fn reversed_passes_keep_their_overcut_in_one_run() {
+    for corner in [CornerMode::Arc, LIFT] {
+        let s = PipelineSettings {
+            passes: 2,
+            reverse_alternate_passes: true,
+            ..host(corner)
+        };
+        let input = [
+            placed(1, l_shape()),
+            placed(2, rect_path(50.0, 10.0, 0.3, 10.0)),
+        ];
+        let (out, trace, m) = planned(&input, &s);
+        assert_eq!(out.toolpaths.len(), 4);
+        assert_starts_aligned(&out.toolpaths, &trace);
+        assert_eq!(m.pushed, 0, "{corner:?}");
+        assert_eq!(m.max_into_kept_mm, 0.0, "{corner:?}");
+        let shortest = s.overcut_mm + 2.0 * D;
+        for (i, t) in out.toolpaths.iter().enumerate() {
+            for (r, run) in runs(t).iter().enumerate() {
+                let len: f64 = run.points.windows(2).map(|w| w[0].distance(w[1])).sum();
+                assert!(len >= shortest, "{corner:?} toolpath {i} run {r}: {len}");
+            }
+        }
+    }
+}
+
+/// An exact hairpin with a pivot threshold above 0 still gets its arc: the
+/// tip stays on the vertex while the blade turns, and nothing is pushed.
+#[test]
+fn hairpin_with_a_pivot_threshold_turns_on_the_vertex() {
+    let s = PipelineSettings {
+        compensation: Compensation::Host(HostSettings::new(D, 2.0)),
+        ..PipelineSettings::with_defaults(area(), Point::ZERO)
+    };
+    let v = p(30.0, 10.0);
+    let line = Toolpath::new(vec![p(10.0, 10.0), v, p(10.0, 10.0)], false, source(1));
+    let h = Vec2::new(1.0, 0.0);
+    let out = applied(vec![line], &s, h);
+    let (trace, m) = simulated(&out, p(0.0, 0.0), h);
+    assert_eq!(m.pushed, 0);
+    let samples = &trace.samples;
+    let arrive = samples
+        .iter()
+        .position(|x| x.down && x.axis.distance(v + D * h) < 1e-9)
+        .unwrap();
+    let leave = arrive
+        + samples[arrive..]
+            .iter()
+            .position(|x| x.axis.distance(v - D * h) < 1e-9)
+            .unwrap();
+    assert!(leave > arrive + 6);
+    for x in &samples[arrive..=leave] {
+        assert!(
+            x.tip.distance(v) <= ALGORITHM_LIMIT_MM,
+            "{}",
+            x.tip.distance(v)
+        );
+    }
+    assert!(m.max_correspondence_mm <= ALGORITHM_LIMIT_MM);
+}
+
+/// A turn at or below the pivot threshold gets no arc, and the tip then
+/// strays as the model predicts: the axis leaves the vertex d * sin(theta)
+/// off the next segment's axis line, and the trailing tip deviates by just
+/// under that. With an arc the same turn stays within the limit.
+#[test]
+fn skipped_pivots_deviate_as_the_model_predicts() {
+    for deg in [1.0f64, 2.0, 5.0, 10.0] {
+        let a = deg.to_radians();
+        let pts = vec![
+            p(10.0, 10.0),
+            p(30.0, 10.0),
+            p(30.0, 10.0) + 20.0 * heading(deg),
+        ];
+        let line = Toolpath::new(pts, false, source(1));
+        let measured = |threshold: f64| {
+            let s = PipelineSettings {
+                compensation: Compensation::Host(HostSettings::new(D, threshold)),
+                ..PipelineSettings::with_defaults(area(), Point::ZERO)
+            };
+            let h = Vec2::new(1.0, 0.0);
+            let out = applied(vec![line.clone()], &s, h);
+            let (_, m) = simulated(&out, p(0.0, 0.0), h);
+            assert_eq!(m.pushed, 0);
+            m.max_correspondence_mm
+        };
+        let predicted = D * a.sin();
+        let skipped = measured(20.0);
+        assert!(
+            (0.9 * predicted..=predicted).contains(&skipped),
+            "{deg} deg: {skipped} vs {predicted}"
+        );
+        assert!(measured(0.0) <= ALGORITHM_LIMIT_MM, "{deg} deg");
+    }
+}
+
+/// The device addresses the axis: an overshoot whose axis would leave the
+/// cutting area is refused, and the corner gets its arc instead. A ring
+/// 0.2 mm from the right edge of the grid.
+#[test]
+fn waste_axis_points_stay_in_the_cutting_area() {
+    for corner in [CornerMode::Arc, LIFT] {
+        let input = [placed(1, rect_path(289.8, 100.0, 10.0, 10.0))];
+        let s = PipelineSettings {
+            start_heading: heading(150.0),
+            ..host(corner)
+        };
+        let (out, trace, m) = planned(&input, &s);
+        let t = &out.toolpaths[0];
+        // Axis points off the grid are only the ones every compensated
+        // path has: within d of a path vertex.
+        for run in runs(t) {
+            for q in &run.points {
+                if !area().contains(*q) {
+                    let near = t.points.iter().any(|v| v.distance(*q) <= D + 1e-9);
+                    assert!(near, "{corner:?}: {q:?} is off the grid");
+                }
+            }
+        }
+        assert_starts_aligned(&out.toolpaths, &trace);
+        assert_eq!(m.max_into_kept_mm, 0.0);
+    }
+}
+
+/// Within 2d of the join the check samples finely enough that a kept
+/// sliver 0.05 mm wide across the lead-in cannot fall between samples.
+#[test]
+fn a_thin_kept_sliver_near_the_join_refuses_the_lead_in() {
+    let mut ring = square_ring(10.0, 10.0, 10.0, 1);
+    ring.keep = KeepSide::Inside;
+    // A separate piece 0.05 mm wide, 0.25 mm before the start corner,
+    // across the backward extension of the first segment.
+    let mut sliver = Toolpath::new(
+        vec![
+            p(9.7, 9.0),
+            p(9.75, 9.0),
+            p(9.75, 11.0),
+            p(9.7, 11.0),
+            p(9.7, 9.0),
+        ],
+        true,
+        source(2),
+    );
+    sliver.keep = KeepSide::Inside;
+    let h = heading(135.0);
+    let out = applied(vec![ring, sliver], &host(CornerMode::Arc), h);
+    assert_ne!(branch(&out[0], 0), Branch::LeadIn);
+    let (trace, m) = simulated(&out, p(0.0, 0.0), h);
+    for x in trace.samples.iter().filter(|x| x.down && x.toolpath == 0) {
+        let inside = x.tip.x > 9.7 + ALGORITHM_LIMIT_MM
+            && x.tip.x < 9.75 - ALGORITHM_LIMIT_MM
+            && (9.0..=11.0).contains(&x.tip.y);
+        assert!(!inside, "{:?}", x.tip);
+    }
+    assert_eq!(m.max_into_kept_mm, 0.0);
 }
 
 #[test]
