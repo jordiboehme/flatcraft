@@ -914,10 +914,7 @@ fn job_counts_fills_without_area() {
     let r = run(&mut s, "job.preview", json!({}));
     assert_eq!(r["toolpaths"], 1, "{r}");
     let warnings = r["warnings"].to_string();
-    assert!(
-        warnings.contains("1 filled paths have no area"),
-        "{warnings}"
-    );
+    assert!(warnings.contains("1 filled path has no area"), "{warnings}");
 }
 
 // ---------------------------------------------------------------- thin lines on default fills (fix round 3)
@@ -1040,7 +1037,7 @@ fn fill_only_sliver_below_tolerance_is_dropped() {
     let warnings = r["warnings"].to_string();
     assert!(
         warnings.contains(
-            "'sliver': 1 filled paths have no area or are thinner than the cut tolerance (0.01 mm) and are not cut."
+            "'sliver': 1 filled path has no area or is thinner than the cut tolerance (0.01 mm) and is not cut."
         ),
         "{warnings}"
     );

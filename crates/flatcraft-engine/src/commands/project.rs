@@ -342,26 +342,40 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
                 o.name
             ));
         }
-        match &o.source {
+        let rebuilt = match &o.source {
             Source::Svg { bytes, .. } => match import_svg(bytes, fonts::system_fonts()) {
                 Ok(import) => {
                     for w in &import.warnings {
                         warnings.push(format!("{}: {}", o.name, warning_text(w)));
                     }
-                    o.set_geometry(import.paths);
-                    o.frame = import.page_frame_mm;
+                    Some((import.paths, import.page_frame_mm))
                 }
-                Err(e) => warnings.push(format!("{}: cannot rebuild the shape: {e}", o.name)),
+                Err(e) => {
+                    warnings.push(format!("{}: cannot rebuild the shape: {e}", o.name));
+                    None
+                }
             },
             Source::Raster { bytes, trace, .. } => {
                 let blade = blade_offset_for(s, &document.job.plotter_id);
                 match flatcraft_import::trace::trace(bytes, trace, blade) {
-                    Ok(t) => {
-                        o.set_geometry(t.paths);
-                        o.frame = Rect::new(0.0, 0.0, t.size_mm.0, t.size_mm.1);
+                    Ok(t) => Some((t.paths, Rect::new(0.0, 0.0, t.size_mm.0, t.size_mm.1))),
+                    Err(e) => {
+                        warnings.push(format!("{}: cannot trace the image: {e}", o.name));
+                        None
                     }
-                    Err(e) => warnings.push(format!("{}: cannot trace the image: {e}", o.name)),
                 }
+            }
+        };
+        if let Some((paths, frame)) = rebuilt {
+            if o.local_bounds == Rect::ZERO && o.frame == Rect::ZERO {
+                // A project from before the saved bounds: the transform
+                // was made against these same bounds.
+                o.set_geometry(paths);
+                o.frame = frame;
+            } else {
+                // The saved bounds and frame are what the transform was
+                // made against: keep the frame in place, as reload does.
+                o.set_geometry_anchored(paths, frame);
             }
         }
     }

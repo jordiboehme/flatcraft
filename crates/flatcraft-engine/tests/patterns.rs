@@ -541,6 +541,9 @@ fn test_patterns_writes_the_svg_atomically() {
     assert_eq!(r["svg_path"].as_str().unwrap(), path.to_str().unwrap());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), sheet_svg());
     assert!(s.doc().document.objects.is_empty());
+    // Only a file was written: the document is unchanged.
+    assert!(!s.doc().undo.can_undo());
+    assert!(!s.doc().dirty);
     let leftovers: Vec<_> = std::fs::read_dir(out.path()).unwrap().collect();
     assert_eq!(leftovers.len(), 1, "no temp file is left");
 }

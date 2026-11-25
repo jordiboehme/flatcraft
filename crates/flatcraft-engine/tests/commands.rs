@@ -1130,6 +1130,179 @@ fn retrace_keeps_the_image_frame_when_bounds_change_asymmetrically() {
     assert!((after.x1 - square_before.x1).abs() < 1e-6);
 }
 
+/// An all-black image: traced as is, it is one square; inverted, nothing.
+fn framed_square_png(dir: &tempfile::TempDir) -> std::path::PathBuf {
+    let img = image::GrayImage::from_pixel(300, 300, image::Luma([0]));
+    let path = dir.path().join("framed.png");
+    img.save(&path).unwrap();
+    path
+}
+
+#[test]
+fn retrace_from_an_empty_trace_keeps_the_image_frame() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = run(
+        &mut s,
+        "object.import",
+        json!({ "path": framed_square_png(&dir) }),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [id], "dx_mm": 40.0, "dy_mm": 30.0 }),
+    );
+    let before = placed_bounds(&s, id);
+    let r = run(
+        &mut s,
+        "object.retrace",
+        json!({ "id": id, "settings": { "invert": true } }),
+    );
+    assert!(
+        r["warnings"].to_string().contains("nothing was traced"),
+        "{r}"
+    );
+    run(
+        &mut s,
+        "object.retrace",
+        json!({ "id": id, "settings": {} }),
+    );
+    let after = placed_bounds(&s, id);
+    assert!(
+        (after.x0 - before.x0).abs() < 1e-6 && (after.y0 - before.y0).abs() < 1e-6,
+        "{after:?} {before:?}"
+    );
+}
+
+#[test]
+fn an_image_that_traces_to_nothing_is_placed_in_the_cutting_area() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let blank = dir.path().join("blank.png");
+    image::GrayImage::from_pixel(50, 50, image::Luma([255]))
+        .save(&blank)
+        .unwrap();
+    let id = run(&mut s, "object.import", json!({ "path": blank }))["id"]
+        .as_u64()
+        .unwrap();
+    // Traced again with a shape, the image frame sits where an image
+    // with shapes would have gone: at the top-left of the cutting area.
+    let r = run(
+        &mut s,
+        "object.retrace",
+        json!({ "id": id, "settings": { "invert": true } }),
+    );
+    let area = run(&mut s, "document.state", json!({}))["cutting_area_mm"].clone();
+    let b = placed_bounds(&s, id);
+    assert!(
+        (b.x0 - area["x0"].as_f64().unwrap()).abs() < 1e-6
+            && (b.y0 - area["y0"].as_f64().unwrap()).abs() < 1e-6,
+        "{b:?} {area} {r}"
+    );
+}
+
+/// The trace of a saved image can differ when the project is opened
+/// (other trace settings, another blade offset, a newer tracer). The image
+/// frame stays where it was, as object.retrace and object.reload keep it.
+#[test]
+fn project_open_keeps_the_image_frame_when_the_trace_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    // A big square plus a 30 px dot at the top-left; the dot is 2.5 mm.
+    let mut img = image::GrayImage::from_pixel(300, 300, image::Luma([255]));
+    for (x0, y0, size) in [(100u32, 100u32, 150u32), (10, 10, 30)] {
+        for y in y0..y0 + size {
+            for x in x0..x0 + size {
+                img.put_pixel(x, y, image::Luma([0]));
+            }
+        }
+    }
+    let png = dir.path().join("two.png");
+    img.save(&png).unwrap();
+    let id = run(&mut s, "object.import", json!({ "path": png }))["id"]
+        .as_u64()
+        .unwrap();
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [id], "degrees": 30.0 }),
+    );
+    let biggest = |o: &flatcraft_core::document::Object| {
+        o.placed_paths()
+            .iter()
+            .map(|c| kurbo::Shape::bounding_box(&c.path))
+            .max_by(|a, b| a.area().total_cmp(&b.area()))
+            .unwrap()
+    };
+    let before = biggest(s.doc().document.get(ObjectId(id)).unwrap());
+    let path = dir.path().join("p.flatcraft");
+    run(&mut s, "project.save", json!({ "path": path }));
+
+    // The dot is dropped when the project is opened.
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    v["objects"][0]["source"]["Raster"]["trace"]["min_feature_mm"] = json!(5.0);
+    std::fs::write(&path, v.to_string()).unwrap();
+    let mut s2 = session(&dir);
+    run(&mut s2, "project.open", json!({ "path": path }));
+    let o = s2.doc().document.get(ObjectId(id)).unwrap();
+    assert_eq!(o.geometry.len(), 1);
+    let after = biggest(o);
+    for (a, b) in [
+        (after.x0, before.x0),
+        (after.y0, before.y0),
+        (after.x1, before.x1),
+        (after.y1, before.y1),
+    ] {
+        assert!((a - b).abs() < 1e-6, "{after:?} {before:?}");
+    }
+}
+
+/// The same for an SVG: the page frame stays put when the shapes change
+/// (here: a project file whose embedded SVG lost a shape).
+#[test]
+fn project_open_keeps_the_svg_page_frame_when_the_shapes_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let two = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><rect x="10" y="10" width="5" height="5"/><rect x="50" y="40" width="30" height="20"/></svg>"#;
+    let one = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><rect x="50" y="40" width="30" height="20"/></svg>"#;
+    let id = run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": two, "name": "two" }),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [id], "degrees": 30.0 }),
+    );
+    let o = s.doc().document.get(ObjectId(id)).unwrap();
+    let before = kurbo::Shape::bounding_box(&o.placed_paths()[1].path);
+    let path = dir.path().join("p.flatcraft");
+    run(&mut s, "project.save", json!({ "path": path }));
+    use base64::Engine as _;
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    v["objects"][0]["source"]["Svg"]["bytes"] =
+        json!(base64::engine::general_purpose::STANDARD.encode(one));
+    std::fs::write(&path, v.to_string()).unwrap();
+    let mut s2 = session(&dir);
+    run(&mut s2, "project.open", json!({ "path": path }));
+    let o = s2.doc().document.get(ObjectId(id)).unwrap();
+    assert_eq!(o.geometry.len(), 1);
+    let after = kurbo::Shape::bounding_box(&o.placed_paths()[0].path);
+    for (a, b) in [
+        (after.x0, before.x0),
+        (after.y0, before.y0),
+        (after.x1, before.x1),
+        (after.y1, before.y1),
+    ] {
+        assert!((a - b).abs() < 1e-6, "{after:?} {before:?}");
+    }
+}
+
 #[test]
 fn big_raster_reports_the_downscale_and_wording_follows_invert() {
     let dir = tempfile::tempdir().unwrap();
@@ -1172,6 +1345,27 @@ fn big_raster_reports_the_downscale_and_wording_follows_invert() {
         json!({ "id": id, "settings": { "invert": true } }),
     );
     assert!(r["warnings"].to_string().contains("no light shape"), "{r}");
+}
+
+#[test]
+fn a_raster_larger_than_the_cutting_area_warns_at_import() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    // 4000 px at 300 dpi: a bar about 330 mm long, longer than any 12 inch mat.
+    let mut img = image::GrayImage::from_pixel(4000, 300, image::Luma([255]));
+    for y in 100..200 {
+        for x in 50..3950 {
+            img.put_pixel(x, y, image::Luma([0]));
+        }
+    }
+    let path = dir.path().join("long.png");
+    img.save(&path).unwrap();
+    let r = run(&mut s, "object.import", json!({ "path": path }));
+    let w = r["warnings"].to_string();
+    assert!(w.contains("larger than the cutting area"), "{w}");
+    // A small image gives no such warning.
+    let r = run(&mut s, "object.import", json!({ "path": square_png(&dir) }));
+    assert!(!r["warnings"].to_string().contains("cutting area"), "{r}");
 }
 
 #[test]

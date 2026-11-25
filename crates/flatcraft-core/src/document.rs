@@ -102,6 +102,10 @@ pub struct SourceLink {
 }
 
 /// A broken link loads as no link, so it never stops a project from opening.
+fn is_zero_rect(r: &Rect) -> bool {
+    *r == Rect::ZERO
+}
+
 fn lenient_link<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<SourceLink>, D::Error> {
     let value = Option::<serde_json::Value>::deserialize(d)?;
     Ok(value.and_then(|v| serde_json::from_value(v).ok()))
@@ -188,11 +192,20 @@ pub struct Object {
     pub link: Option<SourceLink>,
     #[serde(skip)]
     pub geometry: Arc<Vec<CutPath>>,
-    #[serde(skip)]
+    /// Saved in the project, empty geometry or not: the transform is
+    /// relative to its centre, so `project.open` needs it to keep the
+    /// object in place when the rebuilt geometry differs. Older projects
+    /// load `Rect::ZERO`.
+    #[serde(
+        default,
+        rename = "local_bounds_mm",
+        skip_serializing_if = "is_zero_rect"
+    )]
     pub local_bounds: Rect,
     /// The source's page frame in local mm (SVG page box, image pixel
-    /// frame). `Rect::ZERO` when unknown; see `anchor_frame`.
-    #[serde(skip)]
+    /// frame). `Rect::ZERO` when unknown; see `anchor_frame`. Saved in the
+    /// project for the same reason as `local_bounds`.
+    #[serde(default, rename = "frame_mm", skip_serializing_if = "is_zero_rect")]
     pub frame: Rect,
 }
 

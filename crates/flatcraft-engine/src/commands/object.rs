@@ -74,6 +74,8 @@ pub(crate) fn blade_offset_for(s: &Session, plotter_id: &str) -> f64 {
 /// Adds an object to the active document and selects it. It keeps its
 /// position from the source page if it lies inside the cutting area;
 /// otherwise its top-left corner goes to the top-left of the cutting area.
+/// An object without geometry (an image that traced to nothing) is placed
+/// by its frame instead, so a later retrace lands in the cutting area.
 /// `frame` is the source's page frame in local mm.
 fn add_object(
     s: &mut Session,
@@ -88,7 +90,14 @@ fn add_object(
     let o = object_mut(doc, id)?;
     o.frame = frame;
     o.transform.center_mm = o.local_bounds.center();
-    if let (Some(area), Some(b)) = (area, placed_bounds(o)) {
+    let placed = placed_bounds(o).or_else(|| {
+        (frame != Rect::ZERO).then(|| {
+            o.transform
+                .affine(o.local_bounds)
+                .transform_rect_bbox(frame)
+        })
+    });
+    if let (Some(area), Some(b)) = (area, placed) {
         let inside = b.x0 >= area.x0 && b.y0 >= area.y0 && b.x1 <= area.x1 && b.y1 <= area.y1;
         if !inside {
             translate(o, Point::new(area.x0, area.y0) - Point::new(b.x0, b.y0));
@@ -185,9 +194,28 @@ fn add_raster(
         t.paths,
         Rect::new(0.0, 0.0, t.size_mm.0, t.size_mm.1),
     )?;
+    let mut warnings = warnings;
+    warnings.extend(larger_than_area(s, id));
     let mut out = json!({ "id": id.0, "bounds_mm": bounds_json(s, id), "warnings": warnings });
     merge(&mut out, numbers);
     Ok((id, out))
+}
+
+/// A warning if the traced shapes of object `id` do not fit the cutting
+/// area in width or height, so no move can bring them inside.
+fn larger_than_area(s: &Session, id: ObjectId) -> Option<String> {
+    let area = cutting_area(s).ok()?;
+    let b = s.doc().document.get(id).and_then(placed_bounds)?;
+    const EPS: f64 = 1e-6;
+    (b.width() > area.width() + EPS || b.height() > area.height() + EPS).then(|| {
+        format!(
+            "The traced image is {:.0} x {:.0} mm, larger than the cutting area ({:.0} x {:.0} mm). Scale it down or pick a bigger mat before you cut.",
+            b.width(),
+            b.height(),
+            area.width(),
+            area.height()
+        )
+    })
 }
 
 fn merge(into: &mut Value, from: Value) {

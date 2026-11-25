@@ -233,8 +233,14 @@ pub fn build_input(input: &JobInput) -> Result<JobResult, CommandError> {
             }
         }
         if no_area > 0 {
+            let what = if no_area == 1 {
+                "1 filled path has no area or is thinner than the cut tolerance".to_string()
+            } else {
+                format!("{no_area} filled paths have no area or are thinner than the cut tolerance")
+            };
+            let end = if no_area == 1 { "is" } else { "are" };
             warnings.push(format!(
-                "'{}': {no_area} filled paths have no area or are thinner than the cut tolerance ({} mm) and are not cut.",
+                "'{}': {what} ({} mm) and {end} not cut.",
                 one_line(&o.name),
                 plotter.flatten_tolerance_mm
             ));
