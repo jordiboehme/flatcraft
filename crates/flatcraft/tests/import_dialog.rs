@@ -417,6 +417,28 @@ fn dropped_svg_is_imported() {
 }
 
 #[test]
+fn dropped_files_that_fail_are_listed_in_one_toast() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let ok = dir.path().join("ok.svg");
+    let bad = dir.path().join("bad.svg");
+    let worse = dir.path().join("worse.svg");
+    std::fs::write(&ok, common::SQUARE_SVG).unwrap();
+    std::fs::write(&bad, "<svg").unwrap();
+    std::fs::write(&worse, "not svg").unwrap();
+    let mut h = harness(&dir, s.clone(), false);
+    drop_files(&mut h, &[ok, bad, worse]);
+    let toasts = &app(&h).ui.toasts;
+    assert_eq!(toasts.len(), 1, "{toasts:?}");
+    assert!(
+        toasts[0].text.contains("bad.svg") && toasts[0].text.contains("worse.svg"),
+        "{}",
+        toasts[0].text
+    );
+    assert_eq!(s.lock().unwrap().doc().document.objects.len(), 1);
+}
+
+#[test]
 fn dropped_project_opens() {
     let dir = tempfile::tempdir().unwrap();
     let other = tempfile::tempdir().unwrap();

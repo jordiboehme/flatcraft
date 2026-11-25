@@ -203,7 +203,7 @@ fn merge(into: &mut Value, from: Value) {
 pub struct ImportParams {
     /// Path of the file to import. Supported: .svg, .svgz, .png, .jpg, .jpeg, .webp and .gif. Give path or paths.
     pub path: Option<PathBuf>,
-    /// Several files to import in one undo step. A file that cannot be imported is listed in failed; the others are still imported. Give path or paths.
+    /// Several files to import in one undo step. A file that cannot be imported is listed in failed; the others are still imported, and the call never fails because of a file. Give path or paths.
     #[serde(default)]
     pub paths: Vec<PathBuf>,
 }
@@ -264,33 +264,29 @@ fn run_import(s: &mut Session, p: ImportParams, _: Origin) -> Result<Value, Comm
     }
 }
 
-/// Imports several files as one command. Fails (and changes nothing) only
-/// when no file could be imported.
+/// Imports several files as one command. It never fails because of a
+/// file: a file that cannot be imported is listed in `failed`, and a call
+/// that imported nothing changes nothing (no undo step, not dirty).
 fn import_many(s: &mut Session, paths: &[PathBuf]) -> Result<Value, CommandError> {
-    let (mut imported, mut failed, mut ids) = (Vec::new(), Vec::new(), Vec::new());
-    let mut last_error = None;
+    let (mut ids, mut failed, mut warnings) = (Vec::new(), Vec::new(), Vec::new());
     for path in paths {
         match import_one(s, path) {
-            Ok(mut out) => {
+            Ok(out) => {
                 ids.extend(out["id"].as_u64().map(ObjectId));
-                if let Some(o) = out.as_object_mut() {
-                    o.insert("path".into(), json!(path));
+                let name = path.display();
+                for w in out["warnings"].as_array().into_iter().flatten() {
+                    if let Some(w) = w.as_str() {
+                        warnings.push(format!("{name}: {w}"));
+                    }
                 }
-                imported.push(out);
             }
-            Err(e) => {
-                failed.push(json!({ "path": path, "error": e.to_string() }));
-                last_error = Some(e);
-            }
+            Err(e) => failed.push(json!({ "path": path, "reason": e.to_string() })),
         }
     }
-    if imported.is_empty() {
-        return Err(
-            last_error.unwrap_or_else(|| CommandError::InvalidParams("no file to import".into()))
-        );
+    if !ids.is_empty() {
+        s.doc_mut().selection = ids.iter().copied().collect();
     }
-    s.doc_mut().selection = ids.into_iter().collect();
-    Ok(json!({ "imported": imported, "failed": failed }))
+    Ok(json!({ "imported": ids_json(&ids), "failed": failed, "warnings": warnings }))
 }
 
 command!(
@@ -300,7 +296,7 @@ command!(
     mutates: true,
     params: ImportParams,
     run: run_import,
-    description: "Imports a vector file from disk as a new object and selects it. Supported: .svg and .svgz, and the raster types .png, .jpg, .jpeg, .webp and .gif (by extension). The object name is the file name without extension. The object keeps an embedded copy and remembers the file, so after the file is changed in another app object.reload picks up the changes. SVG sizes come from the SVG in mm. A raster image is traced into cut outlines with the default trace settings (automatic threshold, dark pixels are cut) at the dpi stored in the file, or 300 dpi; use object.retrace to change the settings. Images over 16384 x 16384 px are refused. The object keeps its position from the SVG page if that lies inside the cutting area, otherwise its top-left corner moves to the top-left of the cutting area. Coordinates are mm, origin the 0,0 of the grid printed on the mat, y down. With paths instead of path, several files are imported as one undo step and all new objects are selected; a file that fails is listed in failed and the others are still imported (the call fails only when no file could be imported); it returns {imported: [the result of one file plus its path], failed: [{path, error}]}. With path it returns {id, bounds_mm: {x0,y0,x1,y1}, warnings: [text]}; raster imports also return dropped_small (shapes below the minimum feature size that were dropped), despeckled (specks below the despeckle area that were removed), threshold_used (0-255) and size_mm [width, height] of the whole image.",
+    description: "Imports a vector file from disk as a new object and selects it. Supported: .svg and .svgz, and the raster types .png, .jpg, .jpeg, .webp and .gif (by extension). The object name is the file name without extension. The object keeps an embedded copy and remembers the file, so after the file is changed in another app object.reload picks up the changes. SVG sizes come from the SVG in mm. A raster image is traced into cut outlines with the default trace settings (automatic threshold, dark pixels are cut) at the dpi stored in the file, or 300 dpi; use object.retrace to change the settings. Images over 16384 x 16384 px are refused. The object keeps its position from the SVG page if that lies inside the cutting area, otherwise its top-left corner moves to the top-left of the cutting area. Coordinates are mm, origin the 0,0 of the grid printed on the mat, y down. With paths instead of path, several files are imported as one undo step and all new objects are selected; the call never fails because of a file: a file that cannot be imported is listed in failed and the others are still imported, and when none could be imported nothing changes (no undo step); it returns {imported: [id], failed: [{path, reason}], warnings: [text, each starting with the file path]}. With path it returns {id, bounds_mm: {x0,y0,x1,y1}, warnings: [text]}; raster imports also return dropped_small (shapes below the minimum feature size that were dropped), despeckled (specks below the despeckle area that were removed), threshold_used (0-255) and size_mm [width, height] of the whole image.",
 );
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]

@@ -1066,27 +1066,44 @@ fn importing_several_files_is_one_undo_step() {
     let r = run(&mut s, "object.import", json!({ "paths": [a, bad, b] }));
     let imported = r["imported"].as_array().unwrap();
     assert_eq!(imported.len(), 2, "{r}");
-    assert_eq!(imported[0]["path"], json!(a));
+    assert_eq!(
+        imported[0],
+        json!(s.doc().document.objects[0].id.0),
+        "ids: {r}"
+    );
     assert_eq!(r["failed"][0]["path"], json!(bad), "{r}");
     assert!(
-        r["failed"][0]["error"]
+        r["failed"][0]["reason"]
             .as_str()
             .unwrap()
             .contains("bad.svg"),
         "{r}"
     );
+    assert!(r["warnings"].is_array(), "{r}");
     assert_eq!(s.doc().document.objects.len(), 2);
     assert_eq!(s.doc().undo.undo_len(), undo + 1, "one undo step");
     assert_eq!(s.doc().selection.len(), 2, "the new objects are selected");
-    // Nothing imported: the call fails and changes nothing.
-    let e = s
-        .execute("object.import", json!({ "paths": [bad] }), Origin::User)
-        .unwrap_err();
+}
+
+#[test]
+fn importing_only_broken_files_reports_them_and_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(dir.path());
+    let (bad, gone) = (dir.path().join("bad.svg"), dir.path().join("gone.svg"));
+    write(&bad, "<svg");
+    let r = run(&mut s, "object.import", json!({ "paths": [bad, gone] }));
+    assert_eq!(r["imported"], json!([]), "{r}");
+    let failed = r["failed"].as_array().unwrap();
+    assert_eq!(failed.len(), 2, "{r}");
+    assert_eq!(failed[1]["path"], json!(gone));
+    assert!(failed.iter().all(|f| f["reason"].is_string()), "{r}");
+    assert!(!s.doc().undo.can_undo(), "no undo step");
+    assert!(!s.doc().dirty, "not dirty");
+    // Only bad params fail the call.
     assert!(
-        matches!(e, CommandError::InvalidParams(_) | CommandError::Failed(_)),
-        "{e}"
+        s.execute("object.import", json!({ "paths": [] }), Origin::User)
+            .is_err()
     );
-    assert_eq!(s.doc().undo.undo_len(), undo + 1);
     assert!(s.execute("object.import", json!({}), Origin::User).is_err());
 }
 

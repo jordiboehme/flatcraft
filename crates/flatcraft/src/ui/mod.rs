@@ -398,18 +398,27 @@ impl FlatCraftApp {
         let p = &mut self.ui.prepare;
         match command {
             "object.import" if result.get("imported").is_some() => {
-                // Several files: their warnings, and why the others failed.
-                p.notices = result["imported"]
+                // Several files: their warnings, and one toast that names
+                // the files that could not be imported.
+                p.notices = warnings;
+                let failed: Vec<String> = result["failed"]
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .flat_map(|i| i["warnings"].as_array().into_iter().flatten())
-                    .filter_map(|w| w.as_str().map(str::to_string))
+                    .filter_map(|f| f["path"].as_str())
+                    .map(|path| display_name(Path::new(path)))
                     .collect();
-                for f in result["failed"].as_array().into_iter().flatten() {
-                    if let Some(e) = f["error"].as_str() {
-                        self.toast(Toast::error(e.to_string()));
-                    }
+                if !failed.is_empty() {
+                    let first = result["failed"][0]["reason"].as_str().unwrap_or_default();
+                    self.toast(Toast::error(format!(
+                        "Could not import {}. {}",
+                        failed.join(", "),
+                        if failed.len() == 1 {
+                            first.to_string()
+                        } else {
+                            format!("The first one says: {first}")
+                        }
+                    )));
                 }
             }
             "object.import" => p.notices = warnings,
