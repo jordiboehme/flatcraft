@@ -11,7 +11,9 @@ use flatcraft_device::{
     FileTransport, MaterialProfile, PlotterProfile, SendReport, Transport, TransportError,
     TransportSpec,
 };
-use flatcraft_path::{CutPlan, PathRef, PipelineSettings, PlacedPath, PlanError, plan};
+use flatcraft_path::{
+    CutPlan, PathRef, PipelineSettings, PlacedPath, PlanError, StrategySettings, plan,
+};
 use serde_json::{Value, json};
 
 use crate::commands::profile_error;
@@ -319,13 +321,15 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         .into());
     }
     let pipeline = PipelineSettings {
-        cutting_area: area,
         flatten_tolerance_mm: plotter.flatten_tolerance_mm,
         join_tolerance_mm: JOIN_TOLERANCE_MM,
         overcut_mm: material.overcut_mm,
         passes,
         reverse_alternate_passes: material.reverse_alternate_passes,
-        home: plotter.home_mm(media),
+        strategy: StrategySettings::for_strategy(job.strategy),
+        // Half a device step: anything shorter moves no motor at all.
+        min_cut_mm: 0.5 / plotter.units_per_mm,
+        ..PipelineSettings::with_defaults(area, plotter.home_mm(media))
     };
     let cut_plan = plan(&placed, &pipeline).map_err(|e| match e {
         PlanError::Empty => {
@@ -359,6 +363,19 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
             CommandError::Refused(other.to_string()).into()
         }
     })?;
+    if cut_plan.dropped_short > 0 {
+        let n = cut_plan.dropped_short;
+        let what = if n == 1 {
+            "1 cut path is".to_string()
+        } else {
+            format!("{n} cut paths are")
+        };
+        let end = if n == 1 { "it is" } else { "they are" };
+        warnings.push(format!(
+            "{what} shorter than half a plotter step ({} mm), so {end} not cut.",
+            pipeline.min_cut_mm
+        ));
+    }
 
     let paths: Vec<EmitPath> = cut_plan
         .toolpaths

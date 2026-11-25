@@ -19,6 +19,7 @@ fn job() -> JobSettings {
         speed: None,
         force: None,
         passes: None,
+        strategy: Default::default(),
     }
 }
 

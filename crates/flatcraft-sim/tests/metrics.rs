@@ -331,13 +331,9 @@ fn chebyshev_time() {
 #[test]
 fn measured_travel_and_cut_equal_the_plan() {
     let settings = PipelineSettings {
-        cutting_area: Rect::new(0.0, 0.0, 300.0, 300.0),
-        flatten_tolerance_mm: 0.01,
-        join_tolerance_mm: 0.01,
-        overcut_mm: 0.5,
         passes: 2,
         reverse_alternate_passes: true,
-        home: Point::new(-5.0, -3.0),
+        ..PipelineSettings::with_defaults(Rect::new(0.0, 0.0, 300.0, 300.0), Point::new(-5.0, -3.0))
     };
     let mut line = BezPath::new();
     line.move_to((100.0, 10.0));

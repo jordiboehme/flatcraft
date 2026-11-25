@@ -6,7 +6,10 @@ use flatcraft_core::document::ObjectId;
 use flatcraft_core::limits::{MAX_OVERCUT_MM, MAX_TOLERANCE_MM, MIN_TOLERANCE_MM};
 use kurbo::{BezPath, PathEl, Point, Rect, Vec2};
 
+use flatcraft_core::geometry::RingDirection;
+
 use crate::containment::{self, KeepMode};
+use crate::strategy::StrategySettings;
 use crate::{clean, flatten, order, overcut, passes};
 
 /// Which path of which object a toolpath came from.
@@ -36,6 +39,45 @@ pub struct PipelineSettings {
     /// the grid does not start at the media corner, for example at minus
     /// the grid origin.
     pub home: Point,
+    /// The direction every ring is cut in.
+    pub direction: RingDirection,
+    /// Order the cuts in feed bands (Task 7). Off until then.
+    pub monotonic_feed: bool,
+    /// What the cut order optimises for.
+    pub strategy: StrategySettings,
+    /// Paths shorter than this are dropped and counted in
+    /// [`CutPlan::dropped_short`]. The engine uses half a device step.
+    pub min_cut_mm: f64,
+}
+
+/// The default flatten and join tolerance, in millimetres.
+pub const DEFAULT_TOLERANCE_MM: f64 = 0.01;
+
+/// The default overcut of a closed ring, in millimetres.
+pub const DEFAULT_OVERCUT_MM: f64 = 0.5;
+
+/// The default shortest cut: half a step of a 20 units per mm plotter.
+pub const DEFAULT_MIN_CUT_MM: f64 = 0.025;
+
+impl PipelineSettings {
+    /// The spec defaults for `cutting_area` with travel from `home`: 0.01 mm
+    /// tolerances, 0.5 mm overcut, one pass, counter-clockwise rings, no
+    /// feed bands, the Quality strategy and a 0.025 mm shortest cut.
+    pub fn with_defaults(cutting_area: Rect, home: Point) -> Self {
+        Self {
+            cutting_area,
+            flatten_tolerance_mm: DEFAULT_TOLERANCE_MM,
+            join_tolerance_mm: DEFAULT_TOLERANCE_MM,
+            overcut_mm: DEFAULT_OVERCUT_MM,
+            passes: 1,
+            reverse_alternate_passes: false,
+            home,
+            direction: RingDirection::Ccw,
+            monotonic_feed: false,
+            strategy: StrategySettings::default(),
+            min_cut_mm: DEFAULT_MIN_CUT_MM,
+        }
+    }
 }
 
 /// The side of a closed ring the kept material lies on. Open paths use `Both`.
@@ -180,6 +222,9 @@ pub struct CutPlan {
     /// Where the first travel move starts (`PipelineSettings::home`).
     pub home: Point,
     pub compensation: AppliedCompensation,
+    /// Paths left out because they are shorter than
+    /// `PipelineSettings::min_cut_mm`.
+    pub dropped_short: usize,
 }
 
 /// The pipeline setting an [`PlanError::InvalidSettings`] is about.
@@ -191,6 +236,7 @@ pub enum SettingsField {
     Passes,
     CuttingArea,
     Home,
+    MinCut,
 }
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -222,6 +268,9 @@ fn validate(s: &PipelineSettings) -> Result<(), PlanError> {
     }
     if s.passes < 1 {
         return bad(F::Passes, f64::from(s.passes));
+    }
+    if !(s.min_cut_mm.is_finite() && s.min_cut_mm >= 0.0) {
+        return bad(F::MinCut, s.min_cut_mm);
     }
     for v in [s.home.x, s.home.y] {
         if !v.is_finite() {
@@ -280,6 +329,7 @@ fn invalid_settings_message(field: SettingsField, value: f64) -> String {
             "The cutting area must have finite coordinates and a positive width and height (got {value})."
         ),
         F::Home => format!("The home position must have finite coordinates (got {value})."),
+        F::MinCut => format!("The shortest cut must be a number of at least 0 mm (got {value})."),
     }
 }
 
@@ -290,8 +340,16 @@ fn format_ids(ids: &[ObjectId]) -> String {
         .join(", ")
 }
 
-/// Run the full pipeline (after validating the settings): flatten, area check, clean, merge collinear,
-/// order, overcut, passes.
+/// Run the full pipeline after validating the settings:
+///
+/// 1. flatten
+/// 2. area check (a `MoveTo` no drawing follows is ignored)
+/// 3. clean
+/// 4. merge collinear
+/// 5. drop paths shorter than `min_cut_mm`, counted in `dropped_short`
+/// 6. containment and keep sides
+/// 7. order
+/// 8. overcut and passes
 pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanError> {
     validate(s)?;
     let flat: Vec<BezPath> = input
@@ -312,6 +370,7 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
     }
 
     let mut toolpaths = Vec::new();
+    let mut dropped_short = 0;
     for (placed, f) in input.iter().zip(&flat) {
         for line in clean::clean(f, s.join_tolerance_mm) {
             let mut points = flatten::merge_collinear(&line.points, s.flatten_tolerance_mm);
@@ -322,10 +381,17 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
                 // Otherwise [a, b, a] is a line, cut once as an open path
                 // (same as clean does for a two-point ring).
                 if clean::length(&points) < ZERO_LEN_MM {
+                    dropped_short += 1;
                     continue;
                 }
                 points.truncate(2);
                 closed = false;
+            }
+            // Shorter than half a device step, the cut is no cut at all:
+            // leave it out, but count it so the engine can say so.
+            if clean::length(&points) < s.min_cut_mm {
+                dropped_short += 1;
+                continue;
             }
             toolpaths.push(Toolpath::new(points, closed, placed.source));
         }
@@ -334,7 +400,6 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
         return Err(PlanError::Empty);
     }
 
-    let mut toolpaths = order::nearest_neighbour(toolpaths, s.home);
     // Ruling M2-P13: every toolpath's keep side comes from the containment
     // tree. Every object is Pieces until Task 29 supplies the real modes.
     let mode_of = |_: ObjectId| KeepMode::Pieces;
@@ -342,6 +407,7 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
     for (i, t) in toolpaths.iter_mut().enumerate() {
         t.keep = containment::keep_side(&tree, i, t.closed, mode_of(t.source.object));
     }
+    let mut toolpaths = order::order(toolpaths, &tree, s.home, s);
     for t in toolpaths.iter_mut().filter(|t| t.closed) {
         t.lap_range = 0..t.points.len();
         t.points = overcut::apply(&t.points, s.overcut_mm);
@@ -349,17 +415,63 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
     let toolpaths = passes::expand(toolpaths, s.passes, s.reverse_alternate_passes);
 
     let cut_mm = toolpaths.iter().map(|t| clean::length(&t.points)).sum();
-    let mut travel_mm = 0.0;
-    let mut here = s.home;
-    for t in &toolpaths {
-        travel_mm += here.distance(t.points[0]);
-        here = t.points[t.points.len() - 1];
-    }
+    let travel_mm = travel_mm(&toolpaths, s.home);
     Ok(CutPlan {
         toolpaths,
         travel_mm,
         cut_mm,
         home: s.home,
         compensation: AppliedCompensation::Tip,
+        dropped_short,
     })
+}
+
+/// The blade-up distance from `home` through the axis runs of `toolpaths`:
+/// from the end of each run to the start of the next.
+fn travel_mm(toolpaths: &[Toolpath], home: Point) -> f64 {
+    let mut travel = 0.0;
+    let mut here = home;
+    let mut visit = |points: &[Point]| {
+        if let (Some(&first), Some(&last)) = (points.first(), points.last()) {
+            travel += here.distance(first);
+            here = last;
+        }
+    };
+    for t in toolpaths {
+        match &t.axis {
+            Some(runs) => runs.iter().for_each(|r| visit(&r.points)),
+            None => visit(&t.points),
+        }
+    }
+    travel
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn travel_runs_between_axis_runs() {
+        let source = PathRef {
+            object: ObjectId(1),
+            path_index: 0,
+        };
+        let p = |x: f64, y: f64| Point::new(x, y);
+        let plain = Toolpath::new(vec![p(0.0, 0.0), p(10.0, 0.0)], false, source);
+        let mut split = Toolpath::new(vec![p(20.0, 0.0), p(30.0, 0.0)], false, source);
+        // Host compensation lifts once inside the toolpath: 2 mm of travel
+        // between its runs, and the runs start and end off `points`.
+        split.axis = Some(vec![
+            AxisRun {
+                points: vec![p(19.0, 0.0), p(24.0, 0.0)],
+                seg: vec![WASTE_SEG, 0],
+            },
+            AxisRun {
+                points: vec![p(26.0, 0.0), p(31.0, 0.0)],
+                seg: vec![WASTE_SEG, 0],
+            },
+        ]);
+        let travel = travel_mm(&[plain, split], p(0.0, -5.0));
+        assert!((travel - (5.0 + 9.0 + 2.0)).abs() < 1e-12, "{travel}");
+    }
 }

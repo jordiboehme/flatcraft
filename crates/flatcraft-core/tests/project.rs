@@ -27,6 +27,7 @@ fn job() -> JobSettings {
         speed: Some(5),
         force: None,
         passes: Some(2),
+        strategy: Default::default(),
     }
 }
 
@@ -210,6 +211,27 @@ fn old_project_without_cut_options_loads_defaults() {
     assert_eq!(cut.mode, flatcraft_core::document::CutMode::ObjectOutlines);
     assert_eq!(cut.strokes, flatcraft_core::document::StrokeMode::Auto);
     assert_eq!(cut.auto_threshold_mm, 0.5);
+}
+
+#[test]
+fn old_project_without_strategy_loads_quality_and_strategy_roundtrips() {
+    use flatcraft_core::document::CutStrategy;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.flatcraft");
+    std::fs::write(&path, project_with(OLD_OBJECT)).unwrap();
+    let mut doc = project::load(&path).unwrap();
+    assert_eq!(doc.job.strategy, CutStrategy::Quality);
+    doc.job.strategy = CutStrategy::KeepSheet;
+    project::save(&doc, &path).unwrap();
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains(r#""keep_sheet""#)
+    );
+    assert_eq!(
+        project::load(&path).unwrap().job.strategy,
+        CutStrategy::KeepSheet
+    );
 }
 
 // ---------------------------------------------------------------- source links

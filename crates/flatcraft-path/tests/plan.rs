@@ -19,13 +19,8 @@ fn point_at(ring: &[Point], mut d: f64) -> Point {
 
 fn settings() -> PipelineSettings {
     PipelineSettings {
-        cutting_area: Rect::new(5.0, 5.0, 295.0, 395.0),
-        flatten_tolerance_mm: 0.01,
-        join_tolerance_mm: 0.01,
         overcut_mm: 0.0,
-        passes: 1,
-        reverse_alternate_passes: false,
-        home: Point::ZERO,
+        ..PipelineSettings::with_defaults(Rect::new(5.0, 5.0, 295.0, 395.0), Point::ZERO)
     }
 }
 
@@ -173,7 +168,11 @@ fn overcut_extends_closed_square_in_plan() {
     let t = &out.toolpaths[0];
     assert!(t.closed);
     assert!((length(&t.points) - 40.5).abs() < 1e-9);
-    assert_eq!(*t.points.last().unwrap(), Point::new(10.5, 10.0));
+    // Counter-clockwise from the corner nearest the home: down the left
+    // side first, so the overcut runs down from (10, 10) too.
+    assert_eq!(t.points[0], Point::new(10.0, 10.0));
+    assert_eq!(t.points[1], Point::new(10.0, 20.0));
+    assert_eq!(*t.points.last().unwrap(), Point::new(10.0, 10.5));
     assert!((out.cut_mm - 40.5).abs() < 1e-9);
 }
 
@@ -442,7 +441,10 @@ fn overcut_larger_than_the_ring_is_one_lap() {
     let t = &out.toolpaths[0];
     assert!(t.closed);
     assert!((length(&t.points) - 2.0 * perimeter).abs() < 1e-6);
-    assert!(t.points.last().unwrap().distance(ring[0]) < 1e-9);
+    // The order may start the ring at another corner: one full lap of
+    // overcut ends where the cut started.
+    assert!(ring.contains(&t.points[0]));
+    assert!(t.points.last().unwrap().distance(t.points[0]) < 1e-9);
 }
 
 proptest! {
@@ -469,7 +471,6 @@ proptest! {
         path.close_path();
         let mut ring = pts.clone();
         ring.push(pts[0]);
-        let unmerged = ring.clone();
         // overcut up to 2.5x the first edge, so it often crosses a corner,
         // but never above the pipeline's limit (it refuses larger ones)
         let overcut = (overcut_factor * ring[0].distance(ring[1]))
@@ -485,15 +486,28 @@ proptest! {
         prop_assert_eq!(out.toolpaths.len(), 1);
         let t = &out.toolpaths[0];
         prop_assert!(t.closed);
-        prop_assert_eq!(t.points[0], ring[0]);
+        // The order turns the ring counter-clockwise and may start it at
+        // any source vertex, so the expectations follow its own lap.
+        let lap = t.lap();
+        prop_assert_eq!(lap.first(), lap.last());
+        prop_assert!(flatcraft_path::containment::signed_area(lap) < 0.0);
+        prop_assert!(pts.contains(&t.points[0]));
+        prop_assert!((length(lap) - perimeter).abs() < 1e-9);
         // the overcut is capped at one lap of the ring, and the generator can
         // ask for more than that on a small polygon
         prop_assert!(length(&t.points) >= perimeter + overcut.min(perimeter) - 1e-6);
-        let expect = point_at(&ring, overcut);
+        let expect = point_at(lap, overcut);
         prop_assert!(t.points.last().unwrap().distance(expect) < 1e-9);
-        // against the unmerged source ring
-        prop_assert_eq!(t.points[0], pts[0]);
-        let expect_src = point_at(&unmerged, overcut);
+        // against the unmerged source ring, in the same direction and from
+        // the same start
+        let mut src = pts.clone();
+        if flatcraft_path::containment::signed_area(&src) > 0.0 {
+            src[1..].reverse();
+        }
+        let at = src.iter().position(|p| *p == t.points[0]).unwrap();
+        src.rotate_left(at);
+        src.push(src[0]);
+        let expect_src = point_at(&src, overcut);
         prop_assert!(t.points.last().unwrap().distance(expect_src) <= 2.0 * 0.001);
     }
 
@@ -691,4 +705,137 @@ fn plan_sets_the_keep_side_of_every_toolpath() {
         "piece of another object"
     );
     assert_eq!(side(200.0, 20.0), KeepSide::Both, "open line");
+}
+
+fn poly_path(pts: &[(f64, f64)]) -> BezPath {
+    let mut p = BezPath::new();
+    p.move_to(pts[0]);
+    for &q in &pts[1..] {
+        p.line_to(q);
+    }
+    p.close_path();
+    p
+}
+
+/// An L whose only concave corner is (60, 60).
+const L: [(f64, f64); 6] = [
+    (40.0, 40.0),
+    (80.0, 40.0),
+    (80.0, 60.0),
+    (60.0, 60.0),
+    (60.0, 80.0),
+    (40.0, 80.0),
+];
+
+#[test]
+fn all_rings_follow_direction() {
+    use flatcraft_core::geometry::RingDirection;
+    use flatcraft_path::containment::signed_area;
+    // An outline with a hole, a piece in the hole, a circle drawn the
+    // other way round and an L.
+    let mut frame = rect_path(10.0, 10.0, 100.0, 100.0);
+    frame.extend(rect_path(30.0, 30.0, 60.0, 60.0));
+    frame.extend(rect_path(50.0, 50.0, 10.0, 10.0));
+    let circle = Circle::new((200.0, 200.0), 20.0)
+        .to_path(0.01)
+        .reverse_subpaths();
+    let input = [
+        placed(1, frame),
+        placed(2, circle),
+        placed(3, poly_path(&L.map(|(x, y)| (x + 100.0, y + 200.0)))),
+    ];
+    for (dir, sign) in [(RingDirection::Ccw, -1.0), (RingDirection::Cw, 1.0)] {
+        let mut s = settings();
+        s.direction = dir;
+        s.overcut_mm = 0.5;
+        let out = plan(&input, &s).unwrap();
+        assert_eq!(out.toolpaths.len(), 5);
+        for t in &out.toolpaths {
+            assert!(t.closed);
+            assert!(signed_area(t.lap()) * sign > 0.0, "{dir:?}: {:?}", t.lap());
+        }
+    }
+}
+
+#[test]
+fn outline_starts_on_a_waste_side_corner() {
+    use flatcraft_path::rings::extension_in_waste;
+    // The home sits next to the L's concave corner, the nearest vertex by
+    // far; its extension runs into the piece, so the cut starts elsewhere.
+    let mut s = settings();
+    s.home = Point::new(62.0, 62.0);
+    let out = plan(&[placed(1, poly_path(&L))], &s).unwrap();
+    let t = &out.toolpaths[0];
+    assert_eq!(t.keep, KeepSide::Inside);
+    assert_ne!(t.points[0], Point::new(60.0, 60.0));
+    assert!(extension_in_waste(t.lap(), 0, KeepSide::Inside));
+    // Of the waste-side corners, the nearest by travel.
+    assert_eq!(t.points[0], Point::new(60.0, 80.0));
+}
+
+#[test]
+fn hole_avoids_kept_side_corner_when_possible() {
+    use flatcraft_path::rings::extension_in_waste;
+    // An L hole in a frame. Its convex corners point into the piece; only
+    // the concave corner (60, 60) runs out into the falling-out waste, and
+    // it is the farthest corner from the home.
+    let mut frame = rect_path(20.0, 20.0, 100.0, 100.0);
+    frame.extend(poly_path(&L));
+    let out = plan(&[placed(1, frame)], &settings()).unwrap();
+    let hole = &out.toolpaths[0];
+    assert_eq!(hole.keep, KeepSide::Outside);
+    assert_eq!(hole.points[0], Point::new(60.0, 60.0));
+    assert!(extension_in_waste(hole.lap(), 0, KeepSide::Outside));
+    assert_eq!(out.toolpaths[1].keep, KeepSide::Inside);
+}
+
+#[test]
+fn sub_resolution_line_is_dropped_and_counted() {
+    // 0.02 mm: longer than the join tolerance, shorter than half a step
+    // of a 20 units per mm plotter.
+    let mut short = BezPath::new();
+    short.move_to((50.0, 50.0));
+    short.line_to((50.02, 50.0));
+    let input = [
+        placed(1, short),
+        placed(2, rect_path(10.0, 10.0, 10.0, 10.0)),
+    ];
+    let s = settings();
+    assert_eq!(s.min_cut_mm, 0.025);
+    let out = plan(&input, &s).unwrap();
+    assert_eq!(out.dropped_short, 1);
+    assert_eq!(out.toolpaths.len(), 1);
+    assert_eq!(out.toolpaths[0].source.object, ObjectId(2));
+    // With no shortest cut the line stays.
+    let mut s = settings();
+    s.min_cut_mm = 0.0;
+    let out = plan(&input, &s).unwrap();
+    assert_eq!((out.dropped_short, out.toolpaths.len()), (0, 2));
+}
+
+#[test]
+fn bad_min_cut_is_refused() {
+    for v in [-0.1, f64::NAN, f64::INFINITY] {
+        let mut s = settings();
+        s.min_cut_mm = v;
+        invalid(s, SettingsField::MinCut);
+    }
+}
+
+#[test]
+fn with_defaults_uses_the_spec_defaults() {
+    use flatcraft_core::geometry::RingDirection;
+    let area = Rect::new(0.0, 0.0, 200.0, 300.0);
+    let s = PipelineSettings::with_defaults(area, Point::new(-3.0, -4.0));
+    assert_eq!(s.cutting_area, area);
+    assert_eq!(s.home, Point::new(-3.0, -4.0));
+    assert_eq!((s.flatten_tolerance_mm, s.join_tolerance_mm), (0.01, 0.01));
+    assert_eq!(
+        (s.overcut_mm, s.passes, s.reverse_alternate_passes),
+        (0.5, 1, false)
+    );
+    assert_eq!(s.direction, RingDirection::Ccw);
+    assert!(!s.monotonic_feed);
+    assert_eq!(s.strategy, flatcraft_path::StrategySettings::default());
+    assert_eq!(s.min_cut_mm, 0.025);
 }

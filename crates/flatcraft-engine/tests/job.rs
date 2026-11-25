@@ -263,6 +263,62 @@ fn send_out_of_area_names_object() {
 }
 
 #[test]
+fn a_line_below_half_a_step_is_dropped_with_a_warning() {
+    let d = dirs();
+    let mut s = session(&d);
+    import_square(&mut s, "square");
+    // 0.02 mm: under half a step of the Cameo 2 (0.025 mm).
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><path d="M60 60 L60.02 60" stroke="black" fill="none"/></svg>"#;
+    let id = run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": svg, "name": "speck" }),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    run(
+        &mut s,
+        "object.set_cut_options",
+        json!({ "ids": [id], "mode": "all_lines", "strokes": "centre_line", "auto_threshold_mm": 1.5 }),
+    );
+    let r = run(&mut s, "job.preview", json!({}));
+    assert_eq!(r["toolpaths"], 1);
+    let w = r["warnings"].to_string();
+    assert!(
+        w.contains("1 cut path is shorter than half a plotter step (0.025 mm), so it is not cut."),
+        "{w}"
+    );
+    assert!(!w.contains('\u{2014}'));
+    assert_eq!(s.doc().last_job().unwrap().plan.dropped_short, 1);
+}
+
+#[test]
+fn the_job_strategy_reaches_the_order() {
+    use flatcraft_core::document::CutStrategy;
+    // Two frames with a hole each, side by side.
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="100mm" viewBox="0 0 200 100"><path fill-rule="evenodd" d="M10 10 H60 V60 H10 Z M30 30 H40 V40 H30 Z M100 10 H150 V60 H100 Z M120 30 H130 V40 H120 Z"/></svg>"#;
+    let holes_first = |strategy: CutStrategy| {
+        let d = dirs();
+        let mut s = session(&d);
+        run(
+            &mut s,
+            "object.import_svg",
+            json!({ "svg": svg, "name": "frames" }),
+        );
+        s.doc_mut().document.job.strategy = strategy;
+        run(&mut s, "job.preview", json!({}));
+        let plan = &s.doc().last_job().unwrap().plan;
+        let keep: Vec<_> = plan.toolpaths.iter().map(|t| t.keep).collect();
+        assert_eq!(keep.len(), 4);
+        keep[..2]
+            .iter()
+            .all(|k| *k == flatcraft_path::KeepSide::Outside)
+    };
+    assert!(!holes_first(CutStrategy::Quality));
+    assert!(holes_first(CutStrategy::KeepSheet));
+}
+
+#[test]
 fn overrides_reach_the_emitter() {
     let d = dirs();
     let mut s = session(&d);

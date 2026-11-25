@@ -496,13 +496,8 @@ mod tests {
         use crate::plan::{PathRef, PipelineSettings, PlacedPath, plan};
         use flatcraft_core::document::ObjectId;
         let s = PipelineSettings {
-            cutting_area: Rect::new(0.0, 0.0, 300.0, 300.0),
-            flatten_tolerance_mm: 0.01,
-            join_tolerance_mm: 0.01,
             overcut_mm: 0.0,
-            passes: 1,
-            reverse_alternate_passes: false,
-            home: Point::ZERO,
+            ..PipelineSettings::with_defaults(Rect::new(0.0, 0.0, 300.0, 300.0), Point::ZERO)
         };
         let input = [PlacedPath {
             path,

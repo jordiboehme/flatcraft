@@ -254,6 +254,7 @@ mod tests {
             speed: None,
             force: None,
             passes: None,
+            strategy: Default::default(),
         });
         let path = kurbo::BezPath::from_vec(vec![
             kurbo::PathEl::MoveTo(Point::new(0.0, 0.0)),

@@ -386,6 +386,21 @@ impl Object {
     }
 }
 
+/// What the cut order optimises for (spec 8.3, R8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CutStrategy {
+    /// Clean corners first: entries on waste-side corners, few blade
+    /// turns, short travel.
+    #[default]
+    Quality,
+    /// Short travel first: blade turns cost nothing.
+    Fast,
+    /// As Quality, but every outline comes after every hole and inner
+    /// piece, so the sheet holds together until the end.
+    KeepSheet,
+}
+
 /// Job settings; `None` options mean the material value.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JobSettings {
@@ -395,6 +410,9 @@ pub struct JobSettings {
     pub speed: Option<u8>,
     pub force: Option<u8>,
     pub passes: Option<u32>,
+    /// A file written before Milestone 2 has none and gets the default.
+    #[serde(default)]
+    pub strategy: CutStrategy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

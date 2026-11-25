@@ -731,9 +731,13 @@ fn job_adds_the_grid_origin() {
     );
     let built = flatcraft_engine::job::build(&s).unwrap();
     let text = String::from_utf8_lossy(&built.job.bytes).into_owned();
-    // the 20 mm square's corner app (0,0) = device y 12 mm, x 10 mm = D240,200 units (y first),
-    // reached from the path start point M640,200; Z is the physical mat
-    assert!(text.contains("M640,200\x03D240,200,240,600,"), "{text}");
+    // the 20 mm square's corner app (0,0) = device y 12 mm, x 10 mm = M240,200 units (y first),
+    // the corner nearest the home, cut counter-clockwise (down the left side
+    // first) and closed with the 0.5 mm overcut; Z is the physical mat
+    assert!(
+        text.contains("M240,200\x03D640,200,640,600,240,600,240,200,250,200\x03"),
+        "{text}"
+    );
     assert!(text.contains("Z6604,6096"), "{text}");
 }
 

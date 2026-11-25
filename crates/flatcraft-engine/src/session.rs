@@ -482,6 +482,7 @@ impl Session {
             speed: None,
             force: None,
             passes: None,
+            strategy: Default::default(),
         }))
     }
 
@@ -1399,6 +1400,7 @@ mod tests {
             speed: None,
             force: None,
             passes: None,
+            strategy: Default::default(),
         });
         a.add(
             "a".into(),
@@ -1423,6 +1425,7 @@ mod tests {
             speed: None,
             force: None,
             passes: None,
+            strategy: Default::default(),
         });
         for name in ["one", "two"] {
             a.add(
