@@ -51,6 +51,8 @@ pub struct CutPlan {
     pub travel_mm: f64,
     /// Total blade-down length, including overcut and repeated passes.
     pub cut_mm: f64,
+    /// Where the first travel move starts (`PipelineSettings::home`).
+    pub home: Point,
 }
 
 /// The pipeline setting an [`PlanError::InvalidSettings`] is about.
@@ -229,5 +231,6 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
         toolpaths,
         travel_mm,
         cut_mm,
+        home: s.home,
     })
 }

@@ -447,7 +447,7 @@ fn cut_canvas(
 }
 
 /// Draws the first `visible` toolpaths: the cut lines, dotted travel moves
-/// from the origin, a start dot, a direction arrow and the order number.
+/// from the device home, a start dot, a direction arrow and the order number.
 /// Everything is in the mat's contrast colour, so it reads on any mat.
 fn draw_toolpaths(
     painter: &egui::Painter,
@@ -461,7 +461,7 @@ fn draw_toolpaths(
     let paths = &job.plan.toolpaths;
     let travel = contrast.gamma_multiply(0.7);
     let font = fonts::medium(10.0);
-    let mut at = kurbo::Point::ZERO;
+    let mut at = job.plan.home;
     // On-screen starts with their order number and direction.
     let mut starts: Vec<(usize, Pos2)> = Vec::new();
     let mut arrows: Vec<(Pos2, Vec2)> = Vec::new();

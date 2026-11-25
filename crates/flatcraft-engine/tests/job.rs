@@ -939,6 +939,11 @@ fn travel_starts_at_the_media_corner_not_the_grid_origin() {
     let plan = &s.doc().last_job().unwrap().plan;
     assert_eq!(plan.toolpaths.len(), 1);
     let first = plan.toolpaths[0].points[0];
+    assert_eq!(
+        plan.home,
+        kurbo::Point::new(-10.0, -20.0),
+        "viewers draw from here"
+    );
     let expected = kurbo::Point::new(-10.0, -20.0).distance(first);
     let travel = r["travel_mm"].as_f64().unwrap();
     assert!((travel - expected).abs() < 1e-6, "{travel} vs {expected}");

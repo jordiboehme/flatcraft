@@ -261,7 +261,7 @@ pub fn render_png(s: &Session, kind: PreviewKind, max_px: u32) -> Result<Vec<u8>
             };
             let cell = (max_px as f32 / 512.0).round().max(1.0);
             // The plan's travel starts at the device home (the media corner).
-            let home = plotter.home_mm(media);
+            let home = result.plan.home;
             let mut at = home;
             // Mark the home and label it H: the first dashed travel line
             // leaves from here. Below and right of the point, moved inside

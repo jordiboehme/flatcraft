@@ -26,7 +26,7 @@ pub struct LogEntry {
 /// PROVISIONAL endpoints for a log made with `ByteLog::new`: 0x01 out, 0x82 in, as expected on
 /// the Cameo 2. gpgl.md section 1 has no Cameo 2 descriptor dump for them (open question 1), so
 /// the real ones come from the USB descriptor.
-/// TODO(M3 USB transport task): the transport passes its descriptor endpoints through
+/// TODO(M3, USB transport): the transport passes its descriptor endpoints through
 /// `ByteLog::with_endpoints` and these defaults go away.
 pub const PROVISIONAL_OUT_EP: u8 = 0x01;
 pub const PROVISIONAL_IN_EP: u8 = 0x82;
