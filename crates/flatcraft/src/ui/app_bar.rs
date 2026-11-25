@@ -144,6 +144,13 @@ pub struct TabFit {
 /// at that width are shown, with the "»" button (`more` wide). The active
 /// tab is always among them.
 pub fn fit_tabs(natural: &[f32], extra: f32, room: f32, more: f32, active: usize) -> TabFit {
+    if natural.is_empty() {
+        return TabFit {
+            cap: None,
+            shown: Vec::new(),
+            more: false,
+        };
+    }
     let total =
         |idx: &[usize], cap: f32| -> f32 { idx.iter().map(|&i| natural[i].min(cap) + extra).sum() };
     // The largest cap that fits `room`, by bisection.
@@ -182,12 +189,15 @@ pub fn fit_tabs(natural: &[f32], extra: f32, room: f32, more: f32, active: usize
         Some(_) => {}
     }
     let room = room - more;
+    // At least the active tab, even when not one tab fits at the narrowest
+    // name: its name then gets narrower still, down to nothing, so the tab
+    // never runs into the right side.
     let fits = ((room / (MIN_TAB_LABEL + extra)).floor().max(1.0) as usize).min(natural.len());
     let mut shown: Vec<usize> = (0..fits).collect();
     if active >= fits {
-        shown[fits - 1] = active;
+        shown[fits - 1] = active.min(natural.len() - 1);
     }
-    let cap = cap_for(&shown, room);
+    let cap = cap_for(&shown, room).map(|c| c.max(0.0));
     TabFit {
         cap,
         shown,
@@ -300,5 +310,27 @@ mod tests {
             .map(|&i| natural[i].min(f.cap.unwrap_or(100.0)) + 20.0)
             .sum();
         assert!(used + 20.0 <= 250.0, "{f:?}");
+    }
+
+    #[test]
+    fn a_room_too_small_for_one_tab_still_shows_the_active_one_narrower() {
+        let natural = [100.0; 12];
+        // Not even one tab fits at the narrowest name (72 + 20 + 20 > 100).
+        let f = fit_tabs(&natural, 20.0, 100.0, 20.0, 7);
+        assert_eq!(f.shown, [7]);
+        assert!(f.more);
+        let cap = f.cap.expect("narrower than its name");
+        assert!(cap < MIN_TAB_LABEL && cap + 20.0 + 20.0 <= 100.0, "{f:?}");
+        // No tabs at all, and no room: nothing to show, no panic.
+        assert_eq!(
+            fit_tabs(&[], 20.0, -5.0, 20.0, 0).shown,
+            Vec::<usize>::new()
+        );
+        // No room at all: the active tab with an empty name.
+        let f = fit_tabs(&natural, 20.0, 10.0, 20.0, 3);
+        assert_eq!(
+            (f.shown.as_slice(), f.cap),
+            ([3usize].as_slice(), Some(0.0))
+        );
     }
 }
