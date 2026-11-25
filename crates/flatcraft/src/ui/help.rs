@@ -237,7 +237,7 @@ pub const SHORTCUTS: [Shortcut; 20] = [
         CMD,
         Key::Comma,
         SETTINGS_LABEL,
-        |_| Action::ShowProfiles,
+        |_| Action::ShowSettings,
         true,
     ),
     global(CMD_SHIFT, Key::Z, "Redo", Action::Redo, true),

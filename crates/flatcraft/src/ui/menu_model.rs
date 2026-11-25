@@ -196,7 +196,7 @@ impl Cmd {
     pub fn action(&self, active: u64, recent: &[PathBuf]) -> Option<Action> {
         Some(match self {
             Cmd::About => Action::ShowAbout,
-            Cmd::Settings => Action::ShowProfiles,
+            Cmd::Settings => Action::ShowSettings,
             Cmd::Quit => Action::Quit,
             Cmd::New => Action::NewProject,
             Cmd::Open => Action::OpenDialog,

@@ -27,6 +27,7 @@ pub mod rails;
 pub mod ribbon;
 pub mod rng;
 pub mod settings;
+pub mod settings_window;
 pub mod switcher;
 pub mod theme;
 pub mod timeline;
@@ -104,10 +105,12 @@ pub struct UiState {
     pub workspace: Workspace,
     pub toasts: Vec<Toast>,
     pub show_debug: bool,
-    pub show_profiles: bool,
+    /// The Settings window is open.
+    pub show_settings: bool,
     /// The keyboard shortcuts sheet is open.
     pub show_shortcuts: bool,
     pub profiles: profiles_window::ProfilesState,
+    pub settings: settings_window::SettingsState,
     pub prepare: prepare::PrepareState,
     /// The number of each untitled document's name, by stable document id,
     /// so "Untitled 3" keeps its name when "Untitled 2" closes.
@@ -262,9 +265,9 @@ pub enum Action {
     Reveal(PathBuf),
     /// Ask for a capture fixture and show it in the Debug panel.
     OpenCapture,
-    /// Open the Profiles window (Settings button, Settings menu item, Cmd+,).
-    ShowProfiles,
-    /// A save, delete or preference change from the Profiles window.
+    /// Open the Settings window (Settings button, Settings menu item, Cmd+,).
+    ShowSettings,
+    /// A preset save or delete, or a folder pick, from the Settings window.
     Profiles(profiles_window::Request),
     /// Open the About dialog (Help menu, macOS app menu).
     ShowAbout,
@@ -991,7 +994,7 @@ impl FlatCraftApp {
                     }
                 }
             }
-            Action::ShowProfiles => self.ui.show_profiles = true,
+            Action::ShowSettings => self.ui.show_settings = true,
             Action::RememberEach(each) => {
                 let result = lock(&self.session).update_prefs(|p| p.rotate_each = each);
                 if let Err(e) = result {
@@ -1025,7 +1028,7 @@ impl FlatCraftApp {
                     self.toast(Toast::error(format!("Cannot store the pins: {e}")));
                 }
             }
-            Action::Profiles(req) => profiles_window::apply(self, ctx, req),
+            Action::Profiles(req) => profiles_window::apply(self, req),
             Action::ShowAbout => self.ui.about.open(&mut self.rng),
             Action::ShowShortcuts => self.ui.show_shortcuts = true,
             Action::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
@@ -1525,8 +1528,8 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     if app.ui.show_debug && workspace != Workspace::Home {
         debug::show(&ctx, app, &mut actions);
     }
-    if app.ui.show_profiles {
-        profiles_window::show(&ctx, app, &mut actions);
+    if app.ui.show_settings {
+        settings_window::show(&ctx, app, &mut actions);
     }
     let now = (app.clock)();
     let t = app.tokens;
@@ -1604,6 +1607,7 @@ impl FlatCraftApp {
 /// the document stays usable behind them.
 pub fn modal_open(app: &FlatCraftApp) -> bool {
     app.ui.about.open
+        || app.ui.show_settings
         || app.ui.show_shortcuts
         || app.ui.trace.is_some()
         || app.ui.prepare.rename.is_some()
@@ -1720,7 +1724,9 @@ fn refresh_prefs(ctx: &egui::Context, app: &mut FlatCraftApp) {
     let (theme, warning) = {
         let mut s = lock(&app.session);
         s.refresh_prefs(now);
-        (s.prefs.theme, s.take_prefs_warning())
+        // A theme staged in the Settings window shows while it is open.
+        let theme = app.ui.settings.preview_theme.unwrap_or(s.prefs.theme);
+        (theme, s.take_prefs_warning())
     };
     // Every frame: with System the egui input carries the live appearance
     // of the operating system, and the colours follow it.

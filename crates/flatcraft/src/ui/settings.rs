@@ -302,6 +302,19 @@ pub fn job(
             ) {
                 run(actions, "job.set_material", json!({ "id": id }));
             }
+            // The strategy shows here; the Settings window sets the one
+            // new documents start with.
+            painted_label(ui, "Strategy");
+            let name = super::settings_window::strategy_name(snap.job.strategy);
+            let r = ui.label(name);
+            super::groups::card(
+                &r,
+                "Strategy",
+                "The order this document cuts in. Quality cleans up the corners, Fast keeps the travel short, and Keep sheet cuts the outlines last. New documents take it from Settings, Cutting.",
+                None,
+                false,
+            );
+            ui.end_row();
         });
 
     let (Some(plotter), Some(material)) = (&snap.plotter, &snap.material) else {

@@ -1028,7 +1028,7 @@ fn effects(f: &Fixture) -> String {
         (p.show_grid, p.show_rulers, p.panels.clone()),
         a.ui.about.open,
         a.ui.show_shortcuts,
-        a.ui.show_profiles,
+        a.ui.show_settings,
         a.ui.unsaved,
         a.ui.toasts.len(),
         a.injected.len(),

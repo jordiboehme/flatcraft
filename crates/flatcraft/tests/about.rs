@@ -656,7 +656,7 @@ fn the_menu_waits_while_a_dialog_is_open() {
     let menu = || {
         vec![
             Action::ShowAbout,
-            Action::ShowProfiles,
+            Action::ShowSettings,
             Action::Undo(doc),
             Action::Redo(doc),
             Action::Quit,

@@ -1,4 +1,5 @@
-//! The Profiles window, driven through egui_kittest.
+//! The preset pages of the Settings window, and the preferences that
+//! moved there from the old App tab, driven through egui_kittest.
 
 mod common;
 
@@ -22,6 +23,12 @@ fn open(h: &mut AppHarness, tab: &str) {
     h.get_by_role_and_label(Role::Button, "Settings").click();
     h.run();
     h.get_by_role_and_label(Role::Tab, tab).click();
+    h.run();
+}
+
+/// Shows another page of the open window.
+fn page(h: &mut AppHarness, name: &str) {
+    h.get_by_role_and_label(Role::Tab, name).click();
     h.run();
 }
 
@@ -77,7 +84,7 @@ fn use_plotter(h: &mut AppHarness, s: &SharedSession, id: &str) {
         .unwrap()
         .execute("job.set_plotter", json!({ "id": id }), Origin::User)
         .unwrap();
-    app_mut(h).ui.show_profiles = false;
+    app_mut(h).ui.show_settings = false;
     app_mut(h).ui.workspace = Workspace::Prepare;
     h.run();
 }
@@ -127,14 +134,18 @@ fn system_preset_fields_are_read_only() {
             "Units per mm",
             "Knife compensation",
             "Mirror x",
-            "Mat name",
-            "Grid origin y (mm)",
         ] {
             assert!(disabled(&h, field), "{preset}: {field} is editable");
         }
         assert!(h.query_by_label("Save preset").is_none());
         assert!(h.query_by_label("Delete preset").is_none());
         assert!(!disabled(&h, "Save as user preset..."));
+        // The mats of the same preset, on the Mats page.
+        page(&mut h, "Mats");
+        for field in ["Mat name", "Grid origin y (mm)"] {
+            assert!(disabled(&h, field), "{preset}: {field} is editable");
+        }
+        page(&mut h, "Plotters");
     }
     open(&mut h, "Materials");
     click(&mut h, "Vinyl");
@@ -149,10 +160,13 @@ fn allow_agent_cuts_persists() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let mut h = harness(&dir, &s);
-    open(&mut h, "App");
+    open(&mut h, "Agents");
     h.get_by_label("Allow agents to start cuts");
     assert!(h.query_by_label_contains("without asking you").is_some());
     click(&mut h, "Allow agents to start cuts");
+    // Staged until OK.
+    assert!(!s.lock().unwrap().prefs.allow_agent_cuts);
+    click(&mut h, "OK");
 
     assert!(s.lock().unwrap().prefs.allow_agent_cuts);
     let stored = Preferences::load(dir.path());
@@ -166,11 +180,13 @@ fn auto_reload_switch_persists() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let mut h = harness(&dir, &s);
-    open(&mut h, "App");
+    open(&mut h, "General");
     h.get_by_label(
         "When an imported file changes on disk, FlatCraft reloads it and keeps your placement and cut settings.",
     );
     click(&mut h, "Reload changed files automatically");
+    assert!(!s.lock().unwrap().prefs.auto_reload);
+    click(&mut h, "Apply");
     assert!(s.lock().unwrap().prefs.auto_reload);
     assert!(Preferences::load(dir.path()).auto_reload);
     let node = h.get_by_label("Reload changed files automatically");
@@ -183,6 +199,7 @@ fn edit_one_mat_keeps_the_others() {
     let s = session(&dir);
     let mut h = harness(&dir, &s);
     save_as_my_cameo(&mut h);
+    page(&mut h, "Mats");
     click(&mut h, "Mat 12x12");
     type_into(&mut h, "Grid origin y (mm)", "12.7");
     click(&mut h, "Save preset");
@@ -217,6 +234,7 @@ fn hide_builtin_mat() {
     let s = session(&dir);
     let mut h = harness(&dir, &s);
     save_as_my_cameo(&mut h);
+    page(&mut h, "Mats");
     click(&mut h, "Mat 12x24");
     click(&mut h, "Hidden");
     click(&mut h, "Save preset");
@@ -247,6 +265,7 @@ fn invalid_mat_disables_save() {
     let s = session(&dir);
     let mut h = harness(&dir, &s);
     save_as_my_cameo(&mut h);
+    page(&mut h, "Mats");
     click(&mut h, "Mat 12x12");
     let before =
         std::fs::read_to_string(dir.path().join("profiles/plotters/my-cameo.toml")).unwrap();
@@ -276,6 +295,7 @@ fn mat_colour_roundtrip() {
     let s = session(&dir);
     let mut h = harness(&dir, &s);
     save_as_my_cameo(&mut h);
+    page(&mut h, "Mats");
     click(&mut h, "Mat 12x12");
     h.get_by_label("Mat colour");
     type_into(&mut h, "Mat colour (hex)", "#336699");
@@ -367,10 +387,9 @@ fn theme_switch_applies_and_persists() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let mut h = harness(&dir, &s);
-    open(&mut h, "App");
-    h.get_by_label("Theme").click();
-    h.run();
-    click(&mut h, "Light");
+    open(&mut h, "Appearance");
+    click(&mut h, "Theme: Light");
+    click(&mut h, "OK");
     assert_eq!(
         Preferences::load(dir.path()).theme,
         flatcraft_engine::prefs::Theme::Light
@@ -383,10 +402,11 @@ fn default_material_persists_and_new_documents_use_it() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let mut h = harness(&dir, &s);
-    open(&mut h, "App");
+    open(&mut h, "Cutting");
     h.get_by_label("Default material").click();
     h.run();
     click(&mut h, "Vinyl");
+    click(&mut h, "OK");
     assert_eq!(Preferences::load(dir.path()).default_material, "vinyl");
     let mut session = s.lock().unwrap();
     session
@@ -441,10 +461,8 @@ fn save_as_treats_an_unreadable_file_as_taken() {
     let mut p = store(&s).plotter("silhouette-cameo-2").unwrap();
     p.id = "my-cameo".into();
     p.name = "My Cameo".into();
-    let ctx = h.ctx.clone();
     flatcraft::ui::profiles_window::apply(
         app_mut(&mut h),
-        &ctx,
         flatcraft::ui::profiles_window::Request::SavePlotter {
             profile: Box::new(p),
             parent: "silhouette-cameo-2".into(),
@@ -524,11 +542,11 @@ fn reload_presets_clears_a_fixed_file() {
 }
 
 #[test]
-fn calibration_tab_says_what_comes() {
+fn the_mats_page_says_what_comes_for_calibration() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let mut h = harness(&dir, &s);
-    open(&mut h, "Calibration");
+    open(&mut h, "Mats");
     h.get_by_label("The calibration wizard arrives in milestone 3.");
     assert!(h.query_by_label_contains("mat assistant").is_some());
 }
@@ -540,8 +558,14 @@ fn output_folder_choose_persists() {
     let chosen = dir.path().join("cuts");
     let picker = FakePicker::answering([chosen.clone()]);
     let mut h = harness_steps(&dir, s.clone(), 8, |app| app.with_file_picker(picker));
-    open(&mut h, "App");
+    open(&mut h, "General");
     click(&mut h, "Choose folder...");
+    // Staged until Apply.
+    assert_eq!(
+        s.lock().unwrap().prefs.output_dir,
+        Some(dir.path().join("output"))
+    );
+    click(&mut h, "Apply");
     assert_eq!(
         Preferences::load(dir.path()).output_dir,
         Some(chosen.clone())
@@ -567,6 +591,7 @@ fn add_copy_rename_and_delete_own_mats() {
     let s = session(&dir);
     let mut h = harness(&dir, &s);
     save_as_my_cameo(&mut h);
+    page(&mut h, "Mats");
     click(&mut h, "Add mat");
     h.get_by_label("New mat");
     type_into(&mut h, "Mat name", "Scrap mat");
@@ -636,6 +661,7 @@ fn hiding_a_mat_in_use_is_refused() {
     let s = session(&dir);
     let mut h = harness(&dir, &s);
     save_as_my_cameo(&mut h);
+    page(&mut h, "Mats");
     for (cmd, p) in [
         ("job.set_plotter", json!({ "id": "my-cameo" })),
         ("job.set_media", json!({ "id": "mat-12x24" })),
@@ -685,6 +711,7 @@ fn mat_errors_land_on_their_row() {
     let s = session(&dir);
     let mut h = harness(&dir, &s);
     save_as_my_cameo(&mut h);
+    page(&mut h, "Mats");
     click(&mut h, "Mat 12x12");
     let rows = [
         (
@@ -771,11 +798,11 @@ fn closing_asks_before_dropping_edits() {
     let mut h = harness(&dir, &s);
     save_as_my_cameo(&mut h);
     type_into(&mut h, "Scale x", "1.5");
-    click(&mut h, "Close window");
-    assert!(app(&h).ui.show_profiles);
+    click(&mut h, flatcraft::ui::settings_window::CLOSE_NAME);
+    assert!(app(&h).ui.show_settings);
     h.get_by_label("Discard your changes?");
     click(&mut h, "Discard");
-    assert!(!app(&h).ui.show_profiles);
+    assert!(!app(&h).ui.show_settings);
     // Opening again shows the stored values.
     open(&mut h, "Plotters");
     assert_eq!(
@@ -803,7 +830,7 @@ fn save_as_names_clash_only_within_a_kind() {
 }
 
 #[test]
-fn theme_combo_offers_system_and_follows_the_os() {
+fn theme_buttons_offer_system_and_follow_the_os() {
     use flatcraft_engine::prefs::Theme;
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
@@ -812,15 +839,15 @@ fn theme_combo_offers_system_and_follows_the_os() {
         .update_prefs(|p| p.theme = Theme::Dark)
         .unwrap();
     let mut h = harness(&dir, &s);
-    open(&mut h, "App");
-    h.get_by_label("Theme").click();
-    h.run();
+    open(&mut h, "Appearance");
     h.input_mut().system_theme = Some(egui::Theme::Light);
-    click(&mut h, "System");
-    assert_eq!(Preferences::load(dir.path()).theme, Theme::System);
-    assert_eq!(app(&h).tokens, flatcraft::ui::theme::Tokens::light());
+    click(&mut h, "Theme: System");
+    // The picked option explains itself under the buttons.
     assert!(
         h.query_by_label_contains(flatcraft::ui::profiles_window::THEME_HELP)
             .is_some()
     );
+    click(&mut h, "OK");
+    assert_eq!(Preferences::load(dir.path()).theme, Theme::System);
+    assert_eq!(app(&h).tokens, flatcraft::ui::theme::Tokens::light());
 }

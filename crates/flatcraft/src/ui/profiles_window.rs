@@ -1,27 +1,24 @@
-//! The Profiles window: plotter and material presets, the mats of each
-//! plotter, and the app preferences. It opens from the Settings button and
-//! the macOS Settings menu item (Cmd+,).
+//! The preset pages of the Settings window: plotter and material presets
+//! and the mats of each plotter (see [`super::settings_window`], which
+//! draws the frame around them).
 //!
 //! System presets are read-only; "Save as user preset..." makes a user
 //! preset that inherits from them. The widgets only edit a draft in
-//! [`ProfilesState`] and push [`Request`]s; [`apply`] writes presets and
-//! preferences under the session lock, one short step each, so the MCP
-//! thread never sees half a change. No registry command changes the
-//! preferences: this window is the only way (agent limit).
+//! [`ProfilesState`] and push [`Request`]s; [`apply`] writes presets under
+//! the session lock, one short step each, so the MCP thread never sees half
+//! a change. The Plotters and Mats pages edit the same plotter draft, and
+//! "Save preset" stores both.
 
 use super::tools::Setting;
-use std::path::PathBuf;
-
 use egui::{Color32, Response, RichText, Sense, Ui, vec2};
 use flatcraft_device::profile::MAX_SIZE_MM;
 use flatcraft_device::{
     DEFAULT_MAT_COLOR, GpglDialect, Grid, KnifeCompensation, MaterialOverride, MaterialProfile,
     Media, MediaField, MediaKind, PlotterProfile, PresetInfo, Protocol, TransportSpec,
 };
-use flatcraft_engine::prefs::Theme;
 
 use super::settings::set_name;
-use super::theme::{self, Tokens};
+use super::theme::Tokens;
 use super::{Action, FlatCraftApp, Toast, canvas, files, fonts, lock};
 
 /// Help text under the Theme combo.
@@ -38,29 +35,6 @@ pub const MAT_IN_USE: &str = "This mat is in use. Pick another mat in the job fi
 
 /// Warning under "Allow agents to start cuts".
 pub const AGENT_CUTS_WARNING: &str = "With this on, an agent can start a USB cut without asking you first. Turn it on only when the mat is loaded and you trust the agent. File Output never needs it.";
-
-/// The tabs of the window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Tab {
-    #[default]
-    Plotters,
-    Materials,
-    App,
-    Calibration,
-}
-
-impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Plotters, Tab::Materials, Tab::App, Tab::Calibration];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Tab::Plotters => "Plotters",
-            Tab::Materials => "Materials",
-            Tab::App => "App",
-            Tab::Calibration => "Calibration",
-        }
-    }
-}
 
 /// Plotter or material.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,7 +77,6 @@ pub struct SaveAs {
 /// What the window shows besides the session.
 #[derive(Debug, Default)]
 pub struct ProfilesState {
-    pub tab: Tab,
     pub plotter: Option<Draft<PlotterProfile>>,
     /// The mats of the parent preset: the built-in mats of the selected plotter.
     pub parent_media: Vec<Media>,
@@ -120,13 +93,23 @@ pub struct ProfilesState {
     pub confirm_delete: Option<(Kind, String, String)>,
     /// Waiting for "Discard your changes?".
     pub leave: Option<Leave>,
-    /// Close the window at the end of this frame.
-    closing: bool,
+    /// "Discard" answered a close: the Settings window closes this frame.
+    pub(crate) closing: bool,
+    /// The row a search in the Settings window jumped to.
+    pub(crate) highlight: Highlight,
     /// A message for a toast, from a widget that cannot reach the app.
     notice: Option<String>,
     /// The text of the hex colour field while it has the keyboard.
     hex: String,
     hex_editing: bool,
+}
+
+/// The row of a preset form that a search jumped to: its label, and
+/// whether the form still has to scroll it into view.
+#[derive(Debug, Default)]
+pub(crate) struct Highlight {
+    pub(crate) label: Option<&'static str>,
+    pub(crate) scroll: std::cell::Cell<bool>,
 }
 
 /// What waits for "Discard your changes?".
@@ -136,19 +119,8 @@ pub enum Leave {
     Plotter(String),
     /// Show this material preset.
     Material(String),
-    /// Close the window.
+    /// Close the Settings window.
     Close,
-}
-
-/// One change of the preferences. Each is stored right away.
-#[derive(Debug, Clone, PartialEq)]
-pub enum PrefsChange {
-    AllowAgentCuts(bool),
-    Theme(Theme),
-    DefaultPlotter(String),
-    DefaultMaterial(String),
-    OutputDir(Option<PathBuf>),
-    AutoReload(bool),
 }
 
 /// What the window asks [`apply`] to do.
@@ -167,22 +139,17 @@ pub enum Request {
         new: bool,
     },
     Delete(Kind, String),
-    Prefs(PrefsChange),
+    /// Ask for the File Output folder; the answer goes into the Settings
+    /// window's staged preferences.
     ChooseOutputFolder,
     /// Read the user preset files again (after fixing a broken one).
     ReloadPresets,
 }
 
 /// What the window reads from the session, copied under one lock.
-struct View {
-    plotters: Vec<PresetInfo>,
-    materials: Vec<PresetInfo>,
-    allow_agent_cuts: bool,
-    theme: Theme,
-    default_plotter: String,
-    default_material: String,
-    output_dir: Option<PathBuf>,
-    auto_reload: bool,
+pub(crate) struct View {
+    pub(crate) plotters: Vec<PresetInfo>,
+    pub(crate) materials: Vec<PresetInfo>,
     /// (plotter id, mat id) pairs open jobs and new documents use.
     mats_in_use: Vec<(String, String)>,
     /// User preset files the store could not read.
@@ -343,92 +310,59 @@ pub fn material_problems(m: &MaterialProfile) -> Vec<String> {
     out
 }
 
-/// Draws the window when it is open. Loads a newly selected preset first.
-pub fn show(ctx: &egui::Context, app: &mut FlatCraftApp, actions: &mut Vec<Action>) {
-    let view = load(app);
-    let t = app.tokens;
-    let st = &mut app.ui.profiles;
-    let mut open = true;
-    let screen = ctx.content_rect();
-    egui::Window::new("Profiles")
-        .id(egui::Id::unique("flatcraft-profiles"))
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(true)
-        .default_size([1080.0, 680.0])
-        .default_pos(screen.center() - vec2(540.0, 360.0))
-        .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                for tab in Tab::ALL {
-                    let on = st.tab == tab;
-                    let r = ui.add(egui::Button::selectable(on, tab.name()));
-                    r.widget_info(|| {
-                        egui::WidgetInfo::selected(egui::accesskit::Role::Tab, true, on, tab.name())
-                    });
-                    if r.clicked() {
-                        st.tab = tab;
-                    }
-                }
-            });
-            ui.separator();
-            for d in &view.diagnostics {
-                ui.label(
-                    RichText::new(format!(
-                        "This preset file can't be read: {}",
-                        d.reason
-                    ))
-                    .color(t.danger),
-                )
-                .on_hover_text(d.path.display().to_string());
-            }
-            if !view.diagnostics.is_empty()
-                && ui
-                    .button("Reload presets")
-                    .on_hover_text("Fixed the file? Read the preset folder again.")
-                    .clicked()
-            {
-                actions.push(Action::Profiles(Request::ReloadPresets));
-            }
-            if st.leave.is_some() {
-                discard_banner(ui, st, &t);
-            }
-            match st.tab {
-                Tab::Plotters => plotters_tab(ui, st, &view, &t, actions),
-                Tab::Materials => materials_tab(ui, st, &view, &t, actions),
-                Tab::App => app_tab(ui, &view, &t, actions),
-                Tab::Calibration => {
-                    ui.add_space(t.spacing);
-                    ui.label("The calibration wizard arrives in milestone 3.");
-                    ui.label(
-                        RichText::new(
-                            "The mat assistant, which finds where the printed grid of your mat starts, arrives there too.",
-                        )
-                        .color(t.text_dim),
-                    );
-                }
-            }
-        });
-    save_as_dialog(ctx, st, &view, &t, actions);
-    delete_dialog(ctx, st, &t, actions);
-    let unsaved = st.plotter.as_ref().is_some_and(Draft::changed)
-        || st.material.as_ref().is_some_and(Draft::changed);
-    if !open && unsaved {
-        st.leave = Some(Leave::Close);
-    } else if !open || st.closing {
-        st.closing = false;
-        st.leave = None;
-        st.save_as = None;
-        st.confirm_delete = None;
-        app.ui.show_profiles = false;
+/// The unreadable preset files and "Reload presets", over a preset page.
+pub(crate) fn diagnostics(ui: &mut Ui, view: &View, t: &Tokens, actions: &mut Vec<Action>) {
+    for d in &view.diagnostics {
+        ui.label(
+            RichText::new(format!("This preset file can't be read: {}", d.reason)).color(t.danger),
+        )
+        .on_hover_text(d.path.display().to_string());
     }
-    if let Some(n) = app.ui.profiles.notice.take() {
-        app.toast(Toast::warning(n));
+    if !view.diagnostics.is_empty()
+        && ui
+            .button("Reload presets")
+            .on_hover_text("Fixed the file? Read the preset folder again.")
+            .clicked()
+    {
+        actions.push(Action::Profiles(Request::ReloadPresets));
     }
+}
+
+/// Whether a preset draft holds edits that are not saved.
+pub(crate) fn unsaved(st: &ProfilesState) -> bool {
+    st.plotter.as_ref().is_some_and(Draft::changed)
+        || st.material.as_ref().is_some_and(Draft::changed)
+}
+
+/// The Save as and Delete questions over the window.
+pub(crate) fn dialogs(
+    ctx: &egui::Context,
+    st: &mut ProfilesState,
+    view: &View,
+    t: &Tokens,
+    actions: &mut Vec<Action>,
+) {
+    save_as_dialog(ctx, st, view, t, actions);
+    delete_dialog(ctx, st, t, actions);
+}
+
+/// Forgets the open questions when the window closes.
+pub(crate) fn closed(st: &mut ProfilesState) {
+    st.closing = false;
+    st.leave = None;
+    st.save_as = None;
+    st.confirm_delete = None;
+    st.highlight = Highlight::default();
+}
+
+/// Takes the toast a widget asked for.
+pub(crate) fn take_notice(st: &mut ProfilesState) -> Option<String> {
+    st.notice.take()
 }
 
 /// "Discard your changes?" at the top of the window, for a preset switch
 /// or Close while a draft has unsaved edits.
-fn discard_banner(ui: &mut Ui, st: &mut ProfilesState, t: &Tokens) {
+pub(crate) fn discard_banner(ui: &mut Ui, st: &mut ProfilesState, t: &Tokens) {
     egui::Frame::new()
         .stroke(egui::Stroke::new(1.0, t.accent_cut))
         .corner_radius(t.radius)
@@ -466,7 +400,7 @@ fn discard_banner(ui: &mut Ui, st: &mut ProfilesState, t: &Tokens) {
 
 /// Copies the lists and preferences, and loads a newly selected preset,
 /// under one lock.
-fn load(app: &mut FlatCraftApp) -> View {
+pub(crate) fn load(app: &mut FlatCraftApp) -> View {
     let st = &mut app.ui.profiles;
     let s = lock(&app.session);
     let job = &s.doc().document.job;
@@ -540,12 +474,6 @@ fn load(app: &mut FlatCraftApp) -> View {
         mats_in_use: mats_in_use(&s),
         plotters,
         materials,
-        allow_agent_cuts: s.prefs.allow_agent_cuts,
-        theme: s.prefs.theme,
-        default_plotter: s.prefs.default_plotter.clone(),
-        default_material: s.prefs.default_material.clone(),
-        output_dir: s.prefs.output_dir.clone(),
-        auto_reload: s.prefs.auto_reload,
         diagnostics: s.profiles.diagnostics().to_vec(),
     }
 }
@@ -570,7 +498,7 @@ fn header(ui: &mut Ui, name: &str, parent: Option<&str>, system: bool, t: &Token
 
 /// Text painted without an accessibility node, so the widget next to it
 /// is the only node with that name. `dot` marks a modified field.
-fn paint_text(ui: &mut Ui, text: &str, color: Color32, dot: Option<Color32>) {
+fn paint_text(ui: &mut Ui, text: &str, color: Color32, dot: Option<Color32>) -> egui::Rect {
     let font = egui::TextStyle::Body.resolve(ui.style());
     let galley = ui.painter().layout_no_wrap(text.to_string(), font, color);
     let extra = if dot.is_some() { 12.0 } else { 0.0 };
@@ -580,6 +508,7 @@ fn paint_text(ui: &mut Ui, text: &str, color: Color32, dot: Option<Color32>) {
         ui.painter()
             .circle_filled(egui::pos2(rect.right() - 4.0, rect.center().y), 3.5, c);
     }
+    rect
 }
 
 /// Rows of a form with "modified" dots from the modified fields of the
@@ -587,6 +516,8 @@ fn paint_text(ui: &mut Ui, text: &str, color: Color32, dot: Option<Color32>) {
 struct Form<'a> {
     modified: &'a [String],
     t: &'a Tokens,
+    /// The row a search jumped to.
+    highlight: &'a Highlight,
 }
 
 impl Form<'_> {
@@ -609,21 +540,34 @@ impl Form<'_> {
     /// its hover card.
     fn row(&self, ui: &mut Ui, label: &str, key: &str, add: impl FnOnce(&mut Ui) -> Response) {
         let dot = self.is_modified(key).then_some(self.t.accent_prepare);
-        paint_text(ui, label, ui.visuals().text_color(), dot);
+        let at = paint_text(ui, label, ui.visuals().text_color(), dot);
         let r = add(ui);
         set_name(ui, &r, &self.name(label, key));
         if let Some(setting) = setting_of(key) {
             super::groups::card(&r, label, setting.card(), None, false);
         }
+        self.mark(ui, label, at.union(r.rect));
         ui.end_row();
+    }
+
+    /// Outlines the row a search jumped to and scrolls it into view once.
+    fn mark(&self, ui: &Ui, label: &str, rect: egui::Rect) {
+        if self.highlight.label != Some(label) {
+            return;
+        }
+        super::settings_window::paint_highlight(ui, rect, self.t);
+        if self.highlight.scroll.replace(false) {
+            ui.scroll_to_rect(rect, Some(egui::Align::Center));
+        }
     }
 
     /// A checkbox in the widget column.
     fn check(&self, ui: &mut Ui, label: &str, key: &str, v: &mut bool) {
         let dot = self.is_modified(key).then_some(self.t.accent_prepare);
-        paint_text(ui, "", ui.visuals().text_color(), dot);
+        let at = paint_text(ui, "", ui.visuals().text_color(), dot);
         let r = ui.checkbox(v, label);
         set_name(ui, &r, &self.name(label, key));
+        self.mark(ui, label, at.union(r.rect));
         ui.end_row();
     }
 }
@@ -636,6 +580,7 @@ fn setting_of(key: &str) -> Option<Setting> {
         "passes" | "passes_range" => Setting::Passes,
         "overcut_mm" => Setting::Overcut,
         "blade_offset_mm" => Setting::BladeOffset,
+        "knife_compensation" => Setting::KnifeCompensation,
         _ => return None,
     })
 }
@@ -766,50 +711,62 @@ fn preset_buttons(
     }
 }
 
-fn plotters_tab(
+/// The plotter preset list in the left column. A pick with unsaved edits
+/// asks first.
+fn plotter_list(ui: &mut Ui, st: &mut ProfilesState, view: &View, t: &Tokens, height: f32) {
+    ui.vertical(|ui| {
+        ui.set_width(LIST_WIDTH);
+        egui::ScrollArea::vertical()
+            .id_salt("flatcraft-profiles-plotter-list")
+            .max_height(height)
+            .show(ui, |ui| {
+                let sel = st.plotter.as_ref().map(|d| d.id.as_str());
+                if let Some(id) = preset_list(ui, &view.plotters, sel, t) {
+                    if st.plotter.as_ref().is_some_and(Draft::changed) {
+                        st.leave = Some(Leave::Plotter(id));
+                    } else {
+                        st.want_plotter = Some(id);
+                    }
+                }
+            });
+    });
+}
+
+/// Width of the preset list column.
+const LIST_WIDTH: f32 = 170.0;
+
+/// The name, origin and Save buttons of the selected plotter preset, then
+/// `body` with the draft. The Plotters and the Mats page share it.
+fn plotter_page(
     ui: &mut Ui,
     st: &mut ProfilesState,
     view: &View,
     t: &Tokens,
     actions: &mut Vec<Action>,
+    body: impl FnOnce(&mut Ui, &mut ProfilesState, &View, &Tokens),
 ) {
     let height = ui.available_height();
     ui.horizontal_top(|ui| {
-        ui.vertical(|ui| {
-            ui.set_width(190.0);
-            egui::ScrollArea::vertical()
-                .id_salt("flatcraft-profiles-plotter-list")
-                .max_height(height)
-                .show(ui, |ui| {
-                    let sel = st.plotter.as_ref().map(|d| d.id.as_str());
-                    if let Some(id) = preset_list(ui, &view.plotters, sel, t) {
-                        if st.plotter.as_ref().is_some_and(Draft::changed) {
-                            st.leave = Some(Leave::Plotter(id));
-                        } else {
-                            st.want_plotter = Some(id);
-                        }
-                    }
-                });
-        });
+        plotter_list(ui, st, view, t, height);
         ui.separator();
-        let Some(d) = st.plotter.as_mut() else {
+        let Some(d) = st.plotter.as_ref() else {
             if let Some((Kind::Plotter, id, e)) = &st.load_error {
                 ui.label(RichText::new(format!("Cannot load {id}: {e}")).color(t.danger));
             }
             return;
         };
         let problems = plotter_problems(&d.edit);
+        let (id, name, system, parent) = (
+            d.id.clone(),
+            d.saved.name.clone(),
+            d.system,
+            d.parent.clone(),
+        );
+        let edit = d.edit.clone();
+        let changed = d.changed();
         let mut revert = false;
         ui.vertical(|ui| {
-            ui.set_width(360.0);
-            let (id, name, system, parent) = (
-                d.id.clone(),
-                d.saved.name.clone(),
-                d.system,
-                d.parent.clone(),
-            );
             header(ui, &name, parent.as_deref(), system, t);
-            let edit = d.edit.clone();
             preset_buttons(
                 ui,
                 Kind::Plotter,
@@ -817,7 +774,7 @@ fn plotters_tab(
                 &name,
                 system,
                 parent.is_some(),
-                d.changed(),
+                changed,
                 &problems,
                 t,
                 || Request::SavePlotter {
@@ -831,46 +788,98 @@ fn plotters_tab(
                 actions,
             );
             ui.separator();
-            egui::ScrollArea::vertical()
-                .id_salt("flatcraft-profiles-plotter-form")
-                .max_height(ui.available_height())
-                .show(ui, |ui| plotter_form(ui, d, t));
+            body(ui, st, view, t);
         });
-        ui.separator();
-        ui.vertical(|ui| {
-            egui::ScrollArea::vertical()
-                .id_salt("flatcraft-profiles-mats")
-                .max_height(height)
-                .show(ui, |ui| {
-                    let in_use: Vec<&str> = view
-                        .mats_in_use
-                        .iter()
-                        .filter(|(p, _)| *p == d.id)
-                        .map(|(_, m)| m.as_str())
-                        .collect();
-                    mats(
-                        ui,
-                        d,
-                        &in_use,
-                        &mut st.notice,
-                        &st.parent_media,
-                        &mut st.mat,
-                        &mut st.hex,
-                        &mut st.hex_editing,
-                        t,
-                    )
-                });
-        });
-        if revert {
+        if revert && let Some(d) = st.plotter.as_mut() {
             d.edit = d.saved.clone();
         }
     });
 }
 
-fn plotter_form(ui: &mut Ui, d: &mut Draft<PlotterProfile>, t: &Tokens) {
+/// The Plotters page: the preset list and the plotter form.
+pub(crate) fn plotters_page(
+    ui: &mut Ui,
+    st: &mut ProfilesState,
+    view: &View,
+    t: &Tokens,
+    actions: &mut Vec<Action>,
+) {
+    plotter_page(ui, st, view, t, actions, |ui, st, _, t| {
+        let Some(d) = st.plotter.as_mut() else { return };
+        let hl = &st.highlight;
+        egui::ScrollArea::vertical()
+            .id_salt("flatcraft-profiles-plotter-form")
+            .max_height(ui.available_height())
+            .show(ui, |ui| plotter_form(ui, d, hl, t));
+    });
+}
+
+/// The Mats page: the preset list and the mats of the selected plotter
+/// preset, which "Save preset" stores with it.
+pub(crate) fn mats_page(
+    ui: &mut Ui,
+    st: &mut ProfilesState,
+    view: &View,
+    t: &Tokens,
+    actions: &mut Vec<Action>,
+) {
+    plotter_page(ui, st, view, t, actions, |ui, st, view, t| {
+        let ProfilesState {
+            plotter: Some(d),
+            notice,
+            parent_media,
+            mat,
+            hex,
+            hex_editing,
+            highlight,
+            ..
+        } = st
+        else {
+            return;
+        };
+        egui::ScrollArea::vertical()
+            .id_salt("flatcraft-profiles-mats")
+            .max_height(ui.available_height())
+            .show(ui, |ui| {
+                let in_use: Vec<&str> = view
+                    .mats_in_use
+                    .iter()
+                    .filter(|(p, _)| *p == d.id)
+                    .map(|(_, m)| m.as_str())
+                    .collect();
+                mats(
+                    ui,
+                    d,
+                    &in_use,
+                    notice,
+                    parent_media,
+                    mat,
+                    hex,
+                    hex_editing,
+                    highlight,
+                    t,
+                );
+                ui.add_space(t.spacing * 2.0);
+                ui.label(RichText::new("Calibration").font(fonts::semibold(14.0)));
+                ui.label(CALIBRATION_LATER);
+                ui.label(
+                    RichText::new(
+                        "The mat assistant, which finds where the printed grid of your mat starts, arrives there too.",
+                    )
+                    .color(t.text_dim),
+                );
+            });
+    });
+}
+
+/// What the Mats page says about calibration.
+pub const CALIBRATION_LATER: &str = "The calibration wizard arrives in milestone 3.";
+
+fn plotter_form(ui: &mut Ui, d: &mut Draft<PlotterProfile>, highlight: &Highlight, t: &Tokens) {
     let f = Form {
         modified: &d.modified,
         t,
+        highlight,
     };
     let p = &mut d.edit;
     ui.add_enabled_ui(!d.system, |ui| {
@@ -1092,13 +1101,14 @@ fn mats(
     selected: &mut Option<String>,
     hex_text: &mut String,
     hex_editing: &mut bool,
+    highlight: &Highlight,
     t: &Tokens,
 ) {
     let f = Form {
         modified: &d.modified,
         t,
+        highlight,
     };
-    ui.label(RichText::new("Mats").font(fonts::semibold(15.0)));
     ui.label(
         RichText::new("Measure twice, cut once. The grid's 0,0 is FlatCraft's 0,0.")
             .color(t.text_dim),
@@ -1111,33 +1121,36 @@ fn mats(
         .iter()
         .filter(|p| !media.iter().any(|m| m.id == p.id))
         .collect();
-    for (m, is_hidden) in media
-        .iter()
-        .map(|m| (m, false))
-        .chain(hidden.iter().map(|m| (*m, true)))
-    {
-        let mut notes = Vec::new();
-        if is_hidden {
-            notes.push("hidden");
+    // The mats side by side, so the form below stays in view.
+    ui.horizontal_wrapped(|ui| {
+        for (m, is_hidden) in media
+            .iter()
+            .map(|m| (m, false))
+            .chain(hidden.iter().map(|m| (*m, true)))
+        {
+            let mut notes = Vec::new();
+            if is_hidden {
+                notes.push("hidden");
+            }
+            if m.validate().is_err() && !is_hidden {
+                notes.push("needs a fix");
+            }
+            if f.is_modified(&format!("media.{}", m.id)) {
+                notes.push("modified");
+            }
+            let label = if notes.is_empty() {
+                m.name.clone()
+            } else {
+                format!("{} ({})", m.name, notes.join(", "))
+            };
+            let on = selected.as_deref() == Some(m.id.as_str());
+            let r = ui.add(egui::Button::selectable(on, label));
+            if r.clicked() {
+                *selected = Some(m.id.clone());
+                *hex_editing = false;
+            }
         }
-        if m.validate().is_err() && !is_hidden {
-            notes.push("needs a fix");
-        }
-        if f.is_modified(&format!("media.{}", m.id)) {
-            notes.push("modified");
-        }
-        let label = if notes.is_empty() {
-            m.name.clone()
-        } else {
-            format!("{} ({})", m.name, notes.join(", "))
-        };
-        let on = selected.as_deref() == Some(m.id.as_str());
-        let r = ui.add(egui::Button::selectable(on, label));
-        if r.clicked() {
-            *selected = Some(m.id.clone());
-            *hex_editing = false;
-        }
-    }
+    });
     ui.add_enabled_ui(!system, |ui| {
         ui.horizontal(|ui| {
             let owned: Vec<String> = media
@@ -1258,6 +1271,7 @@ fn mats(
     let f = Form {
         modified: &mat_modified,
         t,
+        highlight,
     };
     let m = &mut media[i];
     let problem = mat_problem(m);
@@ -1399,7 +1413,8 @@ fn mat_drawing(ui: &mut Ui, m: &Media, t: &Tokens) {
     );
 }
 
-fn materials_tab(
+/// The Materials page: the preset list and the material form.
+pub(crate) fn materials_page(
     ui: &mut Ui,
     st: &mut ProfilesState,
     view: &View,
@@ -1409,7 +1424,7 @@ fn materials_tab(
     let height = ui.available_height();
     ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
-            ui.set_width(190.0);
+            ui.set_width(LIST_WIDTH);
             egui::ScrollArea::vertical()
                 .id_salt("flatcraft-profiles-material-list")
                 .max_height(height)
@@ -1466,7 +1481,7 @@ fn materials_tab(
             egui::ScrollArea::vertical()
                 .id_salt("flatcraft-profiles-material-form")
                 .max_height(ui.available_height())
-                .show(ui, |ui| material_form(ui, d, view, t));
+                .show(ui, |ui| material_form(ui, d, &st.highlight, view, t));
         });
         if revert {
             d.edit = d.saved.clone();
@@ -1474,10 +1489,17 @@ fn materials_tab(
     });
 }
 
-fn material_form(ui: &mut Ui, d: &mut Draft<MaterialProfile>, view: &View, t: &Tokens) {
+fn material_form(
+    ui: &mut Ui,
+    d: &mut Draft<MaterialProfile>,
+    highlight: &Highlight,
+    view: &View,
+    t: &Tokens,
+) {
     let f = Form {
         modified: &d.modified,
         t,
+        highlight,
     };
     let m = &mut d.edit;
     ui.add_enabled_ui(!d.system, |ui| {
@@ -1654,117 +1676,6 @@ fn cell<T: egui::emath::Numeric>(
     });
 }
 
-fn app_tab(ui: &mut Ui, view: &View, t: &Tokens, actions: &mut Vec<Action>) {
-    let mut reqs: Vec<Request> = Vec::new();
-    let dim = t.text_dim;
-    ui.add_space(t.spacing / 2.0);
-    let mut allow = view.allow_agent_cuts;
-    if ui
-        .checkbox(&mut allow, "Allow agents to start cuts")
-        .changed()
-    {
-        reqs.push(Request::Prefs(PrefsChange::AllowAgentCuts(allow)));
-    }
-    let warn = if allow { t.accent_cut } else { dim };
-    ui.label(RichText::new(AGENT_CUTS_WARNING).color(warn));
-    ui.add_space(t.spacing);
-
-    let mut reload = view.auto_reload;
-    if ui
-        .checkbox(&mut reload, "Reload changed files automatically")
-        .changed()
-    {
-        reqs.push(Request::Prefs(PrefsChange::AutoReload(reload)));
-    }
-    ui.label(RichText::new(AUTO_RELOAD_HELP).color(dim));
-    ui.add_space(t.spacing);
-
-    egui::Grid::new("flatcraft-profiles-app")
-        .num_columns(2)
-        .spacing([t.spacing, t.spacing * 0.75])
-        .show(ui, |ui| {
-            paint_text(ui, "Theme", ui.visuals().text_color(), None);
-            let mut theme = view.theme;
-            let r = combo(
-                ui,
-                "theme",
-                &mut theme,
-                &[
-                    (Theme::Dark, "Dark"),
-                    (Theme::Light, "Light"),
-                    (Theme::System, "System"),
-                ],
-            );
-            set_name(ui, &r, "Theme");
-            if theme != view.theme {
-                reqs.push(Request::Prefs(PrefsChange::Theme(theme)));
-            }
-            ui.end_row();
-            ui.allocate_space(egui::Vec2::ZERO);
-            ui.label(RichText::new(THEME_HELP).color(dim));
-            ui.end_row();
-
-            paint_text(ui, "Default device", ui.visuals().text_color(), None);
-            let mut device = view.default_plotter.clone();
-            let choices: Vec<(String, &str)> = view
-                .plotters
-                .iter()
-                .map(|p| (p.id.clone(), p.name.as_str()))
-                .collect();
-            let r = combo(ui, "default-device", &mut device, &choices);
-            set_name(ui, &r, "Default device");
-            if device != view.default_plotter {
-                reqs.push(Request::Prefs(PrefsChange::DefaultPlotter(device)));
-            }
-            ui.end_row();
-
-            paint_text(ui, "Default material", ui.visuals().text_color(), None);
-            let mut material = view.default_material.clone();
-            let choices: Vec<(String, &str)> = view
-                .materials
-                .iter()
-                .map(|m| (m.id.clone(), m.name.as_str()))
-                .collect();
-            let r = combo(ui, "default-material", &mut material, &choices);
-            set_name(ui, &r, "Default material");
-            if material != view.default_material {
-                reqs.push(Request::Prefs(PrefsChange::DefaultMaterial(material)));
-            }
-            ui.end_row();
-
-            paint_text(ui, "File Output folder", ui.visuals().text_color(), None);
-            ui.vertical(|ui| {
-                let shown = view.output_dir.as_ref().map_or_else(
-                    || "Documents/FlatCraft Output (the default)".to_string(),
-                    |d| d.display().to_string(),
-                );
-                ui.label(shown);
-                ui.horizontal(|ui| {
-                    if ui.button("Choose folder...").clicked() {
-                        reqs.push(Request::ChooseOutputFolder);
-                    }
-                    if ui
-                        .add_enabled(
-                            view.output_dir.is_some(),
-                            egui::Button::new("Use the default"),
-                        )
-                        .clicked()
-                    {
-                        reqs.push(Request::Prefs(PrefsChange::OutputDir(None)));
-                    }
-                });
-            });
-            ui.end_row();
-        });
-    ui.label(
-        RichText::new(
-            "New documents start with the default device and material. A File Output plotter profile with its own folder writes there instead.",
-        )
-        .color(dim),
-    );
-    actions.extend(reqs.into_iter().map(Action::Profiles));
-}
-
 fn save_as_dialog(
     ctx: &egui::Context,
     st: &mut ProfilesState,
@@ -1903,7 +1814,7 @@ fn delete_dialog(
 
 /// Runs a request of the window. Every write happens under the session
 /// lock in one short step.
-pub fn apply(app: &mut FlatCraftApp, ctx: &egui::Context, req: Request) {
+pub fn apply(app: &mut FlatCraftApp, req: Request) {
     match req {
         Request::SavePlotter {
             profile,
@@ -1963,7 +1874,6 @@ pub fn apply(app: &mut FlatCraftApp, ctx: &egui::Context, req: Request) {
             saved(app, Kind::Material, &profile.id, &profile.name, result);
         }
         Request::Delete(kind, id) => delete(app, kind, &id),
-        Request::Prefs(change) => set_pref(app, ctx, change),
         Request::ReloadPresets => {
             let result = lock(&app.session).profiles.reload();
             match result {
@@ -1983,14 +1893,20 @@ pub fn apply(app: &mut FlatCraftApp, ctx: &egui::Context, req: Request) {
             }
         }
         Request::ChooseOutputFolder => {
-            let current = lock(&app.session).prefs.output_dir.clone();
+            let current = match &app.ui.settings.draft {
+                Some(d) => d.output_dir.clone(),
+                None => lock(&app.session).prefs.output_dir.clone(),
+            };
             let req = files::FileRequest {
                 title: "File Output folder".into(),
                 directory: current,
                 ..Default::default()
             };
-            if let Some(dir) = app.files.pick_folder(&req) {
-                set_pref(app, ctx, PrefsChange::OutputDir(Some(dir)));
+            // Staged: Apply or OK stores it.
+            if let Some(dir) = app.files.pick_folder(&req)
+                && let Some(d) = app.ui.settings.draft.as_mut()
+            {
+                d.output_dir = Some(dir);
             }
         }
     }
@@ -2052,33 +1968,6 @@ fn delete(app: &mut FlatCraftApp, kind: Kind, id: &str) {
             app.toast(Toast::info(format!("Deleted {id}.")));
         }
         Err(e) => app.toast(Toast::error(format!("Cannot delete {id}: {e}"))),
-    }
-}
-
-fn set_pref(app: &mut FlatCraftApp, ctx: &egui::Context, change: PrefsChange) {
-    let theme = match &change {
-        PrefsChange::Theme(t) => Some(*t),
-        _ => None,
-    };
-    // Only the touched field changes; the file is read again first, so a
-    // preference another FlatCraft process stored meanwhile is kept.
-    let result = lock(&app.session).update_prefs(|p| match change {
-        PrefsChange::AllowAgentCuts(v) => p.allow_agent_cuts = v,
-        PrefsChange::Theme(v) => p.theme = v,
-        PrefsChange::DefaultPlotter(v) => p.default_plotter = v,
-        PrefsChange::DefaultMaterial(v) => p.default_material = v,
-        PrefsChange::OutputDir(v) => p.output_dir = v,
-        PrefsChange::AutoReload(v) => p.auto_reload = v,
-    });
-    if let Some(theme) = theme {
-        app.tokens = Tokens::for_theme(theme, ctx.system_theme());
-        app.follows_system = theme == Theme::System;
-        theme::apply(ctx, &app.tokens, app.follows_system);
-    }
-    if let Err(e) = result {
-        app.toast(Toast::error(format!(
-            "Cannot store the preferences: {e}. The change holds until FlatCraft closes."
-        )));
     }
 }
 

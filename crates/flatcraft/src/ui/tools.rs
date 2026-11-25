@@ -1040,10 +1040,11 @@ pub enum Setting {
     MinFeature,
     AutoMinFeature,
     AutoArrangeSpacing,
+    KnifeCompensation,
 }
 
 impl Setting {
-    pub const ALL: [Setting; 23] = [
+    pub const ALL: [Setting; 24] = [
         Setting::Width,
         Setting::Height,
         Setting::ScalePercent,
@@ -1067,6 +1068,7 @@ impl Setting {
         Setting::MinFeature,
         Setting::AutoMinFeature,
         Setting::AutoArrangeSpacing,
+        Setting::KnifeCompensation,
     ];
 
     /// The text of its hover card: what it does, when to change it, and
@@ -1139,6 +1141,9 @@ impl Setting {
             }
             Setting::AutoArrangeSpacing => {
                 "The gap left between objects, in millimetres. A pinned Auto arrange uses it too."
+            }
+            Setting::KnifeCompensation => {
+                "Who steers the blade around corners. Firmware lets the plotter do it, Host lets FlatCraft do it, None cuts the plain lines."
             }
         }
     }

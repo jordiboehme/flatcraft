@@ -265,7 +265,7 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                     let settings = flat_icon(ui, Icon::Settings, "Settings", SETTINGS_HINT, None);
                     hot_right.extend([version.rect, help.rect, settings.rect]);
                     if settings.clicked() {
-                        actions.push(Action::ShowProfiles);
+                        actions.push(Action::ShowSettings);
                     }
                     if let Some(status) = agent {
                         let color = if status == "Agent connected" {
