@@ -852,18 +852,28 @@ fn theme_buttons_offer_system_and_follow_the_os() {
     assert_eq!(app(&h).tokens, flatcraft::ui::theme::Tokens::light());
 }
 
-/// The labels of the checkboxes shown now.
-fn checkboxes(h: &AppHarness) -> Vec<String> {
-    h.query_all_by_role(Role::CheckBox)
+/// The labels of the setting controls shown now: text and number fields,
+/// choices, checkboxes and the mat colour button.
+fn controls(h: &AppHarness) -> Vec<String> {
+    h.root()
+        .children_recursive()
+        .filter(|n| {
+            let a = n.accesskit_node();
+            matches!(
+                a.role(),
+                Role::TextInput | Role::SpinButton | Role::ComboBox | Role::CheckBox
+            ) || (a.role() == Role::Button
+                && a.label().is_some_and(|l| l.starts_with("Mat colour")))
+        })
         .filter_map(|n| n.accesskit_node().label())
         .collect()
 }
 
-/// Hovers every checkbox of the open page that is not in `outside` and
-/// returns the ones that show no setting card.
-fn checkboxes_without_a_card(h: &mut AppHarness, outside: &[String]) -> (usize, Vec<String>) {
+/// Hovers every setting control of the open page that is not in `outside`
+/// and returns how many there were and the ones that show no card.
+fn controls_without_a_card(h: &mut AppHarness, outside: &[String]) -> (usize, Vec<String>) {
     use flatcraft::ui::tools::Setting;
-    let labels: Vec<String> = checkboxes(h)
+    let labels: Vec<String> = controls(h)
         .into_iter()
         .filter(|l| !outside.contains(l))
         .collect();
@@ -886,12 +896,20 @@ fn checkboxes_without_a_card(h: &mut AppHarness, outside: &[String]) -> (usize, 
 }
 
 #[test]
-fn every_checkbox_in_the_preset_pages_has_a_hover_card() {
+fn every_setting_control_in_the_preset_pages_has_a_hover_card() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     // Tall enough that every field of a page is on screen to hover.
     let mut h = common::harness_sized(&dir, s.clone(), [1400.0, 2400.0], 8, |app| app);
-    let outside = checkboxes(&h);
+    // The settings search field is not a preset field.
+    let mut outside = controls(&h);
+    outside.push("Search settings".into());
+    let mut seen = 0;
+    let check = |h: &mut AppHarness, what: &str| {
+        let (n, missing) = controls_without_a_card(h, &outside);
+        assert_eq!(missing, Vec::<String>::new(), "{what}");
+        n
+    };
     // A user material with one plotter override shows the override boxes.
     open(&mut h, "Materials");
     click(&mut h, "Copy Paper");
@@ -900,23 +918,20 @@ fn every_checkbox_in_the_preset_pages_has_a_hover_card() {
     h.get_by_label("Add override for").click();
     h.run();
     click(&mut h, "Silhouette Cameo 2");
-    let mut seen = 0;
-    let (n, missing) = checkboxes_without_a_card(&mut h, &outside);
-    assert_eq!(missing, Vec::<String>::new(), "Materials");
-    seen += n;
-    // The system Cameo 2: every field dimmed, a built-in mat to hide.
-    for (tab, preset) in [("Plotters", "Silhouette Cameo 2"), ("Mats", "")] {
-        page(&mut h, tab);
-        if !preset.is_empty() {
-            click(&mut h, preset);
-        }
-        let (n, missing) = checkboxes_without_a_card(&mut h, &outside);
-        assert_eq!(missing, Vec::<String>::new(), "{tab}");
-        seen += n;
+    seen += check(&mut h, "Materials");
+    // Both plotters: one sends over USB with firmware compensation, the
+    // other writes files.
+    page(&mut h, "Plotters");
+    for preset in ["Silhouette Cameo 2", "File Output (GPGL Cameo 2)"] {
+        click(&mut h, preset);
+        seen += check(&mut h, preset);
     }
-    // Mirror x and y, three capabilities, Calibrated, Hidden, Reverse
-    // alternate passes, Track enhancing and four override boxes.
-    assert!(seen >= 13, "{seen}");
+    // The mats of the File Output preset, a built-in mat to hide.
+    page(&mut h, "Mats");
+    seen += check(&mut h, "Mats");
+    // 80 controls on these pages today: the count catches a page that
+    // stopped showing its fields.
+    assert!(seen >= 80, "{seen}");
 }
 
 #[test]

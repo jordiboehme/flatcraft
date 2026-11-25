@@ -1054,10 +1054,42 @@ pub enum Setting {
     HiddenMat,
     TrackEnhancing,
     OverrideSet,
+    PresetName,
+    Vendor,
+    Model,
+    Protocol,
+    Dialect,
+    Transport,
+    UsbVendorId,
+    UsbProductId,
+    OutputFolder,
+    FileExtension,
+    UnitsPerMm,
+    ScaleX,
+    ScaleY,
+    SpeedRange,
+    ForceRange,
+    PassesRange,
+    FlattenTolerance,
+    FcValue,
+    HostOffset,
+    PivotThreshold,
+    MatName,
+    MatKind,
+    MatWidth,
+    MatHeight,
+    GridOriginX,
+    GridOriginY,
+    GridWidth,
+    GridHeight,
+    MatColour,
+    MatColourHex,
+    BladeDepthHint,
+    AddOverride,
 }
 
 impl Setting {
-    pub const ALL: [Setting; 34] = [
+    pub const ALL: [Setting; 66] = [
         Setting::Width,
         Setting::Height,
         Setting::ScalePercent,
@@ -1092,6 +1124,38 @@ impl Setting {
         Setting::HiddenMat,
         Setting::TrackEnhancing,
         Setting::OverrideSet,
+        Setting::PresetName,
+        Setting::Vendor,
+        Setting::Model,
+        Setting::Protocol,
+        Setting::Dialect,
+        Setting::Transport,
+        Setting::UsbVendorId,
+        Setting::UsbProductId,
+        Setting::OutputFolder,
+        Setting::FileExtension,
+        Setting::UnitsPerMm,
+        Setting::ScaleX,
+        Setting::ScaleY,
+        Setting::SpeedRange,
+        Setting::ForceRange,
+        Setting::PassesRange,
+        Setting::FlattenTolerance,
+        Setting::FcValue,
+        Setting::HostOffset,
+        Setting::PivotThreshold,
+        Setting::MatName,
+        Setting::MatKind,
+        Setting::MatWidth,
+        Setting::MatHeight,
+        Setting::GridOriginX,
+        Setting::GridOriginY,
+        Setting::GridWidth,
+        Setting::GridHeight,
+        Setting::MatColour,
+        Setting::MatColourHex,
+        Setting::BladeDepthHint,
+        Setting::AddOverride,
     ];
 
     /// The text of its hover card: what it does, when to change it, and
@@ -1194,6 +1258,100 @@ impl Setting {
             }
             Setting::TrackEnhancing => {
                 "Turns on track enhancing for this material: a mode for the feed rollers (the rubber wheels that move the mat or sheet) that is meant to help long or heavy material run straight. It only works when the plotter's own Track enhancing box is on too."
+            }
+            Setting::PresetName => {
+                "The name this preset shows in the lists, so you can find it again. It does not change the cut."
+            }
+            Setting::Vendor => {
+                "Who makes this plotter, for your own reference. It does not change the cut."
+            }
+            Setting::Model => {
+                "The model name of this plotter, for your own reference. It does not change the cut."
+            }
+            Setting::Protocol => {
+                "The command language the plotter understands. GPGL is the language of Silhouette plotters, and the only one FlatCraft speaks."
+            }
+            Setting::Dialect => {
+                "Which family of GPGL this plotter speaks. FlatCraft builds jobs for Cameo 1 and 2 today; a job for Cameo 3 and later cannot be built yet."
+            }
+            Setting::Transport => {
+                "How jobs reach the plotter. USB sends them down the cable to the plotter; USB cutting arrives in milestone 3. File writes each job into a folder as files, so you can look at it or send it yourself."
+            }
+            Setting::UsbVendorId => {
+                "The number a USB device uses to say who made it (the vendor id), in hex. The Cameo 2 uses 0x0B4D. Change it only for another plotter model."
+            }
+            Setting::UsbProductId => {
+                "The number a USB device uses to say which model it is (the product id), in hex. The Cameo 2 uses 0x112B. Change it only for another plotter model."
+            }
+            Setting::OutputFolder => {
+                "The folder File Output writes its files into. Leave it empty to use the output folder from the General page, or Documents/FlatCraft Output when that is empty too."
+            }
+            Setting::FileExtension => {
+                "The ending of the job file names File Output writes, for example gpgl. The readable listing gets .txt added after it."
+            }
+            Setting::UnitsPerMm => {
+                "How many plotter steps make one millimetre. The Cameo 2 uses 20. Change it only when a test cut comes out the wrong size."
+            }
+            Setting::ScaleX => {
+                "Stretches every cut along x (across the carriage) by this factor: 1 is true size, 1.01 is 1 % longer. Change it when a measured test cut is a little too long or too short that way."
+            }
+            Setting::ScaleY => {
+                "Stretches every cut along y (the direction the mat feeds) by this factor: 1 is true size, 1.01 is 1 % longer. Change it when a measured test cut is a little too long or too short that way."
+            }
+            Setting::SpeedRange => {
+                "The lowest or highest speed this plotter accepts. A material or job asking for a speed outside it is refused. The Cameo 2 takes 1 to 10."
+            }
+            Setting::ForceRange => {
+                "The lowest or highest force this plotter accepts. A material or job asking for a force outside it is refused. The Cameo 2 takes 1 to 33."
+            }
+            Setting::PassesRange => {
+                "The fewest or most passes this plotter allows. A material or job asking for a number outside it is refused. The Cameo 2 allows 1 to 20."
+            }
+            Setting::FlattenTolerance => {
+                "Curves are cut as many short straight lines. This is how far those lines may stray from the true curve, in millimetres. Smaller is smoother but sends more points. Filled shapes thinner than this are not cut."
+            }
+            Setting::FcValue => {
+                "The number FlatCraft sends to the plotter (the FC command) so its firmware steers the blade around corners. 18 is the usual value for the standard blade; 0 turns it off. FlatCraft accepts 0 to 100."
+            }
+            Setting::HostOffset => {
+                "How far the blade tip trails behind the centre of the holder, in millimetres, for Host compensation (FlatCraft steers the blade itself). A job with Host compensation cannot be built yet, so this changes nothing today."
+            }
+            Setting::PivotThreshold => {
+                "For Host compensation: at a corner that turns more than this many degrees, the blade swivels before the next line. 0 swivels at every corner. A job with Host compensation cannot be built yet, so this changes nothing today."
+            }
+            Setting::MatName => "The name this mat shows in the mat lists.",
+            Setting::MatKind => {
+                "Mat is a sticky cutting mat with a printed grid. No mat is material fed in on its own; FlatCraft then cuts it in bands from front to back, so the rollers never pull it back by more than a band."
+            }
+            Setting::MatWidth => {
+                "The real width of the whole mat or sheet, edge to edge, in millimetres. Measure it with a ruler."
+            }
+            Setting::MatHeight => {
+                "The real length of the whole mat or sheet, edge to edge, in millimetres. Measure it with a ruler."
+            }
+            Setting::GridOriginX => {
+                "Where the printed grid starts on the mat, from its left edge, in millimetres. FlatCraft's 0,0 is the grid's 0,0, so a wrong value moves every cut."
+            }
+            Setting::GridOriginY => {
+                "Where the printed grid starts on the mat, from its top edge, in millimetres. FlatCraft's 0,0 is the grid's 0,0, so a wrong value moves every cut."
+            }
+            Setting::GridWidth => {
+                "The width of the printed grid, in millimetres. Cuts stay inside the grid, 5 mm inside while the mat is not calibrated."
+            }
+            Setting::GridHeight => {
+                "The height of the printed grid, in millimetres. Cuts stay inside the grid, 5 mm inside while the mat is not calibrated."
+            }
+            Setting::MatColour => {
+                "The colour FlatCraft paints this mat in on screen, so it looks like yours. It does not change the cut."
+            }
+            Setting::MatColourHex => {
+                "The mat colour as a hex code, like #336699: two digits each for red, green and blue. Type one to change the colour."
+            }
+            Setting::BladeDepthHint => {
+                "A note on how far to set a manual blade for this material, for example 3. The job settings show it as a reminder; FlatCraft does not send it to the plotter."
+            }
+            Setting::AddOverride => {
+                "Pick a plotter to give this material its own speed, force, passes or overcut on that plotter only. Everything you leave alone keeps the material's value."
             }
             Setting::OverrideSet => {
                 "Tick this to use a different value with this one plotter. While it is ticked, the value next to it counts for that plotter; untick it and the material's own value applies again."

@@ -544,17 +544,21 @@ impl Form<'_> {
         }
     }
 
-    /// A label cell, the widget, its accessible name, end of row. A field
-    /// the hints explain (speed, force, passes, overcut, blade offset) gets
-    /// its hover card.
-    fn row(&self, ui: &mut Ui, label: &str, key: &str, add: impl FnOnce(&mut Ui) -> Response) {
+    /// A label cell, the widget, its accessible name, end of row, with the
+    /// hover card of `setting`. Every row has one.
+    fn row(
+        &self,
+        ui: &mut Ui,
+        label: &str,
+        key: &str,
+        setting: Setting,
+        add: impl FnOnce(&mut Ui) -> Response,
+    ) {
         let dot = self.is_modified(key).then_some(self.t.accent_prepare);
         let at = paint_text(ui, label, ui.visuals().text_color(), dot);
         let r = add(ui);
         set_name(ui, &r, &self.name(label, key));
-        if let Some(setting) = setting_of(key) {
-            self.card(&r, label, setting, None);
-        }
+        self.card(&r, label, setting, None);
         self.mark(ui, label, at.union(r.rect));
         ui.end_row();
     }
@@ -592,19 +596,6 @@ impl Form<'_> {
         self.mark(ui, label, at.union(r.rect));
         ui.end_row();
     }
-}
-
-/// The setting a form key shows, for its hover card.
-fn setting_of(key: &str) -> Option<Setting> {
-    Some(match key {
-        "speed" | "speed_range" => Setting::Speed,
-        "force" | "force_range" => Setting::Force,
-        "passes" | "passes_range" => Setting::Passes,
-        "overcut_mm" => Setting::Overcut,
-        "blade_offset_mm" => Setting::BladeOffset,
-        "knife_compensation" => Setting::KnifeCompensation,
-        _ => return None,
-    })
 }
 
 fn num(v: &mut f64, decimals: usize) -> egui::DragValue<'_> {
@@ -923,20 +914,20 @@ fn plotter_form(ui: &mut Ui, d: &mut Draft<PlotterProfile>, highlight: &Highligh
             .num_columns(2)
             .spacing([t.spacing, t.spacing * 0.6])
             .show(ui, |ui| {
-                f.row(ui, "Name", "name", |ui| {
+                f.row(ui, "Name", "name", Setting::PresetName, |ui| {
                     ui.text_edit_singleline(&mut p.name)
                 });
-                f.row(ui, "Vendor", "vendor", |ui| {
+                f.row(ui, "Vendor", "vendor", Setting::Vendor, |ui| {
                     ui.text_edit_singleline(&mut p.vendor)
                 });
-                f.row(ui, "Model", "model", |ui| {
+                f.row(ui, "Model", "model", Setting::Model, |ui| {
                     ui.text_edit_singleline(&mut p.model)
                 });
-                f.row(ui, "Protocol", "protocol", |ui| {
+                f.row(ui, "Protocol", "protocol", Setting::Protocol, |ui| {
                     let mut v = 0;
                     combo(ui, "protocol", &mut v, &[(0, "GPGL")])
                 });
-                f.row(ui, "Dialect", "protocol", |ui| {
+                f.row(ui, "Dialect", "protocol", Setting::Dialect, |ui| {
                     let Protocol::Gpgl { dialect } = &mut p.protocol;
                     combo(
                         ui,
@@ -949,17 +940,25 @@ fn plotter_form(ui: &mut Ui, d: &mut Draft<PlotterProfile>, highlight: &Highligh
                     )
                 });
                 let mut usb = matches!(p.transport, TransportSpec::Usb { .. });
-                f.row(ui, "Transport", "transport", |ui| {
+                f.row(ui, "Transport", "transport", Setting::Transport, |ui| {
                     combo(ui, "transport", &mut usb, &[(true, "USB"), (false, "File")])
                 });
                 match (&mut p.transport, usb) {
                     (TransportSpec::Usb { vid, pid }, true) => {
-                        f.row(ui, "USB vendor id", "transport", |ui| {
-                            ui.add(egui::DragValue::new(vid).hexadecimal(4, false, true))
-                        });
-                        f.row(ui, "USB product id", "transport", |ui| {
-                            ui.add(egui::DragValue::new(pid).hexadecimal(4, false, true))
-                        });
+                        f.row(
+                            ui,
+                            "USB vendor id",
+                            "transport",
+                            Setting::UsbVendorId,
+                            |ui| ui.add(egui::DragValue::new(vid).hexadecimal(4, false, true)),
+                        );
+                        f.row(
+                            ui,
+                            "USB product id",
+                            "transport",
+                            Setting::UsbProductId,
+                            |ui| ui.add(egui::DragValue::new(pid).hexadecimal(4, false, true)),
+                        );
                     }
                     (
                         TransportSpec::File {
@@ -968,23 +967,33 @@ fn plotter_form(ui: &mut Ui, d: &mut Draft<PlotterProfile>, highlight: &Highligh
                         },
                         false,
                     ) => {
-                        f.row(ui, "Output folder", "transport", |ui| {
-                            let mut text = directory
-                                .as_ref()
-                                .map(|d| d.display().to_string())
-                                .unwrap_or_default();
-                            let r = ui.add(
-                                egui::TextEdit::singleline(&mut text)
-                                    .hint_text("The General page's folder"),
-                            );
-                            if r.changed() {
-                                *directory = (!text.trim().is_empty()).then(|| text.into());
-                            }
-                            r
-                        });
-                        f.row(ui, "File extension", "transport", |ui| {
-                            ui.text_edit_singleline(extension)
-                        });
+                        f.row(
+                            ui,
+                            "Output folder",
+                            "transport",
+                            Setting::OutputFolder,
+                            |ui| {
+                                let mut text = directory
+                                    .as_ref()
+                                    .map(|d| d.display().to_string())
+                                    .unwrap_or_default();
+                                let r = ui.add(
+                                    egui::TextEdit::singleline(&mut text)
+                                        .hint_text("The General page's folder"),
+                                );
+                                if r.changed() {
+                                    *directory = (!text.trim().is_empty()).then(|| text.into());
+                                }
+                                r
+                            },
+                        );
+                        f.row(
+                            ui,
+                            "File extension",
+                            "transport",
+                            Setting::FileExtension,
+                            |ui| ui.text_edit_singleline(extension),
+                        );
                     }
                     (_, true) => {
                         p.transport = TransportSpec::Usb {
@@ -999,9 +1008,13 @@ fn plotter_form(ui: &mut Ui, d: &mut Draft<PlotterProfile>, highlight: &Highligh
                         }
                     }
                 }
-                f.row(ui, "Units per mm", "units_per_mm", |ui| {
-                    ui.add(num(&mut p.units_per_mm, 3))
-                });
+                f.row(
+                    ui,
+                    "Units per mm",
+                    "units_per_mm",
+                    Setting::UnitsPerMm,
+                    |ui| ui.add(num(&mut p.units_per_mm, 3)),
+                );
                 f.check(
                     ui,
                     "Mirror x",
@@ -1016,34 +1029,56 @@ fn plotter_form(ui: &mut Ui, d: &mut Draft<PlotterProfile>, highlight: &Highligh
                     Setting::MirrorY,
                     &mut p.axis.mirror_y,
                 );
-                f.row(ui, "Scale x", "scale_x", |ui| {
+                f.row(ui, "Scale x", "scale_x", Setting::ScaleX, |ui| {
                     ui.add(num(&mut p.scale_x, 5).speed(0.0005))
                 });
-                f.row(ui, "Scale y", "scale_y", |ui| {
+                f.row(ui, "Scale y", "scale_y", Setting::ScaleY, |ui| {
                     ui.add(num(&mut p.scale_y, 5).speed(0.0005))
                 });
                 knife(ui, &f, p);
-                f.row(ui, "Blade offset (mm)", "blade_offset_mm", |ui| {
-                    ui.add(num(&mut p.blade_offset_mm, 3))
-                });
-                f.row(ui, "Speed min", "speed_range", |ui| {
+                f.row(
+                    ui,
+                    "Blade offset (mm)",
+                    "blade_offset_mm",
+                    Setting::BladeOffset,
+                    |ui| ui.add(num(&mut p.blade_offset_mm, 3)),
+                );
+                f.row(ui, "Speed min", "speed_range", Setting::SpeedRange, |ui| {
                     ui.add(egui::DragValue::new(&mut p.speed_range[0]).update_while_editing(false))
                 });
-                f.row(ui, "Speed max", "speed_range", |ui| {
+                f.row(ui, "Speed max", "speed_range", Setting::SpeedRange, |ui| {
                     ui.add(egui::DragValue::new(&mut p.speed_range[1]).update_while_editing(false))
                 });
-                f.row(ui, "Force min", "force_range", |ui| {
+                f.row(ui, "Force min", "force_range", Setting::ForceRange, |ui| {
                     ui.add(egui::DragValue::new(&mut p.force_range[0]).update_while_editing(false))
                 });
-                f.row(ui, "Force max", "force_range", |ui| {
+                f.row(ui, "Force max", "force_range", Setting::ForceRange, |ui| {
                     ui.add(egui::DragValue::new(&mut p.force_range[1]).update_while_editing(false))
                 });
-                f.row(ui, "Passes min", "passes_range", |ui| {
-                    ui.add(egui::DragValue::new(&mut p.passes_range[0]).update_while_editing(false))
-                });
-                f.row(ui, "Passes max", "passes_range", |ui| {
-                    ui.add(egui::DragValue::new(&mut p.passes_range[1]).update_while_editing(false))
-                });
+                f.row(
+                    ui,
+                    "Passes min",
+                    "passes_range",
+                    Setting::PassesRange,
+                    |ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut p.passes_range[0])
+                                .update_while_editing(false),
+                        )
+                    },
+                );
+                f.row(
+                    ui,
+                    "Passes max",
+                    "passes_range",
+                    Setting::PassesRange,
+                    |ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut p.passes_range[1])
+                                .update_while_editing(false),
+                        )
+                    },
+                );
                 let c = &mut p.capabilities;
                 f.check(
                     ui,
@@ -1066,9 +1101,13 @@ fn plotter_form(ui: &mut Ui, d: &mut Draft<PlotterProfile>, highlight: &Highligh
                     Setting::AutoBlade,
                     &mut c.auto_blade,
                 );
-                f.row(ui, "Flatten tolerance (mm)", "flatten_tolerance_mm", |ui| {
-                    ui.add(num(&mut p.flatten_tolerance_mm, 4).speed(0.001))
-                });
+                f.row(
+                    ui,
+                    "Flatten tolerance (mm)",
+                    "flatten_tolerance_mm",
+                    Setting::FlattenTolerance,
+                    |ui| ui.add(num(&mut p.flatten_tolerance_mm, 4).speed(0.001)),
+                );
             });
     });
 }
@@ -1086,18 +1125,24 @@ fn knife(ui: &mut Ui, f: &Form<'_>, p: &mut PlotterProfile) {
         KnifeCompensation::None => K::None,
     };
     let before = k;
-    f.row(ui, "Knife compensation", "knife_compensation", |ui| {
-        combo(
-            ui,
-            "knife",
-            &mut k,
-            &[
-                (K::Firmware, "Firmware"),
-                (K::Host, "Host"),
-                (K::None, "None"),
-            ],
-        )
-    });
+    f.row(
+        ui,
+        "Knife compensation",
+        "knife_compensation",
+        Setting::KnifeCompensation,
+        |ui| {
+            combo(
+                ui,
+                "knife",
+                &mut k,
+                &[
+                    (K::Firmware, "Firmware"),
+                    (K::Host, "Host"),
+                    (K::None, "None"),
+                ],
+            )
+        },
+    );
     if k != before {
         p.knife_compensation = match k {
             K::Firmware => KnifeCompensation::Firmware { fc: 18 },
@@ -1110,20 +1155,32 @@ fn knife(ui: &mut Ui, f: &Form<'_>, p: &mut PlotterProfile) {
     }
     match &mut p.knife_compensation {
         KnifeCompensation::Firmware { fc } => {
-            f.row(ui, "FC value", "knife_compensation", |ui| {
-                ui.add(egui::DragValue::new(fc).update_while_editing(false))
-            });
+            f.row(
+                ui,
+                "FC value",
+                "knife_compensation",
+                Setting::FcValue,
+                |ui| ui.add(egui::DragValue::new(fc).update_while_editing(false)),
+            );
         }
         KnifeCompensation::Host {
             offset_mm,
             pivot_threshold_deg,
         } => {
-            f.row(ui, "Host offset (mm)", "knife_compensation", |ui| {
-                ui.add(num(offset_mm, 3))
-            });
-            f.row(ui, "Pivot threshold (deg)", "knife_compensation", |ui| {
-                ui.add(num(pivot_threshold_deg, 1).speed(0.5))
-            });
+            f.row(
+                ui,
+                "Host offset (mm)",
+                "knife_compensation",
+                Setting::HostOffset,
+                |ui| ui.add(num(offset_mm, 3)),
+            );
+            f.row(
+                ui,
+                "Pivot threshold (deg)",
+                "knife_compensation",
+                Setting::PivotThreshold,
+                |ui| ui.add(num(pivot_threshold_deg, 1).speed(0.5)),
+            );
         }
         KnifeCompensation::None => {}
     }
@@ -1351,10 +1408,10 @@ fn mats(
                 .num_columns(2)
                 .spacing([t.spacing, t.spacing * 0.6])
                 .show(ui, |ui| {
-                    f.row(ui, "Mat name", "name", |ui| {
+                    f.row(ui, "Mat name", "name", Setting::MatName, |ui| {
                         ui.add(egui::TextEdit::singleline(&mut m.name).desired_width(160.0))
                     });
-                    f.row(ui, "Mat kind", "kind", |ui| {
+                    f.row(ui, "Mat kind", "kind", Setting::MatKind, |ui| {
                         combo(
                             ui,
                             "mat-kind",
@@ -1362,29 +1419,53 @@ fn mats(
                             &[(MediaKind::Mat, "Mat"), (MediaKind::NoMat, "No mat")],
                         )
                     });
-                    f.row(ui, "Physical width (mm)", "width", |ui| {
-                        ui.add(num(&mut m.width_mm, 2))
-                    });
+                    f.row(
+                        ui,
+                        "Physical width (mm)",
+                        "width",
+                        Setting::MatWidth,
+                        |ui| ui.add(num(&mut m.width_mm, 2)),
+                    );
                     show_problem(ui, MediaField::Width);
-                    f.row(ui, "Physical height (mm)", "height", |ui| {
-                        ui.add(num(&mut m.height_mm, 2))
-                    });
+                    f.row(
+                        ui,
+                        "Physical height (mm)",
+                        "height",
+                        Setting::MatHeight,
+                        |ui| ui.add(num(&mut m.height_mm, 2)),
+                    );
                     show_problem(ui, MediaField::Height);
-                    f.row(ui, "Grid origin x (mm)", "origin_x", |ui| {
-                        ui.add(num(&mut m.grid.origin_x_mm, 2))
-                    });
+                    f.row(
+                        ui,
+                        "Grid origin x (mm)",
+                        "origin_x",
+                        Setting::GridOriginX,
+                        |ui| ui.add(num(&mut m.grid.origin_x_mm, 2)),
+                    );
                     show_problem(ui, MediaField::OriginX);
-                    f.row(ui, "Grid origin y (mm)", "origin_y", |ui| {
-                        ui.add(num(&mut m.grid.origin_y_mm, 2))
-                    });
+                    f.row(
+                        ui,
+                        "Grid origin y (mm)",
+                        "origin_y",
+                        Setting::GridOriginY,
+                        |ui| ui.add(num(&mut m.grid.origin_y_mm, 2)),
+                    );
                     show_problem(ui, MediaField::OriginY);
-                    f.row(ui, "Grid width (mm)", "grid_width", |ui| {
-                        ui.add(num(&mut m.grid.width_mm, 2))
-                    });
+                    f.row(
+                        ui,
+                        "Grid width (mm)",
+                        "grid_width",
+                        Setting::GridWidth,
+                        |ui| ui.add(num(&mut m.grid.width_mm, 2)),
+                    );
                     show_problem(ui, MediaField::GridWidth);
-                    f.row(ui, "Grid height (mm)", "grid_height", |ui| {
-                        ui.add(num(&mut m.grid.height_mm, 2))
-                    });
+                    f.row(
+                        ui,
+                        "Grid height (mm)",
+                        "grid_height",
+                        Setting::GridHeight,
+                        |ui| ui.add(num(&mut m.grid.height_mm, 2)),
+                    );
                     show_problem(ui, MediaField::GridHeight);
                     f.check(
                         ui,
@@ -1393,22 +1474,29 @@ fn mats(
                         Setting::Calibrated,
                         &mut m.calibrated,
                     );
-                    f.row(ui, "Mat colour", "color", |ui| {
+                    f.row(ui, "Mat colour", "color", Setting::MatColour, |ui| {
                         ui.color_edit_button_srgb(&mut m.color)
                     });
-                    f.row(ui, "Mat colour (hex)", "color", |ui| {
-                        if !*hex_editing {
-                            *hex_text = hex(m.color);
-                        }
-                        let r = ui.add(egui::TextEdit::singleline(hex_text).desired_width(90.0));
-                        *hex_editing = r.has_focus();
-                        if (r.changed() || r.lost_focus())
-                            && let Some(c) = parse_hex(hex_text)
-                        {
-                            m.color = c;
-                        }
-                        r
-                    });
+                    f.row(
+                        ui,
+                        "Mat colour (hex)",
+                        "color",
+                        Setting::MatColourHex,
+                        |ui| {
+                            if !*hex_editing {
+                                *hex_text = hex(m.color);
+                            }
+                            let r =
+                                ui.add(egui::TextEdit::singleline(hex_text).desired_width(90.0));
+                            *hex_editing = r.has_focus();
+                            if (r.changed() || r.lost_focus())
+                                && let Some(c) = parse_hex(hex_text)
+                            {
+                                m.color = c;
+                            }
+                            r
+                        },
+                    );
                 });
         });
         mat_drawing(ui, m, t);
@@ -1574,16 +1662,16 @@ fn material_form(
             .num_columns(2)
             .spacing([t.spacing, t.spacing * 0.6])
             .show(ui, |ui| {
-                f.row(ui, "Name", "name", |ui| {
+                f.row(ui, "Name", "name", Setting::PresetName, |ui| {
                     ui.text_edit_singleline(&mut m.name)
                 });
-                f.row(ui, "Speed", "speed", |ui| {
+                f.row(ui, "Speed", "speed", Setting::Speed, |ui| {
                     ui.add(egui::DragValue::new(&mut m.speed).update_while_editing(false))
                 });
-                f.row(ui, "Force", "force", |ui| {
+                f.row(ui, "Force", "force", Setting::Force, |ui| {
                     ui.add(egui::DragValue::new(&mut m.force).update_while_editing(false))
                 });
-                f.row(ui, "Passes", "passes", |ui| {
+                f.row(ui, "Passes", "passes", Setting::Passes, |ui| {
                     ui.add(egui::DragValue::new(&mut m.passes).update_while_editing(false))
                 });
                 f.check(
@@ -1593,7 +1681,7 @@ fn material_form(
                     Setting::ReverseAlternatePasses,
                     &mut m.reverse_alternate_passes,
                 );
-                f.row(ui, "Overcut (mm)", "overcut_mm", |ui| {
+                f.row(ui, "Overcut (mm)", "overcut_mm", Setting::Overcut, |ui| {
                     ui.add(num(&mut m.overcut_mm, 2))
                 });
                 f.check(
@@ -1603,14 +1691,20 @@ fn material_form(
                     Setting::TrackEnhancing,
                     &mut m.track_enhancing,
                 );
-                f.row(ui, "Blade depth hint", "blade_depth_hint", |ui| {
-                    let mut text = m.blade_depth_hint.clone().unwrap_or_default();
-                    let r = ui.text_edit_singleline(&mut text);
-                    if r.changed() {
-                        m.blade_depth_hint = (!text.is_empty()).then_some(text);
-                    }
-                    r
-                });
+                f.row(
+                    ui,
+                    "Blade depth hint",
+                    "blade_depth_hint",
+                    Setting::BladeDepthHint,
+                    |ui| {
+                        let mut text = m.blade_depth_hint.clone().unwrap_or_default();
+                        let r = ui.text_edit_singleline(&mut text);
+                        if r.changed() {
+                            m.blade_depth_hint = (!text.is_empty()).then_some(text);
+                        }
+                        r
+                    },
+                );
             });
         ui.add_space(t.spacing);
         ui.label(RichText::new("Per-plotter overrides").font(fonts::semibold(14.0)));
@@ -1719,6 +1813,7 @@ fn overrides(ui: &mut Ui, f: &Form<'_>, m: &mut MaterialProfile, view: &View, t:
                 }
             });
         set_name(ui, &r.response, "Add override for");
+        f.card(&r.response, "Add override for", Setting::AddOverride, None);
         if let Some(id) = add {
             m.overrides.insert(id, MaterialOverride::default());
         }
