@@ -1198,6 +1198,7 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
             prepare::show(ui, app, snap, &mut actions);
             let p = &mut app.ui.prepare;
             p.text_focus_elsewhere = text_focus_outside(&ctx, p.panel_rect);
+            p.popup_was_open = egui::Popup::is_any_open(&ctx);
             let t = app.tokens;
             if let Some(why) = import_dialog::show(&ctx, &mut app.ui.trace, snap, &t, &mut actions)
             {
@@ -1411,6 +1412,11 @@ fn prepare_keys(
     // Escape in another text field (the search box) only leaves it: egui
     // dropped its focus, the panel and the selection stay.
     if st.text_focus_elsewhere && help::pressed(ctx, help::PrepareKey::ClearSelection) {
+        return;
+    }
+    // Escape on an open list (a ribbon group's list) only closes it: egui
+    // closed it before this runs, so the last frame says it was open.
+    if st.popup_was_open && help::pressed(ctx, help::PrepareKey::ClearSelection) {
         return;
     }
     // Escape closes an open Arrange panel first, and changes nothing. One

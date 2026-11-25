@@ -221,6 +221,9 @@ pub struct PrepareState {
     /// Escape before the key handler runs, so this is how the handler knows
     /// that the Escape only leaves that field.
     pub text_focus_elsewhere: bool,
+    /// A popup (a ribbon group's list, a menu) was open at the end of the
+    /// last frame, so an Escape now only closed it.
+    pub popup_was_open: bool,
     /// The objects the open context menu works on (see `context_menu`).
     pub context: Option<Vec<u64>>,
     /// The open Rename dialog.
@@ -292,6 +295,7 @@ impl Default for PrepareState {
             open_group: None,
             panel_rect: None,
             text_focus_elsewhere: false,
+            popup_was_open: false,
             context: None,
             rename: None,
         }

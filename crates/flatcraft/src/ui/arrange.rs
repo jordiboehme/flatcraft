@@ -47,7 +47,7 @@ impl PanelKind {
     }
 
     pub fn title(self) -> &'static str {
-        self.tool().short_title()
+        self.tool().title.trim_end_matches("...")
     }
 }
 

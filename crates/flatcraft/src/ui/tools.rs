@@ -760,9 +760,14 @@ impl Tool {
         }
     }
 
-    /// The label of a big button: the title without "...".
+    /// The label of a big button: the title without "...", unless another
+    /// action has that title ("Auto arrange..." next to "Auto arrange").
     pub fn short_title(&self) -> &'static str {
-        self.title.trim_end_matches("...")
+        let short = self.title.trim_end_matches("...");
+        let taken = TOOLS
+            .iter()
+            .any(|t| t.id != self.id && t.title.trim_end_matches("...") == short);
+        if taken { self.title } else { short }
     }
 
     /// The accessible name of its pinned button.
@@ -770,6 +775,15 @@ impl Tool {
         match self.style {
             Style::Big => self.short_title().to_string(),
             _ => self.full_title(),
+        }
+    }
+
+    /// What its pin toggle names: like the pinned button, without "..."
+    /// unless that would clash.
+    pub fn pin_label(&self) -> String {
+        match self.option() {
+            Some(_) => self.full_title(),
+            None => self.short_title().to_string(),
         }
     }
 
@@ -1188,6 +1202,28 @@ mod tests {
                 "{icon:?}: a child is paper and accent"
             );
         }
+    }
+
+    #[test]
+    fn every_name_is_unique() {
+        let mut names: Vec<String> = Vec::new();
+        for t in TOOLS {
+            names.push(t.button_name());
+            // The rows of the two Align options never show at once.
+            if t.option() != Some(AlignTo::Area) {
+                names.push(t.row_name());
+            }
+            names.push(format!("Pin {}", t.pin_label()));
+        }
+        let mut sorted = names.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), names.len(), "{names:?}");
+        assert_eq!(
+            by_act(Act::AutoArrangePanel).button_name(),
+            "Auto arrange..."
+        );
+        assert_eq!(by_act(Act::AutoArrange).button_name(), "Auto arrange");
     }
 
     #[test]

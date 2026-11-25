@@ -916,6 +916,8 @@ fn menu_hints_come_from_the_shortcut_table() {
 fn no_em_dash_in_the_menu() {
     for item in ALL {
         assert!(!item.label().contains('\u{2014}'));
+        assert!(!item.description().contains('\u{2014}'), "{item:?}");
+        assert!(!item.description().trim().is_empty(), "{item:?}");
     }
 }
 

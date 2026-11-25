@@ -1597,6 +1597,7 @@ fn cancel_close_and_escape_change_nothing() {
         ("Rotate...", vec![a, b]),
         ("Rectangular pattern...", vec![a]),
         ("Circular pattern...", vec![a, b]),
+        ("Auto arrange...", vec![a, b]),
     ] {
         select(&s, &ids);
         h.run();
@@ -1613,6 +1614,7 @@ fn cancel_close_and_escape_change_nothing() {
                 v.rotate.each = true;
                 v.rect.columns = 5;
                 v.circular.count = 7;
+                v.spacing_mm = 12.0;
             }
             h.run();
             if how == "escape" {
@@ -1627,6 +1629,8 @@ fn cancel_close_and_escape_change_nothing() {
             assert_eq!(revision(&s), rev, "{label} {how}");
             assert_eq!(undo_len(&s), undo, "{label} {how}");
             assert!(!app(&h).ui.prepare.fields.each, "{label} {how}");
+            let stored = flatcraft_engine::prefs::Preferences::load(&app(&h).config_dir);
+            assert_eq!(stored.auto_arrange_spacing_mm, 5.0, "{label} {how}");
         }
     }
 }

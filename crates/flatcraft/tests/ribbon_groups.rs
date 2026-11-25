@@ -363,3 +363,28 @@ fn auto_arrange_spacing_round_trips_and_is_one_undo_step() {
     assert_eq!(undo_len(&s), undo + 1);
     assert_eq!(document_bytes(&s), arranged, "the same as the panel's OK");
 }
+
+#[test]
+fn escape_closes_a_group_list_and_keeps_the_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    let mut h = rig(&dir, s.clone());
+    show_tab(&mut h, "Arrange");
+    h.get_by_role_and_label(Role::Button, "Arrange").click();
+    h.run();
+    h.get_by_label(FOOTER);
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.query_by_label(FOOTER).is_none(), "the list closed");
+    let selection: Vec<u64> = s
+        .lock()
+        .unwrap()
+        .doc()
+        .selection
+        .iter()
+        .map(|i| i.0)
+        .collect();
+    assert_eq!(selection, vec![a], "the selection stays");
+}

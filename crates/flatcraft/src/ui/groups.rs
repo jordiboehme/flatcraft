@@ -49,8 +49,7 @@ pub struct Cx<'a> {
 
 /// The accessible name of the toggle that pins `tool` (or unpins it).
 pub fn pin_name(tool: &Tool, pinned: bool) -> String {
-    let what = tool.full_title();
-    let what = what.trim_end_matches("...");
+    let what = tool.pin_label();
     if pinned {
         format!("Unpin {what}")
     } else {

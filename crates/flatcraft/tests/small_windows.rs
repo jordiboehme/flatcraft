@@ -119,7 +119,9 @@ fn check_tab(h: &mut AppHarness, tab: &str, width: f32) -> usize {
             tiles += 1;
         }
         for t in g.tools() {
-            for n in find(h, Role::Button, &t.button_name()) {
+            let found = find(h, Role::Button, &t.button_name());
+            assert!(found.len() <= 1, "{width}: {} twice", t.button_name());
+            for n in found {
                 assert!(
                     on_ribbon(h, n.rect()),
                     "{width} {tab}: {} is cut off",
@@ -148,6 +150,11 @@ fn check_tab(h: &mut AppHarness, tab: &str, width: f32) -> usize {
                 })
                 .collect();
             for t in want {
+                assert!(
+                    find(h, Role::Button, &t.button_name()).len() <= 1,
+                    "{width}: {} twice with the list open",
+                    t.button_name()
+                );
                 let rows = find(h, Role::Button, &t.row_name());
                 assert_eq!(rows.len(), 1, "{width} {tab}: no row {}", t.row_name());
                 assert!(
@@ -392,37 +399,95 @@ fn resizing_settles_without_flipping() {
 
 #[test]
 fn a_field_that_shrinks_back_lets_the_ribbon_grow_again() {
-    // A long value widens the W field; once it is short again, the bar
-    // measures again and ends where it was, never stuck icon-only.
+    // Long values widen the W and H fields and the bar collapses further;
+    // once they are short again, the bar measures again and ends where it
+    // was, never stuck icon-only.
+    let mut changed = 0;
     for width in WIDTHS {
         let dir = tempfile::tempdir().unwrap();
         let s = session(&dir);
         let a = import_square(&s);
         select(&s, &[a]);
+        pin(&s, &RIBBON_PIN_IDS);
         let mut h = sized(&dir, s.clone(), width);
         show_tab(&mut h, "Arrange");
         wait_for_workers(&mut h);
         let before = collapse::level(&h.ctx, ribbon::bar_id());
-        let scale = |h: &mut AppHarness, w: f64| {
-            s.lock()
-                .unwrap()
-                .execute(
-                    "object.scale",
-                    json!({ "ids": [a], "width_mm": w, "keep_aspect": false }),
-                    Origin::User,
-                )
-                .unwrap();
+        let size = |h: &mut AppHarness, mm: f64| {
+            for key in ["width_mm", "height_mm"] {
+                s.lock()
+                    .unwrap()
+                    .execute(
+                        "object.scale",
+                        json!({ "ids": [a], key: mm, "keep_aspect": false }),
+                        Origin::User,
+                    )
+                    .unwrap();
+            }
             h.run();
             wait_for_workers(h);
         };
-        scale(&mut h, 98765.25);
-        scale(&mut h, 50.0);
+        size(&mut h, 123456.75);
+        if collapse::level(&h.ctx, ribbon::bar_id()) != before {
+            changed += 1;
+        }
+        size(&mut h, 50.0);
         assert_eq!(
             collapse::level(&h.ctx, ribbon::bar_id()),
             before,
             "{width}: back where it was once the text is short"
         );
     }
+    // At the narrowest window where the Arrange tab is still Full, the
+    // long values make it step down, and short ones bring it back.
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    let mut h = sized(&dir, s.clone(), 1400.0);
+    show_tab(&mut h, "Arrange");
+    let mut w = 1400.0;
+    while w > 600.0 {
+        h.set_size(egui::vec2(w - 10.0, 900.0));
+        h.run();
+        if collapse::level(&h.ctx, ribbon::bar_id()) != Some(Level::Full) {
+            break;
+        }
+        w -= 10.0;
+    }
+    // A fresh window of that width (the bar steps up only with room to
+    // spare, so going back by 10 pt would not show Full again).
+    let mut h = sized(&dir, s.clone(), w);
+    show_tab(&mut h, "Arrange");
+    wait_for_workers(&mut h);
+    assert_eq!(
+        collapse::level(&h.ctx, ribbon::bar_id()),
+        Some(Level::Full),
+        "{w}"
+    );
+    for (mm, full) in [(123456.75, false), (50.0, true)] {
+        for key in ["width_mm", "height_mm"] {
+            s.lock()
+                .unwrap()
+                .execute(
+                    "object.scale",
+                    json!({ "ids": [a], key: mm, "keep_aspect": false }),
+                    Origin::User,
+                )
+                .unwrap();
+        }
+        h.run();
+        wait_for_workers(&mut h);
+        if !full {
+            changed += 1;
+        }
+        assert_eq!(
+            collapse::level(&h.ctx, ribbon::bar_id()) == Some(Level::Full),
+            full,
+            "{w} pt with {mm} mm"
+        );
+    }
+    assert!(changed > 0);
 }
 
 /// Every text painted last frame with the clip rect it was painted in.
