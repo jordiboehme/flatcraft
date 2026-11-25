@@ -947,3 +947,31 @@ fn write_atomic_leaves_other_writers_temp_files_alone() {
         .collect();
     assert_eq!(names.len(), 2, "no temp file of ours is left: {names:?}");
 }
+
+#[test]
+fn a_save_never_replaces_a_file_that_differs_only_in_case() {
+    let d = tempdir().unwrap();
+    write(d.path(), "plotters", "Mine", "anything the user keeps here");
+    let file = d.path().join("plotters/Mine.toml");
+    let mut s = ProfileStore::load(d.path()).unwrap();
+    let mut p = s.plotter("silhouette-cameo-2").unwrap();
+    p.id = "mine".into();
+    p.name = "Mine".into();
+    let e = s.save_user_plotter(&p, "silhouette-cameo-2").unwrap_err();
+    assert!(
+        e.to_string().contains(
+            "A file named Mine.toml already exists in your presets folder. Rename or remove it first."
+        ),
+        "{e}"
+    );
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "anything the user keeps here"
+    );
+    // A loaded user preset with exactly that id is saved over as usual.
+    p.id = "ours".into();
+    s.save_user_plotter(&p, "silhouette-cameo-2").unwrap();
+    p.scale_x = 1.01;
+    s.save_user_plotter(&p, "silhouette-cameo-2").unwrap();
+    assert_eq!(s.plotter("ours").unwrap().scale_x, 1.01);
+}

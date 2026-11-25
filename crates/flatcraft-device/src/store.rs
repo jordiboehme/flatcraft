@@ -515,6 +515,31 @@ impl ProfileStore {
         &self.diagnostics
     }
 
+    /// Refuses a save that would replace a file which is not this loaded
+    /// user preset: on a case-insensitive file system `Mine.toml` and
+    /// `mine.toml` are one file. The folder is listed, so the check works
+    /// the same on every file system.
+    fn check_no_clash(&self, kind: Kind, id: &str, dir: &Path) -> Result<(), ProfileError> {
+        let want = format!("{id}.toml");
+        let ours = self.map(kind).get(id).is_some_and(|e| !e.system);
+        let Ok(entries) = fs::read_dir(dir) else {
+            return Ok(());
+        };
+        for entry in entries.flatten() {
+            let file = entry.file_name();
+            let Some(file) = file.to_str() else { continue };
+            if file.eq_ignore_ascii_case(&want) && !(ours && file == want) {
+                return Err(ProfileError::Invalid {
+                    id: id.to_string(),
+                    reason: format!(
+                        "A file named {file} already exists in your presets folder. Rename or remove it first."
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn broken_file(&self, kind: Kind, id: &str) -> Option<&PresetDiagnostic> {
         let path = self.user_dir.join(kind.dir()).join(format!("{id}.toml"));
         self.diagnostics.iter().find(|d| d.path == path)
@@ -784,6 +809,7 @@ impl ProfileStore {
         };
         fs::create_dir_all(&dir).map_err(|e| io(&dir, e))?;
         let path = dir.join(format!("{id}.toml"));
+        self.check_no_clash(kind, id, &dir)?;
         // A crash mid-write must never leave a broken preset: that would
         // stop the next start.
         crate::fsio::write_atomic(&path, text.as_bytes()).map_err(|e| io(&path, e))?;
