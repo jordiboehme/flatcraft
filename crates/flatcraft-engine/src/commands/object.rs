@@ -1169,7 +1169,7 @@ command!(
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum About {
-    /// The objects as one group, about the centre of their common bounding box (default).
+    /// The objects as one group, about the mean of their centres (default).
     #[default]
     Group,
     /// Each object about its own centre.
@@ -1184,24 +1184,31 @@ pub struct RotateParams {
     pub ids: Vec<u64>,
     /// Angle in degrees, clockwise on screen, added to the current rotation.
     pub degrees: f64,
-    /// group (default): turn the objects as one group about the centre of their common bounding box. each: turn each about its own centre. One object turns about its own centre either way.
+    /// group (default): turn the objects as one group about their common centre, the mean of their centres. each: turn each about its own centre. One object turns about its own centre either way.
     #[serde(default)]
     pub about: About,
 }
 
-/// The centre a group rotate or mirror of `ids` turns about: the centre
-/// of their common placed bounds, measured before anything changes. `None`
-/// when each object turns about its own centre (`about: each`, or one
-/// object, which is the same either way).
+/// The centre a group rotate or mirror of `ids` turns about: the mean of
+/// the objects' centres (`center_mm`), measured before anything changes.
+/// A rotate or mirror about it leaves it where it is, so +a then -a puts
+/// every object back exactly (Ruling M2-P11). `None` when each object
+/// turns about its own centre (`about: each`, or one object, which is the
+/// same either way).
 fn group_centre(doc: &Document, ids: &[ObjectId], about: About) -> Option<Point> {
     if about == About::Each || ids.len() < 2 {
         return None;
     }
-    ids.iter()
+    let centres: Vec<Point> = ids
+        .iter()
         .filter_map(|id| doc.get(*id))
-        .map(placed_bounds_or_center)
-        .reduce(|a, b| a.union(b))
-        .map(|r| r.center())
+        .map(|o| o.transform.center_mm)
+        .collect();
+    let n = centres.len() as f64;
+    (n > 0.0).then(|| {
+        let sum = centres.iter().fold(Vec2::ZERO, |acc, c| acc + c.to_vec2());
+        (sum / n).to_point()
+    })
 }
 
 /// Sine and cosine of `degrees`, exact at multiples of 90 degrees, so a
@@ -1250,7 +1257,7 @@ command!(
     mutates: true,
     params: RotateParams,
     run: run_rotate,
-    description: "Rotates objects by degrees, relative to their current rotation, in one undo step. Positive is clockwise on screen (y points down). about: group | each, default group. With group, several objects turn as one group about the centre of their common bounding box: each centre turns about that point and each object's own rotation grows by the angle, so the layout turns with them (the window does this for a multi-selection). With each, every object turns about its own centre and the centres stay. One object turns about its own centre either way. Positions in mm, origin the 0,0 of the grid printed on the mat. Linked copies (see object.copies) keep their own rotation: only the objects in ids turn. The stored rotation is kept in [0, 360). An empty ids list means the current selection. Returns {objects: [{id, rotation_deg, center_mm: [x, y]}]}.",
+    description: "Rotates objects by degrees, relative to their current rotation, in one undo step. Positive is clockwise on screen (y points down). about: group | each, default group. With group, several objects turn as one group about their common centre, the mean of the selected objects' centres: each centre turns about that point and each object's own rotation grows by the angle, so the layout turns with them (the window does this for a multi-selection). With each, every object turns about its own centre and the centres stay. One object turns about its own centre either way. Positions in mm, origin the 0,0 of the grid printed on the mat. Linked copies (see object.copies) keep their own rotation: only the objects in ids turn. The stored rotation is kept in [0, 360). An empty ids list means the current selection. Returns {objects: [{id, rotation_deg, center_mm: [x, y]}]}.",
 );
 
 // ---------------------------------------------------------------- mirror
@@ -1272,7 +1279,7 @@ pub struct MirrorParams {
     pub ids: Vec<u64>,
     /// horizontal flips left and right, vertical flips top and bottom.
     pub axis: MirrorAxis,
-    /// group (default): mirror the objects as one group across the centre line of their common bounding box. each: mirror each across its own centre. One object mirrors across its own centre either way.
+    /// group (default): mirror the objects as one group across a line through their common centre, the mean of their centres. each: mirror each across its own centre. One object mirrors across its own centre either way.
     #[serde(default)]
     pub about: About,
 }
@@ -1305,7 +1312,7 @@ command!(
     mutates: true,
     params: MirrorParams,
     run: run_mirror,
-    description: "Mirrors objects along a screen axis, in one undo step. horizontal flips left and right, vertical flips top and bottom. about: group | each, default group. With group, several objects mirror as one group across the centre line of their common bounding box: each centre is reflected across it and each object is mirrored, so the layout flips with them (the window does this for a multi-selection). With each, every object mirrors across its own centre and the centres stay. One object mirrors across its own centre either way. Positions in mm, origin the 0,0 of the grid printed on the mat, y down. Linked copies (see object.copies) keep their own mirror: only the objects in ids flip. Use horizontal for iron-on vinyl, which is cut from the back. An empty ids list means the current selection. Returns {ids}.",
+    description: "Mirrors objects along a screen axis, in one undo step. horizontal flips left and right, vertical flips top and bottom. about: group | each, default group. With group, several objects mirror as one group across a line through their common centre, the mean of the selected objects' centres: each centre is reflected across it and each object is mirrored, so the layout flips with them (the window does this for a multi-selection). With each, every object mirrors across its own centre and the centres stay. One object mirrors across its own centre either way. Positions in mm, origin the 0,0 of the grid printed on the mat, y down. Linked copies (see object.copies) keep their own mirror: only the objects in ids flip. Use horizontal for iron-on vinyl, which is cut from the back. An empty ids list means the current selection. Returns {ids}.",
 );
 
 // ---------------------------------------------------------------- cut options

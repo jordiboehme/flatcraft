@@ -58,6 +58,16 @@ fn common(s: &Session, ids: &[u64]) -> Rect {
         .unwrap()
 }
 
+/// The mean of the objects' centres: the pivot of a group rotate or
+/// mirror (Ruling M2-P11).
+fn mean(s: &Session, ids: &[u64]) -> Point {
+    let n = ids.len() as f64;
+    let sum = ids.iter().fold(Vec2::ZERO, |acc, i| {
+        acc + transform(s, *i).center_mm.to_vec2()
+    });
+    (sum / n).to_point()
+}
+
 fn undo_len(s: &Session) -> usize {
     s.doc().undo.undo_len()
 }
@@ -85,7 +95,8 @@ fn group_rotate_turns_the_centres_around_the_common_centre() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = session(dir.path());
     let (a, b) = two(&mut s);
-    let c = common(&s, &[a, b]).center();
+    // The common centre: the mean of the two centres.
+    let c = mean(&s, &[a, b]);
     assert!(near(c, Point::new(80.0, 30.0)), "{c:?}");
     let before = undo_len(&s);
     run(
@@ -298,6 +309,7 @@ fn group_mirror_reflects_the_centres_across_the_common_centre() {
     let a = rect_at(&mut s, 20.0, 20.0);
     let b = rect_at(&mut s, 100.0, 60.0);
     let c = common(&s, &[a, b]);
+    let m = mean(&s, &[a, b]);
     let (ca, cb) = (transform(&s, a).center_mm, transform(&s, b).center_mm);
     let before = undo_len(&s);
     run(
@@ -307,7 +319,7 @@ fn group_mirror_reflects_the_centres_across_the_common_centre() {
     );
     assert_eq!(undo_len(&s), before + 1);
     let (ta, tb) = (transform(&s, a), transform(&s, b));
-    let cx = c.center().x;
+    let cx = m.x;
     assert!(
         near(ta.center_mm, Point::new(2.0 * cx - ca.x, ca.y)),
         "{ta:?}"
@@ -324,7 +336,7 @@ fn group_mirror_reflects_the_centres_across_the_common_centre() {
         json!({ "ids": [a, b], "axis": "vertical" }),
     );
     let (ta, tb) = (transform(&s, a), transform(&s, b));
-    let cy = c.center().y;
+    let cy = m.y;
     assert!(
         near(ta.center_mm, Point::new(2.0 * cx - ca.x, 2.0 * cy - ca.y)),
         "{ta:?}"
@@ -507,4 +519,119 @@ fn agents_use_about_and_coalesce_key() {
     }
     let d = registry::get("object.move").unwrap().description();
     assert!(d.contains("coalesce_key") && d.contains("undo step"), "{d}");
+}
+
+#[test]
+fn a_save_ends_the_burst() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(dir.path());
+    let a = rect_at(&mut s, 20.0, 20.0);
+    nudge(&mut s, &[a], 1.0, "k").unwrap();
+    let path = dir.path().join("p.flatcraft");
+    run(&mut s, "project.save", json!({ "path": path }));
+    assert!(!s.doc().dirty);
+    let saved = undo_len(&s);
+    nudge(&mut s, &[a], -1.0, "k").unwrap();
+    // The file holds +1, the document is back at 0: unsaved, and the move
+    // after the save is a step of its own.
+    assert!(s.doc().dirty, "differs from the file");
+    assert_eq!(undo_len(&s), saved + 1);
+}
+
+#[test]
+fn a_burst_back_at_its_start_keeps_redo() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(dir.path());
+    let a = rect_at(&mut s, 20.0, 20.0);
+    let start = transform(&s, a).center_mm;
+    run(&mut s, "object.move", json!({ "ids": [a], "dy_mm": 5.0 }));
+    run(&mut s, "edit.undo", json!({}));
+    assert!(s.doc().undo.can_redo());
+    nudge(&mut s, &[a], 1.0, "k").unwrap();
+    nudge(&mut s, &[a], -1.0, "k").unwrap();
+    assert!(
+        s.doc().undo.can_redo(),
+        "a burst that changed nothing keeps redo"
+    );
+    run(&mut s, "edit.redo", json!({}));
+    assert!(near(
+        transform(&s, a).center_mm,
+        start + Vec2::new(0.0, 5.0)
+    ));
+}
+
+/// Objects of different sizes, one turned, so the centre of the common
+/// box differs from the mean of the centres and moves when they turn.
+fn uneven(s: &mut Session) -> Vec<u64> {
+    let a = rect_at(s, 20.0, 20.0);
+    let b = rect_at(s, 150.0, 90.0);
+    run(s, "object.scale", json!({ "ids": [b], "factor": 2.5 }));
+    run(s, "object.rotate", json!({ "ids": [b], "degrees": 20.0 }));
+    let c = rect_at(s, 60.0, 200.0);
+    vec![a, b, c]
+}
+
+#[test]
+fn group_rotate_there_and_back_puts_everything_back() {
+    for theta in [30.0, 37.0] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = session(dir.path());
+        let ids = uneven(&mut s);
+        let before: Vec<Transform> = ids.iter().map(|i| transform(&s, *i)).collect();
+        run(
+            &mut s,
+            "object.rotate",
+            json!({ "ids": ids, "degrees": theta }),
+        );
+        run(
+            &mut s,
+            "object.rotate",
+            json!({ "ids": ids, "degrees": -theta }),
+        );
+        for (id, t) in ids.iter().zip(&before) {
+            let now = transform(&s, *id);
+            assert!(
+                (now.center_mm - t.center_mm).hypot() < 1e-9,
+                "{theta}: {id} walked {:?}",
+                now.center_mm - t.center_mm
+            );
+            let dr = (now.rotation_deg - t.rotation_deg).rem_euclid(360.0);
+            assert!(dr.min(360.0 - dr) < 1e-9, "{theta}: {id} {now:?}");
+        }
+    }
+}
+
+#[test]
+fn the_group_pivot_is_the_mean_of_the_centres() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(dir.path());
+    let ids = uneven(&mut s);
+    let centres: Vec<Point> = ids.iter().map(|i| transform(&s, *i).center_mm).collect();
+    let n = centres.len() as f64;
+    let mean = Point::new(
+        centres.iter().map(|c| c.x).sum::<f64>() / n,
+        centres.iter().map(|c| c.y).sum::<f64>() / n,
+    );
+    assert!(
+        (common(&s, &ids).center() - mean).hypot() > 1.0,
+        "the fixture tells them apart"
+    );
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": ids, "degrees": 90.0 }),
+    );
+    for (k, id) in ids.iter().enumerate() {
+        let d = centres[k] - mean;
+        let want = mean + Vec2::new(-d.y, d.x);
+        assert!((transform(&s, *id).center_mm - want).hypot() < 1e-9, "{id}");
+    }
+    run(
+        &mut s,
+        "object.mirror",
+        json!({ "ids": ids, "axis": "horizontal" }),
+    );
+    let after: Vec<Point> = ids.iter().map(|i| transform(&s, *i).center_mm).collect();
+    let mx = after.iter().map(|c| c.x).sum::<f64>() / n;
+    assert!((mx - mean.x).abs() < 1e-9, "a mirror keeps the mean");
 }

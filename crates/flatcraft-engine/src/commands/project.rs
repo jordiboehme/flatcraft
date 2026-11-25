@@ -401,6 +401,8 @@ fn run_save(s: &mut Session, p: SaveParams, origin: Origin) -> Result<Value, Com
     }
     st.path = Some(path.clone());
     st.dirty = false;
+    // The file is the new reference: a later nudge is a step of its own.
+    st.end_burst();
     Ok(json!({ "path": path }))
 }
 

@@ -125,16 +125,20 @@ pub struct DocState {
 
 /// A run of `object.move` calls with one `coalesce_key` that share one
 /// undo step (see [`Session::coalesce_with`]).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 struct Burst {
     key: String,
     ids: Vec<ObjectId>,
-    /// The document revision after the burst's last move. Any other change
-    /// (a command, undo, redo, a save) raises it and ends the burst.
+    /// The document revision after the burst's last move. Any other
+    /// command, undo or redo raises it and ends the burst. A save ends it
+    /// through [`DocState::end_burst`], since it leaves the revision alone.
     revision: u64,
     /// `dirty` before the burst's first move, for a burst that ends where
     /// it started.
     dirty_before: bool,
+    /// The redo steps the burst's first move cleared, given back when the
+    /// burst ends where it started.
+    redo_before: Vec<Document>,
 }
 
 /// Everything `placed_bounds` of an object depends on.
@@ -254,6 +258,13 @@ impl DocState {
     /// Notes a change of the document.
     pub(crate) fn touch(&mut self) {
         self.revision += 1;
+    }
+
+    /// Ends the burst of coalescing moves, so the next move records a step
+    /// of its own. A save calls it: the saved file is the new reference
+    /// for `dirty`, so the burst can no longer give back its old flag.
+    pub(crate) fn end_burst(&mut self) {
+        self.burst = None;
     }
 
     /// The job last built by `job.preview` or `job.send`.
@@ -822,37 +833,56 @@ impl Session {
                 Err(CommandError::Refused(TOO_LARGE.into()))
             }
             Ok(value) => {
-                let joined = match (&coalesce, &state.burst) {
+                // A save after the burst's last move ends it (`end_burst`);
+                // a clean document never joins a burst either way.
+                let joined = match (&coalesce, state.burst.take()) {
                     (Some((key, ids)), Some(b))
-                        if b.key == *key && b.ids == *ids && b.revision == state.revision =>
+                        if b.key == *key
+                            && b.ids == *ids
+                            && b.revision == state.revision
+                            && state.dirty =>
                     {
-                        Some(b.dirty_before)
+                        Some(b)
                     }
                     _ => None,
                 };
-                let dirty_before = joined.unwrap_or(state.dirty);
+                let joining = joined.is_some();
+                let (dirty_before, redo_before) = match joined {
+                    Some(b) => (b.dirty_before, b.redo_before),
+                    None => {
+                        // A burst's first step: keep what it may give back.
+                        let redo = if coalesce.is_some() {
+                            state.undo.redo_states().to_vec()
+                        } else {
+                            Vec::new()
+                        };
+                        let dirty = state.dirty;
+                        state.undo.record(before);
+                        (dirty, redo)
+                    }
+                };
                 state.touch();
-                if joined.is_none() {
-                    state.undo.record(before);
-                }
                 state.dirty = true;
-                state.burst = coalesce.map(|(key, ids)| Burst {
-                    key,
-                    ids,
-                    revision: state.revision,
-                    dirty_before,
-                });
-                if joined.is_some()
+                if joining
                     && state
                         .undo
                         .last()
                         .is_some_and(|start| same_document(start, &state.document))
                 {
-                    // Back where the burst started: nothing to undo, and
-                    // nothing more to save than before it.
+                    // Back where the burst started: nothing to undo, the
+                    // redo steps it cleared are good again, and nothing
+                    // more to save than before it.
                     state.undo.discard_last();
+                    state.undo.restore_redo(redo_before);
                     state.dirty = dirty_before;
-                    state.burst = None;
+                } else {
+                    state.burst = coalesce.map(|(key, ids)| Burst {
+                        key,
+                        ids,
+                        revision: state.revision,
+                        dirty_before,
+                        redo_before,
+                    });
                 }
                 state.prune_selection();
                 Ok(value)
