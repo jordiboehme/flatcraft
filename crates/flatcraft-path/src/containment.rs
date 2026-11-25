@@ -128,7 +128,8 @@ pub struct ContainmentTree {
     pub roots: Vec<usize>,
     /// The number of closed paths around each path.
     pub depth: Vec<usize>,
-    /// The number of closed paths of the same object around each path.
+    /// The number of closed paths of the same object around each path,
+    /// counted in a tree of that object's paths alone.
     pub own_depth: Vec<usize>,
 }
 
@@ -142,43 +143,46 @@ pub struct ContainmentTree {
 ///   inside).
 /// - The parent is the smallest container. Candidates are searched from
 ///   the smallest larger ring upward and the first hit wins, so deep
-///   nesting costs about one nesting test per ring.
+///   nesting costs about one nesting test per ring: [`PROBES`] even-odd
+///   tests, or up to 2 x [`PROBES`] when every probe vertex lies on the
+///   boundary and the edge midpoints are tried too.
+/// - `own_depth` repeats the search within each object when the job has
+///   more than one, which at most doubles that cost.
 pub fn build(paths: &[Toolpath]) -> ContainmentTree {
     let n = paths.len();
     // (index, box, absolute area) of every closed path, smallest first.
-    let mut rings: Vec<(usize, Rect, f64)> = paths
+    let mut rings: Vec<Ring> = paths
         .iter()
         .enumerate()
         .filter(|(_, p)| p.closed)
         .filter_map(|(i, p)| Some((i, bbox(p.lap())?, signed_area(p.lap()).abs())))
         .collect();
     rings.sort_by(|a, b| a.2.total_cmp(&b.2).then(a.0.cmp(&b.0)));
+    let open: Vec<usize> = (0..n).filter(|&j| !paths[j].closed).collect();
 
     let mut parent = vec![None; n];
-    for (k, &(j, jb, ja)) in rings.iter().enumerate() {
-        let larger = &rings[k..];
-        let larger = &larger[larger.partition_point(|r| r.2 <= ja)..];
-        parent[j] = larger
-            .iter()
-            .find(|&&(i, ib, ia)| nested(paths[j].lap(), jb, ja, paths[i].lap(), ib, ia))
-            .map(|r| r.0);
-    }
-    let open: Vec<usize> = (0..n).filter(|&j| !paths[j].closed).collect();
-    for &j in &open {
-        let Some(jb) = bbox(paths[j].lap()) else {
-            continue;
-        };
-        parent[j] = rings
-            .iter()
-            .find(|&&(i, ib, ia)| {
-                ia > 0.0
-                    && box_in(jb, ib)
-                    && paths[j]
-                        .lap()
-                        .iter()
-                        .all(|q| point_in_ring(*q, paths[i].lap()) != Some(false))
-            })
-            .map(|r| r.0);
+    find_parents(paths, &rings, &open, &mut parent);
+
+    // The same search within each object, for `own_depth`: a ring of the
+    // path's object can hold it without being its ancestor, when another
+    // object's ring lies in between in part.
+    let mut own_parent = parent.clone();
+    let first = paths.first().map(|p| p.source.object);
+    if paths.iter().any(|p| Some(p.source.object) != first) {
+        let mut groups: HashMap<ObjectId, (Vec<Ring>, Vec<usize>)> = HashMap::new();
+        for r in &rings {
+            groups
+                .entry(paths[r.0].source.object)
+                .or_default()
+                .0
+                .push(*r);
+        }
+        for &j in &open {
+            groups.entry(paths[j].source.object).or_default().1.push(j);
+        }
+        for (group_rings, group_open) in groups.values() {
+            find_parents(paths, group_rings, group_open, &mut own_parent);
+        }
     }
 
     // A parent is a larger closed ring, so going from the largest down
@@ -189,15 +193,8 @@ pub fn build(paths: &[Toolpath]) -> ContainmentTree {
         if let Some(p) = parent[j] {
             depth[j] = depth[p] + 1;
         }
-        // The nearest ancestor of the same object, usually the parent.
-        let object = paths[j].source.object;
-        let mut up = parent[j];
-        while let Some(a) = up {
-            if paths[a].source.object == object {
-                own_depth[j] = own_depth[a] + 1;
-                break;
-            }
-            up = parent[a];
+        if let Some(p) = own_parent[j] {
+            own_depth[j] = own_depth[p] + 1;
         }
     }
     let mut children = vec![Vec::new(); n];
@@ -214,6 +211,39 @@ pub fn build(paths: &[Toolpath]) -> ContainmentTree {
         roots,
         depth,
         own_depth,
+    }
+}
+
+/// (path index, box, absolute area) of a closed path.
+type Ring = (usize, Rect, f64);
+
+/// Set the parent of every ring in `rings` (smallest first) and every path
+/// in `open` to its smallest container among `rings`. Each ring tries the
+/// larger rings from the smallest upward and stops at the first hit.
+fn find_parents(paths: &[Toolpath], rings: &[Ring], open: &[usize], parent: &mut [Option<usize>]) {
+    for (k, &(j, jb, ja)) in rings.iter().enumerate() {
+        let larger = &rings[k..];
+        let larger = &larger[larger.partition_point(|r| r.2 <= ja)..];
+        parent[j] = larger
+            .iter()
+            .find(|&&(i, ib, ia)| nested(paths[j].lap(), jb, ja, paths[i].lap(), ib, ia))
+            .map(|r| r.0);
+    }
+    for &j in open {
+        let Some(jb) = bbox(paths[j].lap()) else {
+            continue;
+        };
+        parent[j] = rings
+            .iter()
+            .find(|&&(i, ib, ia)| {
+                ia > 0.0
+                    && box_in(jb, ib)
+                    && paths[j]
+                        .lap()
+                        .iter()
+                        .all(|q| point_in_ring(*q, paths[i].lap()) != Some(false))
+            })
+            .map(|r| r.0);
     }
 }
 
@@ -820,7 +850,9 @@ mod tests {
         // Ported from order.rs `deep_nesting_orders_fast`: 200 concentric
         // rings of 400 vertices. The search goes from the smallest
         // container upward and stops at the first, so each ring costs at
-        // most PROBES even-odd tests. The count is the check, not the clock.
+        // most 2 x PROBES even-odd tests, and only PROBES here: no probe
+        // vertex of a circle lies on the next circle, so the midpoint
+        // fallback never runs. The count is the check, not the clock.
         let paths: Vec<Toolpath> = (1..=200)
             .map(|k| circle((300.0, 300.0), k as f64, 400))
             .collect();
@@ -837,7 +869,10 @@ mod tests {
     fn containment_of_2000_rings_is_bounded() {
         // Ruling F4: 2000 concentric rings plus 2000 disjoint ones, outside
         // the concentric rings' box. Ruling F30: the guard is the number
-        // of even-odd tests, never a wall-clock limit.
+        // of even-odd tests, never a wall-clock limit. The worst case is
+        // 2 x PROBES per ring (midpoint fallback); no probe vertex lies on
+        // a boundary here, and one object needs no second search for
+        // `own_depth`, so PROBES per ring holds.
         let mut paths: Vec<Toolpath> = (1..=2000)
             .map(|k| circle((0.0, 0.0), k as f64 * 0.1, 64))
             .collect();
@@ -1259,5 +1294,23 @@ mod tests {
         assert!(kept.is_kept(Point::new(65.0, 80.0)), "counter");
         assert!(!kept.is_kept(Point::new(80.0, 80.0)), "island");
         assert!(kept.is_kept(Point::new(30.0, 80.0)), "sheet");
+    }
+    #[test]
+    fn own_depth_counts_a_same_object_ring_that_is_not_an_ancestor() {
+        // Object 2 overlaps object 1's outline in part and holds its hole,
+        // so the hole's parent is object 2 and object 1's outline is not
+        // its ancestor. It still lies in that outline.
+        let paths = [
+            sqo(1, 0.0, 0.0, 100.0, 100.0),
+            sqo(2, 50.0, 20.0, 150.0, 80.0),
+            sqo(1, 60.0, 40.0, 80.0, 60.0),
+        ];
+        let tree = tree_of(&paths);
+        assert_eq!(tree.parent, vec![None, None, Some(1)]);
+        assert_eq!(tree.own_depth, vec![0, 0, 1]);
+        assert_eq!(
+            sides(&tree, &paths),
+            vec![KeepSide::Inside, KeepSide::Inside, KeepSide::Outside]
+        );
     }
 }
