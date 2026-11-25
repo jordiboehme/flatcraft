@@ -944,3 +944,19 @@ fn a_save_never_overwrites_an_unreadable_preset_file() {
     assert!(s.broken_plotter_file("mine").is_some());
     assert!(s.broken_material_file("mine").is_none());
 }
+
+#[test]
+fn write_atomic_leaves_other_writers_temp_files_alone() {
+    let d = tempdir().unwrap();
+    let path = d.path().join("a.toml");
+    let theirs = d.path().join("a.toml.tmp");
+    fs::write(&theirs, "theirs").unwrap();
+    flatcraft_device::fsio::write_atomic(&path, b"mine").unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), "mine");
+    assert_eq!(fs::read_to_string(&theirs).unwrap(), "theirs");
+    let names: Vec<String> = fs::read_dir(d.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names.len(), 2, "no temp file of ours is left: {names:?}");
+}

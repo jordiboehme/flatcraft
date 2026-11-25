@@ -4,18 +4,18 @@
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Writes `bytes` to `path` so a crash or power loss leaves either the old
 /// file or the new one, never a half-written one: write a temp file next
 /// to it, `sync_all` it, rename it over `path`, then (on unix) sync the
-/// folder so the rename itself is on disk. The temp file is removed when
-/// any step fails.
+/// folder so the rename itself is on disk.
 ///
-/// The temp file is always created new (`create_new`, which never follows
-/// a symlink), so a link planted at its name cannot redirect the write. A
-/// name that is taken (a leftover of a crash, or a planted link) is tried
-/// with a number added, and a leftover `<name>.tmp` that is a plain file
-/// or a link is removed first; removing a link never touches its target.
+/// The temp file has a name of its own (`.<name>.<pid>.<n>.tmp`) and is
+/// created new (`create_new`, which never follows a symlink), so a link
+/// planted next to the file cannot redirect the write and two writers never
+/// share a temp file. Only the temp file this call created is removed when
+/// a step fails; other files are never touched.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let name = path
         .file_name()
@@ -35,24 +35,18 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-/// Creates a fresh temp file next to `path`: `<name>.tmp`, else
-/// `<name>.<n>.tmp`.
+/// Creates a new temp file next to `path` with a name no other writer uses:
+/// the process id and a counter.
 fn create_temp(path: &Path, name: &std::ffi::OsStr) -> io::Result<(std::path::PathBuf, File)> {
-    let tmp_at = |n: u32| {
-        let mut t = name.to_os_string();
-        if n > 0 {
-            t.push(format!(".{n}"));
-        }
-        t.push(".tmp");
-        path.with_file_name(t)
-    };
-    let first = tmp_at(0);
-    if fs::symlink_metadata(&first).is_ok_and(|m| !m.is_dir()) {
-        let _ = fs::remove_file(&first);
-    }
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let pid = std::process::id();
     let mut last = None;
-    for n in 0..100 {
-        let tmp = tmp_at(n);
+    for _ in 0..100 {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut t = std::ffi::OsString::from(".");
+        t.push(name);
+        t.push(format!(".{pid}.{n}.tmp"));
+        let tmp = path.with_file_name(t);
         match File::options().write(true).create_new(true).open(&tmp) {
             Ok(f) => return Ok((tmp, f)),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => last = Some(e),
