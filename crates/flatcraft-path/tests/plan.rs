@@ -839,3 +839,31 @@ fn with_defaults_uses_the_spec_defaults() {
     assert_eq!(s.strategy, flatcraft_path::StrategySettings::default());
     assert_eq!(s.min_cut_mm, 0.025);
 }
+
+/// Wall-clock check (Ruling F30) of the whole pipeline on a large, dense
+/// job (20000 overlapping squares): run by hand or by the quality bench.
+/// Measured 0.6 to 1.1 s locally (Apple silicon, test profile, on a busy
+/// machine), so the bound is the plan's 3 s.
+#[test]
+#[ignore = "wall-clock perf check, run by hand or by the quality bench"]
+fn plan_of_20000_squares_is_fast() {
+    let mut seed = 11u64;
+    let mut next = || {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let input: Vec<PlacedPath> = (0..20_000)
+        .map(|k| {
+            let (x, y) = (10.0 + next() * 270.0, 10.0 + next() * 370.0);
+            placed(k, rect_path(x, y, 0.5 + next() * 2.0, 0.5 + next() * 2.0))
+        })
+        .collect();
+    let t0 = std::time::Instant::now();
+    let out = plan(&input, &settings()).unwrap();
+    let secs = t0.elapsed().as_secs_f64();
+    eprintln!("plan of 20000 squares: {secs} s");
+    assert_eq!(out.toolpaths.len(), 20_000);
+    assert!(secs < 3.0, "{secs} s");
+}

@@ -314,8 +314,10 @@ pub fn construct_with_stats(
         let by_cost = |a: &(f64, usize, usize), b: &(f64, usize, usize)| {
             a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2))
         };
-        scored.sort_by(by_cost);
-        scored.truncate(CROSSING_CHECKS);
+        if scored.len() > CROSSING_CHECKS {
+            scored.select_nth_unstable_by(CROSSING_CHECKS - 1, by_cost);
+            scored.truncate(CROSSING_CHECKS);
+        }
         if s.strategy.crossing_penalty {
             for c in &mut scored {
                 let at = units[c.1].candidates[c.2].at;
