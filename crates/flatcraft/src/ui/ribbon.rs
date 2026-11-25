@@ -1118,7 +1118,8 @@ fn keep_aspect(ui: &mut Ui, mode: Mode, cx: &mut Cx, column: egui::Rect, wh: [eg
     // The bracket: from each field, out to the lock's middle, then along
     // to the lock.
     let stroke = egui::Stroke::new(1.0, ui.visuals().weak_text_color());
-    let (left, x) = (column.left() + 1.0, column.center().x);
+    // The ticks start right at the fields.
+    let (left, x) = (wh[0].right().max(wh[1].right()) + 1.0, column.center().x);
     let gap = 2.0;
     let painter = ui.painter();
     painter.line(
