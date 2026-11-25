@@ -277,33 +277,45 @@ impl DocState {
     }
 }
 
+/// Compares embedded sources, the expensive part (up to 50 MB of bytes).
+fn same_source(a: &flatcraft_core::document::Source, b: &flatcraft_core::document::Source) -> bool {
+    #[cfg(test)]
+    tests::SOURCE_COMPARES.with(|n| n.set(n.get() + 1));
+    a == b
+}
+
 /// True if two documents differ at most in the objects' source links.
-/// Cheap fields first; geometry by `Arc` first, then by value.
+/// The cheap fields of every object first, then geometry (by `Arc`, then by
+/// value) and the embedded bytes last.
 fn same_except_links(a: &Document, b: &Document) -> bool {
+    let pairs = || a.objects.iter().zip(&b.objects);
     a.job == b.job
         && a.next_id == b.next_id
         && a.format_version == b.format_version
         && a.objects.len() == b.objects.len()
-        && a.objects.iter().zip(&b.objects).all(|(x, y)| {
+        && pairs().all(|(x, y)| {
             x.id == y.id
                 && x.name == y.name
                 && x.visible == y.visible
                 && x.transform == y.transform
                 && x.cut == y.cut
-                && x.source == y.source
                 && x.frame == y.frame
                 && x.local_bounds == y.local_bounds
-                && (std::sync::Arc::ptr_eq(&x.geometry, &y.geometry) || x.geometry == y.geometry)
         })
+        && pairs().all(|(x, y)| {
+            std::sync::Arc::ptr_eq(&x.geometry, &y.geometry) || x.geometry == y.geometry
+        })
+        && pairs().all(|(x, y)| same_source(&x.source, &y.source))
 }
 
 /// True if a command left the document as it was.
 fn same_document(a: &Document, b: &Document) -> bool {
-    same_except_links(a, b)
+    a.objects.len() == b.objects.len()
         && a.objects
             .iter()
             .zip(&b.objects)
             .all(|(x, y)| x.link == y.link)
+        && same_except_links(a, b)
 }
 
 /// The engine state shared by the GUI, the MCP server and tests.
@@ -614,5 +626,46 @@ impl Session {
                 Err(e)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flatcraft_core::document::Source;
+    use std::cell::Cell;
+
+    thread_local! {
+        pub(super) static SOURCE_COMPARES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    #[test]
+    fn documents_differ_by_cheap_fields_before_any_bytes_are_compared() {
+        let mut a = Document::new(JobSettings {
+            plotter_id: "p".into(),
+            material_id: "m".into(),
+            media_id: "x".into(),
+            speed: None,
+            force: None,
+            passes: None,
+        });
+        for name in ["one", "two"] {
+            a.add(
+                name.into(),
+                Source::Svg {
+                    name: name.into(),
+                    bytes: vec![7; 1000],
+                },
+                Vec::new(),
+            );
+        }
+        let mut b = a.clone();
+        b.objects[1].name = "renamed".into();
+        SOURCE_COMPARES.with(|n| n.set(0));
+        assert!(!same_document(&a, &b));
+        assert_eq!(SOURCE_COMPARES.with(Cell::get), 0, "a cheap field decided");
+        SOURCE_COMPARES.with(|n| n.set(0));
+        assert!(same_document(&a, &a.clone()));
+        assert_eq!(SOURCE_COMPARES.with(Cell::get), 2);
     }
 }
