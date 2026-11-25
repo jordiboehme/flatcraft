@@ -24,7 +24,7 @@ use super::{NoParams, check_exists, command, ids_json, resolve_ids};
 use crate::session::{CommandError, Origin, Session};
 
 /// Largest file that is imported or reloaded.
-pub(crate) const MAX_SOURCE_BYTES: u64 = 50 * 1024 * 1024;
+pub(crate) const MAX_SOURCE_BYTES: u64 = flatcraft_core::limits::MAX_SOURCE_BYTES;
 
 // ---------------------------------------------------------------- files
 

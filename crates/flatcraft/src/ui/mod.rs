@@ -1013,9 +1013,9 @@ impl FlatCraftApp {
                 let Some(sample) = home::SAMPLES.get(i) else {
                     return;
                 };
-                let result = flatcraft_engine::commands::project::open_text(
+                let result = flatcraft_engine::commands::project::open_bytes(
                     &mut lock(&self.session),
-                    sample.text,
+                    sample.bytes,
                     sample.title,
                 );
                 match result {
@@ -1581,46 +1581,12 @@ impl FlatCraftApp {
         true
     }
 
-    /// Draws Home's picture of the open document saved as `path` and
-    /// stores it in the cache, keyed by the file's new version. The
-    /// document is copied under the lock and drawn without it.
+    /// Makes Home read the picture of `path` again: a save wrote a new
+    /// one into the project file (`thumbnail.png`), and an open may show a
+    /// file that changed elsewhere.
     fn refresh_thumbnail(&mut self, path: &Path) {
-        let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-        let found = {
-            let s = lock(&self.session);
-            s.docs
-                .iter()
-                .find(|d| {
-                    d.path
-                        .as_deref()
-                        .is_some_and(|p| std::path::absolute(p).ok().as_deref() == Some(&abs))
-                })
-                .and_then(|d| {
-                    let plotter = s.profiles.plotter(&d.document.job.plotter_id).ok()?;
-                    Some((d.document.clone(), plotter))
-                })
-        };
-        let Some((doc, plotter)) = found else {
-            return;
-        };
-        let id = flatcraft_engine::thumbnails::project_id(&abs);
-        let Some(version) = flatcraft_engine::thumbnails::project_version(&abs) else {
-            return;
-        };
-        match flatcraft_engine::preview::render_document_png(&plotter, &doc, home::THUMB_PX) {
-            Ok(png) => {
-                if let Err(e) =
-                    flatcraft_engine::thumbnails::store(&self.config_dir, &id, &version, &png)
-                {
-                    eprintln!(
-                        "warning: cannot store the picture of {}: {e}",
-                        abs.display()
-                    );
-                }
-                self.ui.home.forget_texture(&id);
-            }
-            Err(e) => eprintln!("warning: cannot draw {}: {e}", abs.display()),
-        }
+        let id = flatcraft_engine::thumbnails::project_id(path);
+        self.ui.home.forget_texture(&id);
     }
 
     /// Takes a project off the recent list, with its details and picture.
@@ -1636,12 +1602,6 @@ impl FlatCraftApp {
             )));
         }
         let id = flatcraft_engine::thumbnails::project_id(&path);
-        if let Err(e) = flatcraft_engine::thumbnails::forget(&self.config_dir, &id) {
-            eprintln!(
-                "warning: cannot remove the picture of {}: {e}",
-                path.display()
-            );
-        }
         self.ui.home.forget_texture(&id);
     }
 
@@ -1718,36 +1678,26 @@ impl FlatCraftApp {
             Workspace::Cut => Workspace::Cut,
             _ => Workspace::Prepare,
         };
-        let dropped = {
-            let mut dropped = Vec::new();
-            let result = lock(&self.session).update_prefs(|p| {
-                let recent = &mut p.recent_projects;
-                recent.retain(|p| p != &path);
-                recent.insert(0, path.clone());
-                dropped = recent.split_off(recent.len().min(MAX_RECENT));
-                let detail = match p.recent_details.iter_mut().find(|d| d.path == path) {
-                    Some(d) => d,
-                    None => {
-                        p.recent_details
-                            .push(flatcraft_engine::prefs::RecentDetail {
-                                path: path.clone(),
-                                ..Default::default()
-                            });
-                        p.recent_details.last_mut().expect("just pushed")
-                    }
-                };
-                detail.opened_unix_s = now;
-                detail.workspace = workspace.name().to_string();
-                p.prune_recent_details();
-            });
-            result.map(|()| dropped)
-        };
-        // Pictures of projects that fell off the list go too.
-        for old in dropped.iter().flatten() {
-            let id = flatcraft_engine::thumbnails::project_id(old);
-            let _ = flatcraft_engine::thumbnails::forget(&self.config_dir, &id);
-        }
-        let result = dropped.map(|_| ());
+        let result = lock(&self.session).update_prefs(|p| {
+            let recent = &mut p.recent_projects;
+            recent.retain(|p| p != &path);
+            recent.insert(0, path.clone());
+            recent.truncate(MAX_RECENT);
+            let detail = match p.recent_details.iter_mut().find(|d| d.path == path) {
+                Some(d) => d,
+                None => {
+                    p.recent_details
+                        .push(flatcraft_engine::prefs::RecentDetail {
+                            path: path.clone(),
+                            ..Default::default()
+                        });
+                    p.recent_details.last_mut().expect("just pushed")
+                }
+            };
+            detail.opened_unix_s = now;
+            detail.workspace = workspace.name().to_string();
+            p.prune_recent_details();
+        });
         if let Err(e) = result {
             self.toast(Toast::error(format!(
                 "Cannot store the recent projects: {e}"

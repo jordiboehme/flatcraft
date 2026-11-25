@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use flatcraft_core::document::{Object, ObjectId, Source};
+use flatcraft_core::project::Archive;
 use flatcraft_device::ProfileStore;
 use flatcraft_engine::commands::placed_bounds;
 use flatcraft_engine::prefs::Preferences;
@@ -745,12 +746,13 @@ fn save_and_open_keep_the_group_and_store_the_source_once() {
         file_len(&ten),
         file_len(&one)
     );
-    let text = std::fs::read_to_string(&ten).unwrap();
-    let value: Value = serde_json::from_str(&text).unwrap();
-    // Older builds must say "newer FlatCraft", not "broken file".
-    assert_eq!(value["format_version"], 2);
-    let one_value: Value = serde_json::from_str(&std::fs::read_to_string(&one).unwrap()).unwrap();
-    assert_eq!(one_value["format_version"], 1, "no group, no new format");
+    // Format 1 is the only version: linked copies are part of it.
+    let value = project_json(&ten);
+    assert_eq!(value["format_version"], 1);
+    assert_eq!(value["link_groups"].as_array().unwrap().len(), 1);
+    assert_eq!(project_json(&one)["format_version"], 1);
+    let sources = Archive::read(&ten).unwrap().sources;
+    assert_eq!(sources.len(), 1, "one source entry for the group");
 
     let mut s2 = session(dir.path());
     let r = run(&mut s2, "project.open", json!({ "path": ten }));
@@ -789,7 +791,7 @@ fn open_refuses_a_member_whose_group_is_missing_and_keeps_a_members_own_fields()
     let all = linked(&mut s, id, 2);
     let path = dir.path().join("p.flatcraft");
     run(&mut s, "project.save", json!({ "path": path }));
-    let mut value: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let mut value = project_json(&path);
 
     // A member that carries its own cut options keeps them and leaves the
     // group; nothing on open overwrites design data.
@@ -797,7 +799,7 @@ fn open_refuses_a_member_whose_group_is_missing_and_keeps_a_members_own_fields()
     edited["objects"][1]["cut"] = json!({ "mode": "all_lines" });
     edited["objects"][1]["name"] = json!("odd");
     let p2 = dir.path().join("edited.flatcraft");
-    write(&p2, serde_json::to_string(&edited).unwrap());
+    write_value(&path, &p2, &edited);
     let mut s2 = session(dir.path());
     let r = run(&mut s2, "project.open", json!({ "path": p2 }));
     assert_eq!(r["warnings"], json!([UNLINKED_WARNING]), "{r}");
@@ -812,7 +814,7 @@ fn open_refuses_a_member_whose_group_is_missing_and_keeps_a_members_own_fields()
     value["link_groups"] = json!([]);
     value["objects"][0]["name"] = json!("Lonely");
     let p3 = dir.path().join("broken.flatcraft");
-    write(&p3, serde_json::to_string(&value).unwrap());
+    write_value(&path, &p3, &value);
     let mut s3 = session(dir.path());
     let e = s3
         .execute("project.open", json!({ "path": p3 }), Origin::User)
@@ -838,7 +840,7 @@ fn hand_written_odd(dir: &Path, odd: usize) -> (Vec<u64>, Value) {
     let all = linked(&mut s, id, 2);
     let path = dir.join("p.flatcraft");
     run(&mut s, "project.save", json!({ "path": path }));
-    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let mut v = project_json(&path);
     let g = v["link_groups"][0].clone();
     v.as_object_mut().unwrap().remove("link_groups");
     for o in v["objects"].as_array_mut().unwrap() {
@@ -855,9 +857,36 @@ fn hand_written_odd(dir: &Path, odd: usize) -> (Vec<u64>, Value) {
     (all, v)
 }
 
+/// The project.json of a saved project.
+fn project_json(path: &Path) -> Value {
+    Archive::read(path).unwrap().project
+}
+
+/// Writes `v` as the project.json of a copy of the saved project `from`
+/// (its sources and thumbnail) at `to`.
+fn write_value(from: &Path, to: &Path, v: &Value) {
+    let mut archive = Archive::read(from).unwrap();
+    archive.project = v.clone();
+    archive.write(to).unwrap();
+}
+
+/// Adds an SVG source to the project [`hand_written`] saved and returns
+/// its file name for project.json.
+fn add_svg(dir: &Path, svg: &str) -> String {
+    let mut file = String::new();
+    Archive::edit(&dir.join("p.flatcraft"), |a| {
+        file = a.add_source(&Source::Svg {
+            name: "circle.svg".into(),
+            bytes: svg.as_bytes().into(),
+        });
+    })
+    .unwrap();
+    file
+}
+
 fn open_value(dir: &Path, v: &Value) -> (Session, Value) {
     let p = dir.join("hand.flatcraft");
-    write(&p, serde_json::to_string(v).unwrap());
+    write_value(&dir.join("p.flatcraft"), &p, v);
     let mut s = session(dir);
     let r = run(&mut s, "project.open", json!({ "path": p }));
     (s, r)
@@ -916,10 +945,8 @@ fn open_names_the_odd_member_when_it_comes_first() {
 fn open_unlinks_a_member_whose_own_source_differs() {
     let dir = tempfile::tempdir().unwrap();
     let (all, mut v) = hand_written(dir.path());
-    use base64::Engine;
     let circle = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="40mm" viewBox="0 0 40 40"><circle cx="20" cy="20" r="15"/></svg>"#;
-    v["objects"][1]["source"]["Svg"]["bytes"] =
-        json!(base64::engine::general_purpose::STANDARD.encode(circle));
+    v["objects"][1]["source"]["Svg"]["file"] = json!(add_svg(dir.path(), circle));
     let (s, r) = open_value(dir.path(), &v);
     // Only the unlink is named: the saved bounds are the square's, but a
     // shape from another source is no font problem.

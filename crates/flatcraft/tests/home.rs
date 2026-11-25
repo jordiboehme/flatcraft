@@ -290,15 +290,18 @@ fn right_click_removes_a_recent_project() {
     assert!(path.exists(), "no file is deleted");
 }
 
-/// The pictures in the cache folder.
-fn cached_pictures(dir: &Path) -> Vec<PathBuf> {
-    std::fs::read_dir(dir.join(flatcraft_engine::thumbnails::DIR))
-        .map(|r| r.flatten().map(|e| e.path()).collect())
-        .unwrap_or_default()
+/// The picture Home shows for `path`: the version it was read at and the
+/// texture size, or `None` while there is none.
+fn shown(h: &common::AppHarness, path: &Path) -> Option<(String, [usize; 2])> {
+    let id = flatcraft_engine::thumbnails::project_id(path);
+    match app(h).ui.home.thumbs.get(&id)? {
+        (v, flatcraft::ui::home::Thumb::Ready(tex)) => Some((v.clone(), tex.size())),
+        _ => None,
+    }
 }
 
 #[test]
-fn pictures_are_drawn_once_cached_and_refreshed_on_save() {
+fn pictures_come_from_the_project_file_and_refresh_on_save() {
     // The config dir and the project's folder are apart, so a picture
     // next to the project would show.
     let dir = tempfile::tempdir().unwrap();
@@ -317,38 +320,29 @@ fn pictures_are_drawn_once_cached_and_refreshed_on_save() {
     });
     wait_for_pictures(&mut h);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    let id = flatcraft_engine::thumbnails::project_id(&path);
     let v1 = flatcraft_engine::thumbnails::project_version(&path).unwrap();
-    let png = flatcraft_engine::thumbnails::cached(dir.path(), &id, &v1).unwrap();
-    assert_eq!(&png[1..4], b"PNG");
-    // Never inside the project's folder: only the project is there.
+    // The picture the save put into the project file, 512 px.
+    let (version, size) = shown(&h, &path).expect("a picture");
+    assert_eq!(version, v1);
+    assert_eq!(size[0].max(size[1]), 512);
+    let png = flatcraft_core::project::read_thumbnail(&path)
+        .unwrap()
+        .unwrap();
+    // Nothing next to the project and nothing in the config dir.
     let next_to: Vec<_> = std::fs::read_dir(projects.path())
         .unwrap()
         .flatten()
         .map(|e| e.file_name())
         .collect();
     assert_eq!(next_to, ["coasters.flatcraft"]);
-    assert_eq!(cached_pictures(dir.path()).len(), 1);
+    assert!(!dir.path().join("thumbnails").exists());
     for _ in 0..5 {
         h.step();
     }
-    assert_eq!(calls.load(Ordering::SeqCst), 1, "drawn once");
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "read once");
 
-    // A second window reads the cache and draws nothing.
-    let calls2 = Arc::new(AtomicUsize::new(0));
-    let counted2 = calls2.clone();
-    let mut h2 = harness_with(&dir, s.clone(), move |a| {
-        a.with_inline_pictures(false).with_thumbnailer(move |p, f| {
-            counted2.fetch_add(1, Ordering::SeqCst);
-            flatcraft::ui::home::render_project(p, f)
-        })
-    });
-    wait_for_pictures(&mut h2);
-    assert_eq!(calls2.load(Ordering::SeqCst), 0);
-    drop(h2);
-
-    // Open, change and save in the window: the picture is redrawn from
-    // the document at once, and the old one is gone.
+    // Open, change and save in the window: the file carries a new
+    // picture and Home reads it again.
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![flatcraft::ui::Action::Open(path.clone())]);
     let doc = s.lock().unwrap().doc().id();
@@ -365,15 +359,14 @@ fn pictures_are_drawn_once_cached_and_refreshed_on_save() {
     app_mut(&mut h).apply(&ctx, vec![flatcraft::ui::Action::Save { doc_id: doc }]);
     let v2 = flatcraft_engine::thumbnails::project_version(&path).unwrap();
     assert_ne!(v1, v2);
-    let png2 = flatcraft_engine::thumbnails::cached(dir.path(), &id, &v2).unwrap();
+    let png2 = flatcraft_core::project::read_thumbnail(&path)
+        .unwrap()
+        .unwrap();
     assert_ne!(png, png2, "the picture shows the moved square");
-    assert!(flatcraft_engine::thumbnails::cached(dir.path(), &id, &v1).is_none());
-    assert_eq!(cached_pictures(dir.path()).len(), 1);
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        1,
-        "the save drew it, no worker"
-    );
+    app_mut(&mut h).ui.workspace = Workspace::Home;
+    wait_for_pictures(&mut h);
+    assert_eq!(shown(&h, &path).map(|(v, _)| v), Some(v2));
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "read again after the save");
 }
 
 #[test]
@@ -474,46 +467,33 @@ fn a_picture_of_an_old_version_never_replaces_the_newer_one() {
     let path = projects.path().join("coasters.flatcraft");
     saved_project(&s, &path);
     s.lock().unwrap().prefs.recent_projects = vec![path.clone()];
-    let id = flatcraft_engine::thumbnails::project_id(&path);
-    let config = dir.path().to_path_buf();
-    let newer: Arc<std::sync::Mutex<Option<String>>> = Arc::default();
-    let seen = newer.clone();
-    // While the worker draws, the project is saved again and that save
-    // stores its own picture, as FlatCraftApp::saved does.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = calls.clone();
+    // While the worker reads the picture, the project is saved again
+    // with another picture.
     let mut h = harness_with(&dir, s.clone(), move |a| {
         a.with_inline_pictures(false).with_thumbnailer(move |p, f| {
             let png = flatcraft::ui::home::render_project(p, f)?;
-            if seen.lock().unwrap().is_some() {
-                // The second round draws the current version.
-                return Ok(png);
+            if counted.fetch_add(1, Ordering::SeqCst) == 0 {
+                flatcraft_core::project::Archive::edit(f, |a| a.thumbnail = Some(tiny_png()))
+                    .unwrap();
             }
-            let mut text = std::fs::read_to_string(f).unwrap();
-            text.push_str("\n\n");
-            std::fs::write(f, text).unwrap();
-            let v = flatcraft_engine::thumbnails::project_version(f).unwrap();
-            flatcraft_engine::thumbnails::store(
-                &config,
-                &flatcraft_engine::thumbnails::project_id(f),
-                &v,
-                &tiny_png(),
-            )
-            .unwrap();
-            *seen.lock().unwrap() = Some(v);
             Ok(png)
         })
     });
     wait_for_pictures(&mut h);
-    let v2 = newer.lock().unwrap().clone().expect("the worker ran");
-    assert_eq!(
-        flatcraft_engine::thumbnails::cached(dir.path(), &id, &v2).as_deref(),
-        Some(&tiny_png()[..]),
-        "the newer picture stays"
-    );
-    assert_eq!(
-        cached_pictures(dir.path()).len(),
-        1,
-        "the old one was not stored"
-    );
+    // The first picture showed an old version and was dropped; the next
+    // frame read the new one.
+    for _ in 0..20 {
+        if calls.load(Ordering::SeqCst) >= 2 && !app(&h).ui.home.busy() {
+            break;
+        }
+        h.step();
+        wait_for_pictures(&mut h);
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let now = flatcraft_engine::thumbnails::project_version(&path).unwrap();
+    assert_eq!(shown(&h, &path), Some((now, [2, 2])), "the newer picture");
 }
 
 #[test]

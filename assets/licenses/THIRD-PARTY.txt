@@ -81,6 +81,7 @@ Rust crates (every platform, from cargo metadata)
   combine 4.6.9 - MIT
   concurrent-queue 2.5.0 - Apache-2.0 OR MIT
   const-oid 0.10.3 - Apache-2.0 OR MIT
+  constant_time_eq 0.6.2 - CC0-1.0 OR MIT-0 OR Apache-2.0
   core-foundation 0.9.4 - MIT OR Apache-2.0
   core-foundation-sys 0.8.7 - MIT OR Apache-2.0
   core-graphics 0.23.2 - MIT OR Apache-2.0
@@ -244,6 +245,7 @@ Rust crates (every platform, from cargo metadata)
   ndk 0.9.0 - MIT OR Apache-2.0
   ndk-context 0.1.1 - MIT OR Apache-2.0
   ndk-sys 0.6.0+11769913 - MIT OR Apache-2.0
+  nix 0.32.0 - MIT
   nohash-hasher 0.2.0 - Apache-2.0 OR MIT
   nom 8.0.0 - MIT
   num-traits 0.2.19 - MIT OR Apache-2.0
@@ -407,6 +409,7 @@ Rust crates (every platform, from cargo metadata)
   tracing-core 0.1.36 - MIT
   tree_magic_mini 3.2.2 - MIT
   type-map 0.5.1 - MIT/Apache-2.0
+  typed-path 0.13.0 - MIT OR Apache-2.0
   typenum 1.20.1 - MIT OR Apache-2.0
   uds_windows 1.2.1 - MIT
   unicode-bidi 0.3.18 - MIT OR Apache-2.0
@@ -503,11 +506,15 @@ Rust crates (every platform, from cargo metadata)
   zerocopy-derive 0.8.64 - BSD-2-Clause OR Apache-2.0 OR MIT
   zerofrom 0.1.8 - Unicode-3.0
   zerofrom-derive 0.1.8 - Unicode-3.0
+  zeroize 1.9.2 - Apache-2.0 OR MIT
+  zeroize_derive 1.5.0 - Apache-2.0 OR MIT
   zerotrie 0.2.5 - Unicode-3.0
   zerovec 0.11.9 - Unicode-3.0
   zerovec-derive 0.11.7 - Unicode-3.0
+  zip 9.8.2 - MIT
   zlib-rs 0.6.9 - Zlib
   zmij 1.0.23 - MIT
+  zopfli 0.8.4 - Apache-2.0
   zune-core 0.5.3 - MIT OR Apache-2.0 OR Zlib
   zune-jpeg 0.5.15 - MIT OR Apache-2.0 OR Zlib
   zvariant 5.15.1 - MIT

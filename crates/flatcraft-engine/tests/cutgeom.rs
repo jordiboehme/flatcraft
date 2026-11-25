@@ -790,10 +790,10 @@ fn project_open_repairs_bad_cut_options() {
     let id = import_line(&mut s);
     let path = dir.path().join("p.flatcraft");
     run(&mut s, "project.save", json!({ "path": path }));
-    let text = std::fs::read_to_string(&path).unwrap();
-    let mut v: Value = serde_json::from_str(&text).unwrap();
-    v["objects"][0]["cut"]["auto_threshold_mm"] = json!(99.0);
-    std::fs::write(&path, v.to_string()).unwrap();
+    flatcraft_core::project::Archive::edit(&path, |a| {
+        a.project["objects"][0]["cut"]["auto_threshold_mm"] = json!(99.0);
+    })
+    .unwrap();
     let mut s2 = session(&dir);
     let r = run(&mut s2, "project.open", json!({ "path": path }));
     assert!(

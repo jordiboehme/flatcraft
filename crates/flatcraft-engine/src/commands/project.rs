@@ -393,7 +393,9 @@ fn run_save(s: &mut Session, p: SaveParams, origin: Origin) -> Result<Value, Com
     // Only metadata, so it is not an undo step; a failed save puts it back.
     let st = &mut s.docs[index];
     let previous = relink_for_save(&mut st.document, st.path.as_deref(), &path);
-    if let Err(e) = project::save_at(&st.document, &target) {
+    let thumbnail = thumbnail_png(&s.profiles, &s.docs[index].document);
+    let st = &mut s.docs[index];
+    if let Err(e) = project::save_at(&st.document, &target, thumbnail.as_deref()) {
         restore_links(&mut st.document, previous);
         return Err(CommandError::Failed(e.to_string()));
     }
@@ -407,6 +409,18 @@ fn run_save(s: &mut Session, p: SaveParams, origin: Origin) -> Result<Value, Com
     Ok(json!({ "path": path }))
 }
 
+/// The picture a project file carries (`thumbnail.png`): the canvas view
+/// of the mat with its objects, drawn by the same renderer as
+/// `document.preview`. `None` when it cannot be drawn (an unknown plotter):
+/// the project is still saved, without a picture.
+pub fn thumbnail_png(
+    profiles: &flatcraft_device::ProfileStore,
+    doc: &flatcraft_core::document::Document,
+) -> Option<Vec<u8>> {
+    let plotter = profiles.plotter(&doc.job.plotter_id).ok()?;
+    crate::preview::render_document_png(&plotter, doc, project::THUMBNAIL_PX).ok()
+}
+
 command!(
     ProjectSave,
     id: "project.save",
@@ -415,7 +429,7 @@ command!(
     session: true,
     params: SaveParams,
     run: run_save,
-    description: "Saves an open document (the active one, or the one with doc_id) as a project file (JSON with the original SVG sources embedded). Without path it uses the document's current path; a document that was never saved needs a path. Linked files (see object.reload) keep pointing at the same files; their paths relative to the project file are updated. Agents may not write inside the FlatCraft config directory. Returns {path}.",
+    description: "Saves an open document (the active one, or the one with doc_id) as a project file: a zip archive with project.json (the readable project), the original imported files under sources/ and thumbnail.png (a 512 px picture of the mat). Without path it uses the document's current path; a document that was never saved needs a path. Linked files (see object.reload) keep pointing at the same files; their paths relative to the project file are updated. Agents may not write inside the FlatCraft config directory. Returns {path}.",
 );
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -471,16 +485,16 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
     }))
 }
 
-/// Opens project text that is not a file (a sample built into the
-/// window) as a new untitled document, like `project.open` does with a
+/// Opens a project file's bytes that are not a file (a sample built into
+/// the window) as a new untitled document, like `project.open` does with a
 /// file: it replaces the active document only if that one is pristine.
 /// The document has no path, so a save asks where to put it and the
-/// text itself is never written. `what` names it in errors. Not a
+/// bytes themselves are never written. `what` names it in errors. Not a
 /// registry command: only the window offers samples. Returns {index,
 /// objects, warnings} like `project.open`.
-pub fn open_text(s: &mut Session, text: &str, what: &str) -> Result<Value, CommandError> {
+pub fn open_bytes(s: &mut Session, bytes: &[u8], what: &str) -> Result<Value, CommandError> {
     let (mut document, unlinked) =
-        project::load_report_str(text).map_err(|e| CommandError::Failed(e.to_string()))?;
+        project::load_report_bytes(bytes).map_err(|e| CommandError::Failed(e.to_string()))?;
     let blade = blade_offset_for(s, &document.job.plotter_id);
     let warnings = rebuild_loaded(&mut document, &unlinked, blade, what)?;
     let objects = document.objects.len();
@@ -504,29 +518,37 @@ pub fn load_rebuilt(
     profiles: &flatcraft_device::ProfileStore,
     path: &Path,
 ) -> Result<flatcraft_core::document::Document, CommandError> {
-    let text = std::fs::read_to_string(path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
+    let (document, unlinked) = project::load_report(path).map_err(|e| match e {
+        ProjectError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => {
             CommandError::NotFound(format!("file {}", path.display()))
-        } else {
-            CommandError::Failed(format!("cannot read {}: {e}", path.display()))
         }
+        other => CommandError::Failed(other.to_string()),
     })?;
-    load_rebuilt_str(profiles, &text, &path.display().to_string())
+    rebuilt(profiles, document, &unlinked, &path.display().to_string())
 }
 
-/// [`load_rebuilt`] for project text. `what` names it in errors.
-pub fn load_rebuilt_str(
+/// [`load_rebuilt`] for a project file's bytes. `what` names it in errors.
+pub fn load_rebuilt_bytes(
     profiles: &flatcraft_device::ProfileStore,
-    text: &str,
+    bytes: &[u8],
     what: &str,
 ) -> Result<flatcraft_core::document::Document, CommandError> {
-    let (mut document, unlinked) =
-        project::load_report_str(text).map_err(|e| CommandError::Failed(e.to_string()))?;
+    let (document, unlinked) =
+        project::load_report_bytes(bytes).map_err(|e| CommandError::Failed(e.to_string()))?;
+    rebuilt(profiles, document, &unlinked, what)
+}
+
+fn rebuilt(
+    profiles: &flatcraft_device::ProfileStore,
+    mut document: flatcraft_core::document::Document,
+    unlinked: &[flatcraft_core::document::ObjectId],
+    what: &str,
+) -> Result<flatcraft_core::document::Document, CommandError> {
     let blade = profiles
         .plotter(&document.job.plotter_id)
         .map(|p| p.blade_offset_mm)
         .unwrap_or(0.25);
-    rebuild_loaded(&mut document, &unlinked, blade, what)?;
+    rebuild_loaded(&mut document, unlinked, blade, what)?;
     Ok(document)
 }
 

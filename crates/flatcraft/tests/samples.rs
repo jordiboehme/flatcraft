@@ -212,9 +212,14 @@ fn regenerate_samples() {
     for sample in &SAMPLES {
         let (_dir, s) = build(sample.id);
         let doc = s.lock().unwrap().doc().document.clone();
-        let value = flatcraft_core::project::to_value(&doc).unwrap();
-        let text = serde_json::to_string_pretty(&value).unwrap() + "\n";
-        std::fs::write(out.join(format!("{}.flatcraft", sample.id)), text).unwrap();
+        let profiles = s.lock().unwrap().profiles.clone();
+        let thumbnail = flatcraft_engine::commands::project::thumbnail_png(&profiles, &doc);
+        assert!(thumbnail.is_some(), "{} has a picture", sample.id);
+        let bytes = flatcraft_core::project::to_archive(&doc, thumbnail.as_deref())
+            .unwrap()
+            .to_bytes()
+            .unwrap();
+        std::fs::write(out.join(format!("{}.flatcraft", sample.id)), bytes).unwrap();
     }
 }
 
@@ -244,13 +249,20 @@ fn differs(a: &serde_json::Value, b: &serde_json::Value, at: &str) -> Option<Str
     }
 }
 
+/// The project.json of a bundled sample.
+fn project_json(sample: &flatcraft::ui::home::Sample) -> serde_json::Value {
+    flatcraft_core::project::Archive::from_bytes(sample.bytes)
+        .unwrap()
+        .project
+}
+
 #[test]
 fn the_bundled_samples_are_the_designs_of_this_file() {
     for sample in &SAMPLES {
         let (_dir, s) = build(sample.id);
         let doc = s.lock().unwrap().doc().document.clone();
         let value = flatcraft_core::project::to_value(&doc).unwrap();
-        let bundled: serde_json::Value = serde_json::from_str(sample.text).unwrap();
+        let bundled = project_json(sample);
         if let Some(d) = differs(&value, &bundled, sample.id) {
             panic!("{d}: run regenerate_samples");
         }
@@ -260,17 +272,15 @@ fn the_bundled_samples_are_the_designs_of_this_file() {
 #[test]
 fn every_sample_loads_plans_without_warnings_and_fits_the_default_mat() {
     for sample in &SAMPLES {
-        assert!(!sample.text.contains("/Users"), "{}", sample.id);
-        assert!(
-            !sample.text.contains("\"link\""),
-            "{} has a file link",
-            sample.id
-        );
+        let text = project_json(sample).to_string();
+        assert!(!text.contains("/Users"), "{}", sample.id);
+        assert!(!text.contains("\"link\""), "{} has a file link", sample.id);
         let dir = tempfile::tempdir().unwrap();
         let s = session(&dir);
         let mut st = s.lock().unwrap();
-        let r = flatcraft_engine::commands::project::open_text(&mut st, sample.text, sample.title)
-            .unwrap();
+        let r =
+            flatcraft_engine::commands::project::open_bytes(&mut st, sample.bytes, sample.title)
+                .unwrap();
         assert_eq!(r["warnings"], json!([]), "{}", sample.id);
         assert!(st.doc().path.is_none());
         let state = st
@@ -307,7 +317,7 @@ fn the_window_star_cuts_its_inner_shapes_first() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let mut st = s.lock().unwrap();
-    flatcraft_engine::commands::project::open_text(&mut st, sample.text, "star").unwrap();
+    flatcraft_engine::commands::project::open_bytes(&mut st, sample.bytes, "star").unwrap();
     let job = flatcraft_engine::job::build(&st).unwrap();
     let paths = &job.plan.toolpaths;
     assert_eq!(paths.len(), 8 * 3 + 2, "25 inner shapes and the star");
@@ -329,7 +339,7 @@ fn the_window_star_cuts_its_inner_shapes_first() {
 fn the_patterns_are_linked_copies() {
     for (id, n) in [("sticker-sheet", 12), ("gift-tags", 6)] {
         let sample = SAMPLES.iter().find(|x| x.id == id).unwrap();
-        let (doc, _) = flatcraft_core::project::load_report_str(sample.text).unwrap();
+        let (doc, _) = flatcraft_core::project::load_report_bytes(sample.bytes).unwrap();
         assert_eq!(doc.objects.len(), n, "{id}");
         let group = doc.objects[0].link_group;
         assert!(group.is_some(), "{id}");
@@ -341,7 +351,7 @@ fn the_patterns_are_linked_copies() {
 fn a_sample_opens_as_an_untitled_copy() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
-    let before: Vec<Vec<u8>> = SAMPLES.iter().map(|x| x.text.as_bytes().to_vec()).collect();
+    let before: Vec<Vec<u8>> = SAMPLES.iter().map(|x| x.bytes.to_vec()).collect();
     let picker = FakePicker::default();
     let requests = picker.requests.clone();
     let mut h = harness_with(&dir, s.clone(), |a| a.with_file_picker(picker));
@@ -366,19 +376,18 @@ fn a_sample_opens_as_an_untitled_copy() {
     h.get_by_role_and_label(Role::Button, "Stencil").click();
     wait_for_source_check(&mut h);
     assert_eq!(s.lock().unwrap().docs.len(), 2);
-    let after: Vec<Vec<u8>> = SAMPLES.iter().map(|x| x.text.as_bytes().to_vec()).collect();
+    let after: Vec<Vec<u8>> = SAMPLES.iter().map(|x| x.bytes.to_vec()).collect();
     assert_eq!(before, after);
     // Nothing was written next to the samples or in the project folder.
     let samples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/samples");
     for sample in &SAMPLES {
-        let on_disk =
-            std::fs::read_to_string(samples.join(format!("{}.flatcraft", sample.id))).unwrap();
-        assert_eq!(on_disk, sample.text);
+        let on_disk = std::fs::read(samples.join(format!("{}.flatcraft", sample.id))).unwrap();
+        assert_eq!(on_disk, sample.bytes);
     }
 }
 
 #[test]
-fn sample_pictures_come_from_the_preview_renderer() {
+fn sample_pictures_come_from_the_sample_files() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let mut h = harness_with(&dir, s.clone(), |a| a.with_inline_pictures(false));
@@ -388,17 +397,24 @@ fn sample_pictures_come_from_the_preview_renderer() {
         let (version, thumb) = app(&h).ui.home.thumbs.get(&id).unwrap();
         assert_eq!(
             *version,
-            flatcraft_engine::thumbnails::text_version(sample.text)
+            flatcraft_engine::thumbnails::bytes_version(sample.bytes)
         );
         let flatcraft::ui::home::Thumb::Ready(tex) = thumb else {
             panic!("{} has no picture: {thumb:?}", sample.id);
         };
-        // The renderer's size: the mat's larger side is SAMPLE_PX.
+        // The picture in the sample file: the mat's larger side is 512 px.
         let [w, h] = tex.size();
-        assert_eq!(w.max(h), flatcraft::ui::home::SAMPLE_PX as usize);
+        assert_eq!(w.max(h), flatcraft_core::project::THUMBNAIL_PX as usize);
+        assert!(
+            flatcraft_core::project::thumbnail_from_bytes(sample.bytes)
+                .unwrap()
+                .is_some(),
+            "{}",
+            sample.id
+        );
     }
-    // Kept in memory, never written next to the samples or in the cache.
-    assert!(!dir.path().join(flatcraft_engine::thumbnails::DIR).exists());
+    // Nothing is written to the config dir.
+    assert!(!dir.path().join("thumbnails").exists());
 }
 
 #[test]
@@ -407,7 +423,7 @@ fn the_gift_tags_cut_each_hole_before_its_tag() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let mut st = s.lock().unwrap();
-    flatcraft_engine::commands::project::open_text(&mut st, sample.text, "tags").unwrap();
+    flatcraft_engine::commands::project::open_bytes(&mut st, sample.bytes, "tags").unwrap();
     let job = flatcraft_engine::job::build(&st).unwrap();
     let boxes: Vec<kurbo::Rect> = job
         .plan

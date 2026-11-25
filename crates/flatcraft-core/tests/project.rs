@@ -1,6 +1,6 @@
 use flatcraft_core::document::{Document, JobSettings, Source, TraceSettings};
 use flatcraft_core::geometry::{CutPath, Paint, bounds};
-use flatcraft_core::project::{self, ProjectError};
+use flatcraft_core::project::{self, Archive, ProjectError};
 use flatcraft_core::undo::UndoStack;
 use kurbo::{BezPath, Point, Rect};
 
@@ -78,10 +78,11 @@ fn roundtrip_keeps_sources_and_transforms() {
 fn newer_format_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("p.flatcraft");
-    std::fs::write(&path, r#"{"format_version": 3, "objects": []}"#).unwrap();
+    write_project(&path, r#"{"format_version": 2, "objects": []}"#);
     match project::load(&path) {
-        Err(ProjectError::NewerFormat { found, supported }) => {
-            assert_eq!((found, supported), (3, 2));
+        Err(e @ ProjectError::NewerFormat { found, supported }) => {
+            assert_eq!((found, supported), (2, 1));
+            assert!(e.to_string().contains("newer FlatCraft"), "{e}");
         }
         other => panic!("unexpected {other:?}"),
     }
@@ -98,11 +99,12 @@ fn unknown_fields_are_tolerated() {
         },
         vec![],
     );
-    let mut v = serde_json::to_value(&doc).unwrap();
-    v["future_field"] = serde_json::json!(1);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("p.flatcraft");
-    std::fs::write(&path, serde_json::to_string(&v).unwrap()).unwrap();
+    project::save(&doc, &path).unwrap();
+    let mut archive = Archive::read(&path).unwrap();
+    archive.project["future_field"] = serde_json::json!(1);
+    archive.write(&path).unwrap();
     assert_eq!(project::load(&path).unwrap().objects.len(), 1);
 }
 
@@ -201,10 +203,9 @@ fn ids_stay_unique_after_remove() {
 #[test]
 fn old_project_without_cut_options_loads_defaults() {
     // A format 1 project written before cut options existed.
-    let text = r#"{"format_version":1,"objects":[{"id":1,"name":"x","source":{"Svg":{"name":"x.svg","bytes":""}},"transform":{"center_mm":{"x":10.0,"y":20.0},"scale_x":1.0,"scale_y":1.0,"rotation_deg":0.0,"mirror":false},"visible":true}],"job":{"plotter_id":"cameo2","material_id":"cardstock","media_id":"a4","speed":null,"force":null,"passes":null},"next_id":2}"#;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("old.flatcraft");
-    std::fs::write(&path, text).unwrap();
+    write_project(&path, &project_with(OLD_OBJECT));
     let doc = project::load(&path).unwrap();
     let cut = doc.objects[0].cut;
     assert_eq!(cut, flatcraft_core::document::CutOptions::default());
@@ -218,16 +219,12 @@ fn old_project_without_strategy_loads_quality_and_strategy_roundtrips() {
     use flatcraft_core::document::CutStrategy;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("old.flatcraft");
-    std::fs::write(&path, project_with(OLD_OBJECT)).unwrap();
+    write_project(&path, &project_with(OLD_OBJECT));
     let mut doc = project::load(&path).unwrap();
     assert_eq!(doc.job.strategy, CutStrategy::Quality);
     doc.job.strategy = CutStrategy::KeepSheet;
     project::save(&doc, &path).unwrap();
-    assert!(
-        std::fs::read_to_string(&path)
-            .unwrap()
-            .contains(r#""keep_sheet""#)
-    );
+    assert!(project_text(&path).contains(r#""keep_sheet""#));
     assert_eq!(
         project::load(&path).unwrap().job.strategy,
         CutStrategy::KeepSheet
@@ -236,7 +233,36 @@ fn old_project_without_strategy_loads_quality_and_strategy_roundtrips() {
 
 // ---------------------------------------------------------------- source links
 
-const OLD_OBJECT: &str = r#"{"id":1,"name":"x","source":{"Svg":{"name":"x.svg","bytes":""}},"transform":{"center_mm":{"x":10.0,"y":20.0},"scale_x":1.0,"scale_y":1.0,"rotation_deg":0.0,"mirror":false},"visible":true}"#;
+const OLD_OBJECT: &str = r#"{"id":1,"name":"x","source":{"Svg":{"name":"x.svg","file":"EMPTY_SVG"}},"transform":{"center_mm":{"x":10.0,"y":20.0},"scale_x":1.0,"scale_y":1.0,"rotation_deg":0.0,"mirror":false},"visible":true}"#;
+
+/// The file name of an empty SVG source in an archive.
+fn empty_svg() -> String {
+    project::source_file(&Source::Svg {
+        name: "x.svg".into(),
+        bytes: Vec::new().into(),
+    })
+}
+
+/// Writes `json` (with `EMPTY_SVG` standing for [`empty_svg`]) as the
+/// project.json of an archive that holds an empty SVG source.
+fn write_project(path: &std::path::Path, json: &str) {
+    let name = empty_svg();
+    let project = serde_json::from_str(&json.replace("EMPTY_SVG", &name)).unwrap();
+    let mut sources = std::collections::BTreeMap::new();
+    sources.insert(name, std::sync::Arc::<[u8]>::from(Vec::new()));
+    Archive {
+        project,
+        sources,
+        thumbnail: None,
+    }
+    .write(path)
+    .unwrap();
+}
+
+/// The project.json text of a saved project.
+fn project_text(path: &std::path::Path) -> String {
+    serde_json::to_string_pretty(&Archive::read(path).unwrap().project).unwrap()
+}
 
 fn project_with(object: &str) -> String {
     format!(
@@ -248,13 +274,13 @@ fn project_with(object: &str) -> String {
 fn old_projects_without_link_still_load() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("old.flatcraft");
-    std::fs::write(&path, project_with(OLD_OBJECT)).unwrap();
+    write_project(&path, &project_with(OLD_OBJECT));
     let doc = project::load(&path).unwrap();
     assert_eq!(doc.objects[0].link, None);
     assert_eq!(doc.format_version, 1);
     // Saving an unlinked object writes no link field.
     project::save(&doc, &path).unwrap();
-    assert!(!std::fs::read_to_string(&path).unwrap().contains("\"link\""));
+    assert!(!project_text(&path).contains("\"link\""));
 }
 
 #[test]
@@ -284,7 +310,7 @@ fn link_roundtrips_and_a_broken_link_loads_as_none() {
 
     // A link of the wrong shape never stops the project from opening.
     let broken = OLD_OBJECT.replace(r#""visible":true"#, r#""visible":true,"link":{"path":7}"#);
-    std::fs::write(&path, project_with(&broken)).unwrap();
+    write_project(&path, &project_with(&broken));
     let doc = project::load(&path).unwrap();
     assert_eq!(doc.objects[0].link, None);
 }
@@ -363,9 +389,16 @@ fn source_bytes_round_trip_byte_identically() {
     let path = dir.path().join("p.flatcraft");
     project::save(&doc, &path).unwrap();
     let first = std::fs::read(&path).unwrap();
-    // The bytes are stored as one base64 string, as before.
-    let v: serde_json::Value = serde_json::from_slice(&first).unwrap();
-    assert!(v["objects"][0]["source"]["Raster"]["bytes"].is_string());
+    // The bytes are stored as their own file in the archive.
+    let archive = Archive::read(&path).unwrap();
+    let file = archive.project["objects"][0]["source"]["Raster"]["file"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        &archive.sources[&file][..],
+        &(0..=255u8).collect::<Vec<_>>()[..]
+    );
     let loaded = project::load(&path).unwrap();
     assert_eq!(loaded.objects[0].source, doc.objects[0].source);
     let again = dir.path().join("q.flatcraft");
@@ -379,19 +412,19 @@ fn source_bytes_round_trip_byte_identically() {
 fn old_project_loads_as_cut_and_saves_without_the_flag() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("old.flatcraft");
-    std::fs::write(&path, project_with(OLD_OBJECT)).unwrap();
+    write_project(&path, &project_with(OLD_OBJECT));
     let mut doc = project::load(&path).unwrap();
     assert!(doc.objects[0].cut_enabled);
     assert_eq!(doc.format_version, 1);
     project::save(&doc, &path).unwrap();
-    let text = std::fs::read_to_string(&path).unwrap();
+    let text = project_text(&path);
     assert!(!text.contains("cut_enabled"), "{text}");
     assert!(text.contains("\"format_version\": 1"), "{text}");
 
     // A skipped object keeps its flag through a save, and format 1 stays.
     doc.objects[0].cut_enabled = false;
     project::save(&doc, &path).unwrap();
-    let text = std::fs::read_to_string(&path).unwrap();
+    let text = project_text(&path);
     assert!(text.contains("\"cut_enabled\": false"), "{text}");
     assert!(text.contains("\"format_version\": 1"), "{text}");
     assert!(!project::load(&path).unwrap().objects[0].cut_enabled);

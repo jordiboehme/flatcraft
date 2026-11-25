@@ -47,38 +47,21 @@ impl Default for TraceSettings {
     }
 }
 
-mod base64_bytes {
-    use base64::Engine;
-    use base64::engine::general_purpose::STANDARD;
-    use serde::{Deserialize, Deserializer, Serializer};
-    use std::sync::Arc;
-
-    pub fn serialize<S: Serializer>(bytes: &Arc<[u8]>, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&STANDARD.encode(bytes))
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Arc<[u8]>, D::Error> {
-        let text = String::deserialize(d)?;
-        STANDARD
-            .decode(text)
-            .map(Arc::from)
-            .map_err(serde::de::Error::custom)
-    }
-}
-
 /// Original imported file, kept so the project is self-contained. The bytes
 /// are shared (`Arc`), so undo snapshots and duplicates do not copy them;
-/// replace them as a whole, never change them in place.
+/// replace them as a whole, never change them in place. The bytes are not
+/// part of the JSON: a project file keeps them as a file of their own in
+/// the archive (see [`crate::project`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Source {
     Svg {
         name: String,
-        #[serde(with = "base64_bytes")]
+        #[serde(skip)]
         bytes: Arc<[u8]>,
     },
     Raster {
         name: String,
-        #[serde(with = "base64_bytes")]
+        #[serde(skip)]
         bytes: Arc<[u8]>,
         trace: TraceSettings,
     },

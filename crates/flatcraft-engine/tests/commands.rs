@@ -1530,9 +1530,11 @@ fn project_open_keeps_the_image_frame_when_the_trace_changes() {
     run(&mut s, "project.save", json!({ "path": path }));
 
     // The dot is dropped when the project is opened.
-    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    v["objects"][0]["source"]["Raster"]["trace"]["min_feature_mm"] = json!(5.0);
-    std::fs::write(&path, v.to_string()).unwrap();
+    flatcraft_core::project::Archive::edit(&path, |a| {
+        let v = &mut a.project;
+        v["objects"][0]["source"]["Raster"]["trace"]["min_feature_mm"] = json!(5.0);
+    })
+    .unwrap();
     let mut s2 = session(&dir);
     run(&mut s2, "project.open", json!({ "path": path }));
     let o = s2.doc().document.get(ObjectId(id)).unwrap();
@@ -1572,11 +1574,11 @@ fn project_open_keeps_the_svg_page_frame_when_the_shapes_change() {
     let before = kurbo::Shape::bounding_box(&o.placed_paths()[1].path);
     let path = dir.path().join("p.flatcraft");
     run(&mut s, "project.save", json!({ "path": path }));
-    use base64::Engine as _;
-    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    v["objects"][0]["source"]["Svg"]["bytes"] =
-        json!(base64::engine::general_purpose::STANDARD.encode(one));
-    std::fs::write(&path, v.to_string()).unwrap();
+    flatcraft_core::project::Archive::edit(&path, |a| {
+        let file = a.add_source(&svg_source(one));
+        a.project["objects"][0]["source"]["Svg"]["file"] = json!(file);
+    })
+    .unwrap();
     let mut s2 = session(&dir);
     run(&mut s2, "project.open", json!({ "path": path }));
     let o = s2.doc().document.get(ObjectId(id)).unwrap();
@@ -1599,15 +1601,28 @@ fn hand_written_project(
     extra: &str,
     transform: &str,
 ) -> std::path::PathBuf {
-    use base64::Engine as _;
     let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><rect x="10" y="10" width="10" height="20"/></svg>"#;
-    let bytes = base64::engine::general_purpose::STANDARD.encode(svg);
+    let mut archive = flatcraft_core::project::Archive {
+        project: Value::Null,
+        sources: Default::default(),
+        thumbnail: None,
+    };
+    let file = archive.add_source(&svg_source(svg));
     let text = format!(
-        r#"{{"format_version":1,"objects":[{{"id":1,"name":"box","source":{{"Svg":{{"name":"box.svg","bytes":"{bytes}"}}}},"transform":{transform},"visible":true{extra}}}],"job":{{"plotter_id":"cameo2","material_id":"cardstock","media_id":"a4","speed":null,"force":null,"passes":null}},"next_id":2}}"#
+        r#"{{"format_version":1,"objects":[{{"id":1,"name":"box","source":{{"Svg":{{"name":"box.svg","file":"{file}"}}}},"transform":{transform},"visible":true{extra}}}],"job":{{"plotter_id":"cameo2","material_id":"cardstock","media_id":"a4","speed":null,"force":null,"passes":null}},"next_id":2}}"#
     );
+    archive.project = serde_json::from_str(&text).unwrap();
     let path = dir.path().join("hand.flatcraft");
-    std::fs::write(&path, text).unwrap();
+    archive.write(&path).unwrap();
     path
+}
+
+/// An SVG source with these bytes.
+fn svg_source(svg: &str) -> flatcraft_core::document::Source {
+    flatcraft_core::document::Source::Svg {
+        name: "box.svg".into(),
+        bytes: svg.as_bytes().into(),
+    }
 }
 
 const PLAIN_TRANSFORM: &str = r#"{"center_mm":{"x":50.0,"y":60.0},"scale_x":1.0,"scale_y":1.0,"rotation_deg":0.0,"mirror":false}"#;
@@ -1726,9 +1741,11 @@ fn a_move_beyond_1_km_is_refused() {
 fn project_open_warnings_join_wrapped_errors_in_lower_case() {
     let dir = tempfile::tempdir().unwrap();
     let path = hand_written_project(&dir, "", PLAIN_TRANSFORM);
-    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    v["objects"][0]["source"]["Svg"]["bytes"] = json!("PG5vdCBzdmc+"); // "<not svg>"
-    std::fs::write(&path, v.to_string()).unwrap();
+    flatcraft_core::project::Archive::edit(&path, |a| {
+        let file = a.add_source(&svg_source("<not svg>"));
+        a.project["objects"][0]["source"]["Svg"]["file"] = json!(file);
+    })
+    .unwrap();
     let mut s = session(&dir);
     let r = run(&mut s, "project.open", json!({ "path": path }));
     let w = r["warnings"][0].as_str().unwrap().to_string();
@@ -2573,10 +2590,12 @@ fn reopening_warns_when_an_svg_rebuilds_to_other_bounds() {
     };
     assert!(!warned(&r), "same bounds, no warning: {r}");
     // As if text in the SVG came out in another font here.
-    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    let x1 = v["objects"][0]["local_bounds_mm"]["x1"].as_f64().unwrap();
-    v["objects"][0]["local_bounds_mm"]["x1"] = json!(x1 + 0.1);
-    std::fs::write(&path, serde_json::to_string(&v).unwrap()).unwrap();
+    flatcraft_core::project::Archive::edit(&path, |a| {
+        let v = &mut a.project;
+        let x1 = v["objects"][0]["local_bounds_mm"]["x1"].as_f64().unwrap();
+        v["objects"][0]["local_bounds_mm"]["x1"] = json!(x1 + 0.1);
+    })
+    .unwrap();
     let r = run(&mut s, "project.open", json!({ "path": path }));
     let w: Vec<&str> = r["warnings"]
         .as_array()
@@ -3380,4 +3399,28 @@ fn a_non_finite_angle_is_refused() {
         assert!(check_angle(v).is_err(), "{v}");
     }
     assert!(check_angle(1e9).is_ok());
+}
+
+// ---------------------------------------------------------------- project file thumbnail
+
+/// A save, also an agent's, puts a 512 px picture of the mat into the
+/// project file.
+#[test]
+fn project_save_embeds_a_thumbnail_that_decodes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    import(&mut s, 30.0, 20.0);
+    let out = tempfile::tempdir().unwrap();
+    let path = out.path().join("pic.flatcraft");
+    s.execute("project.save", json!({ "path": path }), Origin::Agent)
+        .unwrap();
+    let png = flatcraft_core::project::read_thumbnail(&path)
+        .unwrap()
+        .expect("a thumbnail");
+    let img = image::load_from_memory_with_format(&png, image::ImageFormat::Png).unwrap();
+    assert_eq!(img.width().max(img.height()), 512);
+    // The project itself is a zip with the FlatCraft mimetype.
+    let raw = std::fs::read(&path).unwrap();
+    assert_eq!(&raw[0..4], b"PK\x03\x04");
+    assert_eq!(&raw[30..38], b"mimetype");
 }
