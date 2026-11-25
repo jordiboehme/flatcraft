@@ -83,6 +83,47 @@ pub struct Preferences {
     /// writes it (a UI preference); no registry command reads or changes
     /// it. A file without the key gets Quality.
     pub default_strategy: CutStrategy,
+    /// What the Home page says about each recent project: when it was
+    /// last opened and the workspace it was last in. Kept in step with
+    /// `recent_projects` (which holds the order) by the window, which is
+    /// the only writer; no registry command reads or changes it. A file
+    /// without the key has no details yet.
+    pub recent_details: Vec<RecentDetail>,
+}
+
+/// The Home page's details of one recent project (see
+/// [`Preferences::recent_details`]).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecentDetail {
+    pub path: PathBuf,
+    /// When the window last opened or saved it, in seconds since 1970
+    /// (UTC). 0 when unknown.
+    pub opened_unix_s: u64,
+    /// The workspace it was last in: "Prepare" or "Cut". Empty when
+    /// unknown.
+    pub workspace: String,
+}
+
+impl Preferences {
+    /// The details of the recent project `path`, if any.
+    pub fn recent_detail(&self, path: &Path) -> Option<&RecentDetail> {
+        self.recent_details.iter().find(|d| d.path == path)
+    }
+
+    /// Drops the details of projects that are no longer in the recent
+    /// list, and repeats.
+    pub fn prune_recent_details(&mut self) {
+        let mut seen: Vec<PathBuf> = Vec::new();
+        let recent = &self.recent_projects;
+        self.recent_details.retain(|d| {
+            let keep = recent.contains(&d.path) && !seen.contains(&d.path);
+            if keep {
+                seen.push(d.path.clone());
+            }
+            keep
+        });
+    }
 }
 
 /// Every id `ribbon_pins` can hold, in the order of the ribbon's table
@@ -281,6 +322,7 @@ impl Default for Preferences {
             panel_settings: PanelUser::None,
             panel_stage: PanelUser::None,
             default_strategy: CutStrategy::Quality,
+            recent_details: Vec::new(),
         }
     }
 }

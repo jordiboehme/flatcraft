@@ -58,8 +58,12 @@ pub const PUNCH_IT_ODDS: usize = 5;
 /// File extension of FlatCraft projects.
 pub const PROJECT_EXTENSION: &str = "flatcraft";
 
-/// How many recent projects Home lists.
-pub const MAX_RECENT: usize = 10;
+/// How many recent projects are kept. Home shows the newest
+/// [`home::SHOWN_RECENT`] and the rest under "Show all".
+pub const MAX_RECENT: usize = 24;
+
+/// How many recent projects the macOS menu's Open Recent lists.
+pub const MENU_RECENT: usize = 10;
 
 /// An agent call this recent counts as a connected agent.
 pub const AGENT_ACTIVE: Duration = Duration::from_secs(60);
@@ -125,6 +129,7 @@ pub struct UiState {
     /// window closes and is not asked again.
     pub closing: bool,
     pub about: about::AboutState,
+    pub home: home::HomeState,
 }
 
 /// What the unsaved-changes dialog asks about.
@@ -239,6 +244,14 @@ pub enum Action {
     OpenDialog,
     /// Open this project file.
     Open(PathBuf),
+    /// Home: take this project off the recent list (and its picture).
+    /// Only the window does this; no registry command changes the list.
+    RemoveRecent(PathBuf),
+    /// Home: ask where a recent project that moved went, open it there and
+    /// put it in the old one's place.
+    LocateRecent(PathBuf),
+    /// Home: switch to the open document with this id, in this workspace.
+    ShowOpen(u64, Workspace),
     /// The "+" tab: always a new document.
     NewDocument,
     /// Home's New and Cmd+N: reuse the active document if it is pristine,
@@ -339,6 +352,12 @@ pub struct FlatCraftApp {
     /// What a double-click on the title bar does; `None`: the system's
     /// setting. Tests set it with [`Self::with_double_click`].
     pub double_click: Option<app_bar::DoubleClick>,
+    /// The wall clock Home's "2 hours ago" and the recent list go by;
+    /// tests replace it.
+    pub wall_clock: std::sync::Arc<dyn Fn() -> std::time::SystemTime + Send + Sync>,
+    /// Draws the picture of a project file for Home (on a worker thread);
+    /// tests replace it.
+    pub thumbnailer: home::Thumbnailer,
     /// Whether the system asks for reduced motion (the toasts then draw
     /// no countdown ring); tests replace it.
     pub reduce_motion: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
@@ -386,6 +405,8 @@ impl FlatCraftApp {
             title_bar: cfg!(target_os = "macos"),
             double_click: None,
             reduce_motion: std::sync::Arc::new(toasts::system_reduce_motion),
+            wall_clock: std::sync::Arc::new(std::time::SystemTime::now),
+            thumbnailer: std::sync::Arc::new(home::render_project),
             #[cfg(target_os = "macos")]
             menu: None,
         }
@@ -394,6 +415,28 @@ impl FlatCraftApp {
     /// Replaces the system's title-bar double-click setting.
     pub fn with_double_click(mut self, action: app_bar::DoubleClick) -> Self {
         self.double_click = Some(action);
+        self
+    }
+
+    /// Reads the wall clock from `f` instead of `SystemTime::now` (tests).
+    pub fn with_wall_clock(
+        mut self,
+        f: impl Fn() -> std::time::SystemTime + Send + Sync + 'static,
+    ) -> Self {
+        self.wall_clock = std::sync::Arc::new(f);
+        self
+    }
+
+    /// Draws Home's project pictures with `f` instead of the preview
+    /// renderer (tests).
+    pub fn with_thumbnailer(
+        mut self,
+        f: impl Fn(&flatcraft_device::ProfileStore, &Path) -> Result<Vec<u8>, String>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.thumbnailer = std::sync::Arc::new(f);
         self
     }
 
@@ -886,15 +929,31 @@ impl FlatCraftApp {
                 }
             }
             Action::Open(path) => {
-                if let Some(v) = self.execute("project.open", json!({ "path": path })) {
-                    self.remember_recent(&path);
-                    for w in v["warnings"].as_array().into_iter().flatten() {
-                        if let Some(w) = w.as_str() {
-                            self.toast(Toast::warning(w.to_string()));
-                        }
+                self.open_project(&path);
+            }
+            Action::RemoveRecent(path) => self.remove_recent(&path),
+            Action::LocateRecent(old) => {
+                let req = files::FileRequest {
+                    title: format!("Locate {}", display_name(&old)),
+                    filters: vec![files::filter("FlatCraft project", &[PROJECT_EXTENSION])],
+                    file_name: Some(display_name(&old)),
+                    ..Default::default()
+                };
+                if let Some(found) = self.files.pick_file(&req)
+                    && self.open_project(&found)
+                {
+                    let found = std::path::absolute(&found).unwrap_or(found);
+                    if found != old {
+                        self.remove_recent(&old);
                     }
-                    self.ui.workspace = Workspace::Prepare;
-                    self.ui.prepare.sources.check_pending = true;
+                }
+            }
+            Action::ShowOpen(doc_id, workspace) => {
+                if self
+                    .execute("document.switch", json!({ "doc_id": doc_id }))
+                    .is_some()
+                {
+                    self.ui.workspace = workspace;
                 }
             }
             Action::NewDocument => {
@@ -1358,10 +1417,140 @@ impl FlatCraftApp {
         );
     }
 
+    /// Opens a project file, puts it first in the recent list and goes to
+    /// Prepare. False when it could not be opened (a toast says why).
+    fn open_project(&mut self, path: &Path) -> bool {
+        let Some(v) = self.execute("project.open", json!({ "path": path })) else {
+            return false;
+        };
+        self.remember_recent(path);
+        self.refresh_thumbnail(path);
+        for w in v["warnings"].as_array().into_iter().flatten() {
+            if let Some(w) = w.as_str() {
+                self.toast(Toast::warning(w.to_string()));
+            }
+        }
+        self.ui.workspace = Workspace::Prepare;
+        self.ui.prepare.sources.check_pending = true;
+        true
+    }
+
+    /// Draws Home's picture of the open document saved as `path` and
+    /// stores it in the cache, keyed by the file's new version. The
+    /// document is copied under the lock and drawn without it.
+    fn refresh_thumbnail(&mut self, path: &Path) {
+        let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        let found = {
+            let s = lock(&self.session);
+            s.docs
+                .iter()
+                .find(|d| {
+                    d.path
+                        .as_deref()
+                        .is_some_and(|p| std::path::absolute(p).ok().as_deref() == Some(&abs))
+                })
+                .and_then(|d| {
+                    let plotter = s.profiles.plotter(&d.document.job.plotter_id).ok()?;
+                    Some((d.document.clone(), plotter))
+                })
+        };
+        let Some((doc, plotter)) = found else {
+            return;
+        };
+        let id = flatcraft_engine::thumbnails::project_id(&abs);
+        let Some(version) = flatcraft_engine::thumbnails::project_version(&abs) else {
+            return;
+        };
+        match flatcraft_engine::preview::render_document_png(&plotter, &doc, home::THUMB_PX) {
+            Ok(png) => {
+                if let Err(e) =
+                    flatcraft_engine::thumbnails::store(&self.config_dir, &id, &version, &png)
+                {
+                    eprintln!(
+                        "warning: cannot store the picture of {}: {e}",
+                        abs.display()
+                    );
+                }
+                self.ui.home.forget_texture(&id);
+            }
+            Err(e) => eprintln!("warning: cannot draw {}: {e}", abs.display()),
+        }
+    }
+
+    /// Takes a project off the recent list, with its details and picture.
+    fn remove_recent(&mut self, path: &Path) {
+        let path = path.to_path_buf();
+        let result = lock(&self.session).update_prefs(|p| {
+            p.recent_projects.retain(|x| x != &path);
+            p.prune_recent_details();
+        });
+        if let Err(e) = result {
+            self.toast(Toast::error(format!(
+                "Cannot store the recent projects: {e}"
+            )));
+        }
+        let id = flatcraft_engine::thumbnails::project_id(&path);
+        if let Err(e) = flatcraft_engine::thumbnails::forget(&self.config_dir, &id) {
+            eprintln!(
+                "warning: cannot remove the picture of {}: {e}",
+                path.display()
+            );
+        }
+        self.ui.home.forget_texture(&id);
+    }
+
+    /// Notes the workspace the active project is in, for Home's recent
+    /// list. The preferences are written only when it changed.
+    fn note_workspace(&mut self) {
+        let workspace = self.ui.workspace;
+        if workspace == Workspace::Home {
+            return;
+        }
+        let path = lock(&self.session).doc().path.clone();
+        let Some(path) = path else {
+            return;
+        };
+        let path = std::path::absolute(&path).unwrap_or(path);
+        let seen = Some((path.clone(), workspace));
+        if self.ui.home.last_seen == seen {
+            return;
+        }
+        self.ui.home.last_seen = seen;
+        let name = workspace.name();
+        let stale = {
+            let s = lock(&self.session);
+            s.prefs.recent_projects.contains(&path)
+                && s.prefs.recent_detail(&path).map(|d| d.workspace.as_str()) != Some(name)
+        };
+        if stale {
+            let result = lock(&self.session).update_prefs(|p| {
+                if !p.recent_projects.contains(&path) {
+                    return;
+                }
+                match p.recent_details.iter_mut().find(|d| d.path == path) {
+                    Some(d) => d.workspace = name.to_string(),
+                    None => p
+                        .recent_details
+                        .push(flatcraft_engine::prefs::RecentDetail {
+                            path: path.clone(),
+                            opened_unix_s: 0,
+                            workspace: name.to_string(),
+                        }),
+                }
+            });
+            if let Err(e) = result {
+                self.toast(Toast::error(format!(
+                    "Cannot store the recent projects: {e}"
+                )));
+            }
+        }
+    }
+
     fn saved(&mut self, result: &Value) {
         if let Some(path) = result["path"].as_str() {
             let path = PathBuf::from(path);
             self.remember_recent(&path);
+            self.refresh_thumbnail(&path);
             let full = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
             self.toast(
                 Toast::success("Saved")
@@ -1376,12 +1565,43 @@ impl FlatCraftApp {
     /// another FlatCraft process stored meanwhile is kept.
     fn remember_recent(&mut self, path: &Path) {
         let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-        let result = lock(&self.session).update_prefs(|p| {
-            let recent = &mut p.recent_projects;
-            recent.retain(|p| p != &path);
-            recent.insert(0, path);
-            recent.truncate(MAX_RECENT);
-        });
+        let now = (self.wall_clock)()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let workspace = match self.ui.workspace {
+            Workspace::Cut => Workspace::Cut,
+            _ => Workspace::Prepare,
+        };
+        let dropped = {
+            let mut dropped = Vec::new();
+            let result = lock(&self.session).update_prefs(|p| {
+                let recent = &mut p.recent_projects;
+                recent.retain(|p| p != &path);
+                recent.insert(0, path.clone());
+                dropped = recent.split_off(recent.len().min(MAX_RECENT));
+                let detail = match p.recent_details.iter_mut().find(|d| d.path == path) {
+                    Some(d) => d,
+                    None => {
+                        p.recent_details
+                            .push(flatcraft_engine::prefs::RecentDetail {
+                                path: path.clone(),
+                                ..Default::default()
+                            });
+                        p.recent_details.last_mut().expect("just pushed")
+                    }
+                };
+                detail.opened_unix_s = now;
+                detail.workspace = workspace.name().to_string();
+                p.prune_recent_details();
+            });
+            result.map(|()| dropped)
+        };
+        // Pictures of projects that fell off the list go too.
+        for old in dropped.iter().flatten() {
+            let id = flatcraft_engine::thumbnails::project_id(old);
+            let _ = flatcraft_engine::thumbnails::forget(&self.config_dir, &id);
+        }
+        let result = dropped.map(|_| ());
         if let Err(e) = result {
             self.toast(Toast::error(format!(
                 "Cannot store the recent projects: {e}"
@@ -1583,6 +1803,7 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     app.skip_settled_quit_question(&ctx);
     unsaved_modal(&ctx, app, &mut actions);
 
+    app.note_workspace();
     if let Some(users) = app.ui.prepare.panels.take_changed() {
         actions.push(Action::RememberPanels(users));
     }

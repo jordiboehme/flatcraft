@@ -108,16 +108,17 @@ fn home_shows_new_open_and_recent_projects() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     s.lock().unwrap().prefs.recent_projects = vec![dir.path().join("coasters.flatcraft")];
-    let mut h = harness(&dir, s.clone(), false);
+    let h = harness(&dir, s.clone(), false);
     assert_eq!(app(&h).ui.workspace, Workspace::Home);
     h.get_by_role_and_label(Role::Button, "New project");
     h.get_by_role_and_label(Role::Button, "Open...");
-    h.get_by_role_and_label(Role::Button, "coasters.flatcraft");
-    // A missing recent project gives a toast, not a panic.
-    h.get_by_role_and_label(Role::Button, "coasters.flatcraft")
-        .click();
-    h.run();
-    assert_eq!(app(&h).ui.toasts.len(), 1);
+    // A missing recent project offers Locate and Remove, not a dead row.
+    assert!(
+        h.query_by_role_and_label(Role::Button, "Open coasters.flatcraft")
+            .is_none()
+    );
+    h.get_by_role_and_label(Role::Button, "Locate...");
+    h.get_by_role_and_label(Role::Button, "Remove from list");
 }
 
 #[test]

@@ -442,11 +442,107 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
         }
         other => CommandError::Failed(other.to_string()),
     })?;
+    let blade = blade_offset_for(s, &document.job.plotter_id);
+    let warnings = rebuild_loaded(
+        &mut document,
+        &unlinked,
+        blade,
+        &p.path.display().to_string(),
+    )?;
+    // A relative path in a project file is relative to that file.
+    let anchor = project_dir(Some(&p.path));
+    for link in document.objects.iter_mut().filter_map(|o| o.link.as_mut()) {
+        link.anchor_dir = anchor.clone();
+    }
+    let objects = document.objects.len();
+    let mut st = DocState::new(document);
+    st.path = Some(p.path.clone());
+    if s.doc().is_pristine() {
+        *s.doc_mut() = st;
+    } else {
+        s.docs.push(st);
+        s.active = s.docs.len() - 1;
+    }
+    Ok(json!({
+        "index": s.active,
+        "path": p.path,
+        "objects": objects,
+        "warnings": warnings,
+    }))
+}
+
+/// Opens project text that is not a file (a sample built into the
+/// window) as a new untitled document, like `project.open` does with a
+/// file: it replaces the active document only if that one is pristine.
+/// The document has no path, so a save asks where to put it and the
+/// text itself is never written. `what` names it in errors. Not a
+/// registry command: only the window offers samples. Returns {index,
+/// objects, warnings} like `project.open`.
+pub fn open_text(s: &mut Session, text: &str, what: &str) -> Result<Value, CommandError> {
+    let (mut document, unlinked) =
+        project::load_report_str(text).map_err(|e| CommandError::Failed(e.to_string()))?;
+    let blade = blade_offset_for(s, &document.job.plotter_id);
+    let warnings = rebuild_loaded(&mut document, &unlinked, blade, what)?;
+    let objects = document.objects.len();
+    let st = DocState::new(document);
+    if s.doc().is_pristine() {
+        *s.doc_mut() = st;
+    } else {
+        s.docs.push(st);
+        s.active = s.docs.len() - 1;
+    }
+    Ok(json!({
+        "index": s.active,
+        "objects": objects,
+        "warnings": warnings,
+    }))
+}
+
+/// Loads a project file and rebuilds its shapes without opening it, for
+/// a picture of it (the Home page's thumbnails). Warnings are dropped.
+pub fn load_rebuilt(
+    profiles: &flatcraft_device::ProfileStore,
+    path: &Path,
+) -> Result<flatcraft_core::document::Document, CommandError> {
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            CommandError::NotFound(format!("file {}", path.display()))
+        } else {
+            CommandError::Failed(format!("cannot read {}: {e}", path.display()))
+        }
+    })?;
+    load_rebuilt_str(profiles, &text, &path.display().to_string())
+}
+
+/// [`load_rebuilt`] for project text. `what` names it in errors.
+pub fn load_rebuilt_str(
+    profiles: &flatcraft_device::ProfileStore,
+    text: &str,
+    what: &str,
+) -> Result<flatcraft_core::document::Document, CommandError> {
+    let (mut document, unlinked) =
+        project::load_report_str(text).map_err(|e| CommandError::Failed(e.to_string()))?;
+    let blade = profiles
+        .plotter(&document.job.plotter_id)
+        .map(|p| p.blade_offset_mm)
+        .unwrap_or(0.25);
+    rebuild_loaded(&mut document, &unlinked, blade, what)?;
+    Ok(document)
+}
+
+/// Rebuilds the shapes of a loaded document from its embedded sources and
+/// checks its placement. `unlinked` are the linked copies loading split
+/// off; `what` names the project in errors. Returns the warnings.
+fn rebuild_loaded(
+    document: &mut flatcraft_core::document::Document,
+    unlinked: &[flatcraft_core::document::ObjectId],
+    blade: f64,
+    what: &str,
+) -> Result<Vec<String>, CommandError> {
     for o in &document.objects {
         if !o.transform.is_valid() {
             return Err(CommandError::Failed(format!(
-                "cannot open {}: the transform of '{}' is broken (its position, scale or rotation is not a usable number, or beyond 1 km). Fix or remove that object in the project file.",
-                p.path.display(),
+                "cannot open {what}: the transform of '{}' is broken (its position, scale or rotation is not a usable number, or beyond 1 km). Fix or remove that object in the project file.",
                 o.name
             )));
         }
@@ -456,7 +552,6 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
         .filter_map(|id| document.get(*id))
         .map(|o| project::unlinked_warning(&o.name))
         .collect();
-    let blade = blade_offset_for(s, &document.job.plotter_id);
     // Linked copies share one source: it is rebuilt once per group, and the
     // members share the geometry `Arc`.
     let mut groups: Vec<(GroupId, Option<Shared>)> = Vec::new();
@@ -544,31 +639,11 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
     }
     if let Some(o) = document.objects.iter().find(|o| !o.placement_is_valid()) {
         return Err(CommandError::Failed(format!(
-            "cannot open {}: '{}' is placed beyond 1 km. Fix or remove that object in the project file.",
-            p.path.display(),
+            "cannot open {what}: '{}' is placed beyond 1 km. Fix or remove that object in the project file.",
             o.name
         )));
     }
-    // A relative path in a project file is relative to that file.
-    let anchor = project_dir(Some(&p.path));
-    for link in document.objects.iter_mut().filter_map(|o| o.link.as_mut()) {
-        link.anchor_dir = anchor.clone();
-    }
-    let objects = document.objects.len();
-    let mut st = DocState::new(document);
-    st.path = Some(p.path.clone());
-    if s.doc().is_pristine() {
-        *s.doc_mut() = st;
-    } else {
-        s.docs.push(st);
-        s.active = s.docs.len() - 1;
-    }
-    Ok(json!({
-        "index": s.active,
-        "path": p.path,
-        "objects": objects,
-        "warnings": warnings,
-    }))
+    Ok(warnings)
 }
 
 /// Geometry rebuilt from a source: the paths, their local bounds and the

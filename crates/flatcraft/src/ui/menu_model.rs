@@ -29,7 +29,7 @@ use super::context_menu::{self, Item as Obj};
 use super::help::{self, HelpItem, SHORTCUTS};
 use super::prepare::{PrepareState, Snapshot};
 use super::tools::{self, Act, AlignTo, Section, Tool};
-use super::{Action, MAX_RECENT, Workspace, cut, display_name};
+use super::{Action, MENU_RECENT, Workspace, cut, display_name};
 
 /// A key with Cmd held, plus Shift or Alt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -371,7 +371,7 @@ impl MenuModel {
     /// The model while no dialog is open.
     fn build_open(inp: &MenuInput) -> MenuModel {
         MenuModel {
-            recent: inp.recent.iter().take(MAX_RECENT).cloned().collect(),
+            recent: inp.recent.iter().take(MENU_RECENT).cloned().collect(),
             menus: vec![
                 app_menu(),
                 file_menu(inp),
@@ -552,7 +552,7 @@ fn file_menu(inp: &MenuInput) -> Sub {
     } else {
         inp.recent
             .iter()
-            .take(MAX_RECENT)
+            .take(MENU_RECENT)
             .enumerate()
             .map(|(i, p)| item(Cmd::OpenRecent(i), display_name(p), true, None))
             .collect()

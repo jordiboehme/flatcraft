@@ -111,3 +111,316 @@ fn the_new_cards_wrap_at_the_smallest_window() {
     assert!((open.left() - new.left()).abs() < 0.5);
     assert!(import.right() <= 900.0);
 }
+
+// ---------------------------------------------------------------- recent
+
+use common::{app_mut, painted, wait_until};
+use flatcraft_engine::session::Origin;
+use serde_json::json;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// A fixed wall clock: 2026-11-25 12:00 UTC.
+const NOW: u64 = 1_795_608_000;
+
+fn fixed_clock() -> SystemTime {
+    UNIX_EPOCH + Duration::from_secs(NOW)
+}
+
+/// Saves a project with one square, outside the window, and closes it.
+fn saved_project(s: &flatcraft_mcp::SharedSession, path: &Path) {
+    let mut st = s.lock().unwrap();
+    st.execute(
+        "object.import_svg",
+        json!({ "svg": SQUARE_SVG, "name": "square" }),
+        Origin::User,
+    )
+    .unwrap();
+    st.execute("project.save", json!({ "path": path }), Origin::User)
+        .unwrap();
+    let id = st.doc().id();
+    st.execute("document.new", json!({}), Origin::User).unwrap();
+    st.execute("document.close", json!({ "doc_id": id }), Origin::User)
+        .unwrap();
+}
+
+fn texts(h: &common::AppHarness) -> Vec<String> {
+    painted(h)
+        .into_iter()
+        .filter_map(|s| match s {
+            egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Steps until Home's picture worker is done.
+fn wait_for_pictures(h: &mut common::AppHarness) {
+    wait_until(h, |a| a.ui.home.busy());
+}
+
+#[test]
+fn a_recent_row_opens_its_project_and_says_when_and_where() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let path = dir.path().join("coasters.flatcraft");
+    saved_project(&s, &path);
+    {
+        let mut st = s.lock().unwrap();
+        st.prefs.recent_projects = vec![path.clone()];
+        st.prefs.recent_details = vec![flatcraft_engine::prefs::RecentDetail {
+            path: path.clone(),
+            opened_unix_s: NOW - 2 * 3600 - 60,
+            workspace: "Cut".into(),
+        }];
+    }
+    let mut h = harness_with(&dir, s.clone(), |a| a.with_wall_clock(fixed_clock));
+    wait_for_pictures(&mut h);
+    let t = texts(&h);
+    assert!(t.contains(&"2 hours ago".to_string()), "{t:?}");
+    assert!(t.contains(&"Cut".to_string()), "{t:?}");
+    h.get_by_role_and_label(Role::Button, "Open coasters.flatcraft")
+        .click();
+    wait_for_source_check(&mut h);
+    assert_eq!(
+        s.lock().unwrap().doc().path.as_deref(),
+        Some(path.as_path())
+    );
+    assert_eq!(app(&h).ui.workspace, Workspace::Prepare);
+    // Opening made it the newest, opened now.
+    let st = s.lock().unwrap();
+    let d = st.prefs.recent_detail(&path).unwrap();
+    assert_eq!(d.opened_unix_s, NOW);
+}
+
+#[test]
+fn a_recent_project_open_in_a_tab_switches_to_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let path = dir.path().join("coasters.flatcraft");
+    saved_project(&s, &path);
+    let picker = FakePicker::default();
+    let mut h = harness_with(&dir, s.clone(), |a| a.with_file_picker(picker));
+    let ctx = h.ctx.clone();
+    app_mut(&mut h).apply(&ctx, vec![flatcraft::ui::Action::Open(path.clone())]);
+    let opened = s.lock().unwrap().doc().id();
+    // Go to Cut, then a new document, then Home.
+    app_mut(&mut h).ui.workspace = Workspace::Cut;
+    wait_for_source_check(&mut h);
+    s.lock()
+        .unwrap()
+        .execute("document.new", json!({}), Origin::User)
+        .unwrap();
+    app_mut(&mut h).ui.workspace = Workspace::Home;
+    wait_for_pictures(&mut h);
+    assert!(texts(&h).contains(&"Open now".to_string()));
+    let docs = s.lock().unwrap().docs.len();
+    h.get_by_role_and_label(Role::Button, "Go to coasters.flatcraft")
+        .click();
+    wait_for_source_check(&mut h);
+    assert_eq!(s.lock().unwrap().doc().id(), opened);
+    assert_eq!(s.lock().unwrap().docs.len(), docs, "no second copy opened");
+    // It was last in Cut, so it comes back in Cut.
+    assert_eq!(app(&h).ui.workspace, Workspace::Cut);
+    let st = s.lock().unwrap();
+    assert_eq!(st.prefs.recent_detail(&path).unwrap().workspace, "Cut");
+}
+
+#[test]
+fn a_missing_recent_project_can_be_located_or_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let moved = dir.path().join("new place.flatcraft");
+    saved_project(&s, &moved);
+    let gone = dir.path().join("old place.flatcraft");
+    let other = dir.path().join("lost.flatcraft");
+    s.lock().unwrap().prefs.recent_projects = vec![gone.clone(), other.clone()];
+    let picker = FakePicker::answering([moved.clone()]);
+    let mut h = harness_with(&dir, s.clone(), |a| a.with_file_picker(picker));
+    assert!(texts(&h).contains(&"File moved or deleted".to_string()));
+    // Locate the first one.
+    h.get_all_by_role_and_label(Role::Button, "Locate...")
+        .next()
+        .unwrap()
+        .click();
+    wait_for_source_check(&mut h);
+    assert_eq!(
+        s.lock().unwrap().doc().path.as_deref(),
+        Some(moved.as_path())
+    );
+    assert_eq!(
+        s.lock().unwrap().prefs.recent_projects,
+        [moved.clone(), other.clone()]
+    );
+    // Remove the other one.
+    app_mut(&mut h).ui.workspace = Workspace::Home;
+    wait_for_pictures(&mut h);
+    h.get_by_role_and_label(Role::Button, "Remove from list")
+        .click();
+    h.run();
+    assert_eq!(
+        s.lock().unwrap().prefs.recent_projects,
+        std::slice::from_ref(&moved)
+    );
+    // Stored, details too.
+    let stored = flatcraft_engine::Preferences::load(dir.path());
+    assert_eq!(stored.recent_projects, std::slice::from_ref(&moved));
+    assert_eq!(stored.recent_details.len(), 1);
+    assert_eq!(stored.recent_details[0].path, moved);
+}
+
+#[test]
+fn right_click_removes_a_recent_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let path = dir.path().join("coasters.flatcraft");
+    saved_project(&s, &path);
+    s.lock().unwrap().prefs.recent_projects = vec![path.clone()];
+    let mut h = harness_with(&dir, s.clone(), |a| a);
+    wait_for_pictures(&mut h);
+    h.get_by_role_and_label(Role::Button, "Open coasters.flatcraft")
+        .click_secondary();
+    h.run();
+    h.get_by_role_and_label(Role::Button, "Remove from list")
+        .click();
+    h.run();
+    assert!(s.lock().unwrap().prefs.recent_projects.is_empty());
+    assert!(path.exists(), "no file is deleted");
+}
+
+/// The pictures in the cache folder.
+fn cached_pictures(dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir.join(flatcraft_engine::thumbnails::DIR))
+        .map(|r| r.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn pictures_are_drawn_once_cached_and_refreshed_on_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let path = dir.path().join("coasters.flatcraft");
+    saved_project(&s, &path);
+    s.lock().unwrap().prefs.recent_projects = vec![path.clone()];
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = calls.clone();
+    let mut h = harness_with(&dir, s.clone(), move |a| {
+        a.with_thumbnailer(move |p, f| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            flatcraft::ui::home::render_project(p, f)
+        })
+    });
+    wait_for_pictures(&mut h);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let id = flatcraft_engine::thumbnails::project_id(&path);
+    let v1 = flatcraft_engine::thumbnails::project_version(&path).unwrap();
+    let png = flatcraft_engine::thumbnails::cached(dir.path(), &id, &v1).unwrap();
+    assert_eq!(&png[1..4], b"PNG");
+    // Never inside the project's folder: only the project is there.
+    let next_to: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "png"))
+        .collect();
+    assert!(next_to.is_empty());
+    for _ in 0..5 {
+        h.step();
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "drawn once");
+
+    // A second window reads the cache and draws nothing.
+    let calls2 = Arc::new(AtomicUsize::new(0));
+    let counted2 = calls2.clone();
+    let mut h2 = harness_with(&dir, s.clone(), move |a| {
+        a.with_thumbnailer(move |p, f| {
+            counted2.fetch_add(1, Ordering::SeqCst);
+            flatcraft::ui::home::render_project(p, f)
+        })
+    });
+    wait_for_pictures(&mut h2);
+    assert_eq!(calls2.load(Ordering::SeqCst), 0);
+    drop(h2);
+
+    // Open, change and save in the window: the picture is redrawn from
+    // the document at once, and the old one is gone.
+    let ctx = h.ctx.clone();
+    app_mut(&mut h).apply(&ctx, vec![flatcraft::ui::Action::Open(path.clone())]);
+    let doc = s.lock().unwrap().doc().id();
+    s.lock()
+        .unwrap()
+        .execute(
+            "object.move",
+            json!({ "ids": [1], "dx_mm": 100.0, "dy_mm": 100.0 }),
+            Origin::User,
+        )
+        .unwrap();
+    // A file system with coarse times still sees a new size or time.
+    std::thread::sleep(Duration::from_millis(20));
+    app_mut(&mut h).apply(&ctx, vec![flatcraft::ui::Action::Save { doc_id: doc }]);
+    let v2 = flatcraft_engine::thumbnails::project_version(&path).unwrap();
+    assert_ne!(v1, v2);
+    let png2 = flatcraft_engine::thumbnails::cached(dir.path(), &id, &v2).unwrap();
+    assert_ne!(png, png2, "the picture shows the moved square");
+    assert_eq!(cached_pictures(dir.path()).len(), 1);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "the save drew it, no worker"
+    );
+}
+
+#[test]
+fn home_shows_the_eight_newest_and_show_all_lists_the_rest() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let paths: Vec<PathBuf> = (1..=11)
+        .map(|i| dir.path().join(format!("p{i:02}.flatcraft")))
+        .collect();
+    s.lock().unwrap().prefs.recent_projects = paths.clone();
+    // Tall enough that "Show fewer" is on screen under all eleven rows.
+    let mut h = harness_sized(&dir, s.clone(), [1400.0, 1600.0], 8, |a| a);
+    // All missing: one Remove button per shown row.
+    assert_eq!(
+        h.get_all_by_role_and_label(Role::Button, "Remove from list")
+            .count(),
+        8
+    );
+    h.get_by_role_and_label(Role::Button, "Show all (11)")
+        .click();
+    h.run();
+    assert_eq!(
+        h.get_all_by_role_and_label(Role::Button, "Remove from list")
+            .count(),
+        11
+    );
+    h.get_by_role_and_label(Role::Button, "Show fewer").click();
+    h.run();
+    assert_eq!(
+        h.get_all_by_role_and_label(Role::Button, "Remove from list")
+            .count(),
+        8
+    );
+}
+
+#[test]
+fn the_recent_list_keeps_more_than_the_menu_shows() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness_with(&dir, s.clone(), |a| a);
+    let ctx = h.ctx.clone();
+    for i in 0..30 {
+        let p = dir.path().join(format!("p{i:02}.flatcraft"));
+        s.lock()
+            .unwrap()
+            .execute("project.save", json!({ "path": p }), Origin::User)
+            .unwrap();
+        app_mut(&mut h).apply(&ctx, vec![flatcraft::ui::Action::Open(p)]);
+    }
+    let st = s.lock().unwrap();
+    assert_eq!(st.prefs.recent_projects.len(), flatcraft::ui::MAX_RECENT);
+    assert_eq!(st.prefs.recent_details.len(), flatcraft::ui::MAX_RECENT);
+    const { assert!(flatcraft::ui::MAX_RECENT > flatcraft::ui::home::SHOWN_RECENT) };
+    const { assert!(flatcraft::ui::MENU_RECENT < flatcraft::ui::MAX_RECENT) };
+}

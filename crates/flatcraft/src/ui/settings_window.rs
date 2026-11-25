@@ -1878,8 +1878,9 @@ mod tests {
     fn every_preference_has_a_row() {
         let rows: Vec<&str> = fields().collect();
         for key in pref_keys() {
-            // The recent projects list is history, not a setting.
-            if key == "recent_projects" {
+            // The recent projects list and its details are history, not
+            // settings.
+            if key == "recent_projects" || key == "recent_details" {
                 continue;
             }
             assert!(rows.contains(&key.as_str()), "no settings row for {key}");
@@ -1907,6 +1908,7 @@ mod tests {
             panel_settings: PanelUser::Collapsed,
             panel_stage: PanelUser::Open,
             default_strategy: CutStrategy::Fast,
+            recent_details: Vec::new(),
         };
         for f in fields() {
             assert!(differs(f, &other, &def), "{f} is not copied");

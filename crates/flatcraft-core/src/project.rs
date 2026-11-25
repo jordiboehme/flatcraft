@@ -189,8 +189,13 @@ pub fn load(path: &Path) -> Result<Document, ProjectError> {
 /// matched their group (a hand-edited file): they were unlinked and kept
 /// their own design (see [`unlinked_warning`]).
 pub fn load_report(path: &Path) -> Result<(Document, Vec<ObjectId>), ProjectError> {
-    let text = std::fs::read_to_string(path)?;
-    let value: serde_json::Value = serde_json::from_str(&text)?;
+    load_report_str(&std::fs::read_to_string(path)?)
+}
+
+/// [`load_report`] for project text that is not a file on disk (a sample
+/// built into the app).
+pub fn load_report_str(text: &str) -> Result<(Document, Vec<ObjectId>), ProjectError> {
+    let value: serde_json::Value = serde_json::from_str(text)?;
     let found = value
         .get("format_version")
         .and_then(serde_json::Value::as_u64)

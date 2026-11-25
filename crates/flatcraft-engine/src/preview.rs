@@ -165,12 +165,42 @@ pub fn render_png(s: &Session, kind: PreviewKind, max_px: u32) -> Result<Vec<u8>
             "max_px must be between {MIN_PX} and {MAX_PX}, not {max_px}"
         )));
     }
-    let job = &s.doc().document.job;
     let plotter = s
         .profiles
-        .plotter(&job.plotter_id)
+        .plotter(&s.doc().document.job.plotter_id)
         .map_err(crate::commands::profile_error)?;
-    let (media, _) = crate::commands::effective_media(&plotter, job)?;
+    let job = match kind {
+        PreviewKind::Canvas => None,
+        PreviewKind::Path => Some(crate::job::build(s)?),
+    };
+    draw(&plotter, &s.doc().document, job.as_ref(), max_px)
+}
+
+/// Renders `doc` on its mat, the canvas view (objects in their colours),
+/// as a PNG whose larger side is `max_px`. It needs no session, so a
+/// window can draw a document it copied out of the session, or one it
+/// loaded from a file, without holding the session lock.
+pub fn render_document_png(
+    plotter: &flatcraft_device::PlotterProfile,
+    doc: &flatcraft_core::document::Document,
+    max_px: u32,
+) -> Result<Vec<u8>, CommandError> {
+    if !(MIN_PX..=MAX_PX).contains(&max_px) {
+        return Err(CommandError::InvalidParams(format!(
+            "max_px must be between {MIN_PX} and {MAX_PX}, not {max_px}"
+        )));
+    }
+    draw(plotter, doc, None, max_px)
+}
+
+/// The canvas view of `doc`, or the path view of `job` when given.
+fn draw(
+    plotter: &flatcraft_device::PlotterProfile,
+    doc: &flatcraft_core::document::Document,
+    job: Option<&crate::job::JobResult>,
+    max_px: u32,
+) -> Result<Vec<u8>, CommandError> {
+    let (media, _) = crate::commands::effective_media(plotter, &doc.job)?;
     let area = plotter
         .cutting_area(&media.id)
         .ok_or_else(|| failed("no cutting area"))?;
@@ -231,9 +261,9 @@ pub fn render_png(s: &Session, kind: PreviewKind, max_px: u32) -> Result<Vec<u8>
         pm.stroke_path(&p, &edge, &stroke, mat, None);
     }
 
-    match kind {
-        PreviewKind::Canvas => {
-            for o in s.doc().document.objects.iter().filter(|o| o.visible) {
+    match job {
+        None => {
+            for o in doc.objects.iter().filter(|o| o.visible) {
                 for cp in o.placed_paths() {
                     let c = cp.color.unwrap_or([0x22, 0x26, 0x2e]);
                     if let Some(p) = to_skia(&cp.path) {
@@ -259,8 +289,7 @@ pub fn render_png(s: &Session, kind: PreviewKind, max_px: u32) -> Result<Vec<u8>
                 }
             }
         }
-        PreviewKind::Path => {
-            let result = crate::job::build(s)?;
+        Some(result) => {
             let [cr, cg, cb] = flatcraft_core::colour::cut_colour(media.color);
             let cut = paint(color(cr, cg, cb));
             let travel = paint(Color::from_rgba8(lr, lg, lb, 150));
