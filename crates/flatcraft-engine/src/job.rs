@@ -151,16 +151,18 @@ impl JobInput {
         let material = session
             .profiles
             .material(&job.material_id)
-            .map_err(profile_error)?
-            .for_plotter(&plotter.id);
-        Ok(Self::from_parts(doc, plotter, material))
+            .map_err(profile_error)?;
+        Ok(Self::from_parts(doc, plotter, &material))
     }
 
     /// The input of `doc` with profiles the caller already resolved: the
-    /// plotter of `doc.job`, and its material with the plotter's overrides
-    /// applied (`MaterialProfile::for_plotter`). The GUI uses it with the
-    /// profiles of its snapshot, so it never assembles an input itself.
-    pub fn from_parts(doc: &Document, plotter: PlotterProfile, material: MaterialProfile) -> Self {
+    /// plotter of `doc.job` and its material. The plotter's override of
+    /// the material is applied here (`MaterialProfile::for_plotter`, which
+    /// gives the same result when it was applied already). The GUI uses it
+    /// with the profiles of its snapshot, so it never assembles an input
+    /// itself.
+    pub fn from_parts(doc: &Document, plotter: PlotterProfile, material: &MaterialProfile) -> Self {
+        let material = material.for_plotter(&plotter.id);
         Self {
             objects: Self::objects_of(doc),
             job: doc.job.clone(),
@@ -464,7 +466,7 @@ pub(crate) fn send(
             let report = deliver_built(s, &plotter.transport, &result.job, &name, origin)?;
             let value = sent_json(&report, &summary(&result));
             result.sent = Some(report);
-            s.doc_mut().last_job = Some(result);
+            s.doc_mut().set_last_job(result);
             Ok(value)
         }
     }

@@ -40,7 +40,7 @@ fn run_preview(s: &mut Session, _: NoParams, _: Origin) -> Result<Value, Command
         "listing_total": result.job.listing.len(),
         "listing": listing,
     });
-    s.doc_mut().last_job = Some(result);
+    s.doc_mut().set_last_job(result);
     Ok(value)
 }
 

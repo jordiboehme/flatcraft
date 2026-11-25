@@ -874,3 +874,39 @@ fn confirm_uses_the_clock_it_is_given() {
     assert_eq!(e, CommandError::Refused(PENDING_EXPIRED.into()));
     assert!(s.pending_send().is_none());
 }
+
+#[test]
+fn every_new_last_job_bumps_its_revision() {
+    let d = dirs();
+    let mut s = session(&d);
+    import_square(&mut s, "square");
+    assert_eq!(s.doc().last_job_rev(), 0);
+    run(&mut s, "job.preview", json!({}));
+    assert_eq!(s.doc().last_job_rev(), 1);
+    run(&mut s, "job.send", json!({}));
+    assert_eq!(s.doc().last_job_rev(), 2);
+    assert!(s.doc().last_job.as_ref().unwrap().sent.is_some());
+}
+
+#[test]
+fn from_parts_applies_the_plotter_override_once() {
+    use flatcraft_device::profile::MaterialOverride;
+    use flatcraft_engine::job::JobInput;
+    let d = dirs();
+    let s = session(&d);
+    let doc = &s.doc().document;
+    let plotter = s.profiles.plotter(&doc.job.plotter_id).unwrap();
+    let mut raw = s.profiles.material(&doc.job.material_id).unwrap();
+    raw.overrides.insert(
+        plotter.id.clone(),
+        MaterialOverride {
+            speed: Some(9),
+            ..Default::default()
+        },
+    );
+    let from_raw = JobInput::from_parts(doc, plotter.clone(), &raw);
+    assert_eq!(from_raw.material.speed, 9);
+    let applied = raw.for_plotter(&plotter.id);
+    let from_applied = JobInput::from_parts(doc, plotter, &applied);
+    assert_eq!(from_applied, from_raw);
+}

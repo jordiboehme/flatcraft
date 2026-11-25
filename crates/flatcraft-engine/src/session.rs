@@ -96,7 +96,10 @@ pub struct DocState {
     pub undo: UndoStack<Document>,
     pub path: Option<PathBuf>,
     pub dirty: bool,
+    /// The job last built by `job.preview` or `job.send`. Set it with
+    /// [`DocState::set_last_job`], which counts the change.
     pub last_job: Option<JobResult>,
+    last_job_rev: u64,
 }
 
 fn next_doc_id() -> u64 {
@@ -116,6 +119,7 @@ impl Clone for DocState {
             path: self.path.clone(),
             dirty: self.dirty,
             last_job: self.last_job.clone(),
+            last_job_rev: self.last_job_rev,
         }
     }
 }
@@ -135,7 +139,20 @@ impl DocState {
             path: None,
             dirty: false,
             last_job: None,
+            last_job_rev: 0,
         }
+    }
+
+    /// Stores the job last built and counts it, so a viewer can tell a new
+    /// job from the one it copied without comparing bytes.
+    pub fn set_last_job(&mut self, job: JobResult) {
+        self.last_job = Some(job);
+        self.last_job_rev += 1;
+    }
+
+    /// How often `last_job` was set.
+    pub fn last_job_rev(&self) -> u64 {
+        self.last_job_rev
     }
 
     /// True for an empty document nobody has touched: no objects, no
