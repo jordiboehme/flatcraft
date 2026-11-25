@@ -129,10 +129,14 @@ pub struct UiState {
 pub enum Unsaved {
     /// Quitting while documents have unsaved changes: the dialog asks
     /// about `asking`; `answered` are the documents already answered in
-    /// this round. Every document with unsaved changes that is not
-    /// answered yet follows in turn, also one that became unsaved during
-    /// the round.
-    Quit { asking: u64, answered: Vec<u64> },
+    /// this round, each with its revision right after the answer. Every
+    /// document with unsaved changes that is not answered yet follows in
+    /// turn, also one that became unsaved during the round, and one that
+    /// changed again after its answer (its revision moved).
+    Quit {
+        asking: u64,
+        answered: Vec<(u64, u64)>,
+    },
     /// Closing this document with unsaved changes.
     Close(u64),
     /// Quitting while an agent waits for the person's OK to send a cut.
@@ -1095,7 +1099,12 @@ impl FlatCraftApp {
                     ));
                     return;
                 }
-                answered.push(asking);
+                // The revision after the answer (and after a save), so a
+                // later change by an agent is asked about again.
+                if let Some(rev) = self.doc_revision(asking) {
+                    answered.retain(|(d, _)| *d != asking);
+                    answered.push((asking, rev));
+                }
                 self.ask_next_or_quit(ctx, answered);
             }
         }
@@ -1104,15 +1113,28 @@ impl FlatCraftApp {
     /// Quit goes on: the next document with unsaved changes that is not
     /// answered yet is asked about (also one an agent changed during the
     /// round). The window closes only when none is left.
-    fn ask_next_or_quit(&mut self, ctx: &egui::Context, answered: Vec<u64>) {
-        match self
+    fn ask_next_or_quit(&mut self, ctx: &egui::Context, answered: Vec<(u64, u64)>) {
+        let next = self
             .dirty_docs()
             .into_iter()
-            .find(|d| !answered.contains(d))
-        {
+            .find(|d| !self.still_answered(&answered, *d));
+        match next {
             Some(asking) => self.ui.unsaved = Some(Unsaved::Quit { asking, answered }),
             None => self.close_window(ctx),
         }
+    }
+
+    /// The document was answered in this Quit round and has not changed
+    /// since.
+    fn still_answered(&self, answered: &[(u64, u64)], doc: u64) -> bool {
+        let rev = self.doc_revision(doc);
+        answered.iter().any(|&(d, r)| d == doc && rev == Some(r))
+    }
+
+    /// The change counter of a document, `None` when it is gone.
+    fn doc_revision(&self, doc: u64) -> Option<u64> {
+        let s = lock(&self.session);
+        s.doc_index(doc).ok().map(|i| s.docs[i].revision())
     }
 
     /// While Quit asks about a document that was saved or closed meanwhile
@@ -1651,6 +1673,7 @@ pub fn unsaved_dialog(app: &FlatCraftApp, asked: &Unsaved) -> dialog::Dialog {
     };
     let name = app.doc_name(doc);
     let mut d = Dialog::new("unsaved", Kind::Warning, format!("Save changes to {name}?"))
+        .about(doc)
         .body(format!(
             "{name} has unsaved changes. If you don't save, they are lost."
         ))
@@ -1660,8 +1683,8 @@ pub fn unsaved_dialog(app: &FlatCraftApp, asked: &Unsaved) -> dialog::Dialog {
         // One more line at most: how many follow, and the waiting agent.
         let more = app
             .dirty_docs()
-            .iter()
-            .filter(|d| *d != asking && !answered.contains(d))
+            .into_iter()
+            .filter(|d| d != asking && !app.still_answered(answered, *d))
             .count();
         let waiting = app.send_waiting();
         let count = match more {
@@ -1902,6 +1925,7 @@ pub fn pending_dialog(p: &PendingView) -> dialog::Dialog {
         dialog::Kind::Warning,
         format!("Allow the agent to cut on {}?", p.plotter),
     )
+    .about(p.id)
     .body(format!(
         "{paths}, {} cut, speed {}, force {}, {passes}.",
         cut::mm_text(s.cut_mm),

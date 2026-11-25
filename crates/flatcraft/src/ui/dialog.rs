@@ -79,6 +79,10 @@ pub enum Answer {
 pub struct Dialog {
     /// Keeps the dialog's state apart from other dialogs.
     pub id: &'static str,
+    /// What this question is about (a document id), so two questions with
+    /// the same title (two documents with the same name) never share
+    /// their key state.
+    pub subject: u64,
     pub kind: Kind,
     pub title: String,
     /// One or two plain sentences, one line each.
@@ -101,6 +105,7 @@ impl Dialog {
         let title = title.into();
         Self {
             id,
+            subject: 0,
             kind,
             title: Self::titled(kind, &title),
             body: Vec::new(),
@@ -120,6 +125,12 @@ impl Dialog {
             Kind::Error if !title.starts_with(GREAT_SCOTT) => format!("{GREAT_SCOTT} {title}"),
             _ => title.to_string(),
         }
+    }
+
+    /// What the question is about (see [`Dialog::subject`]).
+    pub fn about(mut self, subject: u64) -> Self {
+        self.subject = subject;
+        self
     }
 
     pub fn body(mut self, line: impl Into<String>) -> Self {
@@ -174,7 +185,8 @@ impl Dialog {
         // Keys count only once every key that was down when this question
         // appeared is up again: a key still held (or repeating) from the
         // answer before never answers this one.
-        let armed_id = egui::Id::unique(("flatcraft-dialog-armed", self.id, &self.title));
+        let armed_id =
+            egui::Id::unique(("flatcraft-dialog-armed", self.id, self.subject, &self.title));
         let armed = ctx.data(|d| d.get_temp::<bool>(armed_id)).unwrap_or(false);
         let keys_up = ctx.input(|i| i.keys_down.is_empty());
         if !armed && keys_up {

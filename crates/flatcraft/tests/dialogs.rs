@@ -517,3 +517,79 @@ fn rename_takes_a_name_typed_in_the_same_frame_as_enter() {
     assert!(app(&h).ui.prepare.rename.is_none());
     assert_eq!(s.lock().unwrap().doc().document.objects[0].name, "Lid");
 }
+
+#[test]
+fn quit_asks_again_about_a_document_changed_after_its_answer() {
+    let (dir, s) = dirty_docs(2);
+    let a = doc_id(&s, 0);
+    let path = dir.path().join("a.flatcraft");
+    let picker = FakePicker::answering([path.clone()]);
+    let mut h = harness_with(&dir, s.clone(), |app| app.with_file_picker(picker.clone()));
+    act(&mut h, Action::Quit);
+    h.get_by_label("Save changes to Untitled 1?");
+    h.key_press(Key::Enter);
+    h.run();
+    assert!(
+        path.exists() && !s.lock().unwrap().docs[0].dirty,
+        "A was saved"
+    );
+    h.get_by_label("Save changes to Untitled 2?");
+    // An agent changes A again after its answer.
+    {
+        let mut g = s.lock().unwrap();
+        g.execute("document.switch", json!({ "doc_id": a }), Origin::User)
+            .unwrap();
+        g.execute(
+            "object.import_svg",
+            json!({ "svg": SQUARE_SVG, "name": "late" }),
+            Origin::Agent,
+        )
+        .unwrap();
+        assert!(g.docs[0].dirty);
+    }
+    // B: Don't Save. A is asked again (its name is now its file name).
+    h.key_press_modifiers(Modifiers::COMMAND, Key::D);
+    h.run();
+    assert!(!closing(&h), "A changed after its answer");
+    h.get_by_label("Save changes to a.flatcraft?");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::D);
+    h.run();
+    assert!(closing(&h));
+}
+
+#[test]
+fn two_documents_with_one_name_do_not_share_their_key_state() {
+    use flatcraft::ui::dialog::{Dialog, Kind};
+    // A key held from the answer to the first question does not answer
+    // the second, even with the same title.
+    let ctx = egui::Context::default();
+    let t = flatcraft::ui::theme::Tokens::dark();
+    let frame = |ctx: &egui::Context, d: &Dialog, events: Vec<egui::Event>| {
+        let mut answer = None;
+        let input = egui::RawInput {
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            answer = d.show(ui.ctx(), &t, |_| {});
+        });
+        out.textures_delta.clear();
+        answer
+    };
+    // The first question arms with no key down, then Enter answers it.
+    let d = Dialog::new("unsaved", Kind::Warning, "Save changes to x.flatcraft?")
+        .about(1)
+        .primary("Save");
+    frame(&ctx, &d, vec![]);
+    frame(&ctx, &d, vec![]);
+    let enter = |repeat| key_event(Key::Enter, true, repeat, Modifiers::NONE);
+    assert_eq!(
+        frame(&ctx, &d, vec![enter(false)]),
+        Some(flatcraft::ui::dialog::Answer::Primary)
+    );
+    // Enter is still held (it repeats) when the second document's question
+    // appears with the same title: it does not answer it.
+    let second = d.clone().about(2);
+    assert_eq!(frame(&ctx, &second, vec![enter(true)]), None);
+    assert_eq!(frame(&ctx, &second, vec![enter(true)]), None);
+}
