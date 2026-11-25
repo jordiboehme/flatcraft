@@ -603,7 +603,7 @@ fn the_rail_dot_does_not_rebuild_the_job_during_a_drag_or_nudge() {
     assert!(rail_open(&h, "Cut and Job"));
     let plan = |h: &AppHarness| app(h).ui.cut.job().expect("a plan");
     let first = plan(&h);
-    let mut change = |h: &mut AppHarness, dx: f64| {
+    let change = |h: &mut AppHarness, dx: f64| {
         run(&s, "object.move", json!({ "ids": [ids[0]], "dx_mm": dx }));
         h.run();
     };
