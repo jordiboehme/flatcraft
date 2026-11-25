@@ -562,3 +562,95 @@ fn the_first_path_is_the_one_nearest_the_home() {
     .unwrap();
     assert_eq!(out.toolpaths[0].source.object, ObjectId(2));
 }
+
+#[test]
+fn lap_is_the_first_ring_without_overcut_in_every_pass() {
+    let mut s = settings();
+    s.overcut_mm = 0.5;
+    s.passes = 2;
+    for reverse in [false, true] {
+        s.reverse_alternate_passes = reverse;
+        let input = [
+            placed(1, rect_path(10.0, 10.0, 10.0, 10.0)),
+            placed(2, Circle::new((60.0, 60.0), 5.0).to_path(0.1)),
+        ];
+        let out = plan(&input, &s).unwrap();
+        assert_eq!(out.toolpaths.len(), 4);
+        for t in &out.toolpaths {
+            let lap = t.lap();
+            assert_eq!(
+                lap.first(),
+                lap.last(),
+                "reverse {reverse}, pass {}",
+                t.pass
+            );
+            // the ring is the toolpath without the 0.5 mm overcut
+            assert!(
+                (length(lap) - (length(&t.points) - 0.5)).abs() < 1e-9,
+                "reverse {reverse}, pass {}",
+                t.pass
+            );
+        }
+        let square = &out.toolpaths[0];
+        assert_eq!(square.lap().len(), 5);
+    }
+}
+
+#[test]
+fn lap_of_an_open_path_is_the_whole_path() {
+    let mut p = BezPath::new();
+    p.move_to((10.0, 10.0));
+    p.line_to((20.0, 10.0));
+    p.line_to((20.0, 30.0));
+    let mut s = settings();
+    s.passes = 2;
+    s.reverse_alternate_passes = true;
+    let out = plan(&[placed(1, p)], &s).unwrap();
+    for t in &out.toolpaths {
+        assert_eq!(t.lap(), &t.points[..]);
+    }
+}
+
+/// Structural: the default run restates `points` with `seg = [WASTE_SEG, 0, 1, ..]`.
+#[test]
+fn default_run_is_the_points_with_their_segments() {
+    let out = plan(&[placed(1, rect_path(10.0, 10.0, 10.0, 10.0))], &settings()).unwrap();
+    let t = &out.toolpaths[0];
+    assert_eq!(t.axis, None);
+    let runs = t.runs();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].points, t.points);
+    assert_eq!(
+        runs[0].seg,
+        vec![flatcraft_path::WASTE_SEG, 0, 1, 2, 3],
+        "moving to points[j] executes segment j - 1"
+    );
+    assert_eq!(out.compensation, flatcraft_path::AppliedCompensation::Tip);
+    assert_eq!(
+        (t.laps, t.keep, t.kind),
+        (
+            1,
+            flatcraft_path::KeepSide::Both,
+            flatcraft_path::ToolpathKind::Cut
+        )
+    );
+}
+
+/// Structural: `runs()` returns explicit axis runs unchanged.
+#[test]
+fn explicit_axis_runs_are_returned_as_they_are() {
+    let mut out = plan(&[placed(1, rect_path(10.0, 10.0, 10.0, 10.0))], &settings()).unwrap();
+    let t = &mut out.toolpaths[0];
+    let runs = vec![
+        flatcraft_path::AxisRun {
+            points: vec![Point::new(10.0, 10.0), Point::new(20.0, 10.0)],
+            seg: vec![flatcraft_path::WASTE_SEG, 0],
+        },
+        flatcraft_path::AxisRun {
+            points: vec![Point::new(20.0, 10.0), Point::new(20.0, 20.0)],
+            seg: vec![flatcraft_path::WASTE_SEG, 1],
+        },
+    ];
+    t.axis = Some(runs.clone());
+    assert_eq!(t.runs(), runs);
+}

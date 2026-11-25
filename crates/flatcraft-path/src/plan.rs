@@ -1,7 +1,10 @@
 //! The baseline cut pipeline: types and the `plan` entry point.
 
+use std::ops::Range;
+
 use flatcraft_core::document::ObjectId;
-use kurbo::{BezPath, PathEl, Point, Rect};
+use flatcraft_core::limits::{MAX_OVERCUT_MM, MAX_TOLERANCE_MM, MIN_TOLERANCE_MM};
+use kurbo::{BezPath, PathEl, Point, Rect, Vec2};
 
 use crate::{clean, flatten, order, overcut, passes};
 
@@ -34,14 +37,132 @@ pub struct PipelineSettings {
     pub home: Point,
 }
 
+/// The side of a closed ring the kept material lies on. Open paths use `Both`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeepSide {
+    Inside,
+    Outside,
+    Both,
+}
+
+/// What a toolpath is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolpathKind {
+    /// Part of the design.
+    Cut,
+    /// The optional alignment stroke: the first blade-down run of a job,
+    /// which turns the blade to a known heading. It counts as waste.
+    Alignment,
+}
+
+/// A short straight stroke that turns the blade to `direction` before the first cut.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AlignmentStroke {
+    pub start: Point,
+    pub direction: Vec2,
+    pub length_mm: f64,
+}
+
+/// The `seg` value of a deliberate waste move: a swivel, a lead-in, an
+/// overshoot or the alignment stroke.
+pub const WASTE_SEG: u32 = u32::MAX;
+
+/// The heading the blade is assumed to have before the first cut of a job
+/// when there is no alignment stroke.
+pub const ASSUMED_START_HEADING: Vec2 = Vec2::new(1.0, 0.0);
+
+/// A turn of at least this many degrees is a corner.
+pub const CORNER_DEG: f64 = 30.0;
+
+/// One blade-down run of the axis (the knife holder).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AxisRun {
+    pub points: Vec<Point>,
+    /// `seg[j]` is the index into the toolpath's `points` of the intended
+    /// segment (`points[i]` to `points[i + 1]`) executed while the axis moves
+    /// to `points[j]` of this run. A pivot arc carries the segment that ends
+    /// at its vertex. [`WASTE_SEG`] marks deliberate waste moves only;
+    /// `seg[0]` is always `WASTE_SEG` (the drop point).
+    pub seg: Vec<u32>,
+}
+
 /// The blade is down along `points`; a travel move lies between consecutive toolpaths.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Toolpath {
+    /// The intended tip path: the flattened, cleaned path with its laps
+    /// and overcut.
     pub points: Vec<Point>,
     pub closed: bool,
     pub source: PathRef,
     /// 1-based pass number.
     pub pass: u32,
+    /// How many laps of a closed ring are chained in `points` (1 by default).
+    pub laps: u32,
+    pub keep: KeepSide,
+    pub kind: ToolpathKind,
+    /// The axis runs. `None` means one run along `points` (no host compensation).
+    pub axis: Option<Vec<AxisRun>>,
+    /// Where the first lap of a closed ring lies in `points`, as a closed
+    /// ring (first point equals last point). The whole of `points` for an
+    /// open path. Code that rewrites `points` keeps it in step.
+    pub lap_range: Range<usize>,
+}
+
+impl Toolpath {
+    /// A single-pass, single-lap `Cut` toolpath with `Both` sides kept, no
+    /// axis runs and the whole of `points` as its lap.
+    pub fn new(points: Vec<Point>, closed: bool, source: PathRef) -> Self {
+        let lap_range = 0..points.len();
+        Self {
+            points,
+            closed,
+            source,
+            pass: 1,
+            laps: 1,
+            keep: KeepSide::Both,
+            kind: ToolpathKind::Cut,
+            axis: None,
+            lap_range,
+        }
+    }
+
+    /// The axis runs. Without host compensation this is one run along
+    /// `points` with `seg = [WASTE_SEG, 0, 1, ..]`.
+    pub fn runs(&self) -> Vec<AxisRun> {
+        match &self.axis {
+            Some(runs) => runs.clone(),
+            None => {
+                let seg = std::iter::once(WASTE_SEG)
+                    .chain((0..self.points.len().saturating_sub(1)).map(|i| i as u32))
+                    .collect();
+                vec![AxisRun {
+                    points: self.points.clone(),
+                    seg,
+                }]
+            }
+        }
+    }
+
+    /// The first lap of a closed ring, closed, without the other laps and
+    /// without the overcut. For an open path, all of `points`.
+    pub fn lap(&self) -> &[Point] {
+        if self.closed {
+            &self.points[self.lap_range.clone()]
+        } else {
+            &self.points
+        }
+    }
+}
+
+/// The compensation a [`CutPlan`] carries.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AppliedCompensation {
+    /// The points are the intended tip path (no host compensation).
+    Tip,
+    /// The axis runs are host compensated with this offset.
+    Host { offset_mm: f64 },
+    /// A host calibration series: each tile has its own offset.
+    HostCalibration,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -53,6 +174,7 @@ pub struct CutPlan {
     pub cut_mm: f64,
     /// Where the first travel move starts (`PipelineSettings::home`).
     pub home: Point,
+    pub compensation: AppliedCompensation,
 }
 
 /// The pipeline setting an [`PlanError::InvalidSettings`] is about.
@@ -78,8 +200,6 @@ pub enum PlanError {
 
 /// Anything shorter than this has no length.
 const ZERO_LEN_MM: f64 = 1e-9;
-
-use flatcraft_core::limits::{MAX_OVERCUT_MM, MAX_TOLERANCE_MM, MIN_TOLERANCE_MM};
 
 fn validate(s: &PipelineSettings) -> Result<(), PlanError> {
     use SettingsField as F;
@@ -202,12 +322,7 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
                 points.truncate(2);
                 closed = false;
             }
-            toolpaths.push(Toolpath {
-                points,
-                closed,
-                source: placed.source,
-                pass: 1,
-            });
+            toolpaths.push(Toolpath::new(points, closed, placed.source));
         }
     }
     if toolpaths.is_empty() {
@@ -216,6 +331,7 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
 
     let mut toolpaths = order::nearest_neighbour(toolpaths, s.home);
     for t in toolpaths.iter_mut().filter(|t| t.closed) {
+        t.lap_range = 0..t.points.len();
         t.points = overcut::apply(&t.points, s.overcut_mm);
     }
     let toolpaths = passes::expand(toolpaths, s.passes, s.reverse_alternate_passes);
@@ -232,5 +348,6 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
         travel_mm,
         cut_mm,
         home: s.home,
+        compensation: AppliedCompensation::Tip,
     })
 }

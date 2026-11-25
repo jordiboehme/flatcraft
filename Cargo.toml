@@ -4,6 +4,7 @@ members = [
     "crates/flatcraft-core",
     "crates/flatcraft-import",
     "crates/flatcraft-path",
+    "crates/flatcraft-sim",
     "crates/flatcraft-device",
     "crates/flatcraft-engine",
     "crates/flatcraft-mcp",

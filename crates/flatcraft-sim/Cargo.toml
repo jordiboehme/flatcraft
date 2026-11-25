@@ -1,0 +1,18 @@
+[package]
+name = "flatcraft-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+flatcraft-path = { path = "../flatcraft-path" }
+kurbo.workspace = true
+
+[dev-dependencies]
+flatcraft-core = { path = "../flatcraft-core" }
+flatcraft-device = { path = "../flatcraft-device" }
+proptest.workspace = true
+tempfile.workspace = true

@@ -3,7 +3,8 @@
 use crate::plan::Toolpath;
 
 /// Repeat each toolpath `passes` times, in a row. Passes are numbered from 1.
-/// With `reverse_alternate`, even passes run in reverse.
+/// With `reverse_alternate`, even passes run in reverse (and so does their
+/// `lap_range`).
 pub fn expand(paths: Vec<Toolpath>, passes: u32, reverse_alternate: bool) -> Vec<Toolpath> {
     debug_assert!(passes >= 1, "plan validates passes >= 1");
     let mut out = Vec::with_capacity(paths.len() * passes.max(1) as usize);
@@ -13,6 +14,8 @@ pub fn expand(paths: Vec<Toolpath>, passes: u32, reverse_alternate: bool) -> Vec
             copy.pass = pass;
             if reverse_alternate && pass % 2 == 0 {
                 copy.points.reverse();
+                let (n, r) = (copy.points.len(), &copy.lap_range);
+                copy.lap_range = n - r.end..n - r.start;
             }
             out.push(copy);
         }
@@ -28,15 +31,14 @@ mod tests {
     use kurbo::Point;
 
     fn tp(id: u64) -> Toolpath {
-        Toolpath {
-            points: vec![Point::new(id as f64, 0.0), Point::new(id as f64, 5.0)],
-            closed: false,
-            source: PathRef {
+        Toolpath::new(
+            vec![Point::new(id as f64, 0.0), Point::new(id as f64, 5.0)],
+            false,
+            PathRef {
                 object: ObjectId(id),
                 path_index: 0,
             },
-            pass: 1,
-        }
+        )
     }
 
     #[test]

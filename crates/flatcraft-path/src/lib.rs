@@ -13,5 +13,7 @@ pub mod plan;
 
 pub use clean::Polyline;
 pub use plan::{
-    CutPlan, PathRef, PipelineSettings, PlacedPath, PlanError, SettingsField, Toolpath, plan,
+    ASSUMED_START_HEADING, AlignmentStroke, AppliedCompensation, AxisRun, CORNER_DEG, CutPlan,
+    KeepSide, PathRef, PipelineSettings, PlacedPath, PlanError, SettingsField, Toolpath,
+    ToolpathKind, WASTE_SEG, plan,
 };

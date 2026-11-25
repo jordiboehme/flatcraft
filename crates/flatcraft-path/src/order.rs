@@ -165,15 +165,14 @@ mod tests {
     use flatcraft_core::document::ObjectId;
 
     fn tp(id: u64, pts: &[(f64, f64)], closed: bool) -> Toolpath {
-        Toolpath {
-            points: pts.iter().map(|&p| p.into()).collect(),
+        Toolpath::new(
+            pts.iter().map(|&p| p.into()).collect(),
             closed,
-            source: PathRef {
+            PathRef {
                 object: ObjectId(id),
                 path_index: 0,
             },
-            pass: 1,
-        }
+        )
     }
 
     #[test]
