@@ -562,6 +562,18 @@ pub fn show(
                 t.text_dim
             };
             ui.label(egui::RichText::new(status).color(colour));
+            // Linked copies share the trace settings: say that Apply
+            // retraces them all, though the preview shows one.
+            if let Some(n) = snap
+                .object(d.id)
+                .and_then(|o| o.link_group)
+                .map(|g| snap.group_size(g))
+            {
+                ui.label(
+                    egui::RichText::new(format!("Retraces all {n} linked copies"))
+                        .color(t.text_dim),
+                );
+            }
             ui.add_space(t.spacing);
             ui.horizontal(|ui| {
                 if ui

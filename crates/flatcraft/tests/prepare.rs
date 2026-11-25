@@ -1692,3 +1692,42 @@ fn canvas_marks_a_selection_with_linked_copies() {
     h.run();
     assert!(h.query_by_label("Linked copies selected").is_none());
 }
+
+#[test]
+fn arrange_tab_says_scaling_reaches_linked_copies() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let lone = import_square(&s);
+    linked_copies(&s, a, 2);
+    select(&s, &[a]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.run();
+    h.get_by_label("Scales all 3 linked copies");
+    select(&s, &[lone]);
+    h.run();
+    assert!(h.query_by_label("Scales all 3 linked copies").is_none());
+}
+
+#[test]
+fn changed_file_of_linked_copies_counts_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let file = dir.path().join("square.svg");
+    write_square(&file, 30.0);
+    let id = import_file(&s, &file);
+    let all = linked_copies(&s, id, 2);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    write_square(&file, 45.5);
+    focus_window(&mut h);
+    h.get_by_label("1 source file changed");
+    h.get_by_role_and_label(Role::Button, "Reload changed files")
+        .click();
+    h.run();
+    for m in all {
+        assert!((width(&s, m) - 45.5).abs() < 1e-6, "{}", width(&s, m));
+    }
+}

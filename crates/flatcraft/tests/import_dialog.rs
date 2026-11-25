@@ -608,3 +608,35 @@ fn trace_dialog_closes_when_the_image_changes() {
     assert_eq!(toasts, ["The image changed, open Trace again."]);
     assert_eq!(undo_len(&s), undo);
 }
+
+#[test]
+fn trace_dialog_says_it_retraces_every_linked_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let id = import_ring(&dir, &s);
+    let copy = s
+        .lock()
+        .unwrap()
+        .execute(
+            "object.copies",
+            json!({ "id": id, "count": 1, "linked": true }),
+            Origin::User,
+        )
+        .unwrap()["ids"][0]
+        .as_u64()
+        .unwrap();
+    s.lock()
+        .unwrap()
+        .execute("object.select", json!({ "ids": [id] }), Origin::User)
+        .unwrap();
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    open_trace(&mut h);
+    h.get_by_label("Retraces all 2 linked copies");
+    h.get_by_label("Invert").click();
+    h.run();
+    h.get_by_role_and_label(Role::Button, "Apply").click();
+    h.run();
+    assert!(stored_settings(&s, id).invert);
+    assert!(stored_settings(&s, copy).invert, "the linked copy follows");
+}

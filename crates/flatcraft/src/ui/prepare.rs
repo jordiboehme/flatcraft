@@ -733,6 +733,23 @@ impl Snapshot {
         self.objects.iter().find(|o| o.id == id)
     }
 
+    /// How many different linked files the objects `ids` have: linked
+    /// copies, and plain copies of one import, share one file. An object
+    /// without a known file counts on its own.
+    pub fn files_of(&self, ids: &[u64]) -> usize {
+        let mut files: BTreeSet<&std::path::Path> = BTreeSet::new();
+        let mut others = 0;
+        for id in ids {
+            match self.object(*id).and_then(|o| o.link.as_deref()) {
+                Some(path) => {
+                    files.insert(path);
+                }
+                None => others += 1,
+            }
+        }
+        files.len() + others
+    }
+
     /// How many objects are in the group of linked copies `group`.
     pub fn group_size(&self, group: u64) -> usize {
         self.objects
@@ -1280,7 +1297,11 @@ fn pills(
                 }
             }
             if !src.changed.is_empty() {
-                let text = plural(src.changed.len(), "source file changed", "source files changed");
+                let text = plural(
+                    snap.files_of(&src.changed),
+                    "source file changed",
+                    "source files changed",
+                );
                 let ids = src.changed.clone();
                 pill(ui, t.accent_prepare, &mut |ui| {
                     ui.label(text.as_str());
@@ -1305,7 +1326,7 @@ fn pills(
                 pill(ui, t.danger, &mut |ui| {
                     if !src.missing.is_empty() {
                         ui.label(plural(
-                            src.missing.len(),
+                            snap.files_of(&src.missing),
                             "source file not found",
                             "source files not found",
                         ))
@@ -1313,7 +1334,7 @@ fn pills(
                     }
                     if !src.unreadable.is_empty() {
                         ui.label(plural(
-                            src.unreadable.len(),
+                            snap.files_of(&src.unreadable),
                             "source file can't be read",
                             "source files can't be read",
                         ));

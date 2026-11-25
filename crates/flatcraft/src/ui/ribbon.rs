@@ -468,6 +468,11 @@ fn arrange(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Ve
             json!({ "ids": ids, "factor": p / 100.0 }),
         );
     }
+    // Linked copies share the scale.
+    if let Some(n) = snap.linked_reach() {
+        ui.label(egui::RichText::new(format!("Scales all {n} linked copies")).weak())
+            .on_hover_text("Linked copies share the scale. Each keeps its own place.");
+    }
     ui.separator();
     if let Some(d) = number_field(
         ui,
