@@ -1,0 +1,26 @@
+[graph]
+# The three CI targets, so a local run sees the same graph as CI (zbus is Linux-only).
+targets = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin", "x86_64-pc-windows-msvc"]
+
+[licenses]
+# Only licenses the tree uses are listed; add one (permissive or MPL) when a new crate
+# needs it, with a comment naming the crate. Never GPL, LGPL or AGPL.
+allow = [
+    "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-3-Clause", "Zlib", "MPL-2.0",
+    "Unicode-3.0", "Unlicense", "0BSD",
+    # arrayref 0.3.9 (via tiny-skia), roots 0.0.6 (via visioncortex's flo_curves) and
+    # zerocopy 0.8.64 (via ahash, egui and eframe). Permissive, BSD-style.
+    "BSD-2-Clause",
+    # libloading 0.8.9 (permissive): eframe -> glutin -> libloading, for GL loading.
+    "ISC",
+]
+
+[bans]
+multiple-versions = "warn"
+
+[advisories]
+# Only direct dependencies of workspace crates count as unmaintained. The transitive
+# unmaintained crates (chrono, proc-macro-error, zbus_names, zvariant and others) come
+# from eframe, rfd and rmcp and are not ours to replace. Vulnerabilities still fail.
+unmaintained = "workspace"
+ignore = []

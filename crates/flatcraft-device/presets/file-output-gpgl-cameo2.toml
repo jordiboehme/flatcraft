@@ -1,0 +1,4 @@
+id = "file-output-gpgl-cameo2"
+name = "File Output (GPGL Cameo 2)"
+inherits = "silhouette-cameo-2"
+transport = { File = { extension = "gpgl" } }

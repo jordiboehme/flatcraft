@@ -1,0 +1,17 @@
+[package]
+name = "flatcraft-path"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+flatcraft-core = { path = "../flatcraft-core" }
+kurbo.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true

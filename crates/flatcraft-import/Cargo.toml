@@ -1,0 +1,22 @@
+[package]
+name = "flatcraft-import"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+flatcraft-core = { path = "../flatcraft-core" }
+flatcraft-path = { path = "../flatcraft-path" }
+thiserror.workspace = true
+flate2.workspace = true
+kurbo.workspace = true
+usvg.workspace = true
+image = { workspace = true, features = ["png", "jpeg", "webp", "gif"] }
+visioncortex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+base64.workspace = true

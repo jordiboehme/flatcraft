@@ -1,0 +1,32 @@
+[package]
+name = "flatcraft-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+flatcraft-core = { path = "../flatcraft-core" }
+flatcraft-device = { path = "../flatcraft-device" }
+flatcraft-import = { path = "../flatcraft-import" }
+flatcraft-path = { path = "../flatcraft-path" }
+kurbo.workspace = true
+i_overlay.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+base64.workspace = true
+directories.workspace = true
+schemars.workspace = true
+tiny-skia.workspace = true
+resvg.workspace = true
+usvg.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+image = { workspace = true, features = ["png"] }
+tempfile.workspace = true
+flate2.workspace = true

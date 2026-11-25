@@ -1,0 +1,24 @@
+[package]
+name = "flatcraft-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+flatcraft-engine = { path = "../flatcraft-engine" }
+rmcp = { workspace = true, features = ["server", "macros", "transport-io"] }
+tokio = { workspace = true, features = ["rt", "sync", "io-util"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+schemars.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+flatcraft-device = { path = "../flatcraft-device" }
+rmcp = { workspace = true, features = ["client"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util"] }
+base64.workspace = true
+tempfile.workspace = true

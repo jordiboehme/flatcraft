@@ -1,0 +1,453 @@
+//! Raster decoding, DPI detection and tracing. All images are built in memory.
+
+use std::io::Cursor;
+use std::time::{Duration, Instant};
+
+use flatcraft_core::document::TraceSettings;
+use flatcraft_core::geometry::bounds;
+use flatcraft_import::dpi::read_dpi;
+use flatcraft_import::trace::trace;
+use flatcraft_import::{ImportError, raster};
+use image::codecs::jpeg::{JpegEncoder, PixelDensity, PixelDensityUnit};
+use image::{GrayImage, ImageFormat, Luma};
+use kurbo::PathEl;
+
+const BLADE: f64 = 0.25;
+
+fn white(w: u32, h: u32) -> GrayImage {
+    GrayImage::from_pixel(w, h, Luma([255]))
+}
+
+fn fill(img: &mut GrayImage, x0: u32, y0: u32, w: u32, h: u32, v: u8) {
+    for y in y0..y0 + h {
+        for x in x0..x0 + w {
+            img.put_pixel(x, y, Luma([v]));
+        }
+    }
+}
+
+fn png(img: &GrayImage) -> Vec<u8> {
+    let mut out = Cursor::new(Vec::new());
+    img.write_to(&mut out, ImageFormat::Png).unwrap();
+    out.into_inner()
+}
+
+fn crc(kind: &[u8], data: &[u8]) -> u32 {
+    let mut c = flate2::Crc::new();
+    c.update(kind);
+    c.update(data);
+    c.sum()
+}
+
+fn chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+    let mut v = (data.len() as u32).to_be_bytes().to_vec();
+    v.extend_from_slice(kind);
+    v.extend_from_slice(data);
+    v.extend_from_slice(&crc(kind, data).to_be_bytes());
+    v
+}
+
+/// Inserts a `pHYs` chunk right after IHDR.
+fn with_phys(png: &[u8], px_per_m: u32, unit: u8) -> Vec<u8> {
+    let mut data = px_per_m.to_be_bytes().to_vec();
+    data.extend_from_slice(&px_per_m.to_be_bytes());
+    data.push(unit);
+    let split = 8 + 25; // signature + IHDR chunk
+    let mut out = png[..split].to_vec();
+    out.extend(chunk(b"pHYs", &data));
+    out.extend_from_slice(&png[split..]);
+    out
+}
+
+fn square_img() -> GrayImage {
+    let mut img = white(300, 300);
+    fill(&mut img, 50, 50, 200, 200, 0);
+    img
+}
+
+fn width_of(t: &flatcraft_import::trace::TraceResult) -> f64 {
+    bounds(&t.paths).unwrap().width()
+}
+
+fn closed(p: &flatcraft_core::geometry::CutPath) -> bool {
+    p.path.elements().last() == Some(&PathEl::ClosePath)
+}
+
+#[test]
+fn png_phys_dpi_is_read() {
+    let bytes = with_phys(&png(&white(10, 10)), 11811, 1);
+    let dpi = read_dpi(&bytes).unwrap();
+    assert!((dpi - 300.0).abs() < 0.1, "{dpi}");
+    // Unit 0 means unknown.
+    assert_eq!(read_dpi(&with_phys(&png(&white(10, 10)), 11811, 0)), None);
+    assert_eq!(read_dpi(&png(&white(10, 10))), None);
+}
+
+#[test]
+fn jfif_density_is_read() {
+    let img = white(16, 16);
+    for (density, want) in [
+        (PixelDensity::dpi(300), 300.0),
+        (
+            PixelDensity {
+                density: (118, 118),
+                unit: PixelDensityUnit::Centimeters,
+            },
+            118.0 * 2.54,
+        ),
+    ] {
+        let mut out = Vec::new();
+        let mut enc = JpegEncoder::new(&mut out);
+        enc.set_pixel_density(density);
+        enc.encode_image(&img).unwrap();
+        let dpi = read_dpi(&out).unwrap();
+        assert!((dpi - want).abs() < 0.1, "{dpi} vs {want}");
+    }
+    let mut plain = Cursor::new(Vec::new());
+    img.write_to(&mut plain, ImageFormat::Jpeg).unwrap();
+    // The default encoder writes aspect-ratio-only density (unit 0).
+    assert_eq!(read_dpi(plain.get_ref()), None);
+    assert_eq!(read_dpi(b"GIF89a"), None);
+    assert_eq!(read_dpi(&[]), None);
+}
+
+#[test]
+fn no_dpi_defaults_to_300() {
+    let mut img = white(300, 300);
+    fill(&mut img, 0, 100, 300, 100, 0);
+    let t = trace(&png(&img), &TraceSettings::default(), BLADE).unwrap();
+    assert!((t.size_mm.0 - 25.4).abs() < 1e-9, "{:?}", t.size_mm);
+    assert!((width_of(&t) - 25.4).abs() < 0.1);
+}
+
+#[test]
+fn dpi_comes_from_file_and_override_wins() {
+    let bytes = with_phys(&png(&square_img()), 5906, 1); // about 150 dpi
+    let t = trace(&bytes, &TraceSettings::default(), BLADE).unwrap();
+    assert!((width_of(&t) - 33.87).abs() < 0.2, "{}", width_of(&t));
+    let s = TraceSettings {
+        dpi_override: Some(600.0),
+        ..TraceSettings::default()
+    };
+    let t = trace(&bytes, &s, BLADE).unwrap();
+    assert!((width_of(&t) - 8.47).abs() < 0.1, "{}", width_of(&t));
+}
+
+#[test]
+fn square_traces_to_one_closed_path() {
+    let t = trace(&png(&square_img()), &TraceSettings::default(), BLADE).unwrap();
+    assert_eq!(t.paths.len(), 1);
+    assert!(closed(&t.paths[0]));
+    let b = bounds(&t.paths).unwrap();
+    assert!((b.width() - 16.93).abs() < 0.1, "{b:?}");
+    assert!((b.height() - 16.93).abs() < 0.1, "{b:?}");
+    // Image pixel (50, 50) is at 50 * 25.4 / 300 mm, y down.
+    assert!(
+        (b.x0 - 4.23).abs() < 0.1 && (b.y0 - 4.23).abs() < 0.1,
+        "{b:?}"
+    );
+    assert_eq!(t.dropped_small, 0);
+    assert!(t.threshold_used > 0 && t.threshold_used < 255);
+}
+
+#[test]
+fn explicit_threshold_is_reported() {
+    let s = TraceSettings {
+        threshold: Some(100),
+        ..TraceSettings::default()
+    };
+    let t = trace(&png(&square_img()), &s, BLADE).unwrap();
+    assert_eq!(t.threshold_used, 100);
+    assert_eq!(t.paths.len(), 1);
+    // A grey figure at 150 is background below threshold 100.
+    let mut img = white(300, 300);
+    fill(&mut img, 50, 50, 200, 200, 150);
+    assert!(trace(&png(&img), &s, BLADE).unwrap().paths.is_empty());
+}
+
+#[test]
+fn ring_traces_outer_and_hole() {
+    let mut img = square_img();
+    fill(&mut img, 100, 100, 100, 100, 255);
+    let t = trace(&png(&img), &TraceSettings::default(), BLADE).unwrap();
+    assert_eq!(t.paths.len(), 2);
+    assert!(t.paths.iter().all(closed));
+    let mut sizes: Vec<f64> = t
+        .paths
+        .iter()
+        .map(|p| bounds(std::slice::from_ref(p)).unwrap().width())
+        .collect();
+    sizes.sort_by(f64::total_cmp);
+    assert!(
+        (sizes[0] - 8.47).abs() < 0.1 && (sizes[1] - 16.93).abs() < 0.1,
+        "{sizes:?}"
+    );
+}
+
+#[test]
+fn invert_swaps_figure_and_ground() {
+    let s = TraceSettings {
+        invert: true,
+        ..TraceSettings::default()
+    };
+    let t = trace(&png(&square_img()), &s, BLADE).unwrap();
+    // The white frame around the square: outer border and the square-shaped hole.
+    assert_eq!(t.paths.len(), 2);
+    let b = bounds(&t.paths).unwrap();
+    assert!((b.width() - 25.4).abs() < 0.1, "{b:?}");
+}
+
+fn dots(size: u32) -> Vec<u8> {
+    let mut img = white(300, 300);
+    for i in 0..3 {
+        fill(&mut img, 40 + i * 80, 100, size, size, 0);
+    }
+    png(&img)
+}
+
+#[test]
+fn small_dots_are_dropped() {
+    let s = TraceSettings {
+        despeckle_mm2: 0.0,
+        ..TraceSettings::default()
+    };
+    let t = trace(&dots(12), &s, BLADE).unwrap();
+    assert!(t.dropped_small >= 1, "{}", t.dropped_small);
+    assert!(t.paths.is_empty());
+    // An explicit smaller feature size keeps them.
+    let s = TraceSettings {
+        min_feature_mm: Some(0.5),
+        ..s
+    };
+    let t = trace(&dots(12), &s, BLADE).unwrap();
+    assert_eq!(t.paths.len(), 3);
+    assert_eq!(t.dropped_small, 0);
+}
+
+#[test]
+fn despeckle_removes_specks() {
+    let s = TraceSettings {
+        min_feature_mm: Some(0.0),
+        ..TraceSettings::default()
+    };
+    let t = trace(&dots(3), &s, BLADE).unwrap();
+    assert!(t.paths.is_empty());
+    // Area, not side length: a 3 x 300 px line is long but only 0.5 mm wide.
+    let mut img = white(400, 400);
+    fill(&mut img, 50, 50, 300, 3, 0);
+    let t = trace(&png(&img), &s, BLADE).unwrap();
+    assert_eq!(t.paths.len(), 1);
+}
+
+#[test]
+fn decode_supports_png_jpeg_gif_and_rejects_garbage() {
+    let img = square_img();
+    let g = raster::decode(&png(&img)).unwrap();
+    assert_eq!(g.dimensions(), (300, 300));
+    let mut jpg = Cursor::new(Vec::new());
+    img.write_to(&mut jpg, ImageFormat::Jpeg).unwrap();
+    assert_eq!(
+        raster::decode(jpg.get_ref()).unwrap().dimensions(),
+        (300, 300)
+    );
+    let mut gif = Cursor::new(Vec::new());
+    image::DynamicImage::ImageLuma8(img)
+        .to_rgba8()
+        .write_to(&mut gif, ImageFormat::Gif)
+        .unwrap();
+    assert_eq!(
+        raster::decode(gif.get_ref()).unwrap().dimensions(),
+        (300, 300)
+    );
+    assert!(matches!(
+        raster::decode(b"not an image at all"),
+        Err(ImportError::Parse(_))
+    ));
+}
+
+#[test]
+fn webp_is_decoded_and_traced() {
+    let img = image::DynamicImage::ImageLuma8(square_img()).to_rgba8();
+    let mut out = Vec::new();
+    image::codecs::webp::WebPEncoder::new_lossless(&mut out)
+        .encode(img.as_raw(), 300, 300, image::ExtendedColorType::Rgba8)
+        .unwrap();
+    assert_eq!(image::guess_format(&out).unwrap(), ImageFormat::WebP);
+    let t = trace(&out, &TraceSettings::default(), BLADE).unwrap();
+    assert_eq!(t.paths.len(), 1);
+    assert!(
+        (width_of(&t) - 200.0 * 25.4 / 300.0).abs() < 0.5,
+        "{}",
+        width_of(&t)
+    );
+}
+
+/// The first frame is traced: a square on the left. The second frame has
+/// it on the right.
+#[test]
+fn an_animated_gif_is_traced_from_its_first_frame() {
+    use image::codecs::gif::{GifEncoder, Repeat};
+    let frame = |x0: u32| {
+        let mut g = white(300, 100);
+        fill(&mut g, x0, 25, 50, 50, 0);
+        image::Frame::new(image::DynamicImage::ImageLuma8(g).to_rgba8())
+    };
+    let mut out = Vec::new();
+    {
+        let mut enc = GifEncoder::new(&mut out);
+        enc.set_repeat(Repeat::Infinite).unwrap();
+        enc.encode_frames([frame(20), frame(230)]).unwrap();
+    }
+    let t = trace(&out, &TraceSettings::default(), BLADE).unwrap();
+    assert_eq!(t.paths.len(), 1);
+    let b = bounds(&t.paths).unwrap();
+    let mm = |px: f64| px * 25.4 / 300.0;
+    assert!((b.x0 - mm(20.0)).abs() < 0.5, "{b:?}");
+    assert!(b.x1 < mm(100.0), "{b:?}");
+}
+
+/// 16000 x 16000 RGBA at 16 bit is within the side limit but needs 2 GB:
+/// the decoder's memory limit refuses it before any pixel is decoded.
+#[test]
+fn an_image_over_the_memory_limit_is_refused() {
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&16000u32.to_be_bytes());
+    ihdr.extend_from_slice(&16000u32.to_be_bytes());
+    ihdr.extend_from_slice(&[16, 6, 0, 0, 0]); // 16 bit, RGBA
+    let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    bytes.extend(chunk(b"IHDR", &ihdr));
+    bytes.extend(chunk(b"IDAT", &[0x78, 0x9c, 0x63, 0x00]));
+    bytes.extend(chunk(b"IEND", &[]));
+    let start = Instant::now();
+    let e = raster::decode(&bytes).unwrap_err();
+    assert!(
+        matches!(
+            e,
+            ImportError::ImageTooLarge {
+                width: 16000,
+                height: 16000
+            }
+        ),
+        "{e:?}"
+    );
+    // Generous: decoding the pixels would take far longer than this.
+    assert!(start.elapsed() < Duration::from_secs(10));
+}
+
+#[test]
+fn transparent_pixels_count_as_white() {
+    let mut rgba = image::RgbaImage::from_pixel(100, 100, image::Rgba([0, 0, 0, 0]));
+    for y in 20..80 {
+        for x in 20..80 {
+            rgba.put_pixel(x, y, image::Rgba([0, 0, 0, 255]));
+        }
+    }
+    let mut out = Cursor::new(Vec::new());
+    rgba.write_to(&mut out, ImageFormat::Png).unwrap();
+    let t = trace(out.get_ref(), &TraceSettings::default(), BLADE).unwrap();
+    assert_eq!(t.paths.len(), 1);
+}
+
+/// A PNG header that claims 30000 x 30000 pixels; only a stub of pixel data follows.
+fn bomb() -> Vec<u8> {
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&30000u32.to_be_bytes());
+    ihdr.extend_from_slice(&30000u32.to_be_bytes());
+    ihdr.extend_from_slice(&[1, 0, 0, 0, 0]); // 1 bit, grey
+    let mut out = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    out.extend(chunk(b"IHDR", &ihdr));
+    out.extend(chunk(b"IDAT", &[0x78, 0x9c, 0x63, 0x00]));
+    out.extend(chunk(b"IEND", &[]));
+    out
+}
+
+#[test]
+fn decompression_bomb_is_refused() {
+    let start = Instant::now();
+    let bytes = bomb();
+    let want = ImportError::ImageTooLarge {
+        width: 30000,
+        height: 30000,
+    };
+    assert!(matches!(
+        raster::decode(&bytes),
+        Err(ImportError::ImageTooLarge {
+            width: 30000,
+            height: 30000
+        })
+    ));
+    let e = trace(&bytes, &TraceSettings::default(), BLADE).unwrap_err();
+    assert!(matches!(e, ImportError::ImageTooLarge { .. }), "{e}");
+    assert_eq!(
+        e.to_string(),
+        "The image is too large to import (30000 x 30000 pixels, at most 16384 per side)."
+    );
+    assert_eq!(want.to_string(), e.to_string());
+    // Generous: decoding the pixels would take far longer than this.
+    assert!(start.elapsed() < Duration::from_secs(10));
+}
+
+#[test]
+fn big_images_are_downscaled_to_the_budget_with_exact_size() {
+    let mut img = white(6000, 4000);
+    fill(&mut img, 1000, 1000, 2000, 1000, 0);
+    let t = trace(&png(&img), &TraceSettings::default(), BLADE).unwrap();
+    assert_eq!(t.downscaled_from, Some((6000, 4000)));
+    assert!((t.size_mm.0 - 508.0).abs() < 1e-6, "{:?}", t.size_mm);
+    assert!((t.size_mm.1 - 338.6667).abs() < 1e-3, "{:?}", t.size_mm);
+    assert_eq!(t.paths.len(), 1);
+    let b = bounds(&t.paths).unwrap();
+    assert!((b.width() - 169.33).abs() < 0.6, "{b:?}");
+    assert!((b.height() - 84.67).abs() < 0.6, "{b:?}");
+    assert!(
+        (b.x0 - 84.67).abs() < 0.6 && (b.y0 - 84.67).abs() < 0.6,
+        "{b:?}"
+    );
+    // Small images are traced as they are.
+    let t = trace(&png(&square_img()), &TraceSettings::default(), BLADE).unwrap();
+    assert_eq!(t.downscaled_from, None);
+}
+
+#[test]
+fn tiny_declared_dpi_is_ignored() {
+    let bytes = with_phys(&png(&square_img()), 100, 1); // 2.54 dpi
+    let t = trace(&bytes, &TraceSettings::default(), BLADE).unwrap();
+    assert!((t.size_mm.0 - 25.4).abs() < 1e-9, "{:?}", t.size_mm);
+    assert!((t.ignored_dpi.unwrap() - 2.54).abs() < 0.01);
+    // An explicit override never looks at the file.
+    let s = TraceSettings {
+        dpi_override: Some(150.0),
+        ..TraceSettings::default()
+    };
+    let t = trace(&bytes, &s, BLADE).unwrap();
+    assert_eq!(t.ignored_dpi, None);
+    assert!((t.size_mm.0 - 50.8).abs() < 1e-9);
+}
+
+#[test]
+fn collapsed_shapes_are_counted_as_dropped() {
+    let mut img = white(100, 100);
+    img.put_pixel(50, 50, Luma([0]));
+    let s = TraceSettings {
+        despeckle_mm2: 0.0,
+        min_feature_mm: Some(0.0),
+        ..TraceSettings::default()
+    };
+    let t = trace(&png(&img), &s, BLADE).unwrap();
+    assert!(t.paths.is_empty());
+    assert_eq!(t.dropped_small, 1);
+}
+
+#[test]
+fn despeckle_counts_the_specks_it_removes() {
+    // 300 dpi: a 2 x 2 px dot is about 0.03 mm2, below the 0.5 mm2 default.
+    let mut img = white(300, 300);
+    for i in 0..5 {
+        fill(&mut img, 20 + i * 50, 20, 2, 2, 0);
+    }
+    fill(&mut img, 100, 120, 100, 100, 0);
+    let t = trace(&png(&img), &TraceSettings::default(), BLADE).unwrap();
+    assert_eq!(t.despeckled, 5);
+    assert_eq!(t.dropped_small, 0);
+    assert_eq!(t.paths.len(), 1);
+}
