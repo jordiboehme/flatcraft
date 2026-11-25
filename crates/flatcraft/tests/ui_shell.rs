@@ -110,8 +110,8 @@ fn home_shows_new_open_and_recent_projects() {
     s.lock().unwrap().prefs.recent_projects = vec![dir.path().join("coasters.flatcraft")];
     let mut h = harness(&dir, s.clone(), false);
     assert_eq!(app(&h).ui.workspace, Workspace::Home);
-    h.get_by_role_and_label(Role::Button, "New");
-    h.get_by_role_and_label(Role::Button, "Open");
+    h.get_by_role_and_label(Role::Button, "New project");
+    h.get_by_role_and_label(Role::Button, "Open...");
     h.get_by_role_and_label(Role::Button, "coasters.flatcraft");
     // A missing recent project gives a toast, not a panic.
     h.get_by_role_and_label(Role::Button, "coasters.flatcraft")
@@ -125,7 +125,7 @@ fn home_new_reuses_the_empty_start_document() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let mut h = harness(&dir, s.clone(), false);
-    h.get_by_role_and_label(Role::Button, "New").click();
+    h.get_by_role_and_label(Role::Button, "New project").click();
     h.run();
     assert_eq!(s.lock().unwrap().docs.len(), 1);
     assert_eq!(app(&h).ui.workspace, Workspace::Prepare);
@@ -134,7 +134,7 @@ fn home_new_reuses_the_empty_start_document() {
     h.get_by_role_and_label(Role::Button, "Home").click();
     h.run();
     s.lock().unwrap().doc_mut().dirty = true;
-    h.get_by_role_and_label(Role::Button, "New").click();
+    h.get_by_role_and_label(Role::Button, "New project").click();
     wait_for_source_check(&mut h);
     assert_eq!(s.lock().unwrap().docs.len(), 2);
 }
@@ -499,18 +499,20 @@ fn undo_targets_the_document_clicked() {
 }
 
 #[test]
-fn home_actions_are_centred() {
+fn home_cards_line_up_under_the_title() {
     let dir = tempfile::tempdir().unwrap();
     let h = harness(&dir, session(&dir), false);
-    let new = h.get_by_role_and_label(Role::Button, "New").rect();
-    let open = h.get_by_role_and_label(Role::Button, "Open").rect();
-    let row_centre = (new.left() + open.right()) / 2.0;
-    let heading = h.get_by_label("Welcome to FlatCraft").rect();
+    let new = h.get_by_role_and_label(Role::Button, "New project").rect();
+    let patterns = h
+        .get_by_role_and_label(Role::Button, "Test patterns")
+        .rect();
+    let title = h.get_by_label("Start").rect();
     assert!(
-        (row_centre - heading.center().x).abs() < 2.0,
-        "row centre {row_centre}, heading centre {}",
-        heading.center().x
+        (new.left() - title.left()).abs() < 2.0,
+        "card {new:?}, title {title:?}"
     );
+    // 1400 pt: the four cards share one row.
+    assert!((new.top() - patterns.top()).abs() < 0.5);
 }
 
 #[test]

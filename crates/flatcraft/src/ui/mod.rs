@@ -244,6 +244,9 @@ pub enum Action {
     /// Home's New and Cmd+N: reuse the active document if it is pristine,
     /// else open a new one; then go to Prepare.
     NewProject,
+    /// A card of Home's New row: the existing New, Import, Open or Test
+    /// patterns action, on a new project where it needs one.
+    StartWith(home::Start),
     /// Make this document the active one.
     Switch(u64),
     /// Close this document.
@@ -898,20 +901,9 @@ impl FlatCraftApp {
                 self.execute("document.new", json!({}));
             }
             Action::NewProject => {
-                // Checked and acted on under one lock.
-                let result = {
-                    let mut s = lock(&self.session);
-                    if s.doc().is_pristine() {
-                        Ok(Value::Null)
-                    } else {
-                        s.execute("document.new", json!({}), Origin::User)
-                    }
-                };
-                match result {
-                    Ok(_) => self.ui.workspace = Workspace::Prepare,
-                    Err(e) => self.toast(Toast::error(person_text(&e))),
-                }
+                self.new_project();
             }
+            Action::StartWith(start) => self.start_with(ctx, start),
             Action::Switch(doc_id) => {
                 self.execute("document.switch", json!({ "doc_id": doc_id }));
             }
@@ -1047,6 +1039,56 @@ impl FlatCraftApp {
             }
             Action::Unsaved(asked, choice) => self.answer_unsaved(ctx, asked, choice),
             Action::Menu(cmd) => self.run_menu(ctx, cmd),
+        }
+    }
+
+    /// Reuses the active document if it is pristine, else opens a new one,
+    /// and goes to Prepare. Returns the new project's document id, `None`
+    /// when it failed (a toast says why).
+    fn new_project(&mut self) -> Option<u64> {
+        // Checked and acted on under one lock.
+        let result = {
+            let mut s = lock(&self.session);
+            if s.doc().is_pristine() {
+                Ok(s.doc().id())
+            } else {
+                s.execute("document.new", json!({}), Origin::User)
+                    .map(|_| s.doc().id())
+            }
+        };
+        match result {
+            Ok(id) => {
+                self.ui.workspace = Workspace::Prepare;
+                Some(id)
+            }
+            Err(e) => {
+                self.toast(Toast::error(person_text(&e)));
+                None
+            }
+        }
+    }
+
+    /// Runs a card of Home's New row. Import asks for the file first, so
+    /// a cancelled dialog leaves no empty project behind.
+    fn start_with(&mut self, ctx: &egui::Context, start: home::Start) {
+        match start {
+            home::Start::Empty => {
+                self.new_project();
+            }
+            home::Start::Open => self.apply_one(ctx, Action::OpenDialog),
+            home::Start::Import => {
+                let Some(path) = self.files.pick_file(&import_dialog::import_request()) else {
+                    return;
+                };
+                if let Some(doc_id) = self.new_project() {
+                    self.run_on(doc_id, "object.import", json!({ "path": path }));
+                }
+            }
+            home::Start::TestPatterns => {
+                if let Some(doc_id) = self.new_project() {
+                    self.run_on(doc_id, "tools.test_patterns", json!({}));
+                }
+            }
         }
     }
 

@@ -96,6 +96,10 @@ pub enum Icon {
     Keyboard,
     Printer,
     Layers,
+    /// Home's New project card.
+    NewFile,
+    /// Home's Open card.
+    FolderOpen,
 }
 
 macro_rules! svg {
@@ -105,7 +109,7 @@ macro_rules! svg {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 77] = [
+    pub const ALL: [Icon; 79] = [
         Icon::Import,
         Icon::Trace,
         Icon::Duplicate,
@@ -183,6 +187,8 @@ impl Icon {
         Icon::Keyboard,
         Icon::Printer,
         Icon::Layers,
+        Icon::NewFile,
+        Icon::FolderOpen,
     ];
 
     /// The plain icon a framed "to the cutting area" icon is made from.
@@ -277,6 +283,8 @@ impl Icon {
             Icon::Keyboard => svg!("keyboard"),
             Icon::Printer => svg!("printer"),
             Icon::Layers => svg!("layers"),
+            Icon::NewFile => svg!("file-plus"),
+            Icon::FolderOpen => svg!("folder-open"),
             Icon::AlignLeftArea
             | Icon::AlignCentreArea
             | Icon::AlignRightArea

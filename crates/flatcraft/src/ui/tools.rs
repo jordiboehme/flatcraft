@@ -668,7 +668,7 @@ pub const TOOLS: [Tool; 38] = [
 /// the one accent part that tells what happens, in the accent colour.
 /// Every other child is ink. Every icon of an action, a group or a
 /// switch has an entry; the framed Align icons use their base icon's.
-pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 40] = [
+pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 42] = [
     (Icon::Import, &[2], &[0, 1]),
     (Icon::Trace, &[], &[2]),
     (Icon::TestPatterns, &[0], &[1]),
@@ -709,6 +709,9 @@ pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 40] = [
     (Icon::KeepAspect, &[0], &[1, 2]),
     (Icon::EachObject, &[1], &[0]),
     (Icon::AutoArrangePanel, &[0, 2], &[1, 3]),
+    // Home's New cards.
+    (Icon::NewFile, &[0, 1], &[2, 3]),
+    (Icon::FolderOpen, &[], &[0]),
 ];
 
 /// The paper and accent children of `icon` (see [`ICON_ROLES`]); `None`
