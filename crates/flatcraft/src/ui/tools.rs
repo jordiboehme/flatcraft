@@ -1203,10 +1203,10 @@ impl Setting {
                 "Scale the selection: 200 makes it twice as big, 50 half as big. Type a number, then press Tab or Enter or click elsewhere. With Each object on, every object grows or shrinks about its own centre."
             }
             Setting::KeepAspect => {
-                "The lock between W and H. Closed: width and height change together, so the shape does not get squashed, in the fields and with the handles on the mat. Open: change one without the other. Hold Shift while you drag a handle to get the opposite for that drag."
+                "The lock on the bracket beside W and H. Click the lock or the bracket. Closed: width and height change together, so the shape does not get squashed, in the fields and with the handles on the mat. Open: change one without the other. Hold Shift while you drag a handle to get the opposite for that drag."
             }
             Setting::KeepAspectLinked => {
-                "The lock between W and H. Closed: width and height change together, so the shape does not get squashed, in the fields and with the handles on the mat. Open: change one without the other. Hold Shift while you drag a handle to get the opposite for that drag. Linked copies share one shape: stretching one stretches every copy along its own sides, so a copy turned by 90 degrees stretches the other way on the mat. Unlink copies first if they should not follow."
+                "The lock on the bracket beside W and H. Click the lock or the bracket. Closed: width and height change together, so the shape does not get squashed, in the fields and with the handles on the mat. Open: change one without the other. Hold Shift while you drag a handle to get the opposite for that drag. Linked copies share one shape: stretching one stretches every copy along its own sides, so a copy turned by 90 degrees stretches the other way on the mat. Unlink copies first if they should not follow."
             }
             Setting::ScaleHandle => HANDLE_CARD.as_str(),
             Setting::RotateZone => ROTATE_CARD.as_str(),

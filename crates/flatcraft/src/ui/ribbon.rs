@@ -911,8 +911,7 @@ fn size_group(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
         ui.spacing_mut().item_spacing.y = groups::GROUP_GAP;
         // Three columns of two rows: X above Y, W above H, and % above
         // the Angle; each is a grid, so the labels line up. The Keep
-        // aspect lock sits between W/H and %/Angle, joined to W and H by
-        // a bracket.
+        // aspect lock sits left of W and H, on a bracket that joins them.
         let top = groups::pins_row(ui, |ui| {
             // Two rows fill the pins row's height, so the columns start at
             // its top (a grid does not centre itself in a row).
