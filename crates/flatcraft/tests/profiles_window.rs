@@ -1105,3 +1105,58 @@ fn dimmed_buttons_say_why_on_their_card() {
     hover(&mut h, "Save as user preset...");
     assert!(h.query_by_label(FIX_PROBLEMS_FIRST).is_some());
 }
+
+/// Moves the pointer away, then onto the control named `label` with
+/// `role`, and lets its card show.
+fn hover_role(h: &mut AppHarness, role: Role, label: &str) {
+    clear_hover(h);
+    let at = h.get_by_role_and_label(role, label).rect().center();
+    h.hover_at(egui::pos2(at.x, at.y));
+    for _ in 0..10 {
+        h.run();
+    }
+}
+
+#[test]
+fn copy_mat_says_why_it_is_dimmed() {
+    use flatcraft::ui::profiles_window::{HIDDEN_NO_COPY, PICK_A_MAT};
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = common::harness_sized(&dir, s.clone(), [1400.0, 2400.0], 8, |app| app);
+    save_as_my_cameo(&mut h);
+    page(&mut h, "Mats");
+    // A hidden built-in mat is picked: it cannot be copied.
+    h.get_by_role_and_label(Role::Button, "Mat 12x24").click();
+    h.run();
+    click(&mut h, "Hidden");
+    assert!(disabled(&h, "Copy mat"));
+    hover_role(&mut h, Role::Button, "Copy mat");
+    assert!(h.query_by_label(HIDDEN_NO_COPY).is_some());
+    assert!(h.query_by_label(PICK_A_MAT).is_none());
+    // Hide the other built-in mats, add one of your own and delete it:
+    // no mat is picked any more.
+    for mat in ["Mat 12x12", "No mat"] {
+        h.get_by_role_and_label(Role::Button, mat).click();
+        h.run();
+        click(&mut h, "Hidden");
+    }
+    click(&mut h, "Add mat");
+    click(&mut h, "Delete mat");
+    assert!(disabled(&h, "Copy mat"));
+    hover_role(&mut h, Role::Button, "Copy mat");
+    assert!(h.query_by_label(PICK_A_MAT).is_some());
+    assert!(h.query_by_label(HIDDEN_NO_COPY).is_none());
+}
+
+#[test]
+fn reload_presets_has_a_hover_card() {
+    let dir = tempfile::tempdir().unwrap();
+    let plotters = dir.path().join("profiles/plotters");
+    std::fs::create_dir_all(&plotters).unwrap();
+    std::fs::write(plotters.join("broken.toml"), "id = [").unwrap();
+    let s = session(&dir);
+    let mut h = common::harness_sized(&dir, s.clone(), [1400.0, 2400.0], 8, |app| app);
+    open(&mut h, "Plotters");
+    hover_role(&mut h, Role::Button, "Reload presets");
+    h.get_by_label("Fixed the file? This reads the preset folder again.");
+}

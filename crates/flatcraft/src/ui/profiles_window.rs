@@ -50,6 +50,9 @@ pub const NO_PARENT: &str = "This preset inherits from nothing, so edit it in it
 /// Why Copy mat is dimmed with no mat picked.
 pub const PICK_A_MAT: &str = "No mat is picked. Pick one in the list first.";
 
+/// Why Copy mat is dimmed while the picked mat is hidden.
+pub const HIDDEN_NO_COPY: &str = "Hidden mats cannot be copied. Turn off Hidden first.";
+
 /// Why a plotter override value is dimmed, on its hover card.
 pub const OVERRIDE_OFF: &str = "The box on its left is off, so the material's own value applies. Tick the box to set a value for this plotter.";
 
@@ -794,7 +797,7 @@ fn preset_buttons(
             action_card(
                 &r,
                 "Delete preset",
-                "Removes this user preset's file, after you say yes. A preset that an open document or the default uses is not deleted.",
+                "Removes this user preset's file, after you say yes. A preset that an open document or the default uses is not deleted, and neither is one that other presets inherit from.",
                 None,
             );
             if r.clicked() {
@@ -1396,7 +1399,13 @@ fn mats(
                 &r,
                 "Copy mat",
                 "Adds a copy of the picked mat, so you can change it and keep the original.",
-                sel.is_none().then_some(PICK_A_MAT),
+                match (selected.is_some(), sel.is_some()) {
+                    (false, _) => Some(PICK_A_MAT),
+                    // Picked, but not among the visible mats: a hidden
+                    // built-in one.
+                    (true, false) => Some(HIDDEN_NO_COPY),
+                    (true, true) => None,
+                },
             );
             if r.clicked()
                 && let Some(i) = sel
