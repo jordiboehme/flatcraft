@@ -352,6 +352,15 @@ fn discard_on_quit_closes_the_window() {
     h.run();
     assert!(app(&h).ui.closing, "the window closes");
     assert!(app(&h).ui.unsaved.is_none());
+    // The Close command comes back as a close request, which now goes ahead.
+    h.input_mut()
+        .viewports
+        .entry(egui::ViewportId::ROOT)
+        .or_default()
+        .events
+        .push(egui::ViewportEvent::Close);
+    h.step();
+    assert!(!root_commands(&h).contains(&egui::ViewportCommand::CancelClose));
 }
 
 #[test]
