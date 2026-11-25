@@ -1,5 +1,5 @@
-//! Object commands: import, select, show, delete, duplicate, transform and
-//! cut options.
+//! Object commands: import, select, show, delete, duplicate, copies,
+//! transform and cut options.
 
 use std::path::PathBuf;
 
@@ -16,8 +16,8 @@ use serde_json::{Value, json};
 
 use super::sources::{FileKind, ReadError, absolute, clip, file_kind, new_link, read_capped};
 use super::{
-    command, cutting_area, ids_json, object_mut, placed_bounds, placed_bounds_or_center, rect_json,
-    resolve_ids, translate,
+    check_exists, command, cutting_area, ids_json, inside, object_mut, placed_bounds,
+    placed_bounds_or_center, rect_json, resolve_ids, translate,
 };
 use crate::commands::normalize_deg;
 use crate::session::{CommandError, Origin, Session};
@@ -597,19 +597,25 @@ pub struct DuplicateParams {
     pub offset_mm: [f64; 2],
 }
 
+/// Adds a copy of object `id`, moved by `offset`, with a new id, at the end
+/// of the document. Returns the new id.
+fn add_copy(doc: &mut Document, id: ObjectId, offset: Vec2) -> Result<ObjectId, CommandError> {
+    let mut copy = object_mut(doc, id)?.clone();
+    let new_id = ObjectId(doc.next_id);
+    doc.next_id += 1;
+    copy.id = new_id;
+    translate(&mut copy, offset);
+    doc.objects.push(copy);
+    Ok(new_id)
+}
+
 fn run_duplicate(s: &mut Session, p: DuplicateParams, _: Origin) -> Result<Value, CommandError> {
     let ids = resolve_ids(s, &p.ids)?;
     let offset = Vec2::new(p.offset_mm[0], p.offset_mm[1]);
     let st = s.doc_mut();
     let mut new_ids = Vec::new();
     for id in &ids {
-        let mut copy = object_mut(&mut st.document, *id)?.clone();
-        let new_id = ObjectId(st.document.next_id);
-        st.document.next_id += 1;
-        copy.id = new_id;
-        translate(&mut copy, offset);
-        st.document.objects.push(copy);
-        new_ids.push(new_id);
+        new_ids.push(add_copy(&mut st.document, *id, offset)?);
     }
     st.selection = new_ids.iter().copied().collect();
     Ok(json!({ "ids": ids_json(&new_ids) }))
@@ -623,6 +629,132 @@ command!(
     params: DuplicateParams,
     run: run_duplicate,
     description: "Copies objects and moves the copies by offset_mm [dx, dy] (default [10, 10]; mm, y down). The copies become the selection. An empty ids list means the current selection. Returns {ids: [new id]} in the order of the originals.",
+);
+
+// ---------------------------------------------------------------- copies
+
+/// Most copies one `object.copies` call makes.
+pub const MAX_COPIES: u32 = 500;
+
+/// The refusal while linked copies are not there yet.
+pub const LINKED_LATER: &str = "Linked copies arrive with the next update.";
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum CopiesLayout {
+    /// One row to the right of the original.
+    #[default]
+    Row,
+    /// Rows of `columns` cells, filled left to right, then down. The
+    /// original is the first cell.
+    Grid {
+        /// Cells per row, 1 or more.
+        columns: u32,
+    },
+}
+
+fn default_gap() -> f64 {
+    5.0
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CopiesParams {
+    /// The object to copy.
+    pub id: u64,
+    /// How many copies to add, 1 to 500.
+    pub count: u32,
+    /// "row" (default) or {"grid": {"columns": n}}.
+    #[serde(default)]
+    pub layout: CopiesLayout,
+    /// Gap between neighbouring bounding boxes in mm (default 5), 0 or more.
+    #[serde(default = "default_gap")]
+    pub gap_mm: f64,
+    /// Linked copies follow the original. Not available yet: only false is accepted.
+    #[serde(default)]
+    pub linked: bool,
+}
+
+/// Grid cell (column, row) of copy `k` (1-based); the original is cell 0.
+fn cell(layout: CopiesLayout, k: u32) -> (u32, u32) {
+    match layout {
+        CopiesLayout::Row => (k, 0),
+        CopiesLayout::Grid { columns } => (k % columns, k / columns),
+    }
+}
+
+fn run_copies(s: &mut Session, p: CopiesParams, _: Origin) -> Result<Value, CommandError> {
+    if p.linked {
+        return Err(CommandError::Refused(LINKED_LATER.into()));
+    }
+    if !(1..=MAX_COPIES).contains(&p.count) {
+        return Err(CommandError::InvalidParams(format!(
+            "count must be 1 to {MAX_COPIES}"
+        )));
+    }
+    if !(p.gap_mm.is_finite() && p.gap_mm >= 0.0) {
+        return Err(CommandError::InvalidParams(
+            "gap_mm must be 0 or more".into(),
+        ));
+    }
+    if p.layout == (CopiesLayout::Grid { columns: 0 }) {
+        return Err(CommandError::InvalidParams(
+            "a grid needs 1 or more columns".into(),
+        ));
+    }
+    let id = ObjectId(p.id);
+    check_exists(&s.doc().document, id)?;
+    let area = cutting_area(s).ok();
+    let st = s.doc_mut();
+    let b = placed_bounds_or_center(object_mut(&mut st.document, id)?);
+    let (step_x, step_y) = (b.width() + p.gap_mm, b.height() + p.gap_mm);
+    let mut new_ids = Vec::with_capacity(p.count as usize);
+    let mut outside = Vec::new();
+    for k in 1..=p.count {
+        let (col, row) = cell(p.layout, k);
+        // From the original each time, so rounding does not add up.
+        let offset = Vec2::new(col as f64 * step_x, row as f64 * step_y);
+        let new_id = add_copy(&mut st.document, id, offset)?;
+        let copy = object_mut(&mut st.document, new_id)?;
+        if !copy.placement_is_valid() {
+            return Err(CommandError::Refused(format!(
+                "Copy {k} would land more than 1 km from the mat. Make fewer copies or a smaller gap."
+            )));
+        }
+        if let (Some(area), Some(cb)) = (area, placed_bounds(copy))
+            && copy.visible
+            && !inside(cb, area)
+        {
+            outside.push(new_id);
+        }
+        new_ids.push(new_id);
+    }
+    st.selection = new_ids.iter().copied().collect();
+    let warnings: Vec<String> = match outside.len() {
+        0 => Vec::new(),
+        1 => vec![
+            "1 copy is outside the cutting area. Move it, or pick a bigger mat, before you cut."
+                .into(),
+        ],
+        n => vec![format!(
+            "{n} copies are outside the cutting area. Move them, or pick a bigger mat, before you cut."
+        )],
+    };
+    Ok(json!({
+        "ids": ids_json(&new_ids),
+        "outside_area": ids_json(&outside),
+        "warnings": warnings,
+    }))
+}
+
+command!(
+    ObjectCopies,
+    id: "object.copies",
+    title: "Copies",
+    mutates: true,
+    params: CopiesParams,
+    run: run_copies,
+    description: "Adds count copies (1 to 500) of one object in one undo step, laid out next to it by its bounding box plus gap_mm (default 5). layout \"row\" (default) puts them in a row to the right of the original. layout {\"grid\": {\"columns\": n}} fills rows of n cells left to right, then goes down; the original is the first cell, so copy k sits in column k mod n and row k div n. Units mm, origin the 0,0 of the grid printed on the mat, x right, y down. Copies that land outside the cutting area are still added; they are listed in outside_area and get a warning. linked: true is refused for now (linked copies come later). The copies become the selection. Returns {ids: [new id], outside_area: [id], warnings}.",
 );
 
 // ---------------------------------------------------------------- move

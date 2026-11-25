@@ -391,6 +391,20 @@ fn error_texts_have_no_em_dash() {
         ("job.set_overrides", json!({ "force": 0 })),
         ("job.set_overrides", json!({ "passes": 0 })),
         ("arrange.auto", json!({ "spacing_mm": -1.0 })),
+        (
+            "arrange.distribute",
+            json!({ "ids": [id], "axis": "horizontal" }),
+        ),
+        ("arrange.distribute", json!({ "axis": "vertical" })),
+        ("object.copies", json!({ "id": id, "count": 0 })),
+        (
+            "object.copies",
+            json!({ "id": id, "count": 2, "linked": true }),
+        ),
+        (
+            "object.copies",
+            json!({ "id": id, "count": 2, "gap_mm": -5.0 }),
+        ),
     ];
     for (cmd, params) in cases {
         let e = s
@@ -2454,4 +2468,339 @@ fn reopening_warns_when_an_svg_rebuilds_to_other_bounds() {
         w.contains(&"rect looks different on this computer (missing fonts?)"),
         "{w:?}"
     );
+}
+
+// ---------------------------------------------------------------- distribute and copies
+
+/// The placed bounds the arrange commands work with.
+fn cmd_bounds(s: &Session, id: u64) -> Rect {
+    let o = s.doc().document.get(ObjectId(id)).unwrap();
+    flatcraft_engine::commands::placed_bounds(o).unwrap()
+}
+
+/// Imports a w x h rectangle and moves its top-left corner to (x0, y0).
+fn rect_at(s: &mut Session, w: f64, h: f64, x0: f64, y0: f64) -> u64 {
+    let id = import(s, w, h);
+    let b = cmd_bounds(s, id);
+    run(
+        s,
+        "object.move",
+        json!({ "ids": [id], "dx_mm": x0 - b.x0, "dy_mm": y0 - b.y0 }),
+    );
+    id
+}
+
+fn undo_len(s: &Session) -> usize {
+    s.doc().undo.undo_len()
+}
+
+#[test]
+fn distribute_horizontal_makes_equal_gaps_with_uneven_widths() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = rect_at(&mut s, 10.0, 10.0, 20.0, 30.0);
+    let b = rect_at(&mut s, 30.0, 20.0, 50.0, 60.0);
+    let c = rect_at(&mut s, 20.0, 15.0, 130.0, 40.0);
+    let d = rect_at(&mut s, 40.0, 10.0, 200.0, 90.0);
+    let (ya, yb, yc, yd) = (
+        cmd_bounds(&s, a).y0,
+        cmd_bounds(&s, b).y0,
+        cmd_bounds(&s, c).y0,
+        cmd_bounds(&s, d).y0,
+    );
+    let (first, last) = (cmd_bounds(&s, a), cmd_bounds(&s, d));
+    let before = undo_len(&s);
+    // Shuffled: the order comes from the bounds centres.
+    let r = run(
+        &mut s,
+        "arrange.distribute",
+        json!({ "ids": [c, a, d, b], "axis": "horizontal" }),
+    );
+    assert_eq!(undo_len(&s), before + 1, "one undo step");
+    let order: Vec<u64> = r["ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .collect();
+    assert_eq!(order, vec![a, b, c, d]);
+    // The ends stay exactly where they were.
+    assert_eq!(cmd_bounds(&s, a), first);
+    assert_eq!(cmd_bounds(&s, d), last);
+    let bs: Vec<Rect> = order.iter().map(|id| cmd_bounds(&s, *id)).collect();
+    let gaps: Vec<f64> = bs.windows(2).map(|w| w[1].x0 - w[0].x1).collect();
+    let gap = r["gap_mm"].as_f64().unwrap();
+    for g in &gaps {
+        assert!((g - gap).abs() < EPS, "gaps {gaps:?}, gap_mm {gap}");
+    }
+    // 220 mm span, 100 mm of objects, 3 gaps.
+    assert!((gap - 40.0).abs() < 1e-4, "{gap}");
+    // Only x moves.
+    for (id, y) in [(a, ya), (b, yb), (c, yc), (d, yd)] {
+        assert_eq!(cmd_bounds(&s, id).y0, y);
+    }
+    run(&mut s, "edit.undo", json!({}));
+    assert!(close(cmd_bounds(&s, b).x0, 50.0) && close(cmd_bounds(&s, c).x0, 130.0));
+}
+
+#[test]
+fn distribute_vertical_uses_the_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = rect_at(&mut s, 10.0, 12.0, 20.0, 20.0);
+    let b = rect_at(&mut s, 10.0, 33.0, 60.0, 150.0);
+    let c = rect_at(&mut s, 10.0, 7.0, 40.0, 50.0);
+    let (top, bottom) = (cmd_bounds(&s, a), cmd_bounds(&s, b));
+    run(&mut s, "object.select", json!({ "ids": [a, b, c] }));
+    let before = undo_len(&s);
+    let r = run(&mut s, "arrange.distribute", json!({ "axis": "vertical" }));
+    assert_eq!(undo_len(&s), before + 1);
+    assert_eq!(cmd_bounds(&s, a), top);
+    assert_eq!(cmd_bounds(&s, b), bottom);
+    let mid = cmd_bounds(&s, c);
+    let gap = r["gap_mm"].as_f64().unwrap();
+    assert!((mid.y0 - top.y1 - gap).abs() < EPS, "{mid:?} {gap}");
+    assert!((bottom.y0 - mid.y1 - gap).abs() < EPS, "{mid:?} {gap}");
+    assert!(close(mid.x0, 40.0), "x stays");
+}
+
+#[test]
+fn distribute_ties_keep_the_given_order_and_wide_objects_overlap_evenly() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = rect_at(&mut s, 10.0, 10.0, 20.0, 20.0);
+    let b = rect_at(&mut s, 60.0, 10.0, 30.0, 40.0);
+    let c = rect_at(&mut s, 60.0, 10.0, 30.0, 60.0);
+    let d = rect_at(&mut s, 10.0, 10.0, 70.0, 80.0);
+    // b and c share their centre: c was named first, so it comes first.
+    let r = run(
+        &mut s,
+        "arrange.distribute",
+        json!({ "ids": [a, c, b, d], "axis": "horizontal" }),
+    );
+    assert_eq!(r["ids"], json!([a, c, b, d]));
+    let gap = r["gap_mm"].as_f64().unwrap();
+    // 60 mm span, 140 mm of objects: the gaps are negative.
+    assert!((gap - (-80.0 / 3.0)).abs() < 1e-4, "{gap}");
+    let bs: Vec<Rect> = [a, c, b, d].iter().map(|id| cmd_bounds(&s, *id)).collect();
+    for w in bs.windows(2) {
+        assert!((w[1].x0 - w[0].x1 - gap).abs() < EPS, "{bs:?}");
+    }
+}
+
+#[test]
+fn distribute_refuses_fewer_than_three() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = rect_at(&mut s, 10.0, 10.0, 20.0, 20.0);
+    let b = rect_at(&mut s, 10.0, 10.0, 80.0, 20.0);
+    let before = undo_len(&s);
+    let (ba, bb) = (cmd_bounds(&s, a), cmd_bounds(&s, b));
+    for params in [
+        json!({ "ids": [a, b], "axis": "horizontal" }),
+        json!({ "ids": [a, a, b], "axis": "vertical" }),
+    ] {
+        let e = s
+            .execute("arrange.distribute", params, Origin::Agent)
+            .unwrap_err();
+        assert!(matches!(e, CommandError::InvalidParams(_)), "{e}");
+        assert!(e.to_string().contains("at least 3 objects"), "{e}");
+    }
+    run(&mut s, "object.select", json!({ "ids": [a, b] }));
+    let e = s
+        .execute(
+            "arrange.distribute",
+            json!({ "axis": "horizontal" }),
+            Origin::User,
+        )
+        .unwrap_err();
+    assert!(e.to_string().contains("2 are selected"), "{e}");
+    assert_eq!(undo_len(&s), before);
+    assert_eq!((cmd_bounds(&s, a), cmd_bounds(&s, b)), (ba, bb));
+}
+
+#[test]
+fn distribute_of_evenly_spaced_objects_is_no_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let ids = [
+        rect_at(&mut s, 10.0, 10.0, 20.0, 20.0),
+        rect_at(&mut s, 10.0, 10.0, 50.0, 20.0),
+        rect_at(&mut s, 10.0, 10.0, 80.0, 20.0),
+    ];
+    run(
+        &mut s,
+        "arrange.distribute",
+        json!({ "ids": ids, "axis": "horizontal" }),
+    );
+    let before = undo_len(&s);
+    run(
+        &mut s,
+        "arrange.distribute",
+        json!({ "ids": ids, "axis": "horizontal" }),
+    );
+    assert_eq!(undo_len(&s), before);
+}
+
+fn ids_of(r: &Value) -> Vec<u64> {
+    r["ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .collect()
+}
+
+#[test]
+fn copies_in_a_row_start_right_of_the_original() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = rect_at(&mut s, 50.0, 20.0, 20.0, 30.0);
+    let orig = cmd_bounds(&s, id);
+    let before = undo_len(&s);
+    let r = run(
+        &mut s,
+        "object.copies",
+        json!({ "id": id, "count": 3, "layout": "row" }),
+    );
+    assert_eq!(undo_len(&s), before + 1, "one undo step");
+    let ids = ids_of(&r);
+    assert_eq!(ids.len(), 3);
+    assert_eq!(s.doc().document.objects.len(), 4);
+    for (i, c) in ids.iter().enumerate() {
+        let b = cmd_bounds(&s, *c);
+        let k = (i + 1) as f64;
+        // Default gap 5 mm. The width carries usvg's f32 noise.
+        let step = orig.width() + 5.0;
+        assert!((b.x0 - (orig.x0 + k * step)).abs() < EPS, "{i}: {b:?}");
+        assert!((b.y0 - orig.y0).abs() < EPS, "{i}: {b:?}");
+    }
+    let sel: Vec<u64> = s.doc().selection.iter().map(|i| i.0).collect();
+    assert_eq!(sel, ids, "the copies are selected");
+    assert_eq!(cmd_bounds(&s, id), orig, "the original stays");
+    assert_eq!(r["outside_area"], json!([]));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc().document.objects.len(), 1);
+}
+
+#[test]
+fn copies_in_a_grid_fill_rows_then_go_down() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = rect_at(&mut s, 30.0, 20.0, 10.0, 10.0);
+    let orig = cmd_bounds(&s, id);
+    let before = undo_len(&s);
+    let r = run(
+        &mut s,
+        "object.copies",
+        json!({ "id": id, "count": 5, "layout": { "grid": { "columns": 3 } }, "gap_mm": 2.0 }),
+    );
+    assert_eq!(undo_len(&s), before + 1);
+    let ids = ids_of(&r);
+    // The original is cell 0 of the grid.
+    let cells = [(1, 0), (2, 0), (0, 1), (1, 1), (2, 1)];
+    assert_eq!(ids.len(), cells.len());
+    for (c, (col, row)) in ids.iter().zip(cells) {
+        let b = cmd_bounds(&s, *c);
+        let (sx, sy) = (orig.width() + 2.0, orig.height() + 2.0);
+        assert!((b.x0 - (orig.x0 + col as f64 * sx)).abs() < EPS, "{b:?}");
+        assert!((b.y0 - (orig.y0 + row as f64 * sy)).abs() < EPS, "{b:?}");
+    }
+}
+
+#[test]
+fn copies_outside_the_cutting_area_are_added_and_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = rect_at(&mut s, 50.0, 50.0, 20.0, 20.0);
+    let r = run(&mut s, "object.copies", json!({ "id": id, "count": 6 }));
+    let ids = ids_of(&r);
+    assert_eq!(ids.len(), 6);
+    let outside: Vec<u64> = r["outside_area"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .collect();
+    // The cutting area ends at 299.8 mm: copies 5 and 6 start at 295 and 350.
+    assert_eq!(outside, ids[4..].to_vec(), "{r}");
+    let warnings = r["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{r}");
+    assert!(
+        warnings[0]
+            .as_str()
+            .unwrap()
+            .starts_with("2 copies are outside the cutting area"),
+        "{r}"
+    );
+}
+
+#[test]
+fn copies_refuse_bad_params_and_linked_copies() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 20.0, 20.0);
+    let before = undo_len(&s);
+    let e = s
+        .execute(
+            "object.copies",
+            json!({ "id": id, "count": 2, "linked": true }),
+            Origin::Agent,
+        )
+        .unwrap_err();
+    assert!(matches!(e, CommandError::Refused(_)), "{e}");
+    assert_eq!(
+        e.to_string(),
+        "Refused: Linked copies arrive with the next update."
+    );
+    // false is accepted.
+    run(
+        &mut s,
+        "object.copies",
+        json!({ "id": id, "count": 1, "linked": false }),
+    );
+    run(&mut s, "edit.undo", json!({}));
+    for params in [
+        json!({ "id": id, "count": 0 }),
+        json!({ "id": id, "count": 501 }),
+        json!({ "id": id, "count": 2, "gap_mm": -1.0 }),
+        json!({ "id": id, "count": 2, "layout": { "grid": { "columns": 0 } } }),
+        json!({ "id": id, "count": 2, "layout": { "grid": { "columns": 2, "rows": 2 } } }),
+        json!({ "id": id, "count": 2, "layout": "column" }),
+        json!({ "id": id, "count": 2, "spacing_mm": 3.0 }),
+    ] {
+        let e = s
+            .execute("object.copies", params.clone(), Origin::Agent)
+            .expect_err(&format!("{params}"));
+        assert!(matches!(e, CommandError::InvalidParams(_)), "{params}: {e}");
+    }
+    let e = s
+        .execute(
+            "object.copies",
+            json!({ "id": 999, "count": 2 }),
+            Origin::Agent,
+        )
+        .unwrap_err();
+    assert!(matches!(e, CommandError::NotFound(_)), "{e}");
+    assert_eq!(undo_len(&s), before);
+    assert_eq!(s.doc().document.objects.len(), 1);
+}
+
+#[test]
+fn copies_that_would_land_too_far_away_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 20.0, 20.0);
+    let before = undo_len(&s);
+    let e = s
+        .execute(
+            "object.copies",
+            json!({ "id": id, "count": 500, "gap_mm": 5000.0 }),
+            Origin::Agent,
+        )
+        .unwrap_err();
+    assert!(matches!(e, CommandError::Refused(_)), "{e}");
+    assert!(e.to_string().contains("1 km"), "{e}");
+    assert_eq!(undo_len(&s), before);
+    assert_eq!(s.doc().document.objects.len(), 1);
 }

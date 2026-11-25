@@ -132,6 +132,15 @@ pub(crate) fn placed_bounds_or_center(o: &Object) -> Rect {
         .unwrap_or_else(|| Rect::from_points(o.transform.center_mm, o.transform.center_mm))
 }
 
+/// True if `r` lies inside `area`, with a little slack for float noise.
+pub(crate) fn inside(r: Rect, area: Rect) -> bool {
+    const SLACK: f64 = 1e-6;
+    r.x0 >= area.x0 - SLACK
+        && r.y0 >= area.y0 - SLACK
+        && r.x1 <= area.x1 + SLACK
+        && r.y1 <= area.y1 + SLACK
+}
+
 pub(crate) fn translate(o: &mut Object, d: Vec2) {
     o.transform.center_mm += d;
 }

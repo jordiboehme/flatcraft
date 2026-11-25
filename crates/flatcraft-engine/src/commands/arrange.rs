@@ -1,4 +1,4 @@
-//! Arrange commands: align and automatic shelf packing.
+//! Arrange commands: align, distribute and automatic shelf packing.
 
 use flatcraft_core::document::{Object, ObjectId};
 use kurbo::{Point, Rect, Vec2};
@@ -6,22 +6,13 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{
-    command, cutting_area, ids_json, object_mut, placed_bounds, placed_bounds_or_center,
+    command, cutting_area, ids_json, inside, object_mut, placed_bounds, placed_bounds_or_center,
     resolve_ids, translate,
 };
 use crate::session::{CommandError, Origin, Session};
 
 /// Slack for float noise when testing whether something fits.
 const FIT_EPS: f64 = 1e-9;
-
-/// True if `r` lies inside `area`, with a little slack for float noise.
-fn inside(r: Rect, area: Rect) -> bool {
-    const SLACK: f64 = 1e-6;
-    r.x0 >= area.x0 - SLACK
-        && r.y0 >= area.y0 - SLACK
-        && r.x1 <= area.x1 + SLACK
-        && r.y1 <= area.y1 + SLACK
-}
 
 #[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -95,6 +86,91 @@ command!(
     params: AlignParams,
     run: run_align,
     description: "Aligns the bounding boxes of objects. mode: left, hcenter, right, top, vcenter or bottom. relative_to: selection (the common bounding box of the objects, default) or cutting_area (the mat's grid, minus a 5 mm safety margin while the mat is not calibrated; left puts objects at the left edge of that area). Origin the 0,0 of the grid printed on the mat, y down, units mm. An empty ids list means the current selection. Returns {ids}.",
+);
+
+#[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DistributeAxis {
+    /// Left to right, along x.
+    Horizontal,
+    /// Top to bottom, along y (down).
+    Vertical,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DistributeParams {
+    /// Object ids, at least 3; empty means the current selection.
+    #[serde(default)]
+    pub ids: Vec<u64>,
+    /// The direction to spread the objects in.
+    pub axis: DistributeAxis,
+}
+
+/// The start and end of `r` on `axis`.
+fn span(r: Rect, axis: DistributeAxis) -> (f64, f64) {
+    match axis {
+        DistributeAxis::Horizontal => (r.x0, r.x1),
+        DistributeAxis::Vertical => (r.y0, r.y1),
+    }
+}
+
+fn run_distribute(s: &mut Session, p: DistributeParams, _: Origin) -> Result<Value, CommandError> {
+    let from_selection = p.ids.is_empty();
+    let ids = resolve_ids(s, &p.ids)?;
+    if ids.len() < 3 {
+        let have = if from_selection {
+            format!("{} are selected", ids.len())
+        } else {
+            format!("got {}", ids.len())
+        };
+        return Err(CommandError::InvalidParams(format!(
+            "Distribute needs at least 3 objects, {have}."
+        )));
+    }
+    let doc = &s.doc().document;
+    let mut items: Vec<(ObjectId, f64, f64)> = Vec::with_capacity(ids.len());
+    for id in &ids {
+        let o = doc
+            .get(*id)
+            .ok_or_else(|| CommandError::NotFound(format!("no object with id {}", id.0)))?;
+        let (lo, hi) = span(placed_bounds_or_center(o), p.axis);
+        items.push((*id, lo, hi));
+    }
+    // Stable: equal centres keep the given order.
+    items.sort_by(|a, b| (a.1 + a.2).total_cmp(&(b.1 + b.2)));
+    let n = items.len();
+    let (start, end) = (items[0].1, items[n - 1].2);
+    let total: f64 = items.iter().map(|(_, lo, hi)| hi - lo).sum();
+    let gap = (end - start - total) / (n - 1) as f64;
+    let doc = &mut s.doc_mut().document;
+    // Each start from the fixed first object, never from the previous
+    // move, so rounding does not add up. The ends do not move at all.
+    let mut before = 0.0;
+    for (k, (id, lo, hi)) in items.iter().enumerate() {
+        if k > 0 && k < n - 1 {
+            let target = start + before + k as f64 * gap;
+            let d = target - lo;
+            let d = match p.axis {
+                DistributeAxis::Horizontal => Vec2::new(d, 0.0),
+                DistributeAxis::Vertical => Vec2::new(0.0, d),
+            };
+            translate(object_mut(doc, *id)?, d);
+        }
+        before += hi - lo;
+    }
+    let order: Vec<ObjectId> = items.iter().map(|(id, _, _)| *id).collect();
+    Ok(json!({ "ids": ids_json(&order), "gap_mm": gap }))
+}
+
+command!(
+    ArrangeDistribute,
+    id: "arrange.distribute",
+    title: "Distribute",
+    mutates: true,
+    params: DistributeParams,
+    run: run_distribute,
+    description: "Spreads 3 or more objects so the gaps between neighbouring bounding boxes are equal. axis: horizontal (left to right, along x) or vertical (top to bottom, along y down). The objects are ordered by the centre of their bounding box on that axis; equal centres keep the order of ids (for the selection, that is id order). The first and the last object stay where they are, the others move only along the axis. If the objects together are longer than the span, the gaps are negative and they overlap evenly. Units mm, origin the 0,0 of the grid printed on the mat. An empty ids list means the current selection. Refuses fewer than 3 objects. Returns {ids (in the new order), gap_mm}.",
 );
 
 /// Moves `o` by `d` if it then lies inside `area`. Otherwise it stays
