@@ -678,7 +678,7 @@ fn trace_button_opens_the_dialog_and_apply_retraces() {
     to_prepare(&mut h);
     let before = undo_len(&s);
     // Trace opens the dialog; Apply is one retrace.
-    h.get_by_role_and_label(Role::Button, "Trace...").click();
+    h.get_by_role_and_label(Role::Button, "Trace").click();
     h.run_steps(3);
     assert!(app(&h).ui.trace.is_some());
     assert_eq!(undo_len(&s), before);
@@ -1533,10 +1533,10 @@ fn copies_opens_the_rectangular_pattern_panel_and_ok_is_one_step() {
     to_prepare(&mut h);
     select(&s, &[a, b]);
     h.run();
-    assert!(disabled(&h, "Copies..."), "one object at a time");
+    assert!(disabled(&h, "Copies"), "one object at a time");
     select(&s, &[a]);
     h.run();
-    h.get_by_role_and_label(Role::Button, "Copies...").click();
+    h.get_by_role_and_label(Role::Button, "Copies").click();
     h.run();
     assert_eq!(panel_kind(&h), Some(PanelKind::RectangularPattern));
     assert!(
@@ -1578,7 +1578,7 @@ fn panels_remember_the_last_values_that_ran() {
     select(&s, &[a]);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    h.get_by_role_and_label(Role::Button, "Copies...").click();
+    h.get_by_role_and_label(Role::Button, "Copies").click();
     h.run();
     {
         let r = &mut values(&mut h).rect;
@@ -1590,7 +1590,7 @@ fn panels_remember_the_last_values_that_ran() {
     click_ok(&mut h);
     select(&s, &[a]);
     h.run();
-    h.get_by_role_and_label(Role::Button, "Copies...").click();
+    h.get_by_role_and_label(Role::Button, "Copies").click();
     h.run();
     let r = values(&mut h).rect.clone();
     assert_eq!(
@@ -1602,7 +1602,7 @@ fn panels_remember_the_last_values_that_ran() {
     h.get_by_role_and_label(Role::Button, &cancel_name())
         .click();
     h.run();
-    h.get_by_role_and_label(Role::Button, "Copies...").click();
+    h.get_by_role_and_label(Role::Button, "Copies").click();
     h.run();
     assert_eq!(values(&mut h).rect.columns, 2);
 }
@@ -1981,7 +1981,7 @@ fn rectangular_panel_previews_exactly_what_ok_makes() {
     select(&s, &[a]);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    h.get_by_role_and_label(Role::Button, "Copies...").click();
+    h.get_by_role_and_label(Role::Button, "Copies").click();
     h.run();
     {
         let r = &mut values(&mut h).rect;
@@ -2140,7 +2140,7 @@ fn rectangular_pattern_makes_linked_copies() {
     select(&s, &[a]);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    h.get_by_role_and_label(Role::Button, "Copies...").click();
+    h.get_by_role_and_label(Role::Button, "Copies").click();
     h.run();
     {
         let r = &mut values(&mut h).rect;
@@ -2169,7 +2169,7 @@ fn rectangular_pattern_makes_linked_copies() {
     // The switch is remembered with the other values.
     select(&s, &[a]);
     h.run();
-    h.get_by_role_and_label(Role::Button, "Copies...").click();
+    h.get_by_role_and_label(Role::Button, "Copies").click();
     h.run();
     assert!(values(&mut h).rect.linked);
 }

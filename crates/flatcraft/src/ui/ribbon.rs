@@ -14,6 +14,7 @@ use super::icons::Icon;
 use super::prepare::{PrepareState, RibbonTab, Snapshot};
 use super::rails::SidePanel;
 use super::settings::set_name;
+use super::theme::Tokens;
 use super::tools::{self, GroupId, Setting, Tool};
 
 /// A toggle with an icon and a text, with its name as its tooltip (the
@@ -350,15 +351,79 @@ fn search_box(ui: &mut Ui, cx: &mut Cx) {
     }
 }
 
-fn tabs(ui: &mut Ui, st: &mut PrepareState) {
+/// Height of the tab row above the ribbon panel.
+pub const TAB_ROW: f32 = 24.0;
+/// Room between the ribbon panel's border and its tools.
+pub const PANEL_PAD: egui::Vec2 = egui::vec2(6.0, 4.0);
+
+/// Where the ribbon drew its parts, for the tests and the next frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Layout {
+    pub tab_row: egui::Rect,
+    /// The active tab, as painted (it reaches into the panel's border).
+    pub active_tab: egui::Rect,
+    /// The ribbon panel under the tabs.
+    pub panel: egui::Rect,
+    /// The tools row inside the panel.
+    pub tools: egui::Rect,
+}
+
+/// The tabs: quiet text on the tab bar, and the active one a folder tab
+/// in the ribbon panel's colour that opens into the panel. Returns the
+/// active tab's rect.
+fn tabs(ui: &mut Ui, st: &mut PrepareState, t: &Tokens) -> egui::Rect {
+    ui.spacing_mut().item_spacing.x = 2.0;
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let mut active = egui::Rect::NOTHING;
     for tab in RibbonTab::ALL {
         let on = st.tab == tab;
-        let r = ui.add(egui::Button::selectable(on, tab.name()));
+        let galley = ui
+            .painter()
+            .layout_no_wrap(tab.name().to_string(), font.clone(), t.text);
+        let size = egui::vec2(galley.size().x + 24.0, TAB_ROW - 3.0);
+        let (rect, r) = ui.allocate_exact_size(size, egui::Sense::click());
         r.widget_info(|| WidgetInfo::selected(Role::Tab, true, on, tab.name()));
+        let radius = egui::CornerRadius {
+            nw: t.ribbon_radius,
+            ne: t.ribbon_radius,
+            sw: 0,
+            se: 0,
+        };
+        let painter = ui.painter();
+        if on {
+            // One pixel lower: it covers the panel's top border under it.
+            let tab_rect = rect.with_max_y(rect.bottom() + 1.0);
+            painter.rect_filled(tab_rect, radius, t.panel);
+            let stroke = egui::Stroke::new(1.0, t.border);
+            let (l, r_, top, bottom) = (
+                tab_rect.left() + 0.5,
+                tab_rect.right() - 0.5,
+                tab_rect.top() + 0.5,
+                tab_rect.bottom(),
+            );
+            painter.line_segment([egui::pos2(l, bottom), egui::pos2(l, top)], stroke);
+            painter.line_segment([egui::pos2(l, top), egui::pos2(r_, top)], stroke);
+            painter.line_segment([egui::pos2(r_, top), egui::pos2(r_, bottom)], stroke);
+            active = tab_rect;
+        } else if r.hovered() || r.has_focus() {
+            painter.rect_filled(rect, radius, t.surface.gamma_multiply(0.6));
+        }
+        let color = if on || r.hovered() {
+            t.text
+        } else {
+            t.text_dim
+        };
+        let galley = ui
+            .painter()
+            .layout_no_wrap(tab.name().to_string(), font.clone(), color);
+        ui.painter()
+            .galley(rect.center() - galley.size() / 2.0, galley, color);
+        let r = r.on_hover_cursor(egui::CursorIcon::PointingHand);
         if r.clicked() {
             st.tab = tab;
         }
     }
+    active
 }
 
 fn mm(v: f64) -> String {
@@ -391,45 +456,94 @@ pub fn show(
     };
     // Small corners and tight padding, so the groups use their room.
     super::theme::tight(ui.style_mut());
+    let t = Tokens::of(ui.visuals());
     let full = ui.available_rect_before_wrap();
+    let tab_row = egui::Rect::from_min_size(full.min, egui::vec2(full.width(), TAB_ROW));
+    // The panel is painted first, under the active tab, once its height
+    // is known.
+    let panel_shape = ui.painter().add(egui::Shape::Noop);
     let search = ui
         .scope_builder(
             egui::UiBuilder::new()
-                .max_rect(full)
-                .layout(egui::Layout::right_to_left(egui::Align::Min)),
+                .max_rect(tab_row.with_max_y(tab_row.bottom() - 2.0))
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
             |ui| search_box(ui, &mut cx),
         )
         .response
         .rect;
     let gap = ui.spacing().item_spacing.x;
-    let tab_row = egui::Rect::from_min_max(
-        full.min,
-        egui::pos2((search.left() - gap).max(full.left()), full.bottom()),
+    let tabs_rect = egui::Rect::from_min_max(
+        egui::pos2(full.left() + 2.0, tab_row.top()),
+        egui::pos2((search.left() - gap).max(full.left()), tab_row.bottom()),
     );
-    let tabs_rect = ui
+    let active_tab = ui
         .scope_builder(
             egui::UiBuilder::new()
-                .max_rect(tab_row)
+                .max_rect(tabs_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Max)),
+            |ui| tabs(ui, cx.st, &t),
+        )
+        .inner;
+    let tools_rect = egui::Rect::from_min_max(
+        egui::pos2(full.left() + PANEL_PAD.x, tab_row.bottom() + PANEL_PAD.y),
+        egui::pos2(full.right() - PANEL_PAD.x, full.bottom()),
+    );
+    let tools = ui
+        .scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(tools_rect)
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
-            |ui| tabs(ui, cx.st),
+            |ui| {
+                // As tall on every tab, so the ribbon does not jump.
+                ui.set_min_height(groups::ROW_HEIGHT);
+                let tab = cx.st.tab;
+                let bar = bar_groups(ui, tab);
+                let sig = signature(tab, &cx);
+                collapse::show(ui, bar_id(), sig, groups::ROW_HEIGHT, &bar, &mut cx);
+            },
         )
         .response
         .rect;
-    let top = tabs_rect.bottom().max(search.bottom()) + ui.spacing().item_spacing.y;
-    let tools_rect = egui::Rect::from_min_max(egui::pos2(full.left(), top), full.max);
-    ui.scope_builder(
-        egui::UiBuilder::new()
-            .max_rect(tools_rect)
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-        |ui| {
-            // As tall on every tab, so the ribbon does not jump.
-            ui.set_min_height(groups::ROW_HEIGHT);
-            let tab = cx.st.tab;
-            let bar = bar_groups(ui, tab);
-            let sig = signature(tab, &cx);
-            collapse::show(ui, bar_id(), sig, groups::ROW_HEIGHT, &bar, &mut cx);
-        },
+    let tools = egui::Rect::from_min_size(
+        tools.min,
+        egui::vec2(tools_rect.width(), groups::ROW_HEIGHT),
     );
+    let panel = egui::Rect::from_min_max(
+        egui::pos2(full.left(), tab_row.bottom()),
+        egui::pos2(full.right(), tools.bottom() + PANEL_PAD.y),
+    );
+    ui.painter().set(
+        panel_shape,
+        egui::Shape::rect_filled(panel, t.ribbon_radius, t.panel),
+    );
+    // The border, but not under the active tab, which opens into it.
+    let stroke = egui::Stroke::new(1.0, t.border);
+    let p = ui.painter();
+    let top = panel.top() + 0.5;
+    let (l, r) = (panel.left() + 0.5, panel.right() - 0.5);
+    let b = panel.bottom() - 0.5;
+    p.line_segment([egui::pos2(l, top), egui::pos2(l, b)], stroke);
+    p.line_segment([egui::pos2(l, b), egui::pos2(r, b)], stroke);
+    p.line_segment([egui::pos2(r, b), egui::pos2(r, top)], stroke);
+    if active_tab.is_positive() {
+        p.line_segment(
+            [egui::pos2(l, top), egui::pos2(active_tab.left(), top)],
+            stroke,
+        );
+        p.line_segment(
+            [egui::pos2(active_tab.right(), top), egui::pos2(r, top)],
+            stroke,
+        );
+    } else {
+        p.line_segment([egui::pos2(l, top), egui::pos2(r, top)], stroke);
+    }
+    ui.advance_cursor_after_rect(panel.union(tab_row));
+    cx.st.ribbon_layout = Some(Layout {
+        tab_row,
+        active_tab,
+        panel,
+        tools,
+    });
 }
 
 /// What the widths of the groups depend on, besides the window: the tab,
@@ -545,9 +659,9 @@ pub(crate) fn reload_action(doc_id: u64, ids: Vec<u64>) -> Action {
 }
 
 /// A switch that is not an action ("Keep aspect", "Each object"): a
-/// checkbox with its text, or an icon toggle when the ribbon is short.
-/// Either way it is a checkbox named `text` with its state, and its card
-/// says what it does (and why it is dimmed).
+/// compact button with its icon, and its text while the ribbon has room.
+/// It is a checkbox named `text` with its state, and its card says what
+/// it does (and why it is dimmed).
 fn switch(
     ui: &mut Ui,
     mode: Mode,
@@ -558,19 +672,13 @@ fn switch(
     why: Option<&str>,
 ) -> egui::Response {
     let enabled = why.is_none();
-    let resp = match mode {
-        Mode::Icons | Mode::Collapsed => {
-            let mut r = groups::wide_button(ui, Mode::Icons, icon, text, enabled, Some(*on));
-            if r.clicked() {
-                // Like a checkbox: the caller sees the change.
-                *on = !*on;
-                r.mark_changed();
-            }
-            r
-        }
-        Mode::Full | Mode::List => ui.add_enabled(enabled, egui::Checkbox::new(on, text)),
-    };
-    resp.widget_info(|| WidgetInfo::selected(Role::CheckBox, enabled, *on, text));
+    let label = matches!(mode, Mode::Full | Mode::List);
+    let mut resp = groups::compact_switch(ui, icon, text, label, enabled, *on);
+    if resp.clicked() {
+        // Like a checkbox: the caller sees the change.
+        *on = !*on;
+        resp.mark_changed();
+    }
     groups::card(&resp, text, setting.card(), why, false);
     resp
 }
@@ -581,14 +689,10 @@ fn size_group(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
     let def = GroupId::Size.def();
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = groups::GROUP_GAP;
-        let top = ui
-            .horizontal(|ui| {
-                ui.set_min_height(groups::BIG_HEIGHT);
-                size_wh(ui, cx);
-                size_rest(ui, mode, cx);
-            })
-            .response
-            .rect;
+        let top = groups::pins_row(ui, |ui| {
+            size_wh(ui, cx);
+            size_rest(ui, mode, cx);
+        });
         // Its title, like a group button, but nothing to open.
         let (rect, resp) = ui.allocate_exact_size(
             egui::vec2(top.width(), groups::GROUP_BUTTON_HEIGHT),

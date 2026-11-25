@@ -215,8 +215,6 @@ pub enum Act {
 /// How a pinned action looks on the ribbon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Style {
-    /// Icon and text in one row (icon-only when the ribbon is short).
-    Wide,
     /// A 24 pt icon above a small label.
     Big,
     /// A small icon button, in one or two rows.
@@ -315,7 +313,7 @@ const fn align(
 use AlignMode as M;
 use AlignTo::{Area, Selection};
 use GroupId as G;
-use Style::{Big, Small, Wide};
+use Style::{Big, Small};
 
 /// Every action, in the order of the ribbon and of the lists. The ids are
 /// `flatcraft_engine::prefs::RIBBON_PIN_IDS`, in the same order.
@@ -326,7 +324,7 @@ pub const TOOLS: [Tool; 38] = [
         "Import...",
         Icon::Import,
         G::Add,
-        Wide,
+        Big,
         "Bring a design or a picture onto the mat. A design is an SVG file, the drawing format most design apps save. A picture gets traced into cut lines.",
     ),
     tool(
@@ -335,7 +333,7 @@ pub const TOOLS: [Tool; 38] = [
         "Trace...",
         Icon::Trace,
         G::Add,
-        Wide,
+        Big,
         "Turn the selected picture into cut lines with your own settings. Tracing follows the edges between dark and light.",
     ),
     tool(
@@ -344,7 +342,7 @@ pub const TOOLS: [Tool; 38] = [
         "Test patterns",
         Icon::TestPatterns,
         G::Add,
-        Wide,
+        Big,
         "Add the test sheet: small shapes that show how well blade and settings cut. Cut it first on a new machine or material.",
     ),
     tool(
@@ -353,7 +351,7 @@ pub const TOOLS: [Tool; 38] = [
         "Duplicate",
         Icon::Duplicate,
         G::Edit,
-        Wide,
+        Big,
         "Make one copy of the selection, a little to the side.",
     ),
     tool(
@@ -362,7 +360,7 @@ pub const TOOLS: [Tool; 38] = [
         "Copies...",
         Icon::Copies,
         G::Edit,
-        Wide,
+        Big,
         "Many copies of one object in columns and rows. It opens the Rectangular pattern panel.",
     ),
     tool(
@@ -371,7 +369,7 @@ pub const TOOLS: [Tool; 38] = [
         "Delete",
         Icon::Delete,
         G::Edit,
-        Wide,
+        Big,
         "Remove the selection from the mat. Undo brings it back.",
     ),
     tool(
@@ -380,7 +378,7 @@ pub const TOOLS: [Tool; 38] = [
         "Reload",
         Icon::Reload,
         G::Files,
-        Wide,
+        Big,
         "Read the linked files again after you changed them in another app. Works on the selection, or on every linked object when nothing is selected.",
     ),
     tool(
@@ -605,7 +603,7 @@ pub const TOOLS: [Tool; 38] = [
         "Zoom to fit",
         Icon::ZoomFit,
         G::Zoom,
-        Wide,
+        Big,
         "Show the whole mat in the window.",
     ),
     tool(
@@ -614,7 +612,7 @@ pub const TOOLS: [Tool; 38] = [
         "Zoom 100%",
         Icon::ZoomActual,
         G::Zoom,
-        Wide,
+        Big,
         "About real size on a typical screen, to judge how big a design really is.",
     ),
     tool(
@@ -623,7 +621,7 @@ pub const TOOLS: [Tool; 38] = [
         "Grid",
         Icon::Grid,
         G::Show,
-        Wide,
+        Big,
         "Show the grid printed on the mat, to place things by eye.",
     ),
     tool(
@@ -632,7 +630,7 @@ pub const TOOLS: [Tool; 38] = [
         "Rulers",
         Icon::Ruler,
         G::Show,
-        Wide,
+        Big,
         "Show rulers in millimetres along the edges of the canvas.",
     ),
     tool(
@@ -641,7 +639,7 @@ pub const TOOLS: [Tool; 38] = [
         "Objects panel",
         Icon::PanelLeft,
         G::Panels,
-        Wide,
+        Big,
         "The list of everything on the mat. Hide, skip, rename or pick objects there.",
     ),
     tool(
@@ -650,7 +648,7 @@ pub const TOOLS: [Tool; 38] = [
         "Settings panel",
         Icon::PanelRight,
         G::Panels,
-        Wide,
+        Big,
         "What is cut and how: cut mode, plotter, mat, material, speed and force.",
     ),
     tool(
@@ -659,7 +657,7 @@ pub const TOOLS: [Tool; 38] = [
         "Debug panel",
         Icon::Debug,
         G::Panels,
-        Wide,
+        Big,
         "For the curious: what the app planned and what goes to the plotter. You do not need it to cut.",
     ),
 ];

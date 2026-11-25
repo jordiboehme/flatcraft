@@ -222,11 +222,11 @@ fn the_default_pins_are_the_buttons_the_ribbon_had() {
         (
             "Home",
             &[
-                "Import...",
-                "Trace...",
+                "Import",
+                "Trace",
                 "Test patterns",
                 "Duplicate",
-                "Copies...",
+                "Copies",
                 "Delete",
                 "Reload",
             ][..],

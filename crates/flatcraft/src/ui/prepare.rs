@@ -229,6 +229,9 @@ pub struct PrepareState {
     pub context: Option<Vec<u64>>,
     /// The open Rename dialog.
     pub rename: Option<RenameDialog>,
+    /// Where the ribbon drew its tab row, its panel and its tools row,
+    /// last frame (see `ribbon::show`).
+    pub ribbon_layout: Option<super::ribbon::Layout>,
 }
 
 /// The Rename dialog: its object and the name typed so far.
@@ -298,6 +301,7 @@ impl Default for PrepareState {
             popup_was_open: false,
             context: None,
             rename: None,
+            ribbon_layout: None,
         }
     }
 }

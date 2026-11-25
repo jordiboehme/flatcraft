@@ -1,6 +1,6 @@
 //! A group of the ribbon, drawn from the table in [`super::tools`].
 //!
-//! A group shows its pinned actions as buttons (big, small or wide, see
+//! A group shows its pinned actions as buttons (big or small, see
 //! [`Style`]) and its inline settings, and under them a group button as
 //! wide as the group, with the group's title and a chevron. The group
 //! button opens the group's list: every action with its icon, title and
@@ -119,6 +119,7 @@ fn image(ui: &Ui, icon: Icon, size: f32) -> egui::Image<'static> {
 /// A big ribbon button: a 24 pt icon above a small label (only the icon
 /// when `show_label` is off), [`BIG_HEIGHT`] tall. Its accessible name is
 /// `name`. A dimmed one (`enabled` off) does nothing when clicked.
+/// `selected` makes it a toggle that shows whether it is on.
 pub fn big_button(
     ui: &mut Ui,
     icon: Icon,
@@ -126,6 +127,7 @@ pub fn big_button(
     name: &str,
     show_label: bool,
     enabled: bool,
+    selected: Option<bool>,
 ) -> Response {
     const ICON: f32 = 24.0;
     ui.add_enabled_ui(enabled, |ui| {
@@ -142,18 +144,13 @@ pub fn big_button(
         let (rect, resp) =
             ui.allocate_exact_size(egui::vec2(width, BIG_HEIGHT), egui::Sense::click());
         let on = ui.is_enabled();
-        resp.widget_info(|| egui::WidgetInfo::labeled(egui::accesskit::Role::Button, on, name));
+        resp.widget_info(|| match selected {
+            Some(sel) => egui::WidgetInfo::selected(egui::accesskit::Role::Button, on, sel, name),
+            None => egui::WidgetInfo::labeled(egui::accesskit::Role::Button, on, name),
+        });
         if ui.is_rect_visible(rect) {
             let visuals = ui.style().interact(&resp);
-            if resp.hovered() || resp.has_focus() {
-                ui.painter().rect(
-                    rect,
-                    visuals.corner_radius,
-                    visuals.weak_bg_fill,
-                    visuals.bg_stroke,
-                    egui::StrokeKind::Inside,
-                );
-            }
+            paint_state(ui, rect, &resp, selected, on);
             let icon_y = if show_label {
                 rect.top() + 4.0 + ICON / 2.0
             } else {
@@ -170,6 +167,96 @@ pub fn big_button(
                 rect.bottom() - 4.0 - galley.size().y,
             );
             ui.painter().galley(at, galley, visuals.text_color());
+        }
+        resp
+    })
+    .inner
+}
+
+/// The background of a custom ribbon button: the hover fill, and the
+/// selection fill of a toggle that is on. A dimmed toggle that is on gets
+/// only a faint fill, so it does not look active.
+fn paint_state(ui: &Ui, rect: egui::Rect, resp: &Response, selected: Option<bool>, enabled: bool) {
+    let visuals = ui.style().interact(resp);
+    let sel = &ui.visuals().selection;
+    if selected == Some(true) {
+        let fill = if enabled {
+            sel.bg_fill
+        } else {
+            sel.bg_fill.gamma_multiply(0.3)
+        };
+        let stroke = if enabled {
+            sel.stroke
+        } else {
+            egui::Stroke::NONE
+        };
+        ui.painter().rect(
+            rect,
+            visuals.corner_radius,
+            fill,
+            stroke,
+            egui::StrokeKind::Inside,
+        );
+    } else if resp.hovered() || resp.has_focus() {
+        ui.painter().rect(
+            rect,
+            visuals.corner_radius,
+            visuals.weak_bg_fill,
+            visuals.bg_stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
+/// Height of a compact button: two of them, or a row of small buttons,
+/// stack inside [`BIG_HEIGHT`].
+pub const COMPACT_HEIGHT: f32 = 22.0;
+
+/// A compact switch ("Each object", "Keep aspect"): a 16 pt icon, with
+/// its label at its right when `show_label` is on. It is a checkbox named
+/// `name` with its state, so it reads as a switch to a screen reader.
+pub fn compact_switch(
+    ui: &mut Ui,
+    icon: Icon,
+    name: &str,
+    show_label: bool,
+    enabled: bool,
+    on: bool,
+) -> Response {
+    ui.add_enabled_ui(enabled, |ui| {
+        let font = egui::TextStyle::Small.resolve(ui.style());
+        let text = if show_label { name } else { "" };
+        let galley =
+            ui.painter()
+                .layout_no_wrap(text.to_string(), font, egui::Color32::PLACEHOLDER);
+        let pad = 4.0;
+        let width = if show_label {
+            pad + SMALL_ICON + pad + galley.size().x + pad + 2.0
+        } else {
+            SMALL_ICON + 2.0 * pad
+        };
+        let (rect, resp) =
+            ui.allocate_exact_size(egui::vec2(width, COMPACT_HEIGHT), egui::Sense::click());
+        let live = ui.is_enabled();
+        resp.widget_info(|| {
+            egui::WidgetInfo::selected(egui::accesskit::Role::CheckBox, live, on, name)
+        });
+        if ui.is_rect_visible(rect) {
+            let visuals = ui.style().interact(&resp);
+            paint_state(ui, rect, &resp, Some(on), live);
+            let icon_rect = egui::Rect::from_center_size(
+                egui::pos2(rect.left() + pad + SMALL_ICON / 2.0, rect.center().y),
+                egui::Vec2::splat(SMALL_ICON),
+            );
+            image(ui, icon, SMALL_ICON).paint_at(ui, icon_rect);
+            ui.painter().galley(
+                egui::pos2(
+                    icon_rect.right() + pad,
+                    rect.center().y - galley.size().y / 2.0,
+                ),
+                galley,
+                visuals.text_color(),
+            );
         }
         resp
     })
@@ -345,16 +432,12 @@ pub fn show(ui: &mut Ui, mode: Mode, group: GroupId, extras: Extras, cx: &mut Cx
     } else {
         let inner = ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = GROUP_GAP;
-            let top = ui
-                .horizontal(|ui| {
-                    ui.set_min_height(BIG_HEIGHT);
-                    pinned_buttons(ui, mode, &pins, cx);
-                    if let Some(inline) = extras.inline {
-                        inline(ui, mode, cx);
-                    }
-                })
-                .response
-                .rect;
+            let top = pins_row(ui, |ui| {
+                pinned_buttons(ui, mode, &pins, cx);
+                if let Some(inline) = extras.inline {
+                    inline(ui, mode, cx);
+                }
+            });
             group_button(ui, def, top.width())
         });
         inner.inner
@@ -388,22 +471,30 @@ pub fn show(ui: &mut Ui, mode: Mode, group: GroupId, extras: Extras, cx: &mut Cx
         });
 }
 
-/// The pinned actions: wide buttons, then big ones, then the small ones in
-/// one row, or two when there are more than three.
+/// A row [`BIG_HEIGHT`] tall whose widgets are centred in it, from the
+/// left. Returns the rect it used.
+pub fn pins_row(ui: &mut Ui, add: impl FnOnce(&mut Ui)) -> egui::Rect {
+    let width = ui.available_width();
+    let r = ui.allocate_ui_with_layout(
+        egui::vec2(width, BIG_HEIGHT),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_height(BIG_HEIGHT);
+            add(ui);
+        },
+    );
+    r.response.rect
+}
+
+/// The pinned actions: big buttons, then the small ones in one row, or
+/// two when there are more than three. Every action of every tab looks the
+/// same way, so a group's pins fill the row's height.
 fn pinned_buttons(ui: &mut Ui, mode: Mode, pins: &[&'static Tool], cx: &mut Cx) {
-    for t in pins.iter().filter(|t| t.style == Style::Wide) {
-        let on = t.blocked(cx.snap).is_none();
-        let sel = t.selected(cx.st, *cx.show_debug);
-        let r = wide_button(ui, mode, t.icon, &t.button_name(), on, sel);
-        tool_card(&r, t, cx.snap, false);
-        if r.clicked() {
-            t.run(cx.snap, cx.st, cx.show_debug, cx.actions);
-        }
-    }
     for t in pins.iter().filter(|t| t.style == Style::Big) {
         let on = t.blocked(cx.snap).is_none();
+        let sel = t.selected(cx.st, *cx.show_debug);
         let name = t.button_name();
-        let r = big_button(ui, t.icon, &name, &name, mode == Mode::Full, on);
+        let r = big_button(ui, t.icon, &name, &name, mode == Mode::Full, on, sel);
         tool_card(&r, t, cx.snap, false);
         if r.clicked() {
             t.run(cx.snap, cx.st, cx.show_debug, cx.actions);

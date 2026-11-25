@@ -23,17 +23,18 @@ pub fn ribbon(
 ) {
     let t = app.tokens;
     egui::Panel::top("flatcraft-ribbon")
-        .frame(
-            egui::Frame::new()
-                .fill(t.panel)
-                .inner_margin(egui::Margin::same(t.spacing as i8)),
-        )
+        .frame(egui::Frame::new().fill(t.rail).inner_margin(egui::Margin {
+            left: t.spacing as i8,
+            right: t.spacing as i8,
+            top: (t.spacing / 2.0) as i8,
+            bottom: (t.spacing / 2.0) as i8,
+        }))
+        .show_separator_line(false)
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 switcher(ui, app, actions);
                 match (snap, app.ui.workspace) {
                     (Some(snap), Workspace::Prepare) => {
-                        ui.separator();
                         super::ribbon::show(
                             ui,
                             &mut app.ui.prepare,
@@ -43,8 +44,20 @@ pub fn ribbon(
                         );
                     }
                     (Some(_), Workspace::Cut) => {
-                        ui.separator();
-                        super::cut::stage_bar(ui, &mut app.ui.cut, &mut app.ui.show_debug, &t);
+                        // The same panel as the ribbon's, without tabs.
+                        egui::Frame::new()
+                            .fill(t.panel)
+                            .stroke(egui::Stroke::new(1.0, t.border))
+                            .corner_radius(t.ribbon_radius)
+                            .inner_margin(egui::Margin::symmetric(6, 4))
+                            .show(ui, |ui| {
+                                super::cut::stage_bar(
+                                    ui,
+                                    &mut app.ui.cut,
+                                    &mut app.ui.show_debug,
+                                    &t,
+                                );
+                            });
                     }
                     _ => {}
                 }

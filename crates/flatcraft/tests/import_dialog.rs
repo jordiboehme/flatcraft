@@ -85,7 +85,7 @@ fn stored_settings(s: &SharedSession, id: u64) -> TraceSettings {
 /// Clicks Trace. The preview worker repaints the window when it is done,
 /// so this steps a fixed number of frames instead of `run`.
 fn click_trace(h: &mut AppHarness) {
-    h.get_by_role_and_label(Role::Button, "Trace...").click();
+    h.get_by_role_and_label(Role::Button, "Trace").click();
     h.run_steps(3);
     assert!(app(h).ui.trace.is_some(), "the Trace dialog did not open");
 }
@@ -334,7 +334,7 @@ fn trace_needs_exactly_one_image() {
     import_square(&s);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    h.get_by_role_and_label(Role::Button, "Trace...").click();
+    h.get_by_role_and_label(Role::Button, "Trace").click();
     h.run();
     assert!(app(&h).ui.trace.is_none(), "an SVG cannot be traced");
 }
@@ -350,7 +350,7 @@ fn import_uses_the_file_picker() {
     let picker = FakePicker::answering([svg]);
     let mut h = harness_with(&dir, s.clone(), |a| a.with_file_picker(picker.clone()));
     to_prepare(&mut h);
-    h.get_by_role_and_label(Role::Button, "Import...").click();
+    h.get_by_role_and_label(Role::Button, "Import").click();
     h.run();
     assert_eq!(s.lock().unwrap().doc().document.objects.len(), 1);
     let reqs = picker.requests.lock().unwrap();

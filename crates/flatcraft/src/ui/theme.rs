@@ -11,8 +11,11 @@ pub struct Tokens {
     pub panel: Color32,
     /// Cards, buttons and fields on top of a panel.
     pub surface: Color32,
-    /// The collapsed side panels' rails, recessed against the panels.
+    /// The collapsed side panels' rails, recessed against the panels. The
+    /// title bar and the ribbon's tab bar use it too.
     pub rail: Color32,
+    /// The thin line around the ribbon panel and its active tab.
+    pub border: Color32,
     pub text: Color32,
     pub text_dim: Color32,
     /// Teal, the colour of the Prepare workspace.
@@ -46,6 +49,7 @@ impl Tokens {
             panel: Color32::from_rgb(0x1D, 0x20, 0x24),
             surface: Color32::from_rgb(0x27, 0x2B, 0x30),
             rail: Color32::from_rgb(0x17, 0x19, 0x1D),
+            border: Color32::from_rgb(0x2E, 0x33, 0x39),
             text: Color32::from_rgb(0xE6, 0xE8, 0xEB),
             text_dim: Color32::from_rgb(0x9A, 0xA1, 0xAB),
             accent_prepare: Color32::from_rgb(0x2B, 0xB3, 0xA3),
@@ -70,6 +74,7 @@ impl Tokens {
             panel: Color32::from_rgb(0xFF, 0xFF, 0xFF),
             surface: Color32::from_rgb(0xE9, 0xEC, 0xEF),
             rail: Color32::from_rgb(0xEE, 0xF1, 0xF1),
+            border: Color32::from_rgb(0xD5, 0xDA, 0xDE),
             text: Color32::from_rgb(0x1B, 0x1E, 0x22),
             text_dim: Color32::from_rgb(0x5E, 0x66, 0x70),
             accent_prepare: Color32::from_rgb(0x2B, 0xB3, 0xA3),
@@ -98,6 +103,15 @@ impl Tokens {
         match (theme, system) {
             (Theme::Light, _) | (Theme::System, Some(egui::Theme::Light)) => Self::light(),
             (Theme::Dark, _) | (Theme::System, _) => Self::dark(),
+        }
+    }
+
+    /// The tokens of the theme `visuals` belong to.
+    pub fn of(visuals: &Visuals) -> Self {
+        if visuals.dark_mode {
+            Self::dark()
+        } else {
+            Self::light()
         }
     }
 
@@ -181,11 +195,7 @@ fn install(ctx: &egui::Context, t: &Tokens) -> egui::Theme {
 /// The ribbon's tighter look: small corners and less padding, so the
 /// groups use their room. Applied to the ribbon and to its lists.
 pub fn tight(style: &mut egui::Style) {
-    let t = if style.visuals.dark_mode {
-        Tokens::dark()
-    } else {
-        Tokens::light()
-    };
+    let t = Tokens::of(&style.visuals);
     let radius = CornerRadius::same(t.ribbon_radius);
     let v = &mut style.visuals;
     v.menu_corner_radius = radius;
