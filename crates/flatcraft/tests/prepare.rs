@@ -6,7 +6,7 @@ use std::path::Path;
 
 use common::{
     AppHarness, FakePicker, app, app_mut, harness, harness_with, import_square, session,
-    wait_for_workers, worker_delay,
+    wait_for_source_check, wait_for_workers, worker_delay,
 };
 use egui::accesskit::Role;
 use egui::{Color32, Event, Modifiers, Pos2, Shape, Vec2};
@@ -42,7 +42,7 @@ fn undo_len(s: &SharedSession) -> usize {
 
 fn to_prepare(h: &mut AppHarness) {
     app_mut(h).ui.workspace = Workspace::Prepare;
-    h.run();
+    wait_for_source_check(h);
 }
 
 /// A view where 1 mm is 2 points and `mm` sits at the canvas centre.
@@ -692,7 +692,8 @@ fn drag_is_cancelled_when_the_document_changes() {
     let b_undo = undo_len(&s);
     for t in [20.0, 40.0] {
         h.hover_at(from + Vec2::new(t, 20.0));
-        h.run();
+        // The new document starts a source check.
+        wait_for_source_check(&mut h);
     }
     h.drop_at(from + Vec2::new(40.0, 20.0));
     h.run();
@@ -721,7 +722,7 @@ fn switching_back_restores_link_status() {
     h.get_by_label("1 source file not found");
     h.get_by_role_and_label(Role::Button, "New document")
         .click();
-    h.run();
+    wait_for_source_check(&mut h);
     assert!(h.query_by_label("1 source file not found").is_none());
     h.get_by_role_and_label(Role::Button, "Untitled 1 *")
         .click();
@@ -785,12 +786,12 @@ fn shapes_survive_a_document_switch() {
         .unwrap()
         .execute("document.new", json!({}), Origin::User)
         .unwrap();
-    h.run();
+    wait_for_source_check(&mut h);
     s.lock()
         .unwrap()
         .execute("document.switch", json!({ "doc_id": doc }), Origin::User)
         .unwrap();
-    h.run();
+    wait_for_source_check(&mut h);
     let again = app(&h).ui.prepare.cache.shape(doc, id).unwrap();
     assert!(
         std::sync::Arc::ptr_eq(&shape, &again),

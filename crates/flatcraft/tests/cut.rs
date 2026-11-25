@@ -6,7 +6,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use common::{AppHarness, FakePicker, app, app_mut, harness, harness_with, import_square, session};
+use common::{
+    AppHarness, FakePicker, app, app_mut, harness, harness_with, import_square, session,
+    wait_for_source_check,
+};
 use egui::accesskit::Role;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use flatcraft::ui::Workspace;
@@ -504,10 +507,10 @@ fn last_sent_belongs_to_the_active_document() {
     open_last_sent(&mut h);
     assert!(h.query_by_label(&sent).is_some());
     run(&s, "document.new", json!({}));
-    h.run();
+    wait_for_source_check(&mut h);
     assert!(h.query_by_label("Nothing sent yet.").is_some());
     assert!(h.query_by_label(&sent).is_none());
     run(&s, "document.switch", json!({ "doc_id": first }));
-    h.run();
+    wait_for_source_check(&mut h);
     assert!(h.query_by_label(&sent).is_some());
 }

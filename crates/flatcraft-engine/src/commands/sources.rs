@@ -1253,10 +1253,11 @@ mod tests {
             rfc3339(UNIX_EPOCH).as_deref(),
             Some("1970-01-01T00:00:00.000000000Z")
         );
-        let t = UNIX_EPOCH + Duration::new(1_700_000_000, 123_456_789);
+        // On a 100 ns boundary: Windows keeps file times in 100 ns steps.
+        let t = UNIX_EPOCH + Duration::new(1_700_000_000, 123_456_700);
         assert_eq!(
             rfc3339(t).as_deref(),
-            Some("2023-11-14T22:13:20.123456789Z")
+            Some("2023-11-14T22:13:20.123456700Z")
         );
         // A leap day.
         let t = UNIX_EPOCH + Duration::from_secs(951_782_400);

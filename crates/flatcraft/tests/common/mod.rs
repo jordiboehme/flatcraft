@@ -71,8 +71,9 @@ pub fn harness_steps(
     fonts::install(&ctx);
     let mut app = FlatCraftApp::new(&ctx, s, dir.path().to_path_buf());
     if !worker_delay().is_zero() {
-        app = app.with_source_check(|session| {
-            std::thread::sleep(worker_delay());
+        let repaint = ctx.clone();
+        app = app.with_source_check(move |session| {
+            slow_worker(&repaint);
             flatcraft_engine::commands::sources::check_unlocked(session)
         });
         app.ui.prepare.cache.set_builder(|input| {
@@ -157,20 +158,51 @@ pub fn worker_delay() -> std::time::Duration {
     std::time::Duration::from_millis(ms)
 }
 
+/// Waits [`worker_delay`] and keeps asking for repaints meanwhile, like a busy worker on a slow runner whose frames keep
+/// coming. A helper that settles with `Harness::run` while a worker is
+/// busy fails under this.
+pub fn slow_worker(ctx: &egui::Context) {
+    let end = std::time::Instant::now() + worker_delay();
+    while std::time::Instant::now() < end {
+        ctx.request_repaint();
+        std::thread::yield_now();
+    }
+}
+
 /// Longest wait for the source check and the shape worker.
 pub const WORKER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Runs frames until no source check is in flight and the shape worker has
-/// nothing left to build. Fails after [`WORKER_TIMEOUT`].
+/// nothing left to build, then lets the window settle. See [`wait_until`].
 pub fn wait_for_workers(h: &mut AppHarness) {
+    wait_until(h, |app| {
+        app.source_check_job.is_some() || app.ui.prepare.cache.building() > 0
+    });
+}
+
+/// Runs frames until no source check is in flight, then lets the window
+/// settle. For frames that may start a check (entering Prepare, a new or
+/// switched document); the shape worker may stay busy.
+pub fn wait_for_source_check(h: &mut AppHarness) {
+    wait_until(h, |app| app.source_check_job.is_some());
+}
+
+/// Runs frames until `busy` is false and the window settled. While a worker
+/// is busy it steps one frame at a time (`Harness::step`), because
+/// `Harness::run` fails when the worker keeps asking for repaints. Fails
+/// after [`WORKER_TIMEOUT`].
+pub fn wait_until(h: &mut AppHarness, busy: impl Fn(&FlatCraftApp) -> bool) {
     let start = std::time::Instant::now();
-    h.run();
-    while app(h).source_check_job.is_some() || app(h).ui.prepare.cache.building() > 0 {
+    loop {
+        h.step();
+        // Settled, and settling started no new work.
+        if !busy(app(h)) && h.run_ok().is_some() && !busy(app(h)) {
+            return;
+        }
         assert!(
             start.elapsed() < WORKER_TIMEOUT,
             "the source check or the shape worker did not finish within {WORKER_TIMEOUT:?}"
         );
         std::thread::sleep(std::time::Duration::from_millis(5));
-        h.run();
     }
 }

@@ -7,7 +7,10 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use common::{AppHarness, FakePicker, app, app_mut, harness, harness_with, import_square, session};
+use common::{
+    AppHarness, FakePicker, app, app_mut, harness, harness_with, import_square, session,
+    wait_for_source_check,
+};
 use egui::accesskit::Role;
 use egui_kittest::kittest::Queryable as _;
 use flatcraft::ui::Workspace;
@@ -22,7 +25,7 @@ fn undo_len(s: &SharedSession) -> usize {
 
 fn to_prepare(h: &mut AppHarness) {
     app_mut(h).ui.workspace = Workspace::Prepare;
-    h.run();
+    wait_for_source_check(h);
 }
 
 /// A black ring (outer radius 80 px, hole 40 px) on white, 200 x 200 px.
@@ -327,7 +330,7 @@ fn trace_dialog_closes_when_the_document_changes() {
         .unwrap()
         .execute("document.new", json!({}), Origin::Agent)
         .unwrap();
-    h.run();
+    wait_for_source_check(&mut h);
     assert!(app(&h).ui.trace.is_none());
     let first = s.lock().unwrap().docs[0].undo.undo_len();
     assert_eq!(first, undo);
@@ -387,7 +390,8 @@ fn drop_files(h: &mut AppHarness, paths: &[PathBuf]) {
             .dropped_files
             .push(Arc::new(Dropped(p.clone())));
     }
-    h.run();
+    // A dropped project opens and starts a source check.
+    wait_for_source_check(h);
 }
 
 #[test]

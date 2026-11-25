@@ -2,7 +2,9 @@
 
 mod common;
 
-use common::{FakePicker, app, app_mut, harness, harness_with, import_square, session};
+use common::{
+    FakePicker, app, app_mut, harness, harness_with, import_square, session, wait_for_source_check,
+};
 use egui::accesskit::Role;
 use egui_kittest::kittest::Queryable as _;
 use flatcraft::ui::{Action, Workspace};
@@ -133,7 +135,7 @@ fn home_new_reuses_the_empty_start_document() {
     h.run();
     s.lock().unwrap().doc_mut().dirty = true;
     h.get_by_role_and_label(Role::Button, "New").click();
-    h.run();
+    wait_for_source_check(&mut h);
     assert_eq!(s.lock().unwrap().docs.len(), 2);
 }
 
@@ -448,7 +450,7 @@ fn cmd_n_and_home_new_reuse_the_empty_start_document() {
     assert_eq!(app(&h).ui.workspace, Workspace::Prepare);
     s.lock().unwrap().doc_mut().dirty = true;
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::N);
-    h.run();
+    wait_for_source_check(&mut h);
     assert_eq!(s.lock().unwrap().docs.len(), 2);
 }
 
