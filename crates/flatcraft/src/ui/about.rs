@@ -25,6 +25,12 @@ pub const TAGLINE: &str = "Your cutting plotter, leveled up.";
 /// The same words as the README under its title.
 pub const PITCH: &str = "You bought it, so you're in control: every setting, every cut, on your own computer. Pro results for every plotter. Agents welcome.";
 
+/// [`PITCH`] as the two lines the dialog draws.
+pub const PITCH_LINES: [&str; 2] = [
+    "You bought it, so you're in control: every setting, every cut, on your own computer.",
+    "Pro results for every plotter. Agents welcome.",
+];
+
 pub const KOFI_URL: &str = "https://ko-fi.com/V7V31T6CL9";
 pub const PAYPAL_URL: &str = "https://paypal.me/jordiboehmelopez";
 pub const GITHUB_URL: &str = "https://github.com/jordiboehme/flatcraft";
@@ -102,7 +108,7 @@ const BANNER_BADGES: [(f32, f32); 4] = [
 const UNITS_PER_MM: f64 = 10.0;
 /// Every this many millimetres of the simulated tip, one trail point.
 const TRAIL_STEP_MM: f64 = 0.4;
-/// The Ko-fi button colour.
+/// The support buttons' colour (Ko-fi and PayPal).
 const PINK: Color32 = Color32::from_rgb(0xE2, 0x4A, 0x8D);
 const WIDTH: f32 = 560.0;
 
@@ -381,16 +387,17 @@ fn credits(ui: &mut Ui, st: &mut AboutState, t: &Tokens, actions: &mut Vec<Actio
         ui.label(RichText::new(MOTTO).italics().color(t.accent_cut));
         ui.add_space(t.spacing);
         ui.label(RichText::new(TAGLINE).font(fonts::semibold(16.0)));
-        ui.label(PITCH);
+        for line in PITCH_LINES {
+            ui.label(line);
+        }
         ui.add_space(t.spacing);
     });
     centered_row(ui, "buttons", |ui| {
-        let kofi = egui::Button::new(RichText::new("Support Me").color(Color32::WHITE)).fill(PINK);
-        if ui.add(kofi).clicked() {
-            actions.push(Action::OpenUrl(KOFI_URL));
-        }
-        if ui.button("PayPal").clicked() {
-            actions.push(Action::OpenUrl(PAYPAL_URL));
+        for (name, url) in [("Ko-fi", KOFI_URL), ("PayPal", PAYPAL_URL)] {
+            let support = egui::Button::new(RichText::new(name).color(Color32::WHITE)).fill(PINK);
+            if ui.add(support).clicked() {
+                actions.push(Action::OpenUrl(url));
+            }
         }
         if ui.button("GitHub").clicked() {
             actions.push(Action::OpenUrl(GITHUB_URL));
@@ -475,11 +482,18 @@ mod tests {
     }
 
     #[test]
+    fn the_pitch_lines_make_the_pitch() {
+        assert_eq!(PITCH_LINES.join(" "), PITCH);
+    }
+
+    #[test]
     fn no_em_dash_in_the_dialog() {
         let mut all = vec![
             MOTTO,
             TAGLINE,
             PITCH,
+            PITCH_LINES[0],
+            PITCH_LINES[1],
             BUILT_WITH,
             INSPIRED_BY,
             MADE_WITH,

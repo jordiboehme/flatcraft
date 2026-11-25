@@ -104,9 +104,17 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                 },
                 |ui| {
                     let actions = &mut right_actions;
-                    ui.label(
+                    let version = egui::Label::new(
                         RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).color(t.text_dim),
-                    );
+                    )
+                    .sense(egui::Sense::click());
+                    let version = ui
+                        .add(version)
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text("About FlatCraft");
+                    if version.clicked() {
+                        actions.push(Action::ShowAbout);
+                    }
                     if icon_button(ui, Icon::Help, "Help", true).clicked() {
                         actions.push(Action::Help);
                     }

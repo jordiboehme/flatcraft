@@ -48,7 +48,8 @@ fn about_shows_the_credits() {
     for text in [
         about::MOTTO,
         about::TAGLINE,
-        about::PITCH,
+        about::PITCH_LINES[0],
+        about::PITCH_LINES[1],
         about::BUILT_WITH,
         about::INSPIRED_BY,
         about::MADE_WITH,
@@ -117,7 +118,7 @@ fn the_buttons_open_the_right_links() {
     let mut h = harness(&dir, session(&dir), false);
     open_about(&mut h);
     for (button, url) in [
-        ("Support Me", "https://ko-fi.com/V7V31T6CL9"),
+        ("Ko-fi", "https://ko-fi.com/V7V31T6CL9"),
         ("PayPal", "https://paypal.me/jordiboehmelopez"),
         ("GitHub", "https://github.com/jordiboehme/flatcraft"),
     ] {
@@ -128,6 +129,36 @@ fn the_buttons_open_the_right_links() {
         );
         h.run();
     }
+}
+
+#[test]
+fn the_pitch_is_two_centred_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(&dir, session(&dir), false);
+    open_about(&mut h);
+    let first = h.get_by_label(about::PITCH_LINES[0]).rect();
+    let second = h.get_by_label(about::PITCH_LINES[1]).rect();
+    assert!(second.top() >= first.bottom() - 1.0, "{first:?} {second:?}");
+    assert!((first.center().x - second.center().x).abs() < 2.0);
+}
+
+#[test]
+fn the_version_label_opens_about() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(&dir, session(&dir), false);
+    assert!(!app(&h).ui.about.open);
+    let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let rect = h.get_by_label(&version).rect();
+    h.hover_at(rect.center());
+    h.run();
+    assert_eq!(
+        h.output().platform_output.cursor_icon,
+        egui::CursorIcon::PointingHand
+    );
+    h.get_by_label(&version).click();
+    h.run();
+    assert!(app(&h).ui.about.open);
+    h.get_by_label(about::TAGLINE);
 }
 
 #[test]
@@ -178,9 +209,24 @@ fn help_opens_about_except_on_macos() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(&dir, session(&dir), false);
     h.get_by_role_and_label(Role::Button, "Help").click();
-    h.run();
+    h.step();
     // macOS has the About item in the app menu; Help opens the repository.
     assert_eq!(app(&h).ui.about.open, !cfg!(target_os = "macos"));
+    let opened: Vec<String> = h
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .filter_map(|c| match c {
+            egui::OutputCommand::OpenUrl(u) => Some(u.url.clone()),
+            _ => None,
+        })
+        .collect();
+    if cfg!(target_os = "macos") {
+        assert_eq!(opened, vec![flatcraft::ui::HELP_URL.to_string()]);
+    } else {
+        assert!(opened.is_empty());
+    }
 }
 
 #[test]
@@ -326,7 +372,7 @@ fn the_banner_spans_the_dialog_and_the_buttons_are_centred() {
     let banner = h.get_by_label(about::BANNER_NAME).rect();
     assert!((banner.width() - 560.0).abs() < 1.0, "{banner:?}");
     assert!((banner.height() - 140.0).abs() < 1.0, "{banner:?}");
-    let left = h.get_by_role_and_label(Role::Button, "Support Me").rect();
+    let left = h.get_by_role_and_label(Role::Button, "Ko-fi").rect();
     let right = h.get_by_role_and_label(Role::Button, "GitHub").rect();
     let gap_left = left.left() - banner.left();
     let gap_right = banner.right() - right.right();
