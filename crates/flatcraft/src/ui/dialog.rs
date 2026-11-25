@@ -157,10 +157,39 @@ impl Dialog {
         t: &Tokens,
         content: impl FnOnce(&mut Ui),
     ) -> Option<Answer> {
-        // Cmd+D first, so no widget in the dialog sees it.
-        let key_d = self.secondary.is_some()
-            && self.secondary_key
-            && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::D));
+        self.show_with(ctx, t, |ui| {
+            content(ui);
+            self.primary_enabled
+        })
+    }
+
+    /// Like [`Self::show`], with `content` returning whether the primary
+    /// action can run, read after it drew (a name field typed this frame).
+    pub fn show_with(
+        &self,
+        ctx: &egui::Context,
+        t: &Tokens,
+        content: impl FnOnce(&mut Ui) -> bool,
+    ) -> Option<Answer> {
+        // Keys count only once every key that was down when this question
+        // appeared is up again: a key still held (or repeating) from the
+        // answer before never answers this one.
+        let armed_id = egui::Id::unique(("flatcraft-dialog-armed", self.id, &self.title));
+        let armed = ctx.data(|d| d.get_temp::<bool>(armed_id)).unwrap_or(false);
+        let keys_up = ctx.input(|i| i.keys_down.is_empty());
+        if !armed && keys_up {
+            ctx.data_mut(|d| d.insert_temp(armed_id, true));
+        }
+        // The previous question's arming is gone once another title shows.
+        let last_id = egui::Id::unique(("flatcraft-dialog-last", self.id));
+        let last: Option<egui::Id> = ctx.data(|d| d.get_temp(last_id));
+        if last != Some(armed_id) {
+            if let Some(old) = last {
+                ctx.data_mut(|d| d.remove::<bool>(old));
+            }
+            ctx.data_mut(|d| d.insert_temp(last_id, armed_id));
+        }
+        let mut primary_enabled = self.primary_enabled;
         let mut clicked: Option<Answer> = None;
         let frame = egui::Frame::new()
             .fill(t.panel)
@@ -198,7 +227,7 @@ impl Dialog {
                                             .wrap(),
                                     );
                                 }
-                                content(ui);
+                                primary_enabled = content(ui);
                             });
                         });
                     });
@@ -253,7 +282,7 @@ impl Dialog {
                                     let b =
                                         egui::Button::new(RichText::new(label).color(ink).strong())
                                             .fill(fill);
-                                    if ui.add_enabled(self.primary_enabled, b).clicked() {
+                                    if ui.add_enabled(primary_enabled, b).clicked() {
                                         out = Some(Answer::Primary);
                                     }
                                 }
@@ -302,23 +331,55 @@ impl Dialog {
         if clicked.is_some() {
             return clicked;
         }
+        // A click outside is Cancel, like the ×.
+        if modal.backdrop_response.clicked() {
+            return Some(Answer::Cancel);
+        }
+        // Keys only for the dialog on top, and only once armed.
+        if !armed || !modal.is_top_modal {
+            return None;
+        }
+        // Cmd+D (Ctrl+D): only a fresh press, never a repeat of a held key.
+        let key_d = self.secondary.is_some()
+            && self.secondary_key
+            && ctx.input_mut(|i| take_fresh_press(i, Modifiers::COMMAND, Key::D));
         if key_d {
             return Some(Answer::Secondary);
         }
-        // Escape, or a click outside: Cancel. Never the destructive action.
-        if modal.should_close() {
+        // Escape: Cancel. Never the destructive action.
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             return Some(Answer::Cancel);
         }
         let enter = ctx.input(|i| i.key_pressed(Key::Enter));
         if enter {
             return match &self.primary {
-                Some(_) if self.primary_enabled => Some(Answer::Primary),
+                Some(_) if primary_enabled => Some(Answer::Primary),
                 Some(_) => None,
                 None => Some(Answer::Cancel),
             };
         }
         None
     }
+}
+
+/// Takes a press of `key` with `modifiers` that is not a key repeat out of
+/// this frame's events. Repeats of it are taken out too, and ignored.
+fn take_fresh_press(i: &mut egui::InputState, modifiers: Modifiers, key: Key) -> bool {
+    let mut fresh = false;
+    i.events.retain(|e| match e {
+        egui::Event::Key {
+            key: k,
+            pressed: true,
+            repeat,
+            modifiers: m,
+            ..
+        } if *k == key && m.matches_logically(modifiers) => {
+            fresh |= !repeat;
+            false
+        }
+        _ => true,
+    });
+    fresh
 }
 
 /// Width of every dialog.

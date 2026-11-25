@@ -307,3 +307,213 @@ fn a_dialog_dims_the_menu_bar_but_quit() {
         "only Quit"
     );
 }
+
+/// An agent's send waiting for the person, on a document with no unsaved
+/// changes.
+fn waiting_send() -> (tempfile::TempDir, SharedSession) {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    {
+        let mut g = s.lock().unwrap();
+        g.execute(
+            "job.set_plotter",
+            json!({ "id": "silhouette-cameo-2" }),
+            Origin::User,
+        )
+        .unwrap();
+        g.execute("job.send", json!({}), Origin::Agent).unwrap_err();
+        g.doc_mut().dirty = false;
+    }
+    (dir, s)
+}
+
+const SEND_QUESTION: &str = "Allow the agent to cut on Silhouette Cameo 2?";
+
+fn key_event(key: Key, pressed: bool, repeat: bool, modifiers: Modifiers) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed,
+        repeat,
+        modifiers,
+    }
+}
+
+#[test]
+fn no_key_allows_an_agent_cut() {
+    for (key, mods) in [
+        (Key::Enter, Modifiers::NONE),
+        (Key::Escape, Modifiers::NONE),
+        (Key::D, Modifiers::COMMAND),
+    ] {
+        let (dir, s) = waiting_send();
+        let mut h = harness(&dir, s.clone(), true);
+        h.get_by_label(SEND_QUESTION);
+        h.get_by_role_and_label(Role::Image, "Warning");
+        h.key_press_modifiers(mods, key);
+        h.run();
+        // Cmd+D does nothing; Enter and Escape deny. None allows.
+        let g = s.lock().unwrap();
+        if key == Key::D {
+            assert!(g.pending_send().is_some(), "Cmd+D answered");
+        } else {
+            assert!(g.pending_send().is_none(), "{key:?} did not deny");
+        }
+        drop(g);
+        assert!(
+            app(&h)
+                .ui
+                .toasts
+                .iter()
+                .all(|t| !t.text.contains("milestone 3")),
+            "{key:?} allowed the cut"
+        );
+    }
+    // Only a click on Allow allows.
+    let (dir, s) = waiting_send();
+    let mut h = harness(&dir, s.clone(), true);
+    h.get_by_role_and_label(Role::Button, "Allow").click();
+    h.run();
+    assert!(s.lock().unwrap().pending_send().is_none());
+    assert!(
+        app(&h)
+            .ui
+            .toasts
+            .iter()
+            .any(|t| t.text == "USB cutting arrives in milestone 3.")
+    );
+}
+
+#[test]
+fn a_key_held_while_a_dialog_opens_does_not_answer_it() {
+    let (dir, s) = dirty_docs(1);
+    let mut h = harness(&dir, s.clone(), false);
+    // Enter goes down, and the dialog opens while it is held.
+    h.event(key_event(Key::Enter, true, false, Modifiers::NONE));
+    act(&mut h, Action::Close(doc_id(&s, 0)));
+    h.get_by_label("Save changes to Untitled 1?");
+    // It repeats, then comes up: nothing is answered.
+    h.event(key_event(Key::Enter, true, true, Modifiers::NONE));
+    h.run();
+    h.event(key_event(Key::Enter, false, false, Modifiers::NONE));
+    h.run();
+    assert!(app(&h).ui.unsaved.is_some());
+    assert_eq!(docs(&s), 1);
+    // A fresh Escape now cancels.
+    h.key_press(Key::Escape);
+    h.run();
+    assert!(app(&h).ui.unsaved.is_none());
+}
+
+#[test]
+fn a_held_command_d_answers_only_one_document() {
+    let (dir, s) = dirty_docs(2);
+    let mut h = harness(&dir, s.clone(), false);
+    act(&mut h, Action::Quit);
+    h.get_by_label("Save changes to Untitled 1?");
+    h.event(key_event(Key::D, true, false, Modifiers::COMMAND));
+    h.run();
+    h.get_by_label("Save changes to Untitled 2?");
+    // The key repeats while held: the second question stays.
+    for _ in 0..3 {
+        h.event(key_event(Key::D, true, true, Modifiers::COMMAND));
+        h.run();
+    }
+    h.event(key_event(Key::D, false, false, Modifiers::COMMAND));
+    h.run();
+    h.get_by_label("Save changes to Untitled 2?");
+    assert!(!closing(&h));
+}
+
+#[test]
+fn quit_also_asks_about_a_document_an_agent_changed_meanwhile() {
+    // A has unsaved changes, B is clean.
+    let (dir, s) = dirty_docs(1);
+    s.lock()
+        .unwrap()
+        .execute("document.new", json!({}), Origin::User)
+        .unwrap();
+    // B is the active document, where the agent works.
+    let path = dir.path().join("a.flatcraft");
+    let picker = FakePicker::answering([path.clone()]);
+    let mut h = harness_with(&dir, s.clone(), |a| a.with_file_picker(picker.clone()));
+    act(&mut h, Action::Quit);
+    h.get_by_label("Save changes to Untitled 1?");
+    // An agent edits B while the question is open.
+    s.lock()
+        .unwrap()
+        .execute(
+            "object.import_svg",
+            json!({ "svg": SQUARE_SVG, "name": "late" }),
+            Origin::Agent,
+        )
+        .unwrap();
+    assert!(s.lock().unwrap().docs[1].dirty);
+    h.key_press(Key::Enter);
+    h.run();
+    assert!(path.exists(), "A was saved");
+    assert!(!closing(&h), "B is not answered yet");
+    h.get_by_label("Save changes to Untitled 2?");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::D);
+    h.run();
+    assert!(closing(&h));
+}
+
+#[test]
+fn quit_skips_a_document_saved_meanwhile() {
+    let (dir, s) = dirty_docs(2);
+    let mut h = harness(&dir, s.clone(), false);
+    act(&mut h, Action::Quit);
+    h.get_by_label("Save changes to Untitled 1?");
+    // The asked document is saved meanwhile (as an agent or a script
+    // would; agents may not write into this test's config dir).
+    let a = doc_id(&s, 0);
+    s.lock()
+        .unwrap()
+        .execute(
+            "project.save",
+            json!({ "doc_id": a, "path": dir.path().join("a.flatcraft") }),
+            Origin::User,
+        )
+        .unwrap();
+    h.run();
+    h.get_by_label("Save changes to Untitled 2?");
+    assert!(h.query_by_label("Save changes to Untitled 1?").is_none());
+}
+
+#[test]
+fn keys_answer_only_the_dialog_on_top() {
+    // The agent's send dialog, and the unsaved-changes dialog over it.
+    let (dir, s) = waiting_send();
+    s.lock().unwrap().doc_mut().dirty = true;
+    let mut h = harness(&dir, s.clone(), true);
+    act(&mut h, Action::Close(doc_id(&s, 0)));
+    h.get_by_label(SEND_QUESTION);
+    h.get_by_label("Save changes to Untitled 1?");
+    h.key_press(Key::Escape);
+    h.run();
+    // Escape cancelled the top dialog only; the agent's request still waits.
+    assert!(app(&h).ui.unsaved.is_none());
+    assert!(s.lock().unwrap().pending_send().is_some());
+}
+
+#[test]
+fn rename_takes_a_name_typed_in_the_same_frame_as_enter() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let id = import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    app_mut(&mut h).ui.prepare.rename = Some(flatcraft::ui::prepare::RenameDialog {
+        doc_id: s.lock().unwrap().doc().id(),
+        id,
+        name: String::new(),
+    });
+    h.run();
+    h.event(egui::Event::Text("Lid".into()));
+    h.key_press(Key::Enter);
+    h.run();
+    assert!(app(&h).ui.prepare.rename.is_none());
+    assert_eq!(s.lock().unwrap().doc().document.objects[0].name, "Lid");
+}

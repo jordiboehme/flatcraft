@@ -127,9 +127,12 @@ pub struct UiState {
 /// What the unsaved-changes dialog asks about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unsaved {
-    /// Quitting while these documents have unsaved changes. The dialog
-    /// asks about the first one; the others follow in turn.
-    Quit(Vec<u64>),
+    /// Quitting while documents have unsaved changes: the dialog asks
+    /// about `asking`; `answered` are the documents already answered in
+    /// this round. Every document with unsaved changes that is not
+    /// answered yet follows in turn, also one that became unsaved during
+    /// the round.
+    Quit { asking: u64, answered: Vec<u64> },
     /// Closing this document with unsaved changes.
     Close(u64),
     /// Quitting while an agent waits for the person's OK to send a cut.
@@ -323,6 +326,9 @@ pub struct FlatCraftApp {
     /// [`app_bar::viewport`]): it leaves room for the traffic lights and
     /// moves the window. Tests turn it on with [`Self::with_title_bar`].
     pub title_bar: bool,
+    /// What a double-click on the title bar does; `None`: the system's
+    /// setting. Tests set it with [`Self::with_double_click`].
+    pub double_click: Option<app_bar::DoubleClick>,
     /// Whether the system asks for reduced motion (the toasts then draw
     /// no countdown ring); tests replace it.
     pub reduce_motion: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
@@ -368,10 +374,17 @@ impl FlatCraftApp {
             rng: rng::XorShift::default(),
             injected: Vec::new(),
             title_bar: cfg!(target_os = "macos"),
+            double_click: None,
             reduce_motion: std::sync::Arc::new(toasts::system_reduce_motion),
             #[cfg(target_os = "macos")]
             menu: None,
         }
+    }
+
+    /// Replaces the system's title-bar double-click setting.
+    pub fn with_double_click(mut self, action: app_bar::DoubleClick) -> Self {
+        self.double_click = Some(action);
+        self
     }
 
     /// Replaces the system's reduced-motion setting.
@@ -1015,7 +1028,10 @@ impl FlatCraftApp {
             Action::Quit => {
                 let dirty = self.dirty_docs();
                 if !dirty.is_empty() {
-                    self.ui.unsaved = Some(Unsaved::Quit(dirty));
+                    self.ui.unsaved = Some(Unsaved::Quit {
+                        asking: dirty[0],
+                        answered: Vec::new(),
+                    });
                 } else if self.send_waiting() {
                     self.ui.unsaved = Some(Unsaved::PendingSend);
                 } else {
@@ -1066,28 +1082,50 @@ impl FlatCraftApp {
                     self.execute("document.close", json!({ "doc_id": doc_id }));
                 }
             }
-            (Unsaved::Quit(queue), choice) => {
-                let Some((&head, rest)) = queue.split_first() else {
-                    self.close_window(ctx);
-                    return;
-                };
-                if choice == UnsavedChoice::Save && !self.save_for_close(head) {
+            (
+                Unsaved::Quit {
+                    asking,
+                    mut answered,
+                },
+                choice,
+            ) => {
+                if choice == UnsavedChoice::Save && !self.save_for_close(asking) {
                     self.toast(Toast::warning(
                         "Not everything was saved, so FlatCraft stays open.",
                     ));
                     return;
                 }
-                // The next document that still has unsaved changes (an
-                // agent may have saved or closed one meanwhile).
-                let dirty = self.dirty_docs();
-                let rest: Vec<u64> = rest.iter().copied().filter(|d| dirty.contains(d)).collect();
-                if rest.is_empty() {
-                    self.close_window(ctx);
-                } else {
-                    self.ui.unsaved = Some(Unsaved::Quit(rest));
-                }
+                answered.push(asking);
+                self.ask_next_or_quit(ctx, answered);
             }
         }
+    }
+
+    /// Quit goes on: the next document with unsaved changes that is not
+    /// answered yet is asked about (also one an agent changed during the
+    /// round). The window closes only when none is left.
+    fn ask_next_or_quit(&mut self, ctx: &egui::Context, answered: Vec<u64>) {
+        match self
+            .dirty_docs()
+            .into_iter()
+            .find(|d| !answered.contains(d))
+        {
+            Some(asking) => self.ui.unsaved = Some(Unsaved::Quit { asking, answered }),
+            None => self.close_window(ctx),
+        }
+    }
+
+    /// While Quit asks about a document that was saved or closed meanwhile
+    /// (by an agent), it moves on to the next one, or quits.
+    fn skip_settled_quit_question(&mut self, ctx: &egui::Context) {
+        let Some(Unsaved::Quit { asking, answered }) = &self.ui.unsaved else {
+            return;
+        };
+        if self.dirty_docs().contains(asking) {
+            return;
+        }
+        let answered = answered.clone();
+        self.ask_next_or_quit(ctx, answered);
     }
 
     /// Saves a document before it closes, asking for a path when it has
@@ -1475,6 +1513,7 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
         app.ui.show_shortcuts = help::show_shortcuts(&ctx, &t);
     }
     pending_modal(&ctx, app, &mut actions);
+    app.skip_settled_quit_question(&ctx);
     unsaved_modal(&ctx, app, &mut actions);
 
     if let Some(users) = app.ui.prepare.panels.take_changed() {
@@ -1499,17 +1538,10 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     } else if let Some(next) = next {
         ctx.request_repaint_after(next);
     }
-    let mut closed: Vec<usize> = Vec::new();
     for e in events {
         match e {
             toasts::Event::Reveal(file) => app.apply(&ctx, vec![Action::Reveal(file)]),
-            toasts::Event::Close(i) => closed.push(i),
-        }
-    }
-    closed.sort_unstable();
-    for i in closed.into_iter().rev() {
-        if i < app.ui.toasts.len() {
-            app.ui.toasts.remove(i);
+            toasts::Event::Close(id) => app.ui.toasts.retain(|t| t.id != id),
         }
     }
     if app.agent {
@@ -1576,8 +1608,11 @@ pub fn guard_close(ctx: &egui::Context, app: &mut FlatCraftApp) {
         if app.ui.unsaved.is_none() {
             app.ui.unsaved = Some(Unsaved::PendingSend);
         }
-    } else if !matches!(app.ui.unsaved, Some(Unsaved::Quit(_))) {
-        app.ui.unsaved = Some(Unsaved::Quit(dirty));
+    } else if !matches!(app.ui.unsaved, Some(Unsaved::Quit { .. })) {
+        app.ui.unsaved = Some(Unsaved::Quit {
+            asking: dirty[0],
+            answered: Vec::new(),
+        });
     }
 }
 
@@ -1612,7 +1647,7 @@ pub fn unsaved_dialog(app: &FlatCraftApp, asked: &Unsaved) -> dialog::Dialog {
                 .secondary("Quit anyway", false);
         }
         Unsaved::Close(doc_id) => *doc_id,
-        Unsaved::Quit(queue) => queue.first().copied().unwrap_or_default(),
+        Unsaved::Quit { asking, .. } => *asking,
     };
     let name = app.doc_name(doc);
     let mut d = Dialog::new("unsaved", Kind::Warning, format!("Save changes to {name}?"))
@@ -1621,16 +1656,32 @@ pub fn unsaved_dialog(app: &FlatCraftApp, asked: &Unsaved) -> dialog::Dialog {
         ))
         .secondary("Don't Save", true)
         .primary("Save");
-    if let Unsaved::Quit(queue) = asked {
-        match queue.len() {
-            0 | 1 => {}
-            2 => d = d.body("1 more document has unsaved changes."),
-            n => d = d.body(format!("{} more documents have unsaved changes.", n - 1)),
-        }
-        if app.send_waiting() {
-            d = d.body(
-                "An agent is also waiting for your OK to send a cut. Quitting drops that request.",
-            );
+    if let Unsaved::Quit { asking, answered } = asked {
+        // One more line at most: how many follow, and the waiting agent.
+        let more = app
+            .dirty_docs()
+            .iter()
+            .filter(|d| *d != asking && !answered.contains(d))
+            .count();
+        let waiting = app.send_waiting();
+        let count = match more {
+            0 => None,
+            1 => Some("1 more document has unsaved changes".to_string()),
+            n => Some(format!("{n} more documents have unsaved changes")),
+        };
+        let line = match (count, waiting) {
+            (Some(c), true) => Some(format!(
+                "{c}, and quitting drops the agent's waiting cut request."
+            )),
+            (Some(c), false) => Some(format!("{c}.")),
+            (None, true) => Some(
+                "An agent is also waiting for your OK to send a cut. Quitting drops that request."
+                    .to_string(),
+            ),
+            (None, false) => None,
+        };
+        if let Some(line) = line {
+            d = d.body(line);
         }
     }
     d
@@ -1809,54 +1860,57 @@ fn pending_view(app: &mut FlatCraftApp) -> Option<PendingView> {
     view
 }
 
-/// "An agent wants to start a cut on <plotter>. Allow?" in every
-/// workspace. Allow confirms exactly the request shown (its id).
+/// "Allow the agent to cut on <plotter>?" in every workspace, on the
+/// shared dialog, safety first: Deny is the Cancel button and the default,
+/// Allow is the left action with no key. Enter, Escape, × and a click
+/// outside all deny; only a click on Allow allows. Allow confirms exactly
+/// the request shown (its id).
 fn pending_modal(ctx: &egui::Context, app: &mut FlatCraftApp, actions: &mut Vec<Action>) {
     let Some(p) = pending_view(app) else {
         return;
     };
     ctx.request_repaint_after(p.left);
     let t = app.tokens;
-    egui::Modal::new(egui::Id::unique("flatcraft-agent-send")).show(ctx, |ui| {
-        ui.set_max_width(420.0);
-        ui.label(
-            egui::RichText::new(format!(
-                "An agent wants to start a cut on {}. Allow?",
-                p.plotter
-            ))
-            .font(fonts::semibold(15.0)),
-        );
-        ui.add_space(t.spacing);
-        let s = &p.summary;
-        let paths = if s.toolpaths == 1 {
-            "1 path".to_string()
-        } else {
-            format!("{} paths", s.toolpaths)
-        };
-        ui.label(format!("{paths}, {} cut", cut::mm_text(s.cut_mm)));
-        let passes = if s.passes == 1 {
-            "1 pass".to_string()
-        } else {
-            format!("{} passes", s.passes)
-        };
-        ui.label(
-            egui::RichText::new(format!("Speed {}, force {}, {passes}", s.speed, s.force))
-                .color(t.text_dim),
-        );
-        for w in &s.warnings {
-            ui.label(egui::RichText::new(w).color(t.accent_cut));
+    let d = pending_dialog(&p);
+    let answer = d.show(ctx, &t, |ui| {
+        for w in &p.summary.warnings {
+            ui.add(egui::Label::new(egui::RichText::new(w).color(t.accent_cut)).wrap());
         }
-        ui.label(egui::RichText::new("The request expires after 5 minutes.").color(t.text_dim));
-        ui.add_space(t.spacing);
-        ui.horizontal(|ui| {
-            if ui.button("Allow").clicked() {
-                actions.push(Action::ConfirmPending(p.id));
-            }
-            if ui.button("Deny").clicked() {
-                actions.push(Action::DenyPending(p.id));
-            }
-        });
     });
+    match answer {
+        Some(dialog::Answer::Secondary) => actions.push(Action::ConfirmPending(p.id)),
+        Some(_) => actions.push(Action::DenyPending(p.id)),
+        None => {}
+    }
+}
+
+/// The dialog of an agent's pending send.
+pub fn pending_dialog(p: &PendingView) -> dialog::Dialog {
+    let s = &p.summary;
+    let paths = if s.toolpaths == 1 {
+        "1 path".to_string()
+    } else {
+        format!("{} paths", s.toolpaths)
+    };
+    let passes = if s.passes == 1 {
+        "1 pass".to_string()
+    } else {
+        format!("{} passes", s.passes)
+    };
+    dialog::Dialog::new(
+        "agent-send",
+        dialog::Kind::Warning,
+        format!("Allow the agent to cut on {}?", p.plotter),
+    )
+    .body(format!(
+        "{paths}, {} cut, speed {}, force {}, {passes}.",
+        cut::mm_text(s.cut_mm),
+        s.speed,
+        s.force
+    ))
+    .body("Check the mat and the blade first. The request expires after 5 minutes.")
+    .secondary("Allow", false)
+    .cancel("Deny")
 }
 
 impl eframe::App for FlatCraftApp {

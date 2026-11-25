@@ -1197,18 +1197,19 @@ fn rename_window(
         *slot = None;
         return;
     }
-    let ok = !d.name.trim().is_empty();
     let dialog = super::dialog::Dialog::new("rename", super::dialog::Kind::Info, "Rename")
         .body("A name you will find again in the Objects panel.")
-        .primary("Rename")
-        .primary_enabled(ok);
-    let answer = dialog.show(ctx, t, |ui| {
+        .primary("Rename");
+    // Whether Rename can run is decided after the field took this frame's
+    // typing, so the button and Enter see the name as it is now.
+    let answer = dialog.show_with(ctx, t, |ui| {
         ui.add_space(t.spacing);
         let field = ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(f32::INFINITY));
         settings::set_name(ui, &field, "Name");
         if !field.has_focus() && !field.lost_focus() {
             field.request_focus();
         }
+        !d.name.trim().is_empty()
     });
     match answer {
         Some(super::dialog::Answer::Primary) => {

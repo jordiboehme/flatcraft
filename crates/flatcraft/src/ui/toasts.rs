@@ -50,6 +50,9 @@ impl ToastKind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Toast {
+    /// Stable for the toast's life: its widgets keep their ids when a
+    /// toast above it goes away.
+    pub id: u64,
     /// The title.
     pub text: String,
     /// The line under the title, if any (a full path, say).
@@ -82,7 +85,9 @@ impl Toast {
     }
 
     fn new(text: impl Into<String>, kind: ToastKind) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
+            id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             text: text.into(),
             detail: None,
             kind,
@@ -167,8 +172,8 @@ pub fn prune(toasts: &mut Vec<Toast>, now: Instant) -> Option<Duration> {
 pub enum Event {
     /// Show this file in the file manager.
     Reveal(PathBuf),
-    /// Close the toast at this index.
-    Close(usize),
+    /// Close the toast with this id.
+    Close(u64),
 }
 
 /// Draws the toasts in the bottom-right corner, oldest at the top, and
@@ -185,7 +190,7 @@ pub fn show(
     if toasts.is_empty() {
         return events;
     }
-    egui::Area::new(egui::Id::unique("flatcraft-toasts"))
+    let area = egui::Area::new(egui::Id::unique("flatcraft-toasts"))
         .anchor(
             egui::Align2::RIGHT_BOTTOM,
             egui::vec2(-t.spacing * 2.0, -t.spacing * 2.0),
@@ -193,12 +198,23 @@ pub fn show(
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing.y = t.spacing;
-            for (i, toast) in toasts.iter_mut().enumerate() {
-                let (event, hovered) = card(ui, toast, i, t, now, reduce_motion);
+            for toast in toasts.iter_mut() {
+                let (event, hovered) = card(ui, toast, t, now, reduce_motion);
                 toast.set_hovered(hovered, now);
                 events.extend(event);
             }
         });
+    // The stack is anchored at its bottom right, but egui places it by
+    // last frame's size: when the size changed (a toast came or went), the
+    // cards stood in the wrong place this pass. Draw again at once, so no
+    // click lands on a card that only looked like it was there.
+    let size_id = egui::Id::unique("flatcraft-toasts-size");
+    let size = area.response.rect.size();
+    let last: Option<egui::Vec2> = ctx.data(|d| d.get_temp(size_id));
+    ctx.data_mut(|d| d.insert_temp(size_id, size));
+    if last.is_some_and(|l| l != size) {
+        ctx.request_discard("the toast stack changed size");
+    }
     events
 }
 
@@ -206,7 +222,6 @@ pub fn show(
 fn card(
     ui: &mut egui::Ui,
     toast: &Toast,
-    index: usize,
     t: &Tokens,
     now: Instant,
     reduce_motion: bool,
@@ -258,7 +273,7 @@ fn card(
         });
     });
     let rect = inner.response.rect;
-    let id = egui::Id::unique(("flatcraft-toast", index));
+    let id = egui::Id::unique(("flatcraft-toast", toast.id));
     let body = ui.interact(rect, id, egui::Sense::click());
     let mut event = None;
     if let Some(file) = &toast.reveal {
@@ -313,7 +328,7 @@ fn card(
         );
     }
     if x.clicked() {
-        event = Some(Event::Close(index));
+        event = Some(Event::Close(toast.id));
     }
     let hovered = body.hovered() || x.hovered() || ui.rect_contains_pointer(rect);
     (event, hovered)

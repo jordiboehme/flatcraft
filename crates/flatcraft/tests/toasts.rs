@@ -216,3 +216,34 @@ fn the_easter_egg_toasts_still_show() {
     h.run();
     h.get_by_label(NOTHING_TO_UNDO);
 }
+
+#[test]
+fn closing_a_toast_never_hits_its_neighbour() {
+    let mut r = rig(false);
+    let a = PathBuf::from("/tmp/flatcraft-test/a.flatcraft");
+    let b = PathBuf::from("/tmp/flatcraft-test/b.flatcraft");
+    r.show(Toast::success("A").with_reveal(a));
+    r.show(Toast::success("B").with_reveal(b.clone()));
+    let ids: Vec<u64> = app(&r.h).ui.toasts.iter().map(|t| t.id).collect();
+    assert_ne!(ids[0], ids[1]);
+    // Close A with its ×: the top one, with the pointer.
+    let x =
+        r.h.query_all_by_label(CLOSE_NAME)
+            .map(|n| n.rect())
+            .min_by(|x, y| x.top().total_cmp(&y.top()))
+            .unwrap()
+            .center();
+    r.h.hover_at(x);
+    r.h.run();
+    r.h.drag_at(x);
+    r.h.run();
+    r.h.drop_at(x);
+    r.h.run();
+    assert_eq!(r.titles(), ["B"]);
+    assert_eq!(app(&r.h).ui.toasts[0].id, ids[1], "B keeps its id");
+    // A click on B shows B's file.
+    r.h.get_by_role_and_label(Role::Button, reveal_label())
+        .click();
+    r.h.run();
+    assert_eq!(*r.revealed.0.lock().unwrap(), vec![b]);
+}

@@ -248,7 +248,7 @@ fn agent_request(s: &SharedSession) -> u64 {
     g.pending_send().unwrap().id
 }
 
-const QUESTION: &str = "An agent wants to start a cut on Silhouette Cameo 2. Allow?";
+const QUESTION: &str = "Allow the agent to cut on Silhouette Cameo 2?";
 
 #[test]
 fn agent_confirmation_dialog_allows() {
@@ -304,8 +304,8 @@ fn allow_sends_the_snapshot_not_the_current_document() {
         .unwrap();
     let mut h = harness(&dir, s.clone(), true);
     // The dialog shows the snapshot, not the empty document.
-    let line = format!("1 path, {} cut", mm_text(snapshot.summary.cut_mm));
-    assert!(h.query_by_label(&line).is_some(), "{line}");
+    let line = format!("1 path, {} cut,", mm_text(snapshot.summary.cut_mm));
+    assert!(h.query_by_label_contains(&line).is_some(), "{line}");
     assert!(h.query_by_label_contains("force 20").is_none());
     {
         let g = s.lock().unwrap();
