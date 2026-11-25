@@ -248,7 +248,8 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                     ui.add_space(t.spacing / 2.0);
                     thin_separator(ui, &t);
                     ui.add_space(t.spacing / 2.0);
-                    doc_tabs(ui, &t, &tabs, active, actions, &mut hot);
+                    let menus = !super::modal_open(app);
+                    doc_tabs(ui, &t, &tabs, active, menus, actions, &mut hot);
                 },
                 |ui| {
                     let actions = &mut right_actions;
@@ -581,6 +582,73 @@ fn doc_tab(
     (resp, close)
 }
 
+/// The reason Reveal and Copy path are dimmed for a document without a
+/// file.
+pub const SAVE_FIRST: &str = "Save the project first.";
+
+/// The right-click menu of a document tab: show its file in the file
+/// manager, copy its path, close it, close the others. Closing asks about
+/// unsaved changes per document, as Quit does.
+fn tab_menu(ui: &mut Ui, tab: &Tab, open: usize, actions: &mut Vec<Action>) {
+    ui.set_min_width(180.0);
+    let why = tab.path.is_none().then_some(SAVE_FIRST);
+    let reveal_label = super::files::reveal_menu_label();
+    let r = ui.add_enabled(why.is_none(), egui::Button::new(reveal_label));
+    card(
+        &r,
+        reveal_label,
+        "Opens the folder of this project in your file manager, with the file selected.",
+        why,
+        true,
+    );
+    if r.clicked()
+        && let Some(path) = &tab.path
+    {
+        actions.push(Action::Reveal(path.clone()));
+        ui.close();
+    }
+    let r = ui.add_enabled(why.is_none(), egui::Button::new("Copy path"));
+    card(
+        &r,
+        "Copy path",
+        "Copies the full path of the project file, to paste it somewhere else.",
+        why,
+        true,
+    );
+    if r.clicked()
+        && let Some(path) = &tab.path
+    {
+        actions.push(Action::CopyPath(path.clone()));
+        ui.close();
+    }
+    ui.separator();
+    let r = ui.button("Close");
+    card(
+        &r,
+        "Close",
+        "Closes this document. If it has unsaved changes, FlatCraft asks first.",
+        None,
+        true,
+    );
+    if r.clicked() {
+        actions.push(Action::Close(tab.id));
+        ui.close();
+    }
+    let others = (open < 2).then_some("No other documents are open.");
+    let r = ui.add_enabled(others.is_none(), egui::Button::new("Close other tabs"));
+    card(
+        &r,
+        "Close other tabs",
+        "Closes every document but this one. Each one with unsaved changes asks first.",
+        others,
+        true,
+    );
+    if r.clicked() {
+        actions.push(Action::CloseOthers(tab.id));
+        ui.close();
+    }
+}
+
 /// The document tabs, the "»" list when they do not all fit, and the New
 /// document button.
 fn doc_tabs(
@@ -588,6 +656,7 @@ fn doc_tabs(
     t: &Tokens,
     tabs: &[Tab],
     active: u64,
+    menus: bool,
     actions: &mut Vec<Action>,
     hot: &mut Vec<egui::Rect>,
 ) {
@@ -622,6 +691,10 @@ fn doc_tabs(
         }
         if close.clicked() {
             actions.push(Action::Close(tab.id));
+        }
+        // Right-click: the tab's menu. Not while a dialog is open.
+        if menus {
+            r.context_menu(|ui| tab_menu(ui, tab, tabs.len(), actions));
         }
     }
     if fit.more {

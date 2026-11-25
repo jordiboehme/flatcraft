@@ -246,3 +246,27 @@ pub fn wait_until(h: &mut AppHarness, busy: impl Fn(&FlatCraftApp) -> bool) {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
+
+/// Records the files it is asked to show instead of starting the file
+/// manager.
+#[derive(Clone, Default)]
+pub struct FakeRevealer(pub Arc<Mutex<Vec<PathBuf>>>);
+
+impl flatcraft::ui::files::Revealer for FakeRevealer {
+    fn reveal(&mut self, file: &std::path::Path) -> Result<(), String> {
+        self.0.lock().unwrap().push(file.to_path_buf());
+        Ok(())
+    }
+}
+
+/// The text the last frame put on the clipboard, if any.
+pub fn copied(h: &AppHarness) -> Option<String> {
+    h.output()
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|c| match c {
+            egui::OutputCommand::CopyText(t) => Some(t.clone()),
+            _ => None,
+        })
+}

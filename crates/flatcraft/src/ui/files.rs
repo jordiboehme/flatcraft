@@ -70,6 +70,30 @@ pub fn reveal_label() -> &'static str {
     }
 }
 
+/// The menu item that shows a file in the file manager: "Reveal in
+/// Finder" on macOS, "Show in Explorer" on Windows, "Show in folder"
+/// elsewhere (Linux opens the folder that holds it).
+pub fn reveal_menu_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Reveal in Finder"
+    } else if cfg!(target_os = "windows") {
+        "Show in Explorer"
+    } else {
+        "Show in folder"
+    }
+}
+
+/// The menu item that shows an object's linked file in the file manager.
+pub fn reveal_source_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Reveal source in Finder"
+    } else if cfg!(target_os = "windows") {
+        "Show source in Explorer"
+    } else {
+        "Show source in folder"
+    }
+}
+
 /// Shows a file in the platform file manager. The app uses
 /// [`NativeRevealer`]; tests record the paths instead of starting
 /// processes.

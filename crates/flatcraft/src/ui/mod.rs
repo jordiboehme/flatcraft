@@ -130,6 +130,9 @@ pub struct UiState {
     pub closing: bool,
     pub about: about::AboutState,
     pub home: home::HomeState,
+    /// Documents "Close other tabs" still has to ask about, after the one
+    /// the unsaved-changes dialog asks about now.
+    pub close_queue: Vec<u64>,
 }
 
 /// What the unsaved-changes dialog asks about.
@@ -282,6 +285,11 @@ pub enum Action {
     DenyPending(u64),
     /// Show this file in the file manager.
     Reveal(PathBuf),
+    /// Copy this path to the clipboard.
+    CopyPath(PathBuf),
+    /// Close every document but this one; each one with unsaved changes
+    /// asks first, one after the other.
+    CloseOthers(u64),
     /// Ask for a capture fixture and show it in the Debug panel.
     OpenCapture,
     /// Open the Settings window (Settings button, Settings menu item, Cmd+,).
@@ -1054,6 +1062,19 @@ impl FlatCraftApp {
                     self.toast(Toast::info("Cut request denied. Nothing was sent."));
                 }
             }
+            Action::CopyPath(path) => ctx.copy_text(path.display().to_string()),
+            Action::CloseOthers(keep) => {
+                let others: Vec<u64> = {
+                    let s = lock(&self.session);
+                    s.docs
+                        .iter()
+                        .map(|d| d.id())
+                        .filter(|d| *d != keep)
+                        .collect()
+                };
+                self.ui.close_queue = others;
+                self.close_next_queued();
+            }
             Action::Reveal(file) => {
                 if let Err(e) = self.revealer.reveal(&file) {
                     self.toast(Toast::error(format!(
@@ -1187,6 +1208,27 @@ impl FlatCraftApp {
         }
     }
 
+    /// Closes the queued documents of "Close other tabs" without unsaved
+    /// changes, and asks about the next one that has them.
+    fn close_next_queued(&mut self) {
+        while !self.ui.close_queue.is_empty() {
+            let doc_id = self.ui.close_queue.remove(0);
+            let dirty = {
+                let s = lock(&self.session);
+                match s.doc_index(doc_id) {
+                    Ok(i) => s.docs[i].dirty,
+                    // Closed meanwhile.
+                    Err(_) => continue,
+                }
+            };
+            if dirty {
+                self.ui.unsaved = Some(Unsaved::Close(doc_id));
+                return;
+            }
+            self.execute("document.close", json!({ "doc_id": doc_id }));
+        }
+    }
+
     /// Stable ids of the documents with unsaved changes.
     pub fn dirty_docs(&self) -> Vec<u64> {
         let s = lock(&self.session);
@@ -1212,8 +1254,9 @@ impl FlatCraftApp {
             return;
         }
         self.ui.unsaved = None;
+        let closing = matches!(asked, Unsaved::Close(_));
         match (asked, choice) {
-            (_, UnsavedChoice::Cancel) => {}
+            (_, UnsavedChoice::Cancel) => self.ui.close_queue.clear(),
             (Unsaved::PendingSend, _) => self.close_window(ctx),
             (Unsaved::Close(doc_id), UnsavedChoice::Discard) => {
                 self.execute(
@@ -1224,6 +1267,9 @@ impl FlatCraftApp {
             (Unsaved::Close(doc_id), UnsavedChoice::Save) => {
                 if self.save_for_close(doc_id) {
                     self.execute("document.close", json!({ "doc_id": doc_id }));
+                } else {
+                    // Not saved: "Close other tabs" stops here, as Quit does.
+                    self.ui.close_queue.clear();
                 }
             }
             (
@@ -1247,6 +1293,11 @@ impl FlatCraftApp {
                 }
                 self.ask_next_or_quit(ctx, answered);
             }
+        }
+        // "Close other tabs" goes on with the next document, unless the
+        // person cancelled (the queue is empty then).
+        if closing && self.ui.unsaved.is_none() {
+            self.close_next_queued();
         }
     }
 
