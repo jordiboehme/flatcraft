@@ -1472,22 +1472,26 @@ fn a_missing_mat_falls_back_to_the_first_one_with_a_warning() {
 fn a_headless_session_rereads_changed_preferences() {
     use std::time::{Duration, Instant, SystemTime};
     let dir = tempfile::tempdir().unwrap();
-    let write = |text: &str, age: u64| {
+    let out = dir.path().join("output");
+    let stamp = SystemTime::now() + Duration::from_secs(60);
+    // Every version keeps File Output in the tempdir.
+    let write = |allow: &str, at: SystemTime| {
         let path = dir.path().join(flatcraft_engine::prefs::FILE_NAME);
+        let text = format!("output_dir = {:?}\n{allow}\n", out.to_str().unwrap());
         std::fs::write(&path, text).unwrap();
         std::fs::File::options()
             .write(true)
             .open(&path)
             .unwrap()
-            .set_modified(SystemTime::now() + Duration::from_secs(age))
+            .set_modified(at)
             .unwrap();
     };
-    write("allow_agent_cuts = false\n", 0);
+    write("allow_agent_cuts = false", stamp);
     let mut s = session(&dir);
     s.watch_prefs_file();
     let t0 = Instant::now();
     assert!(!s.refresh_prefs(t0), "nothing changed");
-    write("allow_agent_cuts = true\n", 60);
+    write("allow_agent_cuts = true", stamp + Duration::from_secs(60));
     assert!(
         !s.refresh_prefs(t0 + Duration::from_millis(500)),
         "checked at most once per second"
@@ -1495,10 +1499,18 @@ fn a_headless_session_rereads_changed_preferences() {
     assert!(!s.prefs.allow_agent_cuts);
     assert!(s.refresh_prefs(t0 + Duration::from_millis(1100)));
     assert!(s.prefs.allow_agent_cuts);
+    assert_eq!(s.prefs.output_dir.as_deref(), Some(out.as_path()));
+    // Same time, other size (a coarse clock): still seen.
+    write(
+        "allow_agent_cuts = false\nauto_reload = true",
+        stamp + Duration::from_secs(60),
+    );
+    assert!(s.refresh_prefs(t0 + Duration::from_millis(2200)));
+    assert!(s.prefs.auto_reload);
     // A broken file keeps what was read last, not the defaults.
-    write("allow_agent_cuts = [", 120);
-    assert!(!s.refresh_prefs(t0 + Duration::from_millis(2200)));
-    assert!(s.prefs.allow_agent_cuts);
+    write("allow_agent_cuts = [", stamp + Duration::from_secs(120));
+    assert!(!s.refresh_prefs(t0 + Duration::from_millis(3300)));
+    assert!(s.prefs.auto_reload);
 }
 
 fn state_bounds(s: &mut Session, id: u64) -> Rect {

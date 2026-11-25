@@ -336,7 +336,7 @@ pub const PREFS_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 #[derive(Debug, Clone)]
 struct PrefsWatch {
     last_check: Option<Instant>,
-    modified: Option<std::time::SystemTime>,
+    stamp: Option<(Option<std::time::SystemTime>, u64)>,
 }
 
 impl Session {
@@ -395,13 +395,13 @@ impl Session {
     }
 
     /// Re-read `preferences.toml` before commands when its modification time
-    /// changed, checked at most once per [`PREFS_CHECK_INTERVAL`]. For a
+    /// or size changed, checked at most once per [`PREFS_CHECK_INTERVAL`]. For a
     /// headless `flatcraft mcp`, so a change made in a FlatCraft window
     /// reaches it. A GUI session owns its preferences and does not watch.
     pub fn watch_prefs_file(&mut self) {
         self.prefs_watch = Some(PrefsWatch {
             last_check: None,
-            modified: Preferences::modified(&self.config_dir),
+            stamp: Preferences::stamp(&self.config_dir),
         });
     }
 
@@ -419,13 +419,13 @@ impl Session {
             return false;
         }
         w.last_check = Some(now);
-        let modified = Preferences::modified(&self.config_dir);
-        if modified == w.modified {
+        let stamp = Preferences::stamp(&self.config_dir);
+        if stamp == w.stamp {
             return false;
         }
         // Once per change of the file, also a broken one: fixing it changes
-        // the time again.
-        w.modified = modified;
+        // the time or size again.
+        w.stamp = stamp;
         match Preferences::read(&self.config_dir) {
             Ok(prefs) => {
                 self.prefs = prefs;

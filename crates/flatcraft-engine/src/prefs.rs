@@ -71,11 +71,12 @@ impl Preferences {
         toml::from_str(&text).map_err(|e| format!("{} is broken: {e}", path.display()))
     }
 
-    /// Modification time of the preferences file, `None` when it is missing.
-    pub fn modified(config_dir: &Path) -> Option<std::time::SystemTime> {
-        std::fs::metadata(config_dir.join(FILE_NAME))
-            .and_then(|m| m.modified())
-            .ok()
+    /// Modification time and size of the preferences file, `None` when it
+    /// is missing. The size catches a change within one tick of a coarse
+    /// file system clock.
+    pub fn stamp(config_dir: &Path) -> Option<(Option<std::time::SystemTime>, u64)> {
+        let m = std::fs::metadata(config_dir.join(FILE_NAME)).ok()?;
+        Some((m.modified().ok(), m.len()))
     }
 
     /// Writes the preferences crash-safely (temp file, sync, rename).
