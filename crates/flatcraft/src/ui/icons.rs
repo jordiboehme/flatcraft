@@ -78,6 +78,10 @@ pub enum Icon {
     EachObject,
     /// "Auto arrange...", the panel (the one-click one uses Arrange).
     AutoArrangePanel,
+    /// The badges of the dialogs.
+    Warning,
+    Info,
+    Error,
     /// The Align directions "to the cutting area": the align icon inside a
     /// small dashed frame, drawn at render time from the Lucide file.
     AlignLeftArea,
@@ -95,7 +99,7 @@ macro_rules! svg {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 69] = [
+    pub const ALL: [Icon; 72] = [
         Icon::Import,
         Icon::Trace,
         Icon::Duplicate,
@@ -159,6 +163,9 @@ impl Icon {
         Icon::KeepAspect,
         Icon::EachObject,
         Icon::AutoArrangePanel,
+        Icon::Warning,
+        Icon::Info,
+        Icon::Error,
         Icon::AlignLeftArea,
         Icon::AlignCentreArea,
         Icon::AlignRightArea,
@@ -251,6 +258,9 @@ impl Icon {
             Icon::KeepAspect => svg!("proportions"),
             Icon::EachObject => svg!("ungroup"),
             Icon::AutoArrangePanel => svg!("layout-dashboard"),
+            Icon::Warning => svg!("triangle-exclamation-point"),
+            Icon::Info => svg!("info"),
+            Icon::Error => svg!("circle-x"),
             Icon::AlignLeftArea
             | Icon::AlignCentreArea
             | Icon::AlignRightArea

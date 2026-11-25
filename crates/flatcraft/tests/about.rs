@@ -565,7 +565,7 @@ fn keys_do_not_reach_prepare_under_the_unsaved_dialog() {
     let (mut h, s) = selected_square(&dir);
     let doc = s.lock().unwrap().doc().id();
     act(&mut h, Action::Close(doc));
-    let question = "You have unsaved changes in Untitled 1.";
+    let question = "Save changes to Untitled 1?";
     h.get_by_label(question);
     h.key_press(egui::Key::Delete);
     h.run();

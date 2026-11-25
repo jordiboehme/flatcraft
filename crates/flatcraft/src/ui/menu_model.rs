@@ -287,6 +287,11 @@ pub struct MenuInput<'a> {
     /// The Cut stage has a job that can be sent.
     pub send_ready: bool,
     pub recent: &'a [PathBuf],
+    /// A dialog owns the keyboard (see `ui::modal_open`): only Quit, and
+    /// the Edit items of a focused text field, stay enabled. A dimmed
+    /// item lets its key through to the dialog (Cmd+D is Don't Save there,
+    /// not Duplicate).
+    pub modal: bool,
 }
 
 impl MenuInput<'_> {
@@ -343,6 +348,28 @@ pub fn object_item(cmd: &Cmd, snap: &Snapshot, st: &PrepareState, ids: &[u64]) -
 
 impl MenuModel {
     pub fn build(inp: &MenuInput) -> MenuModel {
+        let mut model = Self::build_open(inp);
+        if inp.modal {
+            fn gate(entries: &mut [Entry], text_focused: bool) {
+                for e in entries {
+                    match e {
+                        Entry::Item(l) => {
+                            l.enabled &= l.cmd == Cmd::Quit || (text_focused && l.cmd.edits_text());
+                        }
+                        Entry::Sub(s) => gate(&mut s.entries, text_focused),
+                        _ => {}
+                    }
+                }
+            }
+            for m in &mut model.menus {
+                gate(&mut m.entries, inp.text_focused);
+            }
+        }
+        model
+    }
+
+    /// The model while no dialog is open.
+    fn build_open(inp: &MenuInput) -> MenuModel {
         MenuModel {
             recent: inp.recent.iter().take(MAX_RECENT).cloned().collect(),
             menus: vec![

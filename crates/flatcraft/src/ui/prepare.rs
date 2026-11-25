@@ -1180,51 +1180,47 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
     rename_window(ui.ctx(), &mut p.rename, snap, &t, actions);
 }
 
-/// The Rename dialog. It closes when its document is no longer shown or its
-/// object is gone. Enter or Rename sends `object.rename`.
+/// The Rename dialog (the shared [`super::dialog`]). It closes when its
+/// document is no longer shown or its object is gone. Enter or Rename
+/// sends `object.rename`; Escape, × and Cancel close it.
 fn rename_window(
     ctx: &egui::Context,
-    dialog: &mut Option<RenameDialog>,
+    slot: &mut Option<RenameDialog>,
     snap: &Snapshot,
     t: &Tokens,
     actions: &mut Vec<Action>,
 ) {
-    let Some(d) = dialog else {
+    let Some(d) = slot else {
         return;
     };
     if d.doc_id != snap.doc_id || !snap.objects.iter().any(|o| o.id == d.id) {
-        *dialog = None;
+        *slot = None;
         return;
     }
-    let mut close = false;
-    let modal = egui::Modal::new(egui::Id::unique("flatcraft-rename")).show(ctx, |ui| {
-        ui.set_width(300.0);
-        ui.label(RichText::new("Rename").font(super::fonts::semibold(15.0)));
-        ui.add_space(t.spacing / 2.0);
+    let ok = !d.name.trim().is_empty();
+    let dialog = super::dialog::Dialog::new("rename", super::dialog::Kind::Info, "Rename")
+        .body("A name you will find again in the Objects panel.")
+        .primary("Rename")
+        .primary_enabled(ok);
+    let answer = dialog.show(ctx, t, |ui| {
+        ui.add_space(t.spacing);
         let field = ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(f32::INFINITY));
         settings::set_name(ui, &field, "Name");
         if !field.has_focus() && !field.lost_focus() {
             field.request_focus();
         }
-        let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        ui.add_space(t.spacing / 2.0);
-        let ok = !d.name.trim().is_empty();
-        ui.horizontal(|ui| {
-            if ui.add_enabled(ok, egui::Button::new("Rename")).clicked() || (entered && ok) {
-                actions.push(Action::run(
-                    d.doc_id,
-                    "object.rename",
-                    json!({ "id": d.id, "name": d.name }),
-                ));
-                close = true;
-            }
-            if ui.button("Cancel").clicked() {
-                close = true;
-            }
-        });
     });
-    if close || modal.should_close() {
-        *dialog = None;
+    match answer {
+        Some(super::dialog::Answer::Primary) => {
+            actions.push(Action::run(
+                d.doc_id,
+                "object.rename",
+                json!({ "id": d.id, "name": d.name }),
+            ));
+            *slot = None;
+        }
+        Some(_) => *slot = None,
+        None => {}
     }
 }
 

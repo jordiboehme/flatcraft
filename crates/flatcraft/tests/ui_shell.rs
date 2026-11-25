@@ -246,20 +246,17 @@ fn closing_a_dirty_tab_offers_discard() {
         .click();
     h.run();
     assert_eq!(s.lock().unwrap().docs[0].document.objects.len(), 1);
-    h.get_by_label("You have unsaved changes in Untitled 1.");
+    h.get_by_label("Save changes to Untitled 1?");
     // Cancel keeps it.
     h.get_by_role_and_label(Role::Button, "Cancel").click();
     h.run();
-    assert!(
-        h.query_by_label("You have unsaved changes in Untitled 1.")
-            .is_none()
-    );
+    assert!(h.query_by_label("Save changes to Untitled 1?").is_none());
     assert_eq!(s.lock().unwrap().docs[0].document.objects.len(), 1);
     // Discard closes it.
     h.get_by_role_and_label(Role::Button, "Close Untitled 1")
         .click();
     h.run();
-    h.get_by_role_and_label(Role::Button, "Discard").click();
+    h.get_by_role_and_label(Role::Button, "Don't Save").click();
     h.run();
     let st = s.lock().unwrap();
     assert_eq!(st.docs.len(), 1);
@@ -311,14 +308,11 @@ fn quit_with_unsaved_work_asks_first_and_cancel_keeps_the_app() {
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
     h.run();
-    h.get_by_label("You have unsaved changes in 1 document.");
+    h.get_by_label("Save changes to Untitled 1?");
     assert!(!asks_to_close(&h));
     h.get_by_role_and_label(Role::Button, "Cancel").click();
     h.run();
-    assert!(
-        h.query_by_label("You have unsaved changes in 1 document.")
-            .is_none()
-    );
+    assert!(h.query_by_label("Save changes to Untitled 1?").is_none());
     assert!(!asks_to_close(&h));
     assert!(!app(&h).ui.closing);
     assert_eq!(s.lock().unwrap().docs[0].document.objects.len(), 1);
@@ -349,8 +343,16 @@ fn discard_on_quit_closes_the_window() {
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
     h.run();
-    h.get_by_label("You have unsaved changes in 2 documents.");
-    h.get_by_role_and_label(Role::Button, "Discard").click();
+    // One document after the other, each by its name.
+    h.get_by_label("Save changes to Untitled 1?");
+    h.get_by_role_and_label(Role::Button, "Don't Save").click();
+    h.run();
+    assert!(
+        !app(&h).ui.closing,
+        "the second document is still asked about"
+    );
+    h.get_by_label("Save changes to Untitled 2?");
+    h.get_by_role_and_label(Role::Button, "Don't Save").click();
     h.run();
     assert!(app(&h).ui.closing, "the window closes");
     assert!(app(&h).ui.unsaved.is_none());
@@ -380,7 +382,7 @@ fn the_window_close_button_asks_too() {
     h.step();
     assert!(root_commands(&h).contains(&egui::ViewportCommand::CancelClose));
     h.run();
-    h.get_by_label("You have unsaved changes in 1 document.");
+    h.get_by_label("Save changes to Untitled 1?");
 }
 
 #[test]
@@ -394,7 +396,11 @@ fn save_all_asks_for_a_path_per_untitled_document() {
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
     h.run();
-    h.get_by_role_and_label(Role::Button, "Save all").click();
+    // The app bar has a Save button too; the dialog is drawn last.
+    h.get_all_by_role_and_label(Role::Button, "Save")
+        .last()
+        .unwrap()
+        .click();
     h.run();
     assert_eq!(picker.requests.lock().unwrap().len(), 1);
     assert_eq!(
@@ -415,7 +421,11 @@ fn a_cancelled_save_all_keeps_the_app_open() {
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
     h.run();
-    h.get_by_role_and_label(Role::Button, "Save all").click();
+    // The app bar has a Save button too; the dialog is drawn last.
+    h.get_all_by_role_and_label(Role::Button, "Save")
+        .last()
+        .unwrap()
+        .click();
     h.run();
     assert!(!asks_to_close(&h));
     assert!(!app(&h).ui.closing);

@@ -9,6 +9,7 @@ pub mod collapse;
 pub mod context_menu;
 pub mod cut;
 pub mod debug;
+pub mod dialog;
 pub mod files;
 pub mod fonts;
 pub mod groups;
@@ -126,7 +127,8 @@ pub struct UiState {
 /// What the unsaved-changes dialog asks about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unsaved {
-    /// Quitting while these documents have unsaved changes.
+    /// Quitting while these documents have unsaved changes. The dialog
+    /// asks about the first one; the others follow in turn.
     Quit(Vec<u64>),
     /// Closing this document with unsaved changes.
     Close(u64),
@@ -267,8 +269,9 @@ pub enum Action {
     Menu(menu_model::Cmd),
     /// Quit; asks first when a document has unsaved changes.
     Quit,
-    /// The answer in the unsaved-changes dialog.
-    Unsaved(UnsavedChoice),
+    /// The answer in the unsaved-changes dialog, with the question it
+    /// answers: an answer to a question no longer asked is ignored.
+    Unsaved(Unsaved, UnsavedChoice),
 }
 
 impl Action {
@@ -471,6 +474,7 @@ impl FlatCraftApp {
             text_focused: ctx.text_edit_focused(),
             send_ready: matches!(self.ui.cut.plan, Some(Ok(_))),
             recent: &recent,
+            modal: modal_open(self),
         })
     }
 
@@ -1008,7 +1012,7 @@ impl FlatCraftApp {
                     self.close_window(ctx);
                 }
             }
-            Action::Unsaved(choice) => self.answer_unsaved(ctx, choice),
+            Action::Unsaved(asked, choice) => self.answer_unsaved(ctx, asked, choice),
             Action::Menu(cmd) => self.run_menu(ctx, cmd),
         }
     }
@@ -1031,11 +1035,13 @@ impl FlatCraftApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
-    /// Runs the answer of the unsaved-changes dialog.
-    fn answer_unsaved(&mut self, ctx: &egui::Context, choice: UnsavedChoice) {
-        let Some(asked) = self.ui.unsaved.take() else {
+    /// Runs the answer of the unsaved-changes dialog to `asked`. An answer
+    /// to a question that is no longer open does nothing.
+    fn answer_unsaved(&mut self, ctx: &egui::Context, asked: Unsaved, choice: UnsavedChoice) {
+        if self.ui.unsaved.as_ref() != Some(&asked) {
             return;
-        };
+        }
+        self.ui.unsaved = None;
         match (asked, choice) {
             (_, UnsavedChoice::Cancel) => {}
             (Unsaved::PendingSend, _) => self.close_window(ctx),
@@ -1050,18 +1056,26 @@ impl FlatCraftApp {
                     self.execute("document.close", json!({ "doc_id": doc_id }));
                 }
             }
-            (Unsaved::Quit(_), UnsavedChoice::Discard) => self.close_window(ctx),
-            (Unsaved::Quit(_), UnsavedChoice::Save) => {
-                // The documents dirty now: an agent may have changed more.
-                for doc_id in self.dirty_docs() {
-                    if !self.save_for_close(doc_id) {
-                        self.toast(Toast::warning(
-                            "Not everything was saved, so FlatCraft stays open.",
-                        ));
-                        return;
-                    }
+            (Unsaved::Quit(queue), choice) => {
+                let Some((&head, rest)) = queue.split_first() else {
+                    self.close_window(ctx);
+                    return;
+                };
+                if choice == UnsavedChoice::Save && !self.save_for_close(head) {
+                    self.toast(Toast::warning(
+                        "Not everything was saved, so FlatCraft stays open.",
+                    ));
+                    return;
                 }
-                self.close_window(ctx);
+                // The next document that still has unsaved changes (an
+                // agent may have saved or closed one meanwhile).
+                let dirty = self.dirty_docs();
+                let rest: Vec<u64> = rest.iter().copied().filter(|d| dirty.contains(d)).collect();
+                if rest.is_empty() {
+                    self.close_window(ctx);
+                } else {
+                    self.ui.unsaved = Some(Unsaved::Quit(rest));
+                }
             }
         }
     }
@@ -1525,72 +1539,59 @@ pub fn guard_close(ctx: &egui::Context, app: &mut FlatCraftApp) {
     }
 }
 
-/// The unsaved-changes dialog: Save (all) / Discard / Cancel.
+/// The unsaved-changes dialog: "Save changes to <name>?" with Don't
+/// Save, Cancel and Save, for closing a document and, one document after
+/// the other, for quitting. Quitting while an agent waits for a send asks
+/// about that.
 fn unsaved_modal(ctx: &egui::Context, app: &mut FlatCraftApp, actions: &mut Vec<Action>) {
     let Some(asked) = app.ui.unsaved.clone() else {
         return;
     };
-    let (text, save) = match &asked {
-        Unsaved::Quit(docs) if docs.len() == 1 => (
-            "You have unsaved changes in 1 document.".to_string(),
-            "Save all",
-        ),
-        Unsaved::Quit(docs) => (
-            format!("You have unsaved changes in {} documents.", docs.len()),
-            "Save all",
-        ),
-        Unsaved::Close(doc_id) => (
-            format!("You have unsaved changes in {}.", app.doc_name(*doc_id)),
-            "Save",
-        ),
-        Unsaved::PendingSend => (
-            "An agent is waiting for your OK to send a cut. Quit anyway?".to_string(),
-            "",
-        ),
-    };
-    let waiting = app.send_waiting() && !matches!(asked, Unsaved::PendingSend);
-    let pending_only = matches!(asked, Unsaved::PendingSend);
+    let d = unsaved_dialog(app, &asked);
     let t = app.tokens;
-    let modal = egui::Modal::new(egui::Id::unique("flatcraft-unsaved")).show(ctx, |ui| {
-        ui.set_max_width(420.0);
-        ui.label(egui::RichText::new(text).font(fonts::semibold(15.0)));
-        ui.add_space(t.spacing);
-        if pending_only {
-            ui.label(
-                egui::RichText::new("Quitting drops the request. Nothing is sent.")
-                    .color(t.text_dim),
-            );
-        } else {
-            ui.label(
-                egui::RichText::new("Discard drops them for good. No undo past this point.")
-                    .color(t.text_dim),
-            );
-        }
-        if waiting {
-            ui.label(
-                egui::RichText::new(
-                    "An agent is also waiting for your OK to send a cut. Quitting drops that request.",
-                )
-                .color(t.text_dim),
-            );
-        }
-        ui.add_space(t.spacing);
-        ui.horizontal(|ui| {
-            if !pending_only && ui.button(save).clicked() {
-                actions.push(Action::Unsaved(UnsavedChoice::Save));
-            }
-            let discard = if pending_only { "Quit anyway" } else { "Discard" };
-            if ui.button(discard).clicked() {
-                actions.push(Action::Unsaved(UnsavedChoice::Discard));
-            }
-            if ui.button("Cancel").clicked() {
-                actions.push(Action::Unsaved(UnsavedChoice::Cancel));
-            }
-        });
-    });
-    if modal.should_close() && actions.iter().all(|a| !matches!(a, Action::Unsaved(_))) {
-        actions.push(Action::Unsaved(UnsavedChoice::Cancel));
+    if let Some(answer) = d.show(ctx, &t, |_| {}) {
+        let choice = match answer {
+            dialog::Answer::Primary => UnsavedChoice::Save,
+            dialog::Answer::Secondary => UnsavedChoice::Discard,
+            dialog::Answer::Cancel => UnsavedChoice::Cancel,
+        };
+        actions.push(Action::Unsaved(asked, choice));
     }
+}
+
+/// The dialog of an unsaved-changes question.
+pub fn unsaved_dialog(app: &FlatCraftApp, asked: &Unsaved) -> dialog::Dialog {
+    use dialog::{Dialog, Kind};
+    let doc = match asked {
+        Unsaved::PendingSend => {
+            return Dialog::new("unsaved", Kind::Warning, "Quit while an agent waits?")
+                .body("An agent is waiting for your OK to send a cut.")
+                .body("If you quit, the request is dropped and nothing is sent.")
+                .secondary("Quit anyway", false);
+        }
+        Unsaved::Close(doc_id) => *doc_id,
+        Unsaved::Quit(queue) => queue.first().copied().unwrap_or_default(),
+    };
+    let name = app.doc_name(doc);
+    let mut d = Dialog::new("unsaved", Kind::Warning, format!("Save changes to {name}?"))
+        .body(format!(
+            "{name} has unsaved changes. If you don't save, they are lost."
+        ))
+        .secondary("Don't Save", true)
+        .primary("Save");
+    if let Unsaved::Quit(queue) = asked {
+        match queue.len() {
+            0 | 1 => {}
+            2 => d = d.body("1 more document has unsaved changes."),
+            n => d = d.body(format!("{} more documents have unsaved changes.", n - 1)),
+        }
+        if app.send_waiting() {
+            d = d.body(
+                "An agent is also waiting for your OK to send a cut. Quitting drops that request.",
+            );
+        }
+    }
+    d
 }
 
 /// Picks up preferences another FlatCraft process stored (at most once a

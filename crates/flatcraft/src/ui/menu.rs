@@ -268,6 +268,7 @@ mod tests {
             text_focused: true,
             send_ready: true,
             recent: &[],
+            modal: false,
         });
         let mut n = 0;
         for l in model.leaves() {

@@ -48,6 +48,7 @@ fn model_of(h: &mut AppHarness, recent: &[PathBuf]) -> MenuModel {
         text_focused: false,
         send_ready: false,
         recent,
+        modal: false,
     })
 }
 
@@ -63,6 +64,7 @@ fn home_model(h: &AppHarness) -> MenuModel {
         text_focused: false,
         send_ready: false,
         recent: &[],
+        modal: false,
     })
 }
 
@@ -390,6 +392,7 @@ fn the_cut_workspace_dims_the_prepare_items_and_enables_send() {
         text_focused: false,
         send_ready,
         recent: &[],
+        modal: false,
     };
     let m = MenuModel::build(&input(true));
     assert!(!tool(&m, "duplicate").enabled);
@@ -418,6 +421,7 @@ fn edit_items_work_for_text_fields() {
             text_focused,
             send_ready: false,
             recent: &[],
+            modal: false,
         })
     };
     let m = build(false, false);
@@ -754,6 +758,7 @@ fn the_edit_items_reach_a_text_field_in_a_dialog() {
         text_focused: true,
         send_ready: false,
         recent: &[],
+        modal: false,
     });
     for c in &EDIT_CMDS {
         assert!(leaf(&m, c).enabled, "{c:?}");
@@ -801,6 +806,7 @@ fn a_text_field_keeps_the_keys_of_duplicate_import_and_delete() {
             text_focused,
             send_ready: false,
             recent: &[],
+            modal: false,
         })
     };
     let typing = build(true);
@@ -924,7 +930,8 @@ fn quit_with_a_pending_send_asks_first() {
     app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
     h.run();
     assert_eq!(app(&h).ui.unsaved, Some(Unsaved::PendingSend));
-    h.get_by_label("An agent is waiting for your OK to send a cut. Quit anyway?");
+    h.get_by_label("Quit while an agent waits?");
+    h.get_by_label("An agent is waiting for your OK to send a cut.");
     assert!(!closes(&h) && !app(&h).ui.closing);
     // Cancel keeps the window and the request.
     h.get_by_role_and_label(egui::accesskit::Role::Button, "Cancel")
@@ -1050,6 +1057,7 @@ fn every_enabled_menu_item_does_something_when_clicked() {
             text_focused: false,
             send_ready: false,
             recent: &probe.recent,
+            modal: false,
         })
     };
     let todo: Vec<Cmd> = m
