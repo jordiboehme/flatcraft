@@ -1381,22 +1381,14 @@ fn prepare_keys(
     }
     let ids: Vec<u64> = snap.selection.iter().copied().collect();
     if help::pressed(ctx, help::PrepareKey::Duplicate) {
-        actions.push(Action::run(
-            snap.doc_id,
-            "object.duplicate",
-            json!({ "ids": ids }),
-        ));
+        actions.push(ribbon::duplicate_action(snap.doc_id, &ids));
         return;
     }
     canvas::nudge_keys(ctx, snap, st, now, actions);
     let delete = help::pressed(ctx, help::PrepareKey::Delete);
     let escape = help::pressed(ctx, help::PrepareKey::ClearSelection);
     if delete {
-        actions.push(Action::run(
-            snap.doc_id,
-            "object.delete",
-            json!({ "ids": ids }),
-        ));
+        actions.push(ribbon::delete_action(snap.doc_id, &ids));
     } else if escape {
         actions.push(Action::run(
             snap.doc_id,

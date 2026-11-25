@@ -113,7 +113,7 @@ pub enum PrepareKey {
     SelectAll,
     Import,
     Duplicate,
-    /// The arrow keys, see [`NUDGE_KEYS`].
+    /// One row per arrow key; Shift and Alt change the step.
     Nudge,
     Delete,
     ClearSelection,
@@ -186,7 +186,7 @@ const fn prepare(
 /// Every shortcut the app has. The key handler runs the entries with a
 /// `run`, in this order (a Shift variant before its plain key), and the
 /// shortcuts sheet lists all of them.
-pub const SHORTCUTS: [Shortcut; 16] = [
+pub const SHORTCUTS: [Shortcut; 19] = [
     global(
         CMD_SHIFT,
         Key::S,
@@ -218,7 +218,25 @@ pub const SHORTCUTS: [Shortcut; 16] = [
     prepare(
         Modifiers::NONE,
         Key::ArrowLeft,
-        "Nudge the selection by 1 mm (Shift 10 mm, Alt 0.1 mm)",
+        "Nudge the selection left by 1 mm (Shift 10 mm, Alt 0.1 mm)",
+        PrepareKey::Nudge,
+    ),
+    prepare(
+        Modifiers::NONE,
+        Key::ArrowRight,
+        "Nudge the selection right by 1 mm (Shift 10 mm, Alt 0.1 mm)",
+        PrepareKey::Nudge,
+    ),
+    prepare(
+        Modifiers::NONE,
+        Key::ArrowUp,
+        "Nudge the selection up by 1 mm (Shift 10 mm, Alt 0.1 mm)",
+        PrepareKey::Nudge,
+    ),
+    prepare(
+        Modifiers::NONE,
+        Key::ArrowDown,
+        "Nudge the selection down by 1 mm (Shift 10 mm, Alt 0.1 mm)",
         PrepareKey::Nudge,
     ),
     prepare(
@@ -253,20 +271,38 @@ fn rows(action: PrepareKey) -> impl Iterator<Item = &'static Shortcut> {
 }
 
 /// Consumes the keys of a Prepare key from this frame's input. True if one
-/// of them was pressed.
+/// of them was pressed. The modifiers must match exactly: Cmd+Shift+D is
+/// not Cmd+D.
 pub fn pressed(ctx: &egui::Context, action: PrepareKey) -> bool {
     ctx.input_mut(|i| {
         let mut hit = false;
         for s in rows(action) {
-            hit |= i.consume_shortcut(&KeyboardShortcut::new(s.modifiers, s.key));
+            let at = i.events.iter().position(|e| {
+                matches!(e, egui::Event::Key { key, pressed: true, modifiers, .. }
+                    if *key == s.key && modifiers.matches_exact(s.modifiers))
+            });
+            if let Some(at) = at {
+                i.events.remove(at);
+                hit = true;
+            }
         }
         hit
     })
 }
 
+/// Whether `key` is one of the nudge keys of the table.
+pub fn is_nudge_key(key: Key) -> bool {
+    rows(PrepareKey::Nudge).any(|s| s.key == key)
+}
+
 /// The key hint of a Prepare key for menus ("Cmd+D"), from the table.
 pub fn hint(action: PrepareKey) -> String {
-    rows(action).next().map(Shortcut::keys).unwrap_or_default()
+    // On a Mac the key that deletes is labelled Backspace (the delete key).
+    let mac_delete = cfg!(target_os = "macos") && action == PrepareKey::Delete;
+    rows(action)
+        .find(|s| !mac_delete || s.key == Key::Backspace)
+        .map(Shortcut::keys)
+        .unwrap_or_default()
 }
 
 /// The key that is held to pan with the pointer.
@@ -290,7 +326,11 @@ impl Shortcut {
         }
         s.push_str(match self.key {
             Key::Comma => ",",
-            Key::ArrowLeft => "Arrow keys",
+            Key::ArrowLeft => "Left",
+            Key::ArrowRight => "Right",
+            Key::ArrowUp => "Up",
+            Key::ArrowDown => "Down",
+            Key::Backspace => "Backspace",
             Key::Escape => "Esc",
             Key::Delete => "Del",
             Key::Space => "Space",

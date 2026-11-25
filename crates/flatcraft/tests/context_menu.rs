@@ -363,11 +363,12 @@ fn the_menu_of_two_objects() {
     select(&r.s, &r.ids.clone());
     r.h.run();
     r.right_click_object(0);
-    // Two separate imports hold their own source: no Link copies.
+    // Two imports of one file: the same bytes, so they can be linked.
     assert_eq!(
         r.items(),
         vec![
             Duplicate,
+            LinkCopies,
             RotateLeft,
             RotateRight,
             MirrorHorizontal,
@@ -833,11 +834,13 @@ fn menu_hints_come_from_the_shortcut_table() {
             .iter()
             .find(|s| s.what == what)
             .unwrap();
-        assert_eq!(
-            item.hint().as_deref(),
-            Some(row.keys().as_str()),
-            "{item:?}"
-        );
+        // Delete has two rows; a Mac shows the Backspace one.
+        let want = if item == Delete && cfg!(target_os = "macos") {
+            "Backspace".to_string()
+        } else {
+            row.keys()
+        };
+        assert_eq!(item.hint().as_deref(), Some(want.as_str()), "{item:?}");
     }
     assert_eq!(Rename.hint(), None);
 }
@@ -846,5 +849,102 @@ fn menu_hints_come_from_the_shortcut_table() {
 fn no_em_dash_in_the_menu() {
     for item in ALL {
         assert!(!item.label().contains('\u{2014}'));
+    }
+}
+
+#[test]
+fn shifted_keys_are_not_duplicate_or_import() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let id = import_square(&s);
+    let picker = FakePicker::default();
+    let p = picker.clone();
+    let mut h = harness_with(&dir, s.clone(), move |app| app.with_file_picker(p));
+    to_prepare(&mut h);
+    select(&s, &[id]);
+    h.run();
+    for key in [Key::D, Key::I, Key::A] {
+        h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, key);
+        h.run();
+    }
+    assert_eq!(object_count(&s), 1);
+    assert!(picker.requests.lock().unwrap().is_empty());
+}
+
+#[test]
+fn cmd_d_and_cmd_i_wait_while_a_text_field_has_the_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let id = import_square(&s);
+    let picker = FakePicker::default();
+    let p = picker.clone();
+    let mut h = harness_with(&dir, s.clone(), move |app| app.with_file_picker(p));
+    to_prepare(&mut h);
+    select(&s, &[id]);
+    h.run();
+    h.get_by_label("Search commands").click();
+    h.run();
+    for key in [Key::D, Key::I] {
+        h.key_press_modifiers(Modifiers::COMMAND, key);
+        h.run();
+    }
+    assert_eq!(object_count(&s), 1);
+    assert!(picker.requests.lock().unwrap().is_empty());
+}
+
+fn save_and_reopen(dir: &tempfile::TempDir, s: &SharedSession) -> SharedSession {
+    let path = dir.path().join("p.flatcraft");
+    exec(s, "project.save", json!({ "path": path }));
+    let fresh = session(dir);
+    exec(&fresh, "project.open", json!({ "path": path }));
+    fresh
+}
+
+#[test]
+fn link_copies_is_offered_after_a_reopen_and_for_two_imports_of_one_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let d = exec(&s, "object.duplicate", json!({ "ids": [a] }));
+    let dup = d["ids"][0].as_u64().unwrap();
+    exec(
+        &s,
+        "object.move",
+        json!({ "ids": [dup], "dx_mm": 100.0, "dy_mm": 0.0 }),
+    );
+    // Two imports of one file.
+    let file = dir.path().join("a.svg");
+    write_square(&file, 50.0);
+    let f1 = import_file(&s, &file);
+    let f2 = import_file(&s, &file);
+    exec(
+        &s,
+        "object.move",
+        json!({ "ids": [f1], "dx_mm": 0.0, "dy_mm": 100.0 }),
+    );
+    exec(
+        &s,
+        "object.move",
+        json!({ "ids": [f2], "dx_mm": 100.0, "dy_mm": 100.0 }),
+    );
+    for (sess, pair) in [(s.clone(), [f1, f2]), (save_and_reopen(&dir, &s), [a, dup])] {
+        select(&sess, &pair);
+        let mut h = harness(&dir, sess.clone(), false);
+        to_prepare(&mut h);
+        let rect = app(&h).ui.prepare.canvas_rect;
+        let b = object(&sess, pair[0])["bounds_mm"].clone();
+        let view = CanvasView {
+            offset: rect.center().to_vec2() - Vec2::new(45.0, 45.0) * 2.0,
+            px_per_mm: 2.0,
+        };
+        app_mut(&mut h).ui.prepare.view = view;
+        app_mut(&mut h).ui.prepare.fit_pending = false;
+        wait_for_workers(&mut h);
+        select(&sess, &pair);
+        let cx = (b["x0"].as_f64().unwrap() + b["x1"].as_f64().unwrap()) / 2.0;
+        let cy = (b["y0"].as_f64().unwrap() + b["y1"].as_f64().unwrap()) / 2.0;
+        right_click(&mut h, at_mm(&view, cx, cy));
+        let items = shown(&h);
+        assert!(items.contains(&LinkCopies), "{pair:?}: {items:?}");
     }
 }

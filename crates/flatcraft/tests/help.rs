@@ -221,7 +221,9 @@ fn every_prepare_key_does_what_the_sheet_says() {
             Key::I => assert_eq!(picker.requests.lock().unwrap().len(), 1, "{who}"),
             // Held while dragging; see `space_drag_pans_the_canvas`.
             Key::Space => continue,
-            Key::ArrowLeft => assert!(common::undo_len(&sess) > undo_before, "{who}"),
+            Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown => {
+                assert!(common::undo_len(&sess) > undo_before, "{who}")
+            }
             Key::Delete | Key::Backspace => assert_eq!(objects(), 1, "{who}"),
             Key::Escape => assert_eq!(selection(), 0, "{who}"),
             other => panic!("no check for {other:?}"),
@@ -248,15 +250,36 @@ fn every_row_is_global_or_prepare() {
     }
 }
 
-/// The arrow keys of the Nudge row are the keys the handler reads.
+/// The table has a row for each arrow key, and they are the nudge keys.
 #[test]
-fn the_nudge_row_lists_the_nudge_keys() {
-    let row = SHORTCUTS
+fn the_nudge_rows_are_the_four_arrows() {
+    let keys: Vec<Key> = SHORTCUTS
         .iter()
-        .find(|s| s.prepare == Some(help::PrepareKey::Nudge))
-        .unwrap();
-    assert!(help::NUDGE_KEYS.contains(&row.key));
-    assert_eq!(help::NUDGE_KEYS.len(), 4);
+        .filter(|s| s.prepare == Some(help::PrepareKey::Nudge))
+        .map(|s| s.key)
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            Key::ArrowLeft,
+            Key::ArrowRight,
+            Key::ArrowUp,
+            Key::ArrowDown
+        ]
+    );
+    assert!(keys.iter().all(|k| help::is_nudge_key(*k)));
+    assert!(!help::is_nudge_key(Key::A));
+}
+
+#[test]
+fn the_delete_hint_names_the_key_of_the_platform() {
+    let hint = help::hint(help::PrepareKey::Delete);
+    if cfg!(target_os = "macos") {
+        // The bundled font has no delete-key glyph, so it is spelled out.
+        assert_eq!(hint, "Backspace");
+    } else {
+        assert_eq!(hint, "Del");
+    }
 }
 
 #[test]

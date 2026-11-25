@@ -596,11 +596,7 @@ pub(crate) fn draw_rulers(painter: &egui::Painter, rect: Rect, view: &CanvasView
 /// 0.1 mm with Alt (Option), else 1 mm. `None` for keys that are not
 /// arrows and for Cmd or Ctrl with an arrow, which are left to others.
 fn nudge_step(key: egui::Key, modifiers: egui::Modifiers) -> Option<kurbo::Vec2> {
-    if modifiers.command
-        || modifiers.ctrl
-        || modifiers.mac_cmd
-        || !super::help::NUDGE_KEYS.contains(&key)
-    {
+    if modifiers.command || modifiers.ctrl || modifiers.mac_cmd || !super::help::is_nudge_key(key) {
         return None;
     }
     let mm = if modifiers.shift {

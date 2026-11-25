@@ -142,7 +142,7 @@ pub fn items(snap: &Snapshot, st: &PrepareState, ids: &[u64]) -> Vec<Vec<Item>> 
     }
     let all_one_group =
         objs[0].link_group.is_some() && objs.iter().all(|o| o.link_group == objs[0].link_group);
-    if n >= 2 && !all_one_group && objs.iter().all(|o| o.source_key == objs[0].source_key) {
+    if n >= 2 && !all_one_group && objs.iter().all(|o| o.same_source(objs[0])) {
         g.push(Item::LinkCopies);
     }
     if objs.iter().any(|o| o.link_group.is_some()) {

@@ -593,10 +593,18 @@ pub struct RenameParams {
     pub name: String,
 }
 
+/// The longest object name `object.rename` takes, in characters.
+pub const MAX_NAME_CHARS: usize = 200;
+
 fn run_rename(s: &mut Session, p: RenameParams, _: Origin) -> Result<Value, CommandError> {
     let name = p.name.trim().to_string();
     if name.is_empty() {
         return Err(CommandError::InvalidParams("name must not be empty".into()));
+    }
+    if name.chars().count() > MAX_NAME_CHARS {
+        return Err(CommandError::InvalidParams(format!(
+            "name must be at most {MAX_NAME_CHARS} characters"
+        )));
     }
     if name.chars().any(char::is_control) {
         return Err(CommandError::InvalidParams(
@@ -616,7 +624,7 @@ command!(
     mutates: true,
     params: RenameParams,
     run: run_rename,
-    description: "Renames one object. The name is one line of text without leading or trailing spaces and must not be empty. Linked copies (see object.copies) each keep their own name. Returns {id, name}.",
+    description: "Renames one object. The name is one line of text without leading or trailing spaces and must not be empty and at most 200 characters. Renaming to the name the object has changes nothing and records no undo step. Linked copies (see object.copies) each keep their own name. Returns {id, name}.",
 );
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]

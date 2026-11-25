@@ -741,15 +741,18 @@ pub struct ObjView {
     pub link: Option<PathBuf>,
     /// The group of linked copies the object belongs to.
     pub link_group: Option<u64>,
-    /// Where the source bytes live and how long they are: objects with the
-    /// same key share one source (copies and linked copies), so they can be
-    /// linked. Two imports of one file hold equal bytes in two places and
-    /// are not found by this key.
-    pub source_key: (usize, usize),
+    /// The source bytes, shared with the document. See [`ObjView::same_source`].
+    pub source: Arc<[u8]>,
     pub shape: Arc<Shape>,
 }
 
 impl ObjView {
+    /// Same source, as `object.link` compares: the same allocation, else
+    /// the same length and bytes (copies, and two imports of one file).
+    pub fn same_source(&self, other: &ObjView) -> bool {
+        Arc::ptr_eq(&self.source, &other.source) || *self.source == *other.source
+    }
+
     /// The engine's bounds in mat mm, as `document.state` reports them.
     pub fn bounds(&self) -> Option<kurbo::Rect> {
         self.shape
@@ -952,10 +955,8 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
                 cut: o.cut,
                 link: o.link.as_ref().map(|l| l.path.clone()),
                 link_group: o.link_group.map(|g| g.0),
-                source_key: match &o.source {
-                    Source::Svg { bytes, .. } | Source::Raster { bytes, .. } => {
-                        (bytes.as_ptr() as usize, bytes.len())
-                    }
+                source: match &o.source {
+                    Source::Svg { bytes, .. } | Source::Raster { bytes, .. } => bytes.clone(),
                 },
                 shape,
             });

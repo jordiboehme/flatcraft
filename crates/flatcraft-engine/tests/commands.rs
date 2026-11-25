@@ -389,6 +389,23 @@ fn rename_changes_one_name_and_undoes() {
             .unwrap_err();
         assert!(!e.to_string().contains('\u{2014}'));
     }
+    // The cap is in characters, not bytes.
+    let long = "\u{e4}".repeat(200);
+    run(&mut s, "object.rename", json!({ "id": a, "name": long }));
+    let too_long = "x".repeat(201);
+    assert!(
+        s.execute(
+            "object.rename",
+            json!({ "id": a, "name": too_long }),
+            Origin::Agent
+        )
+        .is_err()
+    );
+    // The same name again is no undo step.
+    let steps = s.doc().undo.undo_len();
+    run(&mut s, "object.rename", json!({ "id": a, "name": long }));
+    run(&mut s, "object.rename", json!({ "id": a, "name": format!(" {long} ") }));
+    assert_eq!(s.doc().undo.undo_len(), steps);
     assert!(
         s.execute(
             "object.rename",
