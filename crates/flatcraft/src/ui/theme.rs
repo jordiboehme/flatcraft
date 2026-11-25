@@ -11,6 +11,8 @@ pub struct Tokens {
     pub panel: Color32,
     /// Cards, buttons and fields on top of a panel.
     pub surface: Color32,
+    /// The collapsed side panels' rails, recessed against the panels.
+    pub rail: Color32,
     pub text: Color32,
     pub text_dim: Color32,
     /// Teal, the colour of the Prepare workspace.
@@ -43,6 +45,7 @@ impl Tokens {
             bg: Color32::from_rgb(0x15, 0x17, 0x1A),
             panel: Color32::from_rgb(0x1D, 0x20, 0x24),
             surface: Color32::from_rgb(0x27, 0x2B, 0x30),
+            rail: Color32::from_rgb(0x17, 0x19, 0x1D),
             text: Color32::from_rgb(0xE6, 0xE8, 0xEB),
             text_dim: Color32::from_rgb(0x9A, 0xA1, 0xAB),
             accent_prepare: Color32::from_rgb(0x2B, 0xB3, 0xA3),
@@ -66,6 +69,7 @@ impl Tokens {
             bg: Color32::from_rgb(0xF4, 0xF5, 0xF7),
             panel: Color32::from_rgb(0xFF, 0xFF, 0xFF),
             surface: Color32::from_rgb(0xE9, 0xEC, 0xEF),
+            rail: Color32::from_rgb(0xEE, 0xF1, 0xF1),
             text: Color32::from_rgb(0x1B, 0x1E, 0x22),
             text_dim: Color32::from_rgb(0x5E, 0x66, 0x70),
             accent_prepare: Color32::from_rgb(0x2B, 0xB3, 0xA3),

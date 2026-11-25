@@ -14,7 +14,7 @@ use std::sync::Arc;
 use egui::{Align2, Color32, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use flatcraft_device::TransportSpec;
 use flatcraft_engine::CommandError;
-use flatcraft_engine::job::{JobInput, JobResult, build_input, file_output_dir, summary};
+use flatcraft_engine::job::{JobInput, JobResult, build_classified, file_output_dir, summary};
 
 use super::canvas::{self, CanvasView};
 use super::collapse::{self, Group, Mode};
@@ -92,6 +92,8 @@ pub struct CutState {
     /// The document and input the plan was built from.
     plan_key: Option<(u64, JobInput)>,
     pub plan: Option<Plan>,
+    /// The plan failed because no visible object has cut paths.
+    pub nothing_to_cut: bool,
     /// The active plotter's transport.
     pub transport: Option<TransportSpec>,
     pub labels: LabelCache,
@@ -108,6 +110,7 @@ impl Default for CutState {
             timeline: Timeline::default(),
             plan_key: None,
             plan: None,
+            nothing_to_cut: false,
             transport: None,
             labels: LabelCache::default(),
         }
@@ -127,7 +130,9 @@ impl CutState {
                     .as_ref()
                     .is_some_and(|(d, i)| *d == snap.doc_id && i == input);
                 if !same {
-                    let plan = build_input(input).map(Arc::new);
+                    let built = build_classified(input);
+                    self.nothing_to_cut = built.as_ref().err().is_some_and(|f| f.nothing_to_cut);
+                    let plan = built.map_err(|f| f.error).map(Arc::new);
                     let total = plan.as_ref().map_or(0, |r| r.plan.toolpaths.len());
                     self.timeline.reset(total);
                     self.plan = Some(plan);
@@ -138,6 +143,7 @@ impl CutState {
                 if !matches!(&self.plan, Some(Err(old)) if old == e) {
                     self.timeline.reset(0);
                 }
+                self.nothing_to_cut = false;
                 self.plan = Some(Err(e.clone()));
                 self.plan_key = None;
             }
@@ -275,10 +281,7 @@ fn stages(ui: &mut Ui, mode: Mode, st: &mut CutState) {
 pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut Vec<Action>) {
     let t = app.tokens;
     if app.ui.prepare.panels.collapsed(SidePanel::Stage) {
-        let dot = match &app.ui.cut.plan {
-            Some(plan) => rails::plan_dot(plan),
-            None => rails::snapshot_dot(snap),
-        };
+        let dot = rails::job_dot(snap, Some(&app.ui.cut));
         let summary = rails::stage_summary(app.ui.cut.stage, dot);
         if rails::show_rail(ui, SidePanel::Stage, Side::Right, &t, &summary) {
             app.ui.prepare.panels.set_collapsed(SidePanel::Stage, false);

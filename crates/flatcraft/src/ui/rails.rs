@@ -19,13 +19,13 @@ use egui::{Color32, Pos2, Rect, Sense, Stroke, Ui, vec2};
 use flatcraft_core::document::CutMode;
 use flatcraft_engine::prefs::{PanelUser, Preferences};
 
-use super::cut::{Plan, Stage};
+use super::cut::{CutState, Stage};
+use super::fonts;
 use super::groups;
 use super::icons::{self, Icon};
 use super::prepare::Snapshot;
 use super::settings::set_name;
 use super::theme::Tokens;
-use super::{fonts, person_text};
 
 /// The width of a rail, in points.
 pub const RAIL_W: f32 = 28.0;
@@ -136,9 +136,16 @@ impl Panels {
         }
     }
 
-    /// The person collapsed (the chevron) or opened (the rail) the panel.
+    /// The person collapsed (the chevron) or opened (the rail) the panel. The
+    /// choice is kept only when it differs from what the window width
+    /// gives.
     pub fn set_collapsed(&mut self, kind: SidePanel, collapsed: bool) {
-        self.users[kind.index()] = if collapsed {
+        // A choice the window width would make anyway is no choice: the
+        // panel follows the width again.
+        let auto = auto_collapsed(kind, self.window_w, self.arrange_open);
+        self.users[kind.index()] = if collapsed == auto {
+            PanelUser::None
+        } else if collapsed {
             PanelUser::Collapsed
         } else {
             PanelUser::Open
@@ -195,12 +202,31 @@ impl Dot {
     }
 }
 
-/// The dot of the Prepare rail, from what the snapshot knows, so the job is
-/// not built just for a dot: grey when no visible object is set to be cut,
-/// amber when the plotter or mat has a problem or a cut object sticks out
-/// of the cutting area, green otherwise. The Cut workspace uses its plan
-/// instead ([`plan_dot`]).
-pub fn snapshot_dot(snap: &Snapshot) -> Dot {
+/// The one rule for the state dot, used by the Prepare and the Cut rails.
+///
+/// Grey: no visible object is set to be cut ("Nothing to cut"). Amber: a
+/// real problem of the job: no plotter or material, a plotter or mat
+/// problem, a cut object outside the cutting area, or a warning of the
+/// job builder that is not the person's own choice. A hidden or a skipped
+/// object is the person's choice and never turns it amber. Green:
+/// otherwise.
+///
+/// The job is not built for the dot. Prepare reads what its snapshot
+/// already knows; the Cut workspace passes its plan (`cut`), which is the
+/// job builder's own answer (`JobResult::problem_warnings`,
+/// `BuildFailure::nothing_to_cut`) and also sees problems the snapshot
+/// cannot, such as a filled path too thin to cut.
+pub fn job_dot(snap: &Snapshot, cut: Option<&CutState>) -> Dot {
+    if let Some(cut) = cut
+        && let Some(plan) = &cut.plan
+    {
+        return match plan {
+            Ok(job) if job.problem_warnings() == 0 => Dot::Ready,
+            Ok(_) => Dot::Warning,
+            Err(_) if cut.nothing_to_cut => Dot::Nothing,
+            Err(_) => Dot::Warning,
+        };
+    }
     if !snap.objects.iter().any(|o| o.visible && o.cut_enabled) {
         return Dot::Nothing;
     }
@@ -213,17 +239,6 @@ pub fn snapshot_dot(snap: &Snapshot) -> Dot {
         return Dot::Warning;
     }
     Dot::Ready
-}
-
-/// The dot of the Cut workspace, from the plan it shows: a job with
-/// warnings is amber, "Nothing to cut" is grey, any other refusal is amber.
-pub fn plan_dot(plan: &Plan) -> Dot {
-    match plan {
-        Ok(job) if job.warnings.is_empty() => Dot::Ready,
-        Ok(_) => Dot::Warning,
-        Err(e) if person_text(e).starts_with("Nothing to cut") => Dot::Nothing,
-        Err(_) => Dot::Warning,
-    }
 }
 
 // ---------------------------------------------------------------- summaries
@@ -473,9 +488,9 @@ fn paint_rail(
     let resp = ui.interact(rect, id, Sense::click());
     let hovered = resp.hovered() || resp.has_focus();
     let fill = if hovered {
-        t.surface.lerp_to_gamma(t.text, 0.08)
+        t.rail.lerp_to_gamma(t.text, 0.08)
     } else {
-        t.surface
+        t.rail
     };
     let p = ui.painter_at(rect);
     p.rect_filled(rect, 0.0, fill);

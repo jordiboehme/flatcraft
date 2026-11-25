@@ -45,6 +45,11 @@ pub struct JobResult {
     pub job: EmittedJob,
     pub settings: CutSettings,
     pub warnings: Vec<String>,
+    /// How many of `warnings` only repeat the person's own choice (a hidden
+    /// or a skipped object). The others are real problems of the job (a
+    /// path outside the area, a mat that is not there, paths that are not
+    /// cut). The window's state dot counts only those.
+    pub choice_warnings: usize,
     pub sent: Option<SendReport>,
 }
 
@@ -185,9 +190,39 @@ pub fn build(session: &Session) -> Result<JobResult, CommandError> {
     build_input(&JobInput::of(session)?)
 }
 
+impl JobResult {
+    /// The warnings that are real problems, not the person's own choices.
+    pub fn problem_warnings(&self) -> usize {
+        self.warnings.len().saturating_sub(self.choice_warnings)
+    }
+}
+
+/// Why a job could not be built, for a caller that needs to tell "nothing
+/// to cut" from a real refusal without reading the text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildFailure {
+    pub error: CommandError,
+    /// No visible object has cut paths.
+    pub nothing_to_cut: bool,
+}
+
+impl From<CommandError> for BuildFailure {
+    fn from(error: CommandError) -> Self {
+        Self {
+            error,
+            nothing_to_cut: false,
+        }
+    }
+}
+
 /// Builds a job from a [`JobInput`]. It does not need the session, so the
 /// GUI runs it without holding the session lock.
 pub fn build_input(input: &JobInput) -> Result<JobResult, CommandError> {
+    build_classified(input).map_err(|f| f.error)
+}
+
+/// [`build_input`], and a failure says whether it was "nothing to cut".
+pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
     let JobInput {
         objects,
         job,
@@ -203,10 +238,12 @@ pub fn build_input(input: &JobInput) -> Result<JobResult, CommandError> {
         objects.iter().map(|o| (o.id, o.name.as_str())).collect();
 
     let mut warnings: Vec<String> = mat_warning.into_iter().collect();
+    let mut choice_warnings = 0;
     let mut placed = Vec::new();
     let mut labels = std::collections::BTreeMap::new();
     for o in objects {
         if !o.visible {
+            choice_warnings += 1;
             warnings.push(format!(
                 "'{}' is hidden and will not be cut.",
                 one_line(&o.name)
@@ -214,6 +251,7 @@ pub fn build_input(input: &JobInput) -> Result<JobResult, CommandError> {
             continue;
         }
         if !o.cut_enabled {
+            choice_warnings += 1;
             warnings.push(format!(
                 "'{}' is skipped and will not be cut.",
                 one_line(&o.name)
@@ -277,7 +315,8 @@ pub fn build_input(input: &JobInput) -> Result<JobResult, CommandError> {
         return Err(CommandError::Refused(format!(
             "{from} asks for {passes} passes, but this plotter takes {} to {hi}. Set passes in the job settings or pick another material.",
             lo.max(1)
-        )));
+        ))
+        .into());
     }
     let pipeline = PipelineSettings {
         cutting_area: area,
@@ -290,12 +329,16 @@ pub fn build_input(input: &JobInput) -> Result<JobResult, CommandError> {
     };
     let cut_plan = plan(&placed, &pipeline).map_err(|e| match e {
         PlanError::Empty => {
+            let nothing_to_cut = true;
             let mut text = String::from("Nothing to cut: no visible object has cut paths.");
             for w in &warnings {
                 text.push(' ');
                 text.push_str(w);
             }
-            CommandError::Refused(text)
+            BuildFailure {
+                error: CommandError::Refused(text),
+                nothing_to_cut,
+            }
         }
         PlanError::OutOfArea { objects } => {
             let names: Vec<String> = objects
@@ -310,8 +353,11 @@ pub fn build_input(input: &JobInput) -> Result<JobResult, CommandError> {
                 "These objects are outside the cutting area: {}. Move or scale them, or pick a bigger mat.",
                 names.join(", ")
             ))
+            .into()
         }
-        other @ PlanError::InvalidSettings { .. } => CommandError::Refused(other.to_string()),
+        other @ PlanError::InvalidSettings { .. } => {
+            CommandError::Refused(other.to_string()).into()
+        }
     })?;
 
     let paths: Vec<EmitPath> = cut_plan
@@ -338,6 +384,7 @@ pub fn build_input(input: &JobInput) -> Result<JobResult, CommandError> {
         job: emitted,
         settings,
         warnings,
+        choice_warnings,
         sent: None,
     })
 }

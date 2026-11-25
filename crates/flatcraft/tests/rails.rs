@@ -166,59 +166,101 @@ fn stage_summary_names_the_stage() {
     assert_eq!(s.full(), "Stage 2 of 4 \u{b7} Path \u{b7} Ready to cut");
 }
 
+fn both_dots(h: &mut AppHarness) -> (Dot, Dot) {
+    let sn = snap(h);
+    let prepare = rails::job_dot(&sn, None);
+    let ws = app(h).ui.workspace;
+    app_mut(h).ui.workspace = Workspace::Cut;
+    h.run();
+    let cut = rails::job_dot(&sn, Some(&app(h).ui.cut));
+    app_mut(h).ui.workspace = ws;
+    h.run();
+    (prepare, cut)
+}
+
 #[test]
 fn the_dot_says_ready_warning_or_nothing_to_cut() {
     let (_d, s, mut h, ids) = four(1400.0);
-    assert_eq!(rails::snapshot_dot(&snap(&mut h)), Dot::Ready);
-    // One object sticks out of the cutting area.
+    assert_eq!(both_dots(&mut h), (Dot::Ready, Dot::Ready));
+    // Hiding or skipping an object is the person's choice: still ready.
+    run(
+        &s,
+        "object.set_visible",
+        json!({ "ids": [ids[0]], "visible": false }),
+    );
+    run(
+        &s,
+        "object.set_cut",
+        json!({ "ids": [ids[1]], "cut": false }),
+    );
+    h.run();
+    assert_eq!(both_dots(&mut h), (Dot::Ready, Dot::Ready));
+    run(
+        &s,
+        "object.set_visible",
+        json!({ "ids": [ids[0]], "visible": true }),
+    );
+    run(
+        &s,
+        "object.set_cut",
+        json!({ "ids": [ids[1]], "cut": true }),
+    );
+    // One object sticks out of the cutting area: a real problem.
     run(
         &s,
         "object.move",
         json!({ "ids": [ids[3]], "dx_mm": 5000.0 }),
     );
     h.run();
-    assert_eq!(rails::snapshot_dot(&snap(&mut h)), Dot::Warning);
-    // Skip it and hide the rest: nothing is left to cut.
+    assert_eq!(both_dots(&mut h), (Dot::Warning, Dot::Warning));
+    // Skipping that object solves it.
     run(
         &s,
         "object.set_cut",
         json!({ "ids": [ids[3]], "cut": false }),
     );
     h.run();
-    assert_eq!(rails::snapshot_dot(&snap(&mut h)), Dot::Ready);
+    assert_eq!(both_dots(&mut h), (Dot::Ready, Dot::Ready));
+    // Nothing left to cut.
     run(
         &s,
         "object.set_visible",
         json!({ "ids": [ids[0], ids[1], ids[2]], "visible": false }),
     );
     h.run();
-    assert_eq!(rails::snapshot_dot(&snap(&mut h)), Dot::Nothing);
+    assert_eq!(both_dots(&mut h), (Dot::Nothing, Dot::Nothing));
 }
 
 #[test]
-fn the_cut_workspace_dot_follows_its_plan() {
+fn the_job_tells_choices_from_problems_and_nothing_to_cut() {
     let (_d, s, mut h, ids) = four(1400.0);
-    app_mut(&mut h).ui.workspace = Workspace::Cut;
-    h.run();
-    let plan = app(&h).ui.cut.plan.clone().unwrap();
-    assert_eq!(rails::plan_dot(&plan), Dot::Ready);
-    // A hidden object is a warning of the job.
     run(
         &s,
         "object.set_visible",
         json!({ "ids": [ids[0]], "visible": false }),
     );
     h.run();
-    let plan = app(&h).ui.cut.plan.clone().unwrap();
-    assert_eq!(rails::plan_dot(&plan), Dot::Warning);
+    app_mut(&mut h).ui.workspace = Workspace::Cut;
+    h.run();
+    let job = app(&h).ui.cut.job().unwrap();
+    assert_eq!(job.warnings.len(), 1);
+    assert_eq!(job.choice_warnings, 1);
+    assert_eq!(job.problem_warnings(), 0);
     run(
         &s,
         "object.set_visible",
         json!({ "ids": [ids[1], ids[2], ids[3]], "visible": false }),
     );
     h.run();
-    let plan = app(&h).ui.cut.plan.clone().unwrap();
-    assert_eq!(rails::plan_dot(&plan), Dot::Nothing);
+    assert!(app(&h).ui.cut.plan.as_ref().unwrap().is_err());
+    assert!(app(&h).ui.cut.nothing_to_cut);
+    run(
+        &s,
+        "object.set_visible",
+        json!({ "ids": [ids[1]], "visible": true }),
+    );
+    h.run();
+    assert!(!app(&h).ui.cut.nothing_to_cut);
 }
 
 #[test]
@@ -252,31 +294,51 @@ fn the_cut_stage_panel_follows_the_right_threshold() {
 #[test]
 fn a_hand_set_state_wins_over_the_width() {
     let (_d, s, mut h, _) = four(1000.0);
-    // Opened by hand in a narrow window: stays open at 900 and 1000 pt.
+    let prefs = |s: &SharedSession| s.lock().unwrap().prefs.clone();
+    // Opened by hand in a narrow window: stays open at 900 and 1400 pt.
     h.get_by_label_contains("Open the Cut and Job panel")
         .click();
     h.run();
-    assert!(collapse_button(&h, "Cut and Job"));
+    assert_eq!(prefs(&s).panel_settings, PanelUser::Open);
     resize(&mut h, 900.0);
     assert!(collapse_button(&h, "Cut and Job"));
-    // Collapsed by hand in a wide window: stays collapsed.
     resize(&mut h, 1400.0);
+    assert!(collapse_button(&h, "Cut and Job"));
+    // Collapsed by hand in a wide window: stays collapsed.
     h.get_by_label("Collapse the Objects panel").click();
     h.run();
     resize(&mut h, 1600.0);
     assert!(rail_open(&h, "Objects"));
-    // The opposite control gives the state back to the person.
+    assert_eq!(prefs(&s).panel_objects, PanelUser::Collapsed);
+}
+
+#[test]
+fn a_choice_the_width_would_make_anyway_follows_the_width_again() {
+    let (_d, s, mut h, _) = four(1400.0);
+    let prefs = |s: &SharedSession| s.lock().unwrap().prefs.clone();
+    // Wide window: collapse, then open again: no choice is left.
+    h.get_by_label("Collapse the Objects panel").click();
+    h.run();
+    assert_eq!(prefs(&s).panel_objects, PanelUser::Collapsed);
     h.get_by_label_contains("Open the Objects panel").click();
     h.run();
+    assert_eq!(prefs(&s).panel_objects, PanelUser::None);
     resize(&mut h, 900.0);
-    assert!(
-        collapse_button(&h, "Objects"),
-        "opened by hand wins at 900 pt"
-    );
-    let p = s.lock().unwrap().prefs.clone();
-    assert_eq!(p.panel_objects, PanelUser::Open);
-    assert_eq!(p.panel_settings, PanelUser::Open);
-    assert_eq!(p.panel_stage, PanelUser::None);
+    assert!(rail_open(&h, "Objects"), "it follows the width again");
+    // Narrow window: open by hand, then collapse again: no choice either.
+    h.get_by_label_contains("Open the Objects panel").click();
+    h.run();
+    assert_eq!(prefs(&s).panel_objects, PanelUser::Open);
+    h.get_by_label("Collapse the Objects panel").click();
+    h.run();
+    assert_eq!(prefs(&s).panel_objects, PanelUser::None);
+    resize(&mut h, 1400.0);
+    assert!(collapse_button(&h, "Objects"));
+    // The ribbon toggle does the same.
+    let st = &mut app_mut(&mut h).ui.prepare.panels;
+    st.toggle(SidePanel::Settings);
+    st.toggle(SidePanel::Settings);
+    assert_eq!(st.user(SidePanel::Settings), PanelUser::None);
 }
 
 #[test]
@@ -365,6 +427,42 @@ fn rotated(h: &AppHarness) -> Vec<TextShape> {
         .collect()
 }
 
+/// The text of one rail stays inside the rail's own layout: below the
+/// arrow and the dot, above the bottom padding, inside its width.
+fn assert_text_inside(h: &AppHarness, panel: &str, text: &TextShape, dot: bool) -> Rect {
+    let rail = h
+        .get_by_label_contains(&format!("Open the {panel} panel"))
+        .rect();
+    let lay = rails::layout(rail, dot);
+    let b = text.visual_bounding_rect();
+    let eps = 0.5;
+    assert!(
+        b.top() >= lay.arrow.bottom() - eps,
+        "{b:?} under {:?}",
+        lay.arrow
+    );
+    assert!(
+        b.top() >= lay.text_top - eps,
+        "{b:?} starts at {}",
+        lay.text_top
+    );
+    if let Some(d) = lay.dot {
+        assert!(b.top() > d.y + 4.5, "{b:?} clear of the dot at {d:?}");
+    }
+    assert!(
+        b.bottom() <= lay.text_top + lay.text_len + eps,
+        "{b:?} ends at {}",
+        lay.text_top + lay.text_len
+    );
+    assert!(b.left() >= rail.left() - eps && b.right() <= rail.right() + eps);
+    // Right under the arrow: the text block starts at the top.
+    assert!(
+        b.top() <= lay.text_top + eps,
+        "{b:?} starts right under the arrow"
+    );
+    b
+}
+
 #[test]
 fn rail_text_is_turned_and_stays_inside_the_rail() {
     let (_d, _s, h, _) = four(900.0);
@@ -380,24 +478,9 @@ fn rail_text_is_turned_and_stays_inside_the_rail() {
         .expect("right rail reads top to bottom");
     assert!(left.galley.text().starts_with("4 objects"));
     assert!(right.galley.text().starts_with("1 selected"));
-    let win = h.ctx.content_rect();
-    let lay_l = rails::layout(
-        Rect::from_min_size(win.left_top(), vec2(rails::RAIL_W, win.height())),
-        false,
-    );
-    let lay_r = rails::layout(
-        Rect::from_min_size(win.right_top(), vec2(-rails::RAIL_W, win.height())),
-        true,
-    );
-    let _ = (lay_l, lay_r);
-    for t in &shapes {
-        let b = t.visual_bounding_rect();
-        assert!(b.width() <= rails::RAIL_W, "{b:?}");
-    }
-    // Both sit right under the arrow, at the same height.
-    let (bl, br) = (left.visual_bounding_rect(), right.visual_bounding_rect());
-    assert!(bl.top() < br.top() + 40.0 && bl.top() > 20.0);
-    assert!(br.top() > 40.0, "the dot is above the right text");
+    assert!(!left.galley.text().ends_with("..."), "it fits whole");
+    assert_text_inside(&h, "Objects", left, false);
+    assert_text_inside(&h, "Cut and Job", right, true);
 }
 
 #[test]
@@ -408,17 +491,28 @@ fn a_long_summary_ends_in_dots_and_never_runs_past_the_rail() {
         import_square(&s);
     }
     run(&s, "object.select", json!({ "ids": [] }));
+    // A short window: the summaries do not fit and are cut.
     let mut h = harness_sized(&dir, s, [900.0, 260.0], 8, |a| a);
     to_prepare(&mut h);
     h.run();
     let shapes = rotated(&h);
-    assert!(!shapes.is_empty());
-    let win = h.ctx.content_rect();
+    assert_eq!(shapes.len(), 2);
     let right = shapes.iter().find(|t| t.angle > 0.0).unwrap();
     let text = right.galley.text();
     assert!(text.ends_with("..."), "{text}");
-    let b = right.visual_bounding_rect();
-    assert!(b.bottom() <= win.bottom() - 5.0, "{b:?} in {win:?}");
+    let b = assert_text_inside(&h, "Cut and Job", right, true);
+    let lay = rails::layout(
+        h.get_by_label_contains("Open the Cut and Job panel").rect(),
+        true,
+    );
+    // It uses the room it has, to within one character.
+    assert!(
+        b.height() > lay.text_len - 12.0,
+        "{b:?} of {}",
+        lay.text_len
+    );
+    let left = shapes.iter().find(|t| t.angle < 0.0).unwrap();
+    assert_text_inside(&h, "Objects", left, false);
     // The tooltip and the name still hold everything.
     assert!(has(&h, "Speed"));
 }
@@ -441,4 +535,24 @@ fn an_open_arrange_panel_keeps_the_canvas_usable_at_900() {
     resize(&mut h, 1200.0);
     assert!(rail_open(&h, "Cut and Job"));
     assert!(app(&h).ui.prepare.canvas_rect.width() > 450.0);
+}
+
+#[test]
+fn the_ribbon_toggle_knows_about_an_open_arrange_panel_in_the_same_frame() {
+    let (_d, _s, mut h, _) = four(1200.0);
+    let tool = flatcraft::ui::tools::TOOLS
+        .iter()
+        .find(|t| t.id == "panel.settings")
+        .unwrap();
+    assert_eq!(tool.selected(&app(&h).ui.prepare, false), Some(true));
+    let sn = snap(&mut h);
+    flatcraft::ui::arrange::open(
+        &mut app_mut(&mut h).ui.prepare,
+        &sn,
+        flatcraft::ui::arrange::PanelKind::MoveCopy,
+    );
+    h.step();
+    // The frame has set arrange_open before the ribbon asked.
+    assert!(app(&h).ui.prepare.panels.arrange_open);
+    assert_eq!(tool.selected(&app(&h).ui.prepare, false), Some(false));
 }

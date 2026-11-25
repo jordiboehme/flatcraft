@@ -1367,6 +1367,12 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     #[cfg(target_os = "macos")]
     app.refresh_menu(&ctx, snap.as_ref());
     app_bar::show(ui, app, &mut actions);
+    if let (Some(snap), Workspace::Prepare) = (&snap, workspace) {
+        // Before the ribbon draws: its Settings panel toggle needs to know
+        // whether an Arrange panel takes room.
+        arrange::keep_or_close(&mut app.ui.prepare, snap);
+        app.ui.prepare.panels.arrange_open = app.ui.prepare.panel.is_some();
+    }
     switcher::ribbon(ui, app, snap.as_ref(), &mut actions);
     if workspace != Workspace::Prepare {
         // The Trace dialog lives in Prepare.

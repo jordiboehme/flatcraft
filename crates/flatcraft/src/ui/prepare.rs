@@ -1148,7 +1148,7 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
     }
 
     if app.ui.prepare.panels.collapsed(SidePanel::Settings) {
-        let summary = rails::settings_summary(snap, rails::snapshot_dot(snap));
+        let summary = rails::settings_summary(snap, rails::job_dot(snap, None));
         if rails::show_rail(ui, SidePanel::Settings, Side::Right, &t, &summary) {
             app.ui
                 .prepare
