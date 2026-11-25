@@ -177,7 +177,7 @@ pub fn simulate(
 
 /// The sample step to use: at least [`MIN_SAMPLE_STEP_MM`], and that when
 /// the setting is not a number.
-fn sample_step(step: f64) -> f64 {
+pub(crate) fn sample_step(step: f64) -> f64 {
     if step.is_nan() {
         MIN_SAMPLE_STEP_MM
     } else {

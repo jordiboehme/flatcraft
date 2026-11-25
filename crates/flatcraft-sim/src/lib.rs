@@ -3,14 +3,20 @@
 //! The model (spec 8.6) is a pursuit model: the tip trails the axis at the
 //! blade offset `d` and moves only along the tip-to-axis direction. `model`
 //! holds the closed-form step along one straight axis segment, `trace` runs
-//! it over a list of toolpaths.
+//! it over a list of toolpaths, `metrics` measures the trace against the
+//! intended paths and `report` adds the time estimate.
 
+mod grid;
+pub mod metrics;
 pub mod model;
+pub mod report;
 pub mod trace;
 
 use flatcraft_path::ASSUMED_START_HEADING;
 use kurbo::{Point, Vec2};
 
+pub use metrics::{Grade, JobMetrics, PathMetrics, Spot, SpotKind, measure};
+pub use report::{SimResult, TimeModel, estimate_seconds, run};
 pub use trace::{Sample, SimTrace, simulate};
 
 /// The quality limit of the float simulation against the intended path (R7).
