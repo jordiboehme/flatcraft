@@ -93,6 +93,8 @@ fn the_quotes_are_word_for_word() {
                 "You want to make something that the very next morning the minute you wake up you want to run to your shop and look at it.",
                 "Jimmy DiResta, Making It interview 2017"
             ),
+            ("Words are hard.", "Evan & Katelyn"),
+            ("Don't glue yourself to the table.", "Joel Telling"),
         ]
     );
 }
