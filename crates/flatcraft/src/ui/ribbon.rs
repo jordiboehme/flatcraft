@@ -349,7 +349,11 @@ pub fn show(
                     Icon::Copies,
                     "Copies...",
                     copies.is_some(),
-                    "Many copies of one object in a row or a grid. Sticker sheet, engage!",
+                    if copies.is_some() {
+                        "Many copies of one object in a row or a grid. Sticker sheet, engage!"
+                    } else {
+                        "Many copies of one object in a row or a grid. Select one object first."
+                    },
                 ) {
                     st.copies = copies;
                 }
