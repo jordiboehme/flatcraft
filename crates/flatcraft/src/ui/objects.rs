@@ -1,9 +1,10 @@
-//! The Objects panel: one row per object with its kind, name, a mark for
+//! The Objects panel: one flat row per object with its kind, name, a mark for
 //! linked copies, file status, an eye to show or hide it and scissors to
-//! skip its cut. Below the list, the details of a single selected object with its linked copies
+//! skip its cut. The two toggles are quiet until the row is hovered, and
+//! clear when the object is hidden or skipped. Below the list, the details of a single selected object with its linked copies
 //! and its linked file.
 
-use egui::{RichText, Ui};
+use egui::{Rect, RichText, Ui};
 use serde_json::json;
 
 use super::context_menu;
@@ -11,7 +12,7 @@ use super::icons::{self, Icon};
 use super::prepare::{ObjView, PrepareState, Snapshot};
 use super::rails::{Side, SidePanel};
 use super::theme::Tokens;
-use super::{Action, ICON_SIZE, fonts, icon_button, icon_button_hint};
+use super::{Action, ICON_SIZE, fonts};
 
 /// A small icon with an accessible name.
 fn badge(ui: &mut Ui, icon: Icon, name: &str, colour: egui::Color32) {
@@ -33,7 +34,6 @@ pub fn show(
     t: &Tokens,
     actions: &mut Vec<Action>,
 ) {
-    let doc_id = snap.doc_id;
     if super::rails::header(ui, SidePanel::Objects, Side::Left, "Objects") {
         st.panels.set_collapsed(SidePanel::Objects, true);
     }
@@ -48,78 +48,7 @@ pub fn show(
         .max_height(ui.available_height() * 0.6)
         .show(ui, |ui| {
             for o in &snap.objects {
-                ui.horizontal(|ui| {
-                    let (icon, kind) = if o.raster {
-                        (Icon::ImageFile, "Traced image")
-                    } else {
-                        (Icon::SvgFile, "SVG")
-                    };
-                    badge(ui, icon, kind, t.text_dim);
-                    let selected = snap.selection.contains(&o.id);
-                    let name = if o.visible && o.cut_enabled {
-                        RichText::new(&o.name)
-                    } else {
-                        RichText::new(&o.name).color(t.text_dim)
-                    };
-                    let row = ui.add(egui::Button::selectable(selected, name));
-                    if o.link_group.is_some() {
-                        badge(ui, Icon::Linked, "Linked copy", t.text_dim);
-                    }
-                    if row.clicked() {
-                        let shift = ui.input(|i| i.modifiers.shift);
-                        let ids: Vec<u64> = if shift {
-                            let mut ids: Vec<u64> = snap.selection.iter().copied().collect();
-                            if !ids.contains(&o.id) {
-                                ids.push(o.id);
-                            }
-                            ids
-                        } else {
-                            vec![o.id]
-                        };
-                        actions.push(Action::run(doc_id, "object.select", json!({ "ids": ids })));
-                    }
-                    if row.secondary_clicked() {
-                        st.context = Some(context_menu::target(snap, Some(o.id), actions));
-                    }
-                    row.context_menu(|ui| context_menu::show(ui, snap, st, actions));
-                    let src = &st.sources;
-                    if src.changed.contains(&o.id) {
-                        badge(ui, Icon::Reload, "Source file changed", t.accent_prepare);
-                    } else if src.missing.contains(&o.id) {
-                        badge(ui, Icon::BrokenLink, "Source file not found", t.danger);
-                    } else if src.unreadable.contains(&o.id) {
-                        badge(ui, Icon::BrokenLink, "Source file can't be read", t.danger);
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let (icon, name) = if o.visible {
-                            (Icon::Eye, format!("Hide {}", o.name))
-                        } else {
-                            (Icon::EyeOff, format!("Show {}", o.name))
-                        };
-                        if icon_button(ui, icon, &name, true).clicked() {
-                            actions.push(set_visible_action(doc_id, &[o.id], !o.visible));
-                        }
-                        let (hint, name) = if o.cut_enabled {
-                            ("Skip cutting", format!("Skip cutting {}", o.name))
-                        } else {
-                            ("Cut again", format!("Cut again {}", o.name))
-                        };
-                        let resp = icon_button_hint(ui, Icon::Cut, &name, true, hint);
-                        if !o.cut_enabled {
-                            // Dimmed and struck through: the state at a glance.
-                            let r = resp.rect.shrink(4.0);
-                            ui.painter()
-                                .rect_filled(resp.rect, 2.0, t.bg.gamma_multiply(0.55));
-                            ui.painter().line_segment(
-                                [r.left_bottom(), r.right_top()],
-                                egui::Stroke::new(1.5, t.text_dim),
-                            );
-                        }
-                        if resp.clicked() {
-                            actions.push(toggle_cut(snap, o));
-                        }
-                    });
-                });
+                object_row(ui, st, snap, o, t, actions);
             }
         });
 
@@ -128,6 +57,218 @@ pub fn show(
         ui.separator();
         details(ui, o, st, snap, t, actions);
     }
+}
+
+/// The height of a row: comfortable to click.
+const ROW_HEIGHT: f32 = 28.0;
+/// The side of a toggle button.
+const TOGGLE: f32 = 22.0;
+
+/// One row: a highlight when selected, the kind icon and the name, marks,
+/// and the two toggles on the right.
+fn object_row(
+    ui: &mut Ui,
+    st: &mut PrepareState,
+    snap: &Snapshot,
+    o: &ObjView,
+    t: &Tokens,
+    actions: &mut Vec<Action>,
+) {
+    let doc_id = snap.doc_id;
+    let selected = snap.selection.contains(&o.id);
+    let (rect, row) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), ROW_HEIGHT),
+        egui::Sense::click(),
+    );
+    let name_text = o.name.clone();
+    row.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::accesskit::Role::Button,
+            true,
+            selected,
+            name_text.clone(),
+        )
+    });
+    let over = ui.rect_contains_pointer(rect);
+    let quiet = !(o.visible && o.cut_enabled);
+    if ui.is_rect_visible(rect) {
+        let fill = if selected {
+            t.accent_prepare.gamma_multiply(0.22)
+        } else if over {
+            t.surface
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        ui.painter().rect_filled(rect, t.radius, fill);
+    }
+    // The kind, the name and the marks.
+    let mut left = rect;
+    left.set_right(rect.right() - 2.0 * TOGGLE - 6.0);
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(left.shrink2(egui::vec2(6.0, 0.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            let (icon, kind) = if o.raster {
+                (Icon::ImageFile, "Traced image")
+            } else {
+                (Icon::SvgFile, "SVG")
+            };
+            badge(ui, icon, kind, t.text_dim);
+            let colour = if quiet { t.text_dim } else { t.text };
+            ui.add(
+                egui::Label::new(RichText::new(&o.name).color(colour))
+                    .truncate()
+                    .selectable(false),
+            );
+            if o.link_group.is_some() {
+                badge(ui, Icon::Linked, "Linked copy", t.text_dim);
+            }
+            let src = &st.sources;
+            if src.changed.contains(&o.id) {
+                badge(ui, Icon::Reload, "Source file changed", t.accent_prepare);
+            } else if src.missing.contains(&o.id) {
+                badge(ui, Icon::BrokenLink, "Source file not found", t.danger);
+            } else if src.unreadable.contains(&o.id) {
+                badge(ui, Icon::BrokenLink, "Source file can't be read", t.danger);
+            }
+        },
+    );
+    // The toggles come after the row, so they win their clicks.
+    let toggle_rect = |i: f32| {
+        egui::Rect::from_center_size(
+            egui::pos2(rect.right() - 2.0 - TOGGLE * (1.5 - i), rect.center().y),
+            egui::Vec2::splat(TOGGLE),
+        )
+    };
+    let (hint, name) = if o.cut_enabled {
+        ("Skip cutting", format!("Skip cutting {}", o.name))
+    } else {
+        ("Cut again", format!("Cut again {}", o.name))
+    };
+    if toggle(
+        ui,
+        toggle_rect(0.0),
+        o.id,
+        Icon::Cut,
+        &name,
+        hint,
+        !o.cut_enabled,
+        over,
+        selected,
+        t,
+    )
+    .clicked()
+    {
+        actions.push(toggle_cut(snap, o));
+    }
+    let (icon, hint, name) = if o.visible {
+        (Icon::Eye, "Hide", format!("Hide {}", o.name))
+    } else {
+        (Icon::EyeOff, "Show", format!("Show {}", o.name))
+    };
+    if toggle(
+        ui,
+        toggle_rect(1.0),
+        o.id,
+        icon,
+        &name,
+        hint,
+        !o.visible,
+        over,
+        selected,
+        t,
+    )
+    .clicked()
+    {
+        actions.push(set_visible_action(doc_id, &[o.id], !o.visible));
+    }
+
+    if row.clicked() {
+        let shift = ui.input(|i| i.modifiers.shift);
+        let ids: Vec<u64> = if shift {
+            let mut ids: Vec<u64> = snap.selection.iter().copied().collect();
+            if !ids.contains(&o.id) {
+                ids.push(o.id);
+            }
+            ids
+        } else {
+            vec![o.id]
+        };
+        actions.push(Action::run(doc_id, "object.select", json!({ "ids": ids })));
+    }
+    if row.double_clicked() {
+        st.rename = Some(super::prepare::RenameDialog {
+            doc_id,
+            id: o.id,
+            name: o.name.clone(),
+        });
+    }
+    if row.secondary_clicked() {
+        st.context = Some(context_menu::target(snap, Some(o.id), actions));
+    }
+    row.context_menu(|ui| context_menu::show(ui, snap, st, actions));
+}
+
+/// A small icon toggle. Quiet (faint) until the row is hovered, clear when
+/// `on` (the object is skipped or hidden), with a hover fill of its own.
+#[allow(clippy::too_many_arguments)]
+fn toggle(
+    ui: &mut Ui,
+    rect: egui::Rect,
+    object: u64,
+    icon: Icon,
+    name: &str,
+    hint: &str,
+    on: bool,
+    row_hovered: bool,
+    row_selected: bool,
+    t: &Tokens,
+) -> egui::Response {
+    let id = ui.make_persistent_id(("object-toggle", object, name));
+    let resp = ui.interact(rect, id, egui::Sense::click());
+    let name = name.to_owned();
+    resp.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::accesskit::Role::Button, true, name.clone())
+    });
+    let resp = resp.on_hover_text(hint);
+    if ui.is_rect_visible(rect) {
+        let loud = on || resp.hovered();
+        let alpha = if loud {
+            1.0
+        } else if row_hovered || row_selected {
+            0.55
+        } else {
+            0.0
+        };
+        let painter = ui.painter();
+        if resp.hovered() {
+            painter.rect_filled(rect, t.radius, t.border);
+        } else if on {
+            painter.rect_filled(rect, t.radius, t.warn.gamma_multiply(0.18));
+        }
+        if alpha > 0.0 {
+            let colour = if on { t.warn } else { t.text };
+            let tex = icons::texture_colored(ui.ctx(), icon, 14.0, colour);
+            let tint = egui::Color32::WHITE.gamma_multiply(alpha);
+            let img = Rect::from_center_size(rect.center(), egui::Vec2::splat(14.0));
+            ui.painter().image(
+                tex.id(),
+                img,
+                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                tint,
+            );
+            if icon == Icon::Cut && on {
+                // Struck through: skipped, at a glance.
+                let r = img.shrink(1.0);
+                ui.painter().line_segment(
+                    [r.left_bottom(), r.right_top()],
+                    egui::Stroke::new(1.5, t.warn),
+                );
+            }
+        }
+    }
+    resp
 }
 
 /// The `object.set_visible` of the eye button and the Hide and Show items.
