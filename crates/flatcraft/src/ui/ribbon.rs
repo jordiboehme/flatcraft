@@ -226,6 +226,15 @@ fn finish_edit(ctx: &egui::Context, st: &mut PrepareState, actions: &mut Vec<Act
     if edit.ids.is_empty() || !v.is_finite() {
         return;
     }
+    // An angle too large to be exact: say so and put the old value back.
+    if edit.field == SizeField::Angle && flatcraft_engine::commands::object::check_angle(v).is_err()
+    {
+        *edit.field.buf(&mut st.fields) = edit.shown.clone();
+        actions.push(Action::Error(format!(
+            "The angle {typed} is too large. Type at most 1000000000 degrees either way; full turns of 360 count as 0, so 370 is 10."
+        )));
+        return;
+    }
     if let Some(a) = size_action(&st.fields, &edit, v) {
         actions.push(a);
     }

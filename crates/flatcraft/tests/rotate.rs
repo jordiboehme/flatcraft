@@ -468,3 +468,38 @@ fn the_rotate_card_opens_next_to_the_pointer() {
     assert!(card.top() >= canvas.top(), "{card:?} {canvas:?}");
     assert!(card.distance_to_pos(at) < 60.0, "{card:?} {at:?}");
 }
+
+#[test]
+fn a_typed_angle_is_reduced_by_full_turns() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, id, mut h, _) = square(&dir);
+    for (typed, want, shown) in [
+        ("735", 15.0, "15.00"),
+        ("-90", 270.0, "270.00"),
+        ("1080", 0.0, "0.00"),
+    ] {
+        type_text(&mut h, ANGLE, typed);
+        h.key_press(Key::Enter);
+        h.run();
+        h.run();
+        assert!(near(transform(&s, id).rotation_deg, want), "{typed}");
+        assert_eq!(fields(&h).angle, shown, "{typed}");
+    }
+}
+
+#[test]
+fn a_typed_angle_too_large_to_be_exact_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, id, mut h, _) = square(&dir);
+    let before = undo_len(&s);
+    type_text(&mut h, ANGLE, "1e10");
+    h.key_press(Key::Enter);
+    h.run();
+    h.run();
+    assert_eq!(undo_len(&s), before);
+    assert!(near(transform(&s, id).rotation_deg, 0.0));
+    assert_eq!(fields(&h).angle, "0.00");
+    let toast = app(&h).ui.toasts.last().cloned().unwrap();
+    assert!(toast.text.contains("Type at most"), "{}", toast.text);
+    assert!(!toast.text.contains('\u{2014}'));
+}

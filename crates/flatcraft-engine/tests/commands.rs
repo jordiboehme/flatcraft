@@ -3300,3 +3300,85 @@ fn rotate_needs_exactly_one_of_degrees_and_angle() {
     let t = s.doc().document.get(ObjectId(a)).unwrap().transform;
     assert!(close(t.rotation_deg, 10.0));
 }
+
+#[test]
+fn any_finite_angle_is_reduced_by_full_turns() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = import(&mut s, 20.0, 10.0);
+    let angle = |s: &Session| {
+        s.doc()
+            .document
+            .get(ObjectId(a))
+            .unwrap()
+            .transform
+            .rotation_deg
+    };
+    for (given, want) in [
+        (735.0, 15.0),
+        (-90.0, 270.0),
+        (1080.0, 0.0),
+        (359.999, 359.999),
+        (-0.0, 0.0),
+        (1e9, 280.0),
+        (-1e9, 80.0),
+    ] {
+        run(
+            &mut s,
+            "object.rotate",
+            json!({ "ids": [a], "angle_deg": given }),
+        );
+        assert!(close(angle(&s), want), "{given}: {}", angle(&s));
+        assert!(angle(&s).is_sign_positive(), "{given}");
+    }
+    // Relative turns too.
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [a], "angle_deg": 0.0 }),
+    );
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [a], "degrees": 735.0 }),
+    );
+    assert!(close(angle(&s), 15.0));
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [a], "degrees": -1e9 }),
+    );
+    assert!(close(angle(&s), 95.0), "{}", angle(&s));
+}
+
+#[test]
+fn angles_too_large_to_be_exact_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = import(&mut s, 20.0, 10.0);
+    let steps = s.doc().undo.undo_len();
+    for params in [
+        json!({ "ids": [a], "angle_deg": 1e10 }),
+        json!({ "ids": [a], "angle_deg": -1.5e9 }),
+        json!({ "ids": [a], "degrees": 1e10 }),
+    ] {
+        let e = s
+            .execute("object.rotate", params.clone(), Origin::User)
+            .unwrap_err();
+        assert!(matches!(e, CommandError::InvalidParams(_)), "{params}: {e}");
+        assert!(e.to_string().contains("1000000000"), "{e}");
+    }
+    assert_eq!(s.doc().undo.undo_len(), steps);
+}
+
+/// JSON has no NaN or infinity, so the engine checks them on the typed
+/// value itself.
+#[test]
+fn a_non_finite_angle_is_refused() {
+    use flatcraft_engine::commands::object::{RotateParams, check_angle};
+    for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert!(check_angle(v).is_err(), "{v}");
+    }
+    assert!(check_angle(1e9).is_ok());
+    let _ = std::mem::size_of::<RotateParams>();
+}
