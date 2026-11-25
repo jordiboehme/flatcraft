@@ -67,6 +67,7 @@ fn the_tools_row_has_the_same_top_and_height_on_every_tab() {
         for tab in RibbonTab::ALL {
             show_tab(&mut h, tab);
             let l = layout(&h);
+            // Structural: the layout records the row at its fixed height.
             assert_eq!(l.tools.height(), ROW_HEIGHT, "{width} {tab:?}");
             // The group buttons and tiles end at the bottom of the row.
             for g in tools::GROUPS
@@ -105,8 +106,10 @@ fn the_active_tab_touches_the_ribbon_panel() {
         show_tab(&mut h, tab);
         let l = layout(&h);
         let r = node_rect(&h, Role::Tab, tab.name());
-        // The tab's own rect ends where the panel starts, and the painted
-        // folder tab reaches over the panel's top border.
+        // Structural (both come from the same layout): the tab's own rect
+        // ends where the panel starts, and the folder tab reaches over the
+        // panel's top border. The painted check is
+        // `the_painted_active_tab_opens_into_the_panel`.
         assert_eq!(r.bottom(), l.panel.top(), "{tab:?}");
         assert!(l.active_tab.bottom() > l.panel.top(), "{tab:?}: {l:?}");
         assert!(l.active_tab.left() >= l.panel.left() && l.active_tab.right() <= l.panel.right());
@@ -192,5 +195,56 @@ fn the_switches_are_compact_and_inside_their_group() {
             (keep.center().y - pins_mid).abs() <= 0.5,
             "{width}: {keep:?}"
         );
+    }
+}
+
+#[test]
+fn the_painted_active_tab_opens_into_the_panel() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = rig(&dir, s, 1400.0);
+    for tab in RibbonTab::ALL {
+        show_tab(&mut h, tab);
+        let t = app(&h).tokens;
+        let tab_rect = node_rect(&h, Role::Tab, tab.name());
+        let shapes = painted(&h);
+        let panel_fills: Vec<Rect> = shapes
+            .iter()
+            .filter_map(|s| match s {
+                egui::Shape::Rect(r) if r.fill == t.panel => Some(r.rect),
+                _ => None,
+            })
+            .collect();
+        // The ribbon panel: a panel-coloured fill that starts under the tabs.
+        assert!(
+            panel_fills
+                .iter()
+                .any(|r| r.top() == tab_rect.bottom() && r.width() > 600.0),
+            "{tab:?}: no panel fill under the tab row: {panel_fills:?}"
+        );
+        // The active tab: a panel-coloured fill over the tab that reaches
+        // below the line where the panel starts.
+        assert!(
+            panel_fills.iter().any(|r| r.left() <= tab_rect.left() + 0.5
+                && r.right() >= tab_rect.right() - 0.5
+                && r.top() < tab_rect.bottom()
+                && r.bottom() > tab_rect.bottom()),
+            "{tab:?}: the active tab does not reach into the panel"
+        );
+        // No border line runs under the active tab: the folder opens there.
+        let border_y = tab_rect.bottom() + 0.5;
+        for s in &shapes {
+            if let egui::Shape::LineSegment { points, stroke } = s
+                && stroke.color == t.border
+                && (points[0].y - border_y).abs() < 0.01
+                && (points[1].y - border_y).abs() < 0.01
+            {
+                let (a, b) = (points[0].x.min(points[1].x), points[0].x.max(points[1].x));
+                assert!(
+                    b <= tab_rect.left() + 0.5 || a >= tab_rect.right() - 0.5,
+                    "{tab:?}: a border line {a}..{b} runs under the tab {tab_rect:?}"
+                );
+            }
+        }
     }
 }

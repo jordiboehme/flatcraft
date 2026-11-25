@@ -24,6 +24,8 @@ pub const WARNING_LIFETIME: Duration = Duration::from_secs(8);
 
 /// Width of a toast card.
 pub const WIDTH: f32 = 340.0;
+/// The hover card of a toast with a file.
+pub const REVEAL_HINT: &str = "Click to show the file in your file manager.";
 /// The accessible name of a toast's × button.
 pub const CLOSE_NAME: &str = "Close message";
 
@@ -262,10 +264,8 @@ fn card(
     if let Some(file) = &toast.reveal {
         let label = super::files::reveal_label();
         body.widget_info(|| egui::WidgetInfo::labeled(egui::accesskit::Role::Button, true, label));
-        let body = body
-            .clone()
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text(label);
+        let body = body.clone().on_hover_cursor(egui::CursorIcon::PointingHand);
+        super::groups::card(&body, label, REVEAL_HINT, None, false);
         if body.clicked() {
             event = Some(Event::Reveal(file.clone()));
         }
@@ -286,6 +286,7 @@ fn card(
     );
     let x = ui.interact(x_rect, id.with("close"), egui::Sense::click());
     x.widget_info(|| egui::WidgetInfo::labeled(egui::accesskit::Role::Button, true, CLOSE_NAME));
+    let x = x.on_hover_text(CLOSE_NAME);
     if x.hovered() {
         ui.painter()
             .circle_filled(x_rect.center(), X / 2.0, t.surface);

@@ -270,6 +270,8 @@ fn the_title_bar_leaves_the_traffic_lights_free() {
     assert!(h.get_by_label("FlatCraft").rect().left() < ORIGIN + TRAFFIC_LIGHTS);
 }
 
+/// Structural: the options as built. The real window was checked by hand
+/// on macOS 27.2.1 (see the Task 40 report).
 #[test]
 fn the_viewport_options_of_the_macos_title_bar() {
     let mac = app_bar::viewport(true);
@@ -287,6 +289,35 @@ fn the_viewport_options_of_the_macos_title_bar() {
         assert_eq!(
             v.min_inner_size,
             Some(egui::Vec2::from(flatcraft::ui::MIN_WINDOW))
+        );
+    }
+}
+
+#[test]
+fn the_bar_explains_itself_on_hover() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    three_documents(&s);
+    let mut h = rig(&dir, s, true);
+    h.ctx
+        .global_style_mut(|st| st.interaction.tooltip_delay = 0.0);
+    let hover = |h: &mut AppHarness, role: Role, name: &str| {
+        let at = rect(h, role, name).center();
+        h.hover_at(at);
+        h.run();
+        h.run();
+    };
+    // The dot is explained on a tab with unsaved changes.
+    hover(&mut h, Role::Button, &format!("Untitled 1 {DIRTY}"));
+    h.get_by_label(app_bar::TAB_DIRTY_HINT);
+    // A dimmed Redo says why.
+    hover(&mut h, Role::Button, "Redo");
+    h.get_by_label("There is nothing to redo. Redo brings back what Undo took back.");
+    for name in ["Home", "Save", "New document", "Close Untitled 2"] {
+        hover(&mut h, Role::Button, name);
+        assert!(
+            h.query_all_by_label(name).count() >= 2,
+            "{name} has a card with its title"
         );
     }
 }

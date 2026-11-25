@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use egui::{RichText, Ui};
 
+use super::groups::card;
 use super::icons::{self, Icon};
 use super::settings::set_name;
 use super::theme::Tokens;
@@ -62,6 +63,25 @@ struct Tab {
     name: String,
     dirty: bool,
 }
+
+// The hover cards of the bar (Hints for beginners).
+const HOME_HINT: &str = "The start page with your recent projects. Your open documents stay open.";
+const FILE_HINT: &str =
+    "New, Open, Save and Save As. A project file keeps your designs and where they sit on the mat.";
+const SAVE_HINT: &str =
+    "Store this document as a project file. The first time, FlatCraft asks where.";
+const UNDO_HINT: &str = "Take back the last change to this document.";
+const REDO_HINT: &str = "Bring back the change that Undo just took back.";
+const HELP_HINT: &str = "The user guide, the keyboard shortcuts and where to report a problem.";
+const SETTINGS_HINT: &str = "Your plotters, mats and materials, and how FlatCraft looks.";
+const NEW_HINT: &str = "Open an empty mat in a new tab. Your other documents stay open.";
+const ALL_HINT: &str = "Every open document, also the ones the tabs have no room for.";
+const TAB_HINT: &str = "Click to show this document.";
+/// The card of a tab with unsaved changes: it explains the dot.
+pub const TAB_DIRTY_HINT: &str =
+    "Click to show this document. The dot means it has changes that are not saved yet.";
+const CLOSE_HINT: &str =
+    "Close this document. If it has changes that are not saved, FlatCraft asks first.";
 
 /// The mark after the name of a document with unsaved changes.
 pub const DIRTY: &str = "\u{2022}";
@@ -131,7 +151,7 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                 |ui| {
                     app_name(ui, &t);
                     ui.add_space(t.spacing);
-                    let home = flat_icon(ui, Icon::Home, "Home", true);
+                    let home = flat_icon(ui, Icon::Home, "Home", HOME_HINT, None);
                     hot.push(home.rect);
                     if home.clicked() {
                         actions.push(Action::SetWorkspace(Workspace::Home));
@@ -151,10 +171,25 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                             actions.push(Action::SaveAs { doc_id: active });
                         }
                     });
+                    card(&file.0, "File", FILE_HINT, None, false);
                     hot.push(file.0.rect);
-                    let save = flat_icon(ui, Icon::Save, "Save", true);
-                    let undo = flat_icon(ui, Icon::Undo, "Undo", can_undo);
-                    let redo = flat_icon(ui, Icon::Redo, "Redo", can_redo);
+                    let save = flat_icon(ui, Icon::Save, "Save", SAVE_HINT, None);
+                    let undo = flat_icon(
+                        ui,
+                        Icon::Undo,
+                        "Undo",
+                        UNDO_HINT,
+                        (!can_undo).then_some("There is nothing to undo yet."),
+                    );
+                    let redo = flat_icon(
+                        ui,
+                        Icon::Redo,
+                        "Redo",
+                        REDO_HINT,
+                        (!can_redo).then_some(
+                            "There is nothing to redo. Redo brings back what Undo took back.",
+                        ),
+                    );
                     hot.extend([save.rect, undo.rect, redo.rect]);
                     if save.clicked() {
                         actions.push(Action::Save { doc_id: active });
@@ -184,9 +219,9 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                         actions.push(Action::ShowAbout);
                     }
                     ui.add_space(t.spacing / 2.0);
-                    let help = flat_icon(ui, Icon::Help, "Help", true);
+                    let help = flat_icon(ui, Icon::Help, "Help", HELP_HINT, None);
                     egui::Popup::menu(&help).show(|ui| super::help::menu(ui, actions));
-                    let settings = flat_icon(ui, Icon::Settings, "Settings", true);
+                    let settings = flat_icon(ui, Icon::Settings, "Settings", SETTINGS_HINT, None);
                     hot_right.extend([version.rect, help.rect, settings.rect]);
                     if settings.clicked() {
                         actions.push(Action::ShowProfiles);
@@ -260,20 +295,27 @@ fn app_icon(ctx: &egui::Context, dark: bool) -> egui::TextureHandle {
 }
 
 /// A flat icon button: no box, only a hover fill. `name` is its
-/// accessible name and its tooltip.
-pub fn flat_icon(ui: &mut Ui, icon: Icon, name: &str, enabled: bool) -> egui::Response {
+/// accessible name and the title of its hover card, `description` says
+/// what it does; a dimmed one (`why` set) says why first.
+pub fn flat_icon(
+    ui: &mut Ui,
+    icon: Icon,
+    name: &str,
+    description: &str,
+    why: Option<&str>,
+) -> egui::Response {
     let tex = icons::texture(ui.ctx(), icon, ICON_SIZE);
     let image = egui::Image::from_texture(egui::load::SizedTexture::new(
         tex.id(),
         egui::Vec2::splat(ICON_SIZE),
     ))
     .alt_text(name);
-    ui.add_enabled(
-        enabled,
+    let r = ui.add_enabled(
+        why.is_none(),
         egui::Button::image(image).frame_when_inactive(false),
-    )
-    .on_hover_text(name)
-    .on_disabled_hover_text(name)
+    );
+    card(&r, name, description, why, false);
+    r
 }
 
 /// A thin vertical line between the commands and the tabs.
@@ -473,8 +515,9 @@ fn doc_tab(
             );
         }
     }
-    let resp = resp.on_hover_text(label);
-    let close = close.on_hover_text(close_name);
+    let hint = if tab.dirty { TAB_DIRTY_HINT } else { TAB_HINT };
+    card(&resp, &label, hint, None, false);
+    card(&close, &close_name, CLOSE_HINT, None, false);
     (resp, close)
 }
 
@@ -522,9 +565,8 @@ fn doc_tabs(
         }
     }
     if fit.more {
-        let resp = ui
-            .add(egui::Button::new("»").frame_when_inactive(false))
-            .on_hover_text("Every open document");
+        let resp = ui.add(egui::Button::new("»").frame_when_inactive(false));
+        card(&resp, ALL_DOCUMENTS, ALL_HINT, None, false);
         set_name(ui, &resp, ALL_DOCUMENTS);
         hot.push(resp.rect);
         egui::Popup::menu(&resp).show(|ui| {
@@ -541,7 +583,7 @@ fn doc_tabs(
             }
         });
     }
-    let plus = flat_icon(ui, Icon::Plus, "New document", true);
+    let plus = flat_icon(ui, Icon::Plus, "New document", NEW_HINT, None);
     hot.push(plus.rect);
     if plus.clicked() {
         actions.push(Action::NewDocument);
