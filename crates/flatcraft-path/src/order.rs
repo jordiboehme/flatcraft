@@ -413,11 +413,15 @@ pub fn order(
     let mut distinct = band.clone();
     distinct.sort_unstable();
     distinct.dedup();
-    let total = paths.len().max(1) as u64;
     let mut slots: Vec<Option<Toolpath>> = paths.into_iter().map(Some).collect();
     let (mut head, mut heading) = (start, s.start_heading);
     let mut out = Vec::with_capacity(slots.len());
-    for b in distinct {
+    let sizes: Vec<usize> = distinct
+        .iter()
+        .map(|&b| band.iter().filter(|&&x| x == b).count())
+        .collect();
+    let budgets = band_budgets(s.strategy.budget, &sizes);
+    for (k, b) in distinct.into_iter().enumerate() {
         let members: Vec<usize> = (0..slots.len()).filter(|&i| band[i] == b).collect();
         let local: HashMap<usize, usize> =
             members.iter().enumerate().map(|(l, &g)| (g, l)).collect();
@@ -457,14 +461,31 @@ pub fn order(
         };
         let mut band_settings = s.clone();
         band_settings.start_heading = heading;
-        band_settings.strategy.budget =
-            (u128::from(s.strategy.budget) * members.len() as u128 / u128::from(total)) as u64;
+        band_settings.strategy.budget = budgets[k];
         let group: Vec<Toolpath> = members.iter().filter_map(|&g| slots[g].take()).collect();
         let (ordered, exit) = order_group(group, &sub, head, &band_settings);
         if let Some((h, hd)) = exit {
             (head, heading) = (h, hd);
         }
         out.extend(ordered);
+    }
+    out
+}
+
+/// The improvement budget of each band, in proportion to its path count.
+/// A band of two paths or more gets at least 1, and the last band takes the
+/// rounding remainder, so the shares add up to `budget` exactly (unless the
+/// minimums alone are more).
+pub fn band_budgets(budget: u64, sizes: &[usize]) -> Vec<u64> {
+    let total = sizes.iter().sum::<usize>().max(1) as u128;
+    let mut out: Vec<u64> = Vec::with_capacity(sizes.len());
+    for (i, &n) in sizes.iter().enumerate() {
+        let share = if i + 1 == sizes.len() {
+            budget.saturating_sub(out.iter().sum())
+        } else {
+            (u128::from(budget) * n as u128 / total) as u64
+        };
+        out.push(if n >= 2 { share.max(1) } else { share });
     }
     out
 }

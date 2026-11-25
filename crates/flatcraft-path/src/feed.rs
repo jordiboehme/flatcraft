@@ -10,6 +10,15 @@
 //! parent, so its maximum y is never larger and it lands in the same or an
 //! earlier band: every child still comes before its parent. The minimum y
 //! would not give that.
+//!
+//! The bound is for the ordered paths: the head goes back at most a band
+//! plus the tallest path. Overcut can add up to the overcut length (0.5 mm
+//! by default) on top, and passes repeat a path in place, so they add no
+//! backtrack.
+//!
+//! With the KeepSheet strategy bands win over the outlines-last rule. A hole
+//! whose outer ring lies in a later band is cut as an outline of its own
+//! band: last in that band, not early.
 
 use crate::containment::ContainmentTree;
 use crate::plan::Toolpath;
@@ -147,6 +156,22 @@ mod tests {
                 ys.clone().fold(f64::MIN, f64::max) - ys.fold(f64::MAX, f64::min)
             })
             .fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn band_budgets_add_up_and_no_real_band_gets_zero() {
+        use crate::order::band_budgets;
+        for budget in [4_000_000u64, 10, 3] {
+            let sizes = [1usize, 2, 1, 50, 3, 2];
+            let b = band_budgets(budget, &sizes);
+            assert_eq!(b.len(), sizes.len());
+            if budget >= 1000 {
+                assert_eq!(b.iter().sum::<u64>(), budget);
+            }
+            for (n, share) in sizes.iter().zip(&b) {
+                assert!(*n < 2 || *share >= 1, "budget {budget}: {sizes:?} {b:?}");
+            }
+        }
     }
 
     #[test]
