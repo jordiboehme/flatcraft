@@ -852,65 +852,139 @@ fn theme_buttons_offer_system_and_follow_the_os() {
     assert_eq!(app(&h).tokens, flatcraft::ui::theme::Tokens::light());
 }
 
-/// The labels of the setting controls shown now: text and number fields,
-/// choices, checkboxes and the mat colour button.
-fn controls(h: &AppHarness) -> Vec<String> {
-    h.root()
+/// One control of a window: its accessible name, its centre and whether
+/// it is dimmed.
+struct Control {
+    /// The accesskit node id, as text.
+    id: String,
+    label: String,
+    disabled: bool,
+}
+
+/// The controls of the window (an accesskit dialog) that holds a node
+/// named `anchor`: buttons, text and number fields, choices and
+/// checkboxes. Only that window's own nodes count, so a control of the
+/// same name elsewhere in the app neither hides nor adds one.
+fn window_controls(h: &AppHarness, anchor: &str) -> Vec<Control> {
+    let window = h
+        .root()
+        .children_recursive()
+        .filter(|n| n.accesskit_node().role() == Role::Dialog)
+        .find(|d| {
+            d.children_recursive()
+                .any(|n| n.accesskit_node().label().as_deref() == Some(anchor))
+        })
+        .unwrap_or_else(|| panic!("no window holds {anchor}"));
+    window
         .children_recursive()
         .filter(|n| {
-            let a = n.accesskit_node();
             matches!(
-                a.role(),
-                Role::TextInput | Role::SpinButton | Role::ComboBox | Role::CheckBox
-            ) || (a.role() == Role::Button
-                && a.label().is_some_and(|l| l.starts_with("Mat colour")))
+                n.accesskit_node().role(),
+                Role::Button | Role::TextInput | Role::SpinButton | Role::ComboBox | Role::CheckBox
+            )
         })
-        .filter_map(|n| n.accesskit_node().label())
+        .map(|n| {
+            let a = n.accesskit_node();
+            Control {
+                id: format!("{:?}", a.id()),
+                label: a.label().unwrap_or_default(),
+                disabled: a.is_disabled(),
+            }
+        })
         .collect()
 }
 
-/// Hovers every setting control of the open page that is not in `outside`
-/// and returns how many there were and the ones that show no card.
-fn controls_without_a_card(h: &mut AppHarness, outside: &[String]) -> (usize, Vec<String>) {
-    use flatcraft::ui::tools::Setting;
-    let labels: Vec<String> = controls(h)
-        .into_iter()
-        .filter(|l| !outside.contains(l))
-        .collect();
-    let mut missing = Vec::new();
-    for label in &labels {
-        let at = h.get_by_label(label).rect().center();
-        h.hover_at(egui::pos2(at.x, at.y));
+/// Every text the app shows now (a label node keeps its text as value).
+fn texts(h: &AppHarness) -> std::collections::BTreeSet<String> {
+    h.root()
+        .children_recursive()
+        .filter_map(|n| {
+            let a = n.accesskit_node();
+            if a.role() == Role::Label {
+                a.value()
+            } else {
+                a.label()
+            }
+        })
+        .collect()
+}
+
+/// Moves the pointer to an empty corner and waits until no hover card is
+/// left, so the next card can only come from the next hovered control.
+fn clear_hover(h: &mut AppHarness) -> std::collections::BTreeSet<String> {
+    h.hover_at(egui::pos2(1395.0, 2395.0));
+    let mut before = texts(h);
+    for _ in 0..10 {
         h.run();
-        h.run();
-        if !Setting::ALL
-            .iter()
-            .any(|s| h.query_by_label(s.card()).is_some())
-        {
-            missing.push(label.clone());
+        let now = texts(h);
+        if now == before {
+            return now;
         }
-        h.hover_at(egui::pos2(1.0, 1.0));
-        h.run();
+        before = now;
     }
-    (labels.len(), missing)
+    panic!("a hover card did not go away");
+}
+
+/// Hovers every control of the window that holds `anchor` and returns how
+/// many there were (and how many dimmed) and the ones that show no card.
+fn controls_without_a_card(h: &mut AppHarness, anchor: &str) -> (usize, usize, Vec<String>) {
+    let controls = window_controls(h, anchor);
+    let mut missing = Vec::new();
+    for c in &controls {
+        // Scroll the control into view, then find where it is now.
+        let node = |h: &AppHarness| {
+            h.root()
+                .children_recursive()
+                .find(|n| format!("{:?}", n.accesskit_node().id()) == c.id)
+                .map(|n| n.rect().center())
+        };
+        if let Some(n) = h
+            .root()
+            .children_recursive()
+            .find(|n| format!("{:?}", n.accesskit_node().id()) == c.id)
+        {
+            n.scroll_to_me();
+        }
+        h.run();
+        let before = clear_hover(h);
+        let Some(at) = node(h) else {
+            missing.push(format!("{} (gone)", c.label));
+            continue;
+        };
+        h.hover_at(at);
+        // The card is the new text the hover brought: its title and body.
+        // A card waits for the tooltip delay, so give it some frames.
+        let shown = (0..40).any(|_| {
+            h.run();
+            texts(h)
+                .difference(&before)
+                .any(|t| t.len() > 20 && t.ends_with(['.', '!', '?']))
+        });
+        if !shown {
+            missing.push(format!("{} (dimmed {})", c.label, c.disabled));
+        }
+    }
+    clear_hover(h);
+    let dimmed = controls.iter().filter(|c| c.disabled).count();
+    (controls.len(), dimmed, missing)
 }
 
 #[test]
-fn every_setting_control_in_the_preset_pages_has_a_hover_card() {
+fn every_control_in_the_preset_pages_has_a_hover_card() {
+    let close = flatcraft::ui::settings_window::CLOSE_NAME;
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
-    // Tall enough that every field of a page is on screen to hover.
+    // Tall enough that every control of a page is on screen to hover.
     let mut h = common::harness_sized(&dir, s.clone(), [1400.0, 2400.0], 8, |app| app);
-    // The settings search field is not a preset field.
-    let mut outside = controls(&h);
-    outside.push("Search settings".into());
-    let mut seen = 0;
-    let check = |h: &mut AppHarness, what: &str| {
-        let (n, missing) = controls_without_a_card(h, &outside);
+    let (mut seen, mut dimmed) = (0, 0);
+    let mut check = |h: &mut AppHarness, anchor: &str, what: &str| {
+        let (n, d, missing) = controls_without_a_card(h, anchor);
         assert_eq!(missing, Vec::<String>::new(), "{what}");
-        n
+        seen += n;
+        dimmed += d;
     };
-    // A user material with one plotter override shows the override boxes.
+    // A user material with one plotter override: Save preset is dimmed
+    // (nothing changed), the override boxes and values show.
     open(&mut h, "Materials");
     click(&mut h, "Copy Paper");
     click(&mut h, "Save as user preset...");
@@ -918,20 +992,49 @@ fn every_setting_control_in_the_preset_pages_has_a_hover_card() {
     h.get_by_label("Add override for").click();
     h.run();
     click(&mut h, "Silhouette Cameo 2");
-    seen += check(&mut h, "Materials");
-    // Both plotters: one sends over USB with firmware compensation, the
-    // other writes files.
+    check(&mut h, close, "Materials, with an override");
+    // The Delete question.
+    click(&mut h, "Delete preset");
+    check(&mut h, "Yes, delete", "the Delete question");
+    click(&mut h, "Keep it");
+    // Both system plotters: everything dimmed.
     page(&mut h, "Plotters");
     for preset in ["Silhouette Cameo 2", "File Output (GPGL Cameo 2)"] {
         click(&mut h, preset);
-        seen += check(&mut h, preset);
+        check(&mut h, close, preset);
     }
-    // The mats of the File Output preset, a built-in mat to hide.
+    // The Save as question.
+    click(&mut h, "Save as user preset...");
+    check(&mut h, "Create", "the Save as question");
+    h.root()
+        .children_recursive()
+        .filter(|n| n.accesskit_node().role() == Role::Dialog)
+        .find(|d| d.query_by_label("Create").is_some())
+        .unwrap()
+        .get_by_label("Cancel")
+        .click();
+    h.run();
+    // The system mats: Add mat and Copy mat dimmed.
     page(&mut h, "Mats");
-    seen += check(&mut h, "Mats");
-    // 80 controls on these pages today: the count catches a page that
-    // stopped showing its fields.
-    assert!(seen >= 80, "{seen}");
+    check(&mut h, close, "Mats of a system preset");
+    // A user plotter with a changed field and a mat of its own: Save
+    // preset, Revert and Delete mat show.
+    page(&mut h, "Plotters");
+    click(&mut h, "Save as user preset...");
+    type_into(&mut h, "Preset name", "My Cameo");
+    type_into(&mut h, "Scale x", "1.01");
+    check(&mut h, close, "a changed user plotter");
+    page(&mut h, "Mats");
+    click(&mut h, "Add mat");
+    check(&mut h, close, "Mats of a user preset");
+    // Picking another preset with unsaved changes asks first.
+    page(&mut h, "Plotters");
+    click(&mut h, "Silhouette Cameo 2");
+    check(&mut h, "Discard", "the Discard question");
+    // 242 controls today, 83 of them dimmed: the counts catch a page that
+    // stopped showing its controls.
+    assert!(seen >= 242, "{seen}");
+    assert!(dimmed >= 83, "{dimmed}");
 }
 
 #[test]
@@ -964,4 +1067,41 @@ fn dimmed_fields_say_why_on_their_card() {
     hover(&mut h, "Silhouette Cameo 2 force");
     assert!(h.query_by_label(OVERRIDE_OFF).is_some());
     assert!(h.query_by_label(SYSTEM_READ_ONLY).is_none());
+}
+
+#[test]
+fn dimmed_buttons_say_why_on_their_card() {
+    use flatcraft::ui::profiles_window::{FIX_PROBLEMS_FIRST, NOTHING_TO_SAVE, SYSTEM_READ_ONLY};
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = common::harness_sized(&dir, s.clone(), [1400.0, 2400.0], 8, |app| app);
+    let hover = |h: &mut AppHarness, label: &str| {
+        h.hover_at(egui::pos2(1395.0, 2395.0));
+        h.run();
+        let at = h.get_by_label(label).rect().center();
+        h.hover_at(egui::pos2(at.x, at.y));
+        for _ in 0..10 {
+            h.run();
+        }
+    };
+    // A system preset's mats cannot be added to.
+    open(&mut h, "Mats");
+    assert!(disabled(&h, "Add mat"));
+    hover(&mut h, "Add mat");
+    assert!(h.query_by_label(SYSTEM_READ_ONLY).is_some());
+    // A fresh user preset has nothing to save.
+    page(&mut h, "Plotters");
+    click(&mut h, "Save as user preset...");
+    type_into(&mut h, "Preset name", "My Cameo");
+    assert!(disabled(&h, "Save preset"));
+    hover(&mut h, "Save preset");
+    assert!(h.query_by_label(NOTHING_TO_SAVE).is_some());
+    // A field that needs a fix blocks both saves.
+    type_into(&mut h, "Scale x", "0");
+    h.get_by_label("The scale must be above 0.");
+    hover(&mut h, "Save preset");
+    assert!(h.query_by_label(FIX_PROBLEMS_FIRST).is_some());
+    assert!(h.query_by_label(NOTHING_TO_SAVE).is_none());
+    hover(&mut h, "Save as user preset...");
+    assert!(h.query_by_label(FIX_PROBLEMS_FIRST).is_some());
 }

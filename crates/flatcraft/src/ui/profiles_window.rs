@@ -37,6 +37,19 @@ pub const MAT_IN_USE: &str = "This mat is in use. Pick another mat in the job fi
 pub const SYSTEM_READ_ONLY: &str =
     "This is a system preset, so it cannot be changed. Save a user preset to change it.";
 
+/// Why Save preset or Save as is dimmed while a field needs a fix.
+pub const FIX_PROBLEMS_FIRST: &str =
+    "A field needs a fix first: the red lines above say which one and why.";
+
+/// Why Save preset is dimmed when nothing changed.
+pub const NOTHING_TO_SAVE: &str = "Nothing changed yet, so there is nothing to save.";
+
+/// Why Save preset is dimmed for a preset without a parent.
+pub const NO_PARENT: &str = "This preset inherits from nothing, so edit it in its file. Save as user preset makes an editable copy.";
+
+/// Why Copy mat is dimmed with no mat picked.
+pub const PICK_A_MAT: &str = "No mat is picked. Pick one in the list first.";
+
 /// Why a plotter override value is dimmed, on its hover card.
 pub const OVERRIDE_OFF: &str = "The box on its left is off, so the material's own value applies. Tick the box to set a value for this plotter.";
 
@@ -328,7 +341,14 @@ pub(crate) fn diagnostics(ui: &mut Ui, view: &View, t: &Tokens, actions: &mut Ve
     if !view.diagnostics.is_empty()
         && ui
             .button("Reload presets")
-            .on_hover_text("Fixed the file? Read the preset folder again.")
+            .on_hover_ui(|ui| {
+                super::groups::card_ui(
+                    ui,
+                    "Reload presets",
+                    "Fixed the file? This reads the preset folder again.",
+                    None,
+                )
+            })
             .clicked()
     {
         actions.push(Action::Profiles(Request::ReloadPresets));
@@ -377,7 +397,14 @@ pub(crate) fn discard_banner(ui: &mut Ui, st: &mut ProfilesState, t: &Tokens) {
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Discard your changes?").color(t.accent_cut));
-                if ui.button("Discard").clicked() {
+                let r = ui.button("Discard");
+                action_card(
+                    &r,
+                    "Discard",
+                    "Drops the changes you did not save and goes on: to the preset you picked, or the window closes.",
+                    None,
+                );
+                if r.clicked() {
                     match st.leave.take() {
                         Some(Leave::Plotter(id)) => st.want_plotter = Some(id),
                         Some(Leave::Material(id)) => st.want_material = Some(id),
@@ -397,7 +424,14 @@ pub(crate) fn discard_banner(ui: &mut Ui, st: &mut ProfilesState, t: &Tokens) {
                         None => {}
                     }
                 }
-                if ui.button("Keep editing").clicked() {
+                let r = ui.button("Keep editing");
+                action_card(
+                    &r,
+                    "Keep editing",
+                    "Stays on this preset with your changes, so you can save them first.",
+                    None,
+                );
+                if r.clicked() {
                     st.leave = None;
                 }
             });
@@ -563,6 +597,17 @@ impl Form<'_> {
         ui.end_row();
     }
 
+    /// The hover card of an action on `r`. On a system preset it says why
+    /// the action is dimmed; otherwise `reason` does, when there is one.
+    fn card_text(&self, r: &Response, title: &str, text: &str, reason: Option<&str>) {
+        let reason = if self.system {
+            Some(SYSTEM_READ_ONLY)
+        } else {
+            reason
+        };
+        action_card(r, title, text, reason);
+    }
+
     /// The hover card of `setting` on `r`. On a system preset it says why
     /// the field is dimmed; otherwise `reason` does, when there is one.
     fn card(&self, r: &Response, label: &str, setting: Setting, reason: Option<&str>) {
@@ -596,6 +641,12 @@ impl Form<'_> {
         self.mark(ui, label, at.union(r.rect));
         ui.end_row();
     }
+}
+
+/// The hover card of an action button: what it does, and why it is dimmed
+/// when `reason` says so.
+fn action_card(r: &Response, title: &str, text: &str, reason: Option<&str>) {
+    super::groups::card(r, title, text, reason, false);
 }
 
 fn num(v: &mut f64, decimals: usize) -> egui::DragValue<'_> {
@@ -645,7 +696,14 @@ fn preset_list(
         for p in presets.iter().filter(|p| p.system == system) {
             any = true;
             let on = selected == Some(p.id.as_str());
-            if ui.add(egui::Button::selectable(on, &p.name)).clicked() && !on {
+            let r = ui.add(egui::Button::selectable(on, &p.name));
+            action_card(
+                &r,
+                &p.name,
+                "Shows this preset. If the open one has changes you did not save, FlatCraft asks first.",
+                None,
+            );
+            if r.clicked() && !on {
                 picked = Some(p.id.clone());
             }
         }
@@ -681,32 +739,67 @@ fn preset_buttons(
     ui.horizontal(|ui| {
         if !system {
             let ok = problems.is_empty() && changed && has_parent;
-            if ui
-                .add_enabled(ok, egui::Button::new("Save preset"))
-                .clicked()
-            {
+            let r = ui.add_enabled(ok, egui::Button::new("Save preset"));
+            let why = if !has_parent {
+                Some(NO_PARENT)
+            } else if !problems.is_empty() {
+                Some(FIX_PROBLEMS_FIRST)
+            } else if !changed {
+                Some(NOTHING_TO_SAVE)
+            } else {
+                None
+            };
+            action_card(
+                &r,
+                "Save preset",
+                "Writes your changes into this user preset's file.",
+                why,
+            );
+            if r.clicked() {
                 actions.push(Action::Profiles(save()));
             }
         }
         // Save as writes too, so it waits for valid fields like Save.
-        if ui
-            .add_enabled(
-                problems.is_empty(),
-                egui::Button::new("Save as user preset..."),
-            )
-            .clicked()
-        {
+        let r = ui.add_enabled(
+            problems.is_empty(),
+            egui::Button::new("Save as user preset..."),
+        );
+        action_card(
+            &r,
+            "Save as user preset",
+            "Saves this preset under a new name as your own user preset. It inherits from this one, so everything you leave alone keeps up with it.",
+            (!problems.is_empty()).then_some(FIX_PROBLEMS_FIRST),
+        );
+        if r.clicked() {
             *st_save_as = Some(SaveAs {
                 kind: Some(kind),
                 name: format!("My {name}"),
                 error: None,
             });
         }
-        if changed && ui.button("Revert").clicked() {
-            *revert = true;
+        if changed {
+            let r = ui.button("Revert");
+            action_card(
+                &r,
+                "Revert",
+                "Takes back every change you did not save yet.",
+                None,
+            );
+            if r.clicked() {
+                *revert = true;
+            }
         }
-        if !system && ui.button("Delete preset").clicked() {
-            *st_delete = Some((kind, id.to_string(), name.to_string()));
+        if !system {
+            let r = ui.button("Delete preset");
+            action_card(
+                &r,
+                "Delete preset",
+                "Removes this user preset's file, after you say yes. A preset that an open document or the default uses is not deleted.",
+                None,
+            );
+            if r.clicked() {
+                *st_delete = Some((kind, id.to_string(), name.to_string()));
+            }
         }
     });
     if system {
@@ -1253,7 +1346,8 @@ fn mats(
                 format!("{} ({})", m.name, notes.join(", "))
             };
             let on = selected.as_deref() == Some(m.id.as_str());
-            let r = ui.add(egui::Button::selectable(on, label));
+            let r = ui.add(egui::Button::selectable(on, label.as_str()));
+            action_card(&r, &label, "Shows this mat's fields below.", None);
             if r.clicked() {
                 *selected = Some(m.id.clone());
                 *hex_editing = false;
@@ -1268,7 +1362,14 @@ fn mats(
                 .map(|m| m.id.clone())
                 .collect();
             let taken: Vec<&str> = owned.iter().map(String::as_str).collect();
-            if ui.button("Add mat").clicked() {
+            let r = ui.button("Add mat");
+            f.card_text(
+                &r,
+                "Add mat",
+                "Adds a new mat to this plotter with a 12 by 12 inch grid. Then set its fields below to match your mat.",
+                None,
+            );
+            if r.clicked() {
                 let id = fresh_mat_id("my-mat", &taken);
                 media.push(Media {
                     id: id.clone(),
@@ -1290,9 +1391,14 @@ fn mats(
             let sel = selected
                 .as_ref()
                 .and_then(|s| media.iter().position(|m| &m.id == s));
-            if ui
-                .add_enabled(sel.is_some(), egui::Button::new("Copy mat"))
-                .clicked()
+            let r = ui.add_enabled(sel.is_some(), egui::Button::new("Copy mat"));
+            f.card_text(
+                &r,
+                "Copy mat",
+                "Adds a copy of the picked mat, so you can change it and keep the original.",
+                sel.is_none().then_some(PICK_A_MAT),
+            );
+            if r.clicked()
                 && let Some(i) = sel
             {
                 let mut copy = media[i].clone();
@@ -1303,9 +1409,17 @@ fn mats(
             }
             let own = sel.filter(|i| !builtin(&media[*i].id));
             // Only your own mats can be deleted; built-in ones are hidden.
-            if let Some(i) = own
-                && ui.button("Delete mat").clicked()
-            {
+            let delete = own.map(|i| {
+                let r = ui.button("Delete mat");
+                f.card_text(
+                    &r,
+                    "Delete mat",
+                    "Removes this mat of your own. Built-in mats cannot be deleted, only hidden. A mat in use is not deleted: pick another mat in the job first.",
+                    None,
+                );
+                (i, r.clicked())
+            });
+            if let Some((i, true)) = delete {
                 if in_use.contains(&media[i].id.as_str()) {
                     *notice = Some(MAT_IN_USE.into());
                 } else {
@@ -1786,7 +1900,14 @@ fn overrides(ui: &mut Ui, f: &Form<'_>, m: &mut MaterialProfile, view: &View, t:
                         o.overcut_mm = Some(v);
                     }
                 });
-                if ui.button(format!("Remove override for {name}")).clicked() {
+                let r = ui.button(format!("Remove override for {name}"));
+                f.card_text(
+                    &r,
+                    &format!("Remove override for {name}"),
+                    "Removes this plotter's own values, so the material's values apply on it again.",
+                    None,
+                );
+                if r.clicked() {
                     remove = Some(pid.clone());
                 }
                 ui.end_row();
@@ -1869,12 +1990,25 @@ fn save_as_dialog(
         ui.add_space(t.spacing / 2.0);
         let r = ui.text_edit_singleline(&mut dialog.name);
         set_name(ui, &r, "Preset name");
+        action_card(
+            &r,
+            "Preset name",
+            "The name of the new preset. FlatCraft makes its file name from it.",
+            None,
+        );
         if let Some(e) = &dialog.error {
             ui.label(RichText::new(e).color(t.danger));
         }
         let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         ui.horizontal(|ui| {
-            if ui.button("Create").clicked() || enter {
+            let c = ui.button("Create");
+            action_card(
+                &c,
+                "Create",
+                "Saves the new user preset under this name. The name needs at least one letter or digit, and no other preset of this kind may use it.",
+                None,
+            );
+            if c.clicked() || enter {
                 let name = dialog.name.trim().to_string();
                 let id = slug(&name);
                 // Plotters and materials live in their own folders, so an
@@ -1900,7 +2034,9 @@ fn save_as_dialog(
                     close = true;
                 }
             }
-            if ui.button("Cancel").clicked() {
+            let r = ui.button("Cancel");
+            action_card(&r, "Cancel", "Closes this dialog and saves nothing.", None);
+            if r.clicked() {
                 close = true;
             }
         });
@@ -1970,11 +2106,25 @@ fn delete_dialog(
         ui.label(RichText::new("Its file is removed. This cannot be undone.").color(t.text_dim));
         ui.add_space(t.spacing);
         ui.horizontal(|ui| {
-            if ui.button("Yes, delete").clicked() {
+            let r = ui.button("Yes, delete");
+            action_card(
+                &r,
+                "Yes, delete",
+                "Removes the preset file for good. This cannot be undone.",
+                None,
+            );
+            if r.clicked() {
                 actions.push(Action::Profiles(Request::Delete(kind, id.clone())));
                 close = true;
             }
-            if ui.button("Keep it").clicked() {
+            let r = ui.button("Keep it");
+            action_card(
+                &r,
+                "Keep it",
+                "Closes this question and keeps the preset.",
+                None,
+            );
+            if r.clicked() {
                 close = true;
             }
         });

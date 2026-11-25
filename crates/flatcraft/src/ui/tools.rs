@@ -1236,10 +1236,10 @@ impl Setting {
                 "Who steers the blade around corners. Firmware lets the plotter do it, Host lets FlatCraft do it, None cuts the plain lines."
             }
             Setting::MirrorX => {
-                "Flips the x axis: x runs from the far edge of the mat instead of the near one. Turn it on only when this plotter counts x the other way round, so its cuts come out mirrored left to right. The Cameo 2 leaves it off."
+                "Flips the x axis: x runs from the far edge of the mat instead of the near one. Turn it on only when this plotter counts x the other way round (without it, its cuts come out mirrored left to right). The Cameo 2 leaves it off."
             }
             Setting::MirrorY => {
-                "Flips the y axis: y runs from the far end of the mat instead of the start. Turn it on only when this plotter counts y the other way round, so its cuts come out upside down. The Cameo 2 leaves it off."
+                "Flips the y axis: y runs from the far end of the mat instead of the start. Turn it on only when this plotter counts y the other way round (without it, its cuts come out upside down). The Cameo 2 leaves it off."
             }
             Setting::TrackEnhancingSupport => {
                 "Says whether this plotter has track enhancing. Track enhancing is a mode for the feed rollers (the rubber wheels that move the mat or sheet) that is meant to help long or heavy material run straight. A material can only use it when this is on."
@@ -1290,7 +1290,7 @@ impl Setting {
                 "The ending of the job file names File Output writes, for example gpgl. The readable listing gets .txt added after it."
             }
             Setting::UnitsPerMm => {
-                "How many plotter steps make one millimetre. The Cameo 2 uses 20. Change it only when a test cut comes out the wrong size."
+                "How many plotter steps make one millimetre. The Cameo 2 uses 20. Change it only for another plotter model. For small size errors, use Scale x and Scale y."
             }
             Setting::ScaleX => {
                 "Stretches every cut along x (across the carriage) by this factor: 1 is true size, 1.01 is 1 % longer. Change it when a measured test cut is a little too long or too short that way."

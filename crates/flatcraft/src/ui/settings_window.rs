@@ -376,7 +376,7 @@ pub const ROWS: [Row; 24] = [
         "Preset",
         "Units per mm",
         Card::Text(
-            "How many plotter steps make one millimetre. The Cameo 2 uses 20. Change it only when a test cut comes out the wrong size.",
+            "How many plotter steps make one millimetre. The Cameo 2 uses 20. Change it only for another plotter model. For small size errors, use Scale x and Scale y.",
         ),
         "steps resolution scale size",
     ),
