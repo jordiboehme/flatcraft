@@ -1,5 +1,6 @@
 //! FlatCraft core crate.
 
+pub mod colour;
 pub mod document;
 pub mod fsio;
 pub mod geometry;

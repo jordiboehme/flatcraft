@@ -94,45 +94,7 @@ impl CanvasView {
 
 // ---------------------------------------------------------------- colours
 
-fn linear(c: u8) -> f64 {
-    let c = f64::from(c) / 255.0;
-    if c <= 0.04045 {
-        c / 12.92
-    } else {
-        ((c + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-/// Relative luminance after WCAG 2.
-pub fn luminance(c: [u8; 3]) -> f64 {
-    0.2126 * linear(c[0]) + 0.7152 * linear(c[1]) + 0.0722 * linear(c[2])
-}
-
-/// WCAG contrast ratio, 1 to 21.
-pub fn contrast_ratio(a: [u8; 3], b: [u8; 3]) -> f64 {
-    let (la, lb) = (luminance(a), luminance(b));
-    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
-}
-
-/// Near-black on light mats, near-white on dark ones.
-pub fn contrast_colour(mat: [u8; 3]) -> [u8; 3] {
-    const DARK: [u8; 3] = [0x1B, 0x1E, 0x22];
-    const LIGHT: [u8; 3] = [0xF4, 0xF5, 0xF7];
-    if contrast_ratio(mat, DARK) >= contrast_ratio(mat, LIGHT) {
-        DARK
-    } else {
-        LIGHT
-    }
-}
-
-/// An object's own colour if it reads on the mat (ratio at least 3), else
-/// the contrast colour.
-pub fn object_colour(own: Option<[u8; 3]>, mat: [u8; 3]) -> [u8; 3] {
-    match own {
-        Some(c) if contrast_ratio(c, mat) >= 3.0 => c,
-        _ => contrast_colour(mat),
-    }
-}
+pub use flatcraft_core::colour::{contrast_colour, contrast_ratio, luminance, object_colour};
 
 pub fn rgb(c: [u8; 3]) -> Color32 {
     Color32::from_rgb(c[0], c[1], c[2])
@@ -536,8 +498,12 @@ pub(crate) fn draw_rulers(painter: &egui::Painter, rect: Rect, view: &CanvasView
 
 // ---------------------------------------------------------------- pointer
 
-/// Zoom factor per mouse wheel line.
+/// Zoom factor per mouse wheel line. A first guess: Jordi tunes it on a
+/// real mouse. Too small feels sticky, too large jumps past the detail.
 const WHEEL_ZOOM_PER_LINE: f32 = 1.15;
+/// Lines in one page step (a wheel set to scroll a page at a time). Also a
+/// guess, tuned together with `WHEEL_ZOOM_PER_LINE`.
+const WHEEL_LINES_PER_PAGE: f32 = 10.0;
 
 /// What one scroll event does to the canvas.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -561,7 +527,9 @@ fn wheel_events(events: &[egui::Event]) -> Vec<Wheel> {
             } if !modifiers.command && !modifiers.ctrl => Some(match unit {
                 egui::MouseWheelUnit::Point => Wheel::Pan(*delta),
                 egui::MouseWheelUnit::Line => Wheel::Zoom(WHEEL_ZOOM_PER_LINE.powf(delta.y)),
-                egui::MouseWheelUnit::Page => Wheel::Zoom(WHEEL_ZOOM_PER_LINE.powf(delta.y * 10.0)),
+                egui::MouseWheelUnit::Page => {
+                    Wheel::Zoom(WHEEL_ZOOM_PER_LINE.powf(delta.y * WHEEL_LINES_PER_PAGE))
+                }
             }),
             _ => None,
         })
@@ -756,22 +724,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn contrast_follows_the_mat() {
-        assert_eq!(contrast_colour([0xF4, 0xF1, 0xEA]), [0x1B, 0x1E, 0x22]);
-        assert_eq!(contrast_colour([0x20, 0x20, 0x20]), [0xF4, 0xF5, 0xF7]);
-        // Black on white is 21:1.
-        assert!((contrast_ratio([0, 0, 0], [255, 255, 255]) - 21.0).abs() < 1e-9);
-        // A light grey shape on a light mat falls back to the contrast colour.
-        let mat = [0xF4, 0xF1, 0xEA];
-        assert_eq!(
-            object_colour(Some([0xDD, 0xDD, 0xDD]), mat),
-            contrast_colour(mat)
-        );
-        assert_eq!(
-            object_colour(Some([0xC0, 0x10, 0x10]), mat),
-            [0xC0, 0x10, 0x10]
-        );
-        assert_eq!(object_colour(None, mat), contrast_colour(mat));
+    fn a_wheel_page_zooms_like_its_lines() {
+        let event = |unit| egui::Event::MouseWheel {
+            unit,
+            delta: vec2(0.0, 1.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let zoom = |unit| match wheel_events(&[event(unit)])[0] {
+            Wheel::Zoom(f) => f,
+            Wheel::Pan(_) => panic!("panned"),
+        };
+        assert_eq!(zoom(egui::MouseWheelUnit::Line), WHEEL_ZOOM_PER_LINE);
+        let page = WHEEL_ZOOM_PER_LINE.powf(WHEEL_LINES_PER_PAGE);
+        assert!((zoom(egui::MouseWheelUnit::Page) - page).abs() < 1e-4);
     }
 
     #[test]

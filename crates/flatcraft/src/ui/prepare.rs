@@ -545,7 +545,10 @@ pub fn build_shape(input: &ShapeInput) -> Shape {
                     });
                 }
                 kurbo::PathEl::LineTo(pt) => {
-                    if let Some(l) = &mut current {
+                    // A repeated point draws nothing.
+                    if let Some(l) = &mut current
+                        && l.points.last() != Some(&pt)
+                    {
                         l.points.push(pt);
                     }
                 }
@@ -553,6 +556,11 @@ pub fn build_shape(input: &ShapeInput) -> Shape {
                     if let Some(mut l) = current.take() {
                         l.closed = true;
                         let start = l.points[0];
+                        // The closing edge comes from `closed`; a last
+                        // point on the start would repeat it.
+                        while l.points.len() > 1 && l.points.last() == Some(&start) {
+                            l.points.pop();
+                        }
                         if l.points.len() > 1 {
                             lines.push(l);
                         }
@@ -1142,4 +1150,41 @@ fn pills(
             }
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flatcraft_core::geometry::{CutPath, Paint};
+
+    /// A ring drawn back to its start before `Z`, with a doubled corner,
+    /// is four corners: no repeated point and no closing point.
+    #[test]
+    fn a_closed_shape_has_no_repeated_points() {
+        let mut path = kurbo::BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.line_to((10.0, 0.0));
+        path.line_to((10.0, 0.0));
+        path.line_to((10.0, 10.0));
+        path.line_to((0.0, 10.0));
+        path.line_to((0.0, 0.0));
+        path.close_path();
+        let geometry = vec![CutPath {
+            path,
+            color: None,
+            label: None,
+            paint: Paint::default(),
+        }];
+        let input = ShapeInput {
+            local_bounds: flatcraft_core::geometry::bounds(&geometry).unwrap(),
+            geometry: Arc::new(geometry),
+            transform: Transform::default(),
+            cut: CutOptions::default(),
+        };
+        let shape = build_shape(&input);
+        assert_eq!(shape.lines.len(), 1);
+        let line = &shape.lines[0];
+        assert!(line.closed);
+        assert_eq!(line.points.len(), 4, "{:?}", line.points);
+    }
 }

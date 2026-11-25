@@ -438,6 +438,41 @@ fn canvas_preview_draws_the_object_in_its_colour() {
     );
 }
 
+/// The first travel move starts at the 0,0 of the grid. The path preview
+/// marks that point and labels it "H" (home), so the dashed line that
+/// leaves it is not a mystery.
+#[test]
+fn path_preview_labels_the_travel_from_the_origin() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="200mm" viewBox="0 0 200 200"><rect x="150" y="150" width="20" height="20"/></svg>"##;
+    run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": svg, "name": "far" }),
+    );
+    let mat = run(&mut s, "document.state", json!({}))["mat"].clone();
+    let (w, h) = (
+        mat["width_mm"].as_f64().unwrap(),
+        mat["height_mm"].as_f64().unwrap(),
+    );
+    let max_px = 1024;
+    let scale = f64::from(max_px) / w.max(h);
+    let ox = mat["grid"]["origin_x_mm"].as_f64().unwrap() * scale;
+    let oy = mat["grid"]["origin_y_mm"].as_f64().unwrap() * scale;
+    let png = render_png(&s, PreviewKind::Path, max_px).unwrap();
+    let img = image::load_from_memory(&png).unwrap().to_rgba8();
+    // Label pixels (near black) within 30 px right of and below the origin.
+    let label = (0..30u32)
+        .flat_map(|dy| (0..30u32).map(move |dx| (dx, dy)))
+        .filter(|&(dx, dy)| {
+            let p = img.get_pixel(ox as u32 + dx, oy as u32 + dy).0;
+            p[0] < 0x20 && p[1] < 0x20 && p[2] < 0x20
+        })
+        .count();
+    assert!(label > 0, "no label at the origin ({ox}, {oy})");
+}
+
 #[test]
 fn preview_command_returns_base64_png() {
     use base64::Engine;

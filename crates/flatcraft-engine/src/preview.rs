@@ -2,7 +2,8 @@
 //!
 //! Canvas view: the media, the cutting area and the objects in their colours.
 //! Path view: the media and cutting area, then the toolpaths in cut order
-//! (each with its number), travel moves dashed and a dot on every start point.
+//! (each with its number), travel moves dashed and a dot on every start point;
+//! the 0,0 where the first travel move starts is marked and labelled H (home).
 //! Order numbers come from a tiny built-in 3x5 digit font, because the engine
 //! has no text rendering library. Direction arrows are not drawn.
 
@@ -102,13 +103,23 @@ const DIGITS: [[u8; 5]; 10] = [
     [0b111, 0b101, 0b111, 0b001, 0b111],
 ];
 
+/// The letter H (home), in the same 3x5 grid as the digits.
+const HOME: [u8; 5] = [0b101, 0b101, 0b111, 0b101, 0b101];
+
 /// Draws `n` with its top-left corner at pixel (x, y); `cell` px per dot.
 fn draw_number(pm: &mut Pixmap, n: usize, x: f32, y: f32, cell: f32, p: &Paint) {
-    let text = n.to_string();
+    draw_text(pm, &n.to_string(), x, y, cell, p);
+}
+
+/// Draws digits and `H` with the top-left corner at pixel (x, y).
+fn draw_text(pm: &mut Pixmap, text: &str, x: f32, y: f32, cell: f32, p: &Paint) {
     for (k, ch) in text.chars().enumerate() {
-        let digit = ch.to_digit(10).unwrap_or(0) as usize;
+        let glyph = match ch {
+            'H' => &HOME,
+            _ => &DIGITS[ch.to_digit(10).unwrap_or(0) as usize],
+        };
         let ox = x + k as f32 * 4.0 * cell;
-        for (row, bits) in DIGITS[digit].iter().enumerate() {
+        for (row, bits) in glyph.iter().enumerate() {
             for col in 0..3 {
                 if bits & (0b100 >> col) != 0
                     && let Some(r) = tiny_skia::Rect::from_xywh(
@@ -129,6 +140,12 @@ fn dot(pm: &mut Pixmap, x: f32, y: f32, r: f32, p: &Paint) {
     if let Some(path) = PathBuilder::from_circle(x, y, r) {
         pm.fill_path(&path, p, FillRule::Winding, Transform::identity(), None);
     }
+}
+
+/// The colour of the grid and the cutting area edge on a mat of colour
+/// `mat`: the canvas's contrast colour.
+fn line_colour(mat: [u8; 3]) -> [u8; 3] {
+    flatcraft_core::colour::contrast_colour(mat)
 }
 
 fn failed(what: &str) -> CommandError {
@@ -170,8 +187,7 @@ pub fn render_png(s: &Session, kind: PreviewKind, max_px: u32) -> Result<Vec<u8>
     // The physical mat in its own colour; the printed grid in a contrast colour on top.
     let [r, g, b] = media.color;
     pm.fill(color(r, g, b));
-    let luminance = 0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b);
-    let line = if luminance > 128.0 { 0 } else { 255 };
+    let [lr, lg, lb] = line_colour(media.color);
     let mut grid_lines = PathBuilder::new();
     let (gw, gh) = (media.grid.width_mm as f32, media.grid.height_mm as f32);
     let mut at = 0.0f32;
@@ -191,7 +207,7 @@ pub fn render_png(s: &Session, kind: PreviewKind, max_px: u32) -> Result<Vec<u8>
             width: px(1.0) as f32,
             ..Stroke::default()
         };
-        let faint = paint(Color::from_rgba8(line, line, line, 60));
+        let faint = paint(Color::from_rgba8(lr, lg, lb, 60));
         pm.stroke_path(&p, &faint, &stroke, mat, None);
     }
     if let Some(p) = rect_path(area) {
@@ -199,7 +215,7 @@ pub fn render_png(s: &Session, kind: PreviewKind, max_px: u32) -> Result<Vec<u8>
             width: px(1.0) as f32,
             ..Stroke::default()
         };
-        let edge = paint(Color::from_rgba8(line, line, line, 160));
+        let edge = paint(Color::from_rgba8(lr, lg, lb, 160));
         pm.stroke_path(&p, &edge, &stroke, mat, None);
     }
 
@@ -238,6 +254,14 @@ pub fn render_png(s: &Session, kind: PreviewKind, max_px: u32) -> Result<Vec<u8>
             };
             let cell = (max_px as f32 / 512.0).round().max(1.0);
             let mut at = Point::ZERO; // the plan's travel starts at the origin
+            // Mark the origin and label it H (home): the first dashed
+            // travel line leaves from here. Below and right of the point,
+            // so a mat whose grid starts at its corner still shows it.
+            let (hx, hy) = (ox * sc, oy * sc);
+            if let Some(r) = tiny_skia::Rect::from_xywh(hx, hy, 2.0 * cell, 2.0 * cell) {
+                pm.fill_rect(r, &travel, Transform::identity(), None);
+            }
+            draw_text(&mut pm, "H", hx + 3.0 * cell, hy + 3.0 * cell, cell, &label);
             for (i, t) in result.plan.toolpaths.iter().enumerate() {
                 let Some(first) = t.points.first() else {
                     continue;
@@ -263,4 +287,18 @@ pub fn render_png(s: &Session, kind: PreviewKind, max_px: u32) -> Result<Vec<u8>
         }
     }
     pm.encode_png().map_err(|e| failed(&e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The same WCAG rule as the canvas: a mid grey mat (#808080) reads
+    /// better with dark lines, which a plain luminance > 128 got wrong.
+    #[test]
+    fn grid_lines_use_the_wcag_contrast_colour() {
+        assert_eq!(line_colour([0x80, 0x80, 0x80]), [0x1B, 0x1E, 0x22]);
+        assert_eq!(line_colour([0x20, 0x20, 0x20]), [0xF4, 0xF5, 0xF7]);
+        assert_eq!(line_colour([0xF4, 0xF1, 0xEA]), [0x1B, 0x1E, 0x22]);
+    }
 }
