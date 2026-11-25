@@ -1402,6 +1402,8 @@ dependencies = [
  "flatcraft-engine",
  "flatcraft-import",
  "flatcraft-mcp",
+ "flatcraft-path",
+ "flatcraft-sim",
  "kurbo",
  "muda",
  "resvg",

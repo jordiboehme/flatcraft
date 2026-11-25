@@ -198,6 +198,9 @@ pub struct PrepareState {
     pub nudge: Option<Nudge>,
     /// A drag value being dragged, and its value so far.
     pub live_override: Option<(Override, f64)>,
+    /// The last speed typed was above the plotter's maximum (and was
+    /// clamped): the speed field says "These go to eleven."
+    pub speed_eleven: bool,
     /// Warnings of the last import, until dismissed.
     pub notices: Vec<String>,
     pub sources: SourceStatus,
@@ -290,6 +293,7 @@ impl Default for PrepareState {
             drag: None,
             nudge: None,
             live_override: None,
+            speed_eleven: false,
             notices: Vec::new(),
             sources: SourceStatus::default(),
             source_memory: HashMap::new(),

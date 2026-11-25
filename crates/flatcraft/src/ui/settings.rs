@@ -19,6 +19,20 @@ fn override_key(which: Override) -> &'static str {
     }
 }
 
+/// The speed hint after a typed speed above the plotter's maximum.
+pub const ELEVEN: &str = "These go to eleven.";
+
+/// egui's own number parsing (whitespace ignored, U+2212 as minus), so a
+/// custom parser can look at the typed value before the range clamps it.
+fn parse_number(text: &str) -> Option<f64> {
+    let text: String = text
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| if c == '\u{2212}' { '-' } else { c })
+        .collect();
+    text.parse().ok()
+}
+
 /// Sets the accessible name of a widget, replacing the one it gave itself.
 pub fn set_name(ui: &Ui, resp: &Response, name: &str) {
     ui.ctx().accesskit_node_builder(resp.id, |node| {
@@ -322,23 +336,46 @@ pub fn job(
                     Some((w, x)) if w == which => x,
                     _ => f64::from(value),
                 };
-                let resp = ui.add(
-                    egui::DragValue::new(&mut v)
-                        .range(f64::from(range[0])..=f64::from(range[1]))
-                        .speed(0.1)
-                        .max_decimals(0)
-                        .update_while_editing(false),
-                );
+                // A typed speed above the maximum is clamped like any
+                // other value; the parser notes the attempt.
+                let typed_over = std::cell::Cell::new(None::<bool>);
+                let max = f64::from(range[1]);
+                let mut drag = egui::DragValue::new(&mut v)
+                    .range(f64::from(range[0])..=max)
+                    .speed(0.1)
+                    .max_decimals(0)
+                    .update_while_editing(false);
+                if which == Override::Speed {
+                    drag = drag.custom_parser(|text| {
+                        let n = parse_number(text);
+                        if let Some(n) = n {
+                            typed_over.set(Some(n.round() > max));
+                        }
+                        n
+                    });
+                }
+                let resp = ui.add(drag);
+                if let Some(over) = typed_over.get() {
+                    st.speed_eleven = over;
+                }
+                if which == Override::Speed && resp.dragged() {
+                    st.speed_eleven = false;
+                }
+                let eleven = which == Override::Speed && st.speed_eleven;
                 let name = if modified {
                     format!("{label} (modified)")
                 } else {
                     label.to_string()
                 };
                 set_name(ui, &resp, &name);
-                let resp = resp.on_hover_text(format!(
-                    "{label}: {} to {}. The material says {base}.",
-                    range[0], range[1]
-                ));
+                let resp = if eleven {
+                    resp.on_hover_text(ELEVEN)
+                } else {
+                    resp.on_hover_text(format!(
+                        "{label}: {} to {}. The material says {base}.",
+                        range[0], range[1]
+                    ))
+                };
                 // One command when a drag ends or a typed value lands,
                 // never one per frame of a drag.
                 if resp.dragged() {
@@ -374,6 +411,9 @@ pub fn job(
                 ui.end_row();
             }
         });
+    if st.speed_eleven {
+        ui.label(RichText::new(ELEVEN).color(t.accent_cut));
+    }
     if let Some(hint) = &material.blade_depth_hint {
         ui.add_space(t.spacing / 2.0);
         ui.label(RichText::new(format!("Blade depth: {hint}")).color(t.text_dim));

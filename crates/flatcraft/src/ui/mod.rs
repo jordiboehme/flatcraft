@@ -1,6 +1,7 @@
 //! The app shell: app bar, workspace switcher, Home and toasts. The state and
 //! the drawing do not depend on eframe, so tests drive [`shell`] directly.
 
+pub mod about;
 pub mod app_bar;
 pub mod canvas;
 pub mod cut;
@@ -16,6 +17,7 @@ pub mod objects;
 pub mod prepare;
 pub mod profiles_window;
 pub mod ribbon;
+pub mod rng;
 pub mod settings;
 pub mod switcher;
 pub mod theme;
@@ -36,8 +38,16 @@ use icons::Icon;
 use theme::Tokens;
 pub use toasts::Toast;
 
-/// The project repository, opened by Help.
+/// The project repository. Help opens it on macOS, where the app menu has
+/// the About item; elsewhere Help opens the About dialog, which links it.
 pub const HELP_URL: &str = "https://github.com/jordiboehme/flatcraft";
+
+/// The toast of Undo with nothing to undo.
+pub const NOTHING_TO_UNDO: &str = "Great Scott! Nothing to undo.";
+
+/// The toast of about one successful send in [`PUNCH_IT_ODDS`].
+pub const PUNCH_IT: &str = "Punch it.";
+pub const PUNCH_IT_ODDS: usize = 5;
 
 /// File extension of FlatCraft projects.
 pub const PROJECT_EXTENSION: &str = "flatcraft";
@@ -104,6 +114,7 @@ pub struct UiState {
     /// The person chose to quit (nothing unsaved, saved or discarded): the
     /// window closes and is not asked again.
     pub closing: bool,
+    pub about: about::AboutState,
 }
 
 /// What the unsaved-changes dialog asks about.
@@ -226,7 +237,12 @@ pub enum Action {
     ShowProfiles,
     /// A save, delete or preference change from the Profiles window.
     Profiles(profiles_window::Request),
+    /// Help: the repository on macOS, the About dialog elsewhere.
     Help,
+    /// Open the About dialog (macOS app menu, Help elsewhere).
+    ShowAbout,
+    /// Open a link in the browser.
+    OpenUrl(&'static str),
     /// Quit; asks first when a document has unsaved changes.
     Quit,
     /// The answer in the unsaved-changes dialog.
@@ -270,6 +286,10 @@ pub struct FlatCraftApp {
     pub source_check: flatcraft_mcp::server::SourceChecker,
     /// The check of linked files that is running, if any.
     pub source_check_job: Option<std::sync::mpsc::Receiver<prepare::CheckDone>>,
+    /// Rolls the maker quote and the rare "Punch it." toast. Seeded with
+    /// [`rng::DEFAULT_SEED`]; `main` seeds it from the clock and tests with
+    /// [`FlatCraftApp::with_seed`].
+    pub rng: rng::XorShift,
     /// The macOS menu bar; it must live as long as the app.
     #[cfg(target_os = "macos")]
     menu: Option<menu::AppMenu>,
@@ -300,6 +320,7 @@ impl FlatCraftApp {
             clock: std::sync::Arc::new(Instant::now),
             source_check: std::sync::Arc::new(flatcraft_engine::commands::sources::check_unlocked),
             source_check_job: None,
+            rng: rng::XorShift::default(),
             #[cfg(target_os = "macos")]
             menu: None,
         }
@@ -352,6 +373,12 @@ impl FlatCraftApp {
         + 'static,
     ) -> Self {
         self.source_check = std::sync::Arc::new(f);
+        self
+    }
+
+    /// Seeds the random rolls of the easter eggs.
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.rng = rng::XorShift::new(seed);
         self
     }
 
@@ -681,7 +708,18 @@ impl FlatCraftApp {
                 }
             }
             Action::Undo(doc_id) => {
-                self.execute("edit.undo", json!({ "doc_id": doc_id }));
+                // An empty stack is no error (the macOS menu item and the
+                // shortcut are always there).
+                let nothing = {
+                    let s = lock(&self.session);
+                    s.doc_index(doc_id)
+                        .is_ok_and(|i| !s.docs[i].undo.can_undo())
+                };
+                if nothing {
+                    self.toast(Toast::info(NOTHING_TO_UNDO));
+                } else {
+                    self.execute("edit.undo", json!({ "doc_id": doc_id }));
+                }
             }
             Action::Redo(doc_id) => {
                 self.execute("edit.redo", json!({ "doc_id": doc_id }));
@@ -740,7 +778,15 @@ impl FlatCraftApp {
                 }
             }
             Action::Profiles(req) => profiles_window::apply(self, ctx, req),
-            Action::Help => ctx.open_url(egui::OpenUrl::new_tab(HELP_URL)),
+            Action::Help => {
+                if cfg!(target_os = "macos") {
+                    ctx.open_url(egui::OpenUrl::new_tab(HELP_URL));
+                } else {
+                    self.ui.about.open(&mut self.rng);
+                }
+            }
+            Action::ShowAbout => self.ui.about.open(&mut self.rng),
+            Action::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
             Action::Quit => {
                 let dirty = self.dirty_docs();
                 if dirty.is_empty() {
@@ -933,10 +979,16 @@ impl FlatCraftApp {
             .flatten()
             .filter_map(|f| f.as_str().map(PathBuf::from))
             .collect();
+        // About one send in five, the toast quotes Star Wars instead.
+        let punch = self.rng.one_in(PUNCH_IT_ODDS);
         let Some(first) = files.first().cloned() else {
-            self.toast(Toast::info("Sent. Ship it!"));
+            self.toast(Toast::info(if punch { PUNCH_IT } else { "Sent. Ship it!" }));
             return;
         };
+        if punch {
+            self.toast(Toast::info(PUNCH_IT).with_reveal(first));
+            return;
+        }
         let names: Vec<String> = files.iter().map(|f| display_name(f)).collect();
         let dir = first
             .parent()
@@ -1138,6 +1190,9 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     if app.ui.show_profiles {
         profiles_window::show(&ctx, app, &mut actions);
     }
+    let now = (app.clock)();
+    let t = app.tokens;
+    about::show(&ctx, &mut app.ui.about, &t, now, &mut actions);
     pending_modal(&ctx, app, &mut actions);
     unsaved_modal(&ctx, app, &mut actions);
 

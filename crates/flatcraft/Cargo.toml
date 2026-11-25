@@ -13,6 +13,8 @@ flatcraft-device = { path = "../flatcraft-device" }
 flatcraft-mcp = { path = "../flatcraft-mcp" }
 flatcraft-core = { path = "../flatcraft-core" }
 flatcraft-import = { path = "../flatcraft-import" }
+flatcraft-path = { path = "../flatcraft-path" }
+flatcraft-sim = { path = "../flatcraft-sim" }
 kurbo.workspace = true
 eframe = { workspace = true, features = ["glow", "accesskit", "x11", "wayland"] }
 egui.workspace = true

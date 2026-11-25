@@ -1,12 +1,14 @@
-//! The macOS menu bar: About, Preferences, Quit, and Edit with Undo and Redo.
+//! The macOS menu bar: About (FlatCraft's own dialog), Preferences, Quit,
+//! and Edit with Undo and Redo.
 
 use std::sync::mpsc;
 
 use muda::accelerator::{Accelerator, Code, Modifiers};
-use muda::{AboutMetadata, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+use muda::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 
 use super::Action;
 
+const ABOUT: &str = "flatcraft.about";
 const PREFERENCES: &str = "flatcraft.preferences";
 const QUIT: &str = "flatcraft.quit";
 const UNDO: &str = "flatcraft.undo";
@@ -23,15 +25,8 @@ impl AppMenu {
     pub fn install(ctx: &egui::Context) -> muda::Result<Self> {
         let menu = Menu::new();
         let app = Submenu::new("FlatCraft", true);
-        let about = AboutMetadata {
-            name: Some("FlatCraft".into()),
-            version: Some(env!("CARGO_PKG_VERSION").into()),
-            license: Some("MPL-2.0".into()),
-            website: Some(super::HELP_URL.into()),
-            ..Default::default()
-        };
         app.append_items(&[
-            &PredefinedMenuItem::about(Some("About FlatCraft"), Some(about)),
+            &MenuItem::with_id(ABOUT, "About FlatCraft", true, None),
             &PredefinedMenuItem::separator(),
             &MenuItem::with_id(
                 PREFERENCES,
@@ -88,6 +83,7 @@ impl AppMenu {
         self.events
             .try_iter()
             .filter_map(|e| match e.id().as_ref() {
+                ABOUT => Some(Action::ShowAbout),
                 PREFERENCES => Some(Action::ShowProfiles),
                 QUIT => Some(Action::Quit),
                 UNDO => Some(Action::Undo(active)),

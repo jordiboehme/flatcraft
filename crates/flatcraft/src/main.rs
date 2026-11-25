@@ -102,7 +102,8 @@ fn run_window(
         "FlatCraft",
         options,
         Box::new(move |cc| {
-            let mut app = FlatCraftApp::new(&cc.egui_ctx, session, config_dir);
+            let mut app = FlatCraftApp::new(&cc.egui_ctx, session, config_dir)
+                .with_seed(flatcraft::ui::rng::XorShift::clock_seed());
             #[cfg(target_os = "macos")]
             app.install_menu(&cc.egui_ctx);
             if let Some(slot) = agent {
