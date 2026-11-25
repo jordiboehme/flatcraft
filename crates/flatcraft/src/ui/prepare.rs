@@ -712,8 +712,7 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
         .into_iter()
         .flatten()
         .find(|e| matches!(e, flatcraft_device::ProfileError::Invalid { .. }))
-        // The same text as `commands::profile_error`.
-        .map(|e| format!("{e}. Open Settings to fix it."));
+        .map(flatcraft_engine::commands::profile_problem_text);
         let plotter = plotter_result.ok();
         let material = material_result.ok().map(|m| m.for_plotter(&job.plotter_id));
         // The mat is drawn from the unchecked preset, so a bad value never

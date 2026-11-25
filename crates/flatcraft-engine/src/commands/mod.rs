@@ -177,11 +177,19 @@ pub(crate) fn profile_error(e: ProfileError) -> CommandError {
         ProfileError::UnknownPreset { id } => {
             CommandError::NotFound(format!("no plotter or material preset with id '{id}'"))
         }
-        // A preset with a bad value can be repaired in the Profiles window.
-        e @ ProfileError::Invalid { .. } => {
-            CommandError::Failed(format!("{e}. Open Settings to fix it."))
+        other => CommandError::Failed(profile_problem_text(&other)),
+    }
+}
+
+/// The text of a profile error for people. A user preset with a bad value
+/// can be repaired in the Profiles window, so its text says so; a built-in
+/// preset cannot be edited there.
+pub fn profile_problem_text(e: &ProfileError) -> String {
+    match e {
+        ProfileError::Invalid { id, .. } if !flatcraft_device::presets::is_system(id) => {
+            format!("{e}. Open Settings to fix it.")
         }
-        other => CommandError::Failed(other.to_string()),
+        other => other.to_string(),
     }
 }
 
@@ -195,4 +203,26 @@ pub(crate) fn point_arr(p: Point) -> serde_json::Value {
 
 pub(crate) fn ids_json(ids: &[ObjectId]) -> serde_json::Value {
     serde_json::Value::Array(ids.iter().map(|i| i.0.into()).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn invalid(id: &str) -> ProfileError {
+        ProfileError::Invalid {
+            id: id.into(),
+            reason: "bad".into(),
+        }
+    }
+
+    #[test]
+    fn only_user_presets_point_to_the_settings() {
+        let user = profile_error(invalid("my-vinyl")).to_string();
+        assert!(user.ends_with("Open Settings to fix it."), "{user}");
+        for id in ["vinyl", "silhouette-cameo-2"] {
+            let built_in = profile_error(invalid(id)).to_string();
+            assert!(!built_in.contains("Open Settings"), "{built_in}");
+        }
+    }
 }
