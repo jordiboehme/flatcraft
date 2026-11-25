@@ -336,6 +336,16 @@ pub struct OpenParams {
     pub path: PathBuf,
 }
 
+/// Saved and rebuilt local bounds further apart than this, mm, on any
+/// side, mean the source draws differently here.
+const BOUNDS_CHANGED_MM: f64 = 0.01;
+
+fn bounds_differ(a: Rect, b: Rect) -> bool {
+    [(a.x0, b.x0), (a.y0, b.y0), (a.x1, b.x1), (a.y1, b.y1)]
+        .iter()
+        .any(|(p, q)| (p - q).abs() > BOUNDS_CHANGED_MM)
+}
+
 fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandError> {
     let mut document = project::load(&p.path).map_err(|e| match e {
         ProjectError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => {
@@ -407,7 +417,21 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
                 }
             }
             match anchored {
-                Some(a) => *o = a,
+                Some(a) => {
+                    // Text in an SVG is set with the fonts of this
+                    // computer; other fonts give other shapes.
+                    let svg = matches!(o.source, Source::Svg { .. });
+                    if svg
+                        && o.local_bounds != Rect::ZERO
+                        && bounds_differ(o.local_bounds, a.local_bounds)
+                    {
+                        warnings.push(format!(
+                            "{} looks different on this computer (missing fonts?)",
+                            o.name
+                        ));
+                    }
+                    *o = a;
+                }
                 None => {
                     if saved {
                         warnings.push(format!(

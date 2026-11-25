@@ -2149,3 +2149,38 @@ fn new_documents_start_on_a_mat_the_default_plotter_has() {
     let st = run(&mut s, "document.state", json!({}));
     assert!(st["warnings"].as_array().unwrap().is_empty(), "{st}");
 }
+
+#[test]
+fn reopening_warns_when_an_svg_rebuilds_to_other_bounds() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    import(&mut s, 30.0, 20.0);
+    let path = dir.path().join("output").join("fonts.flatcraft");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    run(&mut s, "project.save", json!({ "path": path }));
+    let r = run(&mut s, "project.open", json!({ "path": path }));
+    let warned = |r: &Value| {
+        r["warnings"].as_array().unwrap().iter().any(|w| {
+            w.as_str()
+                .unwrap()
+                .contains("looks different on this computer")
+        })
+    };
+    assert!(!warned(&r), "same bounds, no warning: {r}");
+    // As if text in the SVG came out in another font here.
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let x1 = v["objects"][0]["local_bounds_mm"]["x1"].as_f64().unwrap();
+    v["objects"][0]["local_bounds_mm"]["x1"] = json!(x1 + 0.1);
+    std::fs::write(&path, serde_json::to_string(&v).unwrap()).unwrap();
+    let r = run(&mut s, "project.open", json!({ "path": path }));
+    let w: Vec<&str> = r["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        w.contains(&"rect looks different on this computer (missing fonts?)"),
+        "{w:?}"
+    );
+}
