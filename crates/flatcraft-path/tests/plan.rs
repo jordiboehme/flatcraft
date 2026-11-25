@@ -398,8 +398,7 @@ fn overcut_larger_than_the_ring_is_one_lap() {
 proptest! {
     #[test]
     fn closed_rings_stay_closed(
-        // small rings, so 2.5 edges of overcut stay below the 5 mm limit
-        radii in proptest::collection::vec(0.5f64..1.0, 3..64),
+        radii in proptest::collection::vec(5.0f64..40.0, 3..64),
         overcut_factor in 0.0f64..2.5,
     ) {
         // star-shaped polygon: increasing angles, so it is simple
@@ -421,8 +420,10 @@ proptest! {
         let mut ring = pts.clone();
         ring.push(pts[0]);
         let unmerged = ring.clone();
-        // overcut up to 2.5x the first edge, so it often crosses a corner
-        let overcut = overcut_factor * ring[0].distance(ring[1]);
+        // overcut up to 2.5x the first edge, so it often crosses a corner,
+        // but never above the pipeline's limit (it refuses larger ones)
+        let overcut = (overcut_factor * ring[0].distance(ring[1]))
+            .min(flatcraft_core::limits::MAX_OVERCUT_MM);
         // the plan merges collinear points with the same tolerance
         let ring = flatcraft_path::flatten::merge_collinear(&ring, 0.001);
         let perimeter = length(&ring);
