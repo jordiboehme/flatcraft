@@ -152,7 +152,7 @@ There's a Cameo 2 on my desk. It's years old and it still cuts fine. The vendor 
 
 Adam Savage likes to say that failure is always an option. Giving up on a working machine shouldn't be.
 
-So FlatCraft is long-life software for the plotters we already own. It's in the spirit of the makers who share how they work: Adam Savage, Josef Průša, Laura Kampf and Felix Schelhasse. Build it, fix it, keep it running.
+So FlatCraft is long-life software for the plotters we already own. It's in the spirit of the makers who share how they work: Adam Savage, Josef Průša, Laura Kampf, Felix Schelhasse, Simone Giertz and Jimmy DiResta. Build it, fix it, keep it running.
 
 ## Principles
 
@@ -177,7 +177,7 @@ Super massive stability stuff, as Felix Schelhasse would say. Here's FlatCraft's
 - **Something doesn't work:** [open a bug report](https://github.com/jordiboehme/flatcraft/issues/new?template=bug_report.yml). If a cut looks wrong, attach the `.gpgl.txt` listing from File Output.
 - **Your plotter isn't supported yet:** [ask for your plotter](https://github.com/jordiboehme/flatcraft/issues/new?template=plotter_support.yml). Name the model and its USB IDs. A USB recording of a simple cut from the vendor software helps a lot.
   Every new plotter needs testing on the real machine. If you want more plotters supported, you can support the project on [Ko-fi](https://ko-fi.com/V7V31T6CL9) or [PayPal](https://paypal.me/jordiboehmelopez). Or send me a plotter. ;)
-- **You have an idea:** [request a feature](https://github.com/jordiboehme/flatcraft/issues/new?template=feature_request.yml). Tell what you want to do and what stops you today.
+- **You have an idea:** "Maybe a toothbrush helmet isn't the answer, but at least you're asking the question." (Simone Giertz) [Request a feature](https://github.com/jordiboehme/flatcraft/issues/new?template=feature_request.yml). Tell what you want to do and what stops you today.
 
 ## Contributing
 
@@ -201,5 +201,7 @@ FlatCraft drives a machine with a blade. Use it at your own risk: start with pap
 [MPL-2.0](https://www.mozilla.org/en-US/MPL/2.0/). FlatCraft was written from public protocol facts and its own notes, without copying code from other plotter drivers.
 
 FlatCraft is independent. It is not affiliated with, sponsored by or endorsed by Silhouette America or Graphtec. Silhouette and Cameo are trademarks of their owners, named only to describe compatibility.
+
+> "You want to make something that the very next morning the minute you wake up you want to run to your shop and look at it." - Jimmy DiResta
 
 *Keep cutting.*
