@@ -991,6 +991,18 @@ pub const ICON_SIZE: f32 = 18.0;
 
 /// An icon-only button. `name` is its accessible name and its tooltip.
 pub fn icon_button(ui: &mut egui::Ui, icon: Icon, name: &str, enabled: bool) -> egui::Response {
+    icon_button_hint(ui, icon, name, enabled, name)
+}
+
+/// An icon-only button with the accessible name `name` and the tooltip
+/// `hint`.
+pub fn icon_button_hint(
+    ui: &mut egui::Ui,
+    icon: Icon,
+    name: &str,
+    enabled: bool,
+    hint: &str,
+) -> egui::Response {
     let tex = icons::texture(ui.ctx(), icon, ICON_SIZE);
     let image = egui::Image::from_texture(egui::load::SizedTexture::new(
         tex.id(),
@@ -998,8 +1010,8 @@ pub fn icon_button(ui: &mut egui::Ui, icon: Icon, name: &str, enabled: bool) -> 
     ))
     .alt_text(name);
     ui.add_enabled(enabled, egui::Button::image(image))
-        .on_hover_text(name)
-        .on_disabled_hover_text(name)
+        .on_hover_text(hint)
+        .on_disabled_hover_text(hint)
 }
 
 /// Keyboard shortcuts. On macOS the menu bar owns Undo and Redo.

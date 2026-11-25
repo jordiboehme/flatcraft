@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use super::canvas::{CanvasView, PX_PER_MM_100};
 use super::icons::{self, Icon};
-use super::prepare::{CopiesDialog, PrepareState, RibbonTab, Snapshot};
+use super::prepare::{CopiesDialog, CopiesSettings, PrepareState, RibbonTab, Snapshot};
 use super::settings::set_name;
 use super::{Action, ICON_SIZE};
 
@@ -20,21 +20,6 @@ fn tool(ui: &mut Ui, icon: Icon, text: &str, enabled: bool, hint: &str) -> bool 
         egui::Vec2::splat(ICON_SIZE),
     ));
     ui.add_enabled(enabled, egui::Button::image_and_text(image, text))
-        .on_hover_text(hint)
-        .on_disabled_hover_text(hint)
-        .clicked()
-}
-
-/// An icon-only button whose accessible name is `name` and whose tooltip
-/// is `hint`.
-fn icon_tool(ui: &mut Ui, icon: Icon, name: &str, enabled: bool, hint: &str) -> bool {
-    let tex = icons::texture(ui.ctx(), icon, ICON_SIZE);
-    let image = egui::Image::from_texture(egui::load::SizedTexture::new(
-        tex.id(),
-        egui::Vec2::splat(ICON_SIZE),
-    ))
-    .alt_text(name);
-    ui.add_enabled(enabled, egui::Button::image(image))
         .on_hover_text(hint)
         .on_disabled_hover_text(hint)
         .clicked()
@@ -192,10 +177,11 @@ pub fn single_raster(snap: &Snapshot) -> Option<u64> {
     }
 }
 
-/// The selected object when it is the only one, as the Copies dialog for it.
-pub fn copies_dialog(snap: &Snapshot) -> Option<CopiesDialog> {
+/// The selected object when it is the only one, as the Copies dialog for
+/// it with the settings used last.
+pub fn copies_dialog(snap: &Snapshot, last: CopiesSettings) -> Option<CopiesDialog> {
     match snap.selected().collect::<Vec<_>>().as_slice() {
-        [o] => Some(CopiesDialog::new(snap.doc_id, o.id, o.name.clone())),
+        [o] => Some(CopiesDialog::new(snap.doc_id, o.id, o.name.clone(), last)),
         _ => None,
     }
 }
@@ -220,7 +206,7 @@ fn pick(id: &'static str, snap: &Snapshot, st: &mut PrepareState, actions: &mut 
         return;
     }
     if id == "object.copies"
-        && let Some(d) = copies_dialog(snap)
+        && let Some(d) = copies_dialog(snap, st.copies_last)
     {
         // Like the ribbon button; else the Home tab shows where it is.
         st.copies = Some(d);
@@ -343,7 +329,7 @@ pub fn show(
                 if tool(ui, Icon::Duplicate, "Duplicate", any, "Copy the selection") {
                     run(actions, "object.duplicate", json!({ "ids": selected }));
                 }
-                let copies = copies_dialog(snap);
+                let copies = copies_dialog(snap, st.copies_last);
                 if tool(
                     ui,
                     Icon::Copies,
@@ -580,7 +566,9 @@ fn arrange(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Ve
             "Equal gaps from top to bottom. The outer objects stay put.",
         ),
     ] {
-        if icon_tool(ui, icon, name, three, &format!("{name}: {hint}{need}")) {
+        if super::icon_button_hint(ui, icon, name, three, &format!("{name}: {hint}{need}"))
+            .clicked()
+        {
             run(
                 actions,
                 "arrange.distribute",

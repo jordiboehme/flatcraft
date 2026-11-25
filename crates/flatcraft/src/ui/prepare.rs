@@ -176,6 +176,28 @@ pub struct PrepareState {
     pub cache: ShapeCache,
     /// The open Copies dialog.
     pub copies: Option<CopiesDialog>,
+    /// The settings of the last copies made, for the next dialog.
+    pub copies_last: CopiesSettings,
+}
+
+/// What the Copies dialog asks for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CopiesSettings {
+    pub count: u32,
+    pub grid: bool,
+    pub columns: u32,
+    pub gap_mm: f64,
+}
+
+impl Default for CopiesSettings {
+    fn default() -> Self {
+        Self {
+            count: 3,
+            grid: false,
+            columns: 4,
+            gap_mm: 5.0,
+        }
+    }
 }
 
 /// The Copies dialog: its object and the settings so far.
@@ -192,15 +214,24 @@ pub struct CopiesDialog {
 }
 
 impl CopiesDialog {
-    pub fn new(doc_id: u64, id: u64, name: String) -> Self {
+    pub fn new(doc_id: u64, id: u64, name: String, s: CopiesSettings) -> Self {
         Self {
             doc_id,
             id,
             name,
-            count: 3,
-            grid: false,
-            columns: 4,
-            gap_mm: 5.0,
+            count: s.count,
+            grid: s.grid,
+            columns: s.columns,
+            gap_mm: s.gap_mm,
+        }
+    }
+
+    pub fn settings(&self) -> CopiesSettings {
+        CopiesSettings {
+            count: self.count,
+            grid: self.grid,
+            columns: self.columns,
+            gap_mm: self.gap_mm,
         }
     }
 }
@@ -226,6 +257,7 @@ impl Default for PrepareState {
             source_memory: HashMap::new(),
             cache: ShapeCache::default(),
             copies: None,
+            copies_last: CopiesSettings::default(),
         }
     }
 }
@@ -694,7 +726,6 @@ impl Snapshot {
 
     /// Visible objects that are not inside the cutting area.
     pub fn outside_area(&self) -> usize {
-        const SLACK: f64 = 1e-6;
         let Some(a) = self.area else {
             return 0;
         };
@@ -702,12 +733,7 @@ impl Snapshot {
             .iter()
             .filter(|o| o.visible)
             .filter_map(ObjView::bounds)
-            .filter(|b| {
-                b.x0 < a.x0 - SLACK
-                    || b.y0 < a.y0 - SLACK
-                    || b.x1 > a.x1 + SLACK
-                    || b.y1 > a.y1 + SLACK
-            })
+            .filter(|b| !flatcraft_engine::commands::inside(*b, a))
             .count()
     }
 
@@ -1023,27 +1049,31 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
             canvas::show(ui, rect, snap, &mut app.ui.prepare, &t, actions);
             pills(ui, rect, snap, &mut app.ui.prepare, &t, actions);
         });
-    copies_window(ui.ctx(), &mut app.ui.prepare.copies, snap, &t, actions);
+    let p = &mut app.ui.prepare;
+    if let Some(used) = copies_window(ui.ctx(), &mut p.copies, snap, &t, actions) {
+        p.copies_last = used;
+    }
 }
 
 /// The Copies dialog. It closes when its document is no longer shown or its
-/// object is gone.
+/// object is gone. Returns the settings when copies were made.
 fn copies_window(
     ctx: &egui::Context,
     dialog: &mut Option<CopiesDialog>,
     snap: &Snapshot,
     t: &Tokens,
     actions: &mut Vec<Action>,
-) {
+) -> Option<CopiesSettings> {
     use flatcraft_engine::commands::object::{LINKED_LATER, MAX_COPIES};
     let Some(d) = dialog else {
-        return;
+        return None;
     };
     if d.doc_id != snap.doc_id || !snap.objects.iter().any(|o| o.id == d.id) {
         *dialog = None;
-        return;
+        return None;
     }
     let mut close = false;
+    let mut made = None;
     let modal = egui::Modal::new(egui::Id::unique("flatcraft-copies")).show(ctx, |ui| {
         ui.set_width(320.0);
         ui.label(RichText::new(format!("Copies of {}", d.name)).font(super::fonts::semibold(15.0)));
@@ -1115,6 +1145,7 @@ fn copies_window(
                     "object.copies",
                     json!({ "id": d.id, "count": d.count, "layout": layout, "gap_mm": d.gap_mm }),
                 ));
+                made = Some(d.settings());
                 close = true;
             }
             if ui.button("Cancel").clicked() {
@@ -1125,6 +1156,7 @@ fn copies_window(
     if close || modal.should_close() {
         *dialog = None;
     }
+    made
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {

@@ -1468,6 +1468,57 @@ fn copies_dialog_makes_copies_in_one_step() {
     assert_eq!(undo_len(&s), before + 1);
     assert_eq!(s.lock().unwrap().doc().document.objects.len(), 2 + 7);
     assert!(app(&h).ui.prepare.copies.is_none(), "the dialog closes");
+    // Default 4 columns: the original is cell 0, so copy 4 starts row 2.
+    let copies: Vec<u64> = s
+        .lock()
+        .unwrap()
+        .doc()
+        .selection
+        .iter()
+        .map(|i| i.0)
+        .collect();
+    let (o, c4) = (bounds(&s, a), bounds(&s, copies[3]));
+    let f = |v: &Value, k: &str| v[k].as_f64().unwrap();
+    assert!((f(&c4, "x0") - f(&o, "x0")).abs() < 1e-9, "{o} {c4}");
+    assert!(
+        (f(&c4, "y0") - (f(&o, "y1") + 5.0)).abs() < 1e-9,
+        "{o} {c4}"
+    );
+}
+
+#[test]
+fn copies_dialog_remembers_the_last_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    h.get_by_role_and_label(Role::Button, "Copies...").click();
+    h.run();
+    {
+        let d = app_mut(&mut h).ui.prepare.copies.as_mut().unwrap();
+        d.count = 9;
+        d.grid = true;
+        d.columns = 2;
+        d.gap_mm = 1.5;
+    }
+    h.get_by_role_and_label(Role::Button, "Make copies").click();
+    h.run();
+    wait_for_workers(&mut h);
+    select(&s, &[a]);
+    h.run();
+    h.get_by_role_and_label(Role::Button, "Copies...").click();
+    h.run();
+    let d = app(&h).ui.prepare.copies.clone().unwrap();
+    assert_eq!((d.count, d.grid, d.columns, d.gap_mm), (9, true, 2, 1.5));
+    // Cancel keeps the last settings that were used, not the edits.
+    app_mut(&mut h).ui.prepare.copies.as_mut().unwrap().count = 2;
+    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    h.run();
+    h.get_by_role_and_label(Role::Button, "Copies...").click();
+    h.run();
+    assert_eq!(app(&h).ui.prepare.copies.as_ref().unwrap().count, 9);
 }
 
 #[test]
