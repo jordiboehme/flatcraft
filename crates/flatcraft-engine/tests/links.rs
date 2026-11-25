@@ -1117,3 +1117,26 @@ fn relinking_several_objects_is_one_undo_step() {
     assert_eq!(obj(&s, ia).link.as_ref().unwrap().path, new.join("a.svg"));
     assert_eq!(obj(&s, ib).link.as_ref().unwrap().path, new.join("b.svg"));
 }
+
+#[test]
+fn relink_items_with_one_entry_reports_like_several() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(dir.path());
+    let a = dir.path().join("a.svg");
+    write(&a, svg(false));
+    let id = import(&mut s, &a);
+    let r = run(
+        &mut s,
+        "object.relink",
+        json!({ "items": [{ "id": id, "path": dir.path().join("gone.svg") }] }),
+    );
+    assert_eq!(r["failed"][0]["id"], json!(id), "{r}");
+    assert_eq!(r["reloaded"], json!([]));
+    let r = run(
+        &mut s,
+        "object.relink",
+        json!({ "items": [{ "id": id, "path": a }] }),
+    );
+    assert_eq!(r["unchanged"], json!([id]), "{r}");
+    assert_eq!(r["failed"], json!([]), "{r}");
+}

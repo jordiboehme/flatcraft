@@ -585,7 +585,7 @@ pub struct RelinkParams {
     pub id: Option<u64>,
     /// The file's new location. It must exist and be of the object's kind: .svg or .svgz for SVG objects, .png, .jpg, .jpeg, .webp or .gif for traced images.
     pub path: Option<PathBuf>,
-    /// Several objects to relink in one undo step, for example the also_found list of an earlier relink. An item that fails is listed in failed and changes nothing; the others are still relinked.
+    /// Several objects to relink in one undo step, for example the also_found list of an earlier relink. An item that fails is listed in failed and changes nothing; the others are still relinked. The call never fails because of an item.
     #[serde(default)]
     pub items: Vec<RelinkItem>,
 }
@@ -660,6 +660,9 @@ fn relink_one(
 }
 
 fn run_relink(s: &mut Session, p: RelinkParams, _: Origin) -> Result<Value, CommandError> {
+    // `items` reports per item and never fails because of one; id and path
+    // is one relink that fails like any command.
+    let single = p.items.is_empty();
     let items: Vec<(ObjectId, PathBuf)> = match (p.id, p.path, p.items.is_empty()) {
         (Some(id), Some(path), true) => vec![(ObjectId(id), path)],
         (None, None, false) => p
@@ -673,23 +676,15 @@ fn run_relink(s: &mut Session, p: RelinkParams, _: Origin) -> Result<Value, Comm
             ));
         }
     };
-    let single = items.len() == 1;
     let mut warnings = Vec::new();
     let (mut reloaded, mut unchanged, mut failed) = (vec![], vec![], vec![]);
-    let mut last_error = None;
     for (id, path) in &items {
         match relink_one(s, *id, path, &mut warnings) {
             Ok(true) => reloaded.push(*id),
             Ok(false) => unchanged.push(*id),
             Err(e) if single => return Err(e),
-            Err(e) => {
-                failed.push(json!({ "id": id.0, "path": path, "error": e.to_string() }));
-                last_error = Some(e);
-            }
+            Err(e) => failed.push(json!({ "id": id.0, "path": path, "error": e.to_string() })),
         }
-    }
-    if reloaded.is_empty() && unchanged.is_empty() {
-        return Err(last_error.unwrap_or_else(|| CommandError::InvalidParams("no items".into())));
     }
     let done: Vec<ObjectId> = reloaded.iter().chain(&unchanged).copied().collect();
     let mut also_found: Vec<Value> = Vec::new();
@@ -750,7 +745,7 @@ command!(
     mutates: true,
     params: RelinkParams,
     run: run_relink,
-    description: "Points an object's link to a file at a new location (after it was moved or renamed) and reloads it from there, keeping position, scale, rotation, mirror, cut options, name and visibility. An unlinked object gets a link. The file must exist and match the object's kind (.svg/.svgz for SVG objects, .png/.jpg/.jpeg/.webp/.gif for traced images); a file that cannot be read or parsed fails the call and changes nothing. One undo step. items: [{id, path}] instead of id and path relinks several objects in one undo step (for example the also_found list); an item that fails changes nothing and is listed in failed: [{id, path, error}], the others are still relinked, and the call fails only when every item failed. Returns {reloaded: [id] (the content changed), unchanged: [id] (same content, only the link moved), also_found: [{id, path}] (other objects whose file is missing but whose file name exists in the new folder; relink them too, in one call with items), warnings: [text]}, plus failed with items.",
+    description: "Points an object's link to a file at a new location (after it was moved or renamed) and reloads it from there, keeping position, scale, rotation, mirror, cut options, name and visibility. An unlinked object gets a link. The file must exist and match the object's kind (.svg/.svgz for SVG objects, .png/.jpg/.jpeg/.webp/.gif for traced images); a file that cannot be read or parsed fails the call and changes nothing. One undo step. items: [{id, path}] instead of id and path relinks several objects in one undo step (for example the also_found list); an item that fails changes nothing and is listed in failed: [{id, path, error}], the others are still relinked, and the call never fails because of an item (with one item too). Returns {reloaded: [id] (the content changed), unchanged: [id] (same content, only the link moved), also_found: [{id, path}] (other objects whose file is missing but whose file name exists in the new folder; relink them too, in one call with items), warnings: [text]}, plus failed with items.",
 );
 
 // ---------------------------------------------------------------- unlink
