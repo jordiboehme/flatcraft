@@ -134,6 +134,22 @@ pub fn show(
         });
 
     ui.separator();
+    job(ui, st, snap, t, actions);
+}
+
+/// Plotter, mat, material and the speed, force and passes of the job. The
+/// Cut workspace shows the same controls in its first stage.
+pub fn job(
+    ui: &mut Ui,
+    st: &mut PrepareState,
+    snap: &Snapshot,
+    t: &Tokens,
+    actions: &mut Vec<Action>,
+) {
+    let doc_id = snap.doc_id;
+    let run = |actions: &mut Vec<Action>, cmd: &'static str, params: Value| {
+        actions.push(Action::run(doc_id, cmd, params));
+    };
     ui.label(RichText::new("Job").font(fonts::semibold(14.0)));
     egui::Grid::new("flatcraft-job")
         .num_columns(2)

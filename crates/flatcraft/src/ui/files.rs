@@ -1,6 +1,6 @@
 //! File dialogs behind a trait, so tests can answer them.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// What a file dialog asks for.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -54,4 +54,51 @@ pub fn filter(name: &str, extensions: &[&str]) -> (String, Vec<String>) {
         name.to_string(),
         extensions.iter().map(|e| e.to_string()).collect(),
     )
+}
+
+/// The name of the link that shows a file in the file manager.
+pub fn reveal_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Show in Finder"
+    } else {
+        "Show in folder"
+    }
+}
+
+/// Shows a file in the platform file manager. The app uses
+/// [`NativeRevealer`]; tests record the paths instead of starting
+/// processes.
+pub trait Revealer {
+    fn reveal(&mut self, file: &Path) -> Result<(), String>;
+}
+
+/// `open -R` on macOS, `explorer /select,` on Windows, `xdg-open` on the
+/// folder elsewhere.
+#[derive(Debug, Default)]
+pub struct NativeRevealer;
+
+impl Revealer for NativeRevealer {
+    fn reveal(&mut self, file: &Path) -> Result<(), String> {
+        let mut cmd = if cfg!(target_os = "macos") {
+            let mut c = std::process::Command::new("open");
+            c.arg("-R").arg(file);
+            c
+        } else if cfg!(target_os = "windows") {
+            // Two arguments: one "/select,<path>" argument would be quoted
+            // as a whole when the path has spaces ("FlatCraft Output"),
+            // which Explorer does not understand.
+            let mut c = std::process::Command::new("explorer");
+            c.arg("/select,").arg(file);
+            c
+        } else {
+            let dir = file.parent().unwrap_or(file);
+            let mut c = std::process::Command::new("xdg-open");
+            c.arg(dir);
+            c
+        };
+        let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+        // Reaped off the UI thread, so no zombie process stays behind.
+        std::thread::spawn(move || child.wait());
+        Ok(())
+    }
 }

@@ -31,15 +31,22 @@ pub fn ribbon(
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 switcher(ui, app, actions);
-                if let Some(snap) = snap {
-                    ui.separator();
-                    super::ribbon::show(
-                        ui,
-                        &mut app.ui.prepare,
-                        snap,
-                        &mut app.ui.show_debug,
-                        actions,
-                    );
+                match (snap, app.ui.workspace) {
+                    (Some(snap), Workspace::Prepare) => {
+                        ui.separator();
+                        super::ribbon::show(
+                            ui,
+                            &mut app.ui.prepare,
+                            snap,
+                            &mut app.ui.show_debug,
+                            actions,
+                        );
+                    }
+                    (Some(_), Workspace::Cut) => {
+                        ui.separator();
+                        super::cut::stage_bar(ui, &mut app.ui.cut, &mut app.ui.show_debug, &t);
+                    }
+                    _ => {}
                 }
             });
         });

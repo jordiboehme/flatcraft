@@ -819,3 +819,31 @@ fn a_cloned_document_gets_a_new_id_and_drops_the_pending_send() {
     run(&mut s, "document.state", json!({}));
     assert!(s.pending_send().is_none());
 }
+
+#[test]
+fn a_pending_send_expires_after_five_minutes() {
+    use flatcraft_engine::session::PENDING_TTL;
+    let d = dirs();
+    let mut s = usb_ui_session(&d);
+    request(&mut s);
+    let asked = s.pending_send().unwrap().requested_at;
+    assert_eq!(PENDING_TTL, std::time::Duration::from_secs(300));
+    assert!(!s.expire_pending(asked + PENDING_TTL - std::time::Duration::from_millis(1)));
+    assert!(s.pending_send().is_some());
+    assert!(s.expire_pending(asked + PENDING_TTL));
+    assert!(s.pending_send().is_none());
+    assert!(!s.expire_pending(asked + PENDING_TTL));
+}
+
+#[test]
+fn deny_drops_only_the_named_request() {
+    let d = dirs();
+    let mut s = usb_ui_session(&d);
+    let id = request(&mut s);
+    assert!(!s.deny_pending(id + 1));
+    assert!(s.pending_send().is_some());
+    assert!(s.deny_pending(id));
+    assert!(s.pending_send().is_none());
+    let e = s.confirm_pending(id).unwrap_err();
+    assert!(matches!(e, CommandError::NotFound(_)), "{e}");
+}

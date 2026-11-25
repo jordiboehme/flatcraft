@@ -134,7 +134,7 @@ pub fn object_colour(own: Option<[u8; 3]>, mat: [u8; 3]) -> [u8; 3] {
     }
 }
 
-fn rgb(c: [u8; 3]) -> Color32 {
+pub fn rgb(c: [u8; 3]) -> Color32 {
     Color32::from_rgb(c[0], c[1], c[2])
 }
 
@@ -261,24 +261,61 @@ pub fn show(
     pointer(ui, &resp, snap, st, actions);
 
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, t.bg);
     let view = st.view;
-    let mat_rgb = snap.mat.as_ref().map_or([0x8F, 0xA8, 0xB8], |m| m.color);
-    let contrast = rgb(contrast_colour(mat_rgb));
+    let (mat_rgb, contrast) = draw_mat(&painter, rect, snap, &view, st.show_grid, t);
+    draw_objects(&painter, snap, &view, mat_rgb, 1.0, |id| {
+        drag_preview(st.drag.as_ref(), id)
+    });
+    draw_area(&painter, rect, snap, &view, t, contrast);
+    draw_selection(&painter, snap, st, contrast);
+    if st.show_rulers {
+        draw_rulers(&painter, rect, &view, t);
+    }
+}
 
+/// The mat colour, falling back to the Cameo mat blue.
+pub fn mat_rgb(snap: &Snapshot) -> [u8; 3] {
+    snap.mat.as_ref().map_or([0x8F, 0xA8, 0xB8], |m| m.color)
+}
+
+/// Fills the canvas, draws the mat in its colour and the printed grid.
+/// Returns the mat colour and its contrast colour.
+pub(crate) fn draw_mat(
+    painter: &egui::Painter,
+    rect: Rect,
+    snap: &Snapshot,
+    view: &CanvasView,
+    show_grid: bool,
+    t: &Tokens,
+) -> ([u8; 3], Color32) {
+    painter.rect_filled(rect, 0.0, t.bg);
+    let mat_rgb = mat_rgb(snap);
+    let contrast = rgb(contrast_colour(mat_rgb));
     if let Some(m) = &snap.mat {
         painter.rect_filled(view.rect_to_screen(snap.mat_rect(m)), 0.0, rgb(m.color));
-        if st.show_grid {
-            draw_grid(&painter, &view, m.grid.width_mm, m.grid.height_mm, contrast);
+        if show_grid {
+            draw_grid(painter, view, m.grid.width_mm, m.grid.height_mm, contrast);
         }
     }
+    (mat_rgb, contrast)
+}
 
+/// Draws the visible objects in their colours (contrast rule), each placed
+/// by its centre and an optional extra affine (a drag preview). `alpha`
+/// fades them (the Cut workspace draws toolpaths on top).
+pub(crate) fn draw_objects(
+    painter: &egui::Painter,
+    snap: &Snapshot,
+    view: &CanvasView,
+    mat_rgb: [u8; 3],
+    alpha: f32,
+    extra: impl Fn(u64) -> Option<kurbo::Affine>,
+) {
     for o in snap.objects.iter().filter(|o| o.visible) {
-        let preview = drag_preview(st.drag.as_ref(), o.id);
         let base = kurbo::Affine::translate(o.transform.center_mm.to_vec2());
-        let place = preview.map_or(base, |p| p * base);
+        let place = extra(o.id).map_or(base, |p| p * base);
         for line in &o.shape.lines {
-            let colour = rgb(object_colour(line.colour, mat_rgb));
+            let colour = rgb(object_colour(line.colour, mat_rgb)).gamma_multiply(alpha);
             let pts: Vec<Pos2> = line
                 .points
                 .iter()
@@ -292,7 +329,18 @@ pub fn show(
             }
         }
     }
+}
 
+/// Dims everything outside the cutting area, shows the band of an
+/// uncalibrated mat and outlines the area.
+pub(crate) fn draw_area(
+    painter: &egui::Painter,
+    rect: Rect,
+    snap: &Snapshot,
+    view: &CanvasView,
+    t: &Tokens,
+    contrast: Color32,
+) {
     if let Some(area) = snap.area {
         let a = view.rect_to_screen(area);
         let dim = Color32::from_black_alpha(110);
@@ -317,15 +365,10 @@ pub fn show(
         }
         painter.rect_stroke(a, 0.0, Stroke::new(1.0, contrast), egui::StrokeKind::Middle);
     }
-
-    draw_selection(&painter, snap, st, contrast);
-    if st.show_rulers {
-        draw_rulers(&painter, rect, &view, t);
-    }
 }
 
 /// The rect the view fits the mat into: the canvas minus rulers and a margin.
-fn fit_rect(rect: Rect) -> Rect {
+pub(crate) fn fit_rect(rect: Rect) -> Rect {
     Rect::from_min_max(rect.min + vec2(RULER, RULER), rect.max).shrink(24.0)
 }
 
@@ -439,7 +482,7 @@ fn on_step(v: f64, step: f64) -> bool {
     ((v / step).round() * step - v).abs() < 1e-6
 }
 
-fn draw_rulers(painter: &egui::Painter, rect: Rect, view: &CanvasView, t: &Tokens) {
+pub(crate) fn draw_rulers(painter: &egui::Painter, rect: Rect, view: &CanvasView, t: &Tokens) {
     let top = Rect::from_min_max(rect.min, pos2(rect.max.x, rect.min.y + RULER));
     let left = Rect::from_min_max(rect.min, pos2(rect.min.x + RULER, rect.max.y));
     painter.rect_filled(top, 0.0, t.panel);
@@ -527,6 +570,48 @@ fn wheel_events(events: &[egui::Event]) -> Vec<Wheel> {
         .collect()
 }
 
+/// Ruling R29: trackpad scrolling pans; a mouse wheel, Cmd/Ctrl+scroll
+/// and pinch zoom around the pointer. egui turns Cmd/Ctrl+scroll and
+/// pinch into `zoom_delta`.
+fn scroll(
+    resp: &egui::Response,
+    view: &mut CanvasView,
+    wheels: Vec<Wheel>,
+    zoom: f32,
+    hover: Option<Pos2>,
+) {
+    if resp.hovered()
+        && let Some(at) = hover
+    {
+        let mut factor = zoom;
+        for w in wheels {
+            match w {
+                Wheel::Pan(d) => view.offset += d,
+                Wheel::Zoom(f) => factor *= f,
+            }
+        }
+        if (factor - 1.0).abs() > 1e-6 {
+            view.zoom_about(at, factor);
+        }
+    }
+}
+
+/// Pan and zoom only, for a canvas that edits nothing (Cut): scrolling as
+/// in Prepare, and any drag pans.
+pub(crate) fn navigate(ui: &Ui, resp: &egui::Response, view: &mut CanvasView) {
+    let (wheels, zoom, hover) = ui.input(|i| {
+        (
+            wheel_events(&i.raw.events),
+            i.zoom_delta(),
+            i.pointer.hover_pos(),
+        )
+    });
+    scroll(resp, view, wheels, zoom, hover);
+    if resp.dragged() {
+        view.offset += resp.drag_delta();
+    }
+}
+
 fn pointer(
     ui: &Ui,
     resp: &egui::Response,
@@ -545,23 +630,7 @@ fn pointer(
     });
     let space = space && !ui.ctx().egui_wants_keyboard_input();
 
-    // Ruling R29: trackpad scrolling pans; a mouse wheel, Cmd/Ctrl+scroll
-    // and pinch zoom around the pointer. egui turns Cmd/Ctrl+scroll and
-    // pinch into `zoom_delta`.
-    if resp.hovered()
-        && let Some(at) = hover
-    {
-        let mut factor = zoom;
-        for w in wheels {
-            match w {
-                Wheel::Pan(d) => st.view.offset += d,
-                Wheel::Zoom(f) => factor *= f,
-            }
-        }
-        if (factor - 1.0).abs() > 1e-6 {
-            st.view.zoom_about(at, factor);
-        }
-    }
+    scroll(resp, &mut st.view, wheels, zoom, hover);
 
     // Middle drag or space drag pans.
     if resp.dragged_by(egui::PointerButton::Middle)

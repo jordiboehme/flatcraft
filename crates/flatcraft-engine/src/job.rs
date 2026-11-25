@@ -1,11 +1,15 @@
 //! Job building: document -> cut plan -> GPGL bytes, and sending.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use flatcraft_core::document::ObjectId;
+use flatcraft_core::document::{CutOptions, Document, JobSettings, ObjectId};
+use flatcraft_core::geometry::CutPath;
+use flatcraft_core::transform::Transform;
 use flatcraft_device::gpgl::{CutSettings, EmitError, EmitPath, EmittedJob, check_safe, emit_job};
 use flatcraft_device::{
-    FileTransport, PlotterProfile, SendReport, Transport, TransportError, TransportSpec,
+    FileTransport, MaterialProfile, PlotterProfile, SendReport, Transport, TransportError,
+    TransportSpec,
 };
 use flatcraft_path::{CutPlan, PathRef, PipelineSettings, PlacedPath, PlanError, plan};
 use serde_json::{Value, json};
@@ -80,32 +84,113 @@ fn emit_error(e: EmitError) -> CommandError {
     }
 }
 
+/// One object as the job build reads it. The geometry `Arc` is shared with
+/// the document, so taking a [`JobInput`] is cheap.
+#[derive(Debug, Clone)]
+pub struct JobObject {
+    pub id: ObjectId,
+    pub name: String,
+    pub visible: bool,
+    pub transform: Transform,
+    pub local_bounds: kurbo::Rect,
+    pub cut: CutOptions,
+    pub geometry: Arc<Vec<CutPath>>,
+}
+
+/// Two inputs are equal when the same geometry `Arc` is placed the same
+/// way. The comparison never walks the geometry, so a GUI can compare
+/// inputs every frame; it holds the `Arc`s, so an address cannot be reused.
+impl PartialEq for JobObject {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.name == other.name
+            && self.visible == other.visible
+            && self.transform == other.transform
+            && self.local_bounds == other.local_bounds
+            && self.cut == other.cut
+            && Arc::ptr_eq(&self.geometry, &other.geometry)
+    }
+}
+
+/// Everything a job build reads, taken from a session under its lock, so
+/// the build itself can run without the lock ([`build_input`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct JobInput {
+    pub objects: Vec<JobObject>,
+    pub job: JobSettings,
+    pub plotter: PlotterProfile,
+    /// The material with the plotter's overrides applied.
+    pub material: MaterialProfile,
+}
+
+impl JobInput {
+    /// The objects of `doc` as the build reads them.
+    pub fn objects_of(doc: &Document) -> Vec<JobObject> {
+        doc.objects
+            .iter()
+            .map(|o| JobObject {
+                id: o.id,
+                name: o.name.clone(),
+                visible: o.visible,
+                transform: o.transform,
+                local_bounds: o.local_bounds,
+                cut: o.cut,
+                geometry: o.geometry.clone(),
+            })
+            .collect()
+    }
+
+    /// The active document's objects, job settings and profiles.
+    pub fn of(session: &Session) -> Result<Self, CommandError> {
+        let doc = &session.doc().document;
+        let job = &doc.job;
+        let plotter = session
+            .profiles
+            .plotter(&job.plotter_id)
+            .map_err(profile_error)?;
+        let material = session
+            .profiles
+            .material(&job.material_id)
+            .map_err(profile_error)?
+            .for_plotter(&plotter.id);
+        Ok(Self {
+            objects: Self::objects_of(doc),
+            job: job.clone(),
+            plotter,
+            material,
+        })
+    }
+}
+
 /// Builds the job of the active document: the visible objects' cut paths
 /// (per their cut options, see `cutgeom`), the material values for this
 /// plotter, then the job overrides.
 pub fn build(session: &Session) -> Result<JobResult, CommandError> {
-    let doc = &session.doc().document;
-    let job = &doc.job;
-    let plotter = session
-        .profiles
-        .plotter(&job.plotter_id)
-        .map_err(profile_error)?;
-    let material = session
-        .profiles
-        .material(&job.material_id)
-        .map_err(profile_error)?
-        .for_plotter(&plotter.id);
+    build_input(&JobInput::of(session)?)
+}
+
+/// Builds a job from a [`JobInput`]. It does not need the session, so the
+/// GUI runs it without holding the session lock.
+pub fn build_input(input: &JobInput) -> Result<JobResult, CommandError> {
+    let JobInput {
+        objects,
+        job,
+        plotter,
+        material,
+    } = input;
     let area = plotter.cutting_area(&job.media_id).ok_or_else(|| {
         CommandError::NotFound(format!(
             "media '{}' is not defined for plotter '{}'",
             job.media_id, job.plotter_id
         ))
     })?;
+    let names: std::collections::BTreeMap<ObjectId, &str> =
+        objects.iter().map(|o| (o.id, o.name.as_str())).collect();
 
     let mut warnings = Vec::new();
     let mut placed = Vec::new();
     let mut labels = std::collections::BTreeMap::new();
-    for o in &doc.objects {
+    for o in objects {
         if !o.visible {
             warnings.push(format!(
                 "'{}' is hidden and will not be cut.",
@@ -175,8 +260,9 @@ pub fn build(session: &Session) -> Result<JobResult, CommandError> {
             let names: Vec<String> = objects
                 .iter()
                 .map(|id| {
-                    doc.get(*id)
-                        .map_or_else(|| format!("object {}", id.0), |o| one_line(&o.name))
+                    names
+                        .get(id)
+                        .map_or_else(|| format!("object {}", id.0), |n| one_line(n))
                 })
                 .collect();
             CommandError::Refused(format!(
@@ -192,7 +278,7 @@ pub fn build(session: &Session) -> Result<JobResult, CommandError> {
         .iter()
         .map(|t| {
             let id = t.source.object;
-            let name = doc.get(id).map_or("", |o| o.name.as_str());
+            let name = names.get(&id).copied().unwrap_or("");
             let label = labels.get(&(id, t.source.path_index)).map(String::as_str);
             EmitPath {
                 points: t.points.clone(),
@@ -205,7 +291,7 @@ pub fn build(session: &Session) -> Result<JobResult, CommandError> {
         force: job.force.unwrap_or(material.force),
         track_enhancing: material.track_enhancing && plotter.capabilities.track_enhancing,
     };
-    let emitted = emit_job(&paths, &plotter, &job.media_id, &settings).map_err(emit_error)?;
+    let emitted = emit_job(&paths, plotter, &job.media_id, &settings).map_err(emit_error)?;
     Ok(JobResult {
         plan: cut_plan,
         job: emitted,
@@ -254,6 +340,21 @@ pub fn output_dir(
         .map(Path::to_path_buf)
         .or_else(|| documents.map(|d| d.join(OUTPUT_FOLDER)))
         .unwrap_or_else(|| config_dir.join("output"))
+}
+
+/// Where File Output writes for this profile folder and preference, with
+/// the platform Documents folder. The Cut workspace shows this folder.
+pub fn file_output_dir(
+    profile_dir: Option<&Path>,
+    prefs_dir: Option<&Path>,
+    config_dir: &Path,
+) -> PathBuf {
+    output_dir(
+        profile_dir,
+        prefs_dir,
+        documents_dir().as_deref(),
+        config_dir,
+    )
 }
 
 /// The platform Documents folder, if there is one.
@@ -394,10 +495,9 @@ pub(crate) fn deliver_built(
                     dir.display()
                 )));
             }
-            let dir = output_dir(
+            let dir = file_output_dir(
                 directory.as_deref(),
                 s.prefs.output_dir.as_deref(),
-                documents_dir().as_deref(),
                 &s.config_dir,
             );
             if origin == Origin::Agent && !agent_may_write(&dir, &s.config_dir) {

@@ -16,6 +16,7 @@ use flatcraft_core::geometry::CutPath;
 use flatcraft_core::transform::Transform;
 use flatcraft_device::{MaterialProfile, Media, MediaKind, PlotterProfile, PresetInfo};
 use flatcraft_engine::commands::placed_bounds;
+use flatcraft_engine::job::JobInput;
 use serde_json::json;
 
 use super::canvas::{self, CanvasView};
@@ -350,6 +351,12 @@ pub struct Snapshot {
     /// The image or the trace settings of the Trace dialog's object
     /// changed since the dialog opened (an agent retraced or reloaded it).
     pub trace_source_changed: bool,
+    /// What a job build reads, when the snapshot was asked for it (Cut,
+    /// Debug panel). An error says why there is no job (a missing profile).
+    pub job_input: Option<Result<JobInput, flatcraft_engine::CommandError>>,
+    /// The output folder of the preferences.
+    pub output_pref: Option<PathBuf>,
+    pub config_dir: PathBuf,
 }
 
 impl Snapshot {
@@ -402,6 +409,11 @@ impl Snapshot {
 /// Takes the snapshot. The lock is held only to copy what is needed;
 /// shapes that changed are rebuilt after it is released.
 pub fn snapshot(app: &mut FlatCraftApp) -> Snapshot {
+    snapshot_with(app, false)
+}
+
+/// [`snapshot`], plus the job input when `want_job` is true.
+pub fn snapshot_with(app: &mut FlatCraftApp, want_job: bool) -> Snapshot {
     let cache = &mut app.ui.prepare.cache;
     let trace = &mut app.ui.trace;
     let mut misses: Vec<(usize, Object)> = Vec::new();
@@ -461,14 +473,25 @@ pub fn snapshot(app: &mut FlatCraftApp) -> Snapshot {
             objects,
             selection: st.selection.iter().map(|i| i.0).collect(),
             job,
-            plotter,
-            material,
+            plotter: plotter.clone(),
+            material: material.clone(),
             plotters: s.profiles.plotters(),
             materials: s.profiles.materials(),
             mat,
             area,
             auto_reload: s.prefs.auto_reload,
             trace_source_changed,
+            job_input: want_job.then(|| match (&plotter, &material) {
+                (Some(p), Some(m)) => Ok(JobInput {
+                    objects: JobInput::objects_of(&st.document),
+                    job: st.document.job.clone(),
+                    plotter: p.clone(),
+                    material: m.clone(),
+                }),
+                _ => JobInput::of(&s),
+            }),
+            output_pref: s.prefs.output_dir.clone(),
+            config_dir: s.config_dir.clone(),
         }
     };
     for (i, o) in misses {

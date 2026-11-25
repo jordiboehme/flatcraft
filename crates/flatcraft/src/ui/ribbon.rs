@@ -26,7 +26,7 @@ fn tool(ui: &mut Ui, icon: Icon, text: &str, enabled: bool, hint: &str) -> bool 
 }
 
 /// A toggle with an icon and a text.
-fn toggle(ui: &mut Ui, icon: Icon, text: &str, on: &mut bool) {
+pub(crate) fn toggle(ui: &mut Ui, icon: Icon, text: &str, on: &mut bool) {
     let tex = icons::texture(ui.ctx(), icon, ICON_SIZE);
     let image = egui::Image::from_texture(egui::load::SizedTexture::new(
         tex.id(),

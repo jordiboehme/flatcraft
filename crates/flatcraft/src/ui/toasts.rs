@@ -1,9 +1,13 @@
-//! Short messages in the corner of the window. Each one expires after 4 s.
+//! Short messages in the corner of the window. Each one expires after 4 s,
+//! or after 10 s when it has a "Show in Finder" link.
 
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// How long a toast stays visible.
 pub const LIFETIME: Duration = Duration::from_secs(4);
+/// How long a toast with a link stays visible, so there is time to click.
+pub const LINK_LIFETIME: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToastKind {
@@ -17,6 +21,8 @@ pub struct Toast {
     pub text: String,
     pub kind: ToastKind,
     pub created: Instant,
+    /// A file the toast's "Show in Finder" link reveals.
+    pub reveal: Option<PathBuf>,
 }
 
 impl Toast {
@@ -37,11 +43,26 @@ impl Toast {
             text: text.into(),
             kind,
             created: Instant::now(),
+            reveal: None,
+        }
+    }
+
+    /// Adds a "Show in Finder" link that reveals `file`.
+    pub fn with_reveal(mut self, file: PathBuf) -> Self {
+        self.reveal = Some(file);
+        self
+    }
+
+    pub fn lifetime(&self) -> Duration {
+        if self.reveal.is_some() {
+            LINK_LIFETIME
+        } else {
+            LIFETIME
         }
     }
 
     pub fn expired(&self, now: Instant) -> bool {
-        now.saturating_duration_since(self.created) >= LIFETIME
+        now.saturating_duration_since(self.created) >= self.lifetime()
     }
 }
 
@@ -51,22 +72,32 @@ pub fn prune(toasts: &mut Vec<Toast>, now: Instant) -> Option<Duration> {
     toasts.retain(|t| !t.expired(now));
     toasts
         .iter()
-        .map(|t| LIFETIME.saturating_sub(now.saturating_duration_since(t.created)))
+        .map(|t| {
+            t.lifetime()
+                .saturating_sub(now.saturating_duration_since(t.created))
+        })
         .min()
 }
 
-/// Draws the toasts in the bottom-right corner.
-pub fn show(ctx: &egui::Context, toasts: &[Toast], tokens: &super::theme::Tokens) {
+/// Draws the toasts in the bottom-right corner. Returns the file of a
+/// clicked "Show in Finder" link.
+pub fn show(
+    ctx: &egui::Context,
+    toasts: &[Toast],
+    tokens: &super::theme::Tokens,
+) -> Option<PathBuf> {
     if toasts.is_empty() {
-        return;
+        return None;
     }
+    let mut clicked = None;
+    let links = toasts.iter().any(|t| t.reveal.is_some());
     egui::Area::new(egui::Id::unique("flatcraft-toasts"))
         .anchor(
             egui::Align2::RIGHT_BOTTOM,
             egui::vec2(-tokens.spacing * 2.0, -tokens.spacing * 2.0),
         )
         .order(egui::Order::Foreground)
-        .interactable(false)
+        .interactable(links)
         .show(ctx, |ui| {
             for t in toasts {
                 let stroke = match t.kind {
@@ -82,9 +113,15 @@ pub fn show(ctx: &egui::Context, toasts: &[Toast], tokens: &super::theme::Tokens
                     .show(ui, |ui| {
                         ui.set_max_width(360.0);
                         ui.label(&t.text);
+                        if let Some(file) = &t.reveal
+                            && ui.link(super::files::reveal_label()).clicked()
+                        {
+                            clicked = Some(file.clone());
+                        }
                     });
             }
         });
+    clicked
 }
 
 #[cfg(test)]

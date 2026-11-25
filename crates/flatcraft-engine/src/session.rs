@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use flatcraft_core::document::{Document, JobSettings, ObjectId};
 use flatcraft_core::undo::UndoStack;
@@ -65,6 +65,21 @@ pub struct PendingSend {
     pub transport: TransportSpec,
     pub job: EmittedJob,
     pub summary: JobSummary,
+}
+
+/// A send that waits for confirmation expires after this long.
+pub const PENDING_TTL: Duration = Duration::from_secs(5 * 60);
+
+/// Refusal of a confirmation that came too late.
+pub const PENDING_EXPIRED: &str =
+    "This cut request expired after 5 minutes. Ask the agent to send it again.";
+
+impl PendingSend {
+    /// True once [`PENDING_TTL`] has passed since the agent asked. `now`
+    /// comes from the monotonic clock (`Instant`).
+    pub fn expired(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.requested_at) >= PENDING_TTL
+    }
 }
 
 /// Media used by new documents.
@@ -274,13 +289,39 @@ impl Session {
         }
     }
 
+    /// Drops the pending send if it is older than [`PENDING_TTL`] at
+    /// `now`. Returns true if it dropped one. GUI only, not a command.
+    pub fn expire_pending(&mut self, now: Instant) -> bool {
+        if self.pending_send.as_ref().is_some_and(|p| p.expired(now)) {
+            self.pending_send = None;
+            return true;
+        }
+        false
+    }
+
+    /// The person said no: drops the pending send with this id. Returns
+    /// false (and keeps it) for any other id. GUI only, not a command.
+    pub fn deny_pending(&mut self, id: u64) -> bool {
+        if self.pending_send.as_ref().is_some_and(|p| p.id == id) {
+            self.pending_send = None;
+            return true;
+        }
+        false
+    }
+
     /// Sends the pending job after the person confirmed it in the GUI. It
     /// runs as `Origin::User` and sends exactly the snapshot taken when the
     /// agent asked: the same bytes through the same transport. The document
     /// is not looked at again. This is not a registry command, so agents
     /// cannot reach it. A wrong id leaves the pending send in place.
+    /// A request older than [`PENDING_TTL`] is dropped and refused.
     pub fn confirm_pending(&mut self, id: u64) -> Result<serde_json::Value, CommandError> {
         self.prune_pending();
+        if self.pending_send.as_ref().is_some_and(|p| p.id == id)
+            && self.expire_pending(Instant::now())
+        {
+            return Err(CommandError::Refused(PENDING_EXPIRED.into()));
+        }
         let pending = match &self.pending_send {
             Some(p) if p.id == id => p,
             _ => {
