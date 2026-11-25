@@ -202,14 +202,24 @@ fn byte_log_jsonl_format_and_ring() {
 }
 
 #[test]
-fn leftover_temp_files_are_skipped_and_kept() {
+fn leftover_temp_files_do_not_block_the_job_name_and_are_kept() {
     let dir = tempfile::tempdir().unwrap();
-    let stale = dir.path().join(".job.gpgl.tmp");
-    std::fs::write(&stale, "someone else's").unwrap();
+    let old_style = dir.path().join(".job.gpgl.tmp");
+    let other = std::process::id().wrapping_add(1);
+    let fresh = dir.path().join(format!(".job.gpgl.{other}.0.tmp"));
+    for f in [&old_style, &fresh] {
+        std::fs::write(f, "someone else's").unwrap();
+    }
     let mut log = ByteLog::new();
     let mut t = FileTransport::new(dir.path().to_path_buf(), "gpgl".into());
     let r = t.send_job(&square_job(), "job", &mut log).unwrap();
-    assert_eq!(r.files[0], dir.path().join("job-2.gpgl"));
-    assert_eq!(std::fs::read_to_string(&stale).unwrap(), "someone else's");
-    assert!(!dir.path().join("job.gpgl").exists());
+    assert_eq!(r.files[0], dir.path().join("job.gpgl"));
+    for f in [&old_style, &fresh] {
+        assert_eq!(std::fs::read_to_string(f).unwrap(), "someone else's");
+    }
+    let tmps: Vec<String> = names(dir.path())
+        .into_iter()
+        .filter(|n| n.ends_with(".tmp"))
+        .collect();
+    assert_eq!(tmps.len(), 2, "no temp file of ours is left: {tmps:?}");
 }

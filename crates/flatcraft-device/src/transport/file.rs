@@ -6,10 +6,13 @@
 //! - `<name>.bytelog.jsonl`: the bytes as the capture fixtures log them.
 //!
 //! When one of these names is taken, `-2`, `-3` and so on are appended to
-//! `name`. Every file is written to a temp file first and then renamed, so a
-//! half-written file never shows up under its real name.
+//! `name`. The three names are taken with `create_new` (empty files) before
+//! anything is written, so a file that appears meanwhile is never replaced.
+//! Every file is then written to a temp file of its own (see
+//! `flatcraft_core::fsio::write_temp_for`) and renamed over its empty
+//! placeholder, so a half-written file never shows up under its real name.
+//! Leftover temp files never block a name.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::{SendReport, Transport, TransportError, split_commands};
@@ -44,8 +47,9 @@ impl FileTransport {
         ]
     }
 
-    /// The first stem (`name`, `name-2`, ...) whose three files are all free.
-    fn free_targets(&self, name: &str) -> Result<[PathBuf; 3], TransportError> {
+    /// Takes the first stem (`name`, `name-2`, ...) whose three files are
+    /// all free, with empty placeholders (see [`reserve`]).
+    fn take_targets(&self, name: &str) -> Result<[PathBuf; 3], TransportError> {
         for n in 1..=MAX_SUFFIX {
             let stem = if n == 1 {
                 name.to_string()
@@ -53,13 +57,7 @@ impl FileTransport {
                 format!("{name}-{n}")
             };
             let targets = self.targets(&stem);
-            let mut taken = false;
-            for t in &targets {
-                // symlink_metadata also sees dangling links, which a rename would
-                // replace. A leftover temp file of the same name counts as taken too.
-                taken |= t.symlink_metadata().is_ok() || tmp_path(t).symlink_metadata().is_ok();
-            }
-            if !taken {
+            if reserve(&targets).map_err(|e| io_error("create", &self.dir, e))? {
                 return Ok(targets);
             }
         }
@@ -68,6 +66,33 @@ impl FileTransport {
             self.dir.display()
         )))
     }
+}
+
+/// Creates every target as a new empty file (`create_new`, which also
+/// refuses a dangling link). Returns false and gives back the names it took
+/// when one of them exists already.
+fn reserve(targets: &[PathBuf]) -> std::io::Result<bool> {
+    let mut taken: Vec<&Path> = Vec::new();
+    for t in targets {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(t)
+        {
+            Ok(_) => taken.push(t),
+            Err(e) => {
+                for t in &taken {
+                    let _ = std::fs::remove_file(t);
+                }
+                return if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    Ok(false)
+                } else {
+                    Err(e)
+                };
+            }
+        }
+    }
+    Ok(true)
 }
 
 /// A file name part made only of `[A-Za-z0-9._-]`, not empty and not
@@ -83,59 +108,29 @@ fn io_error(what: &str, path: &Path, e: std::io::Error) -> TransportError {
     TransportError::Io(format!("cannot {what} {}: {e}", path.display()))
 }
 
-fn tmp_path(target: &Path) -> PathBuf {
-    let name = target
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    target.with_file_name(format!(".{name}.tmp"))
-}
-
-/// Writes a new temp file. It never opens a file that exists already, and
-/// removes the file again when writing it fails.
-fn write_tmp(path: &Path, data: &[u8]) -> Result<(), TransportError> {
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|e| io_error("create", path, e))?;
-    let written = f.write_all(data).and_then(|()| f.sync_all());
-    remove_on_error(written, path)
-}
-
-/// Maps a failed write of the file we just created at `path` to an error
-/// and removes that file.
-fn remove_on_error(result: std::io::Result<()>, path: &Path) -> Result<(), TransportError> {
-    result.map_err(|e| {
-        let _ = std::fs::remove_file(path);
-        io_error("write", path, e)
-    })
-}
-
-/// Writes every `(target, data)` pair through a temp file and renames them in
-/// order. On any error it removes the temp files it created and the files it
-/// already renamed, so a failed job leaves nothing behind and never deletes a
-/// file it did not write.
+/// Writes every `(target, data)` pair through a temp file of its own and
+/// renames them in order over their placeholders. On any error it removes
+/// the temp files it created and every target (placeholder or renamed), so
+/// a failed job leaves nothing behind and never deletes a file it did not
+/// write.
 fn write_all_atomic(files: &[(&Path, &[u8])]) -> Result<(), TransportError> {
     let mut created: Vec<PathBuf> = Vec::new();
-    let mut renamed: Vec<&Path> = Vec::new();
     let result = (|| {
         for (target, data) in files {
-            let tmp = tmp_path(target);
-            write_tmp(&tmp, data)?;
+            let tmp = flatcraft_core::fsio::write_temp_for(target, data, None)
+                .map_err(|e| io_error("write", target, e))?;
             created.push(tmp);
         }
         for ((target, _), tmp) in files.iter().zip(&created) {
             std::fs::rename(tmp, target).map_err(|e| io_error("write", target, e))?;
-            renamed.push(target);
         }
         Ok(())
     })();
     if result.is_err() {
-        for tmp in created.iter().skip(renamed.len()) {
+        for tmp in &created {
             let _ = std::fs::remove_file(tmp);
         }
-        for target in renamed {
+        for (target, _) in files {
             let _ = std::fs::remove_file(target);
         }
     }
@@ -177,7 +172,7 @@ impl Transport for FileTransport {
         let jsonl = job_log.to_jsonl();
 
         std::fs::create_dir_all(&self.dir).map_err(|e| io_error("create", &self.dir, e))?;
-        let [bytes_path, txt_path, log_path] = self.free_targets(name)?;
+        let [bytes_path, txt_path, log_path] = self.take_targets(name)?;
         // The job file goes last: once it exists, its listing and log exist too.
         write_all_atomic(&[
             (&txt_path, listing.as_bytes()),
@@ -200,28 +195,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_failed_write_removes_its_temp_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".job.gpgl.tmp");
-        std::fs::write(&path, "half").unwrap();
-        let e = remove_on_error(Err(std::io::Error::other("disk full")), &path).unwrap_err();
-        assert!(matches!(e, TransportError::Io(_)), "{e:?}");
-        assert!(!path.exists());
-        remove_on_error(Ok(()), &path).unwrap();
-    }
-
-    #[test]
-    fn a_failed_later_file_removes_the_earlier_temp_files() {
+    fn reserving_never_takes_a_name_that_appeared_meanwhile() {
         let dir = tempfile::tempdir().unwrap();
         let a = dir.path().join("a.txt");
         let b = dir.path().join("b.txt");
-        // The temp path of b is taken by a directory, so creating it fails.
-        std::fs::create_dir(tmp_path(&b)).unwrap();
+        // b appears after the job picked its names.
+        std::fs::write(&b, "someone else's").unwrap();
+        assert!(!reserve(&[a.clone(), b.clone()]).unwrap());
+        assert!(!a.exists(), "the reservation of a is given back");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "someone else's");
+    }
+
+    #[test]
+    fn a_failed_later_file_removes_the_earlier_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.txt");
+        let b = dir.path().join("missing").join("b.txt");
+        assert!(reserve(std::slice::from_ref(&a)).unwrap());
+        // b's folder does not exist, so its temp file cannot be created.
         let e = write_all_atomic(&[(&a, b"1"), (&b, b"2")]).unwrap_err();
         assert!(matches!(e, TransportError::Io(_)), "{e:?}");
         assert!(!a.exists());
-        assert!(!tmp_path(&a).exists());
-        // What it did not create stays.
-        assert!(tmp_path(&b).is_dir());
+        let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert!(left.is_empty(), "{left:?}");
     }
 }
