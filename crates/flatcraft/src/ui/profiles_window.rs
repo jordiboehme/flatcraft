@@ -23,9 +23,13 @@ use super::settings::set_name;
 use super::theme::{self, Tokens};
 use super::{Action, FlatCraftApp, Toast, canvas, files, fonts, lock};
 
-/// Help text of the auto-reload switch.
-/// Under the Theme combo.
+/// Help text under the Theme combo.
+#[cfg(target_os = "macos")]
 pub const THEME_HELP: &str = "System follows your Mac's appearance.";
+/// Help text under the Theme combo.
+#[cfg(not(target_os = "macos"))]
+pub const THEME_HELP: &str = "System follows your computer's appearance.";
+/// Help text of the auto-reload switch.
 pub const AUTO_RELOAD_HELP: &str = "When an imported file changes on disk, FlatCraft reloads it and keeps your placement and cut settings.";
 
 /// Why a mat cannot be hidden or deleted.

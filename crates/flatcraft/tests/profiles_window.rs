@@ -820,7 +820,7 @@ fn theme_combo_offers_system_and_follows_the_os() {
     assert_eq!(Preferences::load(dir.path()).theme, Theme::System);
     assert_eq!(app(&h).tokens, flatcraft::ui::theme::Tokens::light());
     assert!(
-        h.query_by_label_contains("follows your Mac's appearance")
+        h.query_by_label_contains(flatcraft::ui::profiles_window::THEME_HELP)
             .is_some()
     );
 }
