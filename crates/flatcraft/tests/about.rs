@@ -205,31 +205,6 @@ fn every_opening_shows_another_quote() {
 }
 
 #[test]
-fn help_opens_about_except_on_macos() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut h = harness(&dir, session(&dir), false);
-    h.get_by_role_and_label(Role::Button, "Help").click();
-    h.step();
-    // macOS has the About item in the app menu; Help opens the repository.
-    assert_eq!(app(&h).ui.about.open, !cfg!(target_os = "macos"));
-    let opened: Vec<String> = h
-        .output()
-        .platform_output
-        .commands
-        .iter()
-        .filter_map(|c| match c {
-            egui::OutputCommand::OpenUrl(u) => Some(u.url.clone()),
-            _ => None,
-        })
-        .collect();
-    if cfg!(target_os = "macos") {
-        assert_eq!(opened, vec![flatcraft::ui::HELP_URL.to_string()]);
-    } else {
-        assert!(opened.is_empty());
-    }
-}
-
-#[test]
 fn five_banner_clicks_run_the_knife_then_end_of_line() {
     let dir = tempfile::tempdir().unwrap();
     let (mut h, now) = with_fake_clock(&dir);

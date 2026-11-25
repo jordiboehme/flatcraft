@@ -1,5 +1,5 @@
 //! The macOS menu bar: About (FlatCraft's own dialog), Preferences, Quit,
-//! and Edit with Undo and Redo.
+//! Edit with Undo and Redo, and Help.
 
 use std::sync::mpsc;
 
@@ -7,12 +7,18 @@ use muda::accelerator::{Accelerator, Code, Modifiers};
 use muda::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 
 use super::Action;
+use super::help::HelpItem;
 
 const ABOUT: &str = "flatcraft.about";
 const PREFERENCES: &str = "flatcraft.preferences";
 const QUIT: &str = "flatcraft.quit";
 const UNDO: &str = "flatcraft.undo";
 const REDO: &str = "flatcraft.redo";
+
+/// The menu id of a Help item.
+fn help_id(item: HelpItem) -> String {
+    format!("flatcraft.help.{}", item.label())
+}
 
 /// The installed menu bar and the channel its clicks arrive on.
 pub struct AppMenu {
@@ -62,7 +68,12 @@ impl AppMenu {
                 )),
             ),
         ])?;
-        menu.append_items(&[&app, &edit])?;
+        let help = Submenu::new("Help", true);
+        for item in HelpItem::ALL {
+            help.append(&MenuItem::with_id(help_id(item), item.label(), true, None))?;
+        }
+        menu.append_items(&[&app, &edit, &help])?;
+        help.set_as_help_menu_for_nsapp();
         menu.init_for_nsapp();
 
         let (tx, events) = mpsc::channel();
@@ -88,7 +99,10 @@ impl AppMenu {
                 QUIT => Some(Action::Quit),
                 UNDO => Some(Action::Undo(active)),
                 REDO => Some(Action::Redo(active)),
-                _ => None,
+                id => HelpItem::ALL
+                    .into_iter()
+                    .find(|&item| help_id(item) == id)
+                    .map(HelpItem::action),
             })
             .collect()
     }

@@ -396,11 +396,11 @@ fn credits(ui: &mut Ui, st: &mut AboutState, t: &Tokens, actions: &mut Vec<Actio
         for (name, url) in [("Ko-fi", KOFI_URL), ("PayPal", PAYPAL_URL)] {
             let support = egui::Button::new(RichText::new(name).color(Color32::WHITE)).fill(PINK);
             if ui.add(support).clicked() {
-                actions.push(Action::OpenUrl(url));
+                actions.push(Action::OpenUrl(url.to_string()));
             }
         }
         if ui.button("GitHub").clicked() {
-            actions.push(Action::OpenUrl(GITHUB_URL));
+            actions.push(Action::OpenUrl(GITHUB_URL.to_string()));
         }
     });
     ui.add_space(t.spacing);

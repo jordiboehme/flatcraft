@@ -115,9 +115,8 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                     if version.clicked() {
                         actions.push(Action::ShowAbout);
                     }
-                    if icon_button(ui, Icon::Help, "Help", true).clicked() {
-                        actions.push(Action::Help);
-                    }
+                    let help = icon_button(ui, Icon::Help, "Help", true);
+                    egui::Popup::menu(&help).show(|ui| super::help::menu(ui, actions));
                     if icon_button(ui, Icon::Settings, "Settings", true).clicked() {
                         actions.push(Action::ShowProfiles);
                     }

@@ -8,6 +8,7 @@ pub mod cut;
 pub mod debug;
 pub mod files;
 pub mod fonts;
+pub mod help;
 pub mod home;
 pub mod icons;
 pub mod import_dialog;
@@ -37,10 +38,6 @@ use serde_json::{Value, json};
 use icons::Icon;
 use theme::Tokens;
 pub use toasts::Toast;
-
-/// The project repository. Help opens it on macOS, where the app menu has
-/// the About item; elsewhere Help opens the About dialog, which links it.
-pub const HELP_URL: &str = "https://github.com/jordiboehme/flatcraft";
 
 /// The toast of Undo with nothing to undo.
 pub const NOTHING_TO_UNDO: &str = "Great Scott! Nothing to undo.";
@@ -100,6 +97,8 @@ pub struct UiState {
     pub toasts: Vec<Toast>,
     pub show_debug: bool,
     pub show_profiles: bool,
+    /// The keyboard shortcuts sheet is open.
+    pub show_shortcuts: bool,
     pub profiles: profiles_window::ProfilesState,
     pub prepare: prepare::PrepareState,
     /// The number of each untitled document's name, by stable document id,
@@ -237,12 +236,12 @@ pub enum Action {
     ShowProfiles,
     /// A save, delete or preference change from the Profiles window.
     Profiles(profiles_window::Request),
-    /// Help: the repository on macOS, the About dialog elsewhere.
-    Help,
-    /// Open the About dialog (macOS app menu, Help elsewhere).
+    /// Open the About dialog (Help menu, macOS app menu).
     ShowAbout,
+    /// Open the keyboard shortcuts sheet.
+    ShowShortcuts,
     /// Open a link in the browser.
-    OpenUrl(&'static str),
+    OpenUrl(String),
     /// Quit; asks first when a document has unsaved changes.
     Quit,
     /// The answer in the unsaved-changes dialog.
@@ -778,14 +777,8 @@ impl FlatCraftApp {
                 }
             }
             Action::Profiles(req) => profiles_window::apply(self, ctx, req),
-            Action::Help => {
-                if cfg!(target_os = "macos") {
-                    ctx.open_url(egui::OpenUrl::new_tab(HELP_URL));
-                } else {
-                    self.ui.about.open(&mut self.rng);
-                }
-            }
             Action::ShowAbout => self.ui.about.open(&mut self.rng),
+            Action::ShowShortcuts => self.ui.show_shortcuts = true,
             Action::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
             Action::Quit => {
                 let dirty = self.dirty_docs();
@@ -1089,37 +1082,10 @@ pub fn icon_button_hint(
         .on_disabled_hover_text(hint)
 }
 
-/// Keyboard shortcuts. On macOS the menu bar owns Undo and Redo.
+/// Keyboard shortcuts: the table in [`help::SHORTCUTS`]. On macOS the menu
+/// bar owns Undo, Redo and Settings.
 fn shortcuts(ctx: &egui::Context, active: u64, actions: &mut Vec<Action>) {
-    use egui::{Key, KeyboardShortcut, Modifiers};
-    let cmd = |key| KeyboardShortcut::new(Modifiers::COMMAND, key);
-    let cmd_shift = |key| KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, key);
-    ctx.input_mut(|i| {
-        if i.consume_shortcut(&cmd_shift(Key::S)) {
-            actions.push(Action::SaveAs { doc_id: active });
-        }
-        if i.consume_shortcut(&cmd(Key::S)) {
-            actions.push(Action::Save { doc_id: active });
-        }
-        if i.consume_shortcut(&cmd(Key::O)) {
-            actions.push(Action::OpenDialog);
-        }
-        if i.consume_shortcut(&cmd(Key::N)) {
-            actions.push(Action::NewProject);
-        }
-        if !cfg!(target_os = "macos") {
-            // On macOS the menu's Preferences item owns Cmd+,.
-            if i.consume_shortcut(&cmd(Key::Comma)) {
-                actions.push(Action::ShowProfiles);
-            }
-            if i.consume_shortcut(&cmd_shift(Key::Z)) || i.consume_shortcut(&cmd(Key::Y)) {
-                actions.push(Action::Redo(active));
-            }
-            if i.consume_shortcut(&cmd(Key::Z)) {
-                actions.push(Action::Undo(active));
-            }
-        }
-    });
+    help::run_shortcuts(ctx, active, actions);
 }
 
 /// Draws the whole window into `ui` and runs what the person asked for.
@@ -1210,6 +1176,9 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     let now = (app.clock)();
     let t = app.tokens;
     about::show(&ctx, &mut app.ui.about, &t, now, &mut actions);
+    if app.ui.show_shortcuts {
+        app.ui.show_shortcuts = help::show_shortcuts(&ctx, &t);
+    }
     pending_modal(&ctx, app, &mut actions);
     unsaved_modal(&ctx, app, &mut actions);
 
@@ -1245,10 +1214,11 @@ impl FlatCraftApp {
     }
 }
 
-/// A dialog that owns the keyboard is open: About, Trace, unsaved changes
+/// A dialog that owns the keyboard is open: About, Shortcuts, Trace, unsaved changes
 /// or the agent's pending send.
 pub fn modal_open(app: &FlatCraftApp) -> bool {
     app.ui.about.open
+        || app.ui.show_shortcuts
         || app.ui.trace.is_some()
         || app.ui.unsaved.is_some()
         || lock(&app.session).pending_send().is_some()
