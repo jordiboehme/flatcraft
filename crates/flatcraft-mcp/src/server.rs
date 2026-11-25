@@ -1,7 +1,8 @@
 //! The MCP tools on top of the command registry.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
+use flatcraft_engine::commands::sources::{self, CheckResult};
 use flatcraft_engine::registry;
 use flatcraft_engine::session::{CommandError, Origin, Session};
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -61,11 +62,16 @@ pub struct PreviewArgs {
     pub max_px: Option<u32>,
 }
 
+/// Runs `document.check_sources` for an agent without holding the session
+/// lock while files are hashed. Tests replace it.
+pub type SourceChecker = Arc<dyn Fn(&Mutex<Session>) -> (CheckResult, bool) + Send + Sync>;
+
 /// The MCP server. Cheap to clone.
 #[derive(Clone)]
 pub struct FlatcraftMcp {
     session: SharedSession,
     on_change: OnChange,
+    source_check: SourceChecker,
     tool_router: ToolRouter<Self>,
 }
 
@@ -87,7 +93,37 @@ impl FlatcraftMcp {
         Self {
             session,
             on_change,
+            source_check: Arc::new(sources::check_unlocked),
             tool_router: Self::tool_router(),
+        }
+    }
+
+    /// Runs the agent's `document.check_sources` with `f` instead of
+    /// [`sources::check_unlocked`] (tests).
+    pub fn with_source_check(
+        mut self,
+        f: impl Fn(&Mutex<Session>) -> (CheckResult, bool) + Send + Sync + 'static,
+    ) -> Self {
+        self.source_check = Arc::new(f);
+        self
+    }
+
+    /// `document.check_sources` without params: stat and compare under the
+    /// lock, hash without it, on tokio's blocking pool.
+    async fn check_sources(&self) -> CallToolResult {
+        let session = Arc::clone(&self.session);
+        let check = Arc::clone(&self.source_check);
+        let done = tokio::task::spawn_blocking(move || {
+            session
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .last_agent_activity = Some(std::time::Instant::now());
+            check(&session).0.to_json()
+        })
+        .await;
+        match done {
+            Ok(v) => text_ok(&v),
+            Err(_) => text_err("The call stopped with an internal error"),
         }
     }
 
@@ -190,6 +226,9 @@ impl FlatcraftMcp {
         let params = args.params.unwrap_or_else(|| json!({}));
         let params = if params.is_null() { json!({}) } else { params };
         let command = args.command;
+        if command == "document.check_sources" && params.as_object().is_some_and(|o| o.is_empty()) {
+            return self.check_sources().await;
+        }
         match self
             .with_session(true, move |s| s.execute(&command, params, Origin::Agent))
             .await

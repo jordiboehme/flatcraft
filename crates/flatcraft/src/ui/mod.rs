@@ -231,6 +231,10 @@ pub struct FlatCraftApp {
     pub revealer: Box<dyn files::Revealer>,
     /// The monotonic clock pending sends expire by; tests replace it.
     pub clock: Clock,
+    /// Runs a check of linked files on a worker thread; tests replace it.
+    pub source_check: flatcraft_mcp::server::SourceChecker,
+    /// The check of linked files that is running, if any.
+    pub source_check_job: Option<std::sync::mpsc::Receiver<prepare::CheckDone>>,
     /// The macOS menu bar; it must live as long as the app.
     #[cfg(target_os = "macos")]
     menu: Option<menu::AppMenu>,
@@ -253,6 +257,8 @@ impl FlatCraftApp {
             tracer: std::sync::Arc::new(flatcraft_import::trace::trace),
             revealer: Box::new(files::NativeRevealer),
             clock: std::sync::Arc::new(Instant::now),
+            source_check: std::sync::Arc::new(flatcraft_engine::commands::sources::check_unlocked),
+            source_check_job: None,
             #[cfg(target_os = "macos")]
             menu: None,
         }
@@ -290,6 +296,21 @@ impl FlatCraftApp {
     /// Reads the time from `clock` instead of `Instant::now` (tests).
     pub fn with_clock(mut self, clock: impl Fn() -> Instant + Send + Sync + 'static) -> Self {
         self.clock = std::sync::Arc::new(clock);
+        self
+    }
+
+    /// Checks linked files with `f` (on the worker thread) instead of
+    /// `sources::check_unlocked` (tests).
+    pub fn with_source_check(
+        mut self,
+        f: impl Fn(
+            &std::sync::Mutex<Session>,
+        ) -> (flatcraft_engine::commands::sources::CheckResult, bool)
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.source_check = std::sync::Arc::new(f);
         self
     }
 

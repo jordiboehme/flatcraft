@@ -20,6 +20,10 @@ struct Fixture {
 }
 
 async fn connect() -> Fixture {
+    connect_with(|server| server).await
+}
+
+async fn connect_with(setup: impl FnOnce(FlatcraftMcp) -> FlatcraftMcp) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let profiles = ProfileStore::load(dir.path()).unwrap();
     let prefs = Preferences {
@@ -32,7 +36,7 @@ async fn connect() -> Fixture {
         false,
         dir.path().to_path_buf(),
     )));
-    let server = FlatcraftMcp::new(session.clone(), Arc::new(|| {}));
+    let server = setup(FlatcraftMcp::new(session.clone(), Arc::new(|| {})));
     let (server_io, client_io) = tokio::io::duplex(1 << 20);
     tokio::spawn(async move {
         let running = server.serve(server_io).await.expect("server starts");
@@ -291,4 +295,56 @@ fn inline_defs_handles_nesting_repeats_siblings_and_cycles() {
     let out = inline_defs(cyclic);
     assert!(out.get("$defs").is_some(), "cycle keeps its defs: {out}");
     assert_eq!(out["type"], "object");
+}
+
+#[tokio::test]
+async fn check_sources_hashes_without_the_session_lock() {
+    use flatcraft_engine::commands::sources::check_unlocked_with;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let hashed = Arc::new(AtomicBool::new(false));
+    let seen = hashed.clone();
+    let f = connect_with(move |server| {
+        server.with_source_check(move |session| {
+            check_unlocked_with(session, |plan| {
+                assert!(session.try_lock().is_ok(), "the lock is free while hashing");
+                seen.store(true, Ordering::SeqCst);
+                plan.run()
+            })
+        })
+    })
+    .await;
+    let file = f._dir.path().join("a.svg");
+    std::fs::write(&file, SVG).unwrap();
+    let id = f
+        .session
+        .lock()
+        .unwrap()
+        .execute(
+            "object.import",
+            json!({ "path": file }),
+            flatcraft_engine::session::Origin::User,
+        )
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    std::fs::write(&file, SVG.replace("x=\"20\"", "x=\"21\"")).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60))
+        .unwrap();
+    let r = call(
+        &f,
+        "execute",
+        json!({ "command": "document.check_sources", "params": {} }),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{}", text(&r));
+    let v: Value = serde_json::from_str(&text(&r)).unwrap();
+    assert_eq!(v["changed"], json!([id]), "{v}");
+    assert!(
+        hashed.load(Ordering::SeqCst),
+        "the MCP check took the unlocked path"
+    );
 }

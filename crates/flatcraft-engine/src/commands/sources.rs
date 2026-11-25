@@ -6,6 +6,7 @@
 
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use flatcraft_core::document::{Document, ObjectId, Source, SourceLink};
@@ -946,10 +947,44 @@ pub fn accept_check(s: &Session, result: &CheckResult) -> Option<Value> {
     (s.docs[index].revision() == result.revision).then(|| result.to_json())
 }
 
-/// The change check. Only `changed` is meant for an automatic reload
-/// (`Preferences::auto_reload`): `missing` and `unreadable` would fail again
-/// on every check and must wait for the user. An agent's call holds the
-/// session lock for the whole check; the GUI uses the three steps.
+/// Times a check runs again when the document changed while it hashed.
+pub const CHECK_RETRIES: usize = 2;
+
+/// The change check of the active document with the session lock held only
+/// to stat ([`plan_check`]) and to compare revisions ([`accept_check`]); the
+/// hashing runs without it. A document that changed meanwhile is checked
+/// again, up to [`CHECK_RETRIES`] times. Returns the last result and
+/// whether it still matches the document. The GUI and the MCP server use
+/// it, so neither ever hashes under the lock.
+pub fn check_unlocked(session: &Mutex<Session>) -> (CheckResult, bool) {
+    check_unlocked_with(session, SourceCheck::run)
+}
+
+/// [`check_unlocked`] with the hashing step given. Tests use it to look at
+/// the lock while the files are hashed.
+pub fn check_unlocked_with(
+    session: &Mutex<Session>,
+    hash: impl Fn(SourceCheck) -> CheckResult,
+) -> (CheckResult, bool) {
+    let lock = || session.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut tries = 0;
+    loop {
+        let plan = plan_check(&lock());
+        let result = hash(plan);
+        let current = accept_check(&lock(), &result).is_some();
+        if current || tries == CHECK_RETRIES {
+            return (result, current);
+        }
+        tries += 1;
+    }
+}
+
+/// The change check as a registry command. Only `changed` is meant for an
+/// automatic reload (`Preferences::auto_reload`): `missing` and
+/// `unreadable` would fail again on every check and must wait for the user.
+/// This command hashes while the caller holds the session lock, so it is
+/// meant for tests and in-process callers; the GUI and the MCP server's
+/// `execute` use [`check_unlocked`] instead.
 fn run_check(s: &mut Session, _: NoParams, _: Origin) -> Result<Value, CommandError> {
     Ok(plan_check(s).run().to_json())
 }
@@ -1129,6 +1164,63 @@ mod tests {
         .unwrap();
         let result = plan.run();
         assert_eq!(accept_check(&s, &result), None);
+    }
+
+    #[test]
+    fn the_shared_check_hashes_without_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = session(dir.path());
+        let id = same_size_change(dir.path(), &mut s);
+        let shared = std::sync::Mutex::new(s);
+        let (result, current) = check_unlocked_with(&shared, |plan| {
+            assert!(shared.try_lock().is_ok(), "the lock is free while hashing");
+            plan.run()
+        });
+        assert!(current);
+        assert_eq!(result.changed, vec![ObjectId(id)]);
+    }
+
+    #[test]
+    fn the_shared_check_retries_a_changed_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = session(dir.path());
+        let id = same_size_change(dir.path(), &mut s);
+        let shared = std::sync::Mutex::new(s);
+        let tries = Cell::new(0);
+        let (_, current) = check_unlocked_with(&shared, |plan| {
+            tries.set(tries.get() + 1);
+            if tries.get() == 1 {
+                shared
+                    .lock()
+                    .unwrap()
+                    .execute(
+                        "object.move",
+                        json!({ "ids": [id], "dx_mm": 1.0 }),
+                        Origin::User,
+                    )
+                    .unwrap();
+            }
+            plan.run()
+        });
+        assert!(current);
+        assert_eq!(tries.get(), 2, "one retry after the change");
+        // A document that changes on every try gives up after 2 retries.
+        let tries = Cell::new(0);
+        let (_, current) = check_unlocked_with(&shared, |plan| {
+            tries.set(tries.get() + 1);
+            shared
+                .lock()
+                .unwrap()
+                .execute(
+                    "object.move",
+                    json!({ "ids": [id], "dx_mm": 1.0 }),
+                    Origin::User,
+                )
+                .unwrap();
+            plan.run()
+        });
+        assert!(!current);
+        assert_eq!(tries.get(), 3);
     }
 
     #[test]

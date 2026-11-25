@@ -917,6 +917,34 @@ fn settings_rows_have_one_accessible_node_each() {
 }
 
 #[test]
+fn source_checks_hash_on_a_worker_thread() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let file = dir.path().join("square.svg");
+    write_square(&file, 30.0);
+    import_file(&s, &file);
+    let ui_thread = std::thread::current().id();
+    let threads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = threads.clone();
+    let mut h = harness_with(&dir, s.clone(), move |app| {
+        app.with_source_check(move |session| {
+            seen.lock().unwrap().push(std::thread::current().id());
+            flatcraft_engine::commands::sources::check_unlocked(session)
+        })
+    });
+    to_prepare(&mut h);
+    write_square(&file, 45.5);
+    focus_window(&mut h);
+    h.get_by_label("1 source file changed");
+    let threads = threads.lock().unwrap();
+    assert!(!threads.is_empty());
+    assert!(
+        threads.iter().all(|t| *t != ui_thread),
+        "hashing ran on the UI thread"
+    );
+}
+
+#[test]
 fn pills_stay_clear_of_the_cutting_area_corner() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);

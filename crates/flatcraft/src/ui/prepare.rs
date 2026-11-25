@@ -770,16 +770,41 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
 
 // ---------------------------------------------------------------- sources
 
+/// A finished check of linked files: the result and whether it still
+/// matches the document.
+pub type CheckDone = (sources::CheckResult, bool);
+
+/// How long a frame waits for a check it just started. Small checks land in
+/// the same frame; a long one (hashing big files) finishes on its thread
+/// and is taken in a later frame.
+const CHECK_WAIT: Duration = Duration::from_millis(50);
+
 impl FlatCraftApp {
     /// Runs a pending check of linked files unless a drag is in progress or
     /// the last check was less than [`CHECK_INTERVAL`] ago. A document
     /// switch checks at once, unless the document's lists are younger than
-    /// [`CHECK_INTERVAL`] (an agent switching in a loop). Files are only
-    /// stated under the session lock; hashing runs without it, and a result
+    /// [`CHECK_INTERVAL`] (an agent switching in a loop). The check runs on
+    /// a worker thread through `sources::check_unlocked`: files are only
+    /// stated under the session lock and hashed without it, and a result
     /// for a document that changed meanwhile is dropped and checked again.
     /// With the `auto_reload` preference on, changed files are reloaded
     /// right away (only those; never missing or unreadable ones).
     pub fn check_sources(&mut self, ctx: &egui::Context, now: Instant) {
+        if let Some(rx) = &self.source_check_job {
+            match rx.try_recv() {
+                Ok(done) => {
+                    self.source_check_job = None;
+                    self.checked(ctx, now, done);
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    // The worker died: check again later.
+                    self.source_check_job = None;
+                    self.ui.prepare.sources.check_pending = true;
+                }
+            }
+            return;
+        }
         let p = &mut self.ui.prepare;
         if !p.sources.check_pending || p.drag.is_some() {
             return;
@@ -801,12 +826,28 @@ impl FlatCraftApp {
         p.sources.check_pending = false;
         p.sources.check_now = false;
         p.sources.last_check = Some(now);
-        let (plan, auto) = {
-            let s = lock(&self.session);
-            (sources::plan_check(&s), s.prefs.auto_reload)
-        };
-        let result = plan.run();
-        let current = sources::accept_check(&lock(&self.session), &result).is_some();
+        let (tx, rx) = mpsc::channel();
+        let session = self.session.clone();
+        let check = self.source_check.clone();
+        let repaint = ctx.clone();
+        let spawned = std::thread::Builder::new()
+            .name("source-check".into())
+            .spawn(move || {
+                let _ = tx.send(check(&session));
+                repaint.request_repaint();
+            });
+        if spawned.is_err() {
+            self.ui.prepare.sources.check_pending = true;
+            return;
+        }
+        match rx.recv_timeout(CHECK_WAIT) {
+            Ok(done) => self.checked(ctx, now, done),
+            Err(_) => self.source_check_job = Some(rx),
+        }
+    }
+
+    /// Takes a finished check into the link status of the active document.
+    fn checked(&mut self, ctx: &egui::Context, now: Instant, (result, current): CheckDone) {
         let src = &mut self.ui.prepare.sources;
         if !current || src.doc_id != result.doc_id {
             // The document changed while its files were hashed.
@@ -819,6 +860,8 @@ impl FlatCraftApp {
         src.missing = ids(&result.missing);
         src.unreadable = ids(&result.unreadable);
         src.checked_at = Some(now);
+        let auto = lock(&self.session).prefs.auto_reload;
+        let src = &mut self.ui.prepare.sources;
         if auto && !src.changed.is_empty() {
             let changed = src.changed.clone();
             src.auto_reloaded = changed.clone();
