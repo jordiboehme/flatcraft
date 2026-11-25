@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="#status">Status</a> ·
-  <a href="#what-it-will-do">Features</a> ·
+  <a href="#what-it-does">Features</a> ·
   <a href="#ai-agents-mcp">MCP</a> ·
   <a href="#safety-first">Safety</a> ·
   <a href="docs/protocol/gpgl.md">Protocol notes</a> ·
@@ -41,34 +41,51 @@ One Rust app. No account, no cloud, no subscription. Where we're going, we don't
 
 ## Status
 
-Early. Nothing to download yet.
+Early. Nothing to download yet, but you can build it.
 
-- Now: M1, the slicer app with File Output. It's built in the open, one reviewed task at a time ([PR #1](https://github.com/jordiboehme/flatcraft/pull/1)).
+- Done: M1, the slicer app with File Output. It was built in the open, one reviewed task at a time ([PR #1](https://github.com/jordiboehme/flatcraft/pull/1)).
 - Next: M2, a knife simulator that measures cut quality, and the final path algorithms.
 - Then: M3, cutting over USB on a real plotter, with ruler tests and a calibration wizard.
 - Later: M4, a signed app, Homebrew and self-update.
 
 Star the repo if you want to see it cut. Don't stop believin'.
 
-## What it will do
+## What it does
 
-- **Import in true size:** SVG in px, mm or inches comes in at the right size. PNG, JPEG, WebP and GIF are traced into cut outlines, with a live preview.
+M1 is the slicer half: everything up to the blade. The jobs land in File Output for now, byte for byte what the plotter would get.
+
+- **Import in true size:** SVG in px, mm or inches comes in at the right size. PNG, JPEG, WebP and GIF are traced into cut outlines. The Trace dialog shows a live preview and counts the specks it cleans up, so dust on a scan doesn't turn into confetti.
+- **Cut what you mean:** cut all lines as drawn, or the outlines of the objects. Strokes are cut on auto, as a centre line or around their outline.
+- **Cut quality first:** holes before outlines, so a piece never moves before it's done. An overcut that closes every shape. Passes that finish one shape, lap by lap, before the blade moves on.
 - **Arrange like a slicer:** move, scale, rotate, mirror, align and auto-arrange on the mat. No vector editor, no node fiddling: bring it in, place it, cut it.
+- **Mats that know their grid:** every mat has a colour and a printed grid with an origin you can calibrate. FlatCraft's 0,0 is the 0,0 printed on your mat, so what you see on the canvas is where the blade goes.
+- **Linked source files:** FlatCraft remembers where a design came from. Changed it in another app? Reload. Moved it? Reconnect. Done with it? Unlink. The project keeps its own copy, so a missing file never breaks a project.
+- **Two workspaces:** Prepare (ribbon, objects, settings) and Cut (device and material, path preview with the cut order, and a timeline to scrub through the job).
+- **File Output:** the exact bytes the plotter would get, plus a readable listing that names the object, path and pass of every command. Think G-code for your plotter. It's the default device, so nothing moves by accident.
 - **One app, many plotters:** every machine gets a profile: the language it speaks, how it connects and what it can do. A new plotter is a new profile, not a new app.
-- **Profiles, PrusaSlicer style:** plotter and material presets with inheritance. Speed, force and passes per material, and a quick override per job.
-- **Cut quality first:** holes before outlines, so a piece never moves before it's done. Start points on corners. An overcut that closes every shape. Passes that stay on one shape until it's finished.
-- **File Output:** the exact bytes the plotter would get, plus a readable listing of every command. Think G-code for your plotter. It's the default device, so nothing moves by accident.
-- **Two workspaces:** Prepare (ribbon, objects, settings) and Cut (device and material, path preview, simulate, send).
+- **Profiles, PrusaSlicer style:** plotter and material presets with inheritance, edited in the Profiles window. Speed, force, passes and overcut per material, and a quick override per job.
+- **Agents welcome, blade stays yours:** an agent can prepare jobs and send them to File Output. A USB cut started by an agent waits for your click in the window, or for a setting you turned on yourself.
+- **Test patterns and a capture tool:** a test sheet with squares, circles, sharp tips, an asymmetric F and rulers, to check scale and mirroring. And `cargo xtask capture`, which turns a Wireshark recording of the vendor software into test fixtures, for the clean-room protocol work.
+
+Screenshots are coming. The app is still teasing its hair for the album cover.
+
+### What comes next
+
+- **M2:** a knife simulator that scores every cut, start points on corners, passes chained without lifting the blade, and the final path order.
+- **M3:** cutting over USB on a real plotter, plus a calibration and mat assistant that measures your mat's grid for you.
 
 ## Build from source
 
-You need Rust (rustup picks the right version from `rust-toolchain.toml`). M1 lives on the `m1-slicer` branch until it's done:
+You need Rust (rustup picks the right version from `rust-toolchain.toml`):
 
 ```sh
-git clone -b m1-slicer https://github.com/jordiboehme/flatcraft.git
+git clone https://github.com/jordiboehme/flatcraft.git
 cd flatcraft
 cargo test --workspace
+cargo build --release
 ```
+
+The app is `target/release/flatcraft`. Start it without arguments to open the window.
 
 On Linux you also need the window system headers:
 
@@ -78,17 +95,43 @@ sudo apt-get install libxkbcommon-dev libgl1-mesa-dev libx11-dev libxcursor-dev 
 
 ## AI agents (MCP)
 
-FlatCraft speaks [MCP](https://modelcontextprotocol.io) over stdio. Your agent's client starts it, so there's no server to run, no port and no token. For Claude Code:
+FlatCraft speaks [MCP](https://modelcontextprotocol.io) over stdio. Your agent's client starts it, so there's no server to run, no port and no token. Use the full path to the `flatcraft` binary.
+
+For Claude Code:
 
 ```sh
-claude mcp add flatcraft -- flatcraft mcp --window
+claude mcp add flatcraft -- /path/to/flatcraft mcp --window
+```
+
+For Claude Desktop, add it to `claude_desktop_config.json` (Settings > Developer > Edit Config) and restart the app:
+
+```json
+{
+  "mcpServers": {
+    "flatcraft": {
+      "command": "/path/to/flatcraft",
+      "args": ["mcp", "--window"]
+    }
+  }
+}
 ```
 
 With `--window` the app opens and you watch the agent work. Without it FlatCraft runs headless, which is fine for File Output.
 
-Everything a person can do, an agent can do too, from the same command list: import, trace, arrange, pick plotter and material, preview and send to File Output. Units are millimetres, the origin is the top-left corner of the mat.
+Everything a person can do, an agent can do too, from the same command list: import, trace, arrange, pick plotter, material and mat, preview and send to File Output. The server has six tools:
 
-The blade stays your call. A USB cut started by an agent needs your click in the window, or a setting you turned on yourself.
+| Tool | What it does |
+|---|---|
+| `version` | App version, the active plotter and material, and whether a window is open |
+| `list_commands` | All commands, with an optional filter |
+| `describe_command` | The full description and parameter schema of one command |
+| `execute` | Runs a command as an agent |
+| `document` | The state of the active document |
+| `preview` | A PNG of the canvas or of the cut path |
+
+Units are millimetres. The origin is the 0,0 of the grid printed on the mat, y points down.
+
+The blade stays your call. A USB cut started by an agent needs your click in the window, or a setting you turned on yourself. An agent can't change your preferences either.
 
 ## Safety first
 
@@ -114,7 +157,7 @@ So FlatCraft is long-life software for the plotters we already own. It's in the 
 Super massive stability stuff, as Felix Schelhasse would say. Here's FlatCraft's version:
 
 - **Local only:** no cloud services, no telemetry. Your designs stay on your machine.
-- **Measured, not guessed:** cut quality is tested with a simulator and with a ruler on real paper.
+- **Measured, not guessed:** cut quality gets tested with a knife simulator (M2) and with a ruler on real paper (M3).
 - **Clean licenses:** FlatCraft uses only libraries with permissive or MPL licenses.
 - **Honest output:** when something can't be cut, FlatCraft says what and why.
 
