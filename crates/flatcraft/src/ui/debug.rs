@@ -5,11 +5,13 @@
 //! and only when it changed; decoding happens outside the session lock.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use egui::{RichText, Ui};
 use flatcraft_device::capture::{CaptureRecord, read_jsonl};
 use flatcraft_device::gpgl::decode;
 use flatcraft_device::{Dir, TransportSpec};
+use flatcraft_engine::JobResult;
 
 use super::theme::Tokens;
 use super::{Action, FlatCraftApp, fonts, lock};
@@ -94,6 +96,16 @@ impl DebugTab {
     }
 }
 
+/// Which listing the Listing tab shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ListingView {
+    /// The job the Cut workspace planned for the document as it is now.
+    #[default]
+    Preview,
+    /// The job last sent from the active document (`DocState.last_job`).
+    LastSent,
+}
+
 /// A capture fixture opened in the viewer.
 #[derive(Debug, Clone, Default)]
 pub struct Capture {
@@ -111,6 +123,9 @@ pub struct DebugState {
     /// Entries of the log, including those not shown.
     pub log_len: usize,
     pub capture: Option<Capture>,
+    pub listing: ListingView,
+    /// The active document's last sent job, copied when it changed.
+    pub last_sent: Option<Arc<JobResult>>,
 }
 
 impl DebugState {
@@ -140,6 +155,39 @@ impl DebugState {
                 .collect();
         }
     }
+}
+
+impl DebugState {
+    /// Copies the active document's last sent job when it changed. The
+    /// check compares the bytes and the written files, without a copy.
+    pub fn refresh_last_sent(&mut self, session: &flatcraft_mcp::SharedSession) {
+        let s = lock(session);
+        let now = s.doc().last_job.as_ref().filter(|j| j.sent.is_some());
+        let same = match (now, &self.last_sent) {
+            (Some(n), Some(c)) => n.sent == c.sent && n.job.bytes == c.job.bytes,
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.last_sent = now.cloned().map(Arc::new);
+        }
+    }
+}
+
+/// The listing lines of a job, as the `.gpgl.txt` file has them.
+fn listing(ui: &mut Ui, job: &JobResult) {
+    let lines = &job.job.listing;
+    egui::ScrollArea::both()
+        .id_salt("flatcraft-debug-listing")
+        .auto_shrink([false, false])
+        .show_rows(ui, 15.0, lines.len(), |ui, range| {
+            for l in &lines[range] {
+                ui.label(
+                    RichText::new(format!("{}\t# {}", l.command, l.note))
+                        .font(egui::FontId::monospace(11.0)),
+                );
+            }
+        });
 }
 
 /// Reads a capture fixture (`.jsonl`, Task 19's format) into rows.
@@ -246,33 +294,46 @@ pub fn show(ctx: &egui::Context, app: &mut FlatCraftApp, actions: &mut Vec<Actio
                     }
                     table(ui, "flatcraft-debug-log", &st.log_rows, &t);
                 }
-                DebugTab::Listing => match &job {
-                    Some(job) => {
-                        let lines = &job.job.listing;
-                        ui.label(
-                            RichText::new("The .gpgl.txt listing of the current job.")
-                                .color(t.text_dim),
+                DebugTab::Listing => {
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut st.listing, ListingView::Preview, "Preview");
+                        let has = st.last_sent.is_some();
+                        let r = ui.add_enabled(
+                            has,
+                            egui::RadioButton::new(
+                                st.listing == ListingView::LastSent,
+                                "Last sent",
+                            ),
                         );
-                        let height = 15.0;
-                        egui::ScrollArea::both()
-                            .id_salt("flatcraft-debug-listing")
-                            .auto_shrink([false, false])
-                            .show_rows(ui, height, lines.len(), |ui, range| {
-                                for l in &lines[range] {
-                                    ui.label(
-                                        RichText::new(format!("{}\t# {}", l.command, l.note))
-                                            .font(egui::FontId::monospace(11.0)),
-                                    );
-                                }
-                            });
+                        if r.clicked() {
+                            st.listing = ListingView::LastSent;
+                        }
+                    });
+                    match (st.listing, &job, &st.last_sent) {
+                        (ListingView::LastSent, _, Some(sent)) => {
+                            let name = sent
+                                .sent
+                                .as_ref()
+                                .and_then(|r| r.files.get(1))
+                                .map_or_else(|| "the last job".into(), |f| super::display_name(f));
+                            ui.label(RichText::new(format!("Last sent: {name}")).color(t.text_dim));
+                            listing(ui, sent);
+                        }
+                        (_, Some(job), _) => {
+                            ui.label(
+                                RichText::new("Preview of the current job (.gpgl.txt)")
+                                    .color(t.text_dim),
+                            );
+                            listing(ui, job);
+                        }
+                        _ => {
+                            ui.label(
+                                RichText::new("No job yet. Open Path in the Cut workspace.")
+                                    .color(t.text_dim),
+                            );
+                        }
                     }
-                    None => {
-                        ui.label(
-                            RichText::new("No job yet. Open Path in the Cut workspace.")
-                                .color(t.text_dim),
-                        );
-                    }
-                },
+                }
                 DebugTab::Capture => {
                     ui.horizontal(|ui| {
                         if ui

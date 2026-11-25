@@ -406,3 +406,46 @@ fn a_broken_capture_says_why() {
     assert!(toast.text.contains("line 1"), "{}", toast.text);
     assert!(app(&h).ui.debug.capture.is_none());
 }
+
+#[test]
+fn debug_listing_shows_preview_and_last_sent() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_cut(&mut h);
+    stage(&mut h, "Send");
+    h.get_by_role_and_label(Role::Button, "Debug panel").click();
+    h.run();
+    h.get_by_role_and_label(Role::Tab, "Listing").click();
+    h.run();
+    assert!(
+        h.query_by_label("Preview of the current job (.gpgl.txt)")
+            .is_some()
+    );
+    let last = h.get_by_role_and_label(Role::RadioButton, "Last sent");
+    assert!(last.accesskit_node().is_disabled());
+    h.get_by_role_and_label(Role::Button, "Send to File Output")
+        .click();
+    h.run();
+    // The document changes after the send: the preview follows it, the
+    // last sent listing does not.
+    run(&s, "job.set_overrides", json!({ "speed": 2 }));
+    h.run();
+    h.get_by_role_and_label(Role::RadioButton, "Last sent")
+        .click();
+    h.run();
+    let gpgl = files_in(&dir.path().join("output"))
+        .into_iter()
+        .find(|n| n.ends_with(".gpgl"))
+        .unwrap();
+    assert!(
+        h.query_by_label(&format!("Last sent: {gpgl}.txt"))
+            .is_some()
+    );
+    assert!(h.query_by_label("!5\t# speed 5").is_some());
+    h.get_by_role_and_label(Role::RadioButton, "Preview")
+        .click();
+    h.run();
+    assert!(h.query_by_label("!2\t# speed 2").is_some());
+}

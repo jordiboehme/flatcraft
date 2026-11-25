@@ -850,6 +850,7 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     }
     if app.ui.show_debug && workspace != Workspace::Home {
         app.ui.debug.refresh_log(&app.session);
+        app.ui.debug.refresh_last_sent(&app.session);
     }
     app_bar::show(ui, app, &mut actions);
     switcher::ribbon(ui, app, snap.as_ref(), &mut actions);
