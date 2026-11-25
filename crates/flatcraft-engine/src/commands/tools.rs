@@ -41,11 +41,13 @@ fn write_atomic(path: &Path, text: &str) -> Result<(), CommandError> {
     let tmp = path.with_file_name(tmp_name);
     let fail =
         |e: std::io::Error| CommandError::Failed(format!("cannot write {}: {e}", path.display()));
-    std::fs::write(&tmp, text).map_err(fail)?;
-    std::fs::rename(&tmp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        fail(e)
-    })
+    // A write that fails half way (disk full) must not leave the temp file.
+    std::fs::write(&tmp, text)
+        .and_then(|()| std::fs::rename(&tmp, path))
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            fail(e)
+        })
 }
 
 fn run_test_patterns(
