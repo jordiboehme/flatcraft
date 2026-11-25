@@ -72,10 +72,12 @@ pub enum Icon {
     ZoomIn,
     /// "Panels" group.
     Panels,
-    /// The Keep aspect switch.
+    /// The Keep aspect lock, closed (on) and open (off).
     KeepAspect,
-    /// The Each object switch.
+    KeepAspectOff,
+    /// The Each object toggle: each on its own (on), as one group (off).
     EachObject,
+    AsGroup,
     /// "Auto arrange...", the panel (the one-click one uses Arrange).
     AutoArrangePanel,
     /// The badges of the dialogs.
@@ -109,7 +111,7 @@ macro_rules! svg {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 79] = [
+    pub const ALL: [Icon; 81] = [
         Icon::Import,
         Icon::Trace,
         Icon::Duplicate,
@@ -171,7 +173,9 @@ impl Icon {
         Icon::ZoomIn,
         Icon::Panels,
         Icon::KeepAspect,
+        Icon::KeepAspectOff,
         Icon::EachObject,
+        Icon::AsGroup,
         Icon::AutoArrangePanel,
         Icon::Warning,
         Icon::Info,
@@ -272,8 +276,10 @@ impl Icon {
             Icon::Pencil => svg!("pencil"),
             Icon::ZoomIn => svg!("zoom-in"),
             Icon::Panels => svg!("panels-top-left"),
-            Icon::KeepAspect => svg!("proportions"),
+            Icon::KeepAspect => svg!("lock"),
+            Icon::KeepAspectOff => svg!("lock-open"),
             Icon::EachObject => svg!("ungroup"),
+            Icon::AsGroup => svg!("group"),
             Icon::AutoArrangePanel => svg!("layout-dashboard"),
             Icon::Warning => svg!("triangle-exclamation-point"),
             Icon::Info => svg!("info"),

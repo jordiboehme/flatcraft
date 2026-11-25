@@ -242,7 +242,8 @@ pub fn compact_switch(
         let galley =
             ui.painter()
                 .layout_no_wrap(text.to_string(), font, egui::Color32::PLACEHOLDER);
-        let pad = 4.0;
+        // An icon-only toggle is as narrow as its icon allows.
+        let pad = if show_label { 4.0 } else { 2.0 };
         let width = if show_label {
             pad + SMALL_ICON + pad + galley.size().x + pad + 2.0
         } else {

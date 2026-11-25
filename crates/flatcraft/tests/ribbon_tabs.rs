@@ -191,6 +191,9 @@ fn the_switches_are_compact_and_inside_their_group() {
         );
         let keep = node_rect(&h, Role::CheckBox, "Keep aspect");
         assert_eq!(keep.height(), COMPACT_HEIGHT);
+        // Both are icon toggles, even with all the room in the world.
+        assert!(each.width() < 24.0, "{width}: {each:?}");
+        assert!(keep.width() < 24.0, "{width}: {keep:?}");
     }
 }
 
@@ -246,7 +249,7 @@ fn the_painted_active_tab_opens_into_the_panel() {
 }
 
 #[test]
-fn the_position_and_size_group_has_four_columns() {
+fn the_position_and_size_group_has_three_columns_and_a_lock() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let a = import_square(&s);
@@ -273,9 +276,15 @@ fn the_position_and_size_group_has_four_columns() {
         assert!(pct.left() > w.right(), "{width}");
         assert!(pct.bottom() <= angle.top(), "{width}: {pct:?} {angle:?}");
         assert_eq!(angle.left(), pct.left(), "{width}");
-        // Column 4: Keep aspect, at the top.
-        assert!(keep.left() > pct.right(), "{width}");
-        assert!(keep.top() < angle.top(), "{width}: {keep:?} {angle:?}");
+        // The Keep aspect lock: between W/H and %/Angle, half way between
+        // W and H.
+        assert!(
+            keep.left() >= w.right() && keep.right() <= pct.left(),
+            "{width}"
+        );
+        let middle = (w.center().y + hh.center().y) / 2.0;
+        assert!((keep.center().y - middle).abs() < 1.0, "{width}: {keep:?}");
+        assert!(keep.width() < 24.0, "{width}: an icon only, {keep:?}");
         // The labels line up too.
         let wl = h.get_by_label("W").rect();
         let hl = h.get_by_label("H").rect();

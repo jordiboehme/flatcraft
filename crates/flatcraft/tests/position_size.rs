@@ -8,7 +8,7 @@ mod common;
 use common::{AppHarness, app, app_mut, harness, import_square, session, to_prepare, undo_len};
 use egui::accesskit::Role;
 use egui::{Key, Modifiers, Pos2, Vec2};
-use egui_kittest::kittest::Queryable as _;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use flatcraft::ui::canvas::CanvasView;
 use flatcraft_engine::session::Origin;
 use flatcraft_mcp::SharedSession;
@@ -737,4 +737,27 @@ fn linked_copies_turned_two_ways_lock_keep_aspect_with_their_reason() {
     assert!(flatcraft::ui::canvas::free_aspect(&snap, &[b]));
     let node = h.get_by_role_and_label(Role::CheckBox, "Keep aspect");
     assert!(egui_kittest::kittest::NodeT::accesskit_node(&node).is_disabled());
+}
+
+/// Keep aspect is a lock: a click opens it (off) and closes it (on); its
+/// accessible name and state follow.
+#[test]
+fn the_keep_aspect_lock_opens_and_closes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_s, _id, mut h, _) = square(&dir);
+    let toggled = |h: &AppHarness| {
+        h.get_by_role_and_label(Role::CheckBox, "Keep aspect")
+            .accesskit_node()
+            .toggled()
+    };
+    assert_eq!(toggled(&h), Some(egui::accesskit::Toggled::True));
+    h.get_by_role_and_label(Role::CheckBox, "Keep aspect")
+        .click();
+    h.run();
+    assert!(!fields(&h).keep_aspect);
+    assert_eq!(toggled(&h), Some(egui::accesskit::Toggled::False));
+    h.get_by_role_and_label(Role::CheckBox, "Keep aspect")
+        .click();
+    h.run();
+    assert!(fields(&h).keep_aspect);
 }

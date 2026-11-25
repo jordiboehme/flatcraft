@@ -670,7 +670,7 @@ pub const TOOLS: [Tool; 38] = [
 /// the one accent part that tells what happens, in the accent colour.
 /// Every other child is ink. Every icon of an action, a group or a
 /// switch has an entry; the framed Align icons use their base icon's.
-pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 42] = [
+pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 44] = [
     (Icon::Import, &[2], &[0, 1]),
     (Icon::Trace, &[], &[2]),
     (Icon::TestPatterns, &[0], &[1]),
@@ -708,8 +708,10 @@ pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 42] = [
     (Icon::ZoomIn, &[], &[2, 3]),
     (Icon::Eye, &[], &[1]),
     (Icon::Panels, &[0], &[1, 2]),
-    (Icon::KeepAspect, &[0], &[1, 2]),
+    (Icon::KeepAspect, &[0], &[1]),
+    (Icon::KeepAspectOff, &[0], &[1]),
     (Icon::EachObject, &[1], &[0]),
+    (Icon::AsGroup, &[4, 5], &[0, 1, 2, 3]),
     (Icon::AutoArrangePanel, &[0, 2], &[1, 3]),
     // Home's New cards.
     (Icon::NewFile, &[0, 1], &[2, 3]),
@@ -1201,16 +1203,16 @@ impl Setting {
                 "Scale the selection: 200 makes it twice as big, 50 half as big. Type a number, then press Tab or Enter or click elsewhere. With Each object on, every object grows or shrinks about its own centre."
             }
             Setting::KeepAspect => {
-                "On: width and height change together, so the shape does not get squashed, in the fields and with the handles on the mat. Off: change one without the other. Hold Shift while you drag a handle to get the opposite for that drag."
+                "The lock between W and H. Closed: width and height change together, so the shape does not get squashed, in the fields and with the handles on the mat. Open: change one without the other. Hold Shift while you drag a handle to get the opposite for that drag."
             }
             Setting::KeepAspectLinked => {
-                "On: width and height change together, so the shape does not get squashed, in the fields and with the handles on the mat. Off: change one without the other. Hold Shift while you drag a handle to get the opposite for that drag. Linked copies share one shape: stretching one stretches every copy along its own sides, so a copy turned by 90 degrees stretches the other way on the mat. Unlink copies first if they should not follow."
+                "The lock between W and H. Closed: width and height change together, so the shape does not get squashed, in the fields and with the handles on the mat. Open: change one without the other. Hold Shift while you drag a handle to get the opposite for that drag. Linked copies share one shape: stretching one stretches every copy along its own sides, so a copy turned by 90 degrees stretches the other way on the mat. Unlink copies first if they should not follow."
             }
             Setting::ScaleHandle => HANDLE_CARD.as_str(),
             Setting::RotateZone => ROTATE_CARD.as_str(),
             Setting::Angle => ANGLE_CARD.as_str(),
             Setting::EachObject => {
-                "On: the Rotate and Mirror buttons and the % field work on each selected object about its own centre. Off: the selection moves as one piece, like Voltron. The Angle field always sets the angle of each object on its own, and turning by hand on the mat always turns the selection as one piece."
+                "Two separate boxes (on): the Rotate and Mirror buttons and the % field work on each selected object about its own centre. Boxes in one frame (off): the selection moves as one piece, like Voltron. The Angle field always sets the angle of each object on its own, and turning by hand on the mat always turns the selection as one piece."
             }
             Setting::Search => {
                 "Type a few letters of what you want to do, then pick it from the list or press Enter."
@@ -1454,7 +1456,12 @@ mod tests {
             .iter()
             .map(|t| t.icon)
             .chain(GROUPS.iter().map(|g| g.icon))
-            .chain([Icon::KeepAspect, Icon::EachObject]);
+            .chain([
+                Icon::KeepAspect,
+                Icon::KeepAspectOff,
+                Icon::EachObject,
+                Icon::AsGroup,
+            ]);
         for icon in icons {
             let (paper, accent) = icon_roles(icon).unwrap_or_else(|| panic!("{icon:?}"));
             assert!(!accent.is_empty(), "{icon:?} has no accent part");

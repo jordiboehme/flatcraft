@@ -44,7 +44,12 @@ const FIELD_MARGIN: egui::Vec2 = egui::vec2(4.0, 2.0);
 /// is: 4 digits and 2 decimals, more than any mat.
 const WIDEST_MM: &str = "-0000.00";
 
-/// The widest value the Angle field shows: 3 digits and 2 decimals.
+/// The widest value the W and H fields show as wide as they are: a size
+/// is never negative.
+const WIDEST_SIZE: &str = "0000.00";
+
+/// The widest value the Angle and % fields show as wide as they are: 3
+/// digits and 2 decimals (a larger % grows its field).
 const WIDEST_DEG: &str = "000.00";
 
 /// A short number field of the Position and size group.
@@ -100,7 +105,7 @@ impl SizeField {
 /// see [`finish_edit`]; Escape puts the shown value back. It is always as
 /// wide as its text, and at least as wide as [`WIDEST_MM`], so no digit is
 /// cut.
-fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) {
+fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) -> egui::Rect {
     let id = nf.field.id();
     let focused = ui.memory(|m| m.has_focus(id));
     let fields = &mut cx.st.fields;
@@ -174,6 +179,7 @@ fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) {
     } else if editing {
         finish_edit(ui.ctx(), cx.st, cx.actions);
     }
+    resp.rect
 }
 
 /// Once a frame, before the ribbon: ends the editing of a field that lost
@@ -765,7 +771,7 @@ fn bar_groups<'a>(ui: &Ui, tab: RibbonTab) -> Vec<Group<Cx<'a>>> {
             GroupId::Arrange => g(def.id, |ui, m, cx| {
                 let extras = Extras {
                     inline: Some(each_switch),
-                    in_list: Some(|ui, cx| each_switch(ui, Mode::Full, cx)),
+                    in_list: Some(|ui, cx| each_switch(ui, Mode::List, cx)),
                 };
                 groups::show(ui, m, GroupId::Arrange, extras, cx)
             }),
@@ -838,21 +844,22 @@ pub(crate) fn reload_action(doc_id: u64, ids: Vec<u64>) -> Action {
     Action::run(doc_id, "object.reload", json!({ "ids": ids }))
 }
 
-/// A switch that is not an action ("Keep aspect", "Each object"): a
-/// compact button with its icon, and its text while the ribbon has room.
-/// It is a checkbox named `text` with its state, and its card says what
-/// it does (and why it is dimmed).
+/// A switch that is not an action ("Keep aspect", "Each object"): an
+/// icon toggle whose icon shows its state (`icons.0` on, `icons.1` off),
+/// with its text only in a list. It is a checkbox named `text` with its
+/// state, and its card says what it does (and why it is dimmed).
 fn switch(
     ui: &mut Ui,
     mode: Mode,
     on: &mut bool,
-    icon: Icon,
+    icons: (Icon, Icon),
     text: &str,
     setting: Setting,
     why: Option<&str>,
 ) -> egui::Response {
     let enabled = why.is_none();
-    let label = matches!(mode, Mode::Full | Mode::List);
+    let label = mode == Mode::List;
+    let icon = if *on { icons.0 } else { icons.1 };
     let mut resp = groups::compact_switch(ui, icon, text, label, enabled, *on);
     if resp.clicked() {
         // Like a checkbox: the caller sees the change.
@@ -870,8 +877,9 @@ fn size_group(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = groups::GROUP_GAP;
         // Three columns of two rows: X above Y, W above H, and % above
-        // the Angle; each is a grid, so the labels line up. Keep aspect
-        // is the fourth column.
+        // the Angle; each is a grid, so the labels line up. The Keep
+        // aspect lock sits between W/H and %/Angle, joined to W and H by
+        // a bracket.
         let top = groups::pins_row(ui, |ui| {
             // Two rows fill the pins row's height, so the columns start at
             // its top (a grid does not centre itself in a row).
@@ -884,17 +892,30 @@ fn size_group(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
                         .min_col_width(0.0)
                         .spacing(SIZE_GRID_GAP)
                         .show(ui, |ui| size_xy(ui, cx));
-                    egui::Grid::new("flatcraft-size-wh")
+                    let wh = egui::Grid::new("flatcraft-size-wh")
                         .num_columns(2)
                         .min_col_width(0.0)
                         .spacing(SIZE_GRID_GAP)
-                        .show(ui, |ui| size_wh(ui, cx));
+                        .show(ui, |ui| size_wh(ui, cx))
+                        .inner;
+                    // The lock's bracket is its own gap: less room around it.
+                    let gap = ui.spacing().item_spacing.x;
+                    ui.spacing_mut().item_spacing.x = SIZE_GRID_GAP.x;
+                    // The grid ends with its own gap.
+                    ui.add_space(-SIZE_GRID_GAP.x);
+                    // Its room now, its toggle after % and Angle: Tab goes
+                    // from H on to % and Angle, then the lock.
+                    let (column, _) = ui.allocate_exact_size(
+                        egui::vec2(LOCK_COLUMN, groups::BIG_HEIGHT),
+                        egui::Sense::hover(),
+                    );
                     egui::Grid::new("flatcraft-size-scale")
                         .num_columns(2)
                         .min_col_width(0.0)
                         .spacing(SIZE_GRID_GAP)
                         .show(ui, |ui| size_scale(ui, cx));
-                    ui.vertical(|ui| keep_aspect(ui, mode, cx));
+                    keep_aspect(ui, mode, cx, column, wh);
+                    ui.spacing_mut().item_spacing.x = gap;
                 },
             );
             linked_note(ui, mode, cx);
@@ -951,8 +972,9 @@ fn size_xy(ui: &mut Ui, cx: &mut Cx) {
     }
 }
 
-/// The second column: W above H.
-fn size_wh(ui: &mut Ui, cx: &mut Cx) {
+/// The second column: W above H. Returns the rects of the two fields.
+fn size_wh(ui: &mut Ui, cx: &mut Cx) -> [egui::Rect; 2] {
+    let mut rects = [egui::Rect::NOTHING; 2];
     let any = !cx.snap.selection.is_empty();
     let b = canvas::live_box(cx.snap, cx.st);
     for (field, label, name, setting, value) in [
@@ -976,15 +998,18 @@ fn size_wh(ui: &mut Ui, cx: &mut Cx) {
             label,
             icon: None,
             hint: "",
-            widest: WIDEST_MM,
+            // A size is never negative.
+            widest: WIDEST_SIZE,
             name,
             setting,
             current: value.map(mm).unwrap_or_default(),
             enabled: any,
         };
-        number_field(ui, nf, cx);
+        let i = usize::from(field == SizeField::Height);
+        rects[i] = number_field(ui, nf, cx);
         ui.end_row();
     }
+    rects
 }
 
 /// The Angle under the %, with the rotate icon as its label.
@@ -1028,7 +1053,8 @@ fn size_scale(ui: &mut Ui, cx: &mut Cx) {
         label: "%",
         icon: None,
         hint: "",
-        widest: WIDEST_MM,
+        // As wide as the Angle below it: 3 digits and 2 decimals.
+        widest: WIDEST_DEG,
         name: "Scale (%)",
         setting: Setting::ScalePercent,
         current,
@@ -1039,8 +1065,47 @@ fn size_scale(ui: &mut Ui, cx: &mut Cx) {
     size_angle(ui, cx);
 }
 
-/// The fourth column: Keep aspect, at the top.
-fn keep_aspect(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
+/// The width of the Keep aspect column: the lock and the bracket's ticks.
+const LOCK_COLUMN: f32 = 20.0;
+
+/// Keep aspect: a lock in `column`, between W/H and %/Angle (closed: on),
+/// joined to the W and H fields (`wh`) by a thin bracket.
+fn keep_aspect(ui: &mut Ui, mode: Mode, cx: &mut Cx, column: egui::Rect, wh: [egui::Rect; 2]) {
+    let (top, bottom) = (wh[0].center().y, wh[1].center().y);
+    let middle = (top + bottom) / 2.0;
+    let lock = egui::Rect::from_center_size(
+        egui::pos2(column.center().x, middle),
+        egui::vec2(LOCK_COLUMN, groups::COMPACT_HEIGHT),
+    );
+    // A child placed in the column's room, so the row's cursor stays.
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(lock));
+    let resp = keep_switch(&mut child, mode, cx);
+    // The bracket: from each field, out to the lock's middle, then along
+    // to the lock.
+    let stroke = egui::Stroke::new(1.0, ui.visuals().weak_text_color());
+    let (left, x) = (column.left() + 1.0, column.center().x);
+    let gap = 2.0;
+    let painter = ui.painter();
+    painter.line(
+        vec![
+            egui::pos2(left, top),
+            egui::pos2(x, top),
+            egui::pos2(x, resp.rect.top() - gap),
+        ],
+        stroke,
+    );
+    painter.line(
+        vec![
+            egui::pos2(left, bottom),
+            egui::pos2(x, bottom),
+            egui::pos2(x, resp.rect.bottom() + gap),
+        ],
+        stroke,
+    );
+}
+
+/// The Keep aspect toggle with its card and, when it is fixed, the reason.
+fn keep_switch(ui: &mut Ui, mode: Mode, cx: &mut Cx) -> egui::Response {
     let ids: Vec<u64> = cx.snap.selection.iter().copied().collect();
     let any = !ids.is_empty();
     let f = &mut cx.st.fields;
@@ -1051,27 +1116,20 @@ fn keep_aspect(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
     } else {
         Setting::KeepAspect
     };
+    let icons = (Icon::KeepAspect, Icon::KeepAspectOff);
     if let Some(why) = forced {
         let mut on = true;
-        switch(
-            ui,
-            mode,
-            &mut on,
-            Icon::KeepAspect,
-            "Keep aspect",
-            card,
-            Some(why),
-        );
+        switch(ui, mode, &mut on, icons, "Keep aspect", card, Some(why))
     } else {
         switch(
             ui,
             mode,
             &mut f.keep_aspect,
-            Icon::KeepAspect,
+            icons,
             "Keep aspect",
             card,
             (!any).then_some("Select something first."),
-        );
+        )
     }
 }
 
@@ -1111,7 +1169,7 @@ fn each_switch(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
         ui,
         mode,
         &mut f.each,
-        Icon::EachObject,
+        (Icon::EachObject, Icon::AsGroup),
         "Each object",
         Setting::EachObject,
         why,
