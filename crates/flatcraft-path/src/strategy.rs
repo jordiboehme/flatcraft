@@ -73,6 +73,7 @@ impl Default for StrategySettings {
 mod tests {
     use super::*;
 
+    /// Structural: restates the strategy table.
     #[test]
     fn strategies_differ_only_where_the_table_says() {
         let q = StrategySettings::for_strategy(CutStrategy::Quality);

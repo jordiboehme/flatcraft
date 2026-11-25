@@ -933,8 +933,8 @@ mod tests {
     }
 
     /// Wall-clock check (Ruling F30): run by hand or by the quality bench.
-    /// Measured 0.09 to 0.15 s locally (Apple silicon, test profile), so
-    /// the bound is 0.5 s, not the plan's 3 s.
+    /// Measured 0.09 to 0.39 s locally (Apple silicon, test profile, on a
+    /// busy machine), so the bound is 1.2 s, not the plan's 3 s.
     #[test]
     #[ignore = "wall-clock perf check, run by hand or by the quality bench"]
     fn nn_of_20000_squares_is_fast_in_debug() {
@@ -945,7 +945,7 @@ mod tests {
         let secs = t0.elapsed().as_secs_f64();
         eprintln!("order of 20000 squares: {secs} s");
         assert_eq!(out.len(), 20_000);
-        assert!(secs < 0.5, "{secs} s");
+        assert!(secs < 1.2, "{secs} s");
     }
 
     fn rects() -> impl Strategy<Value = Vec<(f64, f64, f64, f64, bool)>> {

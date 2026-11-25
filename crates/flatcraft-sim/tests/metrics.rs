@@ -363,6 +363,49 @@ fn measured_travel_and_cut_equal_the_plan() {
     assert_eq!(m.per_path.len(), out.toolpaths.len());
 }
 
+#[test]
+fn crossing_penalty_lowers_simulated_travel_crossings() {
+    // A square, then a line behind it on the right (nearer) and one on the
+    // left (no crossing from the square's start corner). With the penalty
+    // the order goes left first and crosses the square once, on the way
+    // to the right; without it, it crosses on the way right and again on
+    // the way back.
+    let mut settings = PipelineSettings {
+        overcut_mm: 0.0,
+        strategy: flatcraft_path::StrategySettings::for_strategy(
+            flatcraft_core::document::CutStrategy::Fast,
+        ),
+        ..PipelineSettings::with_defaults(Rect::new(0.0, 0.0, 300.0, 300.0), Point::new(49.0, 49.0))
+    };
+    let line = |a: (f64, f64), b: (f64, f64)| {
+        let mut p = BezPath::new();
+        p.move_to(a);
+        p.line_to(b);
+        p
+    };
+    let input: Vec<PlacedPath> = [
+        Rect::new(50.0, 50.0, 60.0, 60.0).to_path(0.1),
+        line((62.0, 51.0), (62.0, 59.0)),
+        line((36.0, 50.0), (35.0, 50.0)),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, path)| PlacedPath {
+        path,
+        source: source(i as u64 + 1),
+    })
+    .collect();
+    let s = SimSettings::float(0.0);
+    let mut crossings = |penalty: bool| {
+        settings.strategy.crossing_penalty = penalty;
+        let out = plan(&input, &settings).unwrap();
+        let order: Vec<u64> = out.toolpaths.iter().map(|t| t.source.object.0).collect();
+        (sim(&out.toolpaths, out.home, &s).1.travel_crossings, order)
+    };
+    assert_eq!(crossings(true), (1, vec![1, 3, 2]));
+    assert_eq!(crossings(false), (2, vec![1, 2, 3]));
+}
+
 /// A closed 20000-gon of 2000 mm.
 fn long_ring() -> Vec<Point> {
     let n = 20_000;
