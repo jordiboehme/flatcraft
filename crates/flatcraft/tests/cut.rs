@@ -423,8 +423,10 @@ fn debug_listing_shows_preview_and_last_sent() {
         h.query_by_label("Preview of the current job (.gpgl.txt)")
             .is_some()
     );
-    let last = h.get_by_role_and_label(Role::RadioButton, "Last sent");
-    assert!(last.accesskit_node().is_disabled());
+    h.get_by_role_and_label(Role::RadioButton, "Last sent")
+        .click();
+    h.run();
+    assert!(h.query_by_label("Nothing sent yet.").is_some());
     h.get_by_role_and_label(Role::Button, "Send to File Output")
         .click();
     h.run();
@@ -448,4 +450,64 @@ fn debug_listing_shows_preview_and_last_sent() {
         .click();
     h.run();
     assert!(h.query_by_label("!2\t# speed 2").is_some());
+}
+
+fn open_last_sent(h: &mut AppHarness) {
+    h.get_by_role_and_label(Role::Button, "Debug panel").click();
+    h.run();
+    h.get_by_role_and_label(Role::Tab, "Listing").click();
+    h.run();
+    h.get_by_role_and_label(Role::RadioButton, "Last sent")
+        .click();
+    h.run();
+}
+
+fn sent_listing_name(dir: &tempfile::TempDir) -> String {
+    let gpgl = files_in(&dir.path().join("output"))
+        .into_iter()
+        .find(|n| n.ends_with(".gpgl"))
+        .unwrap();
+    format!("Last sent: {gpgl}.txt")
+}
+
+#[test]
+fn a_send_made_while_the_debug_panel_is_closed_shows_later() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_cut(&mut h);
+    stage(&mut h, "Send");
+    h.get_by_role_and_label(Role::Button, "Send to File Output")
+        .click();
+    h.run();
+    // A preview after the send does not hide it.
+    run(&s, "job.preview", json!({}));
+    h.run();
+    open_last_sent(&mut h);
+    assert!(h.query_by_label(&sent_listing_name(&dir)).is_some());
+}
+
+#[test]
+fn last_sent_belongs_to_the_active_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let first = s.lock().unwrap().doc().id();
+    let mut h = harness(&dir, s.clone(), false);
+    to_cut(&mut h);
+    stage(&mut h, "Send");
+    h.get_by_role_and_label(Role::Button, "Send to File Output")
+        .click();
+    h.run();
+    let sent = sent_listing_name(&dir);
+    open_last_sent(&mut h);
+    assert!(h.query_by_label(&sent).is_some());
+    run(&s, "document.new", json!({}));
+    h.run();
+    assert!(h.query_by_label("Nothing sent yet.").is_some());
+    assert!(h.query_by_label(&sent).is_none());
+    run(&s, "document.switch", json!({ "doc_id": first }));
+    h.run();
+    assert!(h.query_by_label(&sent).is_some());
 }

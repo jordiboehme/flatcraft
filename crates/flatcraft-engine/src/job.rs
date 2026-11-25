@@ -466,7 +466,7 @@ pub(crate) fn send(
             let report = deliver_built(s, &plotter.transport, &result.job, &name, origin)?;
             let value = sent_json(&report, &summary(&result));
             result.sent = Some(report);
-            s.doc_mut().set_last_job(result);
+            s.doc_mut().set_last_sent(result);
             Ok(value)
         }
     }

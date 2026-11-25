@@ -102,7 +102,7 @@ fn send_square_to_file_output_end_to_end() {
     // The session byte log has the job, and last_job remembers the send.
     let logged: Vec<u8> = s.byte_log.entries().flat_map(|e| e.bytes.clone()).collect();
     assert_eq!(logged, bytes);
-    let last = s.doc().last_job.as_ref().unwrap();
+    let last = s.doc().last_job().unwrap();
     assert_eq!(last.job.bytes, bytes);
     assert_eq!(last.sent.as_ref().unwrap().files, paths);
     assert!(last.plan.cut_mm > 119.0, "{}", last.plan.cut_mm);
@@ -140,7 +140,7 @@ fn preview_summarises_and_stores_last_job() {
     assert_eq!(r["settings"]["speed"], 5);
     assert_eq!(r["settings"]["force"], 10);
     assert_eq!(r["settings"]["passes"], 1);
-    let last = s.doc().last_job.as_ref().unwrap();
+    let last = s.doc().last_job().unwrap();
     assert!(last.sent.is_none());
     // Preview writes nothing.
     assert!(files(d.out.path()).is_empty());
@@ -230,7 +230,7 @@ fn overrides_reach_the_emitter() {
     let has = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
     assert!(has(b"!3\x03"), "{}", String::from_utf8_lossy(&bytes));
     assert!(has(b"FX20\x03"), "{}", String::from_utf8_lossy(&bytes));
-    let last = s.doc().last_job.as_ref().unwrap();
+    let last = s.doc().last_job().unwrap();
     assert_eq!(last.settings.speed, 3);
     assert_eq!(last.settings.force, 20);
     assert!(last.plan.toolpaths.iter().any(|t| t.pass == 2));
@@ -876,16 +876,24 @@ fn confirm_uses_the_clock_it_is_given() {
 }
 
 #[test]
-fn every_new_last_job_bumps_its_revision() {
+fn the_last_send_is_kept_apart_from_previews() {
     let d = dirs();
     let mut s = session(&d);
     import_square(&mut s, "square");
-    assert_eq!(s.doc().last_job_rev(), 0);
+    assert_eq!(s.doc().last_sent_rev(), 0);
     run(&mut s, "job.preview", json!({}));
-    assert_eq!(s.doc().last_job_rev(), 1);
+    assert_eq!(s.doc().last_sent_rev(), 0);
+    assert!(s.doc().last_sent().is_none());
     run(&mut s, "job.send", json!({}));
-    assert_eq!(s.doc().last_job_rev(), 2);
-    assert!(s.doc().last_job.as_ref().unwrap().sent.is_some());
+    assert_eq!(s.doc().last_sent_rev(), 1);
+    let sent = s.doc().last_sent().unwrap().clone();
+    assert!(sent.sent.is_some());
+    // A later preview replaces the last job, not the last send.
+    run(&mut s, "job.set_overrides", json!({ "speed": 2 }));
+    run(&mut s, "job.preview", json!({}));
+    assert!(s.doc().last_job().unwrap().sent.is_none());
+    assert!(std::sync::Arc::ptr_eq(s.doc().last_sent().unwrap(), &sent));
+    assert_eq!(s.doc().last_sent_rev(), 1);
 }
 
 #[test]

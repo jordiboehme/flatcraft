@@ -126,7 +126,7 @@ pub struct DebugState {
     pub listing: ListingView,
     /// The active document's last sent job, copied when it changed.
     pub last_sent: Option<Arc<JobResult>>,
-    /// Document id and `last_job_rev` the copy was made from.
+    /// Document id and `last_sent_rev` the copy was made from.
     last_sent_key: Option<(u64, u64)>,
 }
 
@@ -160,20 +160,15 @@ impl DebugState {
 }
 
 impl DebugState {
-    /// Copies the active document's last sent job when its `last_job_rev`
-    /// (or the active document) changed.
+    /// Takes the active document's last sent job when its `last_sent_rev`
+    /// or the active document changed. It is shared, not copied.
     pub fn refresh_last_sent(&mut self, session: &flatcraft_mcp::SharedSession) {
         let s = lock(session);
         let doc = s.doc();
-        let key = Some((doc.id(), doc.last_job_rev()));
+        let key = Some((doc.id(), doc.last_sent_rev()));
         if key != self.last_sent_key {
             self.last_sent_key = key;
-            // A preview after a send keeps showing that send.
-            match doc.last_job.as_ref() {
-                Some(j) if j.sent.is_some() => self.last_sent = Some(Arc::new(j.clone())),
-                Some(_) => {}
-                None => self.last_sent = None,
-            }
+            self.last_sent = doc.last_sent().cloned();
         }
     }
 }
@@ -308,17 +303,7 @@ pub fn show(ctx: &egui::Context, app: &mut FlatCraftApp, actions: &mut Vec<Actio
                 DebugTab::Listing => {
                     ui.horizontal(|ui| {
                         ui.radio_value(&mut st.listing, ListingView::Preview, "Preview");
-                        let has = st.last_sent.is_some();
-                        let r = ui.add_enabled(
-                            has,
-                            egui::RadioButton::new(
-                                st.listing == ListingView::LastSent,
-                                "Last sent",
-                            ),
-                        );
-                        if r.clicked() {
-                            st.listing = ListingView::LastSent;
-                        }
+                        ui.radio_value(&mut st.listing, ListingView::LastSent, "Last sent");
                     });
                     match (st.listing, &job, &st.last_sent) {
                         (ListingView::LastSent, _, Some(sent)) => {
@@ -329,6 +314,9 @@ pub fn show(ctx: &egui::Context, app: &mut FlatCraftApp, actions: &mut Vec<Actio
                                 .map_or_else(|| "the last job".into(), |f| super::display_name(f));
                             ui.label(RichText::new(format!("Last sent: {name}")).color(t.text_dim));
                             listing(ui, "flatcraft-debug-last-sent", sent);
+                        }
+                        (ListingView::LastSent, _, None) => {
+                            ui.label(RichText::new("Nothing sent yet.").color(t.text_dim));
                         }
                         (_, Some(job), _) => {
                             ui.label(

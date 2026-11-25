@@ -490,7 +490,7 @@ fn job_uses_cut_geometry() {
     let mut s = session(&dir);
     let id = import_line(&mut s);
     run(&mut s, "job.preview", json!({}));
-    let plan = &s.doc().last_job.as_ref().unwrap().plan;
+    let plan = &s.doc().last_job().unwrap().plan;
     assert_eq!(plan.toolpaths.len(), 1, "{:?}", plan.toolpaths);
     let t = &plan.toolpaths[0];
     assert!(t.closed);
@@ -511,7 +511,7 @@ fn job_uses_cut_geometry() {
         json!({ "ids": [id], "mode": "all_lines" }),
     );
     run(&mut s, "job.preview", json!({}));
-    let plan = &s.doc().last_job.as_ref().unwrap().plan;
+    let plan = &s.doc().last_job().unwrap().plan;
     assert_eq!(plan.toolpaths.len(), 1);
     assert!(!plan.toolpaths[0].closed);
 }
@@ -932,7 +932,7 @@ fn job_toolpaths(svg: &str) -> Vec<(bool, f64)> {
         json!({ "svg": svg, "name": "t" }),
     );
     run(&mut s, "job.preview", json!({}));
-    let plan = &s.doc().last_job.as_ref().unwrap().plan;
+    let plan = &s.doc().last_job().unwrap().plan;
     let mut out: Vec<(bool, f64)> = plan
         .toolpaths
         .iter()

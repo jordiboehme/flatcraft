@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -96,10 +97,12 @@ pub struct DocState {
     pub undo: UndoStack<Document>,
     pub path: Option<PathBuf>,
     pub dirty: bool,
-    /// The job last built by `job.preview` or `job.send`. Set it with
-    /// [`DocState::set_last_job`], which counts the change.
-    pub last_job: Option<JobResult>,
-    last_job_rev: u64,
+    /// The job last built by `job.preview` or `job.send`.
+    last_job: Option<Arc<JobResult>>,
+    /// The job last sent from this document, kept apart from previews.
+    last_sent: Option<Arc<JobResult>>,
+    /// How many jobs were sent from this document.
+    last_sent_rev: u64,
 }
 
 fn next_doc_id() -> u64 {
@@ -119,7 +122,8 @@ impl Clone for DocState {
             path: self.path.clone(),
             dirty: self.dirty,
             last_job: self.last_job.clone(),
-            last_job_rev: self.last_job_rev,
+            last_sent: self.last_sent.clone(),
+            last_sent_rev: self.last_sent_rev,
         }
     }
 }
@@ -139,20 +143,38 @@ impl DocState {
             path: None,
             dirty: false,
             last_job: None,
-            last_job_rev: 0,
+            last_sent: None,
+            last_sent_rev: 0,
         }
     }
 
-    /// Stores the job last built and counts it, so a viewer can tell a new
-    /// job from the one it copied without comparing bytes.
-    pub fn set_last_job(&mut self, job: JobResult) {
-        self.last_job = Some(job);
-        self.last_job_rev += 1;
+    /// The job last built by `job.preview` or `job.send`.
+    pub fn last_job(&self) -> Option<&JobResult> {
+        self.last_job.as_deref()
     }
 
-    /// How often `last_job` was set.
-    pub fn last_job_rev(&self) -> u64 {
-        self.last_job_rev
+    /// The job last sent from this document, whatever was previewed since.
+    pub fn last_sent(&self) -> Option<&Arc<JobResult>> {
+        self.last_sent.as_ref()
+    }
+
+    /// How many jobs were sent from this document, so a viewer can spot a
+    /// new send without comparing bytes.
+    pub fn last_sent_rev(&self) -> u64 {
+        self.last_sent_rev
+    }
+
+    /// A built (previewed) job.
+    pub(crate) fn set_last_job(&mut self, job: JobResult) {
+        self.last_job = Some(Arc::new(job));
+    }
+
+    /// A sent job: the last job and the last sent one.
+    pub(crate) fn set_last_sent(&mut self, job: JobResult) {
+        let job = Arc::new(job);
+        self.last_job = Some(job.clone());
+        self.last_sent = Some(job);
+        self.last_sent_rev += 1;
     }
 
     /// True for an empty document nobody has touched: no objects, no
