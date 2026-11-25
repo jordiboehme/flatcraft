@@ -586,6 +586,41 @@ command!(
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct RenameParams {
+    /// The object to rename.
+    pub id: u64,
+    /// The new name. Leading and trailing spaces are dropped.
+    pub name: String,
+}
+
+fn run_rename(s: &mut Session, p: RenameParams, _: Origin) -> Result<Value, CommandError> {
+    let name = p.name.trim().to_string();
+    if name.is_empty() {
+        return Err(CommandError::InvalidParams("name must not be empty".into()));
+    }
+    if name.chars().any(char::is_control) {
+        return Err(CommandError::InvalidParams(
+            "name must be one line of plain text".into(),
+        ));
+    }
+    let id = ObjectId(p.id);
+    check_exists(&s.doc().document, id)?;
+    object_mut(&mut s.doc_mut().document, id)?.name = name.clone();
+    Ok(json!({ "id": p.id, "name": name }))
+}
+
+command!(
+    ObjectRename,
+    id: "object.rename",
+    title: "Rename",
+    mutates: true,
+    params: RenameParams,
+    run: run_rename,
+    description: "Renames one object. The name is one line of text without leading or trailing spaces and must not be empty. Linked copies (see object.copies) each keep their own name. Returns {id, name}.",
+);
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct IdsParams {
     /// Object ids; empty means the current selection.
     #[serde(default)]

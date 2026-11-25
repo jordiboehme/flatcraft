@@ -360,6 +360,46 @@ fn set_cut_skips_several_objects_and_undoes_in_one_step() {
 }
 
 #[test]
+fn rename_changes_one_name_and_undoes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = import(&mut s, 50.0, 50.0);
+    let b = import(&mut s, 50.0, 50.0);
+    let name = |s: &Session, id: u64| s.doc().document.get(ObjectId(id)).unwrap().name.clone();
+    let old = name(&s, b);
+    let r = s
+        .execute(
+            "object.rename",
+            json!({ "id": a, "name": "  Lid  " }),
+            Origin::Agent,
+        )
+        .unwrap();
+    assert_eq!(r["name"], "Lid");
+    assert_eq!(name(&s, a), "Lid");
+    assert_eq!(name(&s, b), old);
+    run(&mut s, "edit.undo", json!({}));
+    assert_ne!(name(&s, a), "Lid");
+    for bad in ["", "   ", "two\nlines"] {
+        let e = s
+            .execute(
+                "object.rename",
+                json!({ "id": a, "name": bad }),
+                Origin::Agent,
+            )
+            .unwrap_err();
+        assert!(!e.to_string().contains('\u{2014}'));
+    }
+    assert!(
+        s.execute(
+            "object.rename",
+            json!({ "id": 999, "name": "x" }),
+            Origin::Agent
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn import_svgz_file() {
     use std::io::Write;
     let dir = tempfile::tempdir().unwrap();
