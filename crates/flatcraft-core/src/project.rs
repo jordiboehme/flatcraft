@@ -23,8 +23,15 @@ pub enum ProjectError {
 /// Writes the project crash-safely ([`crate::fsio::write_atomic`]: a new
 /// temp file in the same folder, synced, then renamed over `path`).
 pub fn save(doc: &Document, path: &Path) -> Result<(), ProjectError> {
+    save_at(doc, &crate::fsio::resolve_links(path)?)
+}
+
+/// Like [`save`], for a `target` the caller has already resolved and
+/// checked; links at it are not followed again
+/// ([`crate::fsio::write_atomic_at`]).
+pub fn save_at(doc: &Document, target: &Path) -> Result<(), ProjectError> {
     let json = serde_json::to_string_pretty(doc)?;
-    crate::fsio::write_atomic(path, json.as_bytes())?;
+    crate::fsio::write_atomic_at(target, json.as_bytes())?;
     Ok(())
 }
 

@@ -789,6 +789,79 @@ fn agent_cannot_save_through_a_link_into_the_config_dir() {
     assert!(!new_file.exists());
 }
 
+/// The guard looks through a linked folder above the file, through a
+/// relative link, and also guards `tools.test_patterns` `svg_path`.
+#[cfg(unix)]
+#[test]
+fn agent_writes_through_folder_and_relative_links_are_refused() {
+    use std::os::unix::fs::symlink;
+    let root = tempfile::tempdir().unwrap();
+    let config = root.path().join("config");
+    let elsewhere = root.path().join("elsewhere");
+    std::fs::create_dir_all(config.join("profiles")).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let profiles = ProfileStore::load(&config).unwrap();
+    let prefs = Preferences {
+        output_dir: Some(root.path().join("output")),
+        ..Preferences::default()
+    };
+    let mut s = Session::new(profiles, prefs, false, config.clone());
+    let prefs_file = config.join("preferences.toml");
+    std::fs::write(&prefs_file, "theme = \"Light\"\n").unwrap();
+    // A folder link: elsewhere/folder -> config/profiles.
+    let folder = elsewhere.join("folder");
+    symlink(config.join("profiles"), &folder).unwrap();
+    let via_folder = folder.join("planted.flatcraft");
+    // A relative link: elsewhere/rel.flatcraft -> ../config/preferences.toml.
+    let relative = elsewhere.join("rel.flatcraft");
+    symlink("../config/preferences.toml", &relative).unwrap();
+    let svg_link = elsewhere.join("sheet.svg");
+    symlink("../config/preferences.toml", &svg_link).unwrap();
+    let svg_in_folder = folder.join("sheet.svg");
+    let attempts = [
+        ("project.save", json!({ "path": via_folder })),
+        ("project.save", json!({ "path": relative })),
+        (
+            "tools.test_patterns",
+            json!({ "add_to_document": false, "svg_path": svg_link }),
+        ),
+        (
+            "tools.test_patterns",
+            json!({ "add_to_document": false, "svg_path": svg_in_folder }),
+        ),
+    ];
+    for (id, params) in attempts {
+        let e = s.execute(id, params.clone(), Origin::Agent).unwrap_err();
+        assert!(matches!(e, CommandError::Refused(_)), "{id} {params}: {e}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(&prefs_file).unwrap(),
+        "theme = \"Light\"\n"
+    );
+    assert!(!config.join("profiles").join("planted.flatcraft").exists());
+    assert!(!config.join("profiles").join("sheet.svg").exists());
+    // The user may, and writes through the links.
+    run(&mut s, "project.save", json!({ "path": via_folder }));
+    assert!(config.join("profiles").join("planted.flatcraft").exists());
+    run(
+        &mut s,
+        "tools.test_patterns",
+        json!({ "add_to_document": false, "svg_path": svg_link }),
+    );
+    assert!(
+        std::fs::read_to_string(&prefs_file)
+            .unwrap()
+            .contains("<svg")
+    );
+    assert!(
+        std::fs::symlink_metadata(&svg_link)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the link stays a link"
+    );
+}
+
 #[test]
 fn documents_new_switch_close() {
     let dir = tempfile::tempdir().unwrap();

@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::object::add_svg;
-use super::project::inside;
+use super::project::write_target;
 use super::{command, cutting_area, object_mut};
 use crate::patterns::{SHEET_MM, SHEET_NAME, sheet_svg};
 use crate::preview::{MAX_PX, MIN_PX, PreviewKind, render_png};
@@ -31,14 +31,11 @@ pub struct TestPatternsParams {
     pub svg_path: Option<PathBuf>,
 }
 
-/// Writes `text` to `path` crash-safely (temp file, sync, rename).
-fn write_atomic(path: &Path, text: &str) -> Result<(), CommandError> {
-    if path.file_name().is_none() {
-        return Err(CommandError::InvalidParams(
-            "svg_path has no file name".into(),
-        ));
-    }
-    flatcraft_device::fsio::write_atomic(path, text.as_bytes())
+/// Writes `text` crash-safely (temp file, sync, rename) to `target`, the
+/// file [`write_target`] resolved and checked for `path`. Links are not
+/// followed again.
+fn write_atomic(path: &Path, target: &Path, text: &str) -> Result<(), CommandError> {
+    flatcraft_device::fsio::write_atomic_at(target, text.as_bytes())
         .map_err(|e| CommandError::Failed(format!("cannot write {}: {e}", path.display())))
 }
 
@@ -52,19 +49,19 @@ fn run_test_patterns(
             "nothing to do: add_to_document is false and no svg_path is given".into(),
         ));
     }
-    if let Some(path) = &p.svg_path
-        && origin == Origin::Agent
-        && inside(path, &s.config_dir)
-    {
-        return Err(CommandError::Refused(format!(
-            "agents may not write into the FlatCraft config directory ({})",
-            s.config_dir.display()
-        )));
-    }
+    let target = match &p.svg_path {
+        Some(path) if path.file_name().is_none() => {
+            return Err(CommandError::InvalidParams(
+                "svg_path has no file name".into(),
+            ));
+        }
+        Some(path) => Some(write_target(path, &s.config_dir, origin)?),
+        None => None,
+    };
     let svg = sheet_svg();
     let mut out = Map::new();
-    if let Some(path) = &p.svg_path {
-        write_atomic(path, &svg)?;
+    if let (Some(path), Some(target)) = (&p.svg_path, &target) {
+        write_atomic(path, target, &svg)?;
         out.insert("svg_path".into(), json!(path));
     }
     if p.add_to_document {

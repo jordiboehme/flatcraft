@@ -247,32 +247,71 @@ pub(crate) fn lexical(path: &Path) -> PathBuf {
 /// The path with symlinks resolved as far as the file system allows: a link
 /// at the path itself is followed even when it dangles, because a save
 /// writes through it (`fsio::write_atomic`); then the longest part that
-/// exists is resolved and the rest is appended.
+/// exists is resolved and the rest is appended. A link loop leaves the
+/// path as it is (see [`resolve_target`] for the strict form).
 pub(crate) fn resolved(path: &Path) -> PathBuf {
-    let linked = flatcraft_device::fsio::resolve_links(path).unwrap_or_else(|_| path.to_path_buf());
+    resolve_target(path).unwrap_or_else(|_| lexical(path))
+}
+
+/// Like [`resolved`], but a link loop is an error.
+fn resolve_target(path: &Path) -> std::io::Result<PathBuf> {
+    let linked = flatcraft_device::fsio::resolve_links(path)?;
     let mut base = linked.as_path();
     let mut tail = Vec::new();
     loop {
         if let Ok(mut p) = base.canonicalize() {
             p.extend(tail.iter().rev());
-            return p;
+            return Ok(p);
         }
         match (base.parent(), base.file_name()) {
             (Some(parent), Some(name)) => {
                 tail.push(name);
                 base = parent;
             }
-            _ => return lexical(&linked),
+            _ => return Ok(lexical(&linked)),
         }
     }
 }
 
+fn absolute(p: &Path) -> PathBuf {
+    std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
 /// True if `path` is the config dir or lies inside it.
 pub(crate) fn inside(path: &Path, config_dir: &Path) -> bool {
-    let abs = |p: &Path| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
-    let path = abs(path);
-    let cfg = abs(config_dir);
-    resolved(&path).starts_with(resolved(&cfg)) || lexical(&path).starts_with(lexical(&cfg))
+    let path = absolute(path);
+    in_config(&resolved(&path), &path, config_dir)
+}
+
+/// True if the resolved `target` or the `given` path (both absolute) lies
+/// in the config dir.
+fn in_config(target: &Path, given: &Path, config_dir: &Path) -> bool {
+    let cfg = absolute(config_dir);
+    target.starts_with(resolved(&cfg)) || lexical(given).starts_with(lexical(&cfg))
+}
+
+/// The file a command's write to `path` replaces, resolved once (links at
+/// the path followed, folders resolved), and checked against the agent
+/// limit. The command writes to exactly this target without following
+/// links again (`fsio::write_atomic_at`), so a link planted after the
+/// check cannot redirect the write.
+pub(crate) fn write_target(
+    path: &Path,
+    config_dir: &Path,
+    origin: Origin,
+) -> Result<PathBuf, CommandError> {
+    let given = absolute(path);
+    let target = resolve_target(&given)
+        .map_err(|e| CommandError::Failed(format!("cannot write {}: {e}", path.display())))?;
+    if origin == Origin::Agent && in_config(&target, &given, config_dir) {
+        return Err(CommandError::Refused(format!(
+            "agents may not write into the FlatCraft config directory ({})",
+            config_dir.display()
+        )));
+    }
+    #[cfg(test)]
+    tests::between_check_and_write();
+    Ok(target)
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -297,17 +336,12 @@ fn run_save(s: &mut Session, p: SaveParams, origin: Origin) -> Result<Value, Com
                 "no path: this document was never saved, so give a path".into(),
             )
         })?;
-    if origin == Origin::Agent && inside(&path, &s.config_dir) {
-        return Err(CommandError::Refused(format!(
-            "agents may not write into the FlatCraft config directory ({})",
-            s.config_dir.display()
-        )));
-    }
+    let target = write_target(&path, &s.config_dir, origin)?;
     // Linked files: refresh their paths for the new place of the project.
     // Only metadata, so it is not an undo step; a failed save puts it back.
     let st = &mut s.docs[index];
     let previous = relink_for_save(&mut st.document, st.path.as_deref(), &path);
-    if let Err(e) = project::save(&st.document, &path) {
+    if let Err(e) = project::save_at(&st.document, &target) {
         restore_links(&mut st.document, previous);
         return Err(CommandError::Failed(e.to_string()));
     }
@@ -505,9 +539,68 @@ command!(
 );
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::cutgeom::tests::CUT_BOUNDS_CALLS;
+    use std::cell::RefCell;
+
+    thread_local! {
+        /// Runs once between the agent path check and the write.
+        static BETWEEN: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+    }
+
+    pub(crate) fn between_check_and_write() {
+        if let Some(f) = BETWEEN.with(|b| b.borrow_mut().take()) {
+            f();
+        }
+    }
+
+    fn session(config: &Path) -> Session {
+        let profiles = flatcraft_device::ProfileStore::load(config).unwrap();
+        let prefs = crate::prefs::Preferences {
+            output_dir: Some(config.join("output")),
+            ..Default::default()
+        };
+        Session::new(profiles, prefs, false, config.to_path_buf())
+    }
+
+    /// A link planted at the target after the check but before the write
+    /// is not followed: the write goes to the file that was checked.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_planted_after_the_check_is_not_followed() {
+        let config = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let prefs = config.path().join("preferences.toml");
+        std::fs::write(&prefs, "theme = \"Light\"\n").unwrap();
+        let mut s = session(config.path());
+        for (id, file, params) in [
+            ("project.save", "x.flatcraft", "path"),
+            ("tools.test_patterns", "x.svg", "svg_path"),
+        ] {
+            let target = elsewhere.path().join(file);
+            let (link_to, at) = (prefs.clone(), target.clone());
+            BETWEEN.with(|b| {
+                *b.borrow_mut() = Some(Box::new(move || {
+                    std::os::unix::fs::symlink(link_to, at).unwrap();
+                }));
+            });
+            let r = s.execute(id, json!({ params: target }), Origin::Agent);
+            assert!(r.is_ok(), "{id}: {r:?}");
+            assert_eq!(
+                std::fs::read_to_string(&prefs).unwrap(),
+                "theme = \"Light\"\n",
+                "{id} wrote through the planted link"
+            );
+            assert!(
+                !std::fs::symlink_metadata(&target)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink(),
+                "{id}: the write replaced the link"
+            );
+        }
+    }
 
     const SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20mm" height="20mm" viewBox="0 0 20 20"><rect x="2" y="2" width="5" height="5"/></svg>"#;
 
