@@ -293,7 +293,6 @@ fn draw(
     actions: &mut Vec<Action>,
 ) -> bool {
     let doc_id = snap.doc_id;
-    let each = st.fields.each;
     let why = item.why(snap, ids);
     match item {
         Item::Align | Item::Distribute if why.is_none() => {
@@ -338,6 +337,21 @@ fn draw(
     if !r.clicked() {
         return false;
     }
+    run_item(item, snap, st, ids, actions)
+}
+
+/// Runs one item on `ids`: pushes its action or opens its panel or dialog.
+/// The context menu and the macOS menu bar both use it. True when it ran
+/// (a submenu never does).
+pub fn run_item(
+    item: Item,
+    snap: &Snapshot,
+    st: &mut PrepareState,
+    ids: &[u64],
+    actions: &mut Vec<Action>,
+) -> bool {
+    let doc_id = snap.doc_id;
+    let each = st.fields.each;
     let first = ids.first().and_then(|id| snap.object(*id));
     match item {
         Item::Duplicate => actions.push(ribbon::duplicate_action(doc_id, ids)),

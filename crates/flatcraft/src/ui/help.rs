@@ -144,6 +144,9 @@ pub struct Shortcut {
     /// The ribbon action (`tools::Tool::id`) whose shortcut this is, so
     /// its row and menu item show the key.
     pub tool: Option<&'static str>,
+    /// Only the macOS menu bar has this key (Windows and Linux have no such
+    /// row and no handler).
+    pub mac_only: bool,
 }
 
 impl Shortcut {
@@ -151,6 +154,17 @@ impl Shortcut {
     const fn for_tool(mut self, id: &'static str) -> Self {
         self.tool = Some(id);
         self
+    }
+
+    /// The same shortcut, for macOS only.
+    const fn mac_only(mut self) -> Self {
+        self.mac_only = true;
+        self
+    }
+
+    /// Whether the key handler or the sheet has this row on this system.
+    pub fn here(&self) -> bool {
+        !self.mac_only || cfg!(target_os = "macos")
     }
 }
 
@@ -176,6 +190,7 @@ const fn global(
         prepare: None,
         menu_on_macos,
         tool: None,
+        mac_only: false,
     }
 }
 
@@ -193,23 +208,25 @@ const fn prepare(
         prepare: Some(action),
         menu_on_macos: false,
         tool: None,
+        mac_only: false,
     }
 }
 
 /// Every shortcut the app has. The key handler runs the entries with a
 /// `run`, in this order (a Shift variant before its plain key), and the
 /// shortcuts sheet lists all of them.
-pub const SHORTCUTS: [Shortcut; 19] = [
+pub const SHORTCUTS: [Shortcut; 20] = [
     global(
         CMD_SHIFT,
         Key::S,
         "Save As",
         |d| Action::SaveAs { doc_id: d },
-        false,
+        true,
     ),
-    global(CMD, Key::S, "Save", |d| Action::Save { doc_id: d }, false),
-    global(CMD, Key::O, "Open", |_| Action::OpenDialog, false),
-    global(CMD, Key::N, "New project", |_| Action::NewProject, false),
+    global(CMD, Key::S, "Save", |d| Action::Save { doc_id: d }, true),
+    global(CMD, Key::O, "Open", |_| Action::OpenDialog, true),
+    global(CMD, Key::N, "New project", |_| Action::NewProject, true),
+    global(CMD, Key::W, "Close the document", Action::Close, true).mac_only(),
     global(
         CMD,
         Key::Comma,
@@ -218,7 +235,8 @@ pub const SHORTCUTS: [Shortcut; 19] = [
         true,
     ),
     global(CMD_SHIFT, Key::Z, "Redo", Action::Redo, true),
-    global(CMD, Key::Y, "Redo", Action::Redo, true),
+    // Not a menu key: the key handler redoes on every system.
+    global(CMD, Key::Y, "Redo", Action::Redo, false),
     global(CMD, Key::Z, "Undo", Action::Undo, true),
     prepare(CMD, Key::A, "Select all objects", PrepareKey::SelectAll),
     prepare(CMD, Key::I, "Import a design", PrepareKey::Import).for_tool("import"),
@@ -357,12 +375,13 @@ impl Shortcut {
 }
 
 /// Runs the key handler's part of [`SHORTCUTS`]. On macOS the menu bar owns
-/// Undo, Redo and Settings.
+/// the rows with `menu_on_macos`: its items have these keys, so the key
+/// never reaches the handler twice.
 pub fn run_shortcuts(ctx: &egui::Context, active: u64, actions: &mut Vec<Action>) {
     ctx.input_mut(|i| {
         for s in &SHORTCUTS {
             let Some(run) = s.run else { continue };
-            if s.menu_on_macos && cfg!(target_os = "macos") {
+            if !s.here() || (s.menu_on_macos && cfg!(target_os = "macos")) {
                 continue;
             }
             if i.consume_shortcut(&KeyboardShortcut::new(s.modifiers, s.key)) {
@@ -382,7 +401,7 @@ pub fn show_shortcuts(ctx: &egui::Context, t: &Tokens) -> bool {
             .num_columns(2)
             .spacing([24.0, 4.0])
             .show(ui, |ui| {
-                for s in &SHORTCUTS {
+                for s in SHORTCUTS.iter().filter(|s| s.here()) {
                     ui.label(RichText::new(s.keys()).monospace());
                     ui.label(s.what);
                     ui.end_row();

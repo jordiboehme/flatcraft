@@ -439,17 +439,29 @@ fn untitled_names_stay_with_their_document() {
     assert!(h.query_by_label("Untitled 2").is_none());
 }
 
+/// Cmd+N: the key handler's on Windows and Linux; on macOS the menu bar has
+/// the key and its New item runs the same action.
+fn cmd_n(h: &mut common::AppHarness) {
+    if cfg!(target_os = "macos") {
+        let ctx = h.ctx.clone();
+        let n = flatcraft::ui::menu_model::Cmd::New;
+        app_mut(h).apply(&ctx, vec![n.action(0, &[]).unwrap()]);
+    } else {
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::N);
+    }
+}
+
 #[test]
 fn cmd_n_and_home_new_reuse_the_empty_start_document() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let mut h = harness(&dir, s.clone(), false);
-    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::N);
+    cmd_n(&mut h);
     h.run();
     assert_eq!(s.lock().unwrap().docs.len(), 1);
     assert_eq!(app(&h).ui.workspace, Workspace::Prepare);
     s.lock().unwrap().doc_mut().dirty = true;
-    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::N);
+    cmd_n(&mut h);
     wait_for_source_check(&mut h);
     assert_eq!(s.lock().unwrap().docs.len(), 2);
 }

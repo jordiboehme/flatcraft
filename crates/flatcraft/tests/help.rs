@@ -159,13 +159,13 @@ fn the_sheet_shows_the_platform_modifier() {
 }
 
 /// Every global shortcut in the table has a handler: pressing it makes the
-/// key handler produce its action. (On macOS the menu bar owns three of
-/// them, so those are skipped there.)
+/// key handler produce its action. (On macOS the menu bar owns some of
+/// them, and some rows exist only there, so those are skipped.)
 #[test]
 fn every_global_shortcut_has_a_handler() {
     for s in &SHORTCUTS {
         let Some(run) = s.run else { continue };
-        if s.menu_on_macos && cfg!(target_os = "macos") {
+        if !s.here() || (s.menu_on_macos && cfg!(target_os = "macos")) {
             continue;
         }
         let ctx = egui::Context::default();

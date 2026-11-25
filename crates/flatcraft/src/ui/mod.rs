@@ -18,6 +18,7 @@ pub mod icons;
 pub mod import_dialog;
 #[cfg(target_os = "macos")]
 pub mod menu;
+pub mod menu_model;
 pub mod objects;
 pub mod prepare;
 pub mod profiles_window;
@@ -256,6 +257,8 @@ pub enum Action {
     ShowShortcuts,
     /// Open a link in the browser.
     OpenUrl(String),
+    /// A macOS menu item that needs the snapshot or the keyboard focus.
+    Menu(menu_model::Cmd),
     /// Quit; asks first when a document has unsaved changes.
     Quit,
     /// The answer in the unsaved-changes dialog.
@@ -303,6 +306,10 @@ pub struct FlatCraftApp {
     /// [`rng::DEFAULT_SEED`]; `main` seeds it from the clock and tests with
     /// [`FlatCraftApp::with_seed`].
     pub rng: rng::XorShift,
+    /// Key events the macOS menu bar passes on to the focused widget. It
+    /// owns the Cmd keys, so a click on Undo, Select All and the like
+    /// hands the key to the text field itself. They enter the next frame.
+    pub injected: Vec<egui::Event>,
     /// The macOS menu bar; it must live as long as the app.
     #[cfg(target_os = "macos")]
     menu: Option<menu::AppMenu>,
@@ -338,6 +345,7 @@ impl FlatCraftApp {
             source_check: std::sync::Arc::new(flatcraft_engine::commands::sources::check_unlocked),
             source_check_job: None,
             rng: rng::XorShift::default(),
+            injected: Vec::new(),
             #[cfg(target_os = "macos")]
             menu: None,
         }
@@ -408,9 +416,133 @@ impl FlatCraftApp {
     /// Installs the macOS menu bar. Call it once the event loop runs.
     #[cfg(target_os = "macos")]
     pub fn install_menu(&mut self, ctx: &egui::Context) {
-        match menu::AppMenu::install(ctx) {
+        let model = self.menu_model(ctx, None);
+        match menu::AppMenu::install(ctx, model) {
             Ok(m) => self.menu = Some(m),
             Err(e) => eprintln!("warning: cannot install the menu bar: {e}"),
+        }
+    }
+
+    /// What the menu bar shows now, for the document `snap` (none on Home).
+    pub fn menu_model(
+        &self,
+        ctx: &egui::Context,
+        snap: Option<&prepare::Snapshot>,
+    ) -> menu_model::MenuModel {
+        let (can_undo, can_redo, recent) = {
+            let s = lock(&self.session);
+            let doc = s.doc();
+            (
+                doc.undo.can_undo(),
+                doc.undo.can_redo(),
+                s.prefs.recent_projects.clone(),
+            )
+        };
+        menu_model::MenuModel::build(&menu_model::MenuInput {
+            workspace: self.ui.workspace,
+            snap,
+            prepare: &self.ui.prepare,
+            show_debug: self.ui.show_debug,
+            can_undo,
+            can_redo,
+            text_focused: ctx.text_edit_focused(),
+            send_ready: matches!(self.ui.cut.plan, Some(Ok(_))),
+            recent: &recent,
+        })
+    }
+
+    /// Updates the menu bar to the state of this frame. Only a model that
+    /// differs from the last one touches the muda items.
+    #[cfg(target_os = "macos")]
+    fn refresh_menu(&mut self, ctx: &egui::Context, snap: Option<&prepare::Snapshot>) {
+        if self.menu.is_none() {
+            return;
+        }
+        let model = self.menu_model(ctx, snap);
+        if let Some(menu) = self.menu.as_mut() {
+            menu.update(model);
+        }
+    }
+
+    /// Runs a menu item that needs the snapshot or the keyboard focus.
+    fn run_menu(&mut self, ctx: &egui::Context, cmd: menu_model::Cmd) {
+        use menu_model::Cmd;
+        let key = |key: egui::Key, shift: bool| egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                shift,
+                ..egui::Modifiers::COMMAND
+            },
+        };
+        let text = ctx.text_edit_focused();
+        match cmd {
+            // The menu has the keys, so a text field gets them from here.
+            Cmd::Undo | Cmd::Redo | Cmd::SelectAll if text => {
+                self.injected.push(match cmd {
+                    Cmd::SelectAll => key(egui::Key::A, false),
+                    _ => key(egui::Key::Z, cmd == Cmd::Redo),
+                });
+            }
+            Cmd::Undo | Cmd::Redo => {
+                let active = lock(&self.session).doc().id();
+                let a = if cmd == Cmd::Undo {
+                    Action::Undo(active)
+                } else {
+                    Action::Redo(active)
+                };
+                self.apply_one(ctx, a);
+            }
+            Cmd::Cut => ctx.send_viewport_cmd(egui::ViewportCommand::RequestCut),
+            Cmd::Copy => ctx.send_viewport_cmd(egui::ViewportCommand::RequestCopy),
+            Cmd::Paste => ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste),
+            Cmd::SelectAll
+            | Cmd::Tool(_)
+            | Cmd::LinkCopies
+            | Cmd::Unlink
+            | Cmd::ToggleCut
+            | Cmd::ToggleHide
+            | Cmd::Rename => {
+                // The menu is dimmed outside Prepare; a late click does
+                // nothing.
+                if self.ui.workspace != Workspace::Prepare {
+                    return;
+                }
+                let snap = prepare::snapshot(self, ctx);
+                let ids: Vec<u64> = snap.selection.iter().copied().collect();
+                let mut actions = Vec::new();
+                match cmd {
+                    Cmd::SelectAll => actions.push(context_menu::select_all_action(&snap)),
+                    Cmd::Tool(id) => {
+                        if let Some(t) = tools::by_id(id) {
+                            t.run(
+                                &snap,
+                                &mut self.ui.prepare,
+                                &mut self.ui.show_debug,
+                                &mut actions,
+                            );
+                        }
+                    }
+                    other => {
+                        if let Some(item) =
+                            menu_model::object_item(&other, &snap, &self.ui.prepare, &ids)
+                        {
+                            context_menu::run_item(
+                                item,
+                                &snap,
+                                &mut self.ui.prepare,
+                                &ids,
+                                &mut actions,
+                            );
+                        }
+                    }
+                }
+                self.apply(ctx, actions);
+            }
+            // The other items became their own actions.
+            _ => {}
         }
     }
 
@@ -725,8 +857,8 @@ impl FlatCraftApp {
                 }
             }
             Action::Undo(doc_id) => {
-                // An empty stack is no error (the macOS menu item and the
-                // shortcut are always there).
+                // An empty stack is no error (the shortcut is always there;
+                // the macOS menu item dims).
                 let nothing = {
                     let s = lock(&self.session);
                     s.doc_index(doc_id)
@@ -826,6 +958,7 @@ impl FlatCraftApp {
                 }
             }
             Action::Unsaved(choice) => self.answer_unsaved(ctx, choice),
+            Action::Menu(cmd) => self.run_menu(ctx, cmd),
         }
     }
 
@@ -1147,6 +1280,11 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     if !modal {
         shortcuts(&ctx, active, &mut actions);
     }
+    // Keys the menu bar passes on (see `FlatCraftApp::injected`).
+    if !app.injected.is_empty() {
+        let events = std::mem::take(&mut app.injected);
+        ctx.input_mut(|i| i.events.extend(events));
+    }
     dropped_files(&ctx, &app.tokens, &mut actions);
     let focused = ctx.input(|i| {
         i.raw
@@ -1180,6 +1318,8 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
         app.ui.debug.refresh_log(&app.session);
         app.ui.debug.refresh_last_sent(&app.session);
     }
+    #[cfg(target_os = "macos")]
+    app.refresh_menu(&ctx, snap.as_ref());
     app_bar::show(ui, app, &mut actions);
     switcher::ribbon(ui, app, snap.as_ref(), &mut actions);
     if workspace != Workspace::Prepare {
@@ -1226,6 +1366,10 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     pending_modal(&ctx, app, &mut actions);
     unsaved_modal(&ctx, app, &mut actions);
 
+    // What a click changed shows in the menu bar next frame.
+    if !actions.is_empty() {
+        ctx.request_repaint();
+    }
     app.apply(&ctx, actions);
 
     let now = (app.clock)();
@@ -1563,7 +1707,7 @@ impl eframe::App for FlatCraftApp {
         #[cfg(target_os = "macos")]
         {
             let active = lock(&self.session).doc().id();
-            let actions = self.menu.as_ref().map(|m| m.actions(active));
+            let actions = self.menu.as_mut().map(|m| m.actions(active));
             if let Some(actions) = actions {
                 let actions = self.menu_gate(actions);
                 self.apply(ctx, actions);
