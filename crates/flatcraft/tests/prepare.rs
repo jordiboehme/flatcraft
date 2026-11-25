@@ -1647,8 +1647,9 @@ fn objects_panel_marks_linked_copies_and_unlinks_one() {
     select(&s, &[all[1]]);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
+    // Three marks for four rows: the lone square has none.
     assert_eq!(h.get_all_by_label("Linked copy").count(), 3);
-    let _ = lone;
+    assert_eq!(link_group(&s, lone), None);
     h.get_by_label("Linked copy, one of 3. It shares the source, the cut options and the scale.");
     let before = undo_len(&s);
     h.get_by_role_and_label(Role::Button, "Unlink copy").click();
@@ -1730,4 +1731,40 @@ fn changed_file_of_linked_copies_counts_once() {
     for m in all {
         assert!((width(&s, m) - 45.5).abs() < 1e-6, "{}", width(&s, m));
     }
+}
+
+#[test]
+fn cut_mode_on_a_linked_copy_changes_every_member_in_one_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let lone = import_square(&s);
+    let all = linked_copies(&s, a, 2);
+    select(&s, &[all[1]]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let before = undo_len(&s);
+    h.get_by_role_and_label(Role::ComboBox, "Cut mode").click();
+    h.run();
+    h.get_by_label("All lines").click();
+    h.run();
+    wait_for_workers(&mut h);
+    assert_eq!(undo_len(&s), before + 1);
+    let mode = |id: u64| {
+        s.lock()
+            .unwrap()
+            .doc()
+            .document
+            .get(ObjectId(id))
+            .unwrap()
+            .cut
+            .mode
+    };
+    for m in all {
+        assert_eq!(mode(m), flatcraft_core::document::CutMode::AllLines, "{m}");
+    }
+    assert_eq!(
+        mode(lone),
+        flatcraft_core::document::CutMode::ObjectOutlines
+    );
 }

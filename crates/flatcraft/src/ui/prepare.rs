@@ -347,22 +347,12 @@ impl ShapeInput {
 
     /// An object with only what drawing and bounds read.
     fn object(&self) -> Object {
-        Object {
-            id: flatcraft_core::document::ObjectId(0),
-            name: String::new(),
-            source: Source::Svg {
-                name: String::new(),
-                bytes: Vec::new().into(),
-            },
-            transform: self.transform,
-            visible: true,
-            cut: self.cut,
-            link: None,
-            geometry: self.geometry.clone(),
-            local_bounds: self.local_bounds,
-            frame: kurbo::Rect::ZERO,
-            link_group: None,
-        }
+        Object::shape_only(
+            self.geometry.clone(),
+            self.local_bounds,
+            self.transform,
+            self.cut,
+        )
     }
 }
 
