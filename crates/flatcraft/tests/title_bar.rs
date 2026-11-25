@@ -197,17 +197,24 @@ fn dragging_empty_bar_space_moves_the_window_and_buttons_do_not() {
     assert!(!drag_from(&mut h, empty));
 }
 
-#[test]
-fn a_double_click_on_empty_space_zooms_the_window() {
+/// Two quick clicks at `at` with the title-bar setting `action`; the
+/// viewport commands of those frames.
+fn double_click(
+    action: app_bar::DoubleClick,
+    at: impl Fn(&AppHarness) -> Pos2,
+) -> Vec<egui::ViewportCommand> {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
-    let mut h = rig(&dir, s, true);
-    let plus = rect(&h, Role::Button, "New document");
-    let at = egui::pos2(plus.right() + 40.0, plus.center().y);
+    three_documents(&s);
+    let mut h = harness_with(&dir, s, move |a| {
+        a.with_title_bar(true).with_double_click(action)
+    });
+    h.run();
     // The harness takes a quarter second per frame and hands the second
     // click a frame later: allow that much time between the clicks.
     h.ctx
         .options_mut(|o| o.input_options.max_double_click_delay = 1.0);
+    let at = at(&h);
     h.hover_at(at);
     h.step();
     for _ in 0..2 {
@@ -219,14 +226,49 @@ fn a_double_click_on_empty_space_zooms_the_window() {
             modifiers: egui::Modifiers::NONE,
         });
     }
-    let mut zoomed = false;
+    let mut out = Vec::new();
     for _ in 0..3 {
         h.step();
-        zoomed |= commands(&h)
-            .iter()
-            .any(|c| matches!(c, egui::ViewportCommand::Maximized(true)));
+        out.extend(commands(&h));
     }
-    assert!(zoomed);
+    out
+}
+
+fn empty_space(h: &AppHarness) -> Pos2 {
+    let plus = rect(h, Role::Button, "New document");
+    egui::pos2(plus.right() + 40.0, plus.center().y)
+}
+
+fn window_commands(c: &[egui::ViewportCommand]) -> usize {
+    c.iter()
+        .filter(|c| {
+            matches!(
+                c,
+                egui::ViewportCommand::Maximized(_) | egui::ViewportCommand::Minimized(_)
+            )
+        })
+        .count()
+}
+
+#[test]
+fn a_double_click_on_empty_space_does_what_the_system_says() {
+    use app_bar::DoubleClick;
+    let c = double_click(DoubleClick::Zoom, empty_space);
+    assert!(c.contains(&egui::ViewportCommand::Maximized(true)), "{c:?}");
+    let c = double_click(DoubleClick::Minimize, empty_space);
+    assert!(c.contains(&egui::ViewportCommand::Minimized(true)), "{c:?}");
+    let c = double_click(DoubleClick::Nothing, empty_space);
+    assert_eq!(window_commands(&c), 0, "{c:?}");
+}
+
+#[test]
+fn a_double_click_on_a_button_or_a_tab_does_not_zoom() {
+    use app_bar::DoubleClick;
+    // Not Save: it would open the real save dialog for an untitled document.
+    for name in ["Home", "Undo", "New document", "Untitled 2", "Settings"] {
+        let c = double_click(DoubleClick::Zoom, |h| rect(h, Role::Button, name).center());
+        assert_eq!(window_commands(&c), 0, "{name}: {c:?}");
+    }
 }
 
 #[test]

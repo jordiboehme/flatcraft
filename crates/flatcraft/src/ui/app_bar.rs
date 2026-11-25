@@ -57,6 +57,47 @@ pub fn left_inset(title_bar: bool, ctx: &egui::Context) -> f32 {
     }
 }
 
+/// What a double-click on the title bar does (macOS: System Settings,
+/// Desktop & Dock, "Double-click a window's title bar to").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoubleClick {
+    Zoom,
+    Minimize,
+    Nothing,
+}
+
+/// The action of the user default `AppleActionOnDoubleClick` ("Maximize",
+/// "Minimize" or "None"), or of the older `AppleMiniaturizeOnDoubleClick`
+/// switch when the first is not set. Zoom when neither is.
+pub fn double_click_action(action: Option<&str>, miniaturize: bool) -> DoubleClick {
+    match action {
+        Some("Minimize") => DoubleClick::Minimize,
+        Some("None") => DoubleClick::Nothing,
+        Some(_) => DoubleClick::Zoom,
+        None if miniaturize => DoubleClick::Minimize,
+        None => DoubleClick::Zoom,
+    }
+}
+
+/// The system's title-bar double-click action. Read when it is needed
+/// (one defaults lookup per double-click); Zoom off macOS.
+pub fn system_double_click() -> DoubleClick {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_foundation::{NSString, NSUserDefaults};
+        let defaults = NSUserDefaults::standardUserDefaults();
+        let action = defaults
+            .stringForKey(&NSString::from_str("AppleActionOnDoubleClick"))
+            .map(|s| s.to_string());
+        let mini = defaults.boolForKey(&NSString::from_str("AppleMiniaturizeOnDoubleClick"));
+        double_click_action(action.as_deref(), mini)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        DoubleClick::Zoom
+    }
+}
+
 /// One open document as the tabs show it.
 struct Tab {
     id: u64,
@@ -252,9 +293,20 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
                 if empty.double_clicked() && on_empty(empty.interact_pointer_pos()) {
-                    let zoomed = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
-                    ui.ctx()
-                        .send_viewport_cmd(egui::ViewportCommand::Maximized(!zoomed));
+                    let action = app.double_click.unwrap_or_else(system_double_click);
+                    match action {
+                        DoubleClick::Zoom => {
+                            let zoomed =
+                                ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+                            ui.ctx()
+                                .send_viewport_cmd(egui::ViewportCommand::Maximized(!zoomed));
+                        }
+                        DoubleClick::Minimize => {
+                            ui.ctx()
+                                .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                        }
+                        DoubleClick::Nothing => {}
+                    }
                 }
             }
         });
@@ -593,6 +645,24 @@ fn doc_tabs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_double_click_setting_is_honoured() {
+        assert_eq!(
+            double_click_action(Some("Maximize"), false),
+            DoubleClick::Zoom
+        );
+        assert_eq!(
+            double_click_action(Some("Minimize"), false),
+            DoubleClick::Minimize
+        );
+        assert_eq!(
+            double_click_action(Some("None"), true),
+            DoubleClick::Nothing
+        );
+        assert_eq!(double_click_action(None, true), DoubleClick::Minimize);
+        assert_eq!(double_click_action(None, false), DoubleClick::Zoom);
+    }
 
     #[test]
     fn tabs_narrow_first_then_move_into_the_list() {
