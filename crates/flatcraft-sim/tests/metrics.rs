@@ -430,6 +430,53 @@ fn crossing_penalty_lowers_simulated_travel_crossings() {
 }
 
 #[test]
+fn order_improvement_lowers_simulated_travel_crossings() {
+    // 40 squares of 0.5 to 4.5 mm packed in 60 x 60 mm, from a fixed
+    // generator. The improvement scores crossings, so here it strictly
+    // lowers the simulated crossings of the construction (23 to 11 when
+    // measured), with less travel. It does not on every job: on 118 such
+    // jobs it lowered them on 87 and raised them on 18, because it counts
+    // unfinished cuts too.
+    let mut seed = 4u64;
+    let mut next = || {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let input: Vec<PlacedPath> = (0..40)
+        .map(|k| {
+            let (x, y) = (10.0 + next() * 60.0, 10.0 + next() * 60.0);
+            let (w, h) = (0.5 + next() * 4.0, 0.5 + next() * 4.0);
+            PlacedPath {
+                path: Rect::new(x, y, x + w, y + h).to_path(0.1),
+                source: source(k),
+            }
+        })
+        .collect();
+    let run = |rounds: Option<u32>| {
+        let mut strategy = flatcraft_path::StrategySettings::default();
+        if let Some(rounds) = rounds {
+            strategy.rounds = rounds;
+        }
+        let settings = PipelineSettings {
+            strategy,
+            ..PipelineSettings::with_defaults(Rect::new(0.0, 0.0, 300.0, 300.0), Point::ZERO)
+        };
+        let out = plan(&input, &settings).unwrap();
+        let (_, m, _) = sim(&out.toolpaths, out.home, &SimSettings::float(0.0));
+        (m.travel_crossings, m.travel_mm)
+    };
+    let (built, built_travel) = run(Some(0));
+    let (improved, improved_travel) = run(None);
+    assert!(
+        improved < built,
+        "{built} -> {improved} crossings ({built_travel} -> {improved_travel} mm)"
+    );
+    assert!(improved_travel < built_travel);
+}
+
+#[test]
 fn order_improvement_lowers_simulated_travel_and_time() {
     // 100 small squares from a fixed generator. The same job is planned
     // with the nearest-neighbour construction alone (no improvement rounds)

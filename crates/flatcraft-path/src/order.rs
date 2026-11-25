@@ -485,38 +485,23 @@ fn head_after(units: &[Unit], from: Option<Placement>, start: Point) -> (Point, 
     }
 }
 
-/// The finished cuts crossed by every travel of `tour`, counted against
-/// `cuts` as [`improve`] counts them.
-fn crossings_in(
-    units: &[Unit],
-    tour: &[Placement],
-    start: Point,
-    cuts: &mut CutIndex,
-    stats: &mut ConstructStats,
-) -> usize {
+/// How many finished cut segments the travels of `tour` cross, more than
+/// 1e-6 mm from their ends, as [`construct`] counts them: a travel into
+/// the unit at position p counts only the cuts of the units at positions
+/// before p. Segments are counted, not travels, so the simulator's
+/// `travel_crossings` can be lower.
+pub fn tour_crossings(units: &[Unit], tour: &[Placement], start: Point) -> usize {
+    let mut cuts = all_cuts(units);
+    cuts.rank_by(tour, units.len());
+    let mut stats = ConstructStats::default();
     let (mut head, mut count) = (start, 0);
     for p in tour {
         if let Some(e) = units[p.unit].candidates.get(p.candidate) {
-            count += cuts.crossings(head, e.at, p.unit, stats);
+            count += cuts.crossings(head, e.at, p.unit, &mut stats);
             head = e.exit;
         }
     }
     count
-}
-
-/// How many cut segments of `units` the travels of `tour` cross, more
-/// than 1e-6 mm from their ends: the crossing term [`improve`] scores with
-/// [`CROSSING_PENALTY_MM`]. Every cut counts, not only the finished ones,
-/// so a travel is scored the same wherever its move puts it; only the cuts
-/// of the unit the travel goes to are left out, as in [`construct`].
-pub fn tour_crossings(units: &[Unit], tour: &[Placement], start: Point) -> usize {
-    crossings_in(
-        units,
-        tour,
-        start,
-        &mut all_cuts(units),
-        &mut ConstructStats::default(),
-    )
 }
 
 /// True when every child in `tree` comes before its parent and, with
@@ -720,10 +705,14 @@ fn entry_dp_edges(units: &[Unit], tour: &[Placement]) -> u64 {
 /// and a move is applied only when its exact cost change is negative.
 ///
 /// With `crossing_penalty` (ruling F6), a move that passes that screen also
-/// counts the cut segments its new travels cross (every cut of the job
-/// except the target unit's own, as [`tour_crossings`] and [`construct`]
-/// count them), and it is applied only when its gain with
-/// [`CROSSING_PENALTY_MM`] per crossing is still positive. The DP result is
+/// counts the cut segments its new travels cross, and it is applied only
+/// when its gain with [`CROSSING_PENALTY_MM`] per crossing is still
+/// positive. The count uses the same segment test as [`construct`], but
+/// against every cut of the job except those of the unit the travel goes
+/// to, finished or not, so a travel's count does not depend on where a
+/// move puts it. That charges travels over cuts not made yet, too; it was
+/// measured to leave fewer real (finished-only, [`tour_crossings`])
+/// crossings than counting only the cuts finished at the round's start. The DP result is
 /// applied run by run: each stretch of changed entries is scored the same
 /// way on its own. The crossing tests are paid per move that passed the
 /// screen, per DP run and for each round's join cache, never per
@@ -1695,6 +1684,10 @@ struct CutIndex {
     query: u32,
     /// The box of every indexed cut.
     bounds: Option<Rect>,
+    /// When set, the position of each unit in a tour: a travel into unit
+    /// `to` counts only the cuts of units ranked before `to`, the cuts
+    /// finished by then. Empty: every indexed cut counts.
+    rank: Vec<usize>,
 }
 
 /// The part of `a`-`b` inside `r` (Liang-Barsky), or `None` when the
@@ -1755,6 +1748,18 @@ fn cells_along(a: Point, b: Point, mut visit: impl FnMut((i64, i64))) {
 }
 
 impl CutIndex {
+    /// Count only finished cuts from now on, by the positions in `tour`
+    /// (a unit not in `tour` is never finished).
+    fn rank_by(&mut self, tour: &[Placement], units: usize) {
+        self.rank.clear();
+        self.rank.resize(units, usize::MAX);
+        for (k, p) in tour.iter().enumerate() {
+            if let Some(r) = self.rank.get_mut(p.unit) {
+                *r = k;
+            }
+        }
+    }
+
     fn insert(&mut self, a: Point, b: Point, unit: usize) {
         if !(a.is_finite() && b.is_finite()) {
             return;
@@ -1777,7 +1782,8 @@ impl CutIndex {
 
     /// How many cuts the travel `a`-`b` into unit `to` properly crosses,
     /// away from its ends. The cuts of `to` itself never count: they are
-    /// not cut yet when the head travels to it. Only the part of the travel inside the cuts' box
+    /// not cut yet when the head travels to it. With a rank, only the cuts
+    /// of units ranked before `to` count. Only the part of the travel inside the cuts' box
     /// walks the cells, so a travel from a far start stays cheap.
     fn crossings(&mut self, a: Point, b: Point, to: usize, stats: &mut ConstructStats) -> usize {
         if !(a.is_finite() && b.is_finite()) {
@@ -1793,6 +1799,11 @@ impl CutIndex {
         let query = self.query;
         let mut count = 0;
         let (segs, cells, stamp) = (&self.segs, &self.cells, &mut self.stamp);
+        let rank = &self.rank;
+        let limit = rank.get(to).copied().unwrap_or(usize::MAX);
+        let finished = |unit: usize| {
+            unit != to && (rank.is_empty() || rank.get(unit).is_some_and(|&r| r < limit))
+        };
         cells_along(ca, cb, |c| {
             for &id in cells.get(&c).into_iter().flatten() {
                 let id = id as usize;
@@ -1800,7 +1811,7 @@ impl CutIndex {
                     stamp[id] = query;
                     stats.crossing_tests += 1;
                     let (q1, q2, unit) = segs[id];
-                    count += usize::from(unit != to && crosses(a, b, q1, q2));
+                    count += usize::from(finished(unit) && crosses(a, b, q1, q2));
                 }
             }
         });
@@ -2508,6 +2519,52 @@ mod tests {
         )
     }
 
+    #[test]
+    fn tour_crossings_counts_only_finished_cuts() {
+        // A square and a short line to its right, from a start on its left.
+        let s = settings(CutStrategy::Quality);
+        let (paths, _) = prepared(vec![
+            ring(0, 0.0, 0.0, 10.0, 10.0),
+            tp(1, &[(15.0, 5.0), (16.0, 5.0)], false),
+        ]);
+        let units: Vec<Unit> = paths.iter().map(|t| Unit::new(t, &s)).collect();
+        let left = units[0]
+            .candidates
+            .iter()
+            .position(|e| e.at.x == 0.0 && e.exit.x == 0.0)
+            .unwrap();
+        let start = p(-5.0, 5.0);
+        let square = Placement {
+            unit: 0,
+            candidate: left,
+        };
+        let line = Placement {
+            unit: 1,
+            candidate: 0,
+        };
+        // The line first: the travel over the square crosses nothing cut.
+        assert_eq!(tour_crossings(&units, &[line, square], start), 0);
+        // The square first: the travel to the line crosses its right side.
+        assert_eq!(tour_crossings(&units, &[square, line], start), 1);
+        // The improvement's term counts the square either way.
+        assert_eq!(scored_crossings(&units, &[line, square], start), 2);
+    }
+
+    /// The crossing term [`improve`] scores: every cut except the target
+    /// unit's own, finished or not.
+    fn scored_crossings(units: &[Unit], tour: &[Placement], start: Point) -> usize {
+        let mut cuts = all_cuts(units);
+        let mut stats = ConstructStats::default();
+        let (mut head, mut count) = (start, 0);
+        for pl in tour {
+            if let Some(e) = units[pl.unit].candidates.get(pl.candidate) {
+                count += cuts.crossings(head, e.at, pl.unit, &mut stats);
+                head = e.exit;
+            }
+        }
+        count
+    }
+
     proptest! {
         #[test]
         fn improvement_never_increases_cost_and_keeps_precedence(
@@ -2552,9 +2609,9 @@ mod tests {
             }
             let after = tour_cost(&units, &tour, start, &s);
             prop_assert!(after <= before + 1e-9, "{} -> {}", before, after);
-            // With the crossing term too.
+            // With the crossing term it scores too.
             let full = |t: &[Placement], cost: f64| {
-                cost + CROSSING_PENALTY_MM * tour_crossings(&units, t, start) as f64
+                cost + CROSSING_PENALTY_MM * scored_crossings(&units, t, start) as f64
             };
             let (full_before, full_after) = (full(&built, before), full(&tour, after));
             prop_assert!(full_after <= full_before + 1e-9, "{} -> {}", full_before, full_after);
