@@ -293,6 +293,36 @@ fn a_line_below_half_a_step_is_dropped_with_a_warning() {
 }
 
 #[test]
+fn a_job_of_only_too_short_lines_says_why_nothing_is_cut() {
+    let d = dirs();
+    let mut s = session(&d);
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><path d="M60 60 L60.02 60" stroke="black" fill="none"/></svg>"#;
+    let id = run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": svg, "name": "speck" }),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    run(
+        &mut s,
+        "object.set_cut_options",
+        json!({ "ids": [id], "mode": "all_lines", "strokes": "centre_line", "auto_threshold_mm": 1.5 }),
+    );
+    let err = s
+        .execute("job.preview", json!({}), Origin::User)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains(
+            "Nothing to cut: the only cut path is shorter than half a plotter step (0.025 mm)."
+        ),
+        "{err}"
+    );
+    assert!(!err.contains('\u{2014}'));
+}
+
+#[test]
 fn the_job_strategy_reaches_the_order() {
     use flatcraft_core::document::CutStrategy;
     // Two frames with a hole each, side by side.

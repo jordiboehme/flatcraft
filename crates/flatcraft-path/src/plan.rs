@@ -243,6 +243,9 @@ pub enum SettingsField {
 pub enum PlanError {
     #[error("there is nothing to cut")]
     Empty,
+    /// Every path was shorter than `min_cut_mm`, so nothing is left to cut.
+    #[error("{}", too_short_message(*.dropped, *.min_cut_mm))]
+    TooShort { dropped: usize, min_cut_mm: f64 },
     #[error("{}", invalid_settings_message(*.field, *.value))]
     InvalidSettings { field: SettingsField, value: f64 },
     #[error("{} object(s) reach outside the cutting area: {}", .objects.len(), format_ids(.objects))]
@@ -333,6 +336,15 @@ fn invalid_settings_message(field: SettingsField, value: f64) -> String {
     }
 }
 
+fn too_short_message(dropped: usize, min_cut_mm: f64) -> String {
+    let what = if dropped == 1 {
+        "the only cut path is".to_string()
+    } else {
+        format!("all {dropped} cut paths are")
+    };
+    format!("there is nothing to cut: {what} shorter than {min_cut_mm} mm")
+}
+
 fn format_ids(ids: &[ObjectId]) -> String {
     ids.iter()
         .map(|id| id.0.to_string())
@@ -397,7 +409,14 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
         }
     }
     if toolpaths.is_empty() {
-        return Err(PlanError::Empty);
+        return Err(if dropped_short > 0 {
+            PlanError::TooShort {
+                dropped: dropped_short,
+                min_cut_mm: s.min_cut_mm,
+            }
+        } else {
+            PlanError::Empty
+        });
     }
 
     // Ruling M2-P13: every toolpath's keep side comes from the containment

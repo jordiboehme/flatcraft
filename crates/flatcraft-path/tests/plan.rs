@@ -307,7 +307,13 @@ fn zero_length_ring_is_dropped() {
     p.line_to((10.0005, 10.0));
     p.line_to((10.0, 10.0005));
     p.close_path();
-    assert_eq!(plan(&[placed(1, p)], &settings()), Err(PlanError::Empty));
+    assert_eq!(
+        plan(&[placed(1, p)], &settings()),
+        Err(PlanError::TooShort {
+            dropped: 1,
+            min_cut_mm: 0.025
+        })
+    );
 }
 
 #[test]
@@ -814,6 +820,33 @@ fn sub_resolution_line_is_dropped_and_counted() {
 }
 
 #[test]
+fn only_short_paths_are_refused_with_their_count() {
+    let line = |x: f64| {
+        let mut p = BezPath::new();
+        p.move_to((x, 50.0));
+        p.line_to((x + 0.02, 50.0));
+        p
+    };
+    let err = plan(&[placed(1, line(50.0)), placed(2, line(60.0))], &settings()).unwrap_err();
+    assert_eq!(
+        err,
+        PlanError::TooShort {
+            dropped: 2,
+            min_cut_mm: 0.025
+        }
+    );
+    assert_eq!(
+        err.to_string(),
+        "there is nothing to cut: all 2 cut paths are shorter than 0.025 mm"
+    );
+    let one = plan(&[placed(1, line(50.0))], &settings()).unwrap_err();
+    assert_eq!(
+        one.to_string(),
+        "there is nothing to cut: the only cut path is shorter than 0.025 mm"
+    );
+}
+
+#[test]
 fn bad_min_cut_is_refused() {
     for v in [-0.1, f64::NAN, f64::INFINITY] {
         let mut s = settings();
@@ -822,6 +855,7 @@ fn bad_min_cut_is_refused() {
     }
 }
 
+/// Structural: restates the spec defaults.
 #[test]
 fn with_defaults_uses_the_spec_defaults() {
     use flatcraft_core::geometry::RingDirection;

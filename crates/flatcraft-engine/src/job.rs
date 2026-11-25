@@ -344,6 +344,23 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
                 nothing_to_cut,
             }
         }
+        PlanError::TooShort {
+            dropped,
+            min_cut_mm,
+        } => {
+            let mut text = format!(
+                "Nothing to cut: {} shorter than half a plotter step ({min_cut_mm} mm).",
+                short_paths(dropped)
+            );
+            for w in &warnings {
+                text.push(' ');
+                text.push_str(w);
+            }
+            BuildFailure {
+                error: CommandError::Refused(text),
+                nothing_to_cut: true,
+            }
+        }
         PlanError::OutOfArea { objects } => {
             let names: Vec<String> = objects
                 .iter()
@@ -404,6 +421,15 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         choice_warnings,
         sent: None,
     })
+}
+
+/// "the only cut path is" or "all {n} cut paths are".
+fn short_paths(n: usize) -> String {
+    if n == 1 {
+        "the only cut path is".to_string()
+    } else {
+        format!("all {n} cut paths are")
+    }
 }
 
 /// `name` reduced to `[A-Za-z0-9._-]` (other characters become `_`),
