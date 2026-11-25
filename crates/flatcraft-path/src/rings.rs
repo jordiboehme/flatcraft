@@ -95,6 +95,7 @@ pub fn is_convex(ring: &[Point], i: usize) -> bool {
     if ring.len() < 3 {
         return false;
     }
+    let i = i % ring.len();
     let (cross, area) = (corner_cross(ring, i), signed_area(ring));
     cross != 0.0 && area != 0.0 && (cross > 0.0) == (area > 0.0)
 }
@@ -111,6 +112,7 @@ pub fn extension_in_waste(ring: &[Point], i: usize, keep: KeepSide) -> bool {
     if ring.len() < 3 {
         return false;
     }
+    let i = i % ring.len();
     let (cross, area) = (corner_cross(ring, i), signed_area(ring));
     if cross == 0.0 || area == 0.0 {
         return false;
@@ -204,7 +206,9 @@ pub fn entry_candidates(ring: &[Point], keep: KeepSide) -> Vec<Candidate> {
         })
     };
     if waste.is_empty() && other.is_empty() {
-        let all: Vec<usize> = (0..n).collect();
+        let all: Vec<usize> = (0..n)
+            .filter(|&i| n == 1 || ring[i] != ring[(i + n - 1) % n])
+            .collect();
         return make(spread(&all, MAX_CANDIDATES, &pos, perimeter), false).collect();
     }
     let w = spread(&waste, MAX_CANDIDATES, &pos, perimeter);
@@ -467,6 +471,27 @@ mod tests {
         assert!(cands.iter().all(|c| c.waste_corner));
     }
 
+    #[test]
+    fn a_cornerless_ring_with_repeated_points_offers_each_place_once() {
+        let n = 100;
+        let mut ring = Vec::new();
+        for k in 0..n {
+            let a = std::f64::consts::TAU * k as f64 / n as f64;
+            let q = p(5.0 * a.cos(), 5.0 * a.sin());
+            ring.push(q);
+            ring.push(q);
+        }
+        let cands = entry_candidates(&ring, KeepSide::Inside);
+        assert_eq!(cands.len(), MAX_CANDIDATES);
+        let mut at: Vec<(u64, u64)> = cands
+            .iter()
+            .map(|c| (ring[c.index].x.to_bits(), ring[c.index].y.to_bits()))
+            .collect();
+        at.sort_unstable();
+        at.dedup();
+        assert_eq!(at.len(), MAX_CANDIDATES);
+    }
+
     fn lap_of(path: BezPath) -> Vec<Point> {
         use crate::plan::{PathRef, PipelineSettings, PlacedPath, plan};
         use flatcraft_core::document::ObjectId;
@@ -535,9 +560,12 @@ mod tests {
             assert_eq!(cands.iter().filter(|c| c.waste_corner).count(), waste);
             assert!(cands.iter().all(|c| c.index < ring.len()));
             // No phantom corner at the repeated closing point.
-            let n = ring.len();
-            for i in 0..n {
+            for i in 0..lap.len() {
                 assert_eq!(is_convex(&lap, i), is_convex(ring, i));
+                assert_eq!(
+                    extension_in_waste(&lap, i, keep),
+                    extension_in_waste(ring, i, keep)
+                );
             }
             assert_eq!(orient(&lap, RingDirection::Ccw).len(), ring.len());
             assert_eq!(rotate_start(&lap, 1).len(), ring.len());
