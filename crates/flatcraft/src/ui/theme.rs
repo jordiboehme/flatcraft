@@ -55,11 +55,17 @@ impl Tokens {
         }
     }
 
-    /// The tokens for a preference value.
-    pub const fn for_theme(theme: flatcraft_engine::prefs::Theme) -> Self {
-        match theme {
-            flatcraft_engine::prefs::Theme::Dark => Self::dark(),
-            flatcraft_engine::prefs::Theme::Light => Self::light(),
+    /// The tokens for a preference value. `system` is the operating
+    /// system's appearance, when the window knows it; it only matters for
+    /// `Theme::System`, which is dark until the system says otherwise.
+    pub const fn for_theme(
+        theme: flatcraft_engine::prefs::Theme,
+        system: Option<egui::Theme>,
+    ) -> Self {
+        use flatcraft_engine::prefs::Theme;
+        match (theme, system) {
+            (Theme::Light, _) | (Theme::System, Some(egui::Theme::Light)) => Self::light(),
+            (Theme::Dark, _) | (Theme::System, _) => Self::dark(),
         }
     }
 
@@ -68,8 +74,28 @@ impl Tokens {
     }
 }
 
-/// Installs the tokens as the egui style of the context.
-pub fn apply(ctx: &egui::Context, t: &Tokens) {
+/// Installs the tokens as the egui style of the context. Both themes get
+/// their style, so a system appearance change restyles at once. With
+/// `follow_system` egui's own preference is System too, so the window
+/// frame follows the operating system and reports its changes; otherwise
+/// the theme of `t` is forced.
+pub fn apply(ctx: &egui::Context, t: &Tokens, follow_system: bool) {
+    let other = if t.is_dark() {
+        Tokens::light()
+    } else {
+        Tokens::dark()
+    };
+    install(ctx, &other);
+    let theme = install(ctx, t);
+    if follow_system {
+        ctx.set_theme(egui::ThemePreference::System);
+    } else {
+        ctx.set_theme(theme);
+    }
+}
+
+/// Sets the visuals and spacing of the theme that `t` belongs to.
+fn install(ctx: &egui::Context, t: &Tokens) -> egui::Theme {
     let mut visuals = if t.is_dark() {
         Visuals::dark()
     } else {
@@ -110,7 +136,6 @@ pub fn apply(ctx: &egui::Context, t: &Tokens) {
     } else {
         egui::Theme::Light
     };
-    ctx.set_theme(theme);
     ctx.set_visuals_of(theme, visuals);
     ctx.style_mut_of(theme, |style| {
         style.spacing.item_spacing = egui::vec2(t.spacing, t.spacing * 0.75);
@@ -118,6 +143,7 @@ pub fn apply(ctx: &egui::Context, t: &Tokens) {
         style.spacing.window_margin = egui::Margin::same(t.spacing as i8);
         style.spacing.menu_margin = egui::Margin::same(t.spacing as i8);
     });
+    theme
 }
 
 #[cfg(test)]

@@ -10,9 +10,19 @@ pub const FILE_NAME: &str = "preferences.toml";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Theme {
-    #[default]
     Dark,
     Light,
+    /// Follows the operating system's appearance, live. The default of a
+    /// new install.
+    #[default]
+    System,
+}
+
+/// The theme of a preferences file that has no `theme` key. Only builds
+/// that knew just Dark wrote such files, so they keep Dark; a new install
+/// has no file and gets [`Theme::System`] from `Preferences::default`.
+fn legacy_theme() -> Theme {
+    Theme::Dark
 }
 
 /// Old files may still hold `mcp_enabled` and `mcp_port` (MCP is stdio only now); unknown keys are ignored.
@@ -22,6 +32,7 @@ pub struct Preferences {
     pub allow_agent_cuts: bool,
     pub default_plotter: String,
     pub default_material: String,
+    #[serde(default = "legacy_theme")]
     pub theme: Theme,
     pub recent_projects: Vec<PathBuf>,
     /// Where File Output writes when the plotter profile names no directory.
@@ -47,7 +58,7 @@ impl Default for Preferences {
             allow_agent_cuts: false,
             default_plotter: "file-output-gpgl-cameo2".into(),
             default_material: "copy-paper".into(),
-            theme: Theme::Dark,
+            theme: Theme::System,
             recent_projects: Vec::new(),
             output_dir: None,
             auto_reload: false,

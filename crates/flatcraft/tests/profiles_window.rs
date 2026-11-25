@@ -801,3 +801,26 @@ fn save_as_names_clash_only_within_a_kind() {
         Vec::<String>::new()
     );
 }
+
+#[test]
+fn theme_combo_offers_system_and_follows_the_os() {
+    use flatcraft_engine::prefs::Theme;
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    s.lock()
+        .unwrap()
+        .update_prefs(|p| p.theme = Theme::Dark)
+        .unwrap();
+    let mut h = harness(&dir, &s);
+    open(&mut h, "App");
+    h.get_by_label("Theme").click();
+    h.run();
+    h.input_mut().system_theme = Some(egui::Theme::Light);
+    click(&mut h, "System");
+    assert_eq!(Preferences::load(dir.path()).theme, Theme::System);
+    assert_eq!(app(&h).tokens, flatcraft::ui::theme::Tokens::light());
+    assert!(
+        h.query_by_label_contains("follows your Mac's appearance")
+            .is_some()
+    );
+}

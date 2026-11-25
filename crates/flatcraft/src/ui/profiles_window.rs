@@ -24,6 +24,8 @@ use super::theme::{self, Tokens};
 use super::{Action, FlatCraftApp, Toast, canvas, files, fonts, lock};
 
 /// Help text of the auto-reload switch.
+/// Under the Theme combo.
+pub const THEME_HELP: &str = "System follows your Mac's appearance.";
 pub const AUTO_RELOAD_HELP: &str = "When an imported file changes on disk, FlatCraft reloads it and keeps your placement and cut settings.";
 
 /// Why a mat cannot be hidden or deleted.
@@ -1665,12 +1667,19 @@ fn app_tab(ui: &mut Ui, view: &View, t: &Tokens, actions: &mut Vec<Action>) {
                 ui,
                 "theme",
                 &mut theme,
-                &[(Theme::Dark, "Dark"), (Theme::Light, "Light")],
+                &[
+                    (Theme::Dark, "Dark"),
+                    (Theme::Light, "Light"),
+                    (Theme::System, "System"),
+                ],
             );
             set_name(ui, &r, "Theme");
             if theme != view.theme {
                 reqs.push(Request::Prefs(PrefsChange::Theme(theme)));
             }
+            ui.end_row();
+            ui.allocate_space(egui::Vec2::ZERO);
+            ui.label(RichText::new(THEME_HELP).color(dim));
             ui.end_row();
 
             paint_text(ui, "Default device", ui.visuals().text_color(), None);
@@ -2040,8 +2049,9 @@ fn set_pref(app: &mut FlatCraftApp, ctx: &egui::Context, change: PrefsChange) {
         PrefsChange::AutoReload(v) => p.auto_reload = v,
     });
     if let Some(theme) = theme {
-        app.tokens = Tokens::for_theme(theme);
-        theme::apply(ctx, &app.tokens);
+        app.tokens = Tokens::for_theme(theme, ctx.system_theme());
+        app.follows_system = theme == Theme::System;
+        theme::apply(ctx, &app.tokens, app.follows_system);
     }
     if let Err(e) = result {
         app.toast(Toast::error(format!(

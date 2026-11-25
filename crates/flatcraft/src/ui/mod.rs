@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use flatcraft_engine::prefs::Theme;
 use flatcraft_engine::session::{CommandError, JobSummary, Origin, PENDING_TTL, Session};
 use flatcraft_mcp::SharedSession;
 use serde_json::{Value, json};
@@ -252,6 +253,8 @@ pub struct FlatCraftApp {
     pub config_dir: PathBuf,
     pub ui: UiState,
     pub tokens: Tokens,
+    /// egui's own theme preference is System (the preference is System).
+    pub follows_system: bool,
     /// True for a window started by `flatcraft mcp --window`.
     pub agent: bool,
     /// File dialogs; tests replace them.
@@ -279,9 +282,9 @@ impl FlatCraftApp {
             let s = lock(&session);
             (s.prefs.theme, s.prefs.rotate_each)
         };
-        let tokens = Tokens::for_theme(theme);
+        let tokens = Tokens::for_theme(theme, ctx.system_theme());
         fonts::install(ctx);
-        theme::apply(ctx, &tokens);
+        theme::apply(ctx, &tokens, theme == Theme::System);
         let mut ui = UiState::default();
         ui.prepare.fields.each = rotate_each;
         Self {
@@ -289,6 +292,7 @@ impl FlatCraftApp {
             config_dir,
             ui,
             tokens,
+            follows_system: theme == Theme::System,
             agent: false,
             files: Box::new(files::NativePicker),
             tracer: std::sync::Arc::new(flatcraft_import::trace::trace),
@@ -1230,10 +1234,14 @@ fn refresh_prefs(ctx: &egui::Context, app: &mut FlatCraftApp) {
         s.refresh_prefs(now);
         (s.prefs.theme, s.take_prefs_warning())
     };
-    let tokens = Tokens::for_theme(theme);
-    if tokens != app.tokens {
+    // Every frame: with System the egui input carries the live appearance
+    // of the operating system, and the colours follow it.
+    let tokens = Tokens::for_theme(theme, ctx.system_theme());
+    let follow = theme == Theme::System;
+    if tokens != app.tokens || follow != app.follows_system {
         app.tokens = tokens;
-        theme::apply(ctx, &app.tokens);
+        app.follows_system = follow;
+        theme::apply(ctx, &app.tokens, follow);
     }
     if let Some(w) = warning {
         app.toast(Toast::warning(w));

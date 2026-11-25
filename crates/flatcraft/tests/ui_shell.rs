@@ -579,7 +579,7 @@ fn a_theme_read_back_by_a_preference_save_is_applied() {
         .execute("project.save", json!({ "path": path }), Origin::User)
         .unwrap();
     let mut h = harness(&dir, session(&dir), false);
-    assert_eq!(app(&h).tokens, Tokens::for_theme(Theme::Dark));
+    assert_eq!(app(&h).tokens, Tokens::for_theme(Theme::Dark, None));
     session(&dir)
         .lock()
         .unwrap()
@@ -588,7 +588,7 @@ fn a_theme_read_back_by_a_preference_save_is_applied() {
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![Action::Open(path)]);
     h.run();
-    assert_eq!(app(&h).tokens, Tokens::for_theme(Theme::Light));
+    assert_eq!(app(&h).tokens, Tokens::for_theme(Theme::Light, None));
 }
 
 /// Storing a preference over a broken file keeps a copy of it, and the
@@ -643,4 +643,49 @@ fn toasts_expire_by_the_window_clock() {
         app(&h).ui.toasts.is_empty(),
         "expired after 4 s on the clock"
     );
+}
+
+/// With System the colours follow the operating system's appearance, live:
+/// the viewport input changes between frames and no restart is needed.
+#[test]
+fn the_system_theme_switches_the_tokens_live() {
+    use flatcraft::ui::theme::Tokens;
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    assert_eq!(
+        s.lock().unwrap().prefs.theme,
+        flatcraft_engine::prefs::Theme::System
+    );
+    let mut h = harness(&dir, s, false);
+    h.input_mut().system_theme = Some(egui::Theme::Light);
+    h.run();
+    assert_eq!(app(&h).tokens, Tokens::light());
+    assert_eq!(h.ctx.theme(), egui::Theme::Light);
+    h.input_mut().system_theme = Some(egui::Theme::Dark);
+    h.run();
+    assert_eq!(app(&h).tokens, Tokens::dark());
+    assert_eq!(h.ctx.theme(), egui::Theme::Dark);
+}
+
+/// Dark and Light ignore the system.
+#[test]
+fn a_fixed_theme_ignores_the_system() {
+    use flatcraft::ui::theme::Tokens;
+    use flatcraft_engine::prefs::Theme;
+    for (pref, want) in [
+        (Theme::Dark, Tokens::dark()),
+        (Theme::Light, Tokens::light()),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let s = session(&dir);
+        s.lock().unwrap().update_prefs(|p| p.theme = pref).unwrap();
+        import_square(&s);
+        let mut h = harness(&dir, s, false);
+        for sys in [egui::Theme::Light, egui::Theme::Dark] {
+            h.input_mut().system_theme = Some(sys);
+            h.run();
+            assert_eq!(app(&h).tokens, want, "{pref:?} under system {sys:?}");
+        }
+    }
 }
