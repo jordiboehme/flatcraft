@@ -273,11 +273,31 @@ impl ArrangeCmd {
         }
     }
 
-    /// Its tooltip: what it does and, when it cannot run, why.
-    fn tooltip(self, snap: &Snapshot) -> String {
+    /// What it does, for its tooltip. An Align direction also says what it
+    /// lines up with (`to_area`, the choice under Align in the drop-down),
+    /// because its button does not show it.
+    fn describe(self, to_area: bool) -> String {
+        if self.align_mode().is_none() {
+            return self.hint().to_string();
+        }
+        let to = if to_area {
+            "to the cutting area"
+        } else {
+            "to the selection"
+        };
+        format!(
+            "{} ({to}). Change what it lines up with under Align in the Arrange drop-down.",
+            self.label()
+        )
+    }
+
+    /// Its tooltip: what it does ([`Self::describe`]) and, when it cannot
+    /// run, why.
+    fn tooltip(self, snap: &Snapshot, to_area: bool) -> String {
+        let what = self.describe(to_area);
         match self.blocked(snap) {
-            Some(why) => format!("{} {why}", self.hint()),
-            None => self.hint().to_string(),
+            Some(why) => format!("{what} {why}"),
+            None => what,
         }
     }
 }
@@ -929,7 +949,7 @@ pub fn group(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut 
     let pins = pinned(snap);
     for cmd in pins.iter().copied().filter(|c| c.big()) {
         let label = cmd.label().trim_end_matches("...");
-        let tip = cmd.tooltip(snap);
+        let tip = cmd.tooltip(snap, st.fields.align_to_area);
         if big_button(ui, cmd.icon(), label, cmd.blocked(snap).is_none(), &tip).clicked() {
             pick(cmd, snap, st, actions);
         }
@@ -945,7 +965,7 @@ pub fn group(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut 
         for chunk in small.chunks(per_row) {
             ui.horizontal(|ui| {
                 for cmd in chunk {
-                    let tip = cmd.tooltip(snap);
+                    let tip = cmd.tooltip(snap, st.fields.align_to_area);
                     let on = cmd.blocked(snap).is_none();
                     if super::icon_button_hint(ui, cmd.icon(), cmd.label(), on, &tip).clicked() {
                         pick(*cmd, snap, st, actions);
@@ -1052,7 +1072,7 @@ fn dropdown(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut V
         let last: Option<egui::Rect> = ui.data(|d| d.get_temp(row_id));
         let hovered = last.is_some_and(|r| ui.rect_contains_pointer(r));
         let is_pinned = pins.contains(&cmd);
-        let tip = cmd.tooltip(snap);
+        let tip = cmd.tooltip(snap, st.fields.align_to_area);
         let name = format!("{} (Arrange)", cmd.label());
         let row = ui.horizontal(|ui| {
             if heading.is_some() {
@@ -1123,5 +1143,25 @@ mod tests {
             assert!(ArrangeCmd::from_id(&id).is_some(), "{id}");
         }
         assert_eq!(ArrangeCmd::from_id("nope"), None);
+    }
+
+    #[test]
+    fn a_pinned_align_says_what_it_lines_up_with() {
+        assert!(
+            ArrangeCmd::AlignLeft
+                .describe(false)
+                .starts_with("Align left (to the selection).")
+        );
+        assert!(
+            ArrangeCmd::AlignBottom
+                .describe(true)
+                .starts_with("Align bottom (to the cutting area).")
+        );
+        for c in ArrangeCmd::ALL {
+            assert!(!c.describe(true).contains('\u{2014}'));
+            if c.align_mode().is_none() {
+                assert_eq!(c.describe(true), c.hint(), "{c:?}");
+            }
+        }
     }
 }
