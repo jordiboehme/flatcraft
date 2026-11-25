@@ -1380,6 +1380,75 @@ fn project_open_refuses_a_broken_transform() {
     }
 }
 
+const TOO_LARGE: &str = "That would make the object too large (over 1 km). Undo or scale it down.";
+
+/// project.open refuses a placement beyond 1e6 mm, so no command may
+/// make one: group scaling by 1000 stops before it overflows.
+#[test]
+fn group_scale_is_refused_before_the_object_could_not_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = import(&mut s, 10.0, 10.0);
+    let b = import(&mut s, 20.0, 10.0);
+    let mut refused = None;
+    for k in 0..400 {
+        match s.execute(
+            "object.scale",
+            json!({ "ids": [a, b], "factor": 1000.0, "group": true }),
+            Origin::User,
+        ) {
+            Ok(_) => {}
+            Err(e) => {
+                refused = Some((k, e));
+                break;
+            }
+        }
+    }
+    let (k, e) = refused.expect("never refused");
+    assert!(k <= 3, "refused only after {k} steps");
+    assert!(matches!(e, CommandError::Refused(_)), "{e}");
+    assert!(e.to_string().contains(TOO_LARGE), "{e}");
+    // The refused step changed nothing; the project still saves and opens.
+    let path = dir.path().join("big.flatcraft");
+    run(&mut s, "project.save", json!({ "path": path }));
+    let mut s2 = session(&dir);
+    run(&mut s2, "project.open", json!({ "path": path }));
+}
+
+#[test]
+fn a_move_beyond_1_km_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 10.0, 10.0);
+    let before = placed_bounds(&s, id);
+    let e = s
+        .execute(
+            "object.move",
+            json!({ "ids": [id], "center_mm": [2e6, 50.0] }),
+            Origin::User,
+        )
+        .unwrap_err();
+    assert!(e.to_string().contains(TOO_LARGE), "{e}");
+    assert_eq!(placed_bounds(&s, id), before);
+}
+
+/// A wrapped error text joins after a colon in lower case.
+#[test]
+fn project_open_warnings_join_wrapped_errors_in_lower_case() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = hand_written_project(&dir, "", PLAIN_TRANSFORM);
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    v["objects"][0]["source"]["Svg"]["bytes"] = json!("PG5vdCBzdmc+"); // "<not svg>"
+    std::fs::write(&path, v.to_string()).unwrap();
+    let mut s = session(&dir);
+    let r = run(&mut s, "project.open", json!({ "path": path }));
+    let w = r["warnings"][0].as_str().unwrap().to_string();
+    assert!(
+        w.starts_with("box: cannot rebuild the shape: the file could not be parsed"),
+        "{w}"
+    );
+}
+
 #[test]
 fn big_raster_reports_the_downscale_and_wording_follows_invert() {
     let dir = tempfile::tempdir().unwrap();

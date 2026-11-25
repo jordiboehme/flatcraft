@@ -6,6 +6,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+/// A command result that `project.open` would refuse to place.
+const TOO_LARGE: &str = "That would make the object too large (over 1 km). Undo or scale it down.";
+
 use flatcraft_core::document::{CutOptions, Document, JobSettings, Object, ObjectId};
 use flatcraft_core::geometry::CutPath;
 use flatcraft_core::transform::Transform;
@@ -612,6 +615,19 @@ impl Session {
                 // Nothing changed: no undo step, not dirty.
                 state.prune_selection();
                 Ok(value)
+            }
+            Ok(_)
+                if state
+                    .document
+                    .objects
+                    .iter()
+                    .any(|o| !o.placement_is_valid()) =>
+            {
+                // project.open would refuse this placement, so it could
+                // never be saved and reopened.
+                state.document = before;
+                state.prune_selection();
+                Err(CommandError::Refused(TOO_LARGE.into()))
             }
             Ok(value) => {
                 state.touch();

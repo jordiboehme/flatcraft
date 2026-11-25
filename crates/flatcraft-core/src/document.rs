@@ -240,6 +240,24 @@ impl Object {
         self.transform.center_mm = old_placement * (self.local_bounds.center() + offset);
     }
 
+    /// True if the object's placement is one `project.open` accepts: a
+    /// valid transform, and its local bounds and frame placed on the mat
+    /// stay finite and within `MAX_PLACEMENT_MM`. Commands that change a
+    /// transform must keep this true, so every saved project reopens.
+    pub fn placement_is_valid(&self) -> bool {
+        use crate::transform::MAX_PLACEMENT_MM;
+        if !self.transform.is_valid() {
+            return false;
+        }
+        let affine = self.transform.affine(self.local_bounds);
+        [self.local_bounds, self.frame].iter().all(|r| {
+            let p = affine.transform_rect_bbox(*r);
+            [p.x0, p.y0, p.x1, p.y1]
+                .iter()
+                .all(|v| v.is_finite() && v.abs() <= MAX_PLACEMENT_MM)
+        })
+    }
+
     /// The paths in mat millimetres.
     pub fn placed_paths(&self) -> Vec<CutPath> {
         let affine = self.transform.affine(self.local_bounds);

@@ -51,7 +51,23 @@ impl Default for Transform {
     }
 }
 
+/// Largest coordinate or size of a placement, mm (1 km). Anything beyond
+/// is a broken value, never a real cut.
+pub const MAX_PLACEMENT_MM: f64 = 1e6;
+
 impl Transform {
+    /// True if the transform can place an object: a finite centre within
+    /// `MAX_PLACEMENT_MM`, a finite rotation and finite non-zero scales.
+    pub fn is_valid(&self) -> bool {
+        let scale_ok = |v: f64| v.is_finite() && v != 0.0;
+        let coord_ok = |v: f64| v.is_finite() && v.abs() <= MAX_PLACEMENT_MM;
+        coord_ok(self.center_mm.x)
+            && coord_ok(self.center_mm.y)
+            && scale_ok(self.scale_x)
+            && scale_ok(self.scale_y)
+            && self.rotation_deg.is_finite()
+    }
+
     /// `translate(center) * rotate(rotation) * scale(sx * mirror, sy) * translate(-local center)`.
     pub fn affine(&self, local_bounds: Rect) -> Affine {
         let flip = if self.mirror { -1.0 } else { 1.0 };

@@ -334,9 +334,9 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
         other => CommandError::Failed(other.to_string()),
     })?;
     for o in &document.objects {
-        if !transform_is_valid(&o.transform) {
+        if !o.transform.is_valid() {
             return Err(CommandError::Failed(format!(
-                "cannot open {}: the transform of '{}' is broken (its position, scale or rotation is not a usable number). Fix or remove that object in the project file.",
+                "cannot open {}: the transform of '{}' is broken (its position, scale or rotation is not a usable number, or beyond 1 km). Fix or remove that object in the project file.",
                 p.path.display(),
                 o.name
             )));
@@ -360,7 +360,11 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
                     Some((import.paths, import.page_frame_mm))
                 }
                 Err(e) => {
-                    warnings.push(format!("{}: cannot rebuild the shape: {e}", o.name));
+                    warnings.push(format!(
+                        "{}: cannot rebuild the shape: {}",
+                        o.name,
+                        joined(&e.to_string())
+                    ));
                     None
                 }
             },
@@ -369,7 +373,11 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
                 match flatcraft_import::trace::trace(bytes, trace, blade) {
                     Ok(t) => Some((t.paths, Rect::new(0.0, 0.0, t.size_mm.0, t.size_mm.1))),
                     Err(e) => {
-                        warnings.push(format!("{}: cannot trace the image: {e}", o.name));
+                        warnings.push(format!(
+                            "{}: cannot trace the image: {}",
+                            o.name,
+                            joined(&e.to_string())
+                        ));
                         None
                     }
                 }
@@ -405,6 +413,13 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
             }
         }
     }
+    if let Some(o) = document.objects.iter().find(|o| !o.placement_is_valid()) {
+        return Err(CommandError::Failed(format!(
+            "cannot open {}: '{}' is placed beyond 1 km. Fix or remove that object in the project file.",
+            p.path.display(),
+            o.name
+        )));
+    }
     // A relative path in a project file is relative to that file.
     let anchor = project_dir(Some(&p.path));
     for link in document.objects.iter_mut().filter_map(|o| o.link.as_mut()) {
@@ -427,27 +442,22 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
     }))
 }
 
-/// Largest coordinate a saved rectangle may have, mm.
-const MAX_SAVED_MM: f64 = 1e6;
+/// A sentence joined after a colon: its first letter in lower case.
+fn joined(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(c) => c.to_lowercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
 
 /// A saved `local_bounds` or `frame`: finite, ordered and within 1 km.
 fn rect_is_sane(r: Rect) -> bool {
     [r.x0, r.y0, r.x1, r.y1]
         .iter()
-        .all(|v| v.is_finite() && v.abs() <= MAX_SAVED_MM)
+        .all(|v| v.is_finite() && v.abs() <= flatcraft_core::transform::MAX_PLACEMENT_MM)
         && r.x0 <= r.x1
         && r.y0 <= r.y1
-}
-
-/// A transform that can place an object: a finite centre and rotation,
-/// finite non-zero scales.
-fn transform_is_valid(t: &flatcraft_core::transform::Transform) -> bool {
-    let scale_ok = |v: f64| v.is_finite() && v != 0.0;
-    t.center_mm.x.is_finite()
-        && t.center_mm.y.is_finite()
-        && scale_ok(t.scale_x)
-        && scale_ok(t.scale_y)
-        && t.rotation_deg.is_finite()
 }
 
 command!(
