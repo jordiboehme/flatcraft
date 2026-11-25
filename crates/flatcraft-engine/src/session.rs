@@ -340,10 +340,12 @@ struct DocSnapshot {
     last_sent_rev: u64,
 }
 
-/// The open documents and the active one before a command.
+/// The open documents, the active one and the send that waits for
+/// confirmation, before a command.
 struct SessionSnapshot {
     docs: Vec<DocSnapshot>,
     active: usize,
+    pending_send: Option<PendingSend>,
 }
 
 /// The engine state shared by the GUI, the MCP server and tests.
@@ -702,7 +704,7 @@ impl Session {
                 if let Some(snapshot) = snapshot {
                     self.roll_back(snapshot);
                 }
-                Err(internal_error())
+                Err(internal_error(command.id()))
             });
         }
         let index = self.active;
@@ -718,7 +720,7 @@ impl Session {
                 state.document = before;
                 state.prune_selection();
             }
-            return Err(internal_error());
+            return Err(internal_error(command.id()));
         };
         let state = &mut self.docs[index];
         match result {
@@ -787,6 +789,7 @@ impl Session {
                 })
                 .collect(),
             active: self.active,
+            pending_send: self.pending_send.clone(),
         }
     }
 
@@ -829,15 +832,29 @@ impl Session {
         }
         // What is left in `current` was added by the command.
         self.active = snapshot.active.min(self.docs.len().saturating_sub(1));
+        // A send the failed command asked for never waits.
+        self.pending_send = snapshot.pending_send;
     }
 }
 
-/// What a command that panicked returns.
-fn internal_error() -> CommandError {
-    CommandError::Failed(
-        "FlatCraft hit an internal error, so this command changed nothing. Please report it at https://github.com/jordiboehme/flatcraft/issues."
-            .into(),
-    )
+/// What the command `id` returns when it panicked. The session state is
+/// put back, but a file a command wrote may stay, so those commands do not
+/// claim that nothing changed.
+fn internal_error(id: &str) -> CommandError {
+    const REPORT: &str = "Please report it at https://github.com/jordiboehme/flatcraft/issues.";
+    let written = match id {
+        "project.save" | "tools.test_patterns" => Some("the file may have been written"),
+        "job.send" => Some("the job may have been written or sent"),
+        _ => None,
+    };
+    CommandError::Failed(match written {
+        Some(w) => format!(
+            "FlatCraft hit an internal error: {w}; the document state was restored. {REPORT}"
+        ),
+        None => {
+            format!("FlatCraft hit an internal error, so this command changed nothing. {REPORT}")
+        }
+    })
 }
 
 /// Runs a command; `Err(())` if it panicked. The caller turns that into
@@ -983,6 +1000,51 @@ mod tests {
         assert_eq!(s.pending_send().map(|p| p.id), Some(pending));
     }
 
+    /// A job.send that panics after it stored a pending send leaves no
+    /// pending send behind: nothing waits for a request that failed.
+    #[test]
+    fn a_panicking_send_leaves_no_pending_send() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = with_pending(&dir);
+        ok(&mut s, "document.switch", serde_json::json!({ "index": 0 }));
+        s.deny_pending(s.pending_send().unwrap().id);
+        PANIC_AFTER.with(|p| p.set(Some("job.send")));
+        let e = s
+            .execute(
+                "job.send",
+                serde_json::json!({ "name": "boom" }),
+                Origin::Agent,
+            )
+            .unwrap_err();
+        PANIC_AFTER.with(|p| p.set(None));
+        assert!(e.to_string().contains("internal error"), "{e}");
+        assert!(s.pending_send().is_none(), "{:?}", s.pending_send());
+    }
+
+    /// A panic after a command wrote a file does not claim that nothing
+    /// changed.
+    #[test]
+    fn a_panic_after_a_write_says_the_file_may_be_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = with_pending(&dir);
+        let file = dir.path().join("p.flatcraft");
+        PANIC_AFTER.with(|p| p.set(Some("project.save")));
+        let e = s
+            .execute(
+                "project.save",
+                serde_json::json!({ "path": file }),
+                Origin::User,
+            )
+            .unwrap_err();
+        PANIC_AFTER.with(|p| p.set(None));
+        let text = e.to_string();
+        assert!(file.exists());
+        assert!(!text.contains("changed nothing"), "{text}");
+        assert!(text.contains("the file may have been written"), "{text}");
+        assert!(text.contains("the document state was restored"), "{text}");
+        assert!(s.doc().path.is_none(), "the path is rolled back");
+    }
+
     /// Every command that does not change the document either changes no
     /// session state at all, or is rolled back after a panic. A new
     /// command must pick one.
@@ -1001,7 +1063,6 @@ mod tests {
                 "profiles.list",
                 "profiles.get",
                 "job.preview",
-                "job.send",
                 "document.preview",
             ]
         );
