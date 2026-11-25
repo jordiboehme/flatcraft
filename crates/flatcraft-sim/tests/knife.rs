@@ -165,6 +165,14 @@ fn assert_starts_aligned(paths: &[Toolpath], trace: &SimTrace) {
     }
 }
 
+/// The index in `points` where run `r` of `t` lifts: the end of its last
+/// path move.
+fn lift_index(t: &Toolpath, r: usize) -> usize {
+    let run = &runs(t)[r];
+    let last = run.seg.iter().rposition(|&s| s != WASTE_SEG).unwrap();
+    run.seg[last] as usize + 1
+}
+
 /// The vertex where run `r` of `t` lifts: the end of its last path move.
 fn lift_vertex(t: &Toolpath, r: usize) -> Point {
     let run = &runs(t)[r];
@@ -492,11 +500,27 @@ fn reversed_passes_keep_their_overcut_in_one_run() {
         assert_eq!(m.max_into_kept_mm, 0.0, "{corner:?}");
         let shortest = s.overcut_mm + 2.0 * D;
         for (i, t) in out.toolpaths.iter().enumerate() {
-            for (r, run) in runs(t).iter().enumerate() {
+            let r = runs(t);
+            for (k, run) in r.iter().enumerate() {
                 let len: f64 = run.points.windows(2).map(|w| w[0].distance(w[1])).sum();
-                assert!(len >= shortest, "{corner:?} toolpath {i} run {r}: {len}");
+                assert!(len >= shortest, "{corner:?} toolpath {i} run {k}: {len}");
+            }
+            // Where the lifts are: never inside the leading overcut of a
+            // reversed pass, up to and including the lap start.
+            for k in 0..r.len() - 1 {
+                let at = lift_index(t, k);
+                assert!(
+                    at > t.lap_range.start,
+                    "{corner:?} toolpath {i} lifts at {at}, inside its overcut"
+                );
+            }
+            // The L lifts at its 4 convex corners after the start in both
+            // directions: 5 runs. A lift at the lap start would make 6.
+            if corner == LIFT && t.source.object == ObjectId(1) {
+                assert_eq!(r.len(), 5, "toolpath {i} (pass {})", t.pass);
             }
         }
+        assert!(out.toolpaths.iter().any(|t| t.lap_range.start > 0));
     }
 }
 

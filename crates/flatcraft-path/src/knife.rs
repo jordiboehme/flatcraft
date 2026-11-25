@@ -1100,6 +1100,40 @@ mod tests {
         assert_eq!(lifts, vec![1, 2, 3]);
     }
 
+    /// The mirror of `no_lift_inside_the_overcut`: a reversed pass starts
+    /// with its overcut stretch, and nothing up to and including the lap
+    /// start lifts.
+    #[test]
+    fn no_lift_inside_the_leading_overcut_of_a_reversed_pass() {
+        let mut ring = Toolpath::new(
+            vec![
+                p(10.0, 10.0),
+                p(10.3, 10.0),
+                p(10.3, 20.0),
+                p(10.0, 20.0),
+                p(10.0, 10.0),
+            ],
+            true,
+            source(),
+        );
+        ring.keep = KeepSide::Inside;
+        let ring = crate::passes::separate(vec![ring], 2, true, 0.5).remove(1);
+        // Reversed: the overcut (back over the 0.3 mm segment and its
+        // corner) comes first, then the lap from index 2.
+        assert_eq!(ring.points.len(), 7);
+        assert_eq!(ring.lap_range, 2..7);
+        let s = PipelineSettings {
+            corner_mode: CornerMode::LiftOvershoot { overshoot_mm: 0.1 },
+            ..host(0.0)
+        };
+        let out = applied(vec![ring], &s, Vec2::new(0.0, 1.0));
+        let runs = out[0].axis.as_ref().unwrap();
+        let lifts: Vec<usize> = runs[..runs.len() - 1].iter().map(lift_index).collect();
+        // The corner inside the overcut (1) and the lap start (2) do not
+        // lift; the three lap corners after it do.
+        assert_eq!(lifts, vec![3, 4, 5]);
+    }
+
     #[test]
     fn min_radius_run_across_a_ring_start_is_one_spot() {
         // A square with one corner rounded at r = 0.2, closed. The ring
