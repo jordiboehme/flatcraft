@@ -1452,6 +1452,7 @@ dependencies = [
  "flatcraft-device",
  "flatcraft-import",
  "flatcraft-path",
+ "flatcraft-sim",
  "flate2",
  "i_overlay",
  "image",

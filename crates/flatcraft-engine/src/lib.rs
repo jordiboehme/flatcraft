@@ -10,6 +10,7 @@ pub mod prefs;
 pub mod preview;
 pub mod registry;
 pub mod session;
+pub mod simulate;
 
 pub use job::JobResult;
 pub use prefs::Preferences;

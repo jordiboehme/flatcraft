@@ -12,6 +12,7 @@ flatcraft-core = { path = "../flatcraft-core" }
 flatcraft-device = { path = "../flatcraft-device" }
 flatcraft-import = { path = "../flatcraft-import" }
 flatcraft-path = { path = "../flatcraft-path" }
+flatcraft-sim = { path = "../flatcraft-sim" }
 kurbo.workspace = true
 i_overlay.workspace = true
 serde = { workspace = true, features = ["derive"] }
