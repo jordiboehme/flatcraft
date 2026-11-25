@@ -26,6 +26,7 @@ pub struct Preferences {
     pub recent_projects: Vec<PathBuf>,
     /// Where File Output writes when the plotter profile names no directory.
     /// `None` means `<Documents>/FlatCraft Output`.
+    /// A folder with a `..` after a folder that does not exist is refused.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_dir: Option<PathBuf>,
     /// Reload changed linked files without asking (the GUI checks on project

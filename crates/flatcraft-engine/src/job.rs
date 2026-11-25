@@ -533,8 +533,9 @@ pub(crate) fn deliver_built(
             );
             // Resolved once: the check and the write see the same folder, so
             // a link swapped in after the check cannot redirect the job. A
-            // folder that cannot be resolved (a `..` after a missing folder)
-            // is never guessed.
+            // folder that cannot be resolved (a `..` after a folder that does
+            // not exist) is never guessed: agents are refused, people get an
+            // error.
             let target = match resolve_strict(&dir, usize::MAX) {
                 Ok(target) => target,
                 Err(_) if origin == Origin::Agent => {
@@ -559,17 +560,10 @@ pub(crate) fn deliver_built(
             }
             #[cfg(test)]
             crate::commands::project::tests::between_check_and_write();
-            FileTransport::new(target.clone(), extension.clone())
+            // Reports and errors name the folder as the person gave it.
+            FileTransport::new(target, extension.clone())
+                .with_shown_dir(dir)
                 .send_job(job, name, &mut s.byte_log)
-                .map(|mut report| {
-                    // Name the files in the folder as the person gave it.
-                    for f in &mut report.files {
-                        if let Ok(rel) = f.strip_prefix(&target) {
-                            *f = dir.join(rel);
-                        }
-                    }
-                    report
-                })
         }
         TransportSpec::Usb { .. } => Err(TransportError::NotAvailable(USB_NOT_AVAILABLE.into())),
     }
@@ -637,6 +631,39 @@ mod tests {
             .map(|f| PathBuf::from(f.as_str().unwrap()))
             .collect();
         assert_eq!(files[0], out.join("swap.gpgl"), "the folder as given");
+    }
+
+    /// Errors name the output folder as the person set it, not the folder
+    /// it resolves to.
+    #[cfg(unix)]
+    #[test]
+    fn file_output_errors_name_the_folder_as_given() {
+        let config = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let real = elsewhere.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        // A file where the job folder should be: creating it fails.
+        std::fs::write(real.join("jobs"), "not a folder").unwrap();
+        let via = elsewhere.path().join("via");
+        std::os::unix::fs::symlink(&real, &via).unwrap();
+        let profiles = flatcraft_device::ProfileStore::load(config.path()).unwrap();
+        let prefs = crate::prefs::Preferences {
+            output_dir: Some(via.join("jobs")),
+            ..Default::default()
+        };
+        let mut s = Session::new(profiles, prefs, false, config.path().to_path_buf());
+        s.execute(
+            "object.import_svg",
+            json!({ "svg": SQUARE, "name": "sq" }),
+            Origin::User,
+        )
+        .unwrap();
+        let e = s
+            .execute("job.send", json!({ "name": "named" }), Origin::User)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains(&via.join("jobs").display().to_string()), "{e}");
+        assert!(!e.contains("real"), "{e}");
     }
 
     /// An output folder an agent names with a `..` after a folder that does

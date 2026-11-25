@@ -26,16 +26,44 @@ const MAX_SUFFIX: u32 = 10_000;
 #[derive(Debug, Clone)]
 pub struct FileTransport {
     dir: PathBuf,
+    /// The folder as the person set it, for reports and errors; `dir` may
+    /// be its resolved form.
+    shown: Option<PathBuf>,
     extension: String,
 }
 
 impl FileTransport {
     pub fn new(dir: PathBuf, extension: String) -> Self {
-        Self { dir, extension }
+        Self {
+            dir,
+            shown: None,
+            extension,
+        }
+    }
+
+    /// Writes into `dir` (see [`FileTransport::new`]) but names `shown`
+    /// in the report and in errors: the folder as the person set it, when
+    /// `dir` is its resolved form.
+    pub fn with_shown_dir(mut self, shown: PathBuf) -> Self {
+        self.shown = Some(shown);
+        self
     }
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// `path` in or at [`FileTransport::dir`], as the shown folder names it.
+    fn shown(&self, path: &Path) -> PathBuf {
+        match (&self.shown, path.strip_prefix(&self.dir)) {
+            (Some(shown), Ok(rel)) if rel.as_os_str().is_empty() => shown.clone(),
+            (Some(shown), Ok(rel)) => shown.join(rel),
+            _ => path.to_path_buf(),
+        }
+    }
+
+    fn io_error(&self, what: &str, path: &Path, e: std::io::Error) -> TransportError {
+        io_error(what, &self.shown(path), e)
     }
 
     /// The three target paths for `stem`.
@@ -58,13 +86,13 @@ impl FileTransport {
                 format!("{name}-{n}")
             };
             let targets = self.targets(&stem);
-            if reserve(&targets).map_err(|e| io_error("create", &self.dir, e))? {
+            if reserve(&targets).map_err(|e| self.io_error("create", &self.dir, e))? {
                 return Ok(targets);
             }
         }
         Err(TransportError::Io(format!(
             "there are already {MAX_SUFFIX} jobs named '{name}' in {}",
-            self.dir.display()
+            self.shown(&self.dir).display()
         )))
     }
 }
@@ -114,7 +142,10 @@ fn io_error(what: &str, path: &Path, e: std::io::Error) -> TransportError {
 /// the temp files it created and every target (placeholder or renamed), so
 /// a failed job leaves nothing behind and never deletes a file it did not
 /// write.
-fn write_all_atomic(files: &[(&Path, &[u8])]) -> Result<(), TransportError> {
+fn write_all_atomic(
+    files: &[(&Path, &[u8])],
+    io_error: impl Fn(&str, &Path, std::io::Error) -> TransportError,
+) -> Result<(), TransportError> {
     let mut created: Vec<PathBuf> = Vec::new();
     let result = (|| {
         for (target, data) in files {
@@ -170,21 +201,27 @@ impl Transport for FileTransport {
         }
         let jsonl = job_log.to_jsonl();
 
-        std::fs::create_dir_all(&self.dir).map_err(|e| io_error("create", &self.dir, e))?;
+        std::fs::create_dir_all(&self.dir).map_err(|e| self.io_error("create", &self.dir, e))?;
         let [bytes_path, txt_path, log_path] = self.take_targets(name)?;
         // The job file is filled last: once it has its bytes, its listing
         // and log are complete too. Until then it is an empty placeholder.
-        write_all_atomic(&[
-            (&txt_path, listing.as_bytes()),
-            (&log_path, jsonl.as_bytes()),
-            (&bytes_path, &job.bytes),
-        ])?;
+        write_all_atomic(
+            &[
+                (&txt_path, listing.as_bytes()),
+                (&log_path, jsonl.as_bytes()),
+                (&bytes_path, &job.bytes),
+            ],
+            |what, path, e| self.io_error(what, path, e),
+        )?;
 
         for c in &commands {
             log.push(Dir::Out, c);
         }
         Ok(SendReport {
-            files: vec![bytes_path, txt_path, log_path],
+            files: [bytes_path, txt_path, log_path]
+                .iter()
+                .map(|p| self.shown(p))
+                .collect(),
             bytes_sent: job.bytes.len(),
         })
     }
@@ -213,7 +250,7 @@ mod tests {
         let b = dir.path().join("missing").join("b.txt");
         assert!(reserve(std::slice::from_ref(&a)).unwrap());
         // b's folder does not exist, so its temp file cannot be created.
-        let e = write_all_atomic(&[(&a, b"1"), (&b, b"2")]).unwrap_err();
+        let e = write_all_atomic(&[(&a, b"1"), (&b, b"2")], io_error).unwrap_err();
         assert!(matches!(e, TransportError::Io(_)), "{e:?}");
         assert!(!a.exists());
         let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
