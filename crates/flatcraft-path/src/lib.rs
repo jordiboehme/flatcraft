@@ -13,6 +13,7 @@ pub mod order;
 pub mod overcut;
 pub mod passes;
 pub mod plan;
+pub mod rings;
 
 pub use clean::Polyline;
 pub use containment::{KeepMode, KeptMaterial};

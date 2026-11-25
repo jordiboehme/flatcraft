@@ -1,0 +1,387 @@
+//! Ring helpers: direction, corners, entry candidates and the exit state
+//! after an overcut (spec 8.3.4).
+//!
+//! Rings are one lap in mat coordinates (x across, y down) without a repeated
+//! closing point. Counter-clockwise as seen on the canvas is a negative
+//! shoelace area; clockwise is positive.
+
+use kurbo::{Point, Vec2};
+
+use flatcraft_core::geometry::RingDirection;
+
+use crate::containment::signed_area;
+use crate::plan::{CORNER_DEG, KeepSide};
+
+/// The most entry candidates a ring offers.
+pub const MAX_CANDIDATES: usize = 16;
+
+/// One place a ring may be entered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Candidate {
+    /// Vertex index in the ring.
+    pub index: usize,
+    /// The corner's forward extension lies in waste (see
+    /// [`extension_in_waste`]). Always false for vertices that are no corner.
+    pub waste_corner: bool,
+}
+
+/// The turn in degrees at `b` when walking `a`, `b`, `c`: 0 straight on,
+/// 180 a hairpin. A zero-length leg counts as no turn.
+pub fn turn_deg(a: Point, b: Point, c: Point) -> f64 {
+    let (u, v) = (b - a, c - b);
+    if u.hypot2() == 0.0 || v.hypot2() == 0.0 {
+        return 0.0;
+    }
+    u.cross(v).abs().atan2(u.dot(v)).to_degrees()
+}
+
+/// The ring in direction `dir`, keeping its first vertex first. A ring of
+/// zero area has no direction and is returned unchanged.
+pub fn orient(ring: &[Point], dir: RingDirection) -> Vec<Point> {
+    let area = signed_area(ring);
+    let is_ccw = area < 0.0;
+    let wanted_ccw = dir == RingDirection::Ccw;
+    let mut out = ring.to_vec();
+    if area != 0.0 && is_ccw != wanted_ccw && out.len() > 1 {
+        out[1..].reverse();
+    }
+    out
+}
+
+/// The ring starting at vertex `index` (taken modulo the length).
+pub fn rotate_start(ring: &[Point], index: usize) -> Vec<Point> {
+    let mut out = ring.to_vec();
+    if !out.is_empty() {
+        out.rotate_left(index % ring.len());
+    }
+    out
+}
+
+/// Cross product of the incoming and outgoing tangent at vertex `i`.
+fn corner_cross(ring: &[Point], i: usize) -> f64 {
+    let n = ring.len();
+    let prev = ring[(i + n - 1) % n];
+    let next = ring[(i + 1) % n];
+    (ring[i] - prev).cross(next - ring[i])
+}
+
+/// True if the turn at vertex `i` has the sign of `signed_area(ring)`: the
+/// ring bends away from its own interior there. Straight vertices are not
+/// convex.
+pub fn is_convex(ring: &[Point], i: usize) -> bool {
+    if ring.len() < 3 {
+        return false;
+    }
+    let (cross, area) = (corner_cross(ring, i), signed_area(ring));
+    cross != 0.0 && area != 0.0 && (cross > 0.0) == (area > 0.0)
+}
+
+/// Whether the forward extension of the incoming edge past vertex `i` lies in
+/// waste. It lies outside the ring at a convex vertex and inside it at a
+/// concave one; `keep` says which side is kept. `Both` keeps everything, so
+/// nothing is waste. Straight vertices have no side and give false.
+///
+/// This is a local pre-filter only: Task 9 confirms every waste move against
+/// `KeptMaterial`. `keep` is Task 2's `KeepSide` (from `keep_side`).
+pub fn extension_in_waste(ring: &[Point], i: usize, keep: KeepSide) -> bool {
+    if ring.len() < 3 {
+        return false;
+    }
+    let (cross, area) = (corner_cross(ring, i), signed_area(ring));
+    if cross == 0.0 || area == 0.0 {
+        return false;
+    }
+    let convex = (cross > 0.0) == (area > 0.0);
+    match keep {
+        KeepSide::Inside => convex,
+        KeepSide::Outside => !convex,
+        KeepSide::Both => false,
+    }
+}
+
+/// Arc length from vertex 0 to each vertex, and the perimeter.
+fn arc_positions(ring: &[Point]) -> (Vec<f64>, f64) {
+    let n = ring.len();
+    let mut pos = Vec::with_capacity(n);
+    let mut s = 0.0;
+    for i in 0..n {
+        pos.push(s);
+        s += ring[i].distance(ring[(i + 1) % n]);
+    }
+    (pos, s)
+}
+
+/// Picks `k` of `items` (ring vertex indices) spread evenly by arc length.
+/// Target `t` sits at `(t + 0.5) / k` of the perimeter; each takes the
+/// nearest unused item, ties to the lower index. The result is sorted.
+fn spread(items: &[usize], k: usize, pos: &[f64], perimeter: f64) -> Vec<usize> {
+    if k >= items.len() {
+        return items.to_vec();
+    }
+    let mut used = vec![false; items.len()];
+    for t in 0..k {
+        let target = (t as f64 + 0.5) / k as f64 * perimeter;
+        let mut best: Option<(f64, usize)> = None;
+        for (j, &v) in items.iter().enumerate() {
+            if used[j] {
+                continue;
+            }
+            let d = (pos[v] - target).abs();
+            let d = d.min((perimeter - d).max(0.0));
+            if best.is_none_or(|(bd, _)| d < bd) {
+                best = Some((d, j));
+            }
+        }
+        if let Some((_, j)) = best {
+            used[j] = true;
+        }
+    }
+    let mut out: Vec<usize> = (0..items.len())
+        .filter(|&j| used[j])
+        .map(|j| items[j])
+        .collect();
+    out.sort_unstable();
+    out
+}
+
+/// Where a ring may be entered, best first: at most [`MAX_CANDIDATES`].
+///
+/// The corners (turn of [`CORNER_DEG`] or more) come first, waste-side
+/// corners before the rest. If there are more waste corners than the cap,
+/// they are spread by arc length; otherwise the remaining slots go to the
+/// other corners, spread by arc length. A ring without corners offers
+/// vertices spread by arc length. Every strategy uses the same candidates.
+pub fn entry_candidates(ring: &[Point], keep: KeepSide) -> Vec<Candidate> {
+    let n = ring.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let (pos, perimeter) = arc_positions(ring);
+    let (mut waste, mut other) = (Vec::new(), Vec::new());
+    for i in 0..n {
+        let turn = turn_deg(ring[(i + n - 1) % n], ring[i], ring[(i + 1) % n]);
+        if turn >= CORNER_DEG {
+            if extension_in_waste(ring, i, keep) {
+                waste.push(i);
+            } else {
+                other.push(i);
+            }
+        }
+    }
+    let make = |idx: Vec<usize>, waste_corner: bool| {
+        idx.into_iter().map(move |index| Candidate {
+            index,
+            waste_corner,
+        })
+    };
+    if waste.is_empty() && other.is_empty() {
+        let all: Vec<usize> = (0..n).collect();
+        return make(spread(&all, MAX_CANDIDATES, &pos, perimeter), false).collect();
+    }
+    let w = spread(&waste, MAX_CANDIDATES, &pos, perimeter);
+    let room = MAX_CANDIDATES - w.len();
+    let o = spread(&other, room, &pos, perimeter);
+    make(w, true).chain(make(o, false)).collect()
+}
+
+/// The point and unit tangent after walking `overcut_mm` of arc length from
+/// vertex `index` along `ring` in the order given. This is where the head and
+/// the blade heading are after the cut.
+///
+/// The ring is taken as oriented: this pure function does not orient it
+/// (Ruling F28). The test ring (0,0), (10,0), (10,10), (0,10) has a positive
+/// shoelace area, which is clockwise by the sign rule, and that is intended.
+/// Exactly on a vertex the tangent is the edge just travelled; at zero
+/// overcut it is the first edge. An overcut longer than the perimeter wraps.
+/// A ring with no length gives a zero tangent.
+pub fn exit_state(ring: &[Point], index: usize, overcut_mm: f64) -> (Point, Vec2) {
+    let n = ring.len();
+    let start = ring[index];
+    let (_, perimeter) = arc_positions(ring);
+    if n < 2 || perimeter <= 0.0 {
+        return (start, Vec2::ZERO);
+    }
+    let mut remaining = overcut_mm.max(0.0) % perimeter;
+    let mut last_dir = Vec2::ZERO;
+    for step in 0..2 * n {
+        let a = ring[(index + step) % n];
+        let b = ring[(index + step + 1) % n];
+        let len = a.distance(b);
+        if len == 0.0 {
+            continue;
+        }
+        let dir = (b - a) / len;
+        last_dir = dir;
+        if remaining <= len {
+            return (a + dir * remaining, dir);
+        }
+        remaining -= len;
+    }
+    (start, last_dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn p(x: f64, y: f64) -> Point {
+        Point::new(x, y)
+    }
+
+    fn square(s: f64) -> Vec<Point> {
+        vec![p(0.0, 0.0), p(s, 0.0), p(s, s), p(0.0, s)]
+    }
+
+    fn l_shape() -> Vec<Point> {
+        vec![
+            p(0.0, 0.0),
+            p(20.0, 0.0),
+            p(20.0, 10.0),
+            p(10.0, 10.0),
+            p(10.0, 20.0),
+            p(0.0, 20.0),
+        ]
+    }
+
+    fn star(points: usize) -> Vec<Point> {
+        (0..2 * points)
+            .map(|k| {
+                let r = if k % 2 == 0 { 20.0 } else { 6.0 };
+                let a = std::f64::consts::PI * k as f64 / points as f64;
+                p(r * a.cos(), r * a.sin())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ccw_means_negative_shoelace_in_mat_coordinates() {
+        // (0,0) -> (10,0) -> (10,10) goes right then down: clockwise on a
+        // y-down canvas, positive area.
+        let cw = square(10.0);
+        assert!(signed_area(&cw) > 0.0);
+        let ccw = orient(&cw, RingDirection::Ccw);
+        assert!(signed_area(&ccw) < 0.0);
+        assert_eq!(ccw[0], cw[0]);
+        let back = orient(&ccw, RingDirection::Cw);
+        assert_eq!(back, cw);
+        assert_eq!(orient(&cw, RingDirection::Cw), cw);
+    }
+
+    #[test]
+    fn rotate_start_moves_the_first_vertex() {
+        let r = rotate_start(&square(10.0), 2);
+        assert_eq!(r[0], p(10.0, 10.0));
+        assert_eq!(r.len(), 4);
+    }
+
+    #[test]
+    fn turn_of_right_angle_is_90() {
+        assert!((turn_deg(p(0.0, 0.0), p(1.0, 0.0), p(1.0, 1.0)) - 90.0).abs() < 1e-9);
+        assert!(turn_deg(p(0.0, 0.0), p(1.0, 0.0), p(2.0, 0.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn hairpin_is_180() {
+        assert!((turn_deg(p(0.0, 0.0), p(1.0, 0.0), p(0.0, 0.0)) - 180.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn square_outline_corners_are_waste_side() {
+        let sq = square(10.0);
+        for ccw in [false, true] {
+            let ring = if ccw {
+                orient(&sq, RingDirection::Ccw)
+            } else {
+                sq.clone()
+            };
+            for i in 0..4 {
+                assert!(is_convex(&ring, i));
+                assert!(extension_in_waste(&ring, i, KeepSide::Inside));
+                assert!(!extension_in_waste(&ring, i, KeepSide::Both));
+            }
+            assert!(
+                entry_candidates(&ring, KeepSide::Inside)
+                    .iter()
+                    .all(|c| c.waste_corner)
+            );
+        }
+    }
+
+    #[test]
+    fn hole_convex_corners_are_not_waste_side() {
+        for ring in [l_shape(), orient(&l_shape(), RingDirection::Ccw)] {
+            let waste: Vec<usize> = (0..ring.len())
+                .filter(|&i| extension_in_waste(&ring, i, KeepSide::Outside))
+                .collect();
+            assert_eq!(waste.len(), 1);
+            assert!(!is_convex(&ring, waste[0]));
+            assert_eq!(ring[waste[0]], p(10.0, 10.0));
+            let cands = entry_candidates(&ring, KeepSide::Outside);
+            assert_eq!(cands.len(), 6);
+            assert_eq!(
+                cands[0],
+                Candidate {
+                    index: waste[0],
+                    waste_corner: true
+                }
+            );
+            assert_eq!(cands.iter().filter(|c| c.waste_corner).count(), 1);
+        }
+    }
+
+    #[test]
+    fn candidates_are_capped_with_waste_first() {
+        // 20 tips (waste for an outline) and 20 notches: 40 corners.
+        let s = star(20);
+        let cands = entry_candidates(&s, KeepSide::Inside);
+        assert_eq!(cands.len(), MAX_CANDIDATES);
+        assert!(cands.iter().all(|c| c.waste_corner));
+        assert!(cands.iter().all(|c| c.index % 2 == 0));
+        // 10 tips and 10 notches: all 10 waste first, then 6 notches.
+        let s = star(10);
+        let cands = entry_candidates(&s, KeepSide::Inside);
+        assert_eq!(cands.len(), MAX_CANDIDATES);
+        assert!(cands[..10].iter().all(|c| c.waste_corner));
+        assert!(cands[10..].iter().all(|c| !c.waste_corner));
+        assert_eq!(cands, entry_candidates(&s, KeepSide::Inside));
+    }
+
+    #[test]
+    fn circle_has_spread_candidates() {
+        let n = 200;
+        let ring: Vec<Point> = (0..n)
+            .map(|k| {
+                let a = std::f64::consts::TAU * k as f64 / n as f64;
+                p(5.0 * a.cos(), 5.0 * a.sin())
+            })
+            .collect();
+        let cands = entry_candidates(&ring, KeepSide::Inside);
+        assert_eq!(cands.len(), MAX_CANDIDATES);
+        assert!(cands.iter().all(|c| !c.waste_corner));
+        let mut idx: Vec<usize> = cands.iter().map(|c| c.index).collect();
+        idx.dedup();
+        assert_eq!(idx.len(), MAX_CANDIDATES);
+        // Even spread: neighbours are about n / 16 apart.
+        for w in idx.windows(2) {
+            assert!((w[1] - w[0]).abs_diff(n / MAX_CANDIDATES) <= 1);
+        }
+    }
+
+    #[test]
+    fn exit_state_after_overcut() {
+        let sq = square(10.0);
+        let (pt, t) = exit_state(&sq, 0, 0.5);
+        assert!((pt - p(0.5, 0.0)).hypot() < 1e-12);
+        assert_eq!(t, Vec2::new(1.0, 0.0));
+        let (pt, t) = exit_state(&sq, 0, 12.0);
+        assert!((pt - p(10.0, 2.0)).hypot() < 1e-12);
+        assert_eq!(t, Vec2::new(0.0, 1.0));
+        // Exactly on a vertex: the edge just travelled.
+        let (pt, t) = exit_state(&sq, 0, 10.0);
+        assert_eq!(pt, p(10.0, 0.0));
+        assert_eq!(t, Vec2::new(1.0, 0.0));
+        // Wraps past the perimeter.
+        let (pt, _) = exit_state(&sq, 0, 40.5);
+        assert!((pt - p(0.5, 0.0)).hypot() < 1e-12);
+    }
+}

@@ -73,6 +73,10 @@ pub const WASTE_SEG: u32 = u32::MAX;
 pub const ASSUMED_START_HEADING: Vec2 = Vec2::new(1.0, 0.0);
 
 /// A turn of at least this many degrees is a corner.
+///
+/// Plan decision: 30 degrees. The flattening vertices of an r = 0.5 mm circle
+/// at 0.01 mm tolerance turn about 23 degrees, and those cannot hide a start
+/// mark, so they must not count as corners.
 pub const CORNER_DEG: f64 = 30.0;
 
 /// One blade-down run of the axis (the knife holder).
