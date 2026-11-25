@@ -631,13 +631,24 @@ impl Session {
         origin: Origin,
     ) -> Result<serde_json::Value, CommandError> {
         if !command.mutates_document() {
-            return command.run(self, params, origin);
+            return run_caught(command, self, params, origin)
+                .unwrap_or_else(|()| Err(internal_error()));
         }
         let index = self.active;
+        let doc_id = self.docs[index].id();
         let before = self.docs[index].document.clone();
         self.no_user_change = false;
-        let result = command.run(self, params, origin);
+        let caught = run_caught(command, self, params, origin);
         let no_user_change = std::mem::take(&mut self.no_user_change);
+        let Ok(result) = caught else {
+            // A panic: the command may have stopped half way. Put the
+            // document back, if it is still open.
+            if let Some(state) = self.docs.iter_mut().find(|d| d.id() == doc_id) {
+                state.document = before;
+                state.prune_selection();
+            }
+            return Err(internal_error());
+        };
         let state = &mut self.docs[index];
         match result {
             Ok(value) if no_user_change => {
@@ -683,6 +694,29 @@ impl Session {
     }
 }
 
+/// What a command that panicked returns.
+fn internal_error() -> CommandError {
+    CommandError::Failed(
+        "FlatCraft hit an internal error, so this command changed nothing. Please report it at https://github.com/jordiboehme/flatcraft/issues."
+            .into(),
+    )
+}
+
+/// Runs a command; `Err(())` if it panicked. The caller turns that into
+/// [`internal_error`], so a bug in one command never takes down the window
+/// or the MCP server.
+fn run_caught(
+    command: &dyn registry::Command,
+    s: &mut Session,
+    params: serde_json::Value,
+    origin: Origin,
+) -> Result<Result<serde_json::Value, CommandError>, ()> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        command.run(s, params, origin)
+    }))
+    .map_err(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -691,6 +725,66 @@ mod tests {
 
     thread_local! {
         pub(super) static SOURCE_COMPARES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// A mutating command that changes the document and then panics.
+    struct HalfDone;
+
+    impl registry::Command for HalfDone {
+        fn id(&self) -> &'static str {
+            "test.half_done"
+        }
+        fn title(&self) -> &'static str {
+            "Half done"
+        }
+        fn description(&self) -> &'static str {
+            "Renames every object, then panics."
+        }
+        fn params_schema(&self) -> schemars::Schema {
+            schemars::json_schema!({})
+        }
+        fn mutates_document(&self) -> bool {
+            true
+        }
+        fn run(
+            &self,
+            s: &mut Session,
+            _: serde_json::Value,
+            _: Origin,
+        ) -> Result<serde_json::Value, CommandError> {
+            for o in &mut s.doc_mut().document.objects {
+                o.name = "half".into();
+            }
+            panic!("a bug in the middle of a command");
+        }
+    }
+
+    #[test]
+    fn a_panicking_command_leaves_the_document_as_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles = flatcraft_device::ProfileStore::load(dir.path()).unwrap();
+        let mut s = Session::new(
+            profiles,
+            Preferences::default(),
+            false,
+            dir.path().to_path_buf(),
+        );
+        s.doc_mut().document.add(
+            "whole".into(),
+            Source::Svg {
+                name: "whole.svg".into(),
+                bytes: Vec::new().into(),
+            },
+            Vec::new(),
+        );
+        let e = s
+            .run_command(&HalfDone, serde_json::json!({}), Origin::Agent)
+            .unwrap_err();
+        assert!(matches!(e, CommandError::Failed(_)), "{e}");
+        assert!(e.to_string().contains("internal error"), "{e}");
+        assert_eq!(s.doc().document.objects[0].name, "whole");
+        assert!(!s.doc().dirty);
+        assert!(!s.doc().undo.can_undo());
     }
 
     #[test]
