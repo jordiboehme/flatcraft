@@ -6,7 +6,7 @@ mod common;
 use common::*;
 use egui::accesskit::Role;
 use egui_kittest::kittest::Queryable as _;
-use flatcraft::ui::collapse::{self, Level};
+use flatcraft::ui::collapse::{self, Level, Mode};
 use flatcraft::ui::prepare::RibbonTab;
 use flatcraft::ui::ribbon::{self, SearchTarget};
 use flatcraft::ui::tools::{self, GroupId};
@@ -104,12 +104,16 @@ fn linked_files_folds_first() {
         to_prepare(&mut h);
         h.run();
         let level = collapse::level(&h.ctx, ribbon::bar_id());
-        // The tail group is a tile: its tail is folded, the labels stay
-        // as long as that is enough.
-        match (width as u32, level) {
-            (1100, Some(Level::Tiles(k))) => assert!(k >= 1, "{level:?}"),
-            (900, Some(Level::Tiles(k) | Level::Collapsed(k))) => assert!(k >= 1, "{level:?}"),
-            _ => panic!("{width}: {level:?}"),
+        // The modes of Add, Edit, Size (keep), Arrange and Linked files.
+        let keep = [false, false, true, false, false];
+        let level = level.expect("the ribbon was drawn");
+        let modes = collapse::modes(&keep, level);
+        assert_eq!(modes[4], Mode::Collapsed, "{width}: Linked files is a tile");
+        assert_ne!(modes[2], Mode::Collapsed, "{width}: Size is never a tile");
+        if width == 1100.0 {
+            // Arrange is one of the most used groups: it stays on the bar.
+            assert_ne!(modes[3], Mode::Collapsed, "{width}: {level:?}");
+            assert!(matches!(level, Level::Folded(_)), "{level:?}");
         }
         // Linked files is a tile, so its Reload button is not on the ribbon.
         assert!(
