@@ -20,7 +20,7 @@ use crate::cutgeom;
 use crate::gate::{self, GateDecision};
 use crate::session::{CommandError, JobSummary, Origin, Session};
 
-/// Join tolerance of the pipeline (spec default).
+/// Join tolerance of the pipeline: path ends closer than this are joined.
 pub const JOIN_TOLERANCE_MM: f64 = 0.01;
 
 /// Name of a job when there is no project file to name it after.
@@ -56,7 +56,9 @@ fn one_line(s: &str) -> String {
         .collect()
 }
 
-/// Listing note of one toolpath. Task 12 reads this format.
+/// Listing note of one toolpath. The File Output listing, `job.preview`
+/// and the Debug panel show it to people and agents, so keep the format
+/// stable.
 fn note(id: ObjectId, name: &str, path: usize, label: Option<&str>, pass: u32) -> String {
     let label = label
         .map(|l| format!(" [{}]", one_line(l)))
@@ -273,6 +275,7 @@ pub fn build_input(input: &JobInput) -> Result<JobResult, CommandError> {
         overcut_mm: material.overcut_mm,
         passes,
         reverse_alternate_passes: material.reverse_alternate_passes,
+        home: plotter.home_mm(media),
     };
     let cut_plan = plan(&placed, &pipeline).map_err(|e| match e {
         PlanError::Empty => {

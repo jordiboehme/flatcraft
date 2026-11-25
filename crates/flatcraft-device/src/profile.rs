@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use kurbo::Rect;
+use kurbo::{Point, Rect};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -359,6 +359,23 @@ impl PlotterProfile {
             Some(m) => Some((m, false)),
             None => self.media.first().map(|m| (m, true)),
         }
+    }
+
+    /// The device home (device 0,0, the media corner the plotter homes to)
+    /// in app millimetres: minus the grid origin, or the far media edge on a
+    /// mirrored axis. Travel to the first cut starts here.
+    pub fn home_mm(&self, media: &Media) -> Point {
+        let x = if self.axis.mirror_x {
+            media.width_mm - media.grid.origin_x_mm
+        } else {
+            -media.grid.origin_x_mm
+        };
+        let y = if self.axis.mirror_y {
+            media.height_mm - media.grid.origin_y_mm
+        } else {
+            -media.grid.origin_y_mm
+        };
+        Point::new(x, y)
     }
 
     /// The area objects may use, in app coordinates (origin = the grid's 0,0): the whole

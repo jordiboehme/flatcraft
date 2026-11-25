@@ -123,7 +123,7 @@ fn old_media_without_grid_loads_with_defaults() {
 }
 
 #[test]
-fn builtin_mats_match_the_brief() {
+fn builtin_mats_have_the_expected_sizes() {
     let (_d, s) = store();
     let p = s.plotter("silhouette-cameo-2").unwrap();
     let get = |id: &str| p.media.iter().find(|m| m.id == id).unwrap().clone();
@@ -1013,4 +1013,20 @@ fn a_save_never_replaces_a_file_that_differs_only_in_case() {
     p.scale_x = 1.01;
     s.save_user_plotter(&p, "silhouette-cameo-2").unwrap();
     assert_eq!(s.plotter("ours").unwrap().scale_x, 1.01);
+}
+
+#[test]
+fn the_device_home_is_the_media_corner_in_app_coordinates() {
+    let (_d, s) = store();
+    let mut p = s.plotter("silhouette-cameo-2").unwrap();
+    let mut m = p.media[0].clone();
+    m.grid.origin_x_mm = 10.0;
+    m.grid.origin_y_mm = 20.0;
+    assert_eq!(p.home_mm(&m), kurbo::Point::new(-10.0, -20.0));
+    // A mirrored axis homes at the far edge of the media.
+    p.axis.mirror_x = true;
+    let home = p.home_mm(&m);
+    assert_eq!(home, kurbo::Point::new(m.width_mm - 10.0, -20.0));
+    let dev = flatcraft_device::gpgl::quantize::to_device(home, &p, &m);
+    assert_eq!((dev.x, dev.y), (0, 0));
 }

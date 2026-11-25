@@ -597,7 +597,7 @@ fn preferences_output_dir_roundtrips() {
     assert_eq!(Preferences::load(d.config.path()).output_dir, None);
 }
 
-// ---------------------------------------------------------------- confirmation snapshot (R10)
+// ---------------------------------------------------------------- confirmation snapshot
 
 fn bytes_have(bytes: &[u8], needle: &[u8]) -> bool {
     bytes.windows(needle.len()).any(|w| w == needle)
@@ -917,4 +917,29 @@ fn from_parts_applies_the_plotter_override_once() {
     let applied = raw.for_plotter(&plotter.id);
     let from_applied = JobInput::from_parts(doc, plotter, &applied);
     assert_eq!(from_applied, from_raw);
+}
+
+#[test]
+fn travel_starts_at_the_media_corner_not_the_grid_origin() {
+    let d = dirs();
+    let mut s = session(&d);
+    let plotter_id = s.doc().document.job.plotter_id.clone();
+    let mut p = s.profiles.plotter(&plotter_id).unwrap();
+    p.id = "shifted".into();
+    p.name = "Shifted".into();
+    let mat = p.media.iter_mut().find(|m| m.id == "mat-12x12").unwrap();
+    mat.grid.origin_x_mm = 10.0;
+    mat.grid.origin_y_mm = 20.0;
+    mat.grid.width_mm = 280.0;
+    mat.grid.height_mm = 280.0;
+    s.profiles.save_user_plotter(&p, &plotter_id).unwrap();
+    s.doc_mut().document.job.plotter_id = "shifted".into();
+    import_square(&mut s, "square");
+    let r = run(&mut s, "job.preview", json!({}));
+    let plan = &s.doc().last_job().unwrap().plan;
+    assert_eq!(plan.toolpaths.len(), 1);
+    let first = plan.toolpaths[0].points[0];
+    let expected = kurbo::Point::new(-10.0, -20.0).distance(first);
+    let travel = r["travel_mm"].as_f64().unwrap();
+    assert!((travel - expected).abs() < 1e-6, "{travel} vs {expected}");
 }

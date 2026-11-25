@@ -27,6 +27,11 @@ pub struct PipelineSettings {
     pub overcut_mm: f64,
     pub passes: u32,
     pub reverse_alternate_passes: bool,
+    /// Where the blade starts: the device home (the media corner the
+    /// plotter homes to), in app millimetres. It lies outside the grid when
+    /// the grid does not start at the media corner, for example at minus
+    /// the grid origin.
+    pub home: Point,
 }
 
 /// The blade is down along `points`; a travel move lies between consecutive toolpaths.
@@ -42,7 +47,7 @@ pub struct Toolpath {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CutPlan {
     pub toolpaths: Vec<Toolpath>,
-    /// Sum of travel distances, starting from the origin.
+    /// Sum of travel distances, starting from the device home.
     pub travel_mm: f64,
     /// Total blade-down length, including overcut and repeated passes.
     pub cut_mm: f64,
@@ -56,6 +61,7 @@ pub enum SettingsField {
     Overcut,
     Passes,
     CuttingArea,
+    Home,
 }
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -89,6 +95,11 @@ fn validate(s: &PipelineSettings) -> Result<(), PlanError> {
     }
     if s.passes < 1 {
         return bad(F::Passes, f64::from(s.passes));
+    }
+    for v in [s.home.x, s.home.y] {
+        if !v.is_finite() {
+            return bad(F::Home, v);
+        }
     }
     let a = s.cutting_area;
     for v in [a.x0, a.y0, a.x1, a.y1] {
@@ -141,6 +152,7 @@ fn invalid_settings_message(field: SettingsField, value: f64) -> String {
         F::CuttingArea => format!(
             "The cutting area must have finite coordinates and a positive width and height (got {value})."
         ),
+        F::Home => format!("The home position must have finite coordinates (got {value})."),
     }
 }
 
@@ -200,7 +212,7 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
         return Err(PlanError::Empty);
     }
 
-    let mut toolpaths = order::nearest_neighbour(toolpaths, Point::ZERO);
+    let mut toolpaths = order::nearest_neighbour(toolpaths, s.home);
     for t in toolpaths.iter_mut().filter(|t| t.closed) {
         t.points = overcut::apply(&t.points, s.overcut_mm);
     }
@@ -208,7 +220,7 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
 
     let cut_mm = toolpaths.iter().map(|t| clean::length(&t.points)).sum();
     let mut travel_mm = 0.0;
-    let mut here = Point::ZERO;
+    let mut here = s.home;
     for t in &toolpaths {
         travel_mm += here.distance(t.points[0]);
         here = t.points[t.points.len() - 1];

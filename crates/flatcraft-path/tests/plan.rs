@@ -23,6 +23,7 @@ fn settings() -> PipelineSettings {
         overcut_mm: 0.0,
         passes: 1,
         reverse_alternate_passes: false,
+        home: Point::ZERO,
     }
 }
 
@@ -534,4 +535,30 @@ fn huge_tolerances_and_overcut_are_refused() {
     let mut s = settings();
     s.overcut_mm = 80.0;
     invalid(s, SettingsField::Overcut);
+}
+
+#[test]
+fn travel_starts_at_the_device_home() {
+    // The grid starts 10 mm right and 20 mm down from the media corner, so
+    // the device home is at -10,-20 in app coordinates.
+    let mut s = settings();
+    s.home = Point::new(-10.0, -20.0);
+    let out = plan(&[placed(1, rect_path(20.0, 30.0, 10.0, 10.0))], &s).unwrap();
+    let expected = Point::new(-10.0, -20.0).distance(Point::new(20.0, 30.0));
+    assert!((out.travel_mm - expected).abs() < 1e-9, "{}", out.travel_mm);
+}
+
+#[test]
+fn the_first_path_is_the_one_nearest_the_home() {
+    let mut s = settings();
+    s.home = Point::new(300.0, 0.0);
+    let out = plan(
+        &[
+            placed(1, rect_path(10.0, 10.0, 10.0, 10.0)),
+            placed(2, rect_path(270.0, 10.0, 10.0, 10.0)),
+        ],
+        &s,
+    )
+    .unwrap();
+    assert_eq!(out.toolpaths[0].source.object, ObjectId(2));
 }

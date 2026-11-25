@@ -260,11 +260,15 @@ pub fn render_png(s: &Session, kind: PreviewKind, max_px: u32) -> Result<Vec<u8>
                 ..Stroke::default()
             };
             let cell = (max_px as f32 / 512.0).round().max(1.0);
-            let mut at = Point::ZERO; // the plan's travel starts at the origin
-            // Mark the origin and label it H (home): the first dashed
-            // travel line leaves from here. Below and right of the point,
-            // so a mat whose grid starts at its corner still shows it.
-            let (hx, hy) = (ox * sc, oy * sc);
+            // The plan's travel starts at the device home (the media corner).
+            let home = plotter.home_mm(media);
+            let mut at = home;
+            // Mark the home and label it H: the first dashed travel line
+            // leaves from here. Below and right of the point, moved inside
+            // the image when the home lies on its right or bottom edge.
+            let mark = 6.0 * cell;
+            let hx = ((home.x as f32 + ox) * sc).clamp(0.0, (w as f32 - mark).max(0.0));
+            let hy = ((home.y as f32 + oy) * sc).clamp(0.0, (h as f32 - mark).max(0.0));
             if let Some(r) = tiny_skia::Rect::from_xywh(hx, hy, 2.0 * cell, 2.0 * cell) {
                 pm.fill_rect(r, &travel, Transform::identity(), None);
             }
