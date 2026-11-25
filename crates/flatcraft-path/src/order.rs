@@ -128,8 +128,14 @@ fn heading_from(points: &[Point], i: usize, forward: bool, wrap: bool) -> Vec2 {
 
 impl Unit {
     /// The unit of toolpath `t`: its first lap turned to `s.direction`, with
-    /// candidates for `t.keep` and exit states after `s.overcut_mm`.
+    /// candidates for `t.keep` and exit states after all its passes.
+    ///
+    /// A ring ends after `s.overcut_mm` (chained laps end where one lap
+    /// does). With `s.reverse_alternate_passes` and an even pass count, the
+    /// last pass runs backwards, so a ring or an open path ends at its
+    /// entry, coming back along its first segment.
     pub fn new(t: &Toolpath, s: &PipelineSettings) -> Self {
+        let back_to_start = s.reverse_alternate_passes && s.passes.is_multiple_of(2);
         if t.closed {
             let ring = rings::orient(t.lap(), s.direction);
             let mut cands = rings::entry_candidates(&ring, t.keep);
@@ -142,12 +148,18 @@ impl Unit {
             let candidates: Vec<Entry> = cands
                 .iter()
                 .map(|c| {
-                    let (exit, exit_heading) = rings::exit_state(&ring, c.index, s.overcut_mm);
+                    let at = ring[c.index];
+                    let tangent = heading_from(&ring, c.index, true, true);
+                    let (exit, exit_heading) = if back_to_start {
+                        (at, -tangent)
+                    } else {
+                        rings::exit_state(&ring, c.index, s.overcut_mm)
+                    };
                     Entry {
                         index: c.index,
                         waste_corner: c.waste_corner,
-                        at: ring[c.index],
-                        tangent: heading_from(&ring, c.index, true, true),
+                        at,
+                        tangent,
                         exit,
                         exit_heading,
                     }
@@ -167,15 +179,25 @@ impl Unit {
                 n => {
                     let last = n - 1;
                     let end = |index: usize, forward: bool| {
-                        let exit_at = if forward { last } else { 0 };
+                        let tangent = heading_from(&points, index, forward, false);
+                        let (exit, exit_heading) = if back_to_start {
+                            // The last pass runs back into the entry end.
+                            (points[index], -tangent)
+                        } else {
+                            let exit_at = if forward { last } else { 0 };
+                            // The heading of the last move into the far end.
+                            (
+                                points[exit_at],
+                                -heading_from(&points, exit_at, !forward, false),
+                            )
+                        };
                         Entry {
                             index,
                             waste_corner: false,
                             at: points[index],
-                            tangent: heading_from(&points, index, forward, false),
-                            exit: points[exit_at],
-                            // The heading of the last move into the far end.
-                            exit_heading: -heading_from(&points, exit_at, !forward, false),
+                            tangent,
+                            exit,
+                            exit_heading,
                         }
                     };
                     vec![end(0, true), end(last, false)]
@@ -2020,6 +2042,51 @@ mod tests {
             &s,
         );
         assert_eq!(out[0].points, vec![p(10.0, 0.0), p(100.0, 0.0)]);
+    }
+
+    #[test]
+    fn even_reversed_passes_exit_at_start() {
+        let line = tp(1, &[(0.0, 0.0), (10.0, 0.0), (10.0, 5.0)], false);
+        let square = ring(2, 0.0, 0.0, 10.0, 10.0);
+        for (passes, reverse, at_start) in [
+            (2, true, true),
+            (4, true, true),
+            (3, true, false),
+            (2, false, false),
+        ] {
+            let mut s = settings(CutStrategy::Quality);
+            s.passes = passes;
+            s.reverse_alternate_passes = reverse;
+            let u = Unit::new(&line, &s);
+            let from_start = &u.candidates[0];
+            let from_end = &u.candidates[1];
+            if at_start {
+                // The last pass runs back to where the first one started.
+                assert_eq!(from_start.exit, p(0.0, 0.0), "{passes} {reverse}");
+                assert_eq!(from_start.exit_heading, Vec2::new(-1.0, 0.0));
+                assert_eq!(from_end.exit, p(10.0, 5.0));
+                assert_eq!(from_end.exit_heading, Vec2::new(0.0, 1.0));
+            } else {
+                assert_eq!(from_start.exit, p(10.0, 5.0), "{passes} {reverse}");
+                assert_eq!(from_start.exit_heading, Vec2::new(0.0, 1.0));
+                assert_eq!(from_end.exit, p(0.0, 0.0));
+                assert_eq!(from_end.exit_heading, Vec2::new(-1.0, 0.0));
+            }
+            // A closed ring with even reversed laps also ends at its entry,
+            // coming back along its first edge; otherwise it ends after the
+            // overcut.
+            let u = Unit::new(&square, &s);
+            for e in &u.candidates {
+                let ring = &u.points;
+                if at_start {
+                    assert_eq!(e.exit, e.at, "{passes} {reverse}");
+                    assert_eq!(e.exit_heading, -e.tangent);
+                } else {
+                    let want = rings::exit_state(ring, e.index, s.overcut_mm);
+                    assert_eq!((e.exit, e.exit_heading), want, "{passes} {reverse}");
+                }
+            }
+        }
     }
 
     #[test]

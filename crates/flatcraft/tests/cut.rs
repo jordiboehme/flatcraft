@@ -194,9 +194,12 @@ fn timeline_limits_drawn_paths() {
     assert_eq!(app(&h).ui.cut.visible_toolpaths(), 1);
     assert!(h.query_by_label("1 of 3").is_some());
     // A changed job starts over with all toolpaths shown.
+    // Two passes on closed rings are chained laps: still three toolpaths.
     run(&s, "job.set_overrides", json!({ "passes": 2 }));
     h.run();
-    assert_eq!(app(&h).ui.cut.visible_toolpaths(), 6);
+    assert_eq!(app(&h).ui.cut.timeline.total, 3);
+    assert_eq!(app(&h).ui.cut.visible_toolpaths(), 3);
+    assert!(h.query_by_label("3 of 3").is_some());
 }
 
 #[test]

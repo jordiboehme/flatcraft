@@ -197,15 +197,54 @@ fn travel_and_cut_totals() {
         placed(2, rect_path(40.0, 10.0, 10.0, 10.0)),
     ];
     let out = plan(&input, &s).unwrap();
-    assert_eq!(out.toolpaths.len(), 4);
+    // Each square is one toolpath with two chained laps.
+    assert_eq!(out.toolpaths.len(), 2);
+    assert!(out.toolpaths.iter().all(|t| t.laps == 2 && t.pass == 1));
     assert!((out.cut_mm - 160.0).abs() < 1e-9);
     // The entry DP enters the first square at (20,20), so it ends heading
     // +x and the second square, entered at (40,20), needs no blade turn:
-    // origin -> (20,20); (20,20) -> (20,20); (20,20) -> (40,20); (40,20) -> (40,20)
+    // origin -> (20,20); (20,20) -> (40,20)
     assert_eq!(out.toolpaths[0].points[0], Point::new(20.0, 20.0));
-    assert_eq!(out.toolpaths[2].points[0], Point::new(40.0, 20.0));
+    assert_eq!(out.toolpaths[1].points[0], Point::new(40.0, 20.0));
     let expected = Point::ZERO.distance(Point::new(20.0, 20.0)) + 20.0;
     assert!((out.travel_mm - expected).abs() < 1e-9, "{}", out.travel_mm);
+}
+
+#[test]
+fn closed_passes_chain_in_the_plan() {
+    let mut s = settings();
+    s.overcut_mm = 0.5;
+    s.passes = 3;
+    let out = plan(&[placed(1, rect_path(10.0, 10.0, 10.0, 10.0))], &s).unwrap();
+    assert_eq!(out.toolpaths.len(), 1);
+    let t = &out.toolpaths[0];
+    assert_eq!((t.pass, t.laps), (1, 3));
+    assert!((out.cut_mm - 120.5).abs() < 1e-9, "{}", out.cut_mm);
+    assert!((length(t.lap()) - 40.0).abs() < 1e-9);
+}
+
+#[test]
+fn unchained_closed_passes_are_lifted_laps() {
+    // Ruling F6: with `chain_closed_passes` off, closed passes are separate
+    // lifted laps, each with its own overcut, as in M1.
+    let mut s = settings();
+    s.overcut_mm = 0.5;
+    s.passes = 3;
+    s.chain_closed_passes = false;
+    let out = plan(&[placed(1, rect_path(10.0, 10.0, 10.0, 10.0))], &s).unwrap();
+    assert_eq!(out.toolpaths.len(), 3);
+    assert_eq!(
+        out.toolpaths
+            .iter()
+            .map(|t| (t.pass, t.laps))
+            .collect::<Vec<_>>(),
+        [(1, 1), (2, 1), (3, 1)]
+    );
+    for t in &out.toolpaths {
+        assert!((length(&t.points) - 40.5).abs() < 1e-9);
+        assert_eq!(t.points[0], out.toolpaths[0].points[0]);
+    }
+    assert!((out.cut_mm - 121.5).abs() < 1e-9, "{}", out.cut_mm);
 }
 
 #[test]
@@ -605,7 +644,9 @@ fn lap_is_the_first_ring_without_overcut_in_every_pass() {
             placed(2, Circle::new((60.0, 60.0), 5.0).to_path(0.1)),
         ];
         let out = plan(&input, &s).unwrap();
-        assert_eq!(out.toolpaths.len(), 2 * passes as usize);
+        // Without reverse each ring is one toolpath of chained laps.
+        let per_ring = if reverse { passes } else { 1 };
+        assert_eq!(out.toolpaths.len(), 2 * per_ring as usize);
         for t in &out.toolpaths {
             let lap = t.lap();
             assert_eq!(
@@ -614,9 +655,10 @@ fn lap_is_the_first_ring_without_overcut_in_every_pass() {
                 "reverse {reverse}, pass {}",
                 t.pass
             );
-            // the ring is the toolpath without the 0.5 mm overcut
+            assert_eq!(t.laps, passes / per_ring);
+            // the ring is one lap of the toolpath without the 0.5 mm overcut
             assert!(
-                (length(lap) - (length(&t.points) - 0.5)).abs() < 1e-9,
+                (f64::from(t.laps) * length(lap) - (length(&t.points) - 0.5)).abs() < 1e-9,
                 "reverse {reverse}, pass {}",
                 t.pass
             );
@@ -878,6 +920,7 @@ fn with_defaults_uses_the_spec_defaults() {
     );
     assert_eq!(s.direction, RingDirection::Ccw);
     assert!(!s.monotonic_feed);
+    assert!(s.chain_closed_passes);
     assert_eq!(s.strategy, flatcraft_path::StrategySettings::default());
     assert_eq!(s.min_cut_mm, 0.025);
 }

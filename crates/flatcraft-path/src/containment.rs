@@ -1443,7 +1443,7 @@ mod tests {
     #[test]
     fn from_toolpaths_reads_one_lap_of_pass_one_and_skips_the_rest() {
         let ring = sq(0.0, 0.0, 20.0, 20.0);
-        let mut paths = crate::passes::expand(vec![ring], 2, true);
+        let mut paths = crate::passes::separate(vec![ring], 2, true, 0.5);
         // An alignment stroke and an open path add no rings.
         let mut align = tp(&[(5.0, 5.0), (15.0, 5.0), (15.0, 15.0), (5.0, 5.0)], true);
         align.kind = ToolpathKind::Alignment;

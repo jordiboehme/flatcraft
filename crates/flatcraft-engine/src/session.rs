@@ -57,6 +57,7 @@ pub struct JobSummary {
     pub warnings: Vec<String>,
     pub speed: u8,
     pub force: u8,
+    /// The highest pass number: a ring of chained laps counts each lap.
     pub passes: u32,
 }
 

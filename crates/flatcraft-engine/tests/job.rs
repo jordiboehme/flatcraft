@@ -366,9 +366,31 @@ fn overrides_reach_the_emitter() {
     let last = s.doc().last_job().unwrap();
     assert_eq!(last.settings.speed, 3);
     assert_eq!(last.settings.force, 20);
-    assert!(last.plan.toolpaths.iter().any(|t| t.pass == 2));
+    // The square's two passes are chained laps of one toolpath.
+    assert!(last.plan.toolpaths.iter().all(|t| t.laps == 2));
     let txt = std::fs::read_to_string(&sent_paths(&r)[1]).unwrap();
-    assert!(txt.contains("pass 2"), "{txt}");
+    assert!(txt.contains("passes 1-2"), "{txt}");
+}
+
+#[test]
+fn summary_reports_chained_passes() {
+    let d = dirs();
+    let mut s = session(&d);
+    import_square(&mut s, "square");
+    run(&mut s, "job.set_overrides", json!({ "passes": 3 }));
+    let r = run(&mut s, "job.preview", json!({}));
+    assert_eq!(r["settings"]["passes"], 3, "{r}");
+    let last = s.doc().last_job().unwrap();
+    assert_eq!(last.plan.toolpaths.len(), 1);
+    assert_eq!(flatcraft_engine::job::summary(last).passes, 3);
+    assert!(
+        r["listing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l["note"].as_str().unwrap().ends_with(", passes 1-3")),
+        "{r}"
+    );
 }
 
 #[test]

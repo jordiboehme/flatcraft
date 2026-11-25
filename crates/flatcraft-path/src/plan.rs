@@ -10,7 +10,7 @@ use flatcraft_core::geometry::RingDirection;
 
 use crate::containment::{self, KeepMode};
 use crate::strategy::StrategySettings;
-use crate::{clean, flatten, order, overcut, passes};
+use crate::{clean, flatten, order, passes};
 
 /// Which path of which object a toolpath came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +34,11 @@ pub struct PipelineSettings {
     pub overcut_mm: f64,
     pub passes: u32,
     pub reverse_alternate_passes: bool,
+    /// Cut the passes of a closed ring as chained laps without lifting,
+    /// with the overcut once after the last lap ([`crate::passes::chain`]).
+    /// Off, they are separate lifted laps, each with its own overcut
+    /// ([`crate::passes::separate`]). Reverse alternate passes never chain.
+    pub chain_closed_passes: bool,
     /// Where the blade starts: the device home (the media corner the
     /// plotter homes to), in app millimetres. It lies outside the grid when
     /// the grid does not start at the media corner, for example at minus
@@ -65,8 +70,9 @@ pub const DEFAULT_MIN_CUT_MM: f64 = 0.025;
 
 impl PipelineSettings {
     /// The spec defaults for `cutting_area` with travel from `home`: 0.01 mm
-    /// tolerances, 0.5 mm overcut, one pass, counter-clockwise rings, no
-    /// feed bands, the Quality strategy and a 0.025 mm shortest cut.
+    /// tolerances, 0.5 mm overcut, one pass, chained closed passes,
+    /// counter-clockwise rings, no feed bands, the Quality strategy and a
+    /// 0.025 mm shortest cut.
     pub fn with_defaults(cutting_area: Rect, home: Point) -> Self {
         Self {
             cutting_area,
@@ -75,6 +81,7 @@ impl PipelineSettings {
             overcut_mm: DEFAULT_OVERCUT_MM,
             passes: 1,
             reverse_alternate_passes: false,
+            chain_closed_passes: true,
             home,
             direction: RingDirection::Ccw,
             monotonic_feed: false,
@@ -366,7 +373,8 @@ fn format_ids(ids: &[ObjectId]) -> String {
 /// 5. drop paths shorter than `min_cut_mm`, counted in `dropped_short`
 /// 6. containment and keep sides
 /// 7. order
-/// 8. overcut and passes
+/// 8. passes and overcut: chained laps on closed rings, the overcut after
+///    the last lap ([`passes::chain`])
 pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanError> {
     validate(s)?;
     let flat: Vec<BezPath> = input
@@ -435,12 +443,22 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
     for (i, t) in toolpaths.iter_mut().enumerate() {
         t.keep = containment::keep_side(&tree, i, t.closed, mode_of(t.source.object));
     }
-    let mut toolpaths = order::order(toolpaths, &tree, s.home, s);
-    for t in toolpaths.iter_mut().filter(|t| t.closed) {
-        t.lap_range = 0..t.points.len();
-        t.points = overcut::apply(&t.points, s.overcut_mm);
-    }
-    let toolpaths = passes::expand(toolpaths, s.passes, s.reverse_alternate_passes);
+    let toolpaths = order::order(toolpaths, &tree, s.home, s);
+    let toolpaths = if s.chain_closed_passes {
+        passes::chain(
+            toolpaths,
+            s.passes,
+            s.reverse_alternate_passes,
+            s.overcut_mm,
+        )
+    } else {
+        passes::separate(
+            toolpaths,
+            s.passes,
+            s.reverse_alternate_passes,
+            s.overcut_mm,
+        )
+    };
 
     let cut_mm = toolpaths.iter().map(|t| clean::length(&t.points)).sum();
     let travel_mm = travel_mm(&toolpaths, s.home);

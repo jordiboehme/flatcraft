@@ -11,13 +11,7 @@ const PREVIEW_LINES: usize = 200;
 
 fn run_preview(s: &mut Session, _: NoParams, _: Origin) -> Result<Value, CommandError> {
     let result = crate::job::build(s)?;
-    let passes = result
-        .plan
-        .toolpaths
-        .iter()
-        .map(|t| t.pass)
-        .max()
-        .unwrap_or(0);
+    let passes = crate::job::summary(&result).passes;
     let listing: Vec<Value> = result
         .job
         .listing
@@ -51,7 +45,7 @@ command!(
     mutates: false,
     params: NoParams,
     run: run_preview,
-    description: "Plans the cut of the active document and builds the GPGL bytes without sending anything. Only visible objects are cut; they must lie inside the cutting area. Speed, force and passes come from the material for this plotter, then the job overrides. Returns {toolpaths (count), cut_mm (blade-down length incl. overcut and passes), travel_mm, warnings: [text], settings: {speed, force, passes, track_enhancing}, bytes (job size), listing_total, listing: [{command, note}] (the first 200 commands; notes read \"object <id> '<name>', path <i> [<label>], pass <p>\")}.",
+    description: "Plans the cut of the active document and builds the GPGL bytes without sending anything. Only visible objects are cut; they must lie inside the cutting area. Speed, force and passes come from the material for this plotter, then the job overrides. Returns {toolpaths (count), cut_mm (blade-down length incl. overcut and passes), travel_mm, warnings: [text], settings: {speed, force, passes, track_enhancing}, bytes (job size), listing_total, listing: [{command, note}] (the first 200 commands; notes read \"object <id> '<name>', path <i> [<label>], pass <p>\", or \"..., passes 1-<n>\" for a closed path cut <n> times in a row without lifting the blade)}.",
 );
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]

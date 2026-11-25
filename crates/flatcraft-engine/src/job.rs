@@ -65,16 +65,35 @@ fn one_line(s: &str) -> String {
 
 /// Listing note of one toolpath. The File Output listing, `job.preview`
 /// and the Debug panel show it to people and agents, so keep the format
-/// stable.
-fn note(id: ObjectId, name: &str, path: usize, label: Option<&str>, pass: u32) -> String {
+/// stable. A single lap reads `pass {p}`; a ring of chained laps reads
+/// `passes {p}-{q}` (for example `passes 1-3`).
+fn note(
+    id: ObjectId,
+    name: &str,
+    path: usize,
+    label: Option<&str>,
+    pass: u32,
+    laps: u32,
+) -> String {
     let label = label
         .map(|l| format!(" [{}]", one_line(l)))
         .unwrap_or_default();
+    let passes = if laps > 1 {
+        format!("passes {pass}-{}", last_pass(pass, laps))
+    } else {
+        format!("pass {pass}")
+    };
     format!(
-        "object {} '{}', path {path}{label}, pass {pass}",
+        "object {} '{}', path {path}{label}, {passes}",
         id.0,
         one_line(name)
     )
+}
+
+/// The number of the last pass in a toolpath of `laps` chained laps that
+/// starts with pass `pass`.
+fn last_pass(pass: u32, laps: u32) -> u32 {
+    pass.saturating_add(laps.max(1) - 1)
 }
 
 /// Problems the person can fix (settings, placement, media) are refusals;
@@ -405,7 +424,7 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
             let label = labels.get(&(id, t.source.path_index)).map(String::as_str);
             EmitPath {
                 points: t.points.clone(),
-                note: note(id, name, t.source.path_index, label, t.pass),
+                note: note(id, name, t.source.path_index, label, t.pass, t.laps),
             }
         })
         .collect();
@@ -536,11 +555,12 @@ pub fn summary(result: &JobResult) -> JobSummary {
         warnings: result.warnings.clone(),
         speed: result.settings.speed,
         force: result.settings.force,
+        // A ring of chained laps carries several passes in one toolpath.
         passes: result
             .plan
             .toolpaths
             .iter()
-            .map(|t| t.pass)
+            .map(|t| last_pass(t.pass, t.laps))
             .max()
             .unwrap_or(0),
     }
