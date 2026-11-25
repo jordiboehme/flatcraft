@@ -602,3 +602,38 @@ fn test_sheet_has_no_overlapping_patterns() {
         }
     }
 }
+
+#[test]
+fn test_sheet_cuts_the_hole_before_its_square() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    run(&mut s, "tools.test_patterns", json!({}));
+    let o = &s.doc().document.objects[0];
+    let hole_paths: Vec<usize> = o
+        .geometry
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.label.as_deref() == Some("hole-in-square"))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(!hole_paths.is_empty());
+    let result = job::build(&s).unwrap();
+    // (position in the cut order, width) of the hole-in-square toolpaths.
+    let rings: Vec<(usize, f64)> = result
+        .plan
+        .toolpaths
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| hole_paths.contains(&t.source.path_index))
+        .map(|(k, t)| {
+            let xs = t.points.iter().map(|p| p.x);
+            let w = xs.clone().fold(f64::MIN, f64::max) - xs.fold(f64::MAX, f64::min);
+            (k, w)
+        })
+        .collect();
+    assert_eq!(rings.len(), 2, "{rings:?}");
+    let inner = rings.iter().min_by(|a, b| a.1.total_cmp(&b.1)).unwrap();
+    let outer = rings.iter().max_by(|a, b| a.1.total_cmp(&b.1)).unwrap();
+    assert!(inner.1 < 12.0 && outer.1 > 29.0, "{rings:?}");
+    assert!(inner.0 < outer.0, "the hole must be cut first: {rings:?}");
+}
