@@ -86,5 +86,23 @@ fn old_whole_command_pins_become_their_directions() {
         old(&["mirror", "mirror_vertical"]),
         ["mirror_horizontal", "mirror_vertical"]
     );
-    assert!(old(&["nope", ""]).is_empty());
+    assert_eq!(
+        old(&["nope", ""]),
+        default_arrange_pins(),
+        "only unknown ids: the defaults, not an empty ribbon"
+    );
+    assert!(old(&[]).is_empty());
+}
+
+#[test]
+fn a_file_with_only_unknown_pins_gets_the_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("preferences.toml"),
+        "arrange_pins = [\"teleport\", \"warp_drive\"]\n",
+    )
+    .unwrap();
+    assert_eq!(Preferences::load(dir.path()).arrange_pins, DEFAULTS);
+    std::fs::write(dir.path().join("preferences.toml"), "arrange_pins = []\n").unwrap();
+    assert!(Preferences::load(dir.path()).arrange_pins.is_empty());
 }

@@ -98,7 +98,9 @@ pub fn default_arrange_pins() -> Vec<String> {
 /// Pins of an earlier version, made current: a whole-command pin of
 /// Mirror, Align or Distribute (`mirror`, `align`, `distribute`) becomes a
 /// pin of each of its directions. Unknown ids are dropped, and so are
-/// repeats; the order is kept.
+/// repeats; the order is kept. A list that only held unknown ids gets
+/// [`default_arrange_pins`], so an old file never empties the ribbon by
+/// accident; an empty list stays empty (the person unpinned everything).
 pub fn migrate_arrange_pins(pins: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for pin in pins {
@@ -123,6 +125,9 @@ pub fn migrate_arrange_pins(pins: &[String]) -> Vec<String> {
                 out.push((*id).to_string());
             }
         }
+    }
+    if out.is_empty() && !pins.is_empty() {
+        return default_arrange_pins();
     }
     out
 }
