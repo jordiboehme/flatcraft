@@ -222,6 +222,36 @@ fn a_listed_tool_works_and_closes_the_list() {
 }
 
 #[test]
+fn search_opens_the_arrange_drop_down_on_a_collapsed_ribbon() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    pin(&s, &ARRANGE_PIN_IDS);
+    select(&s, &[a]);
+    let mut h = sized(&dir, s.clone(), 900.0);
+    show_tab(&mut h, "Home");
+    h.get_by_label("Search commands").click();
+    h.run();
+    h.get_by_label("Search commands").type_text("mirror");
+    h.run();
+    h.get_by_role_and_label(Role::Button, "Mirror (search)")
+        .click();
+    h.run();
+    assert!(
+        matches!(
+            collapse::level(&h.ctx, ribbon::bar_id()),
+            Some(Level::Overflow(_))
+        ),
+        "the Arrange tab is collapsed at 900 pt with every pin"
+    );
+    let undo = undo_len(&s);
+    h.get_by_label("Mirror horizontally (Arrange)").click();
+    h.run();
+    wait_for_workers(&mut h);
+    assert_eq!(undo_len(&s), undo + 1, "mirrored from the drop-down");
+}
+
+#[test]
 fn resizing_settles_without_flipping() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
@@ -378,7 +408,22 @@ fn the_active_tab_stays_visible_with_12_documents() {
         let mut h = sized(&dir, s.clone(), width);
         let settings = h.get_by_label("Settings").rect();
         let help = h.get_by_label("Help").rect();
-        assert!(window(&h).contains_rect(settings) && window(&h).contains_rect(help));
+        let version = h
+            .get_by_label(concat!("v", env!("CARGO_PKG_VERSION")))
+            .rect();
+        for r in [settings, help, version] {
+            assert!(window(&h).contains_rect(r), "{width}: {r:?} off-screen");
+        }
+        // The left side ends before Settings.
+        let left_of_settings = |h: &AppHarness, name: &str| {
+            if let Some(n) = h.query_by_label(name) {
+                let r = n.rect();
+                assert!(
+                    window(h).contains_rect(r) && r.max.x <= settings.min.x,
+                    "{width}: {name} at {r:?}, Settings at {settings:?}"
+                );
+            }
+        };
         // Each document in turn is the active one.
         for (i, name) in names.iter().enumerate() {
             let id = s.lock().unwrap().docs[i].id();
@@ -390,6 +435,9 @@ fn the_active_tab_stays_visible_with_12_documents() {
             h.run();
             let active = s.lock().unwrap().doc().id();
             assert_eq!(active, id, "switched");
+            h.get_by_label("New document");
+            left_of_settings(&h, "New document");
+            left_of_settings(&h, app_bar::ALL_DOCUMENTS);
             let tab = h.get_by_role_and_label(Role::Button, name);
             let r = tab.rect();
             assert!(
