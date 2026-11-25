@@ -2960,13 +2960,14 @@ fn copies_description_names_the_refusal_and_the_shared_link() {
 }
 
 /// A reopened .svgz keeps its text: the stored bytes are still gzipped,
-/// and the rebuild must load the fonts for them anyway.
+/// and the rebuild must load the fonts for them anyway. The text is in
+/// IBM Plex Sans, which is always in the font database.
 #[test]
 fn a_reopened_svgz_keeps_its_text() {
     use std::io::Write;
     let dir = tempfile::tempdir().unwrap();
     let mut s = session(&dir);
-    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="40mm" viewBox="0 0 100 40"><text x="5" y="30" font-family="sans-serif" font-size="24">Hi</text></svg>"#;
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="40mm" viewBox="0 0 100 40"><text x="5" y="30" font-family="IBM Plex Sans" font-size="24">Hi</text></svg>"#;
     let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     gz.write_all(svg.as_bytes()).unwrap();
     let file = dir.path().join("hi.svgz");
@@ -2974,11 +2975,10 @@ fn a_reopened_svgz_keeps_its_text() {
     let r = run(&mut s, "object.import", json!({ "path": file }));
     let id = ObjectId(r["id"].as_u64().unwrap());
     let paths = |s: &Session| s.doc().document.get(id).unwrap().geometry.len();
+    // IBM Plex Sans ships with FlatCraft, so the text draws everywhere.
+    assert_eq!(r["warnings"], json!([]), "{r}");
     let before = paths(&s);
-    if before == 0 {
-        eprintln!("no system font draws the text here; nothing to compare");
-        return;
-    }
+    assert!(before > 0, "the text was drawn");
     let project = dir.path().join("hi.flatcraft");
     run(&mut s, "project.save", json!({ "path": project }));
     run(&mut s, "document.new", json!({}));

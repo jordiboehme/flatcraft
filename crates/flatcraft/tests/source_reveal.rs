@@ -268,7 +268,6 @@ fn a_project_folder_that_moved_as_a_whole_still_finds_its_file() {
 
 #[test]
 fn twelve_copies_of_one_file_touch_no_file_per_frame() {
-    use std::sync::atomic::Ordering;
     let mut r = rig();
     let file = r.dir.path().join("a.svg");
     write_square(&file);
@@ -293,7 +292,7 @@ fn twelve_copies_of_one_file_touch_no_file_per_frame() {
     assert_eq!(ids.len(), 12);
     select(&r.s, &ids);
     r.h.run();
-    let calls = flatcraft_engine::commands::sources::FIND_LINKED_CALLS.load(Ordering::Relaxed);
+    let calls = flatcraft_engine::commands::sources::find_linked_calls();
     for _ in 0..10 {
         r.h.step();
         // What the context menu and the menu bar ask each frame.
@@ -302,13 +301,92 @@ fn twelve_copies_of_one_file_touch_no_file_per_frame() {
         let m = model(&mut r);
         assert!(enabled(&m, &Cmd::RevealSource));
     }
-    let after = flatcraft_engine::commands::sources::FIND_LINKED_CALLS.load(Ordering::Relaxed);
+    let after = flatcraft_engine::commands::sources::find_linked_calls();
     assert_eq!(after, calls, "no file was looked at");
     // A click finds the file once.
     run(&mut r, Item::RevealSource, &ids);
     assert_eq!(
-        flatcraft_engine::commands::sources::FIND_LINKED_CALLS.load(Ordering::Relaxed),
+        flatcraft_engine::commands::sources::find_linked_calls(),
         calls + 1
     );
     assert_eq!(*r.revealed.0.lock().unwrap(), vec![file]);
+}
+
+#[test]
+fn a_click_on_a_file_gone_since_the_last_check_says_so_and_copies_nothing() {
+    let mut r = rig();
+    let file = r.dir.path().join("a.svg");
+    write_square(&file);
+    let id = import_file(&r.s, &file);
+    // Gone, and the source check has not run since.
+    std::fs::remove_file(&file).unwrap();
+    let list = items(&mut r, &[id]);
+    assert_eq!(reason(&list, Item::CopySourcePath), Some(None));
+    for item in [Item::RevealSource, Item::CopySourcePath] {
+        run(&mut r, item, &[id]);
+        let toast = app(&r.h).ui.toasts.last().unwrap();
+        assert_eq!(toast.text, SOURCE_MISSING);
+        assert_eq!(toast.kind, flatcraft::ui::toasts::ToastKind::Error);
+    }
+    assert!(r.revealed.0.lock().unwrap().is_empty());
+    assert!(
+        !app(&r.h).ui.toasts.iter().any(|t| t.text == "Path copied"),
+        "no dead path was copied"
+    );
+}
+
+/// A file manager that refuses at once, or later.
+#[derive(Clone, Default)]
+struct FailingRevealer {
+    later: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    at_once: bool,
+}
+
+impl flatcraft::ui::files::Revealer for FailingRevealer {
+    fn reveal(&mut self, _file: &Path) -> Result<(), String> {
+        if self.at_once {
+            return Err("no file manager".into());
+        }
+        self.later.lock().unwrap().push("Finder said no".into());
+        Ok(())
+    }
+
+    fn failures(&mut self) -> Vec<String> {
+        std::mem::take(&mut *self.later.lock().unwrap())
+    }
+}
+
+#[test]
+fn a_reveal_that_fails_shows_why() {
+    for at_once in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let s = session(&dir);
+        let file = dir.path().join("a.svg");
+        write_square(&file);
+        let id = import_file(&s, &file);
+        let fail = FailingRevealer {
+            at_once,
+            ..Default::default()
+        };
+        let mut h = harness_with(&dir, s.clone(), move |a| a.with_revealer(fail));
+        to_prepare(&mut h);
+        let mut r = Rig {
+            dir,
+            s,
+            h,
+            revealed: FakeRevealer::default(),
+        };
+        run(&mut r, Item::RevealSource, &[id]);
+        r.h.run();
+        let texts: Vec<String> = app(&r.h).ui.toasts.iter().map(|t| t.text.clone()).collect();
+        let want = if at_once {
+            "no file manager"
+        } else {
+            "Finder said no"
+        };
+        assert!(
+            texts.iter().any(|t| t.contains(want)),
+            "{at_once}: {texts:?}"
+        );
+    }
 }

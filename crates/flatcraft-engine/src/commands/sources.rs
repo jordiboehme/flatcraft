@@ -284,10 +284,16 @@ fn candidates(link: &SourceLink, project: Option<&Path>, kind: FileKind) -> Vec<
         .collect()
 }
 
-/// How often [`find_linked_file`] looked at the disk, for tests that
-/// check the window does not do it every frame.
-pub static FIND_LINKED_CALLS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+thread_local! {
+    static FIND_LINKED_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How often [`find_linked_file`] looked at the disk on this thread, for
+/// tests that check the window does not do it every frame. Per thread,
+/// so tests running side by side do not count each other's calls.
+pub fn find_linked_calls() -> usize {
+    FIND_LINKED_CALLS.with(std::cell::Cell::get)
+}
 
 /// Where the linked file of an object is now (`raster`: a picture, else
 /// an SVG), as Reload
@@ -299,7 +305,7 @@ pub fn find_linked_file(
     raster: bool,
     project: Option<&Path>,
 ) -> Option<PathBuf> {
-    FIND_LINKED_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    FIND_LINKED_CALLS.with(|c| c.set(c.get() + 1));
     let kind = if raster {
         FileKind::Raster
     } else {

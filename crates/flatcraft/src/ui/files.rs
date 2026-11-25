@@ -98,16 +98,30 @@ pub fn reveal_source_label() -> &'static str {
 /// [`NativeRevealer`]; tests record the paths instead of starting
 /// processes.
 pub trait Revealer {
+    /// Starts showing `file`. An error here (the file is gone, the
+    /// command cannot start) is shown at once.
     fn reveal(&mut self, file: &Path) -> Result<(), String>;
+
+    /// Reasons of reveals that failed after they started, since the last
+    /// call. The window shows each as an error toast.
+    fn failures(&mut self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// `open -R` on macOS, `explorer /select,` on Windows, `xdg-open` on the
-/// folder elsewhere.
+/// folder elsewhere. The command runs on its own; when it ends with an
+/// error, its message waits in `failed` for [`Revealer::failures`].
 #[derive(Debug, Default)]
-pub struct NativeRevealer;
+pub struct NativeRevealer {
+    failed: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
 
 impl Revealer for NativeRevealer {
     fn reveal(&mut self, file: &Path) -> Result<(), String> {
+        if !file.exists() {
+            return Err("the file was moved or deleted".into());
+        }
         let mut cmd = if cfg!(target_os = "macos") {
             let mut c = std::process::Command::new("open");
             c.arg("-R").arg(file);
@@ -125,9 +139,32 @@ impl Revealer for NativeRevealer {
             c.arg(dir);
             c
         };
-        let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-        // Reaped off the UI thread, so no zombie process stays behind.
-        std::thread::spawn(move || child.wait());
+        cmd.stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped());
+        let child = cmd.spawn().map_err(|e| e.to_string())?;
+        // Waited for off the UI thread, so no zombie process stays behind
+        // and a failure is reported.
+        let failed = self.failed.clone();
+        std::thread::spawn(move || {
+            // Explorer ends with 1 even when it worked, so only open
+            // and xdg-open report.
+            if let Ok(out) = child.wait_with_output()
+                && !out.status.success()
+                && !cfg!(target_os = "windows")
+            {
+                let text = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                let why = if text.is_empty() {
+                    format!("the file manager ended with {}", out.status)
+                } else {
+                    text
+                };
+                failed.lock().unwrap_or_else(|e| e.into_inner()).push(why);
+            }
+        });
         Ok(())
+    }
+
+    fn failures(&mut self) -> Vec<String> {
+        std::mem::take(&mut *self.failed.lock().unwrap_or_else(|e| e.into_inner()))
     }
 }

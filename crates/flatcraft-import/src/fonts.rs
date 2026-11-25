@@ -4,12 +4,18 @@ use std::sync::{Arc, OnceLock};
 
 static SYSTEM_FONTS: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
 
-/// Returns the shared system font database. Fonts are loaded on first use.
+/// IBM Plex Sans (OFL-1.1), the font FlatCraft ships for its window.
+const PLEX_SANS: &[u8] = include_bytes!("../../../assets/fonts/IBMPlexSans-Regular.ttf");
+
+/// Returns the shared font database: the system fonts and IBM Plex Sans,
+/// which FlatCraft ships, so SVG text in Plex draws on every computer.
+/// Fonts are loaded on first use.
 pub fn system_fonts() -> Arc<usvg::fontdb::Database> {
     SYSTEM_FONTS
         .get_or_init(|| {
             let mut db = usvg::fontdb::Database::new();
             db.load_system_fonts();
+            db.load_font_data(PLEX_SANS.to_vec());
             Arc::new(db)
         })
         .clone()

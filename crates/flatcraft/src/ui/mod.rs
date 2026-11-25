@@ -287,6 +287,8 @@ pub enum Action {
     Reveal(PathBuf),
     /// Copy this path to the clipboard.
     CopyPath(PathBuf),
+    /// Show this error as a toast.
+    Error(String),
     /// Close every document but this one; each one with unsaved changes
     /// asks first, one after the other.
     CloseOthers(u64),
@@ -411,7 +413,7 @@ impl FlatCraftApp {
             agent: false,
             files: Box::new(files::NativePicker),
             tracer: std::sync::Arc::new(flatcraft_import::trace::trace),
-            revealer: Box::new(files::NativeRevealer),
+            revealer: Box::new(files::NativeRevealer::default()),
             clock: std::sync::Arc::new(Instant::now),
             source_check: std::sync::Arc::new(flatcraft_engine::commands::sources::check_unlocked),
             source_check_job: None,
@@ -1081,6 +1083,7 @@ impl FlatCraftApp {
                 self.ui.close_queue = others;
                 self.close_next_queued();
             }
+            Action::Error(text) => self.toast(Toast::error(text)),
             Action::Reveal(file) => {
                 if let Err(e) = self.revealer.reveal(&file) {
                     self.toast(Toast::error(format!(
@@ -1924,6 +1927,11 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     }
     app.apply(&ctx, actions);
 
+    // A reveal command that failed after it started (the file manager
+    // said no) shows why.
+    for why in app.revealer.failures() {
+        app.toast(Toast::error(format!("Cannot show the file: {why}")));
+    }
     let now = (app.clock)();
     app.check_sources(&ctx, now);
     let next = toasts::prune(&mut app.ui.toasts, now);

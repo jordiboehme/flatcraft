@@ -207,19 +207,12 @@ pub fn source_file(
 }
 
 /// Where the linked file of object `id` is now, as Reload finds it (also
-/// after the project folder moved as a whole); its last known path when
-/// it is in neither place. Looks at the disk: only for a click.
+/// after the project folder moved as a whole); `None` when it is in
+/// neither place. Looks at the disk: only for a click.
 pub fn source_path(snap: &Snapshot, id: u64) -> Option<std::path::PathBuf> {
     let o = snap.object(id)?;
     let link = o.source_link.as_ref()?;
-    Some(
-        flatcraft_engine::commands::sources::find_linked_file(
-            link,
-            o.raster,
-            snap.project.as_deref(),
-        )
-        .unwrap_or_else(|| link.path.clone()),
-    )
+    flatcraft_engine::commands::sources::find_linked_file(link, o.raster, snap.project.as_deref())
 }
 
 /// The objects a right-click works on. A click on an object outside the
@@ -472,8 +465,11 @@ pub fn run_item(
             let Some(Ok(id)) = source_file(snap, st, ids) else {
                 return false;
             };
+            // The source check may not have seen the file go yet: never
+            // reveal or copy a dead path.
             let Some(path) = source_path(snap, id) else {
-                return false;
+                actions.push(Action::Error(SOURCE_MISSING.to_string()));
+                return true;
             };
             actions.push(if item == Item::RevealSource {
                 Action::Reveal(path)
