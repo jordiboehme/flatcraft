@@ -1024,15 +1024,17 @@ fn size_wh(ui: &mut Ui, cx: &mut Cx) -> [egui::Rect; 2] {
 /// The Angle under the %, with the rotate icon as its label.
 fn size_angle(ui: &mut Ui, cx: &mut Cx) {
     let any = !cx.snap.selection.is_empty();
-    let current = canvas::live_angle(cx.snap, cx.st)
-        .map(mm)
-        .unwrap_or_default();
+    let angle = canvas::live_angle(cx.snap, cx.st);
+    // Mixed only for several objects turned different ways, never for an
+    // emptied field.
+    let mixed = cx.snap.selection.len() > 1 && angle.is_none();
+    let current = angle.map(mm).unwrap_or_default();
     let nf = NumberField {
         field: SizeField::Angle,
         label: "Angle",
         icon: Some(Icon::Rotate),
         // Turned different ways: no one angle to show.
-        hint: if any { "Mixed" } else { "" },
+        hint: if mixed { "Mixed" } else { "" },
         widest: WIDEST_DEG,
         name: "Angle (degrees)",
         setting: Setting::Angle,

@@ -4,7 +4,9 @@
 
 mod common;
 
-use common::{AppHarness, app, app_mut, harness, import_square, session, to_prepare, undo_len};
+use common::{
+    AppHarness, app, app_mut, harness, import_square, painted, session, to_prepare, undo_len,
+};
 use egui::accesskit::Role;
 use egui::{CursorIcon, Key, Modifiers, Pos2, Vec2};
 use egui_kittest::kittest::Queryable as _;
@@ -131,6 +133,14 @@ fn rotate_keys() -> Modifiers {
 }
 
 const ANGLE: &str = "Angle (degrees)";
+
+/// Whether `text` was painted last frame (a field's hint, say).
+fn drawn(h: &AppHarness, text: &str) -> bool {
+    painted(h).iter().any(|s| match s {
+        egui::Shape::Text(t) => t.galley.text() == text,
+        _ => false,
+    })
+}
 
 /// Clicks into the field, selects its text and types `text`, without
 /// leaving it.
@@ -398,6 +408,7 @@ fn the_angle_field_shows_mixed_and_sets_every_object() {
     h.run();
     h.run();
     assert_eq!(fields(&h).angle, "", "mixed angles show the Mixed hint");
+    assert!(drawn(&h, "Mixed"), "the hint is drawn");
     let (ca, cb) = (transform(&s, a).center_mm, transform(&s, b).center_mm);
     let before = undo_len(&s);
     type_text(&mut h, ANGLE, "45");
@@ -567,4 +578,31 @@ fn an_object_under_the_rotate_zone_wins_a_drag() {
         near(after.x - before.x, 10.0) && near(after.y, before.y),
         "{after:?}"
     );
+}
+
+#[test]
+fn one_object_never_shows_mixed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_s, _id, mut h, _) = square(&dir);
+    assert!(!drawn(&h, "Mixed"));
+    // An emptied field is just empty.
+    type_text(&mut h, ANGLE, "");
+    h.key_press(Key::Backspace);
+    h.run();
+    h.run();
+    assert_eq!(fields(&h).angle, "");
+    assert!(!drawn(&h, "Mixed"));
+}
+
+#[test]
+fn two_objects_with_one_angle_do_not_show_mixed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_s, _a, _b, mut h, _) = two_squares(&dir);
+    h.run();
+    assert_eq!(fields(&h).angle, "0.00");
+    assert!(!drawn(&h, "Mixed"));
+    type_text(&mut h, ANGLE, "");
+    h.key_press(Key::Backspace);
+    h.run();
+    assert!(!drawn(&h, "Mixed"));
 }
