@@ -29,8 +29,11 @@ const LABEL_OFFSET: Vec2 = Vec2::new(5.0, -4.0);
 const LABEL_CHAR_W: f32 = 6.0;
 const LABEL_H: f32 = 11.0;
 
-/// Order numbers and arrows are left out above this many toolpaths.
-const MAX_LABELLED: usize = 500;
+/// Order numbers and arrows are left out while more starts than this are
+/// on screen; a hint asks to zoom in.
+pub const MAX_LABELS: usize = 300;
+/// The hint shown instead of the order numbers.
+pub const ZOOM_HINT: &str = "Zoom in to see the order numbers";
 /// Text of the disabled Simulate stage.
 pub const SIMULATE_HINT: &str = "The knife simulator arrives in milestone 2.";
 
@@ -89,6 +92,7 @@ pub struct CutState {
     pub plan: Option<Plan>,
     /// The active plotter's transport.
     pub transport: Option<TransportSpec>,
+    pub labels: LabelCache,
 }
 
 impl Default for CutState {
@@ -103,6 +107,7 @@ impl Default for CutState {
             plan_key: None,
             plan: None,
             transport: None,
+            labels: LabelCache::default(),
         }
     }
 }
@@ -417,7 +422,25 @@ fn cut_canvas(
     let faded = if job.is_some() { 0.3 } else { 1.0 };
     canvas::draw_objects(&painter, snap, &view, mat_rgb, faded, |_| None);
     if let Some(job) = &job {
-        draw_toolpaths(&painter, &view, job, st.visible_toolpaths(), contrast);
+        let visible = st.visible_toolpaths();
+        let crowded = draw_toolpaths(
+            &painter,
+            &view,
+            rect,
+            job,
+            visible,
+            contrast,
+            &mut st.labels,
+        );
+        if crowded {
+            painter.text(
+                rect.left_bottom() + Vec2::new(canvas::RULER + t.spacing, -t.spacing),
+                Align2::LEFT_BOTTOM,
+                ZOOM_HINT,
+                fonts::medium(12.0),
+                t.text_dim,
+            );
+        }
     }
     canvas::draw_area(&painter, rect, snap, &view, t, contrast);
     canvas::draw_rulers(&painter, rect, &view, t);
@@ -429,16 +452,19 @@ fn cut_canvas(
 fn draw_toolpaths(
     painter: &egui::Painter,
     view: &CanvasView,
-    job: &JobResult,
+    rect: Rect,
+    job: &Arc<JobResult>,
     visible: usize,
     contrast: Color32,
-) {
+    cache: &mut LabelCache,
+) -> bool {
     let paths = &job.plan.toolpaths;
-    let labelled = paths.len() <= MAX_LABELLED;
     let travel = contrast.gamma_multiply(0.7);
     let font = fonts::medium(10.0);
     let mut at = kurbo::Point::ZERO;
+    // On-screen starts with their order number and direction.
     let mut starts: Vec<(usize, Pos2)> = Vec::new();
+    let mut arrows: Vec<(Pos2, Vec2)> = Vec::new();
     for (i, tp) in paths.iter().take(visible).enumerate() {
         let Some(first) = tp.points.first().copied() else {
             continue;
@@ -453,23 +479,34 @@ fn draw_toolpaths(
         } else {
             1.5
         };
-        let stroke = Stroke::new(width, contrast);
         // A closed toolpath already returns to its start and runs on by
         // the overcut, so it is drawn as the open line it is cut as.
-        painter.add(egui::Shape::line(pts.clone(), stroke));
+        if let Some(next) = pts.iter().find(|p| p.distance(start) > 0.5) {
+            arrows.push((start, (*next - start).normalized()));
+        }
+        painter.add(egui::Shape::line(pts, Stroke::new(width, contrast)));
         painter.circle_filled(start, 3.0, contrast);
-        if labelled {
-            if let Some(next) = pts.iter().find(|p| p.distance(start) > 0.5) {
-                let dir = (*next - start).normalized();
-                painter.arrow(start + dir * 4.0, dir * 12.0, Stroke::new(1.5, contrast));
-            }
+        if rect.contains(start) {
             starts.push((i + 1, start));
         }
         at = *tp.points.last().unwrap_or(&first);
     }
-    for l in place_labels(&starts) {
-        painter.text(l.at, Align2::LEFT_BOTTOM, l.text, font.clone(), contrast);
+    let key = LabelKey {
+        plan: Arc::as_ptr(job) as usize,
+        visible,
+        view: *view,
+        rect,
+    };
+    let Some(labels) = cache.get(key, &starts) else {
+        return true;
+    };
+    for (start, dir) in arrows {
+        painter.arrow(start + dir * 4.0, dir * 12.0, Stroke::new(1.5, contrast));
     }
+    for l in labels.iter() {
+        painter.text(l.at, Align2::LEFT_BOTTOM, &l.text, font.clone(), contrast);
+    }
+    false
 }
 
 /// An order number label: its bottom-left corner and its text.
@@ -514,6 +551,42 @@ pub fn place_labels(starts: &[(usize, Pos2)]) -> Vec<Label> {
         });
     }
     out
+}
+
+/// What the placed labels were made for: the plan, how many toolpaths are
+/// drawn, the view and the canvas.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LabelKey {
+    /// Address of the plan's `Arc<JobResult>` (held by `CutState.plan`).
+    pub plan: usize,
+    pub visible: usize,
+    pub view: CanvasView,
+    pub rect: Rect,
+}
+
+/// The order numbers of the last frame, reused while nothing moved.
+#[derive(Debug, Clone, Default)]
+pub struct LabelCache {
+    key: Option<LabelKey>,
+    labels: Option<Arc<Vec<Label>>>,
+    /// How often labels were placed (tests).
+    pub placed: usize,
+}
+
+impl LabelCache {
+    /// The labels for `key`, placing them from `starts` (on-screen starts
+    /// only) when the key changed. `None` when there are more than
+    /// [`MAX_LABELS`] starts.
+    pub fn get(&mut self, key: LabelKey, starts: &[(usize, Pos2)]) -> Option<Arc<Vec<Label>>> {
+        if self.key != Some(key) {
+            self.key = Some(key);
+            self.labels = (starts.len() <= MAX_LABELS).then(|| {
+                self.placed += 1;
+                Arc::new(place_labels(starts))
+            });
+        }
+        self.labels.clone()
+    }
 }
 
 /// Screen points of a toolpath without repeated points. egui's tessellator
@@ -565,6 +638,45 @@ mod tests {
         // Far apart labels stay next to their start.
         let far = place_labels(&[(1, Pos2::ZERO), (2, Pos2::new(200.0, 0.0))]);
         assert_eq!(far[1].at, Pos2::new(200.0, 0.0) + LABEL_OFFSET);
+    }
+
+    fn key(visible: usize, px: f32) -> LabelKey {
+        LabelKey {
+            plan: 1,
+            visible,
+            view: CanvasView {
+                offset: Vec2::ZERO,
+                px_per_mm: px,
+            },
+            rect: Rect::from_min_size(Pos2::ZERO, Vec2::splat(500.0)),
+        }
+    }
+
+    #[test]
+    fn labels_are_placed_once_per_view() {
+        let mut cache = LabelCache::default();
+        let starts = [(1, Pos2::new(10.0, 10.0)), (2, Pos2::new(50.0, 10.0))];
+        let a = cache.get(key(2, 2.0), &starts).unwrap();
+        let b = cache.get(key(2, 2.0), &starts).unwrap();
+        assert!(Arc::ptr_eq(&a, &b));
+        assert_eq!(cache.placed, 1);
+        cache.get(key(2, 3.0), &starts);
+        cache.get(key(1, 3.0), &starts[..1]);
+        assert_eq!(cache.placed, 3);
+    }
+
+    #[test]
+    fn too_many_starts_show_no_labels() {
+        let mut cache = LabelCache::default();
+        let many: Vec<(usize, Pos2)> = (0..=MAX_LABELS)
+            .map(|i| (i + 1, Pos2::new(i as f32, 0.0)))
+            .collect();
+        assert!(cache.get(key(many.len(), 2.0), &many).is_none());
+        assert!(
+            cache
+                .get(key(MAX_LABELS, 2.0), &many[..MAX_LABELS])
+                .is_some()
+        );
     }
 
     #[test]
