@@ -59,6 +59,11 @@ pub enum Icon {
     Pin,
     PinOff,
     ChevronDown,
+    AlignLeft,
+    AlignCentre,
+    AlignRight,
+    AlignTop,
+    AlignBottom,
 }
 
 macro_rules! svg {
@@ -68,7 +73,7 @@ macro_rules! svg {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 50] = [
+    pub const ALL: [Icon; 55] = [
         Icon::Import,
         Icon::Trace,
         Icon::Duplicate,
@@ -119,6 +124,11 @@ impl Icon {
         Icon::Pin,
         Icon::PinOff,
         Icon::ChevronDown,
+        Icon::AlignLeft,
+        Icon::AlignCentre,
+        Icon::AlignRight,
+        Icon::AlignTop,
+        Icon::AlignBottom,
     ];
 
     /// The vendored Lucide SVG source.
@@ -174,6 +184,11 @@ impl Icon {
             Icon::Pin => svg!("pin"),
             Icon::PinOff => svg!("pin-off"),
             Icon::ChevronDown => svg!("chevron-down"),
+            Icon::AlignLeft => svg!("align-start-vertical"),
+            Icon::AlignCentre => svg!("align-center-vertical"),
+            Icon::AlignRight => svg!("align-end-vertical"),
+            Icon::AlignTop => svg!("align-start-horizontal"),
+            Icon::AlignBottom => svg!("align-end-horizontal"),
         }
     }
 }

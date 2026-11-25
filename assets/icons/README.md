@@ -15,7 +15,7 @@ https://raw.githubusercontent.com/lucide-icons/lucide/1.79.0/icons/<name>.svg, u
 | Scale | scaling |
 | Rotate | rotate-cw |
 | Mirror | square-axis-dashed-vertical (formerly flip-horizontal) |
-| Align | align-center-horizontal |
+| Align, Align middle | align-center-horizontal |
 | Arrange | layout-grid |
 | Undo | undo-2 |
 | Redo | redo-2 |
@@ -58,6 +58,11 @@ https://raw.githubusercontent.com/lucide-icons/lucide/1.79.0/icons/<name>.svg, u
 | Pin to the ribbon | pin |
 | Unpin from the ribbon | pin-off |
 | Drop-down | chevron-down |
+| Align left | align-start-vertical |
+| Align centre | align-center-vertical |
+| Align right | align-end-vertical |
+| Align top | align-start-horizontal |
+| Align bottom | align-end-horizontal |
 
 The SVGs draw with currentColor. The app replaces it with the theme's text colour before
 resvg renders them.

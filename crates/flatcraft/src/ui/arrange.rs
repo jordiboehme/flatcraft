@@ -24,40 +24,79 @@ use super::settings::{painted_label, set_name};
 use super::theme::Tokens;
 use super::{Action, ICON_SIZE, ribbon};
 
-/// One command of the Arrange drop-down.
+/// One pinnable item of the Arrange drop-down: a command with a big
+/// button (Move / Copy, Rotate, the patterns, Auto arrange), or one
+/// direction of Rotate, Mirror, Align or Distribute, which runs in one
+/// click from a small icon button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ArrangeCmd {
     MoveCopy,
     Rotate,
-    Mirror,
-    Align,
-    Distribute,
+    RotateLeft,
+    RotateRight,
+    MirrorHorizontal,
+    MirrorVertical,
+    AlignLeft,
+    AlignCentre,
+    AlignRight,
+    AlignTop,
+    AlignMiddle,
+    AlignBottom,
+    DistributeHorizontal,
+    DistributeVertical,
     RectangularPattern,
     CircularPattern,
     AutoArrange,
 }
 
+/// A heading row of the drop-down: the command whose directions follow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Heading {
+    Mirror,
+    Align,
+    Distribute,
+}
+
 impl ArrangeCmd {
-    /// Every command, in the order of the drop-down and of the pins.
-    pub const ALL: [ArrangeCmd; 8] = [
+    /// Every item, in the order of the drop-down and of the pins.
+    pub const ALL: [ArrangeCmd; 17] = [
         ArrangeCmd::MoveCopy,
         ArrangeCmd::Rotate,
-        ArrangeCmd::Mirror,
-        ArrangeCmd::Align,
-        ArrangeCmd::Distribute,
+        ArrangeCmd::RotateLeft,
+        ArrangeCmd::RotateRight,
+        ArrangeCmd::MirrorHorizontal,
+        ArrangeCmd::MirrorVertical,
+        ArrangeCmd::AlignLeft,
+        ArrangeCmd::AlignCentre,
+        ArrangeCmd::AlignRight,
+        ArrangeCmd::AlignTop,
+        ArrangeCmd::AlignMiddle,
+        ArrangeCmd::AlignBottom,
+        ArrangeCmd::DistributeHorizontal,
+        ArrangeCmd::DistributeVertical,
         ArrangeCmd::RectangularPattern,
         ArrangeCmd::CircularPattern,
         ArrangeCmd::AutoArrange,
     ];
 
-    /// The id stored in the preferences' `arrange_pins`.
+    /// The id stored in the preferences' `arrange_pins`
+    /// (`flatcraft_engine::prefs::ARRANGE_PIN_IDS`).
     pub fn id(self) -> &'static str {
         match self {
             ArrangeCmd::MoveCopy => "move_copy",
             ArrangeCmd::Rotate => "rotate",
-            ArrangeCmd::Mirror => "mirror",
-            ArrangeCmd::Align => "align",
-            ArrangeCmd::Distribute => "distribute",
+            ArrangeCmd::RotateLeft => "rotate_left",
+            ArrangeCmd::RotateRight => "rotate_right",
+            ArrangeCmd::MirrorHorizontal => "mirror_horizontal",
+            ArrangeCmd::MirrorVertical => "mirror_vertical",
+            ArrangeCmd::AlignLeft => "align_left",
+            ArrangeCmd::AlignCentre => "align_hcenter",
+            ArrangeCmd::AlignRight => "align_right",
+            ArrangeCmd::AlignTop => "align_top",
+            ArrangeCmd::AlignMiddle => "align_vcenter",
+            ArrangeCmd::AlignBottom => "align_bottom",
+            ArrangeCmd::DistributeHorizontal => "distribute_horizontal",
+            ArrangeCmd::DistributeVertical => "distribute_vertical",
             ArrangeCmd::RectangularPattern => "rectangular_pattern",
             ArrangeCmd::CircularPattern => "circular_pattern",
             ArrangeCmd::AutoArrange => "auto_arrange",
@@ -68,13 +107,23 @@ impl ArrangeCmd {
         Self::ALL.into_iter().find(|c| c.id() == id)
     }
 
+    /// The text of its row, and the name of its button.
     pub fn label(self) -> &'static str {
         match self {
             ArrangeCmd::MoveCopy => "Move / Copy...",
             ArrangeCmd::Rotate => "Rotate...",
-            ArrangeCmd::Mirror => "Mirror",
-            ArrangeCmd::Align => "Align",
-            ArrangeCmd::Distribute => "Distribute",
+            ArrangeCmd::RotateLeft => "Rotate -90",
+            ArrangeCmd::RotateRight => "Rotate +90",
+            ArrangeCmd::MirrorHorizontal => "Mirror horizontally",
+            ArrangeCmd::MirrorVertical => "Mirror vertically",
+            ArrangeCmd::AlignLeft => "Align left",
+            ArrangeCmd::AlignCentre => "Align centre",
+            ArrangeCmd::AlignRight => "Align right",
+            ArrangeCmd::AlignTop => "Align top",
+            ArrangeCmd::AlignMiddle => "Align middle",
+            ArrangeCmd::AlignBottom => "Align bottom",
+            ArrangeCmd::DistributeHorizontal => "Distribute horizontally",
+            ArrangeCmd::DistributeVertical => "Distribute vertically",
             ArrangeCmd::RectangularPattern => "Rectangular pattern...",
             ArrangeCmd::CircularPattern => "Circular pattern...",
             ArrangeCmd::AutoArrange => "Auto arrange",
@@ -84,10 +133,18 @@ impl ArrangeCmd {
     pub fn icon(self) -> Icon {
         match self {
             ArrangeCmd::MoveCopy => Icon::Move,
-            ArrangeCmd::Rotate => Icon::Rotate,
-            ArrangeCmd::Mirror => Icon::Mirror,
-            ArrangeCmd::Align => Icon::Align,
-            ArrangeCmd::Distribute => Icon::DistributeHorizontal,
+            ArrangeCmd::Rotate | ArrangeCmd::RotateRight => Icon::Rotate,
+            ArrangeCmd::RotateLeft => Icon::RotateLeft,
+            ArrangeCmd::MirrorHorizontal => Icon::Mirror,
+            ArrangeCmd::MirrorVertical => Icon::MirrorVertical,
+            ArrangeCmd::AlignLeft => Icon::AlignLeft,
+            ArrangeCmd::AlignCentre => Icon::AlignCentre,
+            ArrangeCmd::AlignRight => Icon::AlignRight,
+            ArrangeCmd::AlignTop => Icon::AlignTop,
+            ArrangeCmd::AlignMiddle => Icon::Align,
+            ArrangeCmd::AlignBottom => Icon::AlignBottom,
+            ArrangeCmd::DistributeHorizontal => Icon::DistributeHorizontal,
+            ArrangeCmd::DistributeVertical => Icon::DistributeVertical,
             ArrangeCmd::RectangularPattern => Icon::RectangularPattern,
             ArrangeCmd::CircularPattern => Icon::CircularPattern,
             ArrangeCmd::AutoArrange => Icon::Arrange,
@@ -98,15 +155,74 @@ impl ArrangeCmd {
         match self {
             ArrangeCmd::MoveCopy => "Move the selection by an exact offset, or leave copies behind",
             ArrangeCmd::Rotate => "Turn the selection by an exact angle",
-            ArrangeCmd::Mirror => "Flip the selection left and right, or top and bottom",
-            ArrangeCmd::Align => "Line up the selection, or put it on the cutting area",
-            ArrangeCmd::Distribute => "Equal gaps between 3 or more objects",
+            ArrangeCmd::RotateLeft => "A quarter turn anticlockwise",
+            ArrangeCmd::RotateRight => "A quarter turn clockwise",
+            ArrangeCmd::MirrorHorizontal => {
+                "Flip left and right. Iron-on vinyl is cut from the back."
+            }
+            ArrangeCmd::MirrorVertical => "Flip top and bottom",
+            ArrangeCmd::AlignLeft
+            | ArrangeCmd::AlignCentre
+            | ArrangeCmd::AlignRight
+            | ArrangeCmd::AlignTop
+            | ArrangeCmd::AlignMiddle
+            | ArrangeCmd::AlignBottom => {
+                "Lines up the selection, to itself or to the cutting area as set under Align"
+            }
+            ArrangeCmd::DistributeHorizontal => {
+                "Equal gaps from left to right. The outer objects stay put."
+            }
+            ArrangeCmd::DistributeVertical => {
+                "Equal gaps from top to bottom. The outer objects stay put."
+            }
             ArrangeCmd::RectangularPattern => {
                 "Copies of one object in columns and rows. Sticker sheet, engage!"
             }
             ArrangeCmd::CircularPattern => "Copies around a circle, like the numbers on a clock",
             ArrangeCmd::AutoArrange => "Pack everything onto the mat, Tetris style",
         }
+    }
+
+    /// Pinned, it is a big button; else a small icon button.
+    pub fn big(self) -> bool {
+        matches!(
+            self,
+            ArrangeCmd::MoveCopy
+                | ArrangeCmd::Rotate
+                | ArrangeCmd::RectangularPattern
+                | ArrangeCmd::CircularPattern
+                | ArrangeCmd::AutoArrange
+        )
+    }
+
+    /// The heading the item sits under in the drop-down, if any.
+    fn heading(self) -> Option<Heading> {
+        match self {
+            ArrangeCmd::MirrorHorizontal | ArrangeCmd::MirrorVertical => Some(Heading::Mirror),
+            ArrangeCmd::AlignLeft
+            | ArrangeCmd::AlignCentre
+            | ArrangeCmd::AlignRight
+            | ArrangeCmd::AlignTop
+            | ArrangeCmd::AlignMiddle
+            | ArrangeCmd::AlignBottom => Some(Heading::Align),
+            ArrangeCmd::DistributeHorizontal | ArrangeCmd::DistributeVertical => {
+                Some(Heading::Distribute)
+            }
+            _ => None,
+        }
+    }
+
+    /// The `arrange.align` mode of an Align direction.
+    fn align_mode(self) -> Option<&'static str> {
+        Some(match self {
+            ArrangeCmd::AlignLeft => "left",
+            ArrangeCmd::AlignCentre => "hcenter",
+            ArrangeCmd::AlignRight => "right",
+            ArrangeCmd::AlignTop => "top",
+            ArrangeCmd::AlignMiddle => "vcenter",
+            ArrangeCmd::AlignBottom => "bottom",
+            _ => return None,
+        })
     }
 
     /// The panel the command opens, if it has one.
@@ -120,20 +236,53 @@ impl ArrangeCmd {
         }
     }
 
-    /// Why the command cannot run on this selection, or `None` when it
-    /// can.
+    /// The one command a click runs, for the items without a panel. Rotate
+    /// and Mirror follow the Each object switch, Align the "relative to"
+    /// choice under Align.
+    pub fn action(self, snap: &Snapshot, st: &PrepareState) -> Option<Action> {
+        let ids: Vec<u64> = snap.selection.iter().copied().collect();
+        let doc_id = snap.doc_id;
+        let each = st.fields.each;
+        Some(match self {
+            ArrangeCmd::RotateLeft => ribbon::rotate_action(doc_id, &ids, -90.0, each),
+            ArrangeCmd::RotateRight => ribbon::rotate_action(doc_id, &ids, 90.0, each),
+            ArrangeCmd::MirrorHorizontal => ribbon::mirror_action(doc_id, &ids, "horizontal", each),
+            ArrangeCmd::MirrorVertical => ribbon::mirror_action(doc_id, &ids, "vertical", each),
+            ArrangeCmd::DistributeHorizontal => {
+                ribbon::distribute_action(doc_id, &ids, "horizontal")
+            }
+            ArrangeCmd::DistributeVertical => ribbon::distribute_action(doc_id, &ids, "vertical"),
+            ArrangeCmd::AutoArrange => Action::run(doc_id, "arrange.auto", json!({})),
+            other => {
+                let mode = other.align_mode()?;
+                ribbon::align_action(doc_id, &ids, mode, st.fields.align_to_area)
+            }
+        })
+    }
+
+    /// Why the item cannot run on this selection, or `None` when it can.
     fn blocked(self, snap: &Snapshot) -> Option<&'static str> {
         let n = snap.selection.len();
         match self {
             ArrangeCmd::AutoArrange => snap.objects.is_empty().then_some("Import something first."),
             ArrangeCmd::RectangularPattern => (n != 1).then_some("Select one object first."),
-            ArrangeCmd::Distribute => (n < 3).then_some("Select 3 or more objects first."),
+            ArrangeCmd::DistributeHorizontal | ArrangeCmd::DistributeVertical => {
+                (n < 3).then_some("Select 3 or more objects first.")
+            }
             _ => (n == 0).then_some("Select something first."),
+        }
+    }
+
+    /// Its tooltip: what it does and, when it cannot run, why.
+    fn tooltip(self, snap: &Snapshot) -> String {
+        match self.blocked(snap) {
+            Some(why) => format!("{} {why}", self.hint()),
+            None => self.hint().to_string(),
         }
     }
 }
 
-/// The pinned commands of the snapshot's preferences, in drop-down order.
+/// The pinned items of the snapshot's preferences, in drop-down order.
 pub fn pinned(snap: &Snapshot) -> Vec<ArrangeCmd> {
     ArrangeCmd::ALL
         .into_iter()
@@ -719,50 +868,6 @@ pub fn keep_or_close(st: &mut PrepareState, snap: &Snapshot) {
 
 // ---------------------------------------------------------------- ribbon
 
-/// The items of the Mirror menu.
-pub(crate) fn mirror_items(
-    ui: &mut Ui,
-    doc_id: u64,
-    ids: &[u64],
-    each: bool,
-    actions: &mut Vec<Action>,
-) {
-    for (text, axis) in [
-        ("Mirror horizontally", "horizontal"),
-        ("Mirror vertically", "vertical"),
-    ] {
-        if ui.button(text).clicked() {
-            actions.push(ribbon::mirror_action(doc_id, ids, axis, each));
-            ui.close();
-        }
-    }
-}
-
-/// The items of the Distribute menu.
-pub(crate) fn distribute_items(ui: &mut Ui, doc_id: u64, ids: &[u64], actions: &mut Vec<Action>) {
-    let three = ids.len() >= 3;
-    let need = if three {
-        ""
-    } else {
-        " Select 3 or more objects first."
-    };
-    for ((name, axis), hint) in ribbon::DISTRIBUTE.into_iter().zip([
-        "Equal gaps from left to right. The outer objects stay put.",
-        "Equal gaps from top to bottom. The outer objects stay put.",
-    ]) {
-        let text = format!("{hint}{need}");
-        if ui
-            .add_enabled(three, egui::Button::new(name))
-            .on_hover_text(&text)
-            .on_disabled_hover_text(&text)
-            .clicked()
-        {
-            actions.push(ribbon::distribute_action(doc_id, ids, axis));
-            ui.close();
-        }
-    }
-}
-
 fn small_image(ui: &Ui, icon: Icon) -> egui::Image<'static> {
     let size = ICON_SIZE * 0.7;
     let tex = icons::texture(ui.ctx(), icon, size);
@@ -780,51 +885,25 @@ fn image(ui: &Ui, icon: Icon) -> egui::Image<'static> {
     ))
 }
 
-/// The contents of the submenu of Mirror, Align or Distribute.
-fn submenu(
-    ui: &mut Ui,
-    cmd: ArrangeCmd,
-    snap: &Snapshot,
-    st: &mut PrepareState,
-    actions: &mut Vec<Action>,
-) {
-    let ids: Vec<u64> = snap.selection.iter().copied().collect();
-    let doc_id = snap.doc_id;
-    match cmd {
-        ArrangeCmd::Mirror => mirror_items(ui, doc_id, &ids, st.fields.each, actions),
-        ArrangeCmd::Align => {
-            ribbon::align_items(ui, &mut st.fields.align_to_area, doc_id, &ids, actions);
-        }
-        ArrangeCmd::Distribute => distribute_items(ui, doc_id, &ids, actions),
-        _ => {}
-    }
-}
-
-/// Shows the Arrange tab with the drop-down open and, for Mirror, Align
-/// and Distribute, their items under their row. Search uses it.
-pub fn reveal(st: &mut PrepareState, cmd: ArrangeCmd) {
+/// Shows the Arrange tab with the drop-down open, where every item is
+/// (Rotate, Mirror, Align and Distribute with each direction). Search uses
+/// it for items that may not be pinned.
+pub fn reveal(st: &mut PrepareState) {
     st.tab = super::prepare::RibbonTab::Arrange;
     st.arrange_open = true;
-    st.arrange_reveal = has_submenu(cmd).then_some(cmd);
 }
 
-/// Runs a command that has no submenu: opens its panel or runs it.
+/// Runs an item: opens its panel or runs its command.
 fn pick(cmd: ArrangeCmd, snap: &Snapshot, st: &mut PrepareState, actions: &mut Vec<Action>) {
     if let Some(kind) = cmd.panel() {
         open(st, snap, kind);
-    } else if cmd == ArrangeCmd::AutoArrange {
-        actions.push(Action::run(snap.doc_id, "arrange.auto", json!({})));
+    } else if let Some(a) = cmd.action(snap, st) {
+        actions.push(a);
     }
 }
 
-fn has_submenu(cmd: ArrangeCmd) -> bool {
-    matches!(
-        cmd,
-        ArrangeCmd::Mirror | ArrangeCmd::Align | ArrangeCmd::Distribute
-    )
-}
-
-/// The "Arrange" drop-down, then the pinned commands as buttons.
+/// The "Arrange" drop-down, then the pinned items: big buttons first, then
+/// the directions as small icon buttons, grouped.
 pub fn group(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Vec<Action>) {
     let config = egui::containers::menu::MenuConfig::new()
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
@@ -839,7 +918,7 @@ pub fn group(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut 
     } else {
         resp.clicked().then_some(egui::SetOpenCommand::Toggle)
     };
-    let shown = egui::Popup::menu(&resp)
+    egui::Popup::menu(&resp)
         .open_memory(open)
         .close_behavior(config.close_behavior)
         .info(
@@ -847,26 +926,34 @@ pub fn group(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut 
                 .with_tag_value(egui::containers::menu::MenuConfig::MENU_CONFIG_TAG, config),
         )
         .show(|ui| dropdown(ui, st, snap, actions));
-    if shown.is_none() {
-        st.arrange_reveal = None;
-    }
-    for cmd in pinned(snap) {
-        let blocked = cmd.blocked(snap);
-        let hint = blocked.map_or_else(
-            || cmd.hint().to_string(),
-            |why| format!("{} {why}", cmd.hint()),
-        );
+    let pins = pinned(snap);
+    for cmd in pins.iter().copied().filter(|c| c.big()) {
         let label = cmd.label().trim_end_matches("...");
-        if has_submenu(cmd) {
-            // Distribute's items say themselves what is missing.
-            let resp = big_button(ui, cmd.icon(), label, !snap.selection.is_empty(), &hint);
-            egui::Popup::menu(&resp)
-                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                .show(|ui| submenu(ui, cmd, snap, st, actions));
-        } else if big_button(ui, cmd.icon(), label, blocked.is_none(), &hint).clicked() {
+        let tip = cmd.tooltip(snap);
+        if big_button(ui, cmd.icon(), label, cmd.blocked(snap).is_none(), &tip).clicked() {
             pick(cmd, snap, st, actions);
         }
     }
+    let small: Vec<ArrangeCmd> = pins.into_iter().filter(|c| !c.big()).collect();
+    if small.is_empty() {
+        return;
+    }
+    // Two rows of small buttons fit the height of the big ones.
+    let rows = if small.len() > 3 { 2 } else { 1 };
+    let per_row = small.len().div_ceil(rows);
+    ui.vertical(|ui| {
+        for chunk in small.chunks(per_row) {
+            ui.horizontal(|ui| {
+                for cmd in chunk {
+                    let tip = cmd.tooltip(snap);
+                    let on = cmd.blocked(snap).is_none();
+                    if super::icon_button_hint(ui, cmd.icon(), cmd.label(), on, &tip).clicked() {
+                        pick(*cmd, snap, st, actions);
+                    }
+                }
+            });
+        }
+    });
 }
 
 /// Height of the ribbon's big buttons, and so of its tools row on every
@@ -924,85 +1011,85 @@ fn big_button(ui: &mut Ui, icon: Icon, label: &str, enabled: bool, hint: &str) -
     resp.on_hover_text(hint).on_disabled_hover_text(hint)
 }
 
-/// The rows of the drop-down. Hovering a row shows its pin toggle.
+/// The heading row before the directions of Mirror, Align or Distribute.
+/// Align also asks what to line up with.
+fn heading_row(ui: &mut Ui, heading: Heading, st: &mut PrepareState) {
+    let (icon, text) = match heading {
+        Heading::Mirror => (Icon::Mirror, "Mirror"),
+        Heading::Align => (Icon::Align, "Align"),
+        Heading::Distribute => (Icon::DistributeHorizontal, "Distribute"),
+    };
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.add(image(ui, icon));
+        ui.label(RichText::new(text).strong());
+    });
+    if heading == Heading::Align {
+        ui.indent("flatcraft-align-to", |ui| {
+            let to_area = &mut st.fields.align_to_area;
+            ui.radio_value(to_area, false, "To the selection");
+            ui.radio_value(to_area, true, "To the cutting area");
+        });
+    }
+}
+
+/// The rows of the drop-down. Hovering a row shows its pin toggle. The
+/// directions of Mirror, Align and Distribute sit under their heading,
+/// each with a pin of its own.
 fn dropdown(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Vec<Action>) {
-    ui.set_min_width(250.0);
+    ui.set_min_width(260.0);
     let pins = pinned(snap);
+    let mut last_heading = None;
     for cmd in ArrangeCmd::ALL {
+        let heading = cmd.heading();
+        if heading != last_heading
+            && let Some(h) = heading
+        {
+            heading_row(ui, h, st);
+        }
+        last_heading = heading;
         let row_id = ui.make_persistent_id(("flatcraft-arrange-row", cmd.id()));
         let last: Option<egui::Rect> = ui.data(|d| d.get_temp(row_id));
         let hovered = last.is_some_and(|r| ui.rect_contains_pointer(r));
         let is_pinned = pins.contains(&cmd);
-        let blocked = cmd.blocked(snap);
-        let hint = blocked.map_or_else(
-            || cmd.hint().to_string(),
-            |why| format!("{} {why}", cmd.hint()),
-        );
+        let tip = cmd.tooltip(snap);
         let name = format!("{} (Arrange)", cmd.label());
         let row = ui.horizontal(|ui| {
+            if heading.is_some() {
+                ui.add_space(ICON_SIZE);
+            }
             let main_width = ui.available_width() - ICON_SIZE - 3.0 * ui.spacing().item_spacing.x;
-            let resp = if has_submenu(cmd) {
-                let enabled = !snap.selection.is_empty();
-                ui.add_enabled_ui(enabled, |ui| {
-                    ui.set_width(main_width);
-                    ui.menu_image_text_button(image(ui, cmd.icon()), cmd.label(), |ui| {
-                        submenu(ui, cmd, snap, st, actions);
-                    })
-                    .response
-                })
-                .inner
-            } else {
-                let r = ui.add_enabled(
-                    blocked.is_none(),
+            let r = ui
+                .add_enabled(
+                    cmd.blocked(snap).is_none(),
                     egui::Button::image_and_text(image(ui, cmd.icon()), cmd.label())
                         .min_size(egui::vec2(main_width, 0.0)),
-                );
-                if r.clicked() {
-                    pick(cmd, snap, st, actions);
-                    ui.close();
-                }
-                r
-            };
-            set_name(ui, &resp, &name);
-            resp.on_hover_text(&hint).on_disabled_hover_text(&hint);
+                )
+                .on_hover_text(&tip)
+                .on_disabled_hover_text(&tip);
+            set_name(ui, &r, &name);
+            if r.clicked() {
+                pick(cmd, snap, st, actions);
+                ui.close();
+            }
             if hovered {
-                let (icon, what) = if is_pinned {
-                    (Icon::PinOff, "Unpin")
+                let (icon, what, pin_tip) = if is_pinned {
+                    (Icon::PinOff, "Unpin", "Take it off the ribbon")
                 } else {
-                    (Icon::Pin, "Pin")
+                    (Icon::Pin, "Pin", "Show it on the ribbon")
                 };
                 let label = format!("{what} {}", cmd.label().trim_end_matches("..."));
-                let tip = if is_pinned {
-                    "Take it off the ribbon"
-                } else {
-                    "Show it on the ribbon"
-                };
-                if super::icon_button_hint(ui, icon, &label, true, tip).clicked() {
+                if super::icon_button_hint(ui, icon, &label, true, pin_tip).clicked() {
                     actions.push(Action::SetPin {
                         id: cmd.id(),
                         pinned: !is_pinned,
                     });
                 }
             } else if is_pinned {
-                let tex = icons::texture(ui.ctx(), Icon::Pin, ICON_SIZE);
-                ui.add(
-                    egui::Image::from_texture(egui::load::SizedTexture::new(
-                        tex.id(),
-                        egui::Vec2::splat(ICON_SIZE),
-                    ))
-                    .tint(egui::Color32::from_white_alpha(110)),
-                );
+                ui.add(image(ui, Icon::Pin).tint(egui::Color32::from_white_alpha(110)));
             }
         });
         ui.data_mut(|d| d.insert_temp(row_id, row.response.rect));
-        if st.arrange_reveal == Some(cmd) {
-            // Found by search: its items right here, no hover needed.
-            ui.add_enabled_ui(!snap.selection.is_empty(), |ui| {
-                ui.indent(("flatcraft-arrange-reveal", cmd.id()), |ui| {
-                    submenu(ui, cmd, snap, st, actions);
-                });
-            });
-        }
     }
     ui.separator();
     ui.label(
@@ -1017,10 +1104,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ids_round_trip_and_defaults_are_known() {
+    fn ids_match_the_preferences_and_defaults_are_known() {
+        let known = flatcraft_engine::prefs::ARRANGE_PIN_IDS;
+        assert_eq!(ArrangeCmd::ALL.len(), known.len());
         for c in ArrangeCmd::ALL {
             assert_eq!(ArrangeCmd::from_id(c.id()), Some(c));
+            assert!(known.contains(&c.id()), "{}", c.id());
             assert!(!c.label().contains('\u{2014}') && !c.hint().contains('\u{2014}'));
+            // Big buttons open a panel or run Auto arrange; the small ones
+            // are the directions, which run one command.
+            assert_eq!(
+                c.big(),
+                c.panel().is_some() || c == ArrangeCmd::AutoArrange,
+                "{c:?}"
+            );
         }
         for id in flatcraft_engine::prefs::default_arrange_pins() {
             assert!(ArrangeCmd::from_id(&id).is_some(), "{id}");

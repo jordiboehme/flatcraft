@@ -219,21 +219,19 @@ fn search_panel(id: &str, snap: &Snapshot) -> Option<PanelKind> {
     }
 }
 
-/// The Arrange command a search hit shows in the open Arrange drop-down,
-/// since the tab may not show it (it is not pinned). Mirror, Align and
-/// Distribute show their items too.
-fn search_reveal(id: &str) -> Option<arrange::ArrangeCmd> {
-    use arrange::ArrangeCmd::*;
-    match id {
-        "object.mirror" => Some(Mirror),
-        "arrange.align" => Some(Align),
-        "arrange.distribute" => Some(Distribute),
-        // Without a selection their panel cannot run: the drop-down shows
-        // their row and says what is missing.
-        "object.rotate" => Some(Rotate),
-        "object.circular_copies" => Some(CircularPattern),
-        _ => None,
-    }
+/// Search hits for arrange commands that the tab may not show (they may
+/// not be pinned): they open the Arrange drop-down, which lists Mirror,
+/// Align and Distribute with each direction, and Rotate and Circular
+/// pattern with what they still need when nothing is selected.
+fn search_reveals(id: &str) -> bool {
+    matches!(
+        id,
+        "object.mirror"
+            | "arrange.align"
+            | "arrange.distribute"
+            | "object.rotate"
+            | "object.circular_copies"
+    )
 }
 
 /// What picking a search hit does.
@@ -260,8 +258,8 @@ fn pick(id: &'static str, snap: &Snapshot, st: &mut PrepareState, actions: &mut 
         arrange::open(st, snap, kind);
         return;
     }
-    if let Some(cmd) = search_reveal(id) {
-        arrange::reveal(st, cmd);
+    if search_reveals(id) {
+        arrange::reveal(st);
         return;
     }
     match search_target(id, snap.doc_id) {

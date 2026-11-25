@@ -1174,6 +1174,8 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
                 prepare_keys(&ctx, snap, &mut app.ui.prepare, now, &mut actions);
             }
             prepare::show(ui, app, snap, &mut actions);
+            let p = &mut app.ui.prepare;
+            p.text_focus_elsewhere = text_focus_outside(&ctx, p.panel_rect);
             let t = app.tokens;
             if let Some(why) = import_dialog::show(&ctx, &mut app.ui.trace, snap, &t, &mut actions)
             {
@@ -1384,6 +1386,11 @@ fn prepare_keys(
     if ctx.egui_wants_keyboard_input() || egui::Popup::is_any_open(ctx) {
         return;
     }
+    // Escape in another text field (the search box) only leaves it: egui
+    // dropped its focus, the panel and the selection stay.
+    if st.text_focus_elsewhere && help::pressed(ctx, help::PrepareKey::ClearSelection) {
+        return;
+    }
     // Escape closes an open Arrange panel first, and changes nothing. One
     // press is enough while a panel field has the keys: egui drops the
     // focus on Escape before this runs.
@@ -1422,6 +1429,19 @@ fn prepare_keys(
             json!({ "ids": [] }),
         ));
     }
+}
+
+/// A text field has the keys and it is not in the Arrange panel at
+/// `panel` (screen area).
+fn text_focus_outside(ctx: &egui::Context, panel: Option<egui::Rect>) -> bool {
+    if !ctx.text_edit_focused() {
+        return false;
+    }
+    let rect = ctx
+        .memory(|m| m.focused())
+        .and_then(|id| ctx.read_response(id))
+        .map(|r| r.rect);
+    !matches!((panel, rect), (Some(p), Some(r)) if p.contains_rect(r))
 }
 
 /// What the confirmation dialog shows of an agent's pending send.

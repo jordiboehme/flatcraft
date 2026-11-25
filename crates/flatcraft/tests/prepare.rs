@@ -1431,14 +1431,14 @@ fn distribute_buttons_need_three_objects_and_are_one_step() {
     h.run();
     select(&s, &[a, b]);
     h.run();
-    open_arrange_sub(&mut h, "Distribute");
-    assert!(disabled(&h, "Distribute horizontally"));
-    assert!(disabled(&h, "Distribute vertically"));
+    open_arrange(&mut h);
+    assert!(disabled(&h, "Distribute horizontally (Arrange)"));
+    assert!(disabled(&h, "Distribute vertically (Arrange)"));
     select(&s, &[a, b, c]);
     h.run();
-    assert!(!disabled(&h, "Distribute vertically"));
+    assert!(!disabled(&h, "Distribute vertically (Arrange)"));
     let before = undo_len(&s);
-    h.get_by_label("Distribute horizontally").click();
+    h.get_by_label("Distribute horizontally (Arrange)").click();
     h.run();
     wait_for_workers(&mut h);
     assert_eq!(undo_len(&s), before + 1);
@@ -1450,14 +1450,6 @@ fn distribute_buttons_need_three_objects_and_are_one_step() {
 /// Opens the Arrange drop-down of the Arrange tab.
 fn open_arrange(h: &mut AppHarness) {
     h.get_by_role_and_label(Role::Button, "Arrange").click();
-    h.run();
-}
-
-/// Opens the Arrange drop-down and the submenu of `cmd` (Mirror, Align or
-/// Distribute).
-fn open_arrange_sub(h: &mut AppHarness, cmd: &str) {
-    open_arrange(h);
-    h.get_by_label(&format!("{cmd} (Arrange)")).click();
     h.run();
 }
 
@@ -1700,14 +1692,17 @@ fn search_reaches_arrange_commands_that_are_not_on_the_tab() {
         h.run();
     };
     pins(&mut h, &[]);
-    assert!(h.query_by_role_and_label(Role::Button, "Mirror").is_none());
+    assert!(
+        h.query_by_role_and_label(Role::Button, "Mirror horizontally")
+            .is_none()
+    );
     search(&mut h, "mirror", "Mirror (search)");
     assert_eq!(
         app(&h).ui.prepare.tab,
         flatcraft::ui::prepare::RibbonTab::Arrange
     );
     let undo = undo_len(&s);
-    h.get_by_label("Mirror horizontally").click();
+    h.get_by_label("Mirror horizontally (Arrange)").click();
     h.run();
     wait_for_workers(&mut h);
     assert_eq!(undo_len(&s), undo + 1, "mirrored");
@@ -1716,7 +1711,7 @@ fn search_reaches_arrange_commands_that_are_not_on_the_tab() {
     h.get_by_label("To the cutting area").click();
     h.run();
     let undo = undo_len(&s);
-    h.get_by_label("Right").click();
+    h.get_by_label("Align right (Arrange)").click();
     h.run();
     wait_for_workers(&mut h);
     assert_eq!(undo_len(&s), undo + 1, "aligned");
@@ -1733,7 +1728,7 @@ fn search_reaches_arrange_commands_that_are_not_on_the_tab() {
     h.run();
     search(&mut h, "distrib", "Distribute (search)");
     let undo = undo_len(&s);
-    h.get_by_label("Distribute horizontally").click();
+    h.get_by_label("Distribute horizontally (Arrange)").click();
     h.run();
     wait_for_workers(&mut h);
     assert_eq!(undo_len(&s), undo + 1, "distributed");
@@ -1975,8 +1970,15 @@ fn pins_round_trip_through_the_preferences() {
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Tab, "Arrange").click();
     h.run();
-    // The default pins.
-    for label in ["Move / Copy", "Mirror", "Rectangular pattern"] {
+    // The default pins: two big buttons, four directions.
+    for label in [
+        "Move / Copy",
+        "Rectangular pattern",
+        "Rotate -90",
+        "Rotate +90",
+        "Mirror horizontally",
+        "Mirror vertically",
+    ] {
         h.get_by_role_and_label(Role::Button, label);
     }
     assert!(h.query_by_label("Circular pattern").is_none());
@@ -1997,21 +1999,39 @@ fn pins_round_trip_through_the_preferences() {
         "{stored:?}"
     );
     h.get_by_role_and_label(Role::Button, "Circular pattern");
-    // Unpin Mirror from its row; the menu stays open meanwhile.
-    let row = h.get_by_label("Mirror (Arrange)").rect().center();
-    h.hover_at(egui::pos2(row.x as f32, row.y as f32));
-    h.run();
-    h.run();
-    h.get_by_label("Unpin Mirror").click();
-    h.run();
+    // Unpin one Mirror direction from its row, pin an Align direction;
+    // the menu stays open meanwhile.
+    for (row, toggle) in [
+        ("Mirror vertically (Arrange)", "Unpin Mirror vertically"),
+        ("Align top (Arrange)", "Pin Align top"),
+    ] {
+        let at = h.get_by_label(row).rect().center();
+        h.hover_at(egui::pos2(at.x as f32, at.y as f32));
+        h.run();
+        h.run();
+        h.get_by_label(toggle).click();
+        h.run();
+    }
     let stored = flatcraft_engine::prefs::Preferences::load(&app(&h).config_dir).arrange_pins;
     assert_eq!(
         stored,
-        ["move_copy", "rectangular_pattern", "circular_pattern"]
+        [
+            "move_copy",
+            "rectangular_pattern",
+            "rotate_left",
+            "rotate_right",
+            "mirror_horizontal",
+            "circular_pattern",
+            "align_top"
+        ]
     );
     h.key_press(egui::Key::Escape);
     h.run();
-    assert!(h.query_by_role_and_label(Role::Button, "Mirror").is_none());
+    assert!(
+        h.query_by_role_and_label(Role::Button, "Mirror vertically")
+            .is_none()
+    );
+    h.get_by_role_and_label(Role::Button, "Align top");
 }
 
 #[test]
@@ -2523,11 +2543,9 @@ fn rotate_and_mirror_turn_a_multi_selection_as_a_group_or_each_object() {
     };
     rotate(&mut h, 180.0);
     assert!((object_centre(&s, a) - cb).hypot() < 1e-5, "group turn");
-    // Mirror is pinned by default.
+    // Both Mirror directions are pinned by default: one click each.
     let mirror = |h: &mut AppHarness, item: &str| {
-        h.get_by_role_and_label(Role::Button, "Mirror").click();
-        h.run();
-        h.get_by_label(item).click();
+        h.get_by_role_and_label(Role::Button, item).click();
         h.run();
     };
     mirror(&mut h, "Mirror horizontally");
@@ -2650,4 +2668,147 @@ fn each_object_is_remembered_across_restarts() {
     h.get_by_label("Each object").click();
     h.run();
     assert!(!flatcraft_engine::prefs::Preferences::load(dir.path()).rotate_each);
+}
+
+/// Every direction pinned: one click on each runs exactly its command,
+/// one undo step with the same result as the command run directly.
+#[test]
+fn each_pinned_direction_runs_its_command_in_one_click() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let b = square_at(&s, 60.0);
+    let c = square_at(&s, 200.0);
+    for (id, dy) in [(b, 25.0), (c, 70.0)] {
+        s.lock()
+            .unwrap()
+            .execute(
+                "object.move",
+                json!({ "ids": [id], "dy_mm": dy }),
+                Origin::User,
+            )
+            .unwrap();
+    }
+    select(&s, &[a, b, c]);
+    s.lock()
+        .unwrap()
+        .update_prefs(|p| {
+            p.arrange_pins = flatcraft_engine::prefs::ARRANGE_PIN_IDS
+                .iter()
+                .filter(|id| {
+                    id.contains('_')
+                        && !id.ends_with("pattern")
+                        && **id != "move_copy"
+                        && **id != "auto_arrange"
+                })
+                .map(|id| id.to_string())
+                .collect();
+        })
+        .unwrap();
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.run();
+    let ids = json!([a, b, c]);
+    let align = |mode: &str| {
+        (
+            "arrange.align",
+            json!({ "ids": ids, "mode": mode, "relative_to": "selection" }),
+        )
+    };
+    let cases = [
+        (
+            "Rotate -90",
+            (
+                "object.rotate",
+                json!({ "ids": ids, "degrees": -90.0, "about": "group" }),
+            ),
+        ),
+        (
+            "Rotate +90",
+            (
+                "object.rotate",
+                json!({ "ids": ids, "degrees": 90.0, "about": "group" }),
+            ),
+        ),
+        (
+            "Mirror horizontally",
+            (
+                "object.mirror",
+                json!({ "ids": ids, "axis": "horizontal", "about": "group" }),
+            ),
+        ),
+        (
+            "Mirror vertically",
+            (
+                "object.mirror",
+                json!({ "ids": ids, "axis": "vertical", "about": "group" }),
+            ),
+        ),
+        ("Align left", align("left")),
+        ("Align centre", align("hcenter")),
+        ("Align right", align("right")),
+        ("Align top", align("top")),
+        ("Align middle", align("vcenter")),
+        ("Align bottom", align("bottom")),
+        (
+            "Distribute horizontally",
+            (
+                "arrange.distribute",
+                json!({ "ids": ids, "axis": "horizontal" }),
+            ),
+        ),
+        (
+            "Distribute vertically",
+            (
+                "arrange.distribute",
+                json!({ "ids": ids, "axis": "vertical" }),
+            ),
+        ),
+    ];
+    for (label, (cmd, params)) in cases {
+        let before = document_bytes(&s);
+        let undo = undo_len(&s);
+        h.get_by_role_and_label(Role::Button, label).click();
+        h.run();
+        wait_for_workers(&mut h);
+        assert_eq!(undo_len(&s), undo + 1, "{label}: one step");
+        let clicked = document_bytes(&s);
+        assert_ne!(clicked, before, "{label} changed something");
+        let mut g = s.lock().unwrap();
+        g.execute("edit.undo", json!({}), Origin::User).unwrap();
+        g.execute(cmd, params, Origin::User).unwrap();
+        drop(g);
+        assert_eq!(document_bytes(&s), clicked, "{label} ran {cmd}");
+        // Back to the staggered layout for the next one.
+        s.lock()
+            .unwrap()
+            .execute("edit.undo", json!({}), Origin::User)
+            .unwrap();
+        h.run();
+    }
+}
+
+#[test]
+fn escape_in_the_search_box_leaves_the_panel_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    open_panel(&mut h, "Move / Copy...");
+    h.get_by_label("Search commands").click();
+    h.run();
+    assert!(h.ctx.egui_wants_keyboard_input(), "search has the keys");
+    let before = document_bytes(&s);
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(app(&h).ui.prepare.panel.is_some(), "the panel stays");
+    assert!(!h.ctx.egui_wants_keyboard_input(), "search let go");
+    assert_eq!(document_bytes(&s), before, "the selection stays too");
+    // With no focus, Escape closes the panel.
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(app(&h).ui.prepare.panel.is_none());
 }

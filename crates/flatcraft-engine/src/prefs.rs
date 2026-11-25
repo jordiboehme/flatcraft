@@ -50,20 +50,81 @@ pub struct Preferences {
     /// group. Only the window writes it (a UI preference, ruling R16); no
     /// registry command reads or changes it. Off by default.
     pub rotate_each: bool,
-    /// The Arrange commands pinned to the ribbon as big buttons, by id
-    /// (`move_copy`, `rotate`, `mirror`, `align`, `distribute`,
-    /// `rectangular_pattern`, `circular_pattern`, `auto_arrange`). Unknown
-    /// ids are ignored. Only the window writes it (a UI preference); no
-    /// registry command reads or changes it. A file without the key gets
-    /// [`default_arrange_pins`].
+    /// The Arrange commands pinned to the ribbon, by id (see
+    /// [`ARRANGE_PIN_IDS`]). Only the window writes it (a UI preference);
+    /// no registry command reads or changes it. A file without the key gets
+    /// [`default_arrange_pins`]; reading a file migrates old ids (see
+    /// [`migrate_arrange_pins`]).
     pub arrange_pins: Vec<String>,
 }
 
-/// The pins of a new install: Move / Copy, Mirror and Rectangular pattern.
+/// Every id `arrange_pins` can hold: the commands with a button of their
+/// own, then each direction of Rotate, Mirror, Align and Distribute.
+pub const ARRANGE_PIN_IDS: [&str; 17] = [
+    "move_copy",
+    "rotate",
+    "rotate_left",
+    "rotate_right",
+    "mirror_horizontal",
+    "mirror_vertical",
+    "align_left",
+    "align_hcenter",
+    "align_right",
+    "align_top",
+    "align_vcenter",
+    "align_bottom",
+    "distribute_horizontal",
+    "distribute_vertical",
+    "rectangular_pattern",
+    "circular_pattern",
+    "auto_arrange",
+];
+
+/// The pins of a new install: Move / Copy, Rectangular pattern, Rotate
+/// -90 and +90, and both Mirror directions.
 pub fn default_arrange_pins() -> Vec<String> {
-    ["move_copy", "mirror", "rectangular_pattern"]
-        .map(String::from)
-        .to_vec()
+    [
+        "move_copy",
+        "rectangular_pattern",
+        "rotate_left",
+        "rotate_right",
+        "mirror_horizontal",
+        "mirror_vertical",
+    ]
+    .map(String::from)
+    .to_vec()
+}
+
+/// Pins of an earlier version, made current: a whole-command pin of
+/// Mirror, Align or Distribute (`mirror`, `align`, `distribute`) becomes a
+/// pin of each of its directions. Unknown ids are dropped, and so are
+/// repeats; the order is kept.
+pub fn migrate_arrange_pins(pins: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for pin in pins {
+        let ids: &[&str] = match pin.as_str() {
+            "mirror" => &["mirror_horizontal", "mirror_vertical"],
+            "align" => &[
+                "align_left",
+                "align_hcenter",
+                "align_right",
+                "align_top",
+                "align_vcenter",
+                "align_bottom",
+            ],
+            "distribute" => &["distribute_horizontal", "distribute_vertical"],
+            other => match ARRANGE_PIN_IDS.iter().find(|id| **id == other) {
+                Some(id) => std::slice::from_ref(id),
+                None => &[],
+            },
+        };
+        for id in ids {
+            if !out.iter().any(|o| o == id) {
+                out.push((*id).to_string());
+            }
+        }
+    }
+    out
 }
 
 impl Default for Preferences {
@@ -112,7 +173,10 @@ impl Preferences {
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
             Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
         };
-        toml::from_str(&text).map_err(|e| format!("{} is broken: {e}", path.display()))
+        let mut prefs: Self =
+            toml::from_str(&text).map_err(|e| format!("{} is broken: {e}", path.display()))?;
+        prefs.arrange_pins = migrate_arrange_pins(&prefs.arrange_pins);
+        Ok(prefs)
     }
 
     /// Modification time and size of the preferences file, `None` when it

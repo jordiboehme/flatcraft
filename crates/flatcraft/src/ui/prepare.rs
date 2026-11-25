@@ -214,9 +214,13 @@ pub struct PrepareState {
     pub panel_last: PanelValues,
     /// Open the Arrange drop-down on the next frame (search asked for it).
     pub arrange_open: bool,
-    /// The command whose items the open Arrange drop-down shows right
-    /// under its row (Mirror, Align or Distribute found by search).
-    pub arrange_reveal: Option<arrange::ArrangeCmd>,
+    /// The screen area of the open Arrange panel, last frame.
+    pub panel_rect: Option<Rect>,
+    /// At the end of the last frame a text field outside the Arrange panel
+    /// (the search box, a size field) had the keys. egui drops the focus on
+    /// Escape before the key handler runs, so this is how the handler knows
+    /// that the Escape only leaves that field.
+    pub text_focus_elsewhere: bool,
     /// The objects the open context menu works on (see `context_menu`).
     pub context: Option<Vec<u64>>,
     /// The open Rename dialog.
@@ -286,7 +290,8 @@ impl Default for PrepareState {
             panel: None,
             panel_last: PanelValues::default(),
             arrange_open: false,
-            arrange_reveal: None,
+            panel_rect: None,
+            text_focus_elsewhere: false,
             context: None,
             rename: None,
         }
@@ -1114,13 +1119,16 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
 
     arrange::keep_or_close(&mut app.ui.prepare, snap);
     if app.ui.prepare.panel.is_some() {
-        egui::Panel::right("flatcraft-arrange-panel")
+        let shown = egui::Panel::right("flatcraft-arrange-panel")
             .resizable(false)
             .exact_size(270.0)
             .frame(egui::Frame::new().fill(t.panel).inner_margin(t.spacing))
             .show(ui, |ui| {
                 arrange::panel_ui(ui, &mut app.ui.prepare, snap, &t, actions);
             });
+        app.ui.prepare.panel_rect = Some(shown.response.rect);
+    } else {
+        app.ui.prepare.panel_rect = None;
     }
 
     let mut show_settings = app.ui.prepare.show_settings;
