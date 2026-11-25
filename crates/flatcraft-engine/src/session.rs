@@ -1250,6 +1250,7 @@ mod tests {
                 "profiles.get",
                 "job.preview",
                 "document.preview",
+                "document.export",
             ]
         );
     }

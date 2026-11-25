@@ -412,6 +412,51 @@ fn format_ids(ids: &[ObjectId]) -> String {
         .join(", ")
 }
 
+/// The polylines of one placed path as the cut sees them, before the
+/// order, the overcut, the passes and the knife: curves flattened with
+/// `flatten_tolerance_mm`, ends joined within `join_tolerance_mm`, nearly
+/// collinear points merged. A ring that collapsed to a line becomes an open
+/// line; one without length is left out. [`plan`] cuts exactly these
+/// (minus the ones shorter than its shortest cut), so an export of "what
+/// will be cut" reads them here.
+pub fn shape_lines(
+    path: &BezPath,
+    flatten_tolerance_mm: f64,
+    join_tolerance_mm: f64,
+) -> Vec<clean::Polyline> {
+    let flat = flatten::flatten(path, flatten_tolerance_mm);
+    lines_of_flat(&flat, flatten_tolerance_mm, join_tolerance_mm).0
+}
+
+/// [`shape_lines`] of an already flattened path, and how many rings
+/// without length were left out.
+fn lines_of_flat(
+    flat: &BezPath,
+    flatten_tolerance_mm: f64,
+    join_tolerance_mm: f64,
+) -> (Vec<clean::Polyline>, usize) {
+    let mut out = Vec::new();
+    let mut collapsed = 0;
+    for line in clean::clean(flat, join_tolerance_mm) {
+        let mut points = flatten::merge_collinear(&line.points, flatten_tolerance_mm);
+        let mut closed = line.closed;
+        if closed && points.len() < 4 {
+            // The ring collapsed to fewer than 3 distinct vertices. With no
+            // length it would plunge the blade without moving: drop it.
+            // Otherwise [a, b, a] is a line, cut once as an open path
+            // (same as clean does for a two-point ring).
+            if clean::length(&points) < ZERO_LEN_MM {
+                collapsed += 1;
+                continue;
+            }
+            points.truncate(2);
+            closed = false;
+        }
+        out.push(clean::Polyline { points, closed });
+    }
+    (out, collapsed)
+}
+
 /// Run the full pipeline after validating the settings:
 ///
 /// 1. flatten
@@ -448,32 +493,20 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
     let mut toolpaths = Vec::new();
     let mut dropped_short = 0;
     for (placed, f) in input.iter().zip(&flat) {
-        for line in clean::clean(f, s.join_tolerance_mm) {
-            let mut points = flatten::merge_collinear(&line.points, s.flatten_tolerance_mm);
-            let mut closed = line.closed;
-            if closed && points.len() < 4 {
-                // The ring collapsed to fewer than 3 distinct vertices. With no
-                // length it would plunge the blade without moving: drop it.
-                // Otherwise [a, b, a] is a line, cut once as an open path
-                // (same as clean does for a two-point ring).
-                if clean::length(&points) < ZERO_LEN_MM {
-                    // Counted as too short only when there is a shortest
-                    // cut to be shorter than.
-                    if s.min_cut_mm > 0.0 {
-                        dropped_short += 1;
-                    }
-                    continue;
-                }
-                points.truncate(2);
-                closed = false;
-            }
+        let (lines, collapsed) = lines_of_flat(f, s.flatten_tolerance_mm, s.join_tolerance_mm);
+        // A ring without length counts as too short only when there is a
+        // shortest cut to be shorter than.
+        if s.min_cut_mm > 0.0 {
+            dropped_short += collapsed;
+        }
+        for line in lines {
             // Shorter than half a device step, the cut is no cut at all:
             // leave it out, but count it so the engine can say so.
-            if clean::length(&points) < s.min_cut_mm {
+            if clean::length(&line.points) < s.min_cut_mm {
                 dropped_short += 1;
                 continue;
             }
-            toolpaths.push(Toolpath::new(points, closed, placed.source));
+            toolpaths.push(Toolpath::new(line.points, line.closed, placed.source));
         }
     }
     if toolpaths.is_empty() {

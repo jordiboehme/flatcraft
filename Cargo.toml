@@ -50,6 +50,7 @@ insta = "=1.49.0"
 tempfile = "=3.27.0"
 sha2 = "=0.11.1"
 flate2 = { version = "=1.1.11", default-features = false, features = ["rust_backend"] }
+pdf-writer = "=0.15.0"
 zip = { version = "=9.8.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [profile.dev]

@@ -279,31 +279,8 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
             ));
             continue;
         }
-        // One source path may give several cut paths (stroke outline
-        // rings); they all keep the source path's index.
-        let affine = o.transform.affine(o.local_bounds);
         let before = placed.len();
-        let mut no_area = 0;
-        for (i, p) in o.geometry.iter().enumerate() {
-            if let Some(label) = &p.label {
-                labels.insert((o.id, i), label.clone());
-            }
-            let cut = cutgeom::cut_path(p, &o.cut, affine, plotter.flatten_tolerance_mm);
-            if cut.is_empty() && p.paint.stroke.is_none() && !p.path.elements().is_empty() {
-                // A stroke-less fill without area, or thinner than the
-                // tolerance, is not visible and gives nothing to cut.
-                no_area += 1;
-            }
-            for path in cut {
-                placed.push(PlacedPath {
-                    path,
-                    source: PathRef {
-                        object: o.id,
-                        path_index: i,
-                    },
-                });
-            }
-        }
+        let no_area = place_object(o, plotter.flatten_tolerance_mm, &mut placed, &mut labels);
         if no_area > 0 {
             let what = if no_area == 1 {
                 "1 filled path has no area or is thinner than the cut tolerance".to_string()
@@ -442,6 +419,43 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         choice_warnings,
         sent: None,
     })
+}
+
+/// The cut paths of one object, placed on the mat in app millimetres (the
+/// grid's 0,0, y down), per its cut options: what the cut and the export
+/// both start from. One source path may give several cut paths (stroke
+/// outline rings); they all keep the source path's index. Labels of source
+/// paths go to `labels`. Returns how many filled paths have no area (they
+/// give nothing to cut).
+pub(crate) fn place_object(
+    o: &JobObject,
+    tolerance_mm: f64,
+    placed: &mut Vec<PlacedPath>,
+    labels: &mut std::collections::BTreeMap<(ObjectId, usize), String>,
+) -> usize {
+    let affine = o.transform.affine(o.local_bounds);
+    let mut no_area = 0;
+    for (i, p) in o.geometry.iter().enumerate() {
+        if let Some(label) = &p.label {
+            labels.insert((o.id, i), label.clone());
+        }
+        let cut = cutgeom::cut_path(p, &o.cut, affine, tolerance_mm);
+        if cut.is_empty() && p.paint.stroke.is_none() && !p.path.elements().is_empty() {
+            // A stroke-less fill without area, or thinner than the
+            // tolerance, is not visible and gives nothing to cut.
+            no_area += 1;
+        }
+        for path in cut {
+            placed.push(PlacedPath {
+                path,
+                source: PathRef {
+                    object: o.id,
+                    path_index: i,
+                },
+            });
+        }
+    }
+    no_area
 }
 
 /// "the only cut path is" or "all {n} cut paths are".

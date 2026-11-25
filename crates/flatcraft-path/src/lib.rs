@@ -26,6 +26,6 @@ pub use knife::{Compensation, CornerMode, HostSettings};
 pub use plan::{
     ASSUMED_START_HEADING, AlignmentStroke, AppliedCompensation, AxisRun, CORNER_DEG, CutPlan,
     KeepSide, PathRef, PipelineSettings, PlacedPath, PlanError, SettingsField, Toolpath,
-    ToolpathKind, WASTE_SEG, plan,
+    ToolpathKind, WASTE_SEG, plan, shape_lines,
 };
 pub use strategy::StrategySettings;

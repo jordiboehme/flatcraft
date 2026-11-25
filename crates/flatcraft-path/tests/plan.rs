@@ -1007,3 +1007,73 @@ fn plan_of_20000_squares_is_fast() {
     assert_eq!(out.toolpaths.len(), 20_000);
     assert!(secs < 5.7, "{secs} s");
 }
+
+// ---------------------------------------------------------------- shape lines
+
+#[test]
+fn shape_lines_are_the_polylines_the_plan_cuts() {
+    // A circle and an open zig-zag: the export reads the same polylines as
+    // the cut, before the order, the overcut and the passes.
+    let mut zig = BezPath::new();
+    zig.move_to((20.0, 20.0));
+    zig.line_to((30.0, 25.0));
+    zig.line_to((40.0, 20.0));
+    let paths = [
+        Circle::new((100.0, 100.0), 20.0).to_path(0.1),
+        zig,
+        rect_path(150.0, 150.0, 30.0, 10.0),
+    ];
+    let s = settings();
+    let mut lines = Vec::new();
+    for p in &paths {
+        lines.extend(flatcraft_path::shape_lines(
+            p,
+            s.flatten_tolerance_mm,
+            s.join_tolerance_mm,
+        ));
+    }
+    let input: Vec<PlacedPath> = paths
+        .iter()
+        .enumerate()
+        .map(|(i, p)| placed(i as u64 + 1, p.clone()))
+        .collect();
+    let cut = plan(&input, &s).unwrap();
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines.iter().filter(|l| l.closed).count(), 2);
+    for line in &lines {
+        // Every line of the export is a lap of the cut, maybe rotated or
+        // reversed: the same set of points.
+        let mut ours: Vec<(i64, i64)> = line
+            .points
+            .iter()
+            .map(|p| ((p.x * 1e6) as i64, (p.y * 1e6) as i64))
+            .collect();
+        if line.closed {
+            ours.pop();
+        }
+        ours.sort();
+        let found = cut.toolpaths.iter().any(|t| {
+            let lap = t.lap();
+            let mut theirs: Vec<(i64, i64)> = lap
+                .iter()
+                .map(|p| ((p.x * 1e6) as i64, (p.y * 1e6) as i64))
+                .collect();
+            if t.closed {
+                theirs.pop();
+            }
+            theirs.sort();
+            theirs == ours
+        });
+        assert!(found, "{line:?}");
+    }
+}
+
+#[test]
+fn shape_lines_drop_a_ring_without_length() {
+    let mut dot = BezPath::new();
+    dot.move_to((10.0, 10.0));
+    dot.line_to((10.0, 10.0));
+    dot.line_to((10.0, 10.0));
+    dot.close_path();
+    assert!(flatcraft_path::shape_lines(&dot, 0.01, 0.01).is_empty());
+}
