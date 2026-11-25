@@ -376,6 +376,18 @@ pub struct SaveParams {
 }
 
 fn run_save(s: &mut Session, p: SaveParams, origin: Origin) -> Result<Value, CommandError> {
+    // The session lock is held: never wait for the gate here, an unlocked
+    // save that holds it needs the lock to finish.
+    let gate = s.save_gate();
+    let _turn = match gate.try_lock() {
+        Ok(turn) => turn,
+        Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            return Err(CommandError::Refused(
+                "another save is still being written. Try again in a moment.".into(),
+            ));
+        }
+    };
     let job = begin_save(s, p, origin)?;
     let written = job.write();
     finish_save(s, job, written)
@@ -400,6 +412,7 @@ pub struct SaveJob {
         flatcraft_core::document::ObjectId,
         Option<flatcraft_core::document::SourceLink>,
     )>,
+    hook: Option<crate::session::SaveWriteHook>,
 }
 
 /// The first step of a save: checks the target, refreshes the paths of
@@ -424,9 +437,16 @@ pub fn begin_save(s: &mut Session, p: SaveParams, origin: Origin) -> Result<Save
         .ok();
     // Linked files: refresh their paths for the new place of the project.
     // Only metadata, so it is not an undo step; a failed save puts it back.
+    let hook = s.save_write_hook.clone();
     let st = &mut s.docs[index];
-    let revision = st.revision();
     let previous = relink_for_save(&mut st.document, st.path.as_deref(), &path);
+    if !previous.is_empty() {
+        st.touch();
+    }
+    // The snapshot is the new reference: a nudge while it is written is a
+    // step of its own and never gives back the old dirty flag.
+    st.end_burst();
+    let revision = st.revision();
     Ok(SaveJob {
         doc_id: st.id(),
         path,
@@ -435,6 +455,7 @@ pub fn begin_save(s: &mut Session, p: SaveParams, origin: Origin) -> Result<Save
         plotter,
         revision,
         previous,
+        hook,
     })
 }
 
@@ -445,6 +466,9 @@ impl SaveJob {
         let thumbnail = self.plotter.as_ref().and_then(|plotter| {
             crate::preview::render_document_png(plotter, &self.document, project::THUMBNAIL_PX).ok()
         });
+        if let Some(hook) = &self.hook {
+            (hook.0)(&self.target);
+        }
         project::save_at(&self.document, &self.target, thumbnail.as_deref())
             .map_err(|e| CommandError::Failed(e.to_string()))
     }
@@ -469,15 +493,9 @@ pub fn finish_save(
         return Err(e);
     }
     if let Some(st) = st {
-        if !job.previous.is_empty() {
-            st.touch();
-        }
         st.path = Some(job.path.clone());
-        if unchanged {
-            st.dirty = false;
-            // The file is the new reference: a later nudge is a step of its own.
-            st.end_burst();
-        }
+        // Changed while it was written: the file holds the older state.
+        st.dirty = !unchanged;
     }
     Ok(json!({ "path": job.path }))
 }
@@ -490,18 +508,58 @@ pub fn save_unlocked(
     params: Value,
     origin: Origin,
 ) -> Result<Value, CommandError> {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     let p: SaveParams =
         serde_json::from_value(params).map_err(|e| CommandError::InvalidParams(e.to_string()))?;
     let lock = || session.lock().unwrap_or_else(|e| e.into_inner());
-    let job = {
+    // One save at a time, taken before the session lock and never while
+    // holding it; other commands go on while the file is written.
+    let gate = lock().save_gate();
+    let _turn = gate.lock().unwrap_or_else(|e| e.into_inner());
+    // A panic in any step is a plain error, never a dead window or server:
+    // the session goes back to how it was before that step.
+    let caught =
+        |s: &mut Session, step: &mut dyn FnMut(&mut Session) -> Result<Value, CommandError>| {
+            let snapshot = s.snapshot();
+            match catch_unwind(AssertUnwindSafe(|| step(s))) {
+                Ok(r) => r,
+                Err(_) => {
+                    s.roll_back(snapshot);
+                    Err(crate::session::internal_error("project.save"))
+                }
+            }
+        };
+    let mut job = None;
+    {
         let mut s = lock();
         if origin == Origin::Agent {
             s.last_agent_activity = Some(std::time::Instant::now());
         }
-        begin_save(&mut s, p, origin)?
-    };
-    let written = job.write();
-    finish_save(&mut lock(), job, written)
+        s.refresh_prefs(std::time::Instant::now());
+        let mut p = Some(p);
+        let begun = caught(&mut s, &mut |s| {
+            let p = p.take().expect("runs once");
+            job = Some(begin_save(s, p, origin)?);
+            Ok(Value::Null)
+        });
+        s.prune_pending();
+        begun?;
+    }
+    let job = job.expect("begun");
+    let written = catch_unwind(AssertUnwindSafe(|| job.write()))
+        .unwrap_or_else(|_| Err(crate::session::internal_error("project.save")));
+    let mut s = lock();
+    let mut job = Some(job);
+    let mut written = Some(written);
+    let result = caught(&mut s, &mut |s| {
+        finish_save(
+            s,
+            job.take().expect("runs once"),
+            written.take().expect("runs once"),
+        )
+    });
+    s.prune_pending();
+    result
 }
 
 /// The picture a project file carries (`thumbnail.png`): the canvas view

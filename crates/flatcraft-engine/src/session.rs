@@ -2,8 +2,8 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// A command result that `project.open` would refuse to place.
@@ -377,7 +377,7 @@ struct DocSnapshot {
 
 /// The open documents, the active one and the send that waits for
 /// confirmation, before a command.
-struct SessionSnapshot {
+pub(crate) struct SessionSnapshot {
     docs: Vec<DocSnapshot>,
     active: usize,
     pending_send: Option<PendingSend>,
@@ -410,6 +410,23 @@ pub struct Session {
     /// The last warning about a broken or unreadable preferences file that
     /// nobody showed yet (see [`Session::take_prefs_warning`]).
     prefs_warning: Option<String>,
+    /// One save at a time (see [`Session::save_gate`]).
+    save_gate: Arc<Mutex<()>>,
+    /// Tests only: runs in the write step of every save, without the
+    /// session lock, with the file the save replaces.
+    #[doc(hidden)]
+    pub save_write_hook: Option<SaveWriteHook>,
+}
+
+/// A test hook for the write step of a save (see
+/// [`Session::save_write_hook`]).
+#[derive(Clone)]
+pub struct SaveWriteHook(pub Arc<dyn Fn(&std::path::Path) + Send + Sync>);
+
+impl std::fmt::Debug for SaveWriteHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SaveWriteHook")
+    }
 }
 
 /// How often a headless session looks at the preferences file.
@@ -454,9 +471,19 @@ impl Session {
             coalesce: None,
             prefs_watch: None,
             prefs_warning: None,
+            save_gate: Arc::default(),
+            save_write_hook: None,
         };
         s.docs.push(s.new_doc_state());
         s
+    }
+
+    /// The gate every save of this session passes, so two saves never
+    /// write at the same time and one finishes before the next begins
+    /// (`commands::project::save_unlocked`). Take it before the session
+    /// lock, never while holding it.
+    pub fn save_gate(&self) -> Arc<Mutex<()>> {
+        Arc::clone(&self.save_gate)
     }
 
     /// The mat new documents on `plotter_id` start on: [`DEFAULT_MEDIA`]
@@ -630,7 +657,7 @@ impl Session {
 
     /// Drops the pending send when its document is no longer open (closed,
     /// or replaced by another document in its slot).
-    fn prune_pending(&mut self) {
+    pub(crate) fn prune_pending(&mut self) {
         if let Some(p) = &self.pending_send
             && !self.docs.iter().any(|d| d.id() == p.doc)
         {
@@ -928,7 +955,7 @@ impl Session {
 
     /// The open documents as they are, for [`Session::roll_back`]. Never a
     /// `DocState::clone`, which would give new ids.
-    fn snapshot(&self) -> SessionSnapshot {
+    pub(crate) fn snapshot(&self) -> SessionSnapshot {
         SessionSnapshot {
             docs: self
                 .docs
@@ -958,7 +985,7 @@ impl Session {
     /// documents the command added are dropped. Every restored document
     /// gets a new revision, so work started on any state meanwhile is not
     /// stored.
-    fn roll_back(&mut self, snapshot: SessionSnapshot) {
+    pub(crate) fn roll_back(&mut self, snapshot: SessionSnapshot) {
         let mut current = std::mem::take(&mut self.docs);
         for d in snapshot.docs {
             let st = match current.iter().position(|c| c.id == d.id) {
@@ -999,7 +1026,7 @@ impl Session {
 /// What the command `id` returns when it panicked. The session state is
 /// put back, but a file a command wrote may stay, so those commands do not
 /// claim that nothing changed.
-fn internal_error(id: &str) -> CommandError {
+pub(crate) fn internal_error(id: &str) -> CommandError {
     const REPORT: &str = "Please report it at https://github.com/jordiboehme/flatcraft/issues.";
     let written = match id {
         "project.save" | "tools.test_patterns" => Some("the file may have been written"),
