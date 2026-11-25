@@ -437,11 +437,12 @@ fn arrange(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Ve
                 json!({ "ids": ids, key: target, "keep_aspect": f.keep_aspect }),
             );
         } else if let Some(have) = have.filter(|h| *h > 1e-9) {
-            // Several objects: one factor from the common box.
+            // Several objects: one factor from the common box, which
+            // scales as one group so its layout stays.
             run(
                 actions,
                 "object.scale",
-                json!({ "ids": ids, "factor": target / have }),
+                json!({ "ids": ids, "factor": target / have, "group": true }),
             );
         }
     }
@@ -465,7 +466,7 @@ fn arrange(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Ve
         run(
             actions,
             "object.scale",
-            json!({ "ids": ids, "factor": p / 100.0 }),
+            json!({ "ids": ids, "factor": p / 100.0, "group": !single }),
         );
     }
     // Linked copies share the scale.
@@ -474,6 +475,8 @@ fn arrange(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Ve
             .on_hover_text("Linked copies share the scale. Each keeps its own place.");
     }
     ui.separator();
+    // Several objects turn and flip as one group, or each on its own.
+    let about = if f.each { "each" } else { "group" };
     if let Some(d) = number_field(
         ui,
         "rotate-by",
@@ -486,21 +489,21 @@ fn arrange(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Ve
         run(
             actions,
             "object.rotate",
-            json!({ "ids": ids, "degrees": d }),
+            json!({ "ids": ids, "degrees": d, "about": about }),
         );
     }
     if super::icon_button(ui, Icon::RotateLeft, "Rotate -90", any).clicked() {
         run(
             actions,
             "object.rotate",
-            json!({ "ids": ids, "degrees": -90.0 }),
+            json!({ "ids": ids, "degrees": -90.0, "about": about }),
         );
     }
     if super::icon_button(ui, Icon::Rotate, "Rotate +90", any).clicked() {
         run(
             actions,
             "object.rotate",
-            json!({ "ids": ids, "degrees": 90.0 }),
+            json!({ "ids": ids, "degrees": 90.0, "about": about }),
         );
     }
     ui.separator();
@@ -508,16 +511,25 @@ fn arrange(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Ve
         run(
             actions,
             "object.mirror",
-            json!({ "ids": ids, "axis": "horizontal" }),
+            json!({ "ids": ids, "axis": "horizontal", "about": about }),
         );
     }
     if super::icon_button(ui, Icon::MirrorVertical, "Mirror vertically", any).clicked() {
         run(
             actions,
             "object.mirror",
-            json!({ "ids": ids, "axis": "vertical" }),
+            json!({ "ids": ids, "axis": "vertical", "about": about }),
         );
     }
+    let several = ids.len() > 1;
+    let hint = if several {
+        "Rotate and mirror each object about its own centre. Off: the selection turns as one, like Voltron."
+    } else {
+        "Rotate and mirror each object about its own centre. Select several objects first."
+    };
+    ui.add_enabled(several, egui::Checkbox::new(&mut f.each, "Each object"))
+        .on_hover_text(hint)
+        .on_disabled_hover_text(hint);
     ui.separator();
     let align_to_area = &mut st.fields.align_to_area;
     ui.add_enabled_ui(any, |ui| {

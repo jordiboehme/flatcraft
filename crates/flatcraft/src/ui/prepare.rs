@@ -72,7 +72,32 @@ pub enum Drag {
         anchor: kurbo::Point,
         current: kurbo::Point,
     },
+    /// A selection frame drawn from the empty canvas. On release it selects
+    /// the visible objects whose placed bounds it touches; with `add`
+    /// (Shift) they join the selection.
+    Frame {
+        doc_id: u64,
+        start: kurbo::Point,
+        current: kurbo::Point,
+        add: bool,
+    },
 }
+
+/// Arrow-key presses that share one undo step (`object.move` with a
+/// `coalesce_key`): a held key, or presses less than [`NUDGE_BURST`]
+/// apart, on the same document and the same objects.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Nudge {
+    pub doc_id: u64,
+    pub ids: Vec<u64>,
+    /// Numbers the bursts of this window; the coalesce key.
+    pub burst: u64,
+    /// When the last press of the burst came.
+    pub last: Instant,
+}
+
+/// Arrow-key presses closer than this join one undo step.
+pub const NUDGE_BURST: Duration = Duration::from_millis(500);
 
 /// What the last check of linked files found, for one document.
 #[derive(Debug, Clone, Default)]
@@ -119,6 +144,9 @@ pub struct Fields {
     pub percent: String,
     pub rotate: String,
     pub keep_aspect: bool,
+    /// Rotate and mirror each object about its own centre instead of the
+    /// selection as one group.
+    pub each: bool,
     /// Align to the cutting area instead of the selection.
     pub align_to_area: bool,
     pub search: String,
@@ -132,6 +160,7 @@ impl Default for Fields {
             percent: String::new(),
             rotate: "15".into(),
             keep_aspect: true,
+            each: false,
             align_to_area: false,
             search: String::new(),
         }
@@ -165,6 +194,8 @@ pub struct PrepareState {
     /// The search hits stay open (see `ribbon::search_box`).
     pub search_open: bool,
     pub drag: Option<Drag>,
+    /// The burst of arrow-key nudges going on, if any.
+    pub nudge: Option<Nudge>,
     /// A drag value being dragged, and its value so far.
     pub live_override: Option<(Override, f64)>,
     /// Warnings of the last import, until dismissed.
@@ -257,6 +288,7 @@ impl Default for PrepareState {
             fields: Fields::default(),
             search_open: false,
             drag: None,
+            nudge: None,
             live_override: None,
             notices: Vec::new(),
             sources: SourceStatus::default(),

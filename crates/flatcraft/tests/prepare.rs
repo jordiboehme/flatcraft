@@ -1768,3 +1768,332 @@ fn cut_mode_on_a_linked_copy_changes_every_member_in_one_step() {
         flatcraft_core::document::CutMode::ObjectOutlines
     );
 }
+
+// ---------------------------------------------------------------- multi-selection
+
+fn selection(s: &SharedSession) -> Vec<u64> {
+    s.lock()
+        .unwrap()
+        .doc()
+        .selection
+        .iter()
+        .map(|i| i.0)
+        .collect()
+}
+
+/// A harness on a clock the test moves (`advance`).
+fn clocked(
+    dir: &tempfile::TempDir,
+    s: &SharedSession,
+) -> (
+    AppHarness,
+    std::sync::Arc<std::sync::Mutex<std::time::Instant>>,
+) {
+    let now = std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+    let clock = now.clone();
+    let h = harness_with(dir, s.clone(), move |a| {
+        a.with_clock(move || *clock.lock().unwrap())
+    });
+    (h, now)
+}
+
+fn advance(now: &std::sync::Mutex<std::time::Instant>, ms: u64) {
+    *now.lock().unwrap() += std::time::Duration::from_millis(ms);
+}
+
+fn press(h: &mut AppHarness, modifiers: Modifiers, key: egui::Key) {
+    h.key_press_modifiers(modifiers, key);
+    h.run();
+}
+
+#[test]
+fn arrow_keys_nudge_the_selection_by_1_10_and_0_1_mm() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let b = square_at(&s, 60.0);
+    select(&s, &[a, b]);
+    let (mut h, now) = clocked(&dir, &s);
+    to_prepare(&mut h);
+    let (ca, cb) = (object_centre(&s, a), object_centre(&s, b));
+    let before = undo_len(&s);
+    press(&mut h, Modifiers::NONE, egui::Key::ArrowRight);
+    advance(&now, 1000);
+    press(&mut h, Modifiers::SHIFT, egui::Key::ArrowDown);
+    advance(&now, 1000);
+    press(&mut h, Modifiers::ALT, egui::Key::ArrowLeft);
+    advance(&now, 1000);
+    press(&mut h, Modifiers::NONE, egui::Key::ArrowUp);
+    let want = kurbo::Vec2::new(1.0 - 0.1, 10.0 - 1.0);
+    for (id, c) in [(a, ca), (b, cb)] {
+        let d = object_centre(&s, id) - c;
+        assert!((d - want).hypot() < 1e-9, "{id}: {d:?}");
+    }
+    assert_eq!(
+        undo_len(&s),
+        before + 4,
+        "presses 1 s apart are steps of their own"
+    );
+}
+
+#[test]
+fn a_key_burst_is_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    let (mut h, now) = clocked(&dir, &s);
+    to_prepare(&mut h);
+    let start = object_centre(&s, a);
+    let before = undo_len(&s);
+    for _ in 0..3 {
+        press(&mut h, Modifiers::NONE, egui::Key::ArrowRight);
+        advance(&now, 100);
+    }
+    assert_eq!(undo_len(&s), before + 1, "presses within 500 ms");
+    assert!((object_centre(&s, a) - start - kurbo::Vec2::new(3.0, 0.0)).hypot() < 1e-9);
+    // A key held down repeats: one step, however long it is held.
+    advance(&now, 600);
+    h.key_down(egui::Key::ArrowDown);
+    h.run();
+    for _ in 0..3 {
+        advance(&now, 700);
+        h.key_down(egui::Key::ArrowDown);
+        h.run();
+    }
+    h.key_up(egui::Key::ArrowDown);
+    h.run();
+    assert_eq!(undo_len(&s), before + 2, "a pause, then a held key");
+    assert!((object_centre(&s, a) - start - kurbo::Vec2::new(3.0, 4.0)).hypot() < 1e-9);
+    let doc = s.lock().unwrap().doc().id();
+    let ctx = h.ctx.clone();
+    app_mut(&mut h).apply(&ctx, vec![flatcraft::ui::Action::Undo(doc)]);
+    h.run();
+    assert!((object_centre(&s, a) - start - kurbo::Vec2::new(3.0, 0.0)).hypot() < 1e-9);
+}
+
+#[test]
+fn arrows_are_ignored_in_a_text_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let start = object_centre(&s, a);
+    h.get_by_label("Search commands").click();
+    h.run();
+    press(&mut h, Modifiers::NONE, egui::Key::ArrowRight);
+    press(&mut h, Modifiers::COMMAND, egui::Key::A);
+    assert_eq!(object_centre(&s, a), start);
+    assert_eq!(
+        selection(&s),
+        [a],
+        "Cmd+A selects the text, not the objects"
+    );
+}
+
+#[test]
+fn arrows_move_an_object_selected_on_the_canvas() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let start = object_centre(&s, a);
+    let view = known_view(&mut h, start);
+    let at = view.mm_to_screen(start);
+    h.hover_at(at);
+    h.run();
+    h.drag_at(at);
+    h.run();
+    h.drop_at(at);
+    h.run();
+    assert_eq!(selection(&s), [a]);
+    press(&mut h, Modifiers::NONE, egui::Key::ArrowLeft);
+    assert!((object_centre(&s, a) - start + kurbo::Vec2::new(1.0, 0.0)).hypot() < 1e-9);
+}
+
+#[test]
+fn cmd_a_selects_all_visible_objects() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let b = square_at(&s, 60.0);
+    let hidden = square_at(&s, 120.0);
+    s.lock()
+        .unwrap()
+        .execute(
+            "object.set_visible",
+            json!({ "ids": [hidden], "visible": false }),
+            Origin::User,
+        )
+        .unwrap();
+    select(&s, &[]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    press(&mut h, Modifiers::COMMAND, egui::Key::A);
+    assert_eq!(selection(&s), [a, b]);
+}
+
+#[test]
+fn a_frame_on_the_empty_canvas_selects_what_it_touches() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let b = square_at(&s, 60.0);
+    let c = square_at(&s, 120.0);
+    let f = |v: &Value, k: &str| v[k].as_f64().unwrap();
+    let (ba, bb, bc) = (bounds(&s, a), bounds(&s, b), bounds(&s, c));
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let view = known_view(&mut h, kurbo::Point::new(f(&bb, "x0"), f(&bb, "y0")));
+    let pt = |x: f64, y: f64| view.mm_to_screen(kurbo::Point::new(x, y));
+    // From above-left of a to the middle of b: a and b, not c.
+    let (top, mid) = (f(&ba, "y0") - 5.0, (f(&bb, "y0") + f(&bb, "y1")) / 2.0);
+    drag(
+        &mut h,
+        pt(f(&ba, "x0") - 5.0, top),
+        pt((f(&bb, "x0") + f(&bb, "x1")) / 2.0, mid),
+    );
+    assert_eq!(selection(&s), [a, b]);
+    assert!(app(&h).ui.prepare.drag.is_none());
+    // Shift adds c.
+    let around_c = (pt(f(&bc, "x0") - 2.0, top), pt(f(&bc, "x1") + 2.0, mid));
+    h.event(Event::ModifiersChanged(Modifiers::SHIFT));
+    drag(&mut h, around_c.0, around_c.1);
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    h.run();
+    assert_eq!(selection(&s), [a, b, c]);
+    // Without Shift the frame replaces the selection.
+    drag(&mut h, around_c.0, around_c.1);
+    assert_eq!(selection(&s), [c]);
+    // A frame that touches nothing clears it.
+    drag(
+        &mut h,
+        pt(f(&bc, "x1") + 10.0, top),
+        pt(f(&bc, "x1") + 30.0, mid),
+    );
+    assert!(selection(&s).is_empty());
+}
+
+#[test]
+fn drag_scale_of_a_linked_copy_previews_every_member() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let all = linked_copies(&s, a, 1);
+    let b = all[1];
+    select(&s, &[a]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let f = |v: &Value, k: &str| v[k].as_f64().unwrap();
+    let ba = bounds(&s, a);
+    let view = known_view(&mut h, kurbo::Point::new(f(&ba, "x1"), f(&ba, "y1")));
+    let cb = object_centre(&s, b);
+    let bb = bounds(&s, b);
+    // Bottom-right handle of a out by 25 mm along the diagonal: x1.5.
+    let from = view.mm_to_screen(kurbo::Point::new(f(&ba, "x1"), f(&ba, "y1")));
+    let to = from + Vec2::new(50.0, 50.0);
+    h.hover_at(from);
+    h.run();
+    h.drag_at(from);
+    h.run();
+    for t in [0.5, 1.0] {
+        h.hover_at(from + (to - from) * t);
+        h.run();
+    }
+    let grow = |x: f64, c: f64| c + (x - c) * 1.5;
+    let want = view.rect_to_screen(kurbo::Rect::new(
+        grow(f(&bb, "x0"), cb.x),
+        grow(f(&bb, "y0"), cb.y),
+        grow(f(&bb, "x1"), cb.x),
+        grow(f(&bb, "y1"), cb.y),
+    ));
+    assert!(
+        !object_paths(&h, want).is_empty(),
+        "the linked copy grows about its own centre in the preview"
+    );
+    h.drop_at(to);
+    h.run();
+    // The engine agrees with the preview.
+    let got = screen_bounds(&h, &s, b);
+    assert!((got.min - want.min).length() < 1.0 && (got.max - want.max).length() < 1.0);
+}
+
+#[test]
+fn rotate_and_mirror_turn_a_multi_selection_as_a_group_or_each_object() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let b = square_at(&s, 60.0);
+    select(&s, &[a, b]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.run();
+    let (ca, cb) = (object_centre(&s, a), object_centre(&s, b));
+    // Group by default: half a turn swaps the two centres.
+    h.get_by_label("Rotate +90").click();
+    h.run();
+    h.get_by_label("Rotate +90").click();
+    h.run();
+    assert!((object_centre(&s, a) - cb).hypot() < 1e-5, "group turn");
+    h.get_by_label("Mirror horizontally").click();
+    h.run();
+    assert!((object_centre(&s, a) - ca).hypot() < 1e-5, "group mirror");
+    // Each object: the centres stay.
+    h.get_by_label("Each object").click();
+    h.run();
+    let (ca, cb) = (object_centre(&s, a), object_centre(&s, b));
+    h.get_by_label("Rotate +90").click();
+    h.run();
+    h.get_by_label("Mirror vertically").click();
+    h.run();
+    assert_eq!((object_centre(&s, a), object_centre(&s, b)), (ca, cb));
+    let rot = |id: u64| {
+        s.lock()
+            .unwrap()
+            .doc()
+            .document
+            .get(ObjectId(id))
+            .unwrap()
+            .transform
+    };
+    assert!(rot(a).mirror == rot(b).mirror);
+    // One object: the switch is off, it has nothing to choose.
+    select(&s, &[a]);
+    h.run();
+    assert!(disabled(&h, "Each object"));
+}
+
+#[test]
+fn typed_size_of_a_multi_selection_sizes_the_common_box() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let b = square_at(&s, 60.0);
+    select(&s, &[a, b]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.run();
+    let f = |v: &Value, k: &str| v[k].as_f64().unwrap();
+    // 110 mm wide (two 50 mm squares, 10 mm apart): to 220 mm.
+    type_into(&mut h, "Width (mm)", "220");
+    let (na, nb) = (bounds(&s, a), bounds(&s, b));
+    let width = f(&nb, "x1") - f(&na, "x0");
+    assert!((width - 220.0).abs() < 1e-3, "common width {width}");
+    // The gap grows with the group: the layout stays.
+    assert!(
+        (f(&nb, "x0") - f(&na, "x1") - 20.0).abs() < 1e-3,
+        "{na} {nb}"
+    );
+    // A percentage scales the group too.
+    type_into(&mut h, "Scale (%)", "50");
+    let (na, nb) = (bounds(&s, a), bounds(&s, b));
+    assert!(
+        (f(&nb, "x1") - f(&na, "x0") - 110.0).abs() < 1e-3,
+        "{na} {nb}"
+    );
+}

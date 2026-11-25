@@ -1093,7 +1093,8 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
             // The Trace dialog owns Escape, and Delete must not remove
             // the image it traces.
             if app.ui.trace.is_none() {
-                prepare_keys(&ctx, snap, &mut actions);
+                let now = (app.clock)();
+                prepare_keys(&ctx, snap, &mut app.ui.prepare, now, &mut actions);
             }
             prepare::show(ui, app, snap, &mut actions);
             let t = app.tokens;
@@ -1252,13 +1253,44 @@ fn dropped_files(ctx: &egui::Context, t: &Tokens, actions: &mut Vec<Action>) {
     }
 }
 
-/// Delete removes the selection and Escape clears it, unless a text field
-/// has the keyboard or a menu is open (Escape closes that first).
-fn prepare_keys(ctx: &egui::Context, snap: &prepare::Snapshot, actions: &mut Vec<Action>) {
-    if ctx.egui_wants_keyboard_input() || egui::Popup::is_any_open(ctx) || snap.selection.is_empty()
-    {
+/// Prepare's keys, unless a text field (or another widget) has the
+/// keyboard or a menu is open (Escape closes that first): Cmd+A (Ctrl+A)
+/// selects every visible object, the arrow keys nudge the selection (see
+/// [`canvas::nudge_keys`]), Delete removes it and Escape clears it.
+fn prepare_keys(
+    ctx: &egui::Context,
+    snap: &prepare::Snapshot,
+    st: &mut prepare::PrepareState,
+    now: Instant,
+    actions: &mut Vec<Action>,
+) {
+    if ctx.egui_wants_keyboard_input() || egui::Popup::is_any_open(ctx) {
         return;
     }
+    let select_all = ctx.input_mut(|i| {
+        i.consume_shortcut(&egui::KeyboardShortcut::new(
+            egui::Modifiers::COMMAND,
+            egui::Key::A,
+        ))
+    });
+    if select_all {
+        let ids: Vec<u64> = snap
+            .objects
+            .iter()
+            .filter(|o| o.visible)
+            .map(|o| o.id)
+            .collect();
+        actions.push(Action::run(
+            snap.doc_id,
+            "object.select",
+            json!({ "ids": ids }),
+        ));
+        return;
+    }
+    if snap.selection.is_empty() {
+        return;
+    }
+    canvas::nudge_keys(ctx, snap, st, now, actions);
     let (delete, escape) = ctx.input_mut(|i| {
         (
             i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)

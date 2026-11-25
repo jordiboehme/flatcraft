@@ -8,7 +8,7 @@ use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2};
 use flatcraft_device::MediaKind;
 use serde_json::json;
 
-use super::prepare::{Drag, ObjView, PrepareState, Snapshot};
+use super::prepare::{Drag, NUDGE_BURST, Nudge, ObjView, PrepareState, Snapshot};
 use super::theme::Tokens;
 use super::{Action, fonts};
 
@@ -165,8 +165,15 @@ fn hit_test(snap: &Snapshot, view: &CanvasView, at: Pos2) -> Hit {
         .map_or(Hit::Nothing, |o| Hit::Object(o.id))
 }
 
-/// How a dragged object is shown before the drag is sent.
-fn drag_preview(drag: Option<&Drag>, id: u64) -> Option<kurbo::Affine> {
+/// How a dragged object is shown before the drag is sent. A scale also
+/// shows the linked copies of the scaled objects that are not dragged:
+/// they take the scale and keep their own centre, as `object.scale` does.
+fn drag_preview(drag: Option<&Drag>, snap: &Snapshot, id: u64) -> Option<kurbo::Affine> {
+    let about = |c: kurbo::Point, f: f64| {
+        kurbo::Affine::translate(c.to_vec2())
+            * kurbo::Affine::scale(f)
+            * kurbo::Affine::translate(-c.to_vec2())
+    };
     match drag? {
         Drag::Move {
             ids,
@@ -180,16 +187,34 @@ fn drag_preview(drag: Option<&Drag>, id: u64) -> Option<kurbo::Affine> {
             corner,
             current,
             ..
-        } if ids.contains(&id) => {
+        } => {
             let f = corner_factor(*anchor, *corner, *current);
-            Some(
-                kurbo::Affine::translate(anchor.to_vec2())
-                    * kurbo::Affine::scale(f)
-                    * kurbo::Affine::translate(-anchor.to_vec2()),
-            )
+            if ids.contains(&id) {
+                return Some(about(*anchor, f));
+            }
+            let o = snap.object(id)?;
+            let group = o.link_group?;
+            ids.iter()
+                .any(|i| snap.object(*i).is_some_and(|m| m.link_group == Some(group)))
+                .then(|| about(o.transform.center_mm, f))
         }
         _ => None,
     }
+}
+
+/// The visible objects whose placed bounds touch `frame` (mm), in
+/// document order.
+fn framed(snap: &Snapshot, frame: kurbo::Rect) -> Vec<u64> {
+    let f = frame.abs();
+    snap.objects
+        .iter()
+        .filter(|o| o.visible)
+        .filter(|o| {
+            o.bounds()
+                .is_some_and(|b| b.x0 <= f.x1 && b.x1 >= f.x0 && b.y0 <= f.y1 && b.y1 >= f.y0)
+        })
+        .map(|o| o.id)
+        .collect()
 }
 
 /// Draws the canvas into `rect` and handles the pointer.
@@ -226,11 +251,21 @@ pub fn show(
     let view = st.view;
     let (mat_rgb, contrast) = draw_mat(&painter, rect, snap, &view, st.show_grid, t);
     draw_objects(&painter, snap, &view, mat_rgb, 1.0, |id| {
-        drag_preview(st.drag.as_ref(), id)
+        drag_preview(st.drag.as_ref(), snap, id)
     });
     draw_area(&painter, rect, snap, &view, t, contrast);
     if let Some(r) = draw_selection(&painter, snap, st, contrast) {
         link_badge(ui, r, snap, contrast);
+    }
+    if let Some(Drag::Frame { start, current, .. }) = &st.drag {
+        let r = view.rect_to_screen(kurbo::Rect::from_points(*start, *current));
+        painter.rect_filled(r, 0.0, t.accent_prepare.gamma_multiply(0.12));
+        painter.rect_stroke(
+            r,
+            0.0,
+            Stroke::new(1.0, t.accent_prepare),
+            egui::StrokeKind::Middle,
+        );
     }
     if st.show_rulers {
         draw_rulers(&painter, rect, &view, t);
@@ -430,7 +465,7 @@ fn draw_selection(
         b = b + (*current - *start);
     }
     if let Some(d @ Drag::Scale { ids, .. }) = &st.drag
-        && let Some(a) = ids.first().and_then(|id| drag_preview(Some(d), *id))
+        && let Some(a) = ids.first().and_then(|id| drag_preview(Some(d), snap, *id))
     {
         b = a.transform_rect_bbox(b);
     }
@@ -526,6 +561,104 @@ pub(crate) fn draw_rulers(painter: &egui::Painter, rect: Rect, view: &CanvasView
         0.0,
         t.panel,
     );
+}
+
+// ---------------------------------------------------------------- keys
+
+/// How far one arrow-key press moves the selection: 10 mm with Shift,
+/// 0.1 mm with Alt (Option), else 1 mm. `None` for keys that are not
+/// arrows and for Cmd or Ctrl with an arrow, which are left to others.
+fn nudge_step(key: egui::Key, modifiers: egui::Modifiers) -> Option<kurbo::Vec2> {
+    if modifiers.command || modifiers.ctrl || modifiers.mac_cmd {
+        return None;
+    }
+    let mm = if modifiers.shift {
+        10.0
+    } else if modifiers.alt {
+        0.1
+    } else {
+        1.0
+    };
+    Some(match key {
+        egui::Key::ArrowLeft => kurbo::Vec2::new(-mm, 0.0),
+        egui::Key::ArrowRight => kurbo::Vec2::new(mm, 0.0),
+        egui::Key::ArrowUp => kurbo::Vec2::new(0.0, -mm),
+        egui::Key::ArrowDown => kurbo::Vec2::new(0.0, mm),
+        _ => return None,
+    })
+}
+
+/// The arrow keys move the selection through `object.move`. The presses
+/// of one frame add up to one move. A held key (key repeat) and presses
+/// less than [`NUDGE_BURST`] apart on the same objects share one
+/// `coalesce_key`, so the engine keeps the burst as one undo step. The
+/// caller checks that no text field has the keyboard.
+pub(crate) fn nudge_keys(
+    ctx: &egui::Context,
+    snap: &Snapshot,
+    st: &mut PrepareState,
+    now: std::time::Instant,
+    actions: &mut Vec<Action>,
+) {
+    if st.drag.is_some() {
+        return;
+    }
+    let mut delta = kurbo::Vec2::ZERO;
+    let mut first_repeat = None;
+    ctx.input_mut(|i| {
+        i.events.retain(|e| match e {
+            egui::Event::Key {
+                key,
+                pressed,
+                modifiers,
+                repeat,
+                ..
+            } => match nudge_step(*key, *modifiers) {
+                Some(step) => {
+                    if *pressed {
+                        delta += step;
+                        first_repeat.get_or_insert(*repeat);
+                    }
+                    false
+                }
+                None => true,
+            },
+            _ => true,
+        });
+    });
+    let Some(repeat) = first_repeat else {
+        return;
+    };
+    let ids: Vec<u64> = snap.selection.iter().copied().collect();
+    let burst = match &st.nudge {
+        Some(n)
+            if n.doc_id == snap.doc_id
+                && n.ids == ids
+                && (repeat || now.saturating_duration_since(n.last) < NUDGE_BURST) =>
+        {
+            n.burst
+        }
+        Some(n) => n.burst + 1,
+        None => 1,
+    };
+    st.nudge = Some(Nudge {
+        doc_id: snap.doc_id,
+        ids: ids.clone(),
+        burst,
+        last: now,
+    });
+    if delta.hypot() > 1e-12 {
+        actions.push(Action::run(
+            snap.doc_id,
+            "object.move",
+            json!({
+                "ids": ids,
+                "dx_mm": delta.x,
+                "dy_mm": delta.y,
+                "coalesce_key": format!("nudge-{burst}"),
+            }),
+        ));
+    }
 }
 
 // ---------------------------------------------------------------- pointer
@@ -679,12 +812,21 @@ fn pointer(
                     current: mm,
                 })
             }
-            Hit::Nothing => None,
+            // A selection frame; Shift adds what it touches.
+            Hit::Nothing => Some(Drag::Frame {
+                doc_id,
+                start: mm,
+                current: mm,
+                add: shift,
+            }),
         };
     }
     if let Some(p) = resp.interact_pointer_pos() {
         let mm = st.view.screen_to_mm(p);
-        if let Some(Drag::Move { current, .. } | Drag::Scale { current, .. }) = &mut st.drag {
+        if let Some(
+            Drag::Move { current, .. } | Drag::Scale { current, .. } | Drag::Frame { current, .. },
+        ) = &mut st.drag
+        {
             *current = mm;
         }
     }
@@ -726,6 +868,24 @@ fn pointer(
                         }),
                     ));
                 }
+            }
+            Some(Drag::Frame {
+                doc_id,
+                start,
+                current,
+                add,
+            }) => {
+                let mut ids: Vec<u64> = if add || shift {
+                    snap.selection.iter().copied().collect()
+                } else {
+                    Vec::new()
+                };
+                for id in framed(snap, kurbo::Rect::from_points(start, current)) {
+                    if !ids.contains(&id) {
+                        ids.push(id);
+                    }
+                }
+                actions.push(Action::run(doc_id, "object.select", json!({ "ids": ids })));
             }
             _ => {}
         }
