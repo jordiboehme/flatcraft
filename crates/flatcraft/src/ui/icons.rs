@@ -51,6 +51,7 @@ pub enum Icon {
     Copies,
     DistributeHorizontal,
     DistributeVertical,
+    Linked,
 }
 
 macro_rules! svg {
@@ -60,7 +61,7 @@ macro_rules! svg {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 42] = [
+    pub const ALL: [Icon; 43] = [
         Icon::Import,
         Icon::Trace,
         Icon::Duplicate,
@@ -103,6 +104,7 @@ impl Icon {
         Icon::Copies,
         Icon::DistributeHorizontal,
         Icon::DistributeVertical,
+        Icon::Linked,
     ];
 
     /// The vendored Lucide SVG source.
@@ -150,6 +152,7 @@ impl Icon {
             Icon::Copies => svg!("copy-plus"),
             Icon::DistributeHorizontal => svg!("align-horizontal-distribute-center"),
             Icon::DistributeVertical => svg!("align-vertical-distribute-center"),
+            Icon::Linked => svg!("link"),
         }
     }
 }

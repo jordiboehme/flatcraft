@@ -166,6 +166,10 @@ pub fn show(
                 run(actions, "object.set_cut_options", json!({ "strokes": v }));
             }
         });
+    if let Some(n) = snap.linked_reach() {
+        ui.label(RichText::new(format!("Applies to {n} linked copies")).color(t.text_dim))
+            .on_hover_text("Linked copies share the cut options and the scale. Unlink a copy in the Objects panel to change it alone.");
+    }
 
     ui.separator();
     job(ui, st, snap, t, actions);

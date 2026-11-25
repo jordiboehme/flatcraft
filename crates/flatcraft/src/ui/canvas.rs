@@ -229,7 +229,9 @@ pub fn show(
         drag_preview(st.drag.as_ref(), id)
     });
     draw_area(&painter, rect, snap, &view, t, contrast);
-    draw_selection(&painter, snap, st, contrast);
+    if let Some(r) = draw_selection(&painter, snap, st, contrast) {
+        link_badge(ui, r, snap, contrast);
+    }
     if st.show_rulers {
         draw_rulers(&painter, rect, &view, t);
     }
@@ -391,10 +393,39 @@ fn draw_grid(painter: &egui::Painter, view: &CanvasView, w: f64, h: f64, contras
     }
 }
 
-fn draw_selection(painter: &egui::Painter, snap: &Snapshot, st: &PrepareState, contrast: Color32) {
-    let Some(mut b) = selection_box(snap) else {
+/// A link mark just outside the top-right corner of the selection box
+/// `r` (screen) when the selection holds linked copies.
+fn link_badge(ui: &mut Ui, r: Rect, snap: &Snapshot, contrast: Color32) {
+    let Some(n) = snap.linked_reach() else {
         return;
     };
+    let size = super::ICON_SIZE * 0.8;
+    let at = Rect::from_min_size(
+        r.right_top() + Vec2::new(HANDLE_PICK + 2.0, -size - HANDLE_PICK - 2.0),
+        Vec2::splat(size),
+    );
+    if !ui.clip_rect().intersects(at) {
+        return;
+    }
+    let tex = super::icons::texture_colored(ui.ctx(), super::icons::Icon::Linked, size, contrast);
+    ui.put(
+        at,
+        egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), Vec2::splat(size)))
+            .alt_text("Linked copies selected"),
+    )
+    .on_hover_text(format!(
+        "{n} linked copies share the source, the cut options and the scale"
+    ));
+}
+
+/// Draws the selection box and its handles. Returns the box on screen.
+fn draw_selection(
+    painter: &egui::Painter,
+    snap: &Snapshot,
+    st: &PrepareState,
+    contrast: Color32,
+) -> Option<Rect> {
+    let mut b = selection_box(snap)?;
     if let Some(Drag::Move { start, current, .. }) = &st.drag {
         b = b + (*current - *start);
     }
@@ -419,6 +450,7 @@ fn draw_selection(painter: &egui::Painter, snap: &Snapshot, st: &PrepareState, c
         let h = Rect::from_center_size(c, Vec2::splat(HANDLE * 2.0));
         painter.rect_filled(h, 1.0, contrast);
     }
+    Some(r)
 }
 
 /// A tick step in mm that keeps ticks at least `min_px` apart.

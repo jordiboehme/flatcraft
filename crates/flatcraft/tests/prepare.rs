@@ -1444,10 +1444,7 @@ fn copies_dialog_makes_copies_in_one_step() {
     h.get_by_role_and_label(Role::Button, "Copies...").click();
     h.run();
     assert!(app(&h).ui.prepare.copies.is_some());
-    assert!(
-        disabled(&h, "Linked copies"),
-        "arrives with the next update"
-    );
+    assert!(!disabled(&h, "Linked copies"));
     assert!(disabled(&h, "Columns"), "only for a grid");
     h.get_by_label("Grid").click();
     h.run();
@@ -1566,4 +1563,132 @@ fn search_finds_copies_and_distribute() {
         app(&h).ui.prepare.tab,
         flatcraft::ui::prepare::RibbonTab::Arrange
     );
+}
+
+fn link_group(s: &SharedSession, id: u64) -> Option<u64> {
+    s.lock()
+        .unwrap()
+        .doc()
+        .document
+        .get(ObjectId(id))
+        .unwrap()
+        .link_group
+        .map(|g| g.0)
+}
+
+/// `count` linked copies of `id`; the original first, then the copies.
+fn linked_copies(s: &SharedSession, id: u64, count: u32) -> Vec<u64> {
+    let r = s
+        .lock()
+        .unwrap()
+        .execute(
+            "object.copies",
+            json!({ "id": id, "count": count, "linked": true }),
+            Origin::User,
+        )
+        .unwrap();
+    let mut out = vec![id];
+    out.extend(
+        r["ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap()),
+    );
+    out
+}
+
+#[test]
+fn copies_dialog_makes_linked_copies() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    h.get_by_role_and_label(Role::Button, "Copies...").click();
+    h.run();
+    h.get_by_label("Linked copies").click();
+    h.run();
+    assert!(app(&h).ui.prepare.copies.as_ref().unwrap().linked);
+    let before = undo_len(&s);
+    h.get_by_role_and_label(Role::Button, "Make copies").click();
+    h.run();
+    wait_for_workers(&mut h);
+    assert_eq!(undo_len(&s), before + 1);
+    let ids: Vec<u64> = s
+        .lock()
+        .unwrap()
+        .doc()
+        .document
+        .objects
+        .iter()
+        .map(|o| o.id.0)
+        .collect();
+    assert_eq!(ids.len(), 4);
+    let g = link_group(&s, a);
+    assert!(g.is_some());
+    assert!(ids.iter().all(|i| link_group(&s, *i) == g));
+    // The switch is remembered with the other settings.
+    select(&s, &[a]);
+    h.run();
+    h.get_by_role_and_label(Role::Button, "Copies...").click();
+    h.run();
+    assert!(app(&h).ui.prepare.copies.as_ref().unwrap().linked);
+}
+
+#[test]
+fn objects_panel_marks_linked_copies_and_unlinks_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let lone = import_square(&s);
+    let all = linked_copies(&s, a, 2);
+    select(&s, &[all[1]]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    assert_eq!(h.get_all_by_label("Linked copy").count(), 3);
+    let _ = lone;
+    h.get_by_label("Linked copy, one of 3. It shares the source, the cut options and the scale.");
+    let before = undo_len(&s);
+    h.get_by_role_and_label(Role::Button, "Unlink copy").click();
+    h.run();
+    wait_for_workers(&mut h);
+    assert_eq!(undo_len(&s), before + 1);
+    assert_eq!(link_group(&s, all[1]), None);
+    assert!(link_group(&s, all[0]).is_some());
+    assert_eq!(link_group(&s, all[0]), link_group(&s, all[2]));
+    assert_eq!(h.get_all_by_label("Linked copy").count(), 2);
+}
+
+#[test]
+fn settings_say_how_many_linked_copies_an_edit_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let lone = import_square(&s);
+    let all = linked_copies(&s, a, 2);
+    select(&s, &[all[2]]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    h.get_by_label("Applies to 3 linked copies");
+    select(&s, &[lone]);
+    h.run();
+    assert!(h.query_by_label("Applies to 3 linked copies").is_none());
+}
+
+#[test]
+fn canvas_marks_a_selection_with_linked_copies() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let lone = import_square(&s);
+    linked_copies(&s, a, 1);
+    select(&s, &[a]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    h.get_by_label("Linked copies selected");
+    select(&s, &[lone]);
+    h.run();
+    assert!(h.query_by_label("Linked copies selected").is_none());
 }

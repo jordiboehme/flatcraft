@@ -187,6 +187,8 @@ pub struct CopiesSettings {
     pub grid: bool,
     pub columns: u32,
     pub gap_mm: f64,
+    /// Linked copies share the source, the cut options and the scale.
+    pub linked: bool,
 }
 
 impl Default for CopiesSettings {
@@ -196,6 +198,7 @@ impl Default for CopiesSettings {
             grid: false,
             columns: 4,
             gap_mm: 5.0,
+            linked: false,
         }
     }
 }
@@ -211,6 +214,7 @@ pub struct CopiesDialog {
     pub grid: bool,
     pub columns: u32,
     pub gap_mm: f64,
+    pub linked: bool,
 }
 
 impl CopiesDialog {
@@ -223,6 +227,7 @@ impl CopiesDialog {
             grid: s.grid,
             columns: s.columns,
             gap_mm: s.gap_mm,
+            linked: s.linked,
         }
     }
 
@@ -232,6 +237,7 @@ impl CopiesDialog {
             grid: self.grid,
             columns: self.columns,
             gap_mm: self.gap_mm,
+            linked: self.linked,
         }
     }
 }
@@ -660,6 +666,8 @@ pub struct ObjView {
     pub cut: CutOptions,
     /// Last known path of the linked file.
     pub link: Option<PathBuf>,
+    /// The group of linked copies the object belongs to.
+    pub link_group: Option<u64>,
     pub shape: Arc<Shape>,
 }
 
@@ -723,6 +731,27 @@ impl Snapshot {
 
     pub fn object(&self, id: u64) -> Option<&ObjView> {
         self.objects.iter().find(|o| o.id == id)
+    }
+
+    /// How many objects are in the group of linked copies `group`.
+    pub fn group_size(&self, group: u64) -> usize {
+        self.objects
+            .iter()
+            .filter(|o| o.link_group == Some(group))
+            .count()
+    }
+
+    /// How many linked copies a change of a shared setting (cut options,
+    /// scale) of the selection changes: every member of the groups of the
+    /// selected objects. `None` when no selected object is a linked copy.
+    pub fn linked_reach(&self) -> Option<usize> {
+        let groups: BTreeSet<u64> = self.selected().filter_map(|o| o.link_group).collect();
+        (!groups.is_empty()).then(|| {
+            self.objects
+                .iter()
+                .filter(|o| o.link_group.is_some_and(|g| groups.contains(&g)))
+                .count()
+        })
     }
 
     /// Visible objects that are not inside the cutting area.
@@ -826,6 +855,7 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
                 transform: o.transform,
                 cut: o.cut,
                 link: o.link.as_ref().map(|l| l.path.clone()),
+                link_group: o.link_group.map(|g| g.0),
                 shape,
             });
         }
@@ -1124,9 +1154,9 @@ fn copies_window(
                 settings::set_name(ui, &r, "Gap (mm)");
                 ui.end_row();
             });
-        let mut linked = false;
-        ui.add_enabled(false, egui::Checkbox::new(&mut linked, "Linked copies"))
-            .on_disabled_hover_text("Linked copies arrive with the next update.");
+        ui.checkbox(&mut d.linked, "Linked copies").on_hover_text(
+            "One design, many bodies, like the Clone Army: the copies share the source, the cut options and the scale. Each keeps its own place, rotation and mirror.",
+        );
         ui.label(
             RichText::new(
                 "Copies that land off the mat still arrive. The red pill tells you how many.",
@@ -1144,7 +1174,13 @@ fn copies_window(
                 actions.push(Action::run(
                     d.doc_id,
                     "object.copies",
-                    json!({ "id": d.id, "count": d.count, "layout": layout, "gap_mm": d.gap_mm }),
+                    json!({
+                        "id": d.id,
+                        "count": d.count,
+                        "layout": layout,
+                        "gap_mm": d.gap_mm,
+                        "linked": d.linked,
+                    }),
                 ));
                 made = Some(d.settings());
                 close = true;

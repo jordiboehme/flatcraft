@@ -1,6 +1,7 @@
-//! The Objects panel: one row per object with its kind, name, file status
-//! and an eye to show or hide it. Below the list, the details of a single
-//! selected object with its linked file.
+//! The Objects panel: one row per object with its kind, name, a mark for
+//! linked copies, file status and an eye to show or hide it. Below the
+//! list, the details of a single selected object with its linked copies
+//! and its linked file.
 
 use egui::{RichText, Ui};
 use serde_json::json;
@@ -58,6 +59,9 @@ pub fn show(
                         RichText::new(&o.name).color(t.text_dim)
                     };
                     let row = ui.add(egui::Button::selectable(selected, name));
+                    if o.link_group.is_some() {
+                        badge(ui, Icon::Linked, "Linked copy", t.text_dim);
+                    }
                     if row.clicked() {
                         let shift = ui.input(|i| i.modifiers.shift);
                         let ids: Vec<u64> = if shift {
@@ -99,25 +103,46 @@ pub fn show(
     let mut selected = snap.selected();
     if let (Some(o), None) = (selected.next(), selected.next()) {
         ui.separator();
-        details(ui, o, st, t, doc_id, actions);
+        details(ui, o, st, snap, t, actions);
     }
 }
 
-/// Name, kind and linked file of one object.
+/// Name, kind, linked copies and linked file of one object.
 fn details(
     ui: &mut Ui,
     o: &ObjView,
     st: &PrepareState,
+    snap: &Snapshot,
     t: &Tokens,
-    doc_id: u64,
     actions: &mut Vec<Action>,
 ) {
+    let doc_id = snap.doc_id;
     let src = &st.sources;
     ui.label(RichText::new(&o.name).font(fonts::medium(14.0)));
     if let Some(b) = o.bounds() {
         ui.label(
             RichText::new(format!("{:.1} x {:.1} mm", b.width(), b.height())).color(t.text_dim),
         );
+    }
+    if let Some(g) = o.link_group {
+        let n = snap.group_size(g);
+        ui.label(
+            RichText::new(format!(
+                "Linked copy, one of {n}. It shares the source, the cut options and the scale."
+            ))
+            .color(t.text_dim),
+        );
+        if ui
+            .button("Unlink copy")
+            .on_hover_text("Make this copy independent. The others stay linked.")
+            .clicked()
+        {
+            actions.push(Action::run(
+                doc_id,
+                "object.unlink_copies",
+                json!({ "ids": [o.id] }),
+            ));
+        }
     }
     let Some(path) = &o.link else {
         ui.label(RichText::new("Not linked to a file").color(t.text_dim));
