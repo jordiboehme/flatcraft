@@ -1,20 +1,17 @@
 //! Document and project file commands.
 
 use std::path::{Component, Path, PathBuf};
-
 use std::sync::Arc;
 
-use flatcraft_core::document::{CutOptions, GroupId, Object, ObjectId, Source};
+use flatcraft_core::document::{CutOptions, GroupId, Object, Source};
 use flatcraft_core::geometry::{CutPath, bounds};
 use flatcraft_core::project::{self, ProjectError};
 use flatcraft_device::MediaKind;
-use flatcraft_import::fonts;
-use flatcraft_import::svg::import_svg;
 use kurbo::Rect;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::object::{blade_offset_for, warning_text};
+use super::object::blade_offset_for;
 use super::sources::{project_dir, relink_for_save, restore_links};
 use super::{NoParams, command, cutting_area, ids_json, point_arr, rect_json};
 use crate::session::{CommandError, DocState, Origin, Session};
@@ -436,7 +433,7 @@ fn bounds_differ(a: Rect, b: Rect) -> bool {
 }
 
 fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandError> {
-    let mut document = project::load(&p.path).map_err(|e| match e {
+    let (mut document, mut warnings) = project::load_report(&p.path).map_err(|e| match e {
         ProjectError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => {
             CommandError::NotFound(format!("file {}", p.path.display()))
         }
@@ -451,7 +448,6 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
             )));
         }
     }
-    let mut warnings = Vec::new();
     let blade = blade_offset_for(s, &document.job.plotter_id);
     // Linked copies share one source: it is rebuilt once per group, and the
     // members share the geometry `Arc`.
@@ -527,24 +523,11 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
             }
         }
     }
-    // The file keeps the shared fields once per group, and a member's own
-    // copy of them is replaced by the group's when it loads, so members
-    // agree. A group of one (the others were removed by hand) is no group.
-    document.dissolve_lonely_groups();
-    if !document.link_groups_agree() {
-        // Never expected. Repaired, so the project opens and later
-        // commands are not refused for a mismatch they did not make.
-        let leads: Vec<(ObjectId, String)> = document
-            .group_leads()
-            .into_iter()
-            .filter_map(|id| document.get(id).map(|o| (id, o.name.clone())))
-            .collect();
-        for (id, name) in leads {
-            document.spread_shared(id);
-            warnings.push(format!(
-                "{name}: its linked copies did not match, so they now follow it"
-            ));
-        }
+    // Loading already unlinked members whose own fields differ, so the
+    // members agree. Should the rebuild still leave one apart, it is
+    // unlinked too and keeps its own design: open never overwrites it.
+    for name in document.unlink_mismatched() {
+        warnings.push(project::unlinked_warning(&name));
     }
     if let Some(o) = document.objects.iter().find(|o| !o.placement_is_valid()) {
         return Err(CommandError::Failed(format!(
@@ -582,39 +565,35 @@ type Shared = (Arc<Vec<CutPath>>, Rect, Rect);
 /// Rebuilds the geometry of `o` from its embedded source. A failure is a
 /// warning and `None`: the object opens without shapes.
 fn rebuild_shared(o: &Object, blade: f64, warnings: &mut Vec<String>) -> Option<Shared> {
-    let (paths, frame) = match &o.source {
-        Source::Svg { bytes, .. } => match import_svg(bytes, fonts::system_fonts()) {
-            Ok(import) => {
-                for w in &import.warnings {
-                    warnings.push(format!("{}: {}", o.name, warning_text(w)));
-                }
-                (import.paths, import.page_frame_mm)
-            }
-            Err(e) => {
-                warnings.push(format!(
-                    "{}: cannot rebuild the shape: {}",
-                    o.name,
-                    joined(&e.to_string())
-                ));
-                return None;
-            }
-        },
-        Source::Raster { bytes, trace, .. } => {
-            match flatcraft_import::trace::trace(bytes, trace, blade) {
-                Ok(t) => (t.paths, Rect::new(0.0, 0.0, t.size_mm.0, t.size_mm.1)),
-                Err(e) => {
-                    warnings.push(format!(
-                        "{}: cannot trace the image: {}",
-                        o.name,
-                        joined(&e.to_string())
-                    ));
-                    return None;
-                }
-            }
-        }
+    let (svg, bytes) = match &o.source {
+        Source::Svg { bytes, .. } => (true, bytes),
+        Source::Raster { bytes, .. } => (false, bytes),
     };
-    let local_bounds = bounds(&paths).unwrap_or(Rect::ZERO);
-    Some((Arc::new(paths), local_bounds, frame))
+    // The same build as a reload: an SVG import, or a trace with the
+    // stored settings.
+    match super::sources::rebuild(&o.source, bytes, blade) {
+        Ok(r) => {
+            // Import warnings depend on this computer (fonts), so they are
+            // said again; trace warnings describe settings the owner saw
+            // when tracing, and would repeat on every open.
+            if svg {
+                for w in r.warnings {
+                    warnings.push(format!("{}: {w}", o.name));
+                }
+            }
+            let local_bounds = bounds(&r.paths).unwrap_or(Rect::ZERO);
+            Some((Arc::new(r.paths), local_bounds, r.frame))
+        }
+        Err(e) => {
+            let what = if svg {
+                "cannot rebuild the shape"
+            } else {
+                "cannot trace the image"
+            };
+            warnings.push(format!("{}: {what}: {}", o.name, joined(&e.to_string())));
+            None
+        }
+    }
 }
 
 /// A sentence joined after a colon: its first letter in lower case.

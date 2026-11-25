@@ -580,20 +580,24 @@ fn removing_a_member_keeps_the_rest_linked() {
 }
 
 #[test]
-fn duplicate_of_a_linked_copy_is_independent() {
+fn duplicate_of_a_linked_copy_stays_linked() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = session(dir.path());
     let id = import_text(&mut s);
     let all = linked(&mut s, id, 1);
     let r = run(&mut s, "object.duplicate", json!({ "ids": [all[1]] }));
     let dup = r["ids"][0].as_u64().unwrap();
-    assert_eq!(obj(&s, dup).link_group, None);
+    assert_shared(&s, &[all[0], all[1], dup]);
     run(
         &mut s,
         "object.scale",
         json!({ "ids": [all[0]], "factor": 2.0 }),
     );
-    assert_eq!(obj(&s, dup).transform.scale_x, 1.0);
+    assert_eq!(obj(&s, dup).transform.scale_x, 2.0);
+    // Copies without linked stay independent, even of a linked copy.
+    let r = run(&mut s, "object.copies", json!({ "id": all[1], "count": 1 }));
+    let plain = r["ids"][0].as_u64().unwrap();
+    assert_eq!(obj(&s, plain).link_group, None);
 }
 
 #[test]
@@ -741,7 +745,7 @@ fn save_and_open_keep_the_group_and_store_the_source_once() {
 }
 
 #[test]
-fn open_refuses_a_member_whose_group_is_missing_and_the_group_wins_over_its_own_fields() {
+fn open_refuses_a_member_whose_group_is_missing_and_keeps_a_members_own_fields() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = session(dir.path());
     let id = import_text(&mut s);
@@ -750,18 +754,22 @@ fn open_refuses_a_member_whose_group_is_missing_and_the_group_wins_over_its_own_
     run(&mut s, "project.save", json!({ "path": path }));
     let mut value: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
 
-    // A member that carries its own cut options: the group's win.
+    // A member that carries its own cut options keeps them and leaves the
+    // group; nothing on open overwrites design data.
     let mut edited = value.clone();
     edited["objects"][1]["cut"] = json!({ "mode": "all_lines" });
+    edited["objects"][1]["name"] = json!("odd");
     let p2 = dir.path().join("edited.flatcraft");
     write(&p2, serde_json::to_string(&edited).unwrap());
     let mut s2 = session(dir.path());
-    run(&mut s2, "project.open", json!({ "path": p2 }));
-    assert_shared(&s2, &all);
+    let r = run(&mut s2, "project.open", json!({ "path": p2 }));
+    assert_eq!(r["warnings"], json!([UNLINKED_WARNING]), "{r}");
     assert_eq!(
         obj(&s2, all[1]).cut.mode,
-        flatcraft_core::document::CutMode::ObjectOutlines
+        flatcraft_core::document::CutMode::AllLines
     );
+    assert_eq!(obj(&s2, all[1]).link_group, None);
+    assert_shared(&s2, &[all[0], all[2]]);
 
     // A member whose group is gone has no source: refused, by name.
     value["link_groups"] = json!([]);
@@ -774,6 +782,125 @@ fn open_refuses_a_member_whose_group_is_missing_and_the_group_wins_over_its_own_
         .unwrap_err();
     assert!(matches!(e, CommandError::Failed(_)), "{e}");
     assert!(e.to_string().contains("Lonely"), "{e}");
+}
+
+/// The open warning for the member named "odd" that left its group.
+const UNLINKED_WARNING: &str = "odd: it no longer matched its linked copies, so it was unlinked";
+
+/// A saved project with three linked copies, written by hand the long way:
+/// no `link_groups`, every member carries its own fields. The second
+/// member is named "odd".
+fn hand_written(dir: &Path) -> (Vec<u64>, Value) {
+    let mut s = session(dir);
+    let id = import_text(&mut s);
+    let all = linked(&mut s, id, 2);
+    let path = dir.join("p.flatcraft");
+    run(&mut s, "project.save", json!({ "path": path }));
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let g = v["link_groups"][0].clone();
+    v.as_object_mut().unwrap().remove("link_groups");
+    for o in v["objects"].as_array_mut().unwrap() {
+        for k in ["source", "cut", "link", "local_bounds_mm", "frame_mm"] {
+            if let Some(x) = g.get(k) {
+                o[k] = x.clone();
+            }
+        }
+        for k in ["scale_x", "scale_y"] {
+            o["transform"][k] = g[k].clone();
+        }
+    }
+    v["objects"][1]["name"] = json!("odd");
+    (all, v)
+}
+
+fn open_value(dir: &Path, v: &Value) -> (Session, Value) {
+    let p = dir.join("hand.flatcraft");
+    write(&p, serde_json::to_string(v).unwrap());
+    let mut s = session(dir);
+    let r = run(&mut s, "project.open", json!({ "path": p }));
+    (s, r)
+}
+
+#[test]
+fn open_without_link_groups_keeps_matching_members_linked() {
+    let dir = tempfile::tempdir().unwrap();
+    let (all, v) = hand_written(dir.path());
+    let (s, r) = open_value(dir.path(), &v);
+    assert_eq!(r["warnings"], json!([]), "{r}");
+    assert_shared(&s, &all);
+}
+
+#[test]
+fn open_unlinks_a_member_whose_own_cut_differs() {
+    let dir = tempfile::tempdir().unwrap();
+    let (all, mut v) = hand_written(dir.path());
+    v["objects"][1]["cut"]["mode"] = json!("all_lines");
+    let (s, r) = open_value(dir.path(), &v);
+    assert_eq!(r["warnings"], json!([UNLINKED_WARNING]), "{r}");
+    assert_eq!(obj(&s, all[1]).link_group, None);
+    assert_eq!(
+        obj(&s, all[1]).cut.mode,
+        flatcraft_core::document::CutMode::AllLines
+    );
+    for k in [0, 2] {
+        assert_eq!(
+            obj(&s, all[k]).cut.mode,
+            flatcraft_core::document::CutMode::ObjectOutlines
+        );
+    }
+    assert_shared(&s, &[all[0], all[2]]);
+}
+
+#[test]
+fn open_unlinks_a_member_whose_own_source_differs() {
+    let dir = tempfile::tempdir().unwrap();
+    let (all, mut v) = hand_written(dir.path());
+    use base64::Engine;
+    let circle = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="40mm" viewBox="0 0 40 40"><circle cx="20" cy="20" r="15"/></svg>"#;
+    v["objects"][1]["source"]["Svg"]["bytes"] =
+        json!(base64::engine::general_purpose::STANDARD.encode(circle));
+    let (s, r) = open_value(dir.path(), &v);
+    // Only the bytes were swapped, so the saved bounds are the square's and
+    // open also says the circle looks different.
+    assert_eq!(r["warnings"][0], UNLINKED_WARNING, "{r}");
+    assert_eq!(obj(&s, all[1]).link_group, None);
+    // Each keeps its own design: the circle is 30 mm, the squares 50 mm.
+    assert_eq!(&**bytes_of(obj(&s, all[1])), circle.as_bytes());
+    let w = |id| placed_bounds(obj(&s, id)).unwrap().width();
+    assert!((w(all[1]) - 30.0).abs() < 1e-3, "{}", w(all[1]));
+    for k in [0, 2] {
+        assert!((w(all[k]) - 50.0).abs() < 1e-3, "{}", w(all[k]));
+    }
+    assert_shared(&s, &[all[0], all[2]]);
+}
+
+#[test]
+fn scaling_that_pushes_a_linked_copy_past_1_km_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(dir.path());
+    let id = import_text(&mut s);
+    let all = linked(&mut s, id, 1);
+    // The copy sits near the 1 km limit; its 200 mm page still fits.
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [all[1]], "dx_mm": 999_700.0 }),
+    );
+    let before: Vec<_> = all.iter().map(|i| obj(&s, *i).transform).collect();
+    let undo = undo_len(&s);
+    let e = s
+        .execute(
+            "object.scale",
+            json!({ "ids": [all[0]], "factor": 20.0 }),
+            Origin::User,
+        )
+        .unwrap_err();
+    assert!(matches!(e, CommandError::Refused(_)), "{e}");
+    assert!(e.to_string().contains("1 km"), "{e}");
+    for (k, &m) in all.iter().enumerate() {
+        assert_eq!(obj(&s, m).transform, before[k]);
+    }
+    assert_eq!(undo_len(&s), undo);
 }
 
 // ---------------------------------------------------------------- agents

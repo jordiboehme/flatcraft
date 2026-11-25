@@ -703,17 +703,34 @@ impl Session {
     ) -> Result<serde_json::Value, CommandError> {
         if !command.mutates_document() {
             let snapshot = command.changes_session().then(|| self.snapshot());
-            return run_caught(command, self, params, origin).unwrap_or_else(|()| {
-                // A panic: put the open documents back as they were.
-                if let Some(snapshot) = snapshot {
+            let result = run_caught(command, self, params, origin);
+            return match (result, snapshot) {
+                // Linked copies in every open document still agree.
+                (Ok(Ok(_)), Some(snapshot)) if !self.links_agree() => {
                     self.roll_back(snapshot);
+                    Err(CommandError::Failed(LINKS_DRIFTED.into()))
                 }
-                Err(internal_error(command.id()))
-            });
+                (Ok(result), _) => result,
+                // A panic: put the open documents back as they were.
+                (Err(()), snapshot) => {
+                    if let Some(snapshot) = snapshot {
+                        self.roll_back(snapshot);
+                    }
+                    Err(internal_error(command.id()))
+                }
+            };
         }
         let index = self.active;
         let doc_id = self.docs[index].id();
         let before = self.docs[index].document.clone();
+        // The other documents, to put back should the command break their
+        // linked copies. Cheap: shapes and sources are shared `Arc`s.
+        let others: Vec<(u64, Document)> = self
+            .docs
+            .iter()
+            .filter(|d| d.id() != doc_id)
+            .map(|d| (d.id(), d.document.clone()))
+            .collect();
         self.no_user_change = false;
         let caught = run_caught(command, self, params, origin);
         let no_user_change = std::mem::take(&mut self.no_user_change);
@@ -726,17 +743,24 @@ impl Session {
             }
             return Err(internal_error(command.id()));
         };
-        let state = &mut self.docs[index];
         if result.is_ok() {
             // A group of one is no group, and members never drift apart:
-            // the one place every document change passes.
-            state.document.dissolve_lonely_groups();
-            if !state.document.link_groups_agree() {
-                state.document = before;
-                state.prune_selection();
+            // the one place every document change passes. Every open
+            // document is checked, not only the active one.
+            self.docs[index].document.dissolve_lonely_groups();
+            if !self.links_agree() {
+                for d in &mut self.docs {
+                    if d.id() == doc_id {
+                        d.document = before.clone();
+                    } else if let Some((_, doc)) = others.iter().find(|(id, _)| *id == d.id()) {
+                        d.document = doc.clone();
+                    }
+                    d.prune_selection();
+                }
                 return Err(CommandError::Failed(LINKS_DRIFTED.into()));
             }
         }
+        let state = &mut self.docs[index];
         match result {
             Ok(value) if no_user_change => {
                 debug_assert!(
@@ -782,6 +806,12 @@ impl Session {
 }
 
 impl Session {
+    /// True if the linked copies of every open document agree
+    /// ([`Document::link_groups_agree`]).
+    fn links_agree(&self) -> bool {
+        self.docs.iter().all(|d| d.document.link_groups_agree())
+    }
+
     /// The open documents as they are, for [`Session::roll_back`]. Never a
     /// `DocState::clone`, which would give new ids.
     fn snapshot(&self) -> SessionSnapshot {
@@ -1204,6 +1234,67 @@ mod tests {
         assert_eq!(s.doc().document.objects[0].cut, CutOptions::default());
         assert_eq!(s.doc().undo.undo_len(), undo);
         assert_eq!(s.doc().revision(), revision);
+    }
+
+    /// Like [`Drifts`], but in the first open document, not the active one.
+    struct DriftsElsewhere;
+
+    impl registry::Command for DriftsElsewhere {
+        fn id(&self) -> &'static str {
+            "test.drifts_elsewhere"
+        }
+        fn title(&self) -> &'static str {
+            "Drifts elsewhere"
+        }
+        fn description(&self) -> &'static str {
+            "Changes the cut options of the first object of the first document only."
+        }
+        fn params_schema(&self) -> schemars::Schema {
+            schemars::json_schema!({})
+        }
+        fn mutates_document(&self) -> bool {
+            true
+        }
+        fn run(
+            &self,
+            s: &mut Session,
+            _: serde_json::Value,
+            _: Origin,
+        ) -> Result<serde_json::Value, CommandError> {
+            s.docs[0].document.objects[0].cut.auto_threshold_mm = 2.0;
+            Ok(serde_json::json!({}))
+        }
+    }
+
+    #[test]
+    fn linked_copies_of_another_document_are_checked_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles = flatcraft_device::ProfileStore::load(dir.path()).unwrap();
+        let prefs = Preferences {
+            output_dir: Some(dir.path().join("output")),
+            ..Preferences::default()
+        };
+        let mut s = Session::new(profiles, prefs, false, dir.path().to_path_buf());
+        let id = ok(
+            &mut s,
+            "object.import_svg",
+            serde_json::json!({ "svg": SQUARE, "name": "sq" }),
+        )["id"]
+            .as_u64()
+            .unwrap();
+        ok(
+            &mut s,
+            "object.copies",
+            serde_json::json!({ "id": id, "count": 1, "linked": true }),
+        );
+        ok(&mut s, "document.new", serde_json::json!({}));
+        assert_eq!(s.active, 1);
+        let e = s
+            .run_command(&DriftsElsewhere, serde_json::json!({}), Origin::Agent)
+            .unwrap_err();
+        assert_eq!(e, CommandError::Failed(LINKS_DRIFTED.into()));
+        assert!(s.docs[0].document.link_groups_agree());
+        assert_eq!(s.docs[0].document.objects[0].cut, CutOptions::default());
     }
 
     #[test]

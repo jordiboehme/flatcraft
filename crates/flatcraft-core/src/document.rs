@@ -226,6 +226,33 @@ pub struct Object {
 }
 
 impl Object {
+    /// An object with only what drawing and bounds read: its geometry,
+    /// placement and cut options. No source, name or file link; id 0. For
+    /// views that draw a shape outside a document.
+    pub fn shape_only(
+        geometry: Arc<Vec<CutPath>>,
+        local_bounds: Rect,
+        transform: Transform,
+        cut: CutOptions,
+    ) -> Self {
+        Self {
+            id: ObjectId(0),
+            name: String::new(),
+            source: Source::Svg {
+                name: String::new(),
+                bytes: Arc::from(Vec::new()),
+            },
+            transform,
+            visible: true,
+            cut,
+            link: None,
+            geometry,
+            local_bounds,
+            frame: Rect::ZERO,
+            link_group: None,
+        }
+    }
+
     /// Sets the local geometry and recomputes `local_bounds`
     /// (`Rect::ZERO` when empty).
     pub fn set_geometry(&mut self, geometry: Vec<CutPath>) {
@@ -281,6 +308,19 @@ impl Object {
         Arc::ptr_eq(&self.geometry, &other.geometry)
             && Arc::ptr_eq(&bytes(self), &bytes(other))
             && self.source == other.source
+            && self.cut == other.cut
+            && self.link == other.link
+            && self.local_bounds == other.local_bounds
+            && self.frame == other.frame
+            && self.transform.scale_x == other.transform.scale_x
+            && self.transform.scale_y == other.transform.scale_y
+    }
+
+    /// True if `self` and `other` hold equal values in every shared field
+    /// (see [`Object::shares_with`]), whether or not they share `Arc`s.
+    /// The geometry is not compared: a loaded project has none yet.
+    pub fn shared_values_eq(&self, other: &Object) -> bool {
+        self.source == other.source
             && self.cut == other.cut
             && self.link == other.link
             && self.local_bounds == other.local_bounds
@@ -467,18 +507,51 @@ impl Document {
     /// Makes the members of every group share the first member's shared
     /// fields as one `Arc` each, without moving anything. For a freshly
     /// loaded project, whose members hold equal values in separate `Arc`s.
-    pub fn share_link_groups(&mut self) {
+    /// A member whose shared fields differ from the first member's (a
+    /// hand-edited file) is never overwritten: it leaves its group and
+    /// keeps its own design. Returns the names of those members. Groups of
+    /// one are dissolved.
+    pub fn share_link_groups(&mut self) -> Vec<String> {
         let mut leads: Vec<Object> = Vec::new();
+        let mut unlinked = Vec::new();
         for o in &mut self.objects {
             let Some(g) = o.link_group else { continue };
             match leads.iter().find(|l| l.link_group == Some(g)) {
-                Some(lead) => {
+                Some(lead) if o.shared_values_eq(lead) => {
                     o.source = lead.source.clone();
                     o.geometry = lead.geometry.clone();
+                }
+                Some(_) => {
+                    o.link_group = None;
+                    unlinked.push(o.name.clone());
                 }
                 None => leads.push(o.clone()),
             }
         }
+        self.dissolve_lonely_groups();
+        unlinked
+    }
+
+    /// Unlinks every member that does not share its fields with the first
+    /// member of its group ([`Object::shares_with`]); each keeps its own
+    /// design. Returns the names of the unlinked members. Groups of one
+    /// are dissolved.
+    pub fn unlink_mismatched(&mut self) -> Vec<String> {
+        let mut leads: Vec<Object> = Vec::new();
+        let mut unlinked = Vec::new();
+        for o in &mut self.objects {
+            let Some(g) = o.link_group else { continue };
+            match leads.iter().find(|l| l.link_group == Some(g)) {
+                Some(lead) if o.shares_with(lead) => {}
+                Some(_) => {
+                    o.link_group = None;
+                    unlinked.push(o.name.clone());
+                }
+                None => leads.push(o.clone()),
+            }
+        }
+        self.dissolve_lonely_groups();
+        unlinked
     }
 
     /// Drops groups with a single member: a group of one is no group.

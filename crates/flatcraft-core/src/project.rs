@@ -110,7 +110,9 @@ fn take_shared(
 }
 
 /// Puts the shared fields of each linked copy's group back into its JSON.
-/// The group's values win over any the member carries itself.
+/// A field the member carries itself is kept, never overwritten: when it
+/// differs from the group's, the member leaves the group on load
+/// ([`Document::share_link_groups`]).
 fn unpack_link_groups(value: &mut serde_json::Value) -> Result<(), ProjectError> {
     use serde_json::Value;
     let Some(groups) = value.get_mut("link_groups").map(Value::take) else {
@@ -134,17 +136,15 @@ fn unpack_link_groups(value: &mut serde_json::Value) -> Result<(), ProjectError>
         };
         let record = find(g).ok_or_else(|| missing_group(o, g))?;
         for key in SHARED_KEYS {
-            match record.get(key) {
-                Some(v) => o.insert(key.into(), v.clone()),
-                None => o.remove(key),
-            };
+            if let Some(v) = record.get(key) {
+                o.entry(key).or_insert_with(|| v.clone());
+            }
         }
         if let Some(t) = o.get_mut("transform").and_then(Value::as_object_mut) {
             for key in SHARED_TRANSFORM_KEYS {
-                match record.get(key) {
-                    Some(v) => t.insert(key.into(), v.clone()),
-                    None => t.remove(key),
-                };
+                if let Some(v) = record.get(key) {
+                    t.entry(key).or_insert_with(|| v.clone());
+                }
             }
         }
     }
@@ -180,8 +180,15 @@ fn missing_group(o: &serde_json::Map<String, serde_json::Value>, group: u64) -> 
 
 /// Loads a project. Objects come back with empty geometry; the engine
 /// rebuilds it from the sources. Linked copies come back sharing one
-/// source `Arc`.
+/// source `Arc`. See [`load_report`] for the warnings.
 pub fn load(path: &Path) -> Result<Document, ProjectError> {
+    load_report(path).map(|(doc, _)| doc)
+}
+
+/// [`load`], plus a warning for every linked copy whose own fields no
+/// longer matched its group (a hand-edited file): it was unlinked and kept
+/// its own design.
+pub fn load_report(path: &Path) -> Result<(Document, Vec<String>), ProjectError> {
     let text = std::fs::read_to_string(path)?;
     let value: serde_json::Value = serde_json::from_str(&text)?;
     let found = value
@@ -197,9 +204,18 @@ pub fn load(path: &Path) -> Result<Document, ProjectError> {
     let mut value = value;
     unpack_link_groups(&mut value)?;
     let mut doc: Document = serde_json::from_value(value)?;
-    doc.share_link_groups();
+    let warnings = doc
+        .share_link_groups()
+        .into_iter()
+        .map(|name| unlinked_warning(&name))
+        .collect();
     let min_next = doc.objects.iter().map(|o| o.id.0 + 1).max().unwrap_or(1);
     doc.next_id = doc.next_id.max(min_next);
     doc.format_version = FORMAT_VERSION;
-    Ok(doc)
+    Ok((doc, warnings))
+}
+
+/// The warning for a linked copy that was unlinked on open.
+pub fn unlinked_warning(name: &str) -> String {
+    format!("{name}: it no longer matched its linked copies, so it was unlinked")
 }

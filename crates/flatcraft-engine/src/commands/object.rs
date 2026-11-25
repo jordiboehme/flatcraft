@@ -601,14 +601,14 @@ pub struct DuplicateParams {
 }
 
 /// Adds a copy of object `id`, moved by `offset`, with a new id, at the end
-/// of the document. The copy shares the original's data (`Arc`s) but is
-/// not linked to it. Returns the new id.
+/// of the document. The copy shares the original's data (`Arc`s) and
+/// keeps its group of linked copies; callers that want an independent copy
+/// clear `link_group`. Returns the new id.
 fn add_copy(doc: &mut Document, id: ObjectId, offset: Vec2) -> Result<ObjectId, CommandError> {
     let mut copy = object_mut(doc, id)?.clone();
     let new_id = ObjectId(doc.next_id);
     doc.next_id += 1;
     copy.id = new_id;
-    copy.link_group = None;
     translate(&mut copy, offset);
     doc.objects.push(copy);
     Ok(new_id)
@@ -633,7 +633,7 @@ command!(
     mutates: true,
     params: DuplicateParams,
     run: run_duplicate,
-    description: "Copies objects and moves the copies by offset_mm [dx, dy] (default [10, 10]; mm, y down). The copies become the selection. A copy of a linked copy is independent: it does not join the original's group (use object.copies with linked true, or object.link, for that). An empty ids list means the current selection. Returns {ids: [new id]} in the order of the originals.",
+    description: "Copies objects and moves the copies by offset_mm [dx, dy] (default [10, 10]; mm, y down). The copies become the selection. A copy of a linked copy is a linked copy too: it joins the original's group and shares its source, geometry, trace settings, cut options, scale and file link (object.unlink_copies makes it independent). An empty ids list means the current selection. Returns {ids: [new id]} in the order of the originals.",
 );
 
 // ---------------------------------------------------------------- copies
@@ -728,6 +728,7 @@ fn run_copies(s: &mut Session, p: CopiesParams, _: Origin) -> Result<Value, Comm
         let offset = Vec2::new(col as f64 * step_x, row as f64 * step_y);
         let new_id = add_copy(&mut st.document, id, offset)?;
         let copy = object_mut(&mut st.document, new_id)?;
+        // Without linked, a copy is independent, even of a linked copy.
         copy.link_group = group;
         if !copy.placement_is_valid() {
             return Err(CommandError::Refused(format!(
