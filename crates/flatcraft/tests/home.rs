@@ -181,7 +181,7 @@ fn a_recent_row_opens_its_project_and_says_when_and_where() {
     let t = texts(&h);
     assert!(t.contains(&"2 hours ago".to_string()), "{t:?}");
     assert!(t.contains(&"Cut".to_string()), "{t:?}");
-    h.get_by_role_and_label(Role::Button, "Open coasters.flatcraft")
+    h.get_by_role_and_label(Role::Button, "Open coasters")
         .click();
     wait_for_source_check(&mut h);
     assert_eq!(
@@ -217,7 +217,7 @@ fn a_recent_project_open_in_a_tab_switches_to_it() {
     wait_for_pictures(&mut h);
     assert!(texts(&h).contains(&"Open now".to_string()));
     let docs = s.lock().unwrap().docs.len();
-    h.get_by_role_and_label(Role::Button, "Go to coasters.flatcraft")
+    h.get_by_role_and_label(Role::Button, "Go to coasters")
         .click();
     wait_for_source_check(&mut h);
     assert_eq!(s.lock().unwrap().doc().id(), opened);
@@ -280,7 +280,7 @@ fn right_click_removes_a_recent_project() {
     s.lock().unwrap().prefs.recent_projects = vec![path.clone()];
     let mut h = harness_with(&dir, s.clone(), |a| a);
     wait_for_pictures(&mut h);
-    h.get_by_role_and_label(Role::Button, "Open coasters.flatcraft")
+    h.get_by_role_and_label(Role::Button, "Open coasters")
         .click_secondary();
     h.run();
     h.get_by_role_and_label(Role::Button, "Remove from list")

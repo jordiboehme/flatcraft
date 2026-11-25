@@ -114,7 +114,7 @@ fn home_shows_new_open_and_recent_projects() {
     h.get_by_role_and_label(Role::Button, "Open...");
     // A missing recent project offers Locate and Remove, not a dead row.
     assert!(
-        h.query_by_role_and_label(Role::Button, "Open coasters.flatcraft")
+        h.query_by_role_and_label(Role::Button, "Open coasters")
             .is_none()
     );
     h.get_by_role_and_label(Role::Button, "Locate...");
@@ -713,4 +713,40 @@ fn a_fixed_theme_ignores_the_system() {
             assert_eq!(app(&h).tokens, want, "{pref:?} under system {sys:?}");
         }
     }
+}
+
+#[test]
+fn tabs_and_dialogs_name_a_project_without_its_extension() {
+    use flatcraft::ui::project_name;
+    use std::path::Path;
+    assert_eq!(project_name(Path::new("/a/Stickers.flatcraft")), "Stickers");
+    assert_eq!(
+        project_name(Path::new("/a/my.design.flatcraft")),
+        "my.design"
+    );
+    assert_eq!(project_name(Path::new("/a/LOUD.FLATCRAFT")), "LOUD");
+    assert_eq!(project_name(Path::new("/a/notes.svg")), "notes.svg");
+    assert_eq!(project_name(Path::new("/a/.flatcraft")), ".flatcraft");
+
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let path = dir.path().join("Stickers.flatcraft");
+    {
+        let mut st = s.lock().unwrap();
+        st.execute("project.save", json!({ "path": path }), Origin::User)
+            .unwrap();
+        st.execute("document.new", json!({}), Origin::User).unwrap();
+    }
+    let mut h = harness(&dir, s.clone(), false);
+    h.get_by_role_and_label(Role::Button, "Stickers");
+    assert!(h.query_by_label("Stickers.flatcraft").is_none());
+    h.get_by_role_and_label(Role::Button, "Close Stickers");
+    h.get_by_role_and_label(Role::Button, "Untitled 2");
+    // The unsaved-changes dialog uses the same name.
+    s.lock().unwrap().docs[0].dirty = true;
+    let id = s.lock().unwrap().docs[0].id();
+    let ctx = h.ctx.clone();
+    app_mut(&mut h).apply(&ctx, vec![Action::Close(id)]);
+    h.run();
+    h.get_by_label("Save changes to Stickers?");
 }

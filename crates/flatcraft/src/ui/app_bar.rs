@@ -12,7 +12,7 @@ use super::groups::card;
 use super::icons::{self, Icon};
 use super::settings::set_name;
 use super::theme::Tokens;
-use super::{Action, FlatCraftApp, ICON_SIZE, Workspace, display_name, fonts, lock};
+use super::{Action, FlatCraftApp, ICON_SIZE, Workspace, fonts, lock, project_name};
 
 /// Height of the app bar. On macOS it is the title bar's height, so the
 /// traffic lights sit in its middle.
@@ -101,7 +101,10 @@ pub fn system_double_click() -> DoubleClick {
 /// One open document as the tabs show it.
 struct Tab {
     id: u64,
+    /// The project name without ".flatcraft", or "Untitled N".
     name: String,
+    /// The file, for the hover card.
+    path: Option<std::path::PathBuf>,
     dirty: bool,
 }
 
@@ -150,10 +153,11 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
             .iter()
             .map(|d| Tab {
                 id: d.id(),
-                name: d.path.as_deref().map(display_name).unwrap_or_else(|| {
+                name: d.path.as_deref().map(project_name).unwrap_or_else(|| {
                     let n = app.ui.untitled.get(&d.id()).copied().unwrap_or(1);
                     format!("Untitled {n}")
                 }),
+                path: d.path.clone(),
                 dirty: d.dirty,
             })
             .collect();
@@ -568,7 +572,11 @@ fn doc_tab(
         }
     }
     let hint = if tab.dirty { TAB_DIRTY_HINT } else { TAB_HINT };
-    card(&resp, &label, hint, None, false);
+    let hint = match &tab.path {
+        Some(path) => format!("{hint}\n{}", path.display()),
+        None => hint.to_string(),
+    };
+    card(&resp, &label, &hint, None, false);
     card(&close, &close_name, CLOSE_HINT, None, false);
     (resp, close)
 }

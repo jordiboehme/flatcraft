@@ -551,7 +551,7 @@ fn quit_asks_again_about_a_document_changed_after_its_answer() {
     h.key_press_modifiers(Modifiers::COMMAND, Key::D);
     h.run();
     assert!(!closing(&h), "A changed after its answer");
-    h.get_by_label("Save changes to a.flatcraft?");
+    h.get_by_label("Save changes to a?");
     h.key_press_modifiers(Modifiers::COMMAND, Key::D);
     h.run();
     assert!(closing(&h));

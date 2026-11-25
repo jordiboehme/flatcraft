@@ -128,8 +128,9 @@ fn a_long_name_is_cut_and_the_tooltip_has_it_whole() {
     }
     // The active (last) document gets the long name.
     import_square(&s);
-    let name = "A very long project name that goes on and on and on.flatcraft";
-    let path = dir.path().join(name);
+    // The tab leaves out ".flatcraft".
+    let name = "A very long project name that goes on and on and on";
+    let path = dir.path().join(format!("{name}.flatcraft"));
     s.lock()
         .unwrap()
         .execute("project.save", json!({ "path": path }), Origin::User)

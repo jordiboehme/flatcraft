@@ -8,7 +8,7 @@ use super::icons::{self, Icon};
 use super::theme::Tokens;
 use std::path::{Path, PathBuf};
 
-use super::{Action, FlatCraftApp, display_name, fonts, groups, lock};
+use super::{Action, FlatCraftApp, fonts, groups, lock, project_name};
 
 /// The widest the page gets; wider windows centre it.
 pub const MAX_WIDTH: f32 = 1080.0;
@@ -614,7 +614,7 @@ fn recent_row(
     home_dir: Option<&Path>,
     actions: &mut Vec<Action>,
 ) {
-    let name = display_name(&row.path);
+    let name = project_name(&row.path);
     let gone = row.version.is_none();
     let sense = if gone { Sense::hover() } else { Sense::click() };
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), sense);

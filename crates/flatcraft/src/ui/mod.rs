@@ -1298,7 +1298,7 @@ impl FlatCraftApp {
                 .ok()
                 .and_then(|i| s.docs[i].path.clone())
         };
-        path.as_deref().map(display_name).unwrap_or_else(|| {
+        path.as_deref().map(project_name).unwrap_or_else(|| {
             let n = self.ui.untitled.get(&doc_id).copied().unwrap_or(1);
             format!("Untitled {n}")
         })
@@ -1637,7 +1637,21 @@ pub fn lock(session: &SharedSession) -> MutexGuard<'_, Session> {
     session.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The file name of a project path, for tabs and lists.
+/// The name of a project for tabs, dialogs and Home's recent list: its
+/// file name without a trailing ".flatcraft" (any case), so
+/// "my.design.flatcraft" is "my.design". A name that is only the
+/// extension stays as it is.
+pub fn project_name(path: &Path) -> String {
+    let name = display_name(path);
+    let ext = format!(".{PROJECT_EXTENSION}");
+    let cut = name.len().saturating_sub(ext.len());
+    match name.get(cut..) {
+        Some(tail) if cut > 0 && tail.eq_ignore_ascii_case(&ext) => name[..cut].to_string(),
+        _ => name,
+    }
+}
+
+/// The file name of a path, for messages and file dialogs.
 pub fn display_name(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
