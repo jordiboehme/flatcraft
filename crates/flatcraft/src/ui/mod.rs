@@ -191,7 +191,7 @@ pub enum Action {
         command: &'static str,
         params: Value,
     },
-    /// Store the "Each object" switch of the Arrange tab in the
+    /// Store the "Each object" switch of the Arrange group in the
     /// preferences, so the next start has it as it was.
     RememberEach(bool),
     /// Store what the person chose for the side panels (Objects, Cut and

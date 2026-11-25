@@ -106,7 +106,7 @@ fn scale_field_sets_width() {
     let id = import_square(&s);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.get_by_role_and_label(Role::Tab, "Layout").click();
     h.run();
     type_into(&mut h, "Width (mm)", "100");
     let b = bounds(&s, id);
@@ -1257,7 +1257,7 @@ fn keep_aspect_is_fixed_for_several_objects() {
     let b = import_square(&s);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.get_by_role_and_label(Role::Tab, "Layout").click();
     h.run();
     app_mut(&mut h).ui.prepare.fields.keep_aspect = false;
     s.lock()
@@ -1459,7 +1459,7 @@ fn distribute_buttons_need_three_objects_and_are_one_step() {
     let c = square_at(&s, 200.0);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.get_by_role_and_label(Role::Tab, "Layout").click();
     h.run();
     select(&s, &[a, b]);
     h.run();
@@ -1487,7 +1487,7 @@ fn open_arrange(h: &mut AppHarness) {
 
 /// Opens the panel of `label` ("Rotate...") from the Arrange drop-down.
 fn open_panel(h: &mut AppHarness, label: &str) {
-    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.get_by_role_and_label(Role::Tab, "Layout").click();
     h.run();
     open_arrange(h);
     h.get_by_label(&format!("{label} (Arrange)")).click();
@@ -1750,7 +1750,7 @@ fn search_reaches_arrange_commands_that_are_not_on_the_tab() {
     search(&mut h, "distrib", "Distribute horizontally (search)");
     assert_eq!(
         app(&h).ui.prepare.tab,
-        flatcraft::ui::prepare::RibbonTab::Arrange
+        flatcraft::ui::prepare::RibbonTab::Layout
     );
     assert!(disabled(&h, "Distribute horizontally (Arrange)"));
     h.key_press(egui::Key::Escape);
@@ -1811,7 +1811,7 @@ fn move_copy_moves_or_copies_in_one_step() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     // Pinned by default.
-    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.get_by_role_and_label(Role::Tab, "Layout").click();
     h.run();
     h.get_by_role_and_label(Role::Button, "Move / Copy").click();
     h.run();
@@ -2011,7 +2011,7 @@ fn pins_round_trip_through_the_preferences() {
     select(&s, &[a]);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.get_by_role_and_label(Role::Tab, "Layout").click();
     h.run();
     // The default pins: two big buttons, four directions.
     for label in [
@@ -2095,7 +2095,7 @@ fn search_finds_copies_and_distribute() {
     );
     assert_eq!(
         app(&h).ui.prepare.tab,
-        flatcraft::ui::prepare::RibbonTab::Arrange
+        flatcraft::ui::prepare::RibbonTab::Layout
     );
 }
 
@@ -2241,7 +2241,7 @@ fn arrange_tab_says_scaling_reaches_linked_copies() {
     select(&s, &[a]);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.get_by_role_and_label(Role::Tab, "Layout").click();
     h.run();
     h.get_by_label("Scales all 3 linked copies");
     select(&s, &[lone]);
@@ -2567,7 +2567,7 @@ fn rotate_and_mirror_turn_a_multi_selection_as_a_group_or_each_object() {
     select(&s, &[a, b]);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.get_by_role_and_label(Role::Tab, "Layout").click();
     h.run();
     let (ca, cb) = (object_centre(&s, a), object_centre(&s, b));
     // Group by default: half a turn swaps the two centres.
@@ -2617,7 +2617,7 @@ fn typed_size_of_a_multi_selection_sizes_the_common_box() {
     select(&s, &[a, b]);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.get_by_role_and_label(Role::Tab, "Layout").click();
     h.run();
     let f = |v: &Value, k: &str| v[k].as_f64().unwrap();
     // 110 mm wide (two 50 mm squares, 10 mm apart): to 220 mm.
@@ -2641,7 +2641,7 @@ fn typed_percent_of_a_multi_selection_scales_the_group() {
     select(&s, &[a, b]);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.get_by_role_and_label(Role::Tab, "Layout").click();
     h.run();
     let f = |v: &Value, k: &str| v[k].as_f64().unwrap();
     let (oa, ob) = (bounds(&s, a), bounds(&s, b));
@@ -2673,7 +2673,7 @@ fn each_object_is_remembered_across_restarts() {
     select(&s, &[a, b]);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.get_by_role_and_label(Role::Tab, "Layout").click();
     h.run();
     h.get_by_label("Each object").click();
     h.run();
@@ -2693,7 +2693,7 @@ fn each_object_is_remembered_across_restarts() {
     let mut h = harness(&dir, s2.clone(), false);
     to_prepare(&mut h);
     assert!(app(&h).ui.prepare.fields.each);
-    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.get_by_role_and_label(Role::Tab, "Layout").click();
     h.run();
     assert_eq!(
         h.get_by_label("Each object").accesskit_node().toggled(),
@@ -2737,7 +2737,7 @@ fn each_pinned_direction_runs_its_command_in_one_click() {
         .unwrap();
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.get_by_role_and_label(Role::Tab, "Layout").click();
     h.run();
     let ids = json!([a, b, c]);
     let align = |mode: &str, to: &str| {

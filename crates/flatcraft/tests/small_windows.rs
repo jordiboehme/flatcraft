@@ -65,7 +65,7 @@ fn find<'a>(h: &'a AppHarness, role: Role, name: &str) -> Vec<egui_kittest::Node
 /// The fields and switches of a tab that are not actions.
 fn fields(tab: &str) -> Vec<(Role, &'static str)> {
     match tab {
-        "Arrange" => vec![
+        "Layout" => vec![
             (Role::TextInput, "Width (mm)"),
             (Role::TextInput, "Height (mm)"),
             (Role::CheckBox, "Keep aspect"),
@@ -196,7 +196,7 @@ fn every_ribbon_action_is_reachable_at_every_width() {
             select(&s, &[a, b]);
             pin(&s, pins);
             let mut h = sized(&dir, s.clone(), width);
-            for tab in ["Home", "Arrange", "View"] {
+            for tab in ["Layout", "View"] {
                 show_tab(&mut h, tab);
                 assert!(
                     window(&h).contains_rect(search_rect(&h)),
@@ -220,7 +220,7 @@ fn the_default_pins_are_the_buttons_the_ribbon_had() {
     let mut h = sized(&dir, s, 1920.0);
     let want = [
         (
-            "Home",
+            "Layout",
             &[
                 "Import",
                 "Trace",
@@ -229,11 +229,6 @@ fn the_default_pins_are_the_buttons_the_ribbon_had() {
                 "Copies",
                 "Delete",
                 "Reload",
-            ][..],
-        ),
-        (
-            "Arrange",
-            &[
                 "Move / Copy",
                 "Rectangular pattern",
                 "Rotate -90",
@@ -279,7 +274,7 @@ fn a_listed_action_works_and_closes_the_list() {
     pin(&s, &RIBBON_PIN_IDS);
     select(&s, &[a]);
     let mut h = sized(&dir, s.clone(), 900.0);
-    show_tab(&mut h, "Arrange");
+    show_tab(&mut h, "Layout");
     assert!(
         matches!(
             collapse::level(&h.ctx, ribbon::bar_id()),
@@ -313,7 +308,7 @@ fn search_opens_a_list_on_a_collapsed_ribbon() {
     pin(&s, &RIBBON_PIN_IDS);
     select(&s, &[a]);
     let mut h = sized(&dir, s.clone(), 900.0);
-    show_tab(&mut h, "Home");
+    show_tab(&mut h, "Layout");
     h.get_by_label("Search commands").click();
     h.run();
     h.get_by_label("Search commands").type_text("distribute");
@@ -327,7 +322,7 @@ fn search_opens_a_list_on_a_collapsed_ribbon() {
             collapse::level(&h.ctx, ribbon::bar_id()),
             Some(Level::Collapsed(_))
         ),
-        "the Arrange tab is collapsed at 900 pt with every pin"
+        "the Layout tab is collapsed at 900 pt with every pin"
     );
     assert!(
         h.get_by_label("Distribute vertically (Arrange)")
@@ -351,12 +346,12 @@ fn the_first_frame_after_a_tab_switch_already_fits() {
     pin(&s, &RIBBON_PIN_IDS);
     select(&s, &[a]);
     let mut h = sized(&dir, s, 900.0);
-    show_tab(&mut h, "Home");
-    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    show_tab(&mut h, "Layout");
+    h.get_by_role_and_label(Role::Tab, "Layout").click();
     h.step();
     let level = collapse::level(&h.ctx, ribbon::bar_id());
     assert!(matches!(level, Some(Level::Collapsed(_))), "{level:?}");
-    for g in groups_of("Arrange") {
+    for g in groups_of("Layout") {
         let r = h.get_by_role_and_label(Role::Button, g.def().title).rect();
         assert!(on_ribbon(&h, r), "{} at {r:?}", g.def().title);
     }
@@ -374,7 +369,7 @@ fn resizing_settles_without_flipping() {
     let s = session(&dir);
     pin(&s, &RIBBON_PIN_IDS);
     let mut h = sized(&dir, s, 1920.0);
-    show_tab(&mut h, "Arrange");
+    show_tab(&mut h, "Layout");
     let wide = collapse::level(&h.ctx, ribbon::bar_id());
     let mut seen = Vec::new();
     for w in [
@@ -410,7 +405,7 @@ fn a_field_that_shrinks_back_lets_the_ribbon_grow_again() {
         select(&s, &[a]);
         pin(&s, &RIBBON_PIN_IDS);
         let mut h = sized(&dir, s.clone(), width);
-        show_tab(&mut h, "Arrange");
+        show_tab(&mut h, "Layout");
         wait_for_workers(&mut h);
         let before = collapse::level(&h.ctx, ribbon::bar_id());
         let size = |h: &mut AppHarness, mm: f64| {
@@ -438,14 +433,14 @@ fn a_field_that_shrinks_back_lets_the_ribbon_grow_again() {
             "{width}: back where it was once the text is short"
         );
     }
-    // At the narrowest window where the Arrange tab is still Full, the
+    // At the narrowest window where the Layout tab is still Full, the
     // long values make it step down, and short ones bring it back.
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let a = import_square(&s);
     select(&s, &[a]);
     let mut h = sized(&dir, s.clone(), 1400.0);
-    show_tab(&mut h, "Arrange");
+    show_tab(&mut h, "Layout");
     let mut w = 1400.0;
     while w > 600.0 {
         h.set_size(egui::vec2(w - 10.0, 900.0));
@@ -458,7 +453,7 @@ fn a_field_that_shrinks_back_lets_the_ribbon_grow_again() {
     // A fresh window of that width (the bar steps up only with room to
     // spare, so going back by 10 pt would not show Full again).
     let mut h = sized(&dir, s.clone(), w);
-    show_tab(&mut h, "Arrange");
+    show_tab(&mut h, "Layout");
     wait_for_workers(&mut h);
     assert_eq!(
         collapse::level(&h.ctx, ribbon::bar_id()),
@@ -546,7 +541,7 @@ fn no_number_field_cuts_its_value() {
             .unwrap();
         select(&s, &[a]);
         let mut h = sized(&dir, s.clone(), width);
-        show_tab(&mut h, "Arrange");
+        show_tab(&mut h, "Layout");
         wait_for_workers(&mut h);
         shown_whole(&h, "1250.25", width);
         shown_whole(&h, "50.00", width);

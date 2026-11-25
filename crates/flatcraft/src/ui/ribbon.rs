@@ -1,4 +1,4 @@
-//! The Prepare ribbon: the Home, Arrange and View tabs with their groups
+//! The Prepare ribbon: the Layout and View tabs with their groups
 //! (see [`groups`] and the table in [`tools`]), and the "Search commands"
 //! box on the right.
 
@@ -119,15 +119,15 @@ pub fn search_target(id: &str, doc_id: u64) -> Option<SearchTarget> {
         | "tools.test_patterns" => Run,
         // With one object selected, picking these opens the Trace dialog or
         // the Rectangular pattern panel (see `pick`).
-        "object.retrace" | "object.copies" => Tab(RibbonTab::Home),
-        // The Arrange tab has these; with a selection, Circular pattern
+        "object.retrace" | "object.copies" => Tab(RibbonTab::Layout),
+        // The Arrange group has these; with a selection, Circular pattern
         // opens its panel (see `pick`).
         "object.scale"
         | "object.rotate"
         | "object.mirror"
         | "arrange.align"
         | "arrange.distribute"
-        | "object.circular_copies" => Tab(RibbonTab::Arrange),
+        | "object.circular_copies" => Tab(RibbonTab::Layout),
         "object.set_cut_options"
         | "job.set_plotter"
         | "job.set_material"
@@ -556,7 +556,7 @@ fn signature(tab: RibbonTab, cx: &Cx) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     tab.hash(&mut h);
     cx.snap.ribbon_pins.hash(&mut h);
-    if tab == RibbonTab::Arrange {
+    if tab == RibbonTab::Layout {
         cx.snap.linked_reach().hash(&mut h);
         let f = &cx.st.fields;
         for text in [&f.width, &f.height, &f.percent] {

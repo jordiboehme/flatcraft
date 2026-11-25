@@ -34,18 +34,26 @@ const DRAW_TOLERANCE_MM: f64 = 0.02;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum RibbonTab {
     #[default]
-    Home,
-    Arrange,
+    Layout,
     View,
 }
 
 impl RibbonTab {
-    pub const ALL: [RibbonTab; 3] = [RibbonTab::Home, RibbonTab::Arrange, RibbonTab::View];
+    pub const ALL: [RibbonTab; 2] = [RibbonTab::Layout, RibbonTab::View];
+
+    /// The tab a saved name stands for. The old Home and Arrange tabs are
+    /// Layout now; an unknown name is `None`.
+    pub fn from_saved(name: &str) -> Option<RibbonTab> {
+        match name {
+            "Layout" | "Home" | "Arrange" => Some(RibbonTab::Layout),
+            "View" => Some(RibbonTab::View),
+            _ => None,
+        }
+    }
 
     pub fn name(self) -> &'static str {
         match self {
-            RibbonTab::Home => "Home",
-            RibbonTab::Arrange => "Arrange",
+            RibbonTab::Layout => "Layout",
             RibbonTab::View => "View",
         }
     }

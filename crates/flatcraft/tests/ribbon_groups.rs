@@ -114,7 +114,7 @@ fn pinning_two_actions_in_a_row_keeps_the_list_open() {
     let a = import_square(&s);
     select(&s, &[a]);
     let mut h = rig(&dir, s);
-    show_tab(&mut h, "Arrange");
+    show_tab(&mut h, "Layout");
     h.get_by_role_and_label(Role::Button, "Arrange").click();
     h.run();
     for (row, toggle, button) in [
@@ -158,7 +158,7 @@ fn cards_show_the_description_of_actions_and_groups() {
     let a = import_square(&s);
     select(&s, &[a]);
     let mut h = rig(&dir, s);
-    show_tab(&mut h, "Arrange");
+    show_tab(&mut h, "Layout");
     let rotate = tools::by_act(Act::RotateLeft);
     hover(&mut h, "Rotate -90");
     h.get_by_label(rotate.description);
@@ -207,7 +207,7 @@ fn a_dimmed_row_says_why_and_does_nothing() {
     let a = import_square(&s);
     select(&s, &[a]);
     let mut h = rig(&dir, s.clone());
-    show_tab(&mut h, "Arrange");
+    show_tab(&mut h, "Layout");
     h.get_by_role_and_label(Role::Button, "Arrange").click();
     h.run();
     let row = "Distribute horizontally (Arrange)";
@@ -234,7 +234,7 @@ fn a_pinned_dimmed_action_shows_its_reason_and_does_nothing() {
     select(&s, &[a]);
     pin(&s, &["distribute.vertical"]);
     let mut h = rig(&dir, s.clone());
-    show_tab(&mut h, "Arrange");
+    show_tab(&mut h, "Layout");
     let name = "Distribute vertically";
     assert!(disabled(&h, name));
     hover(&mut h, name);
@@ -253,7 +253,7 @@ fn the_align_option_switches_the_rows_and_their_icons() {
     let b = import_square(&s);
     select(&s, &[a, b]);
     let mut h = rig(&dir, s);
-    show_tab(&mut h, "Arrange");
+    show_tab(&mut h, "Layout");
     h.get_by_role_and_label(Role::Button, "Arrange").click();
     h.run();
     let tex =
@@ -290,7 +290,7 @@ fn auto_arrange_spacing_round_trips_and_is_one_undo_step() {
     let _b = import_square(&s);
     select(&s, &[a]);
     let mut h = rig(&dir, s.clone());
-    show_tab(&mut h, "Arrange");
+    show_tab(&mut h, "Layout");
     h.get_by_role_and_label(Role::Button, "Arrange").click();
     h.run();
     h.get_by_label("Auto arrange... (Arrange)").click();
@@ -371,7 +371,7 @@ fn escape_closes_a_group_list_and_keeps_the_selection() {
     let a = import_square(&s);
     select(&s, &[a]);
     let mut h = rig(&dir, s.clone());
-    show_tab(&mut h, "Arrange");
+    show_tab(&mut h, "Layout");
     h.get_by_role_and_label(Role::Button, "Arrange").click();
     h.run();
     h.get_by_label(FOOTER);
@@ -433,7 +433,7 @@ fn without_a_cutting_area_the_actions_that_need_one_are_dimmed() {
     );
     // On the ribbon: dimmed, the reason on hover, a click does nothing.
     assert!(disabled(&h, "Test patterns"));
-    show_tab(&mut h, "Arrange");
+    show_tab(&mut h, "Layout");
     for name in [
         "Auto arrange",
         "Auto arrange...",
@@ -473,7 +473,7 @@ fn a_dimmed_switch_that_is_on_does_not_look_active() {
     select(&s, &ids);
     let mut h = harness_sized(&dir, s.clone(), [900.0, 600.0], 8, |app| app);
     to_prepare(&mut h);
-    show_tab(&mut h, "Arrange");
+    show_tab(&mut h, "Layout");
     let keep = h.get_by_role_and_label(Role::CheckBox, "Keep aspect");
     assert!(keep.accesskit_node().is_disabled());
     assert_eq!(
@@ -506,7 +506,7 @@ fn the_pin_toggle_is_reachable_by_keyboard() {
     let a = import_square(&s);
     select(&s, &[a]);
     let mut h = rig(&dir, s);
-    show_tab(&mut h, "Arrange");
+    show_tab(&mut h, "Layout");
     h.get_by_role_and_label(Role::Button, "Arrange").click();
     h.run();
     // Nothing hovered: an unpinned row shows no toggle.

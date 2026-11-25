@@ -64,7 +64,7 @@ fn the_list_has_a_heading_rows_a_badge_and_a_footer() {
     for want in [
         "Current",
         "Import, place and size your designs.",
-        "Home \u{b7} Arrange \u{b7} View",
+        "Layout \u{b7} View",
         "Choose plotter and material, check the path and send.",
         "Device & Material \u{b7} Path \u{b7} Simulate \u{b7} Send",
     ] {

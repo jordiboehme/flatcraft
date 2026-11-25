@@ -170,7 +170,7 @@ pub const RIBBON_PIN_IDS: [&str; 38] = [
     "panel.debug",
 ];
 
-/// The pins of the Home and View tabs of a new install: every button
+/// The pins of the Layout and View tabs of a new install: every button
 /// those tabs showed before pins existed.
 const HOME_VIEW_DEFAULTS: [&str; 14] = [
     "import",

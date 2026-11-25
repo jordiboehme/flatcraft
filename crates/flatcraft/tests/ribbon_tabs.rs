@@ -124,7 +124,7 @@ fn the_active_tab_touches_the_ribbon_panel() {
 }
 
 #[test]
-fn every_pinned_action_on_home_is_a_big_button() {
+fn every_pinned_action_of_the_add_edit_and_files_groups_is_a_big_button() {
     for width in WIDTHS {
         let dir = tempfile::tempdir().unwrap();
         let s = session(&dir);
@@ -135,7 +135,7 @@ fn every_pinned_action_on_home_is_a_big_button() {
         let mut seen = 0;
         for t in tools::TOOLS
             .iter()
-            .filter(|t| t.group.def().tab == RibbonTab::Home)
+            .filter(|t| matches!(t.group, GroupId::Add | GroupId::Edit | GroupId::Files))
         {
             let found: Vec<Rect> = h
                 .query_all_by_role(Role::Button)
@@ -174,7 +174,7 @@ fn the_switches_are_compact_and_inside_their_group() {
         .unwrap();
     for width in [1400.0, 1920.0] {
         let mut h = rig(&dir, s.clone(), width);
-        show_tab(&mut h, RibbonTab::Arrange);
+        show_tab(&mut h, RibbonTab::Layout);
         let l = layout(&h);
         let group = node_rect(&h, Role::Button, "Arrange");
         let each = node_rect(&h, Role::CheckBox, "Each object");
@@ -253,7 +253,7 @@ fn the_size_group_has_two_columns() {
     select_all(&s, &[a]);
     for width in [900.0, 1400.0] {
         let mut h = rig(&dir, s.clone(), width);
-        show_tab(&mut h, RibbonTab::Arrange);
+        show_tab(&mut h, RibbonTab::Layout);
         let l = layout(&h);
         let w = node_rect(&h, Role::TextInput, "Width (mm)");
         let hh = node_rect(&h, Role::TextInput, "Height (mm)");
