@@ -19,6 +19,7 @@ use flatcraft_engine::commands::{placed_bounds, sources};
 use flatcraft_engine::job::JobInput;
 use serde_json::json;
 
+use super::arrange::{self, ArrangePanel, PanelValues};
 use super::canvas::{self, CanvasView};
 use super::theme::Tokens;
 use super::{Action, FlatCraftApp, lock, objects, settings};
@@ -142,7 +143,6 @@ pub struct Fields {
     pub width: String,
     pub height: String,
     pub percent: String,
-    pub rotate: String,
     pub keep_aspect: bool,
     /// Rotate and mirror each object about its own centre instead of the
     /// selection as one group.
@@ -158,7 +158,6 @@ impl Default for Fields {
             width: String::new(),
             height: String::new(),
             percent: String::new(),
-            rotate: "15".into(),
             keep_aspect: true,
             each: false,
             align_to_area: false,
@@ -209,10 +208,10 @@ pub struct PrepareState {
     /// shows it at once and a quick switch does not check again.
     pub source_memory: HashMap<u64, SourceStatus>,
     pub cache: ShapeCache,
-    /// The open Copies dialog.
-    pub copies: Option<CopiesDialog>,
-    /// The settings of the last copies made, for the next dialog.
-    pub copies_last: CopiesSettings,
+    /// The Arrange panel docked on the right, if one is open.
+    pub panel: Option<ArrangePanel>,
+    /// The values of the last panel that ran, for the next one.
+    pub panel_last: PanelValues,
     /// The objects the open context menu works on (see `context_menu`).
     pub context: Option<Vec<u64>>,
     /// The open Rename dialog.
@@ -257,68 +256,6 @@ fn effective_speed(snap: &Snapshot) -> Option<u32> {
         .map(u32::from)
 }
 
-/// What the Copies dialog asks for.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CopiesSettings {
-    pub count: u32,
-    pub grid: bool,
-    pub columns: u32,
-    pub gap_mm: f64,
-    /// Linked copies share the source, the cut options and the scale.
-    pub linked: bool,
-}
-
-impl Default for CopiesSettings {
-    fn default() -> Self {
-        Self {
-            count: 3,
-            grid: false,
-            columns: 4,
-            gap_mm: 5.0,
-            linked: false,
-        }
-    }
-}
-
-/// The Copies dialog: its object and the settings so far.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CopiesDialog {
-    pub doc_id: u64,
-    /// The object to copy.
-    pub id: u64,
-    pub name: String,
-    pub count: u32,
-    pub grid: bool,
-    pub columns: u32,
-    pub gap_mm: f64,
-    pub linked: bool,
-}
-
-impl CopiesDialog {
-    pub fn new(doc_id: u64, id: u64, name: String, s: CopiesSettings) -> Self {
-        Self {
-            doc_id,
-            id,
-            name,
-            count: s.count,
-            grid: s.grid,
-            columns: s.columns,
-            gap_mm: s.gap_mm,
-            linked: s.linked,
-        }
-    }
-
-    pub fn settings(&self) -> CopiesSettings {
-        CopiesSettings {
-            count: self.count,
-            grid: self.grid,
-            columns: self.columns,
-            gap_mm: self.gap_mm,
-            linked: self.linked,
-        }
-    }
-}
-
 impl Default for PrepareState {
     fn default() -> Self {
         Self {
@@ -341,8 +278,8 @@ impl Default for PrepareState {
             sources: SourceStatus::default(),
             source_memory: HashMap::new(),
             cache: ShapeCache::default(),
-            copies: None,
-            copies_last: CopiesSettings::default(),
+            panel: None,
+            panel_last: PanelValues::default(),
             context: None,
             rename: None,
         }
@@ -782,6 +719,8 @@ pub struct Snapshot {
     /// Why the plotter or material preset cannot be used (a bad value).
     pub profile_problem: Option<String>,
     pub auto_reload: bool,
+    /// The Arrange commands pinned to the ribbon (preference ids).
+    pub arrange_pins: Vec<String>,
     /// The image or the trace settings of the Trace dialog's object
     /// changed since the dialog opened (an agent retraced or reloaded it).
     pub trace_source_changed: bool,
@@ -975,6 +914,7 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
             mat_warning,
             profile_problem,
             auto_reload: s.prefs.auto_reload,
+            arrange_pins: s.prefs.arrange_pins.clone(),
             trace_source_changed,
             job_input: want_job.then(|| match (&plotter, &material) {
                 (Some(p), Some(m)) => Ok(JobInput::from_parts(&st.document, p.clone(), m)),
@@ -1165,6 +1105,17 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
         });
     app.ui.prepare.show_objects = show_objects;
 
+    arrange::keep_or_close(&mut app.ui.prepare, snap);
+    if app.ui.prepare.panel.is_some() {
+        egui::Panel::right("flatcraft-arrange-panel")
+            .resizable(false)
+            .exact_size(270.0)
+            .frame(egui::Frame::new().fill(t.panel).inner_margin(t.spacing))
+            .show(ui, |ui| {
+                arrange::panel_ui(ui, &mut app.ui.prepare, snap, &t, actions);
+            });
+    }
+
     let mut show_settings = app.ui.prepare.show_settings;
     egui::Panel::right("flatcraft-settings")
         .resizable(true)
@@ -1183,9 +1134,6 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
             pills(ui, rect, snap, &mut app.ui.prepare, &t, actions);
         });
     let p = &mut app.ui.prepare;
-    if let Some(used) = copies_window(ui.ctx(), &mut p.copies, snap, &t, actions) {
-        p.copies_last = used;
-    }
     rename_window(ui.ctx(), &mut p.rename, snap, &t, actions);
 }
 
@@ -1235,116 +1183,6 @@ fn rename_window(
     if close || modal.should_close() {
         *dialog = None;
     }
-}
-
-/// The Copies dialog. It closes when its document is no longer shown or its
-/// object is gone. Returns the settings when copies were made.
-fn copies_window(
-    ctx: &egui::Context,
-    dialog: &mut Option<CopiesDialog>,
-    snap: &Snapshot,
-    t: &Tokens,
-    actions: &mut Vec<Action>,
-) -> Option<CopiesSettings> {
-    use flatcraft_engine::commands::object::MAX_COPIES;
-    let Some(d) = dialog else {
-        return None;
-    };
-    if d.doc_id != snap.doc_id || !snap.objects.iter().any(|o| o.id == d.id) {
-        *dialog = None;
-        return None;
-    }
-    let mut close = false;
-    let mut made = None;
-    let modal = egui::Modal::new(egui::Id::unique("flatcraft-copies")).show(ctx, |ui| {
-        ui.set_width(320.0);
-        ui.label(RichText::new(format!("Copies of {}", d.name)).font(super::fonts::semibold(15.0)));
-        ui.add_space(t.spacing / 2.0);
-        egui::Grid::new("flatcraft-copies-grid")
-            .num_columns(2)
-            .spacing([t.spacing, t.spacing / 2.0])
-            .show(ui, |ui| {
-                settings::painted_label(ui, "Number of copies");
-                let r = ui.add(
-                    egui::DragValue::new(&mut d.count)
-                        .range(1..=MAX_COPIES)
-                        .speed(0.2),
-                );
-                settings::set_name(ui, &r, "Number of copies");
-                ui.end_row();
-
-                settings::painted_label(ui, "Layout");
-                ui.horizontal(|ui| {
-                    ui.radio_value(&mut d.grid, false, "Row")
-                        .on_hover_text("One row to the right of the original");
-                    ui.radio_value(&mut d.grid, true, "Grid").on_hover_text(
-                        "Rows to the right, then down. The original is the first cell.",
-                    );
-                });
-                ui.end_row();
-
-                settings::painted_label(ui, "Columns");
-                let r = ui.add_enabled(
-                    d.grid,
-                    egui::DragValue::new(&mut d.columns)
-                        .range(1..=MAX_COPIES)
-                        .speed(0.1),
-                );
-                settings::set_name(ui, &r, "Columns");
-                r.on_disabled_hover_text("Pick Grid to set the columns.");
-                ui.end_row();
-
-                settings::painted_label(ui, "Gap");
-                let r = ui.add(
-                    egui::DragValue::new(&mut d.gap_mm)
-                        .range(0.0..=1000.0)
-                        .speed(0.1)
-                        .max_decimals(2)
-                        .suffix(" mm"),
-                );
-                settings::set_name(ui, &r, "Gap (mm)");
-                ui.end_row();
-            });
-        ui.checkbox(&mut d.linked, "Linked copies").on_hover_text(
-            "One design, many bodies, like the Clone Army: the copies share the source, the cut options and the scale. Each keeps its own place, rotation and mirror.",
-        );
-        ui.label(
-            RichText::new(
-                "Copies that land off the mat still arrive. The red pill tells you how many.",
-            )
-            .color(t.text_dim),
-        );
-        ui.add_space(t.spacing / 2.0);
-        ui.horizontal(|ui| {
-            if ui.button("Make copies").clicked() {
-                let layout = if d.grid {
-                    json!({ "grid": { "columns": d.columns } })
-                } else {
-                    json!("row")
-                };
-                actions.push(Action::run(
-                    d.doc_id,
-                    "object.copies",
-                    json!({
-                        "id": d.id,
-                        "count": d.count,
-                        "layout": layout,
-                        "gap_mm": d.gap_mm,
-                        "linked": d.linked,
-                    }),
-                ));
-                made = Some(d.settings());
-                close = true;
-            }
-            if ui.button("Cancel").clicked() {
-                close = true;
-            }
-        });
-    });
-    if close || modal.should_close() {
-        *dialog = None;
-    }
-    made
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {

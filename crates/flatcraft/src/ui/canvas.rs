@@ -265,6 +265,15 @@ pub fn show(
     draw_objects(&painter, snap, &view, mat_rgb, 1.0, false, |id| {
         drag_preview(st.drag.as_ref(), snap, id)
     });
+    if let Some(p) = &st.panel {
+        draw_ghosts(
+            &painter,
+            snap,
+            &view,
+            t,
+            &super::arrange::ghosts(snap, p, st.fields.each),
+        );
+    }
     draw_area(&painter, rect, snap, &view, t, contrast);
     if let Some(r) = draw_selection(&painter, snap, st, contrast) {
         link_badge(ui, r, snap, contrast);
@@ -353,6 +362,37 @@ pub(crate) fn draw_objects(
             } else {
                 painter.add(egui::Shape::line(pts, stroke));
             }
+        }
+    }
+}
+
+/// Draws the would-be objects of an open Arrange panel faintly: each
+/// ghost is an object's shape placed by its affine (see
+/// [`super::arrange::ghosts`]). Nothing in the document changes.
+pub(crate) fn draw_ghosts(
+    painter: &egui::Painter,
+    snap: &Snapshot,
+    view: &CanvasView,
+    t: &Tokens,
+    ghosts: &[(u64, kurbo::Affine)],
+) {
+    let stroke = Stroke::new(1.0, t.accent_prepare.gamma_multiply(0.6));
+    for (id, place) in ghosts {
+        let Some(o) = snap.object(*id) else {
+            continue;
+        };
+        for line in &o.shape.lines {
+            let mut pts: Vec<Pos2> = line
+                .points
+                .iter()
+                .map(|p| view.mm_to_screen(*place * *p))
+                .collect();
+            if line.closed
+                && let Some(first) = pts.first().copied()
+            {
+                pts.push(first);
+            }
+            painter.extend(egui::Shape::dashed_line(&pts, stroke, 4.0, 3.0));
         }
     }
 }

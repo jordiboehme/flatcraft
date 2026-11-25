@@ -16,7 +16,7 @@ use serde_json::json;
 
 use super::help::{self, PrepareKey};
 use super::prepare::{PrepareState, RenameDialog, Snapshot};
-use super::{Action, objects, ribbon};
+use super::{Action, arrange, objects, ribbon};
 
 /// One item of the menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -262,8 +262,10 @@ fn draw(
     match item {
         Item::Duplicate => actions.push(ribbon::duplicate_action(doc_id, ids)),
         Item::Copies => {
-            if let Some(d) = ribbon::copies_dialog_for(snap, ids, st.copies_last) {
-                st.copies = Some(d);
+            // The panel works on the selection, which is `ids` by now
+            // (see `target`).
+            if ids.len() == 1 {
+                arrange::open(st, snap, arrange::PanelKind::RectangularPattern);
             }
         }
         Item::LinkCopies => actions.push(Action::run(doc_id, "object.link", json!({ "ids": ids }))),

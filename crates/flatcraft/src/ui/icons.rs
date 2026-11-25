@@ -53,6 +53,12 @@ pub enum Icon {
     DistributeVertical,
     Linked,
     Heart,
+    Move,
+    RectangularPattern,
+    CircularPattern,
+    Pin,
+    PinOff,
+    ChevronDown,
 }
 
 macro_rules! svg {
@@ -62,7 +68,7 @@ macro_rules! svg {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 44] = [
+    pub const ALL: [Icon; 50] = [
         Icon::Import,
         Icon::Trace,
         Icon::Duplicate,
@@ -107,6 +113,12 @@ impl Icon {
         Icon::DistributeVertical,
         Icon::Linked,
         Icon::Heart,
+        Icon::Move,
+        Icon::RectangularPattern,
+        Icon::CircularPattern,
+        Icon::Pin,
+        Icon::PinOff,
+        Icon::ChevronDown,
     ];
 
     /// The vendored Lucide SVG source.
@@ -156,6 +168,12 @@ impl Icon {
             Icon::DistributeVertical => svg!("align-vertical-distribute-center"),
             Icon::Linked => svg!("link"),
             Icon::Heart => svg!("heart"),
+            Icon::Move => svg!("move"),
+            Icon::RectangularPattern => svg!("grid-2x2-plus"),
+            Icon::CircularPattern => svg!("circle-dot"),
+            Icon::Pin => svg!("pin"),
+            Icon::PinOff => svg!("pin-off"),
+            Icon::ChevronDown => svg!("chevron-down"),
         }
     }
 }

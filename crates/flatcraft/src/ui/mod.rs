@@ -3,6 +3,7 @@
 
 pub mod about;
 pub mod app_bar;
+pub mod arrange;
 pub mod canvas;
 pub mod context_menu;
 pub mod cut;
@@ -166,6 +167,12 @@ pub enum Action {
     /// Store the "Each object" switch of the Arrange tab in the
     /// preferences, so the next start has it as it was.
     RememberEach(bool),
+    /// Pin an Arrange command to the ribbon, or unpin it, in the
+    /// preferences (`arrange_pins`, by [`arrange::ArrangeCmd::id`]).
+    SetPin {
+        id: &'static str,
+        pinned: bool,
+    },
     /// Ask for a file and import it into this document.
     Import {
         doc_id: u64,
@@ -777,6 +784,17 @@ impl FlatCraftApp {
                     )));
                 }
             }
+            Action::SetPin { id, pinned } => {
+                let result = lock(&self.session).update_prefs(|p| {
+                    p.arrange_pins.retain(|x| x != id);
+                    if pinned {
+                        p.arrange_pins.push(id.to_string());
+                    }
+                });
+                if let Err(e) = result {
+                    self.toast(Toast::error(format!("Cannot store the pins: {e}")));
+                }
+            }
             Action::Profiles(req) => profiles_window::apply(self, ctx, req),
             Action::ShowAbout => self.ui.about.open(&mut self.rng),
             Action::ShowShortcuts => self.ui.show_shortcuts = true,
@@ -1215,14 +1233,14 @@ impl FlatCraftApp {
     }
 }
 
-/// A dialog that owns the keyboard is open: About, Shortcuts, Trace, Rename, Copies, unsaved changes
-/// or the agent's pending send.
+/// A dialog that owns the keyboard is open: About, Shortcuts, Trace, Rename, unsaved changes
+/// or the agent's pending send. The docked Arrange panels are not dialogs:
+/// the document stays usable behind them.
 pub fn modal_open(app: &FlatCraftApp) -> bool {
     app.ui.about.open
         || app.ui.show_shortcuts
         || app.ui.trace.is_some()
         || app.ui.prepare.rename.is_some()
-        || app.ui.prepare.copies.is_some()
         || app.ui.unsaved.is_some()
         || lock(&app.session).pending_send().is_some()
 }
@@ -1354,7 +1372,8 @@ fn dropped_files(ctx: &egui::Context, t: &Tokens, actions: &mut Vec<Action>) {
 /// keyboard or a menu is open (Escape closes that first): Cmd+A (Ctrl+A)
 /// selects every visible object, Cmd+I imports, Cmd+D duplicates the
 /// selection, the arrow keys nudge it (see [`canvas::nudge_keys`]), Delete
-/// removes it and Escape clears it. The keys come from [`help::SHORTCUTS`].
+/// removes it and Escape clears it (or closes an open Arrange panel). The
+/// keys come from [`help::SHORTCUTS`].
 fn prepare_keys(
     ctx: &egui::Context,
     snap: &prepare::Snapshot,
@@ -1363,6 +1382,11 @@ fn prepare_keys(
     actions: &mut Vec<Action>,
 ) {
     if ctx.egui_wants_keyboard_input() || egui::Popup::is_any_open(ctx) {
+        return;
+    }
+    // Escape closes an open Arrange panel first, and changes nothing.
+    if st.panel.is_some() && help::pressed(ctx, help::PrepareKey::ClearSelection) {
+        st.panel = None;
         return;
     }
     let select_all = help::pressed(ctx, help::PrepareKey::SelectAll);

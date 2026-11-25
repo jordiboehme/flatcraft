@@ -52,6 +52,12 @@ https://raw.githubusercontent.com/lucide-icons/lucide/1.79.0/icons/<name>.svg, u
 | Distribute vertically | align-vertical-distribute-center |
 | Linked copy | link |
 | Heart (About dialog) | heart |
+| Move / Copy | move |
+| Rectangular pattern | grid-2x2-plus |
+| Circular pattern | circle-dot |
+| Pin to the ribbon | pin |
+| Unpin from the ribbon | pin-off |
+| Drop-down | chevron-down |
 
 The SVGs draw with currentColor. The app replaces it with the theme's text colour before
 resvg renders them.

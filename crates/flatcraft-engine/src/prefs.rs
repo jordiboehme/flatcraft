@@ -50,6 +50,20 @@ pub struct Preferences {
     /// group. Only the window writes it (a UI preference, ruling R16); no
     /// registry command reads or changes it. Off by default.
     pub rotate_each: bool,
+    /// The Arrange commands pinned to the ribbon as big buttons, by id
+    /// (`move_copy`, `rotate`, `mirror`, `align`, `distribute`,
+    /// `rectangular_pattern`, `circular_pattern`, `auto_arrange`). Unknown
+    /// ids are ignored. Only the window writes it (a UI preference); no
+    /// registry command reads or changes it. A file without the key gets
+    /// [`default_arrange_pins`].
+    pub arrange_pins: Vec<String>,
+}
+
+/// The pins of a new install: Move / Copy, Mirror and Rectangular pattern.
+pub fn default_arrange_pins() -> Vec<String> {
+    ["move_copy", "mirror", "rectangular_pattern"]
+        .map(String::from)
+        .to_vec()
 }
 
 impl Default for Preferences {
@@ -63,6 +77,7 @@ impl Default for Preferences {
             output_dir: None,
             auto_reload: false,
             rotate_each: false,
+            arrange_pins: default_arrange_pins(),
         }
     }
 }

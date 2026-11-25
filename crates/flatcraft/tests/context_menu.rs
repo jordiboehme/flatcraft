@@ -550,12 +550,16 @@ fn duplicate_and_delete_run_the_ribbon_commands() {
 }
 
 #[test]
-fn copies_opens_the_dialog() {
+fn copies_opens_the_rectangular_pattern_panel() {
     let mut r = rig(1);
     r.right_click_object(0);
     click_item(&mut r.h, Copies);
-    assert_eq!(app(&r.h).ui.prepare.copies.as_ref().unwrap().id, r.ids[0]);
-    r.h.get_by_label("Make copies");
+    let p = app(&r.h).ui.prepare.panel.as_ref().unwrap();
+    assert_eq!(
+        p.kind,
+        flatcraft::ui::arrange::PanelKind::RectangularPattern
+    );
+    r.h.get_by_role_and_label(egui::accesskit::Role::Button, "OK");
 }
 
 #[test]

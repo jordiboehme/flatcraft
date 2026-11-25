@@ -6,9 +6,10 @@ use egui::{Ui, WidgetInfo};
 use flatcraft_engine::registry;
 use serde_json::{Value, json};
 
+use super::arrange::{self, PanelKind};
 use super::canvas::{CanvasView, PX_PER_MM_100};
 use super::icons::{self, Icon};
-use super::prepare::{CopiesDialog, CopiesSettings, PrepareState, RibbonTab, Snapshot};
+use super::prepare::{PrepareState, RibbonTab, Snapshot};
 use super::settings::set_name;
 use super::{Action, ICON_SIZE};
 
@@ -101,10 +102,17 @@ pub fn search_target(id: &str, doc_id: u64) -> Option<SearchTarget> {
         | "object.duplicate"
         | "arrange.auto"
         | "tools.test_patterns" => Run,
-        // With one object selected, picking it opens the dialog (see `pick`).
+        // With one object selected, picking these opens the Trace dialog or
+        // the Rectangular pattern panel (see `pick`).
         "object.retrace" | "object.copies" => Tab(RibbonTab::Home),
-        "object.scale" | "object.rotate" | "object.mirror" | "arrange.align"
-        | "arrange.distribute" => Tab(RibbonTab::Arrange),
+        // The Arrange tab has these; with a selection, Circular pattern
+        // opens its panel (see `pick`).
+        "object.scale"
+        | "object.rotate"
+        | "object.mirror"
+        | "arrange.align"
+        | "arrange.distribute"
+        | "object.circular_copies" => Tab(RibbonTab::Arrange),
         "object.set_cut_options"
         | "job.set_plotter"
         | "job.set_material"
@@ -199,24 +207,13 @@ pub fn single_raster_of(snap: &Snapshot, ids: &[u64]) -> Option<u64> {
     }
 }
 
-/// The selected object when it is the only one, as the Copies dialog for
-/// it with the settings used last.
-pub fn copies_dialog(snap: &Snapshot, last: CopiesSettings) -> Option<CopiesDialog> {
-    let ids: Vec<u64> = snap.selection.iter().copied().collect();
-    copies_dialog_for(snap, &ids, last)
-}
-
-/// The Copies dialog for `ids` when it is one object.
-pub fn copies_dialog_for(
-    snap: &Snapshot,
-    ids: &[u64],
-    last: CopiesSettings,
-) -> Option<CopiesDialog> {
-    match ids {
-        [id] => {
-            let o = snap.object(*id)?;
-            Some(CopiesDialog::new(snap.doc_id, o.id, o.name.clone(), last))
-        }
+/// The panel a search hit opens on this selection, if any: Copies opens
+/// the Rectangular pattern panel for one object, Circular pattern opens its
+/// panel for any selection.
+fn search_panel(id: &str, snap: &Snapshot) -> Option<PanelKind> {
+    match id {
+        "object.copies" if snap.selection.len() == 1 => Some(PanelKind::RectangularPattern),
+        "object.circular_copies" if !snap.selection.is_empty() => Some(PanelKind::CircularPattern),
         _ => None,
     }
 }
@@ -240,11 +237,9 @@ fn pick(id: &'static str, snap: &Snapshot, st: &mut PrepareState, actions: &mut 
         });
         return;
     }
-    if id == "object.copies"
-        && let Some(d) = copies_dialog(snap, st.copies_last)
-    {
-        // Like the ribbon button; else the Home tab shows where it is.
-        st.copies = Some(d);
+    if let Some(kind) = search_panel(id, snap) {
+        // Like the ribbon buttons; else the tab shows where it is.
+        arrange::open(st, snap, kind);
         return;
     }
     match search_target(id, snap.doc_id) {
@@ -364,19 +359,19 @@ pub fn show(
                 if tool(ui, Icon::Duplicate, "Duplicate", any, "Copy the selection") {
                     actions.push(duplicate_action(doc_id, &selected));
                 }
-                let copies = copies_dialog(snap, st.copies_last);
+                let one = selected.len() == 1;
                 if tool(
                     ui,
                     Icon::Copies,
                     "Copies...",
-                    copies.is_some(),
-                    if copies.is_some() {
-                        "Many copies of one object in a row or a grid. Sticker sheet, engage!"
+                    one,
+                    if one {
+                        "Many copies of one object in columns and rows. Sticker sheet, engage!"
                     } else {
-                        "Many copies of one object in a row or a grid. Select one object first."
+                        "Many copies of one object in columns and rows. Select one object first."
                     },
                 ) {
-                    st.copies = copies;
+                    arrange::open(st, snap, PanelKind::RectangularPattern);
                 }
                 if tool(ui, Icon::Delete, "Delete", any, "Delete the selection") {
                     actions.push(delete_action(doc_id, &selected));
@@ -603,37 +598,16 @@ fn arrange(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Ve
             .on_hover_text("Linked copies share the scale. Each keeps its own place.");
     }
     ui.separator();
-    // Several objects turn and flip as one group, or each on its own.
-    if let Some(d) = number_field(
-        ui,
-        "rotate-by",
-        "Rotate",
-        "Rotate by (deg)",
-        &mut f.rotate,
-        None,
-        any,
-    ) {
-        actions.push(rotate_action(doc_id, &ids, d, f.each));
-    }
-    if super::icon_button(ui, Icon::RotateLeft, "Rotate -90", any).clicked() {
-        actions.push(rotate_action(doc_id, &ids, -90.0, f.each));
-    }
-    if super::icon_button(ui, Icon::Rotate, "Rotate +90", any).clicked() {
-        actions.push(rotate_action(doc_id, &ids, 90.0, f.each));
-    }
+    arrange::group(ui, st, snap, actions);
     ui.separator();
-    if super::icon_button(ui, Icon::Mirror, "Mirror horizontally", any).clicked() {
-        actions.push(mirror_action(doc_id, &ids, "horizontal", f.each));
-    }
-    if super::icon_button(ui, Icon::MirrorVertical, "Mirror vertically", any).clicked() {
-        actions.push(mirror_action(doc_id, &ids, "vertical", f.each));
-    }
+    // Several objects turn and flip as one group, or each on its own.
     let several = ids.len() > 1;
     let hint = if several {
         "Rotate and mirror each object about its own centre. Off: the selection turns as one, like Voltron."
     } else {
         "Rotate and mirror each object about its own centre. Select several objects first."
     };
+    let f = &mut st.fields;
     if ui
         .add_enabled(several, egui::Checkbox::new(&mut f.each, "Each object"))
         .on_hover_text(hint)
@@ -641,49 +615,6 @@ fn arrange(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Ve
         .changed()
     {
         actions.push(Action::RememberEach(f.each));
-    }
-    ui.separator();
-    let align_to_area = &mut st.fields.align_to_area;
-    ui.add_enabled_ui(any, |ui| {
-        ui.menu_button("Align", |ui| {
-            align_items(ui, align_to_area, doc_id, &ids, actions);
-        });
-    });
-    ui.separator();
-    ui.label("Distribute");
-    let three = ids.len() >= 3;
-    let need = if three {
-        ""
-    } else {
-        " Select 3 or more objects first."
-    };
-    for (icon, (name, axis), hint) in [
-        (
-            Icon::DistributeHorizontal,
-            DISTRIBUTE[0],
-            "Equal gaps from left to right. The outer objects stay put.",
-        ),
-        (
-            Icon::DistributeVertical,
-            DISTRIBUTE[1],
-            "Equal gaps from top to bottom. The outer objects stay put.",
-        ),
-    ] {
-        if super::icon_button_hint(ui, icon, name, three, &format!("{name}: {hint}{need}"))
-            .clicked()
-        {
-            actions.push(distribute_action(doc_id, &ids, axis));
-        }
-    }
-    ui.separator();
-    if tool(
-        ui,
-        Icon::Arrange,
-        "Auto-arrange",
-        !snap.objects.is_empty(),
-        "Pack everything onto the mat, Tetris style",
-    ) {
-        run(actions, "arrange.auto", json!({}));
     }
 }
 

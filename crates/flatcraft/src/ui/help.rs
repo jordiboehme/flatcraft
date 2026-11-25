@@ -254,7 +254,7 @@ pub const SHORTCUTS: [Shortcut; 19] = [
     prepare(
         Modifiers::NONE,
         Key::Escape,
-        "Clear the selection",
+        "Close the open panel, else clear the selection",
         PrepareKey::ClearSelection,
     ),
     prepare(

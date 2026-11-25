@@ -1429,9 +1429,9 @@ fn distribute_buttons_need_three_objects_and_are_one_step() {
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Tab, "Arrange").click();
     h.run();
-    h.get_by_label("Distribute");
     select(&s, &[a, b]);
     h.run();
+    open_arrange_sub(&mut h, "Distribute");
     assert!(disabled(&h, "Distribute horizontally"));
     assert!(disabled(&h, "Distribute vertically"));
     select(&s, &[a, b, c]);
@@ -1447,8 +1447,54 @@ fn distribute_buttons_need_three_objects_and_are_one_step() {
     assert!(((x(b) - x1(a)) - (x(c) - x1(b))).abs() < 1e-9);
 }
 
+/// Opens the Arrange drop-down of the Arrange tab.
+fn open_arrange(h: &mut AppHarness) {
+    h.get_by_role_and_label(Role::Button, "Arrange").click();
+    h.run();
+}
+
+/// Opens the Arrange drop-down and the submenu of `cmd` (Mirror, Align or
+/// Distribute).
+fn open_arrange_sub(h: &mut AppHarness, cmd: &str) {
+    open_arrange(h);
+    h.get_by_label(&format!("{cmd} (Arrange)")).click();
+    h.run();
+}
+
+/// Opens the panel of `label` ("Rotate...") from the Arrange drop-down.
+fn open_panel(h: &mut AppHarness, label: &str) {
+    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.run();
+    open_arrange(h);
+    h.get_by_label(&format!("{label} (Arrange)")).click();
+    h.run();
+}
+
+fn panel_kind(h: &AppHarness) -> Option<flatcraft::ui::arrange::PanelKind> {
+    app(h).ui.prepare.panel.as_ref().map(|p| p.kind)
+}
+
+fn values(h: &mut AppHarness) -> &mut flatcraft::ui::arrange::PanelValues {
+    &mut app_mut(h).ui.prepare.panel.as_mut().unwrap().values
+}
+
+fn revision(s: &SharedSession) -> u64 {
+    s.lock().unwrap().doc().revision()
+}
+
+fn object_count(s: &SharedSession) -> usize {
+    s.lock().unwrap().doc().document.objects.len()
+}
+
+fn click_ok(h: &mut AppHarness) {
+    h.get_by_role_and_label(Role::Button, "OK").click();
+    h.run();
+    wait_for_workers(h);
+}
+
 #[test]
-fn copies_dialog_makes_copies_in_one_step() {
+fn copies_opens_the_rectangular_pattern_panel_and_ok_is_one_step() {
+    use flatcraft::ui::arrange::PanelKind;
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let a = import_square(&s);
@@ -1462,37 +1508,29 @@ fn copies_dialog_makes_copies_in_one_step() {
     h.run();
     h.get_by_role_and_label(Role::Button, "Copies...").click();
     h.run();
-    assert!(app(&h).ui.prepare.copies.is_some());
-    assert!(!disabled(&h, "Linked copies"));
-    assert!(disabled(&h, "Columns"), "only for a grid");
-    h.get_by_label("Grid").click();
-    h.run();
-    assert!(!disabled(&h, "Columns"));
-    h.get_by_role_and_label(Role::SpinButton, "Number of copies")
-        .click();
+    assert_eq!(panel_kind(&h), Some(PanelKind::RectangularPattern));
+    assert!(
+        !flatcraft::ui::modal_open(app(&h)),
+        "a docked panel is no dialog"
+    );
+    h.get_by_label("Linked copies");
+    h.get_by_role_and_label(Role::SpinButton, "Columns").click();
     h.run();
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
     h.run();
-    h.event(Event::Text("7".into()));
+    h.event(Event::Text("4".into()));
     h.run();
     h.key_press(egui::Key::Enter);
     h.run();
+    assert_eq!(values(&mut h).rect.columns, 4);
     let before = undo_len(&s);
-    h.get_by_role_and_label(Role::Button, "Make copies").click();
-    h.run();
-    wait_for_workers(&mut h);
+    click_ok(&mut h);
     assert_eq!(undo_len(&s), before + 1);
-    assert_eq!(s.lock().unwrap().doc().document.objects.len(), 2 + 7);
-    assert!(app(&h).ui.prepare.copies.is_none(), "the dialog closes");
-    // Default 4 columns: the original is cell 0, so copy 4 starts row 2.
-    let copies: Vec<u64> = s
-        .lock()
-        .unwrap()
-        .doc()
-        .selection
-        .iter()
-        .map(|i| i.0)
-        .collect();
+    // 4 columns, 2 rows: the original and 7 copies.
+    assert_eq!(object_count(&s), 2 + 7);
+    assert!(app(&h).ui.prepare.panel.is_none(), "OK closes the panel");
+    // The original is cell 0, so copy 4 starts row 2.
+    let copies = selection(&s);
     let (o, c4) = (bounds(&s, a), bounds(&s, copies[3]));
     let f = |v: &Value, k: &str| v[k].as_f64().unwrap();
     assert!((f(&c4, "x0") - f(&o, "x0")).abs() < 1e-9, "{o} {c4}");
@@ -1503,7 +1541,7 @@ fn copies_dialog_makes_copies_in_one_step() {
 }
 
 #[test]
-fn copies_dialog_remembers_the_last_settings() {
+fn panels_remember_the_last_values_that_ran() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let a = import_square(&s);
@@ -1513,45 +1551,266 @@ fn copies_dialog_remembers_the_last_settings() {
     h.get_by_role_and_label(Role::Button, "Copies...").click();
     h.run();
     {
-        let d = app_mut(&mut h).ui.prepare.copies.as_mut().unwrap();
-        d.count = 9;
-        d.grid = true;
-        d.columns = 2;
-        d.gap_mm = 1.5;
+        let r = &mut values(&mut h).rect;
+        r.columns = 2;
+        r.rows = 5;
+        r.gap_x_mm = 1.5;
+        r.gap_y_mm = 2.5;
     }
-    h.get_by_role_and_label(Role::Button, "Make copies").click();
-    h.run();
-    wait_for_workers(&mut h);
+    click_ok(&mut h);
     select(&s, &[a]);
     h.run();
     h.get_by_role_and_label(Role::Button, "Copies...").click();
     h.run();
-    let d = app(&h).ui.prepare.copies.clone().unwrap();
-    assert_eq!((d.count, d.grid, d.columns, d.gap_mm), (9, true, 2, 1.5));
-    // Cancel keeps the last settings that were used, not the edits.
-    app_mut(&mut h).ui.prepare.copies.as_mut().unwrap().count = 2;
-    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    let r = values(&mut h).rect.clone();
+    assert_eq!(
+        (r.columns, r.rows, r.gap_x_mm, r.gap_y_mm),
+        (2, 5, 1.5, 2.5)
+    );
+    // Cancel keeps the last values that ran, not the edits.
+    values(&mut h).rect.columns = 7;
+    h.get_by_role_and_label(Role::Button, "Cancel Esc").click();
     h.run();
     h.get_by_role_and_label(Role::Button, "Copies...").click();
     h.run();
-    assert_eq!(app(&h).ui.prepare.copies.as_ref().unwrap().count, 9);
+    assert_eq!(values(&mut h).rect.columns, 2);
 }
 
 #[test]
-fn copies_dialog_cancel_changes_nothing() {
+fn cancel_close_and_escape_change_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let b = square_at(&s, 60.0);
+    select(&s, &[a, b]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let rev = revision(&s);
+    for label in ["Move / Copy...", "Rotate...", "Circular pattern..."] {
+        for how in ["Cancel Esc", "Close panel", "escape"] {
+            open_panel(&mut h, label);
+            assert!(app(&h).ui.prepare.panel.is_some(), "{label}");
+            if how == "escape" {
+                h.key_press(egui::Key::Escape);
+            } else {
+                h.get_by_label(how).click();
+            }
+            h.run();
+            wait_for_workers(&mut h);
+            assert!(app(&h).ui.prepare.panel.is_none(), "{label} {how}");
+            assert_eq!(revision(&s), rev, "{label} {how}");
+            assert_eq!(selection(&s), vec![a, b], "Escape keeps the selection");
+        }
+    }
+    select(&s, &[a]);
+    h.run();
+    let rev = revision(&s);
+    open_panel(&mut h, "Rectangular pattern...");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(app(&h).ui.prepare.panel.is_none());
+    assert_eq!(revision(&s), rev);
+}
+
+#[test]
+fn keys_typed_into_a_panel_field_leave_the_document_alone() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let a = import_square(&s);
     select(&s, &[a]);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    h.get_by_role_and_label(Role::Button, "Copies...").click();
+    open_panel(&mut h, "Move / Copy...");
+    h.get_by_role_and_label(Role::SpinButton, "X offset")
+        .click();
     h.run();
+    assert!(h.ctx.egui_wants_keyboard_input(), "the field has the keys");
+    let (rev, centre) = (revision(&s), object_centre(&s, a));
+    for key in [
+        egui::Key::Delete,
+        egui::Key::Backspace,
+        egui::Key::ArrowLeft,
+        egui::Key::ArrowDown,
+    ] {
+        h.key_press(key);
+        h.run();
+    }
+    wait_for_workers(&mut h);
+    assert_eq!(revision(&s), rev);
+    assert_eq!(object_count(&s), 1);
+    assert_eq!(object_centre(&s, a), centre);
+    assert!(app(&h).ui.prepare.panel.is_some());
+}
+
+#[test]
+fn move_copy_moves_or_copies_in_one_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    // Pinned by default.
+    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.run();
+    h.get_by_role_and_label(Role::Button, "Move / Copy").click();
+    h.run();
+    let c = object_centre(&s, a);
+    {
+        let m = &mut values(&mut h).move_copy;
+        m.dx_mm = 12.5;
+        m.dy_mm = -4.0;
+    }
     let before = undo_len(&s);
-    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    click_ok(&mut h);
+    assert_eq!(undo_len(&s), before + 1);
+    assert_eq!(object_centre(&s, a), c + kurbo::Vec2::new(12.5, -4.0));
+    // Copy: the original stays, copy k is k offsets away.
+    h.get_by_role_and_label(Role::Button, "Move / Copy").click();
     h.run();
-    assert!(app(&h).ui.prepare.copies.is_none());
-    assert_eq!(undo_len(&s), before);
+    h.get_by_label("Copy").click();
+    h.run();
+    {
+        let m = &mut values(&mut h).move_copy;
+        m.dx_mm = 0.0;
+        m.dy_mm = 30.0;
+        m.count = 3;
+    }
+    let c = object_centre(&s, a);
+    let before = undo_len(&s);
+    click_ok(&mut h);
+    assert_eq!(undo_len(&s), before + 1);
+    assert_eq!(object_centre(&s, a), c);
+    let copies = selection(&s);
+    assert_eq!(copies.len(), 3);
+    assert!((object_centre(&s, copies[2]) - (c + kurbo::Vec2::new(0.0, 90.0))).hypot() < 1e-9);
+}
+
+#[test]
+fn rotate_panel_turns_in_one_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let b = square_at(&s, 60.0);
+    select(&s, &[a, b]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let cb = object_centre(&s, b);
+    open_panel(&mut h, "Rotate...");
+    values(&mut h).rotate.degrees = 180.0;
+    let before = undo_len(&s);
+    click_ok(&mut h);
+    assert_eq!(undo_len(&s), before + 1);
+    assert!((object_centre(&s, a) - cb).hypot() < 1e-5, "group turn");
+    // Each about its own centre: the switch is the Each object preference.
+    open_panel(&mut h, "Rotate...");
+    h.get_by_label("Each about its own centre").click();
+    h.run();
+    assert!(app(&h).ui.prepare.fields.each);
+    assert!(s.lock().unwrap().prefs.rotate_each, "stored");
+    let (na, nb) = (object_centre(&s, a), object_centre(&s, b));
+    click_ok(&mut h);
+    assert_eq!((object_centre(&s, a), object_centre(&s, b)), (na, nb));
+}
+
+#[test]
+fn circular_panel_previews_exactly_what_ok_makes() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let painted_before = painted(&h).len();
+    open_panel(&mut h, "Circular pattern...");
+    {
+        let c = &mut values(&mut h).circular;
+        c.count = 4;
+        c.own_centre = true;
+        c.center_mm = [120.0, 120.0];
+    }
+    h.run();
+    let rev = revision(&s);
+    assert!(painted(&h).len() > painted_before, "the ghosts are drawn");
+    assert_eq!(revision(&s), rev, "the preview changes nothing");
+    let ghosts = {
+        let ctx = h.ctx.clone();
+        let app = app_mut(&mut h);
+        let snap = flatcraft::ui::prepare::snapshot(app, &ctx);
+        let p = app.ui.prepare.panel.as_ref().unwrap();
+        flatcraft::ui::arrange::ghosts(&snap, p, app.ui.prepare.fields.each)
+    };
+    assert_eq!(ghosts.len(), 3);
+    let before = undo_len(&s);
+    click_ok(&mut h);
+    assert_eq!(undo_len(&s), before + 1);
+    let copies = selection(&s);
+    assert_eq!(copies.len(), 3);
+    for ((_, g), id) in ghosts.iter().zip(&copies) {
+        let at = *g * kurbo::Point::ZERO;
+        assert!((at - object_centre(&s, *id)).hypot() < 1e-9, "{at:?}");
+        let turned = *g * kurbo::Point::new(1.0, 0.0) - at;
+        let deg = turned.y.atan2(turned.x).to_degrees().rem_euclid(360.0);
+        let rot = s
+            .lock()
+            .unwrap()
+            .doc()
+            .document
+            .get(ObjectId(*id))
+            .unwrap()
+            .transform
+            .rotation_deg;
+        assert!((deg - rot).abs() < 1e-6, "{deg} vs {rot}");
+    }
+}
+
+#[test]
+fn pins_round_trip_through_the_preferences() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    h.get_by_role_and_label(Role::Tab, "Arrange").click();
+    h.run();
+    // The default pins.
+    for label in ["Move / Copy", "Mirror", "Rectangular pattern"] {
+        h.get_by_role_and_label(Role::Button, label);
+    }
+    assert!(h.query_by_label("Circular pattern").is_none());
+    open_arrange(&mut h);
+    h.get_by_label("Pinned commands show on the ribbon. Hover a row to pin or unpin it.");
+    let row = h
+        .get_by_label("Circular pattern... (Arrange)")
+        .rect()
+        .center();
+    h.hover_at(egui::pos2(row.x as f32, row.y as f32));
+    h.run();
+    h.run();
+    h.get_by_label("Pin Circular pattern").click();
+    h.run();
+    let stored = flatcraft_engine::prefs::Preferences::load(&app(&h).config_dir).arrange_pins;
+    assert!(
+        stored.contains(&"circular_pattern".to_string()),
+        "{stored:?}"
+    );
+    h.get_by_role_and_label(Role::Button, "Circular pattern");
+    // Unpin Mirror from its row; the menu stays open meanwhile.
+    let row = h.get_by_label("Mirror (Arrange)").rect().center();
+    h.hover_at(egui::pos2(row.x as f32, row.y as f32));
+    h.run();
+    h.run();
+    h.get_by_label("Unpin Mirror").click();
+    h.run();
+    let stored = flatcraft_engine::prefs::Preferences::load(&app(&h).config_dir).arrange_pins;
+    assert_eq!(
+        stored,
+        ["move_copy", "rectangular_pattern", "circular_pattern"]
+    );
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.query_by_role_and_label(Role::Button, "Mirror").is_none());
 }
 
 #[test]
@@ -1562,7 +1821,6 @@ fn search_finds_copies_and_distribute() {
     select(&s, &[a]);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    // Copies last: its dialog is modal.
     for (query, hit) in [
         ("distrib", "Distribute (search)"),
         ("copies", "Copies (search)"),
@@ -1574,9 +1832,10 @@ fn search_finds_copies_and_distribute() {
         h.get_by_role_and_label(Role::Button, hit).click();
         h.run();
     }
-    assert!(
-        app(&h).ui.prepare.copies.is_some(),
-        "copies opens the dialog"
+    assert_eq!(
+        panel_kind(&h),
+        Some(flatcraft::ui::arrange::PanelKind::RectangularPattern),
+        "copies opens the panel"
     );
     assert_eq!(
         app(&h).ui.prepare.tab,
@@ -1618,7 +1877,7 @@ fn linked_copies(s: &SharedSession, id: u64, count: u32) -> Vec<u64> {
 }
 
 #[test]
-fn copies_dialog_makes_linked_copies() {
+fn rectangular_pattern_makes_linked_copies() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let a = import_square(&s);
@@ -1627,13 +1886,16 @@ fn copies_dialog_makes_linked_copies() {
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Button, "Copies...").click();
     h.run();
+    {
+        let r = &mut values(&mut h).rect;
+        r.columns = 2;
+        r.rows = 2;
+    }
     h.get_by_label("Linked copies").click();
     h.run();
-    assert!(app(&h).ui.prepare.copies.as_ref().unwrap().linked);
+    assert!(values(&mut h).rect.linked);
     let before = undo_len(&s);
-    h.get_by_role_and_label(Role::Button, "Make copies").click();
-    h.run();
-    wait_for_workers(&mut h);
+    click_ok(&mut h);
     assert_eq!(undo_len(&s), before + 1);
     let ids: Vec<u64> = s
         .lock()
@@ -1648,12 +1910,12 @@ fn copies_dialog_makes_linked_copies() {
     let g = link_group(&s, a);
     assert!(g.is_some());
     assert!(ids.iter().all(|i| link_group(&s, *i) == g));
-    // The switch is remembered with the other settings.
+    // The switch is remembered with the other values.
     select(&s, &[a]);
     h.run();
     h.get_by_role_and_label(Role::Button, "Copies...").click();
     h.run();
-    assert!(app(&h).ui.prepare.copies.as_ref().unwrap().linked);
+    assert!(values(&mut h).rect.linked);
 }
 
 #[test]
@@ -2053,22 +2315,28 @@ fn rotate_and_mirror_turn_a_multi_selection_as_a_group_or_each_object() {
     h.run();
     let (ca, cb) = (object_centre(&s, a), object_centre(&s, b));
     // Group by default: half a turn swaps the two centres.
-    h.get_by_label("Rotate +90").click();
-    h.run();
-    h.get_by_label("Rotate +90").click();
-    h.run();
+    let rotate = |h: &mut AppHarness, degrees: f64| {
+        open_panel(h, "Rotate...");
+        values(h).rotate.degrees = degrees;
+        click_ok(h);
+    };
+    rotate(&mut h, 180.0);
     assert!((object_centre(&s, a) - cb).hypot() < 1e-5, "group turn");
-    h.get_by_label("Mirror horizontally").click();
-    h.run();
+    // Mirror is pinned by default.
+    let mirror = |h: &mut AppHarness, item: &str| {
+        h.get_by_role_and_label(Role::Button, "Mirror").click();
+        h.run();
+        h.get_by_label(item).click();
+        h.run();
+    };
+    mirror(&mut h, "Mirror horizontally");
     assert!((object_centre(&s, a) - ca).hypot() < 1e-5, "group mirror");
     // Each object: the centres stay.
     h.get_by_label("Each object").click();
     h.run();
     let (ca, cb) = (object_centre(&s, a), object_centre(&s, b));
-    h.get_by_label("Rotate +90").click();
-    h.run();
-    h.get_by_label("Mirror vertically").click();
-    h.run();
+    rotate(&mut h, 90.0);
+    mirror(&mut h, "Mirror vertically");
     assert_eq!((object_centre(&s, a), object_centre(&s, b)), (ca, cb));
     let rot = |id: u64| {
         s.lock()
