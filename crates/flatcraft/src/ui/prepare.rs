@@ -60,10 +60,11 @@ pub enum Drag {
         start: kurbo::Point,
         current: kurbo::Point,
     },
-    /// A corner handle of a single selected object.
+    /// A corner handle of the selection box. Several objects scale as one
+    /// group (`object.scale` with `group`).
     Scale {
         doc_id: u64,
-        id: u64,
+        ids: Vec<u64>,
         /// 0 top-left, 1 top-right, 2 bottom-right, 3 bottom-left.
         corner_index: usize,
         corner: kurbo::Point,
@@ -554,6 +555,9 @@ pub struct Snapshot {
     pub mat: Option<Media>,
     /// The cutting area, in mm.
     pub area: Option<kurbo::Rect>,
+    /// Set when the document's mat is gone and the plotter's first mat is
+    /// used instead.
+    pub mat_warning: Option<String>,
     pub auto_reload: bool,
     /// The image or the trace settings of the Trace dialog's object
     /// changed since the dialog opened (an agent retraced or reloaded it).
@@ -641,10 +645,16 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
             .material(&job.material_id)
             .ok()
             .map(|m| m.for_plotter(&job.plotter_id));
-        let mat = plotter
+        let effective = plotter
             .as_ref()
-            .and_then(|p| p.media.iter().find(|m| m.id == job.media_id).cloned());
-        let area = plotter.as_ref().and_then(|p| p.cutting_area(&job.media_id));
+            .and_then(|p| flatcraft_engine::commands::effective_media(p, &job).ok())
+            .map(|(m, warning)| (m.clone(), warning));
+        let area = plotter
+            .as_ref()
+            .zip(effective.as_ref())
+            .and_then(|(p, (m, _))| p.cutting_area(&m.id));
+        let (mat, mat_warning) = effective.unzip();
+        let mat_warning = mat_warning.flatten();
         let trace_source_changed = trace.as_mut().is_some_and(|d| {
             d.doc_id == st.id()
                 && match st.document.get(flatcraft_core::document::ObjectId(d.id)) {
@@ -690,6 +700,7 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
             materials: s.profiles.materials(),
             mat,
             area,
+            mat_warning,
             auto_reload: s.prefs.auto_reload,
             trace_source_changed,
             job_input: want_job.then(|| match (&plotter, &material) {
@@ -896,6 +907,11 @@ fn pills(
                         ui.horizontal(|ui| add(ui));
                     });
             };
+            if let Some(w) = &snap.mat_warning {
+                pill(ui, t.accent_cut, &mut |ui| {
+                    ui.label(w.as_str());
+                });
+            }
             if snap.uncalibrated_mat() {
                 pill(ui, t.accent_cut, &mut |ui| {
                     ui.label("This mat is not calibrated yet").on_hover_text(

@@ -12,4 +12,6 @@ pub mod passes;
 pub mod plan;
 
 pub use clean::Polyline;
-pub use plan::{CutPlan, PathRef, PipelineSettings, PlacedPath, PlanError, Toolpath, plan};
+pub use plan::{
+    CutPlan, PathRef, PipelineSettings, PlacedPath, PlanError, SettingsField, Toolpath, plan,
+};

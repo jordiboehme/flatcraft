@@ -1049,3 +1049,71 @@ fn a_folder_with_the_file_name_is_never_taken_for_the_file() {
     let link = obj(&s, id).link.clone().unwrap();
     assert_eq!(link.path, p.join("art").join("x.svg"), "the real file");
 }
+
+#[test]
+fn importing_several_files_is_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(dir.path());
+    let (a, b, bad) = (
+        dir.path().join("a.svg"),
+        dir.path().join("b.svg"),
+        dir.path().join("bad.svg"),
+    );
+    write(&a, svg(false));
+    write(&b, svg(true));
+    write(&bad, "<svg");
+    let undo = s.doc().undo.undo_len();
+    let r = run(&mut s, "object.import", json!({ "paths": [a, bad, b] }));
+    let imported = r["imported"].as_array().unwrap();
+    assert_eq!(imported.len(), 2, "{r}");
+    assert_eq!(imported[0]["path"], json!(a));
+    assert_eq!(r["failed"][0]["path"], json!(bad), "{r}");
+    assert!(
+        r["failed"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("bad.svg"),
+        "{r}"
+    );
+    assert_eq!(s.doc().document.objects.len(), 2);
+    assert_eq!(s.doc().undo.undo_len(), undo + 1, "one undo step");
+    assert_eq!(s.doc().selection.len(), 2, "the new objects are selected");
+    // Nothing imported: the call fails and changes nothing.
+    let e = s
+        .execute("object.import", json!({ "paths": [bad] }), Origin::User)
+        .unwrap_err();
+    assert!(
+        matches!(e, CommandError::InvalidParams(_) | CommandError::Failed(_)),
+        "{e}"
+    );
+    assert_eq!(s.doc().undo.undo_len(), undo + 1);
+    assert!(s.execute("object.import", json!({}), Origin::User).is_err());
+}
+
+#[test]
+fn relinking_several_objects_is_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(dir.path());
+    let old = dir.path().join("old");
+    let (a, b) = (old.join("a.svg"), old.join("b.svg"));
+    write(&a, svg(false));
+    write(&b, svg(false));
+    let (ia, ib) = (import(&mut s, &a), import(&mut s, &b));
+    let new = dir.path().join("new");
+    std::fs::rename(&old, &new).unwrap();
+    let undo = s.doc().undo.undo_len();
+    let r = run(
+        &mut s,
+        "object.relink",
+        json!({ "items": [
+            { "id": ia, "path": new.join("a.svg") },
+            { "id": ib, "path": new.join("b.svg") },
+            { "id": ib, "path": new.join("gone.svg") },
+        ] }),
+    );
+    assert_eq!(r["unchanged"], json!([ia, ib]), "{r}");
+    assert_eq!(r["failed"][0]["id"], json!(ib), "{r}");
+    assert_eq!(s.doc().undo.undo_len(), undo + 1, "one undo step");
+    assert_eq!(obj(&s, ia).link.as_ref().unwrap().path, new.join("a.svg"));
+    assert_eq!(obj(&s, ib).link.as_ref().unwrap().path, new.join("b.svg"));
+}

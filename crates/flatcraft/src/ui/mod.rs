@@ -338,7 +338,7 @@ impl FlatCraftApp {
             if s.doc().id() != doc_id {
                 None
             } else {
-                Some(s.execute(command, params.clone(), Origin::User))
+                Some(s.execute(command, params, Origin::User))
             }
         };
         match result {
@@ -353,14 +353,14 @@ impl FlatCraftApp {
                 None
             }
             Some(Ok(v)) => {
-                self.after_command(command, &params, &v);
+                self.after_command(command, &v);
                 Some(v)
             }
         }
     }
 
     /// Updates what Prepare shows after a command ran.
-    fn after_command(&mut self, command: &str, params: &Value, result: &Value) {
+    fn after_command(&mut self, command: &str, result: &Value) {
         let ids = |v: &Value| -> Vec<u64> {
             v.as_array()
                 .into_iter()
@@ -376,6 +376,21 @@ impl FlatCraftApp {
             .collect();
         let p = &mut self.ui.prepare;
         match command {
+            "object.import" if result.get("imported").is_some() => {
+                // Several files: their warnings, and why the others failed.
+                p.notices = result["imported"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .flat_map(|i| i["warnings"].as_array().into_iter().flatten())
+                    .filter_map(|w| w.as_str().map(str::to_string))
+                    .collect();
+                for f in result["failed"].as_array().into_iter().flatten() {
+                    if let Some(e) = f["error"].as_str() {
+                        self.toast(Toast::error(e.to_string()));
+                    }
+                }
+            }
             "object.import" => p.notices = warnings,
             "object.reload" => {
                 let done: Vec<u64> = [&result["reloaded"], &result["unchanged"]]
@@ -394,9 +409,11 @@ impl FlatCraftApp {
                 }
             }
             "object.relink" => {
-                if let Some(id) = params["id"].as_u64() {
-                    p.sources.forget(&[id]);
-                }
+                let done: Vec<u64> = [&result["reloaded"], &result["unchanged"]]
+                    .into_iter()
+                    .flat_map(ids)
+                    .collect();
+                p.sources.forget(&done);
                 p.sources.also_found = result["also_found"]
                     .as_array()
                     .into_iter()
@@ -405,6 +422,11 @@ impl FlatCraftApp {
                     .collect();
                 for w in warnings {
                     self.toast(Toast::warning(w));
+                }
+                for f in result["failed"].as_array().into_iter().flatten() {
+                    if let Some(e) = f["error"].as_str() {
+                        self.toast(Toast::error(e.to_string()));
+                    }
                 }
             }
             "job.send" => self.sent(result),
@@ -430,25 +452,23 @@ impl FlatCraftApp {
             }
             Action::TraceDialog { doc_id, id } => self.open_trace(ctx, doc_id, id),
             Action::Dropped(paths) => {
+                // Files next to each other in the drop are imported as one
+                // command (one undo step); a project in between opens and
+                // the files after it go into the document active then.
+                let mut files: Vec<PathBuf> = Vec::new();
                 for path in paths {
                     match import_dialog::drop_kind(&path) {
-                        import_dialog::DropKind::Project => self.apply_one(ctx, Action::Open(path)),
-                        import_dialog::DropKind::Import => {
-                            // The active document now: an earlier file of
-                            // the same drop may have opened a project.
-                            let doc_id = lock(&self.session).doc().id();
-                            if self
-                                .run_on(doc_id, "object.import", json!({ "path": path }))
-                                .is_some()
-                            {
-                                self.ui.workspace = Workspace::Prepare;
-                            }
+                        import_dialog::DropKind::Project => {
+                            self.import_dropped(std::mem::take(&mut files));
+                            self.apply_one(ctx, Action::Open(path));
                         }
+                        import_dialog::DropKind::Import => files.push(path),
                         import_dialog::DropKind::Unsupported => {
                             self.toast(Toast::warning(import_dialog::unsupported_text(&path)));
                         }
                     }
                 }
+                self.import_dropped(files);
             }
             Action::Reconnect { doc_id, id } => {
                 let raster = {
@@ -482,9 +502,11 @@ impl FlatCraftApp {
                 }
             }
             Action::ReconnectAll { doc_id, items } => {
-                for (id, path) in items {
-                    self.run_on(doc_id, "object.relink", json!({ "id": id, "path": path }));
-                }
+                let items: Vec<Value> = items
+                    .into_iter()
+                    .map(|(id, path)| json!({ "id": id, "path": path }))
+                    .collect();
+                self.run_on(doc_id, "object.relink", json!({ "items": items }));
                 self.ui.prepare.sources.also_found.clear();
             }
             Action::CheckSources => self.ui.prepare.sources.check_pending = true,
@@ -636,6 +658,23 @@ impl FlatCraftApp {
             Action::Profiles(req) => profiles_window::apply(self, ctx, req),
             Action::Help => ctx.open_url(egui::OpenUrl::new_tab(HELP_URL)),
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+        }
+    }
+
+    /// Imports dropped files into the active document, as one command.
+    fn import_dropped(&mut self, files: Vec<PathBuf>) {
+        if files.is_empty() {
+            return;
+        }
+        // The active document now: an earlier file of the same drop may
+        // have opened a project.
+        let doc_id = lock(&self.session).doc().id();
+        let params = match files.as_slice() {
+            [one] => json!({ "path": one }),
+            _ => json!({ "paths": files }),
+        };
+        if self.run_on(doc_id, "object.import", params).is_some() {
+            self.ui.workspace = Workspace::Prepare;
         }
     }
 

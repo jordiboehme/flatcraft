@@ -412,7 +412,7 @@ fn dropped_svg_is_imported() {
         .map(|o| o.name.clone())
         .collect();
     assert_eq!(names, ["a", "b"]);
-    assert_eq!(undo_len(&s), undo + 2, "one undo step per file");
+    assert_eq!(undo_len(&s), undo + 1, "one undo step for the whole drop");
     assert_eq!(app(&h).ui.workspace, Workspace::Prepare);
 }
 

@@ -48,12 +48,22 @@ pub struct CutPlan {
     pub cut_mm: f64,
 }
 
+/// The pipeline setting an [`PlanError::InvalidSettings`] is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsField {
+    FlattenTolerance,
+    JoinTolerance,
+    Overcut,
+    Passes,
+    CuttingArea,
+}
+
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum PlanError {
     #[error("there is nothing to cut")]
     Empty,
-    #[error("{}", invalid_settings_message(.field, *.value))]
-    InvalidSettings { field: &'static str, value: f64 },
+    #[error("{}", invalid_settings_message(*.field, *.value))]
+    InvalidSettings { field: SettingsField, value: f64 },
     #[error("{} object(s) reach outside the cutting area: {}", .objects.len(), format_ids(.objects))]
     OutOfArea { objects: Vec<ObjectId> },
 }
@@ -65,30 +75,31 @@ const ZERO_LEN_MM: f64 = 1e-9;
 const MIN_TOLERANCE_MM: f64 = 0.001;
 
 fn validate(s: &PipelineSettings) -> Result<(), PlanError> {
+    use SettingsField as F;
     let bad = |field, value| Err(PlanError::InvalidSettings { field, value });
     for (field, v) in [
-        ("flatten_tolerance_mm", s.flatten_tolerance_mm),
-        ("join_tolerance_mm", s.join_tolerance_mm),
+        (F::FlattenTolerance, s.flatten_tolerance_mm),
+        (F::JoinTolerance, s.join_tolerance_mm),
     ] {
         if !(v.is_finite() && v >= MIN_TOLERANCE_MM) {
             return bad(field, v);
         }
     }
     if !(s.overcut_mm.is_finite() && s.overcut_mm >= 0.0) {
-        return bad("overcut_mm", s.overcut_mm);
+        return bad(F::Overcut, s.overcut_mm);
     }
     if s.passes < 1 {
-        return bad("passes", f64::from(s.passes));
+        return bad(F::Passes, f64::from(s.passes));
     }
     let a = s.cutting_area;
     for v in [a.x0, a.y0, a.x1, a.y1] {
         if !v.is_finite() {
-            return bad("cutting_area", v);
+            return bad(F::CuttingArea, v);
         }
     }
     for size in [a.x1 - a.x0, a.y1 - a.y0] {
         if size <= 0.0 {
-            return bad("cutting_area", size);
+            return bad(F::CuttingArea, size);
         }
     }
     Ok(())
@@ -107,22 +118,24 @@ fn inside_area(flat: &BezPath, area: Rect) -> bool {
     })
 }
 
-fn invalid_settings_message(field: &str, value: f64) -> String {
+fn invalid_settings_message(field: SettingsField, value: f64) -> String {
+    use SettingsField as F;
     match field {
-        "flatten_tolerance_mm" | "join_tolerance_mm" => {
-            let label = field.trim_end_matches("_tolerance_mm");
+        F::FlattenTolerance | F::JoinTolerance => {
+            let label = if field == F::FlattenTolerance {
+                "flatten"
+            } else {
+                "join"
+            };
             format!(
                 "The {label} tolerance must be a number of at least {MIN_TOLERANCE_MM} mm (got {value})."
             )
         }
-        "overcut_mm" => {
-            format!("The overcut must be a number of at least 0 mm (got {value}).")
-        }
-        "passes" => format!("The number of passes must be at least 1 (got {value})."),
-        "cutting_area" => format!(
+        F::Overcut => format!("The overcut must be a number of at least 0 mm (got {value})."),
+        F::Passes => format!("The number of passes must be at least 1 (got {value})."),
+        F::CuttingArea => format!(
             "The cutting area must have finite coordinates and a positive width and height (got {value})."
         ),
-        other => format!("The setting {other} is not valid (got {value})."),
     }
 }
 

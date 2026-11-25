@@ -41,6 +41,11 @@ fn load_session(config_dir: PathBuf, has_ui: bool) -> anyhow::Result<SharedSessi
 /// `flatcraft mcp`: no window, the server on the main thread.
 fn run_headless(config_dir: PathBuf) -> anyhow::Result<()> {
     let session = load_session(config_dir, false)?;
+    // A window of another FlatCraft process may change the preferences.
+    session
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .watch_prefs_file();
     stdio::serve(session, Arc::new(|| {}))
 }
 

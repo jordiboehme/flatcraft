@@ -1,6 +1,6 @@
 //! Arrange commands: align and automatic shelf packing.
 
-use flatcraft_core::document::ObjectId;
+use flatcraft_core::document::{Object, ObjectId};
 use kurbo::{Point, Rect, Vec2};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -97,6 +97,19 @@ command!(
     description: "Aligns the bounding boxes of objects. mode: left, hcenter, right, top, vcenter or bottom. relative_to: selection (the common bounding box of the objects, default) or cutting_area (the mat's grid, minus a 5 mm safety margin while the mat is not calibrated; left puts objects at the left edge of that area). Origin the 0,0 of the grid printed on the mat, y down, units mm. An empty ids list means the current selection. Returns {ids}.",
 );
 
+/// Moves `o` by `d` if it then lies inside `area`. Otherwise it stays
+/// exactly where it was and the result is false.
+fn place(o: &mut Object, d: Vec2, area: Rect) -> bool {
+    let centre = o.transform.center_mm;
+    translate(o, d);
+    if placed_bounds(o).is_some_and(|nb| inside(nb, area)) {
+        return true;
+    }
+    // Put the saved centre back: moving back by -d can leave float noise.
+    o.transform.center_mm = centre;
+    false
+}
+
 fn default_spacing() -> f64 {
     5.0
 }
@@ -149,10 +162,8 @@ fn run_auto(s: &mut Session, p: AutoParams, _: Origin) -> Result<Value, CommandE
         }
         let o = object_mut(doc, id)?;
         let d = Point::new(x, y) - Point::new(b.x0, b.y0);
-        translate(o, d);
         // Never report an object as placed unless it really is inside.
-        if !placed_bounds(o).is_some_and(|nb| inside(nb, area)) {
-            translate(o, -d);
+        if !place(o, d, area) {
             did_not_fit.push(id);
             continue;
         }
@@ -172,3 +183,48 @@ command!(
     run: run_auto,
     description: "Packs all visible objects into the cutting area in rows (shelf packing), keeping rotation and size. Objects are sorted by bounding box height, tallest first, and placed left to right from the top-left of the cutting area, with spacing_mm (default 5) between them. Objects that do not fit, or have no cut geometry yet, keep their position and are listed in did_not_fit; they may overlap the packed objects. Origin the 0,0 of the grid printed on the mat, y down, units mm. Returns {placed: [id], did_not_fit: [id]}.",
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flatcraft_core::document::{Document, JobSettings, Source};
+    use flatcraft_core::geometry::CutPath;
+
+    #[test]
+    fn an_object_that_does_not_fit_keeps_its_exact_centre() {
+        let mut doc = Document::new(JobSettings {
+            plotter_id: String::new(),
+            material_id: String::new(),
+            media_id: String::new(),
+            speed: None,
+            force: None,
+            passes: None,
+        });
+        let path = kurbo::BezPath::from_vec(vec![
+            kurbo::PathEl::MoveTo(Point::new(0.0, 0.0)),
+            kurbo::PathEl::LineTo(Point::new(1.0, 1.0)),
+        ]);
+        let id = doc.add(
+            "line".into(),
+            Source::Svg {
+                name: "line".into(),
+                bytes: Vec::new(),
+            },
+            vec![CutPath {
+                path,
+                color: None,
+                label: None,
+                paint: Default::default(),
+            }],
+        );
+        let o = doc.get_mut(id).unwrap();
+        o.transform.center_mm = Point::new(0.1, 0.1);
+        // 0.1 + 0.7 - 0.7 is not 0.1 in floating point.
+        assert!(!place(
+            o,
+            Vec2::new(0.7, 0.7),
+            Rect::new(50.0, 50.0, 60.0, 60.0)
+        ));
+        assert_eq!(o.transform.center_mm, Point::new(0.1, 0.1));
+    }
+}

@@ -74,7 +74,8 @@ pub struct Draft<T> {
     pub parent: Option<String>,
     pub saved: T,
     pub edit: T,
-    /// `ProfileStore::modified_fields` of the stored preset.
+    /// `ProfileStore::modified_plotter_fields` or `modified_material_fields`
+    /// of the stored preset.
     pub modified: Vec<String>,
 }
 
@@ -138,6 +139,7 @@ pub enum PrefsChange {
     AllowAgentCuts(bool),
     Theme(Theme),
     DefaultPlotter(String),
+    DefaultMaterial(String),
     OutputDir(Option<PathBuf>),
     AutoReload(bool),
 }
@@ -169,6 +171,7 @@ struct View {
     allow_agent_cuts: bool,
     theme: Theme,
     default_plotter: String,
+    default_material: String,
     output_dir: Option<PathBuf>,
     auto_reload: bool,
     /// (plotter id, mat id) pairs open jobs and new documents use.
@@ -264,6 +267,9 @@ pub fn plotter_problems(p: &PlotterProfile) -> Vec<String> {
     }
     if p.force_range[0] > p.force_range[1] || p.force_range[0] == 0 {
         out.push("The force range must start at 1 or more and not run backwards.".into());
+    }
+    if p.passes_range[0] > p.passes_range[1] || p.passes_range[0] == 0 {
+        out.push("The passes range must start at 1 or more and not run backwards.".into());
     }
     if let KnifeCompensation::Host {
         offset_mm,
@@ -504,6 +510,7 @@ fn load(app: &mut FlatCraftApp) -> View {
         allow_agent_cuts: s.prefs.allow_agent_cuts,
         theme: s.prefs.theme,
         default_plotter: s.prefs.default_plotter.clone(),
+        default_material: s.prefs.default_material.clone(),
         output_dir: s.prefs.output_dir.clone(),
         auto_reload: s.prefs.auto_reload,
     }
@@ -541,7 +548,8 @@ fn paint_text(ui: &mut Ui, text: &str, color: Color32, dot: Option<Color32>) {
     }
 }
 
-/// Rows of a form with "modified" dots from `modified_fields`.
+/// Rows of a form with "modified" dots from the modified fields of the
+/// stored preset.
 struct Form<'a> {
     modified: &'a [String],
     t: &'a Tokens,
@@ -922,6 +930,12 @@ fn plotter_form(ui: &mut Ui, d: &mut Draft<PlotterProfile>, t: &Tokens) {
                 f.row(ui, "Force max", "force_range", |ui| {
                     ui.add(egui::DragValue::new(&mut p.force_range[1]).update_while_editing(false))
                 });
+                f.row(ui, "Passes min", "passes_range", |ui| {
+                    ui.add(egui::DragValue::new(&mut p.passes_range[0]).update_while_editing(false))
+                });
+                f.row(ui, "Passes max", "passes_range", |ui| {
+                    ui.add(egui::DragValue::new(&mut p.passes_range[1]).update_while_editing(false))
+                });
                 let c = &mut p.capabilities;
                 f.check(
                     ui,
@@ -1181,7 +1195,7 @@ fn mats(
         return;
     };
     // The dots mark the fields of the stored mat that differ from the
-    // parent's mat with the same id (`media.<id>` in `modified_fields`).
+    // parent's mat with the same id (`media.<id>` in `modified_plotter_fields`).
     let mat_modified: Vec<String> = match (
         f.is_modified(&format!("media.{id}")),
         d.saved.media.iter().find(|m| m.id == id),
@@ -1646,6 +1660,20 @@ fn app_tab(ui: &mut Ui, view: &View, t: &Tokens, actions: &mut Vec<Action>) {
             }
             ui.end_row();
 
+            paint_text(ui, "Default material", ui.visuals().text_color(), None);
+            let mut material = view.default_material.clone();
+            let choices: Vec<(String, &str)> = view
+                .materials
+                .iter()
+                .map(|m| (m.id.clone(), m.name.as_str()))
+                .collect();
+            let r = combo(ui, "default-material", &mut material, &choices);
+            set_name(ui, &r, "Default material");
+            if material != view.default_material {
+                reqs.push(Request::Prefs(PrefsChange::DefaultMaterial(material)));
+            }
+            ui.end_row();
+
             paint_text(ui, "File Output folder", ui.visuals().text_color(), None);
             ui.vertical(|ui| {
                 let shown = view.output_dir.as_ref().map_or_else(
@@ -1672,7 +1700,7 @@ fn app_tab(ui: &mut Ui, view: &View, t: &Tokens, actions: &mut Vec<Action>) {
         });
     ui.label(
         RichText::new(
-            "New documents start with the default device. A File Output plotter profile with its own folder writes there instead.",
+            "New documents start with the default device and material. A File Output plotter profile with its own folder writes there instead.",
         )
         .color(dim),
     );
@@ -1955,6 +1983,7 @@ fn set_pref(app: &mut FlatCraftApp, ctx: &egui::Context, change: PrefsChange) {
             PrefsChange::AllowAgentCuts(v) => p.allow_agent_cuts = v,
             PrefsChange::Theme(v) => p.theme = v,
             PrefsChange::DefaultPlotter(v) => p.default_plotter = v,
+            PrefsChange::DefaultMaterial(v) => p.default_material = v,
             PrefsChange::OutputDir(v) => p.output_dir = v,
             PrefsChange::AutoReload(v) => p.auto_reload = v,
         }

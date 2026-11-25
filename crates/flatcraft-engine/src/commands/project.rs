@@ -42,16 +42,17 @@ fn object_json(o: &Object, bounds: Option<Rect>) -> Value {
     })
 }
 
-/// The active mat of the document, or null when the plotter no longer lists it.
-fn mat_json(s: &Session) -> Value {
+/// The mat the document uses (see `effective_media`) and the warning when
+/// it is not the document's own mat. Null when the plotter is unknown.
+fn mat_json(s: &Session) -> (Value, Option<String>) {
     let job = &s.doc().document.job;
     let Ok(plotter) = s.profiles.plotter(&job.plotter_id) else {
-        return Value::Null;
+        return (Value::Null, None);
     };
-    let Some(m) = plotter.media.iter().find(|m| m.id == job.media_id) else {
-        return Value::Null;
+    let Ok((m, warning)) = super::effective_media(&plotter, job) else {
+        return (Value::Null, None);
     };
-    json!({
+    let mat = json!({
         "id": m.id,
         "name": m.name,
         "kind": match m.kind {
@@ -68,11 +69,12 @@ fn mat_json(s: &Session) -> Value {
         },
         "calibrated": m.calibrated,
         "color": format!("#{:02X}{:02X}{:02X}", m.color[0], m.color[1], m.color[2]),
-    })
+    });
+    (mat, warning)
 }
 
 fn run_state(s: &mut Session, _: NoParams, _: Origin) -> Result<Value, CommandError> {
-    let mat = mat_json(s);
+    let (mat, mat_warning) = mat_json(s);
     let area = cutting_area(s).ok().map(rect_json).unwrap_or(Value::Null);
     let bounds = s.doc_mut().placed_bounds_all();
     let st = s.doc();
@@ -105,6 +107,7 @@ fn run_state(s: &mut Session, _: NoParams, _: Origin) -> Result<Value, CommandEr
         "path": st.path,
         "can_undo": st.undo.can_undo(),
         "can_redo": st.undo.can_redo(),
+        "warnings": mat_warning.into_iter().collect::<Vec<_>>(),
     }))
 }
 
@@ -115,7 +118,7 @@ command!(
     mutates: false,
     params: NoParams,
     run: run_state,
-    description: "Describes the active document. All lengths are mm; the origin is the 0,0 of the grid printed on the mat, x right, y down; rotation is degrees clockwise. Returns {index, documents, doc_id (stable id of the active document), doc_ids (stable ids of all open documents, in index order), objects: [{id, name, kind: svg|raster, visible, bounds_mm: {x0,y0,x1,y1} of what is cut (the cut geometry per the cut options, stroke outlines included), transform: {center_mm: [x,y], scale_x, scale_y, rotation_deg, mirror}, cut: {mode: all_lines|object_outlines, strokes: auto|centre_line|outline, auto_threshold_mm} (see object.set_cut_options), link: {path (last known absolute path of the imported file), relative (to the project file, or null)} or null when the object has no linked file}], selection: [id], job: {plotter_id, material_id, media_id, speed, force, passes} (null overrides mean the material value), mat: {id, name, kind: mat|no_mat, width_mm, height_mm (physical), grid: {origin_x_mm, origin_y_mm, width_mm, height_mm}, calibrated, color: \"#RRGGBB\"} (null when unknown), cutting_area_mm: {x0,y0,x1,y1} (the grid, minus a 5 mm safety margin while the mat is not calibrated; objects must stay inside it), dirty, path, can_undo, can_redo}.",
+    description: "Describes the active document. All lengths are mm; the origin is the 0,0 of the grid printed on the mat, x right, y down; rotation is degrees clockwise. Returns {index, documents, doc_id (stable id of the active document), doc_ids (stable ids of all open documents, in index order), objects: [{id, name, kind: svg|raster, visible, bounds_mm: {x0,y0,x1,y1} of what is cut (the cut geometry per the cut options, stroke outlines included), transform: {center_mm: [x,y], scale_x, scale_y, rotation_deg, mirror}, cut: {mode: all_lines|object_outlines, strokes: auto|centre_line|outline, auto_threshold_mm} (see object.set_cut_options), link: {path (last known absolute path of the imported file), relative (to the project file, or null)} or null when the object has no linked file}], selection: [id], job: {plotter_id, material_id, media_id, speed, force, passes} (null overrides mean the material value), mat: {id, name, kind: mat|no_mat, width_mm, height_mm (physical), grid: {origin_x_mm, origin_y_mm, width_mm, height_mm}, calibrated, color: \"#RRGGBB\"} (null when unknown; when the plotter no longer lists job.media_id, hidden or deleted, this is the plotter's first mat, which jobs then use too), cutting_area_mm: {x0,y0,x1,y1} (the grid, minus a 5 mm safety margin while the mat is not calibrated; objects must stay inside it), dirty, path, can_undo, can_redo, warnings: [text] (for example a mat that is no longer available)}.",
 );
 
 // ---------------------------------------------------------------- document.new / switch / close

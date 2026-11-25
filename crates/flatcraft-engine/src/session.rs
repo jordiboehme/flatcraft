@@ -278,9 +278,11 @@ impl DocState {
 }
 
 /// True if two documents differ at most in the objects' source links.
+/// Cheap fields first; geometry by `Arc` first, then by value.
 fn same_except_links(a: &Document, b: &Document) -> bool {
     a.job == b.job
         && a.next_id == b.next_id
+        && a.format_version == b.format_version
         && a.objects.len() == b.objects.len()
         && a.objects.iter().zip(&b.objects).all(|(x, y)| {
             x.id == y.id
@@ -293,6 +295,15 @@ fn same_except_links(a: &Document, b: &Document) -> bool {
                 && x.local_bounds == y.local_bounds
                 && (std::sync::Arc::ptr_eq(&x.geometry, &y.geometry) || x.geometry == y.geometry)
         })
+}
+
+/// True if a command left the document as it was.
+fn same_document(a: &Document, b: &Document) -> bool {
+    same_except_links(a, b)
+        && a.objects
+            .iter()
+            .zip(&b.objects)
+            .all(|(x, y)| x.link == y.link)
 }
 
 /// The engine state shared by the GUI, the MCP server and tests.
@@ -314,6 +325,18 @@ pub struct Session {
     /// Set by a mutating command that ended up changing nothing the user
     /// would undo (see `mark_no_user_change`). Reset before every command.
     no_user_change: bool,
+    /// Set by [`Session::watch_prefs_file`] (headless MCP).
+    prefs_watch: Option<PrefsWatch>,
+}
+
+/// How often a headless session looks at the preferences file.
+pub const PREFS_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+
+/// What a headless session knows about the preferences file.
+#[derive(Debug, Clone)]
+struct PrefsWatch {
+    last_check: Option<Instant>,
+    modified: Option<std::time::SystemTime>,
 }
 
 impl Session {
@@ -337,6 +360,7 @@ impl Session {
             pending_send: None,
             next_pending_id: 1,
             no_user_change: false,
+            prefs_watch: None,
         };
         s.docs.push(s.new_doc_state());
         s
@@ -368,6 +392,50 @@ impl Session {
             .iter()
             .position(|d| d.id() == doc_id)
             .ok_or_else(|| CommandError::NotFound("That document is no longer open.".into()))
+    }
+
+    /// Re-read `preferences.toml` before commands when its modification time
+    /// changed, checked at most once per [`PREFS_CHECK_INTERVAL`]. For a
+    /// headless `flatcraft mcp`, so a change made in a FlatCraft window
+    /// reaches it. A GUI session owns its preferences and does not watch.
+    pub fn watch_prefs_file(&mut self) {
+        self.prefs_watch = Some(PrefsWatch {
+            last_check: None,
+            modified: Preferences::modified(&self.config_dir),
+        });
+    }
+
+    /// Reloads the preferences when the file changed since the last look,
+    /// at most once per [`PREFS_CHECK_INTERVAL`] at `now`. A file that cannot
+    /// be read or parsed (perhaps half written) keeps the preferences as
+    /// they are. Returns true if it reloaded them. Never writes the file.
+    pub fn refresh_prefs(&mut self, now: Instant) -> bool {
+        let Some(w) = &mut self.prefs_watch else {
+            return false;
+        };
+        if w.last_check
+            .is_some_and(|t| now.saturating_duration_since(t) < PREFS_CHECK_INTERVAL)
+        {
+            return false;
+        }
+        w.last_check = Some(now);
+        let modified = Preferences::modified(&self.config_dir);
+        if modified == w.modified {
+            return false;
+        }
+        // Once per change of the file, also a broken one: fixing it changes
+        // the time again.
+        w.modified = modified;
+        match Preferences::read(&self.config_dir) {
+            Ok(prefs) => {
+                self.prefs = prefs;
+                true
+            }
+            Err(e) => {
+                eprintln!("warning: {e}. Keeping the preferences read before.");
+                false
+            }
+        }
     }
 
     /// The send that waits for confirmation in the GUI, if any.
@@ -483,6 +551,7 @@ impl Session {
         if origin == Origin::Agent {
             self.last_agent_activity = Some(Instant::now());
         }
+        self.refresh_prefs(Instant::now());
         let command =
             registry::get(id).ok_or_else(|| CommandError::UnknownCommand(id.to_string()))?;
         let result = self.run_command(command, params, origin);
@@ -491,7 +560,9 @@ impl Session {
     }
 
     /// Called by a mutating command whose run changed nothing the user would
-    /// undo (only `object.reload` when no file changed). Small bookkeeping it
+    /// undo (`object.reload` when no file changed). A command that leaves the
+    /// document exactly as it was needs no call: `run_command` notices that
+    /// itself and records nothing. Small bookkeeping it
     /// did, like a refreshed modification time, stays in the document, but
     /// no undo step is recorded and the document is not marked as changed.
     /// Only link fields may differ from the state before the command; debug
@@ -522,6 +593,11 @@ impl Session {
                     "a command marked as no user change changed the document"
                 );
                 state.touch();
+                state.prune_selection();
+                Ok(value)
+            }
+            Ok(value) if same_document(&before, &state.document) => {
+                // Nothing changed: no undo step, not dirty.
                 state.prune_selection();
                 Ok(value)
             }

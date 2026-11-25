@@ -18,6 +18,7 @@ const PLOTTER_REPLACE_KEYS: &[&str] = &[
     "knife_compensation",
     "speed_range",
     "force_range",
+    "passes_range",
 ];
 /// Keys of older versions that no longer exist; dropped when a user preset is loaded.
 const LEGACY_PLOTTER_KEYS: &[&str] = &["margins"];
@@ -572,23 +573,6 @@ impl ProfileStore {
         let m: MaterialProfile = self.resolve(Kind::Material, id)?;
         self.resolved().materials.insert(id.to_string(), m.clone());
         Ok(m)
-    }
-
-    /// Sorted dotted keys the user preset sets itself. Empty for system presets
-    /// and unknown ids. Plotters are searched first, then materials, so an id
-    /// used by both kinds reports the plotter.
-    pub fn modified_fields(&self, id: &str) -> Vec<String> {
-        for kind in [Kind::Plotter, Kind::Material] {
-            if let Some(e) = self.map(kind).get(id) {
-                let mut out = Vec::new();
-                if !e.system {
-                    flatten_keys("", &e.table, kind.replace_keys(), &mut out);
-                    out.sort();
-                }
-                return out;
-            }
-        }
-        Vec::new()
     }
 
     fn modified(&self, kind: Kind, id: &str) -> Vec<String> {

@@ -10,8 +10,14 @@ use super::prepare::{Override, PrepareState, Snapshot};
 use super::theme::Tokens;
 use super::{Action, fonts, icon_button};
 
-/// Largest pass count `job.set_overrides` accepts.
-pub const MAX_PASSES: u32 = 20;
+/// The `job.set_overrides` field of an override.
+fn override_key(which: Override) -> &'static str {
+    match which {
+        Override::Speed => "speed",
+        Override::Force => "force",
+        Override::Passes => "passes",
+    }
+}
 
 /// Sets the accessible name of a widget, replacing the one it gave itself.
 pub fn set_name(ui: &Ui, resp: &Response, name: &str) {
@@ -19,6 +25,16 @@ pub fn set_name(ui: &Ui, resp: &Response, name: &str) {
         node.clear_labelled_by();
         node.set_label(name);
     });
+}
+
+/// A row label that is only painted, so the widget it names (which gets
+/// the name through [`set_name`]) is the only accessible node with it.
+pub fn painted_label(ui: &mut Ui, text: &str) {
+    let color = ui.visuals().text_color();
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let galley = ui.painter().layout_no_wrap(text.to_string(), font, color);
+    let (rect, _) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
+    ui.painter().galley(rect.left_top(), galley, color);
 }
 
 /// The value all selected objects share, or `None` when they differ.
@@ -52,7 +68,7 @@ fn combo<T: Clone + PartialEq>(
     enabled: bool,
 ) -> Option<T> {
     let mut picked = None;
-    ui.label(label);
+    painted_label(ui, label);
     ui.add_enabled_ui(enabled, |ui| {
         let r = egui::ComboBox::from_id_salt(label)
             .selected_text(current)
@@ -243,14 +259,14 @@ pub fn job(
                     "Passes",
                     job.passes,
                     material.passes,
-                    [1, MAX_PASSES],
+                    [plotter.passes_range[0].max(1), plotter.passes_range[1]],
                 ),
             ];
             for (which, label, set, base, range) in rows {
                 let value = set.unwrap_or(base);
                 let modified = set.is_some_and(|v| v != base);
                 ui.horizontal(|ui| {
-                    ui.label(label);
+                    painted_label(ui, label);
                     if modified {
                         let (r, _) =
                             ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
@@ -291,31 +307,22 @@ pub fn job(
                     }
                     let n = v.round() as u32;
                     if n != value {
-                        let key = match which {
-                            Override::Speed => "speed",
-                            Override::Force => "force",
-                            Override::Passes => "passes",
-                        };
-                        run(actions, "job.set_overrides", json!({ key: n }));
+                        run(
+                            actions,
+                            "job.set_overrides",
+                            json!({ override_key(which): n }),
+                        );
                     }
                 }
                 if modified {
                     let reset = format!("Reset {}", label.to_lowercase());
                     if icon_button(ui, Icon::RotateLeft, &reset, true).clicked() {
-                        // Clear all overrides and send the others back.
-                        let mut p = json!({ "clear": true });
-                        for (w, key, set) in [
-                            (Override::Speed, "speed", job.speed.map(u32::from)),
-                            (Override::Force, "force", job.force.map(u32::from)),
-                            (Override::Passes, "passes", job.passes),
-                        ] {
-                            if w != which
-                                && let Some(x) = set
-                            {
-                                p[key] = json!(x);
-                            }
-                        }
-                        run(actions, "job.set_overrides", p);
+                        // null removes this override only.
+                        run(
+                            actions,
+                            "job.set_overrides",
+                            json!({ override_key(which): null }),
+                        );
                     }
                 } else {
                     ui.label("");

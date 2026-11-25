@@ -115,7 +115,7 @@ fn save_as_user_preset_inherits() {
     assert!(!info.system);
     assert_eq!(info.name, "My Cameo");
     assert_eq!(info.inherits.as_deref(), Some("silhouette-cameo-2"));
-    assert_eq!(st.modified_fields("my-cameo"), ["scale_x"]);
+    assert_eq!(st.modified_plotter_fields("my-cameo"), ["scale_x"]);
     assert_eq!(st.plotter("my-cameo").unwrap().scale_x, 1.01);
 
     let t = plotter_toml(&dir, "my-cameo");
@@ -206,7 +206,10 @@ fn edit_one_mat_keeps_the_others() {
     let ids: Vec<&str> = p.media.iter().map(|m| m.id.as_str()).collect();
     assert_eq!(ids, ["mat-12x12", "mat-12x24", "no-mat"]);
     assert_eq!(p.media[0].grid.origin_y_mm, 12.7);
-    assert_eq!(store(&s).modified_fields("my-cameo"), ["media.mat-12x12"]);
+    assert_eq!(
+        store(&s).modified_plotter_fields("my-cameo"),
+        ["media.mat-12x12"]
+    );
 
     let t = plotter_toml(&dir, "my-cameo");
     let media = t["media"].as_array().unwrap();
@@ -367,7 +370,7 @@ fn material_override_saves_only_the_override() {
 
     let st = store(&s);
     assert_eq!(
-        st.modified_fields("my-paper"),
+        st.modified_material_fields("my-paper"),
         ["overrides.silhouette-cameo-2.speed"]
     );
     let m = st.material("my-paper").unwrap();
@@ -388,6 +391,23 @@ fn theme_switch_applies_and_persists() {
         flatcraft_engine::prefs::Theme::Light
     );
     assert_eq!(app(&h).tokens, flatcraft::ui::theme::Tokens::light());
+}
+
+#[test]
+fn default_material_persists_and_new_documents_use_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    open(&mut h, "App");
+    h.get_by_label("Default material").click();
+    h.run();
+    click(&mut h, "Vinyl");
+    assert_eq!(Preferences::load(dir.path()).default_material, "vinyl");
+    let mut session = s.lock().unwrap();
+    session
+        .execute("document.new", serde_json::json!({}), Origin::User)
+        .unwrap();
+    assert_eq!(session.doc().document.job.material_id, "vinyl");
 }
 
 #[test]

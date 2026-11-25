@@ -287,11 +287,32 @@ pub struct PlotterProfile {
     pub blade_offset_mm: f64,
     pub speed_range: [u8; 2],
     pub force_range: [u8; 2],
+    /// The pass counts a job may use. Older presets load with 1 to 20.
+    #[serde(default = "default_passes_range")]
+    pub passes_range: [u32; 2],
     pub capabilities: Capabilities,
     pub flatten_tolerance_mm: f64,
 }
 
+/// Pass counts of a plotter preset that does not set `passes_range`.
+pub const DEFAULT_PASSES_RANGE: [u32; 2] = [1, 20];
+
+fn default_passes_range() -> [u32; 2] {
+    DEFAULT_PASSES_RANGE
+}
+
 impl PlotterProfile {
+    /// The mat `media_id`, or the plotter's first mat when it no longer
+    /// lists that one (hidden or deleted in a user preset, or a project
+    /// from elsewhere). The flag is true for that fallback; `None` only for
+    /// a plotter without any mat.
+    pub fn media_or_first(&self, media_id: &str) -> Option<(&Media, bool)> {
+        match self.media.iter().find(|m| m.id == media_id) {
+            Some(m) => Some((m, false)),
+            None => self.media.first().map(|m| (m, true)),
+        }
+    }
+
     /// The area objects may use, in app coordinates (origin = the grid's 0,0): the whole
     /// grid for a calibrated mat, the grid minus [`UNCALIBRATED_MARGIN_MM`] on every side
     /// otherwise.

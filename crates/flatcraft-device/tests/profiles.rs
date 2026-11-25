@@ -54,8 +54,8 @@ fn user_override_merges_and_reports_modified() {
     let p = s.plotter("mine").unwrap();
     assert_eq!(p.scale_x, 1.002);
     assert_eq!(p.scale_y, 1.0);
-    assert_eq!(s.modified_fields("mine"), vec!["scale_x"]);
-    assert!(s.modified_fields("silhouette-cameo-2").is_empty());
+    assert_eq!(s.modified_plotter_fields("mine"), vec!["scale_x"]);
+    assert!(s.modified_plotter_fields("silhouette-cameo-2").is_empty());
 }
 
 #[test]
@@ -71,7 +71,7 @@ fn nested_table_merges_key_by_key() {
     let p = s.plotter("mine").unwrap();
     assert!(p.axis.mirror_x);
     assert!(!p.axis.mirror_y);
-    assert_eq!(s.modified_fields("mine"), vec!["axis.mirror_x"]);
+    assert_eq!(s.modified_plotter_fields("mine"), vec!["axis.mirror_x"]);
 }
 
 #[test]
@@ -90,9 +90,9 @@ fn old_profile_with_margins_still_loads() {
     assert!((r.x0 - 5.0).abs() < 1e-9 && (r.x1 - 299.8).abs() < 1e-9);
     // the legacy key is gone, not a ghost modified field
     assert!(
-        s.modified_fields("old").is_empty(),
+        s.modified_plotter_fields("old").is_empty(),
         "{:?}",
-        s.modified_fields("old")
+        s.modified_plotter_fields("old")
     );
 }
 
@@ -176,7 +176,7 @@ fn override_enum_replaces_variant() {
     );
     assert_eq!(p.knife_compensation, KnifeCompensation::None);
     assert_eq!(
-        s.modified_fields("mine"),
+        s.modified_plotter_fields("mine"),
         vec!["knife_compensation", "transport"]
     );
 }
@@ -287,7 +287,7 @@ fn save_writes_only_differences_and_round_trips() {
     p.knife_compensation = KnifeCompensation::None;
     s.save_user_plotter(&p, "silhouette-cameo-2").unwrap();
     assert_eq!(
-        s.modified_fields("tuned"),
+        s.modified_plotter_fields("tuned"),
         vec!["knife_compensation", "media.mat-12x12", "scale_x"]
     );
     let text = fs::read_to_string(d.path().join("plotters/tuned.toml")).unwrap();
@@ -313,7 +313,7 @@ fn save_material_and_reject_system_id() {
     m.name = "My Vinyl".into();
     m.force = 12;
     s.save_user_material(&m, "vinyl").unwrap();
-    assert_eq!(s.modified_fields("my-vinyl"), vec!["force"]);
+    assert_eq!(s.modified_material_fields("my-vinyl"), vec!["force"]);
     let s2 = ProfileStore::load(d.path()).unwrap();
     assert_eq!(s2.material("my-vinyl").unwrap().force, 12);
     assert_eq!(s2.materials().len(), 5);
@@ -532,7 +532,7 @@ fn user_media_merge_by_id() {
     assert!(p.media[0].calibrated);
     assert_eq!(p.media[1].name, "No mat");
     assert_eq!(
-        s.modified_fields("mine"),
+        s.modified_plotter_fields("mine"),
         vec!["media.a4", "media.mat-12x12", "media.mat-12x24"]
     );
     // the parent is untouched
@@ -550,7 +550,7 @@ fn save_writes_only_changed_and_new_mats() {
     p.media.push(mat("extra"));
     s.save_user_plotter(&p, "silhouette-cameo-2").unwrap();
     assert_eq!(
-        s.modified_fields("tuned"),
+        s.modified_plotter_fields("tuned"),
         vec!["media.extra", "media.mat-12x12", "media.mat-12x24"]
     );
     let text = fs::read_to_string(d.path().join("plotters/tuned.toml")).unwrap();

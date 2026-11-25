@@ -183,7 +183,7 @@ fn corner_factor(anchor: kurbo::Point, corner: kurbo::Point, pointer: kurbo::Poi
 }
 
 fn hit_test(snap: &Snapshot, view: &CanvasView, at: Pos2) -> Hit {
-    if let (1, Some(b)) = (snap.selection.len(), selection_box(snap)) {
+    if let Some(b) = selection_box(snap) {
         for (i, c) in corners(b).into_iter().enumerate() {
             if view.mm_to_screen(c).distance(at) <= HANDLE_PICK {
                 return Hit::Handle(i);
@@ -213,12 +213,12 @@ fn drag_preview(drag: Option<&Drag>, id: u64) -> Option<kurbo::Affine> {
             ..
         } if ids.contains(&id) => Some(kurbo::Affine::translate(*current - *start)),
         Drag::Scale {
-            id: d,
+            ids,
             anchor,
             corner,
             current,
             ..
-        } if *d == id => {
+        } if ids.contains(&id) => {
             let f = corner_factor(*anchor, *corner, *current);
             Some(
                 kurbo::Affine::translate(anchor.to_vec2())
@@ -436,8 +436,8 @@ fn draw_selection(painter: &egui::Painter, snap: &Snapshot, st: &PrepareState, c
     if let Some(Drag::Move { start, current, .. }) = &st.drag {
         b = b + (*current - *start);
     }
-    if let Some(d @ Drag::Scale { id, .. }) = &st.drag
-        && let Some(a) = drag_preview(Some(d), *id)
+    if let Some(d @ Drag::Scale { ids, .. }) = &st.drag
+        && let Some(a) = ids.first().and_then(|id| drag_preview(Some(d), *id))
     {
         b = a.transform_rect_bbox(b);
     }
@@ -448,16 +448,14 @@ fn draw_selection(painter: &egui::Painter, snap: &Snapshot, st: &PrepareState, c
         Stroke::new(1.0, contrast),
         egui::StrokeKind::Outside,
     );
-    if snap.selection.len() == 1 {
-        for c in [
-            r.left_top(),
-            r.right_top(),
-            r.right_bottom(),
-            r.left_bottom(),
-        ] {
-            let h = Rect::from_center_size(c, Vec2::splat(HANDLE * 2.0));
-            painter.rect_filled(h, 1.0, contrast);
-        }
+    for c in [
+        r.left_top(),
+        r.right_top(),
+        r.right_bottom(),
+        r.left_bottom(),
+    ] {
+        let h = Rect::from_center_size(c, Vec2::splat(HANDLE * 2.0));
+        painter.rect_filled(h, 1.0, contrast);
     }
 }
 
@@ -660,7 +658,7 @@ fn pointer(
                 let c = corners(b);
                 Some(Drag::Scale {
                     doc_id,
-                    id: *snap.selection.iter().next().expect("one selected"),
+                    ids: snap.selection.iter().copied().collect(),
                     corner_index: i,
                     corner: c[i],
                     anchor: c[(i + 2) % 4],
@@ -709,7 +707,7 @@ fn pointer(
             }
             Some(Drag::Scale {
                 doc_id,
-                id,
+                ids,
                 corner_index,
                 corner,
                 anchor,
@@ -721,9 +719,10 @@ fn pointer(
                         doc_id,
                         "object.scale",
                         json!({
-                            "ids": [id],
+                            "ids": ids,
                             "factor": f,
                             "anchor": CORNERS[(corner_index + 2) % 4],
+                            "group": ids.len() > 1,
                         }),
                     ));
                 }

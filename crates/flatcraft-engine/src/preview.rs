@@ -147,18 +147,9 @@ pub fn render_png(s: &Session, kind: PreviewKind, max_px: u32) -> Result<Vec<u8>
         .profiles
         .plotter(&job.plotter_id)
         .map_err(crate::commands::profile_error)?;
-    let media = plotter
-        .media
-        .iter()
-        .find(|m| m.id == job.media_id)
-        .ok_or_else(|| {
-            CommandError::NotFound(format!(
-                "media '{}' is not defined for plotter '{}'",
-                job.media_id, job.plotter_id
-            ))
-        })?;
+    let (media, _) = crate::commands::effective_media(&plotter, job)?;
     let area = plotter
-        .cutting_area(&job.media_id)
+        .cutting_area(&media.id)
         .ok_or_else(|| failed("no cutting area"))?;
 
     // The larger side is exactly max_px.

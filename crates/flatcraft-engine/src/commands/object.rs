@@ -3,7 +3,9 @@
 
 use std::path::PathBuf;
 
-use flatcraft_core::document::{CutMode, CutOptions, ObjectId, Source, StrokeMode, TraceSettings};
+use flatcraft_core::document::{
+    CutMode, CutOptions, Document, ObjectId, Source, StrokeMode, TraceSettings,
+};
 use flatcraft_core::geometry::CutPath;
 use flatcraft_import::svg::import_svg;
 use flatcraft_import::trace::{TraceResult, trace};
@@ -199,35 +201,96 @@ fn merge(into: &mut Value, from: Value) {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ImportParams {
-    /// Path of the file to import. Supported: .svg, .svgz, .png, .jpg, .jpeg, .webp and .gif.
-    pub path: PathBuf,
+    /// Path of the file to import. Supported: .svg, .svgz, .png, .jpg, .jpeg, .webp and .gif. Give path or paths.
+    pub path: Option<PathBuf>,
+    /// Several files to import in one undo step. A file that cannot be imported is listed in failed; the others are still imported. Give path or paths.
+    #[serde(default)]
+    pub paths: Vec<PathBuf>,
 }
 
-fn run_import(s: &mut Session, p: ImportParams, _: Origin) -> Result<Value, CommandError> {
-    let kind = file_kind(&p.path)?;
-    let name = p
-        .path
+/// Imports one file into the active document and selects it. A failure
+/// changes nothing.
+fn import_one(s: &mut Session, path: &std::path::Path) -> Result<Value, CommandError> {
+    let kind = file_kind(path)?;
+    let name = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("Imported")
         .to_string();
-    let file = read_capped(&p.path).map_err(|e| match e {
-        ReadError::NotFound => CommandError::NotFound(format!("file {}", p.path.display())),
+    let file = read_capped(path).map_err(|e| match e {
+        ReadError::NotFound => CommandError::NotFound(format!("file {}", path.display())),
         ReadError::TooLarge | ReadError::NotAFile => {
-            CommandError::InvalidParams(format!("cannot import {}: {}", p.path.display(), e.text()))
+            CommandError::InvalidParams(format!("cannot import {}: {}", path.display(), e.text()))
         }
-        ReadError::Io(io) => {
-            CommandError::Failed(format!("cannot read {}: {io}", p.path.display()))
-        }
+        ReadError::Io(io) => CommandError::Failed(format!("cannot read {}: {io}", path.display())),
     })?;
-    let path = absolute(&p.path);
-    let link = new_link(&path, s.doc().path.as_deref(), &file);
+    let abs = absolute(path);
+    let link = new_link(&abs, s.doc().path.as_deref(), &file);
     let (id, out) = match kind {
-        FileKind::Raster => add_raster(s, name, file.bytes)?,
-        FileKind::Svg => add_svg(s, name, file.bytes)?,
-    };
+        FileKind::Raster => add_raster(s, name, file.bytes),
+        FileKind::Svg => add_svg(s, name, file.bytes),
+    }
+    .map_err(|e| with_path(e, path))?;
     object_mut(&mut s.doc_mut().document, id)?.link = link;
     Ok(out)
+}
+
+/// An import error that names the file, unless it does already.
+fn with_path(e: CommandError, path: &std::path::Path) -> CommandError {
+    let shown = path.display().to_string();
+    let add = |m: String| {
+        if m.contains(&shown) {
+            m
+        } else {
+            format!("{shown}: {m}")
+        }
+    };
+    match e {
+        CommandError::InvalidParams(m) => CommandError::InvalidParams(add(m)),
+        CommandError::NotFound(m) => CommandError::NotFound(add(m)),
+        CommandError::Refused(m) => CommandError::Refused(add(m)),
+        CommandError::Failed(m) => CommandError::Failed(add(m)),
+        other => other,
+    }
+}
+
+fn run_import(s: &mut Session, p: ImportParams, _: Origin) -> Result<Value, CommandError> {
+    match (p.path, p.paths.is_empty()) {
+        (Some(path), true) => import_one(s, &path),
+        (None, false) => import_many(s, &p.paths),
+        _ => Err(CommandError::InvalidParams(
+            "give exactly one of path and paths".into(),
+        )),
+    }
+}
+
+/// Imports several files as one command. Fails (and changes nothing) only
+/// when no file could be imported.
+fn import_many(s: &mut Session, paths: &[PathBuf]) -> Result<Value, CommandError> {
+    let (mut imported, mut failed, mut ids) = (Vec::new(), Vec::new(), Vec::new());
+    let mut last_error = None;
+    for path in paths {
+        match import_one(s, path) {
+            Ok(mut out) => {
+                ids.extend(out["id"].as_u64().map(ObjectId));
+                if let Some(o) = out.as_object_mut() {
+                    o.insert("path".into(), json!(path));
+                }
+                imported.push(out);
+            }
+            Err(e) => {
+                failed.push(json!({ "path": path, "error": e.to_string() }));
+                last_error = Some(e);
+            }
+        }
+    }
+    if imported.is_empty() {
+        return Err(
+            last_error.unwrap_or_else(|| CommandError::InvalidParams("no file to import".into()))
+        );
+    }
+    s.doc_mut().selection = ids.into_iter().collect();
+    Ok(json!({ "imported": imported, "failed": failed }))
 }
 
 command!(
@@ -237,7 +300,7 @@ command!(
     mutates: true,
     params: ImportParams,
     run: run_import,
-    description: "Imports a vector file from disk as a new object and selects it. Supported: .svg and .svgz, and the raster types .png, .jpg, .jpeg, .webp and .gif (by extension). The object name is the file name without extension. The object keeps an embedded copy and remembers the file, so after the file is changed in another app object.reload picks up the changes. SVG sizes come from the SVG in mm. A raster image is traced into cut outlines with the default trace settings (automatic threshold, dark pixels are cut) at the dpi stored in the file, or 300 dpi; use object.retrace to change the settings. Images over 16384 x 16384 px are refused. The object keeps its position from the SVG page if that lies inside the cutting area, otherwise its top-left corner moves to the top-left of the cutting area. Coordinates are mm, origin the 0,0 of the grid printed on the mat, y down. Returns {id, bounds_mm: {x0,y0,x1,y1}, warnings: [text]}; raster imports also return dropped_small (shapes below the minimum feature size that were dropped), despeckled (specks below the despeckle area that were removed), threshold_used (0-255) and size_mm [width, height] of the whole image.",
+    description: "Imports a vector file from disk as a new object and selects it. Supported: .svg and .svgz, and the raster types .png, .jpg, .jpeg, .webp and .gif (by extension). The object name is the file name without extension. The object keeps an embedded copy and remembers the file, so after the file is changed in another app object.reload picks up the changes. SVG sizes come from the SVG in mm. A raster image is traced into cut outlines with the default trace settings (automatic threshold, dark pixels are cut) at the dpi stored in the file, or 300 dpi; use object.retrace to change the settings. Images over 16384 x 16384 px are refused. The object keeps its position from the SVG page if that lies inside the cutting area, otherwise its top-left corner moves to the top-left of the cutting area. Coordinates are mm, origin the 0,0 of the grid printed on the mat, y down. With paths instead of path, several files are imported as one undo step and all new objects are selected; a file that fails is listed in failed and the others are still imported (the call fails only when no file could be imported); it returns {imported: [the result of one file plus its path], failed: [{path, error}]}. With path it returns {id, bounds_mm: {x0,y0,x1,y1}, warnings: [text]}; raster imports also return dropped_small (shapes below the minimum feature size that were dropped), despeckled (specks below the despeckle area that were removed), threshold_used (0-255) and size_mm [width, height] of the whole image.",
 );
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -629,6 +692,9 @@ pub struct ScaleParams {
     /// Point of the bounding box that stays fixed (default center).
     #[serde(default)]
     pub anchor: Anchor,
+    /// Scale the objects as one group (default false): the common bounding box of all of them scales about its anchor point, so their layout stays. width_mm and height_mm then set the size of that common box; keep_aspect must stay true.
+    #[serde(default)]
+    pub group: bool,
 }
 
 fn positive(name: &str, v: Option<f64>) -> Result<Option<f64>, CommandError> {
@@ -650,6 +716,9 @@ fn run_scale(s: &mut Session, p: ScaleParams, _: Origin) -> Result<Value, Comman
         return Err(CommandError::InvalidParams(
             "give either factor, or width_mm and/or height_mm".into(),
         ));
+    }
+    if p.group {
+        return scale_group(s, &ids, factor, width, height, &p);
     }
     let doc = &mut s.doc_mut().document;
     for id in &ids {
@@ -712,6 +781,70 @@ fn run_scale(s: &mut Session, p: ScaleParams, _: Origin) -> Result<Value, Comman
     Ok(json!({ "ids": ids_json(&ids) }))
 }
 
+/// `object.scale` with `group`: one uniform factor for all objects about
+/// the anchor of their common bounding box.
+fn scale_group(
+    s: &mut Session,
+    ids: &[ObjectId],
+    factor: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
+    p: &ScaleParams,
+) -> Result<Value, CommandError> {
+    if !p.keep_aspect {
+        return Err(CommandError::InvalidParams(
+            "a group scales with its proportions kept: leave keep_aspect true".into(),
+        ));
+    }
+    let doc = &mut s.doc_mut().document;
+    let group_box = |doc: &Document| -> Result<Rect, CommandError> {
+        let mut out: Option<Rect> = None;
+        for id in ids {
+            let o = doc
+                .get(*id)
+                .ok_or_else(|| CommandError::NotFound(format!("no object with id {}", id.0)))?;
+            let b = placed_bounds(o).ok_or_else(|| {
+                CommandError::InvalidParams(format!("object {} has no geometry to scale", id.0))
+            })?;
+            out = Some(out.map_or(b, |r| r.union(b)));
+        }
+        out.ok_or_else(|| CommandError::InvalidParams("no objects to scale".into()))
+    };
+    let old = group_box(doc)?;
+    let ratio = |target: Option<f64>, have: f64, what: &str| match target {
+        None => Ok(None),
+        Some(_) if have <= 1e-12 => Err(CommandError::InvalidParams(format!(
+            "the group has no {what}, so its {what} cannot be set"
+        ))),
+        Some(t) => Ok(Some(t / have)),
+    };
+    let f = match factor {
+        Some(f) => f,
+        None => match (
+            ratio(width, old.width(), "width")?,
+            ratio(height, old.height(), "height")?,
+        ) {
+            (Some(a), Some(b)) => a.min(b),
+            (Some(a), None) | (None, Some(a)) => a,
+            (None, None) => 1.0,
+        },
+    };
+    let anchor = p.anchor.point(old);
+    for id in ids {
+        let o = object_mut(doc, *id)?;
+        o.transform.scale_x *= f;
+        o.transform.scale_y *= f;
+        o.transform.center_mm = anchor + (o.transform.center_mm - anchor) * f;
+    }
+    // Cut outlines may not scale exactly (a stroke crossing the auto
+    // threshold): put the anchor back where it was.
+    let d = anchor - p.anchor.point(group_box(doc)?);
+    for id in ids {
+        translate(object_mut(doc, *id)?, d);
+    }
+    Ok(json!({ "ids": ids_json(ids) }))
+}
+
 command!(
     ObjectScale,
     id: "object.scale",
@@ -719,7 +852,7 @@ command!(
     mutates: true,
     params: ScaleParams,
     run: run_scale,
-    description: "Scales each object on its own (one undo step for all). Either a uniform factor, or width_mm and/or height_mm for the placed bounding box in mm. keep_aspect (default true) scales uniformly: with one size given it follows that size, with both it fits inside them. With keep_aspect false only the given sides change; this needs a rotation that is a multiple of 90 degrees. anchor (center, top_left, top_right, bottom_left, bottom_right; default center) is the point of each bounding box that stays fixed. Origin the 0,0 of the grid printed on the mat, y down. With strokes on auto (see object.set_cut_options), scaling can move a stroke across the 0.5 mm threshold and change how it is cut. An empty ids list means the current selection. Returns {ids}.",
+    description: "Scales each object on its own (one undo step for all), or with group true all of them as one group about one anchor of their common bounding box, so their layout stays (the canvas does this for a multi-selection). Either a uniform factor, or width_mm and/or height_mm for the placed bounding box in mm. keep_aspect (default true) scales uniformly: with one size given it follows that size, with both it fits inside them. With keep_aspect false only the given sides change; this needs a rotation that is a multiple of 90 degrees. anchor (center, top_left, top_right, bottom_left, bottom_right; default center) is the point of each bounding box that stays fixed. Origin the 0,0 of the grid printed on the mat, y down. With strokes on auto (see object.set_cut_options), scaling can move a stroke across the 0.5 mm threshold and change how it is cut. An empty ids list means the current selection. Returns {ids}.",
 );
 
 // ---------------------------------------------------------------- rotate

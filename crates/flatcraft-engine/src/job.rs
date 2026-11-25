@@ -188,16 +188,15 @@ pub fn build_input(input: &JobInput) -> Result<JobResult, CommandError> {
         plotter,
         material,
     } = input;
-    let area = plotter.cutting_area(&job.media_id).ok_or_else(|| {
-        CommandError::NotFound(format!(
-            "media '{}' is not defined for plotter '{}'",
-            job.media_id, job.plotter_id
-        ))
-    })?;
+    let (media, mat_warning) = crate::commands::effective_media(plotter, job)?;
+    let media_id = media.id.clone();
+    let area = plotter
+        .cutting_area(&media_id)
+        .ok_or_else(|| CommandError::Failed("the mat has no cutting area".into()))?;
     let names: std::collections::BTreeMap<ObjectId, &str> =
         objects.iter().map(|o| (o.id, o.name.as_str())).collect();
 
-    let mut warnings = Vec::new();
+    let mut warnings: Vec<String> = mat_warning.into_iter().collect();
     let mut placed = Vec::new();
     let mut labels = std::collections::BTreeMap::new();
     for o in objects {
@@ -301,7 +300,7 @@ pub fn build_input(input: &JobInput) -> Result<JobResult, CommandError> {
         force: job.force.unwrap_or(material.force),
         track_enhancing: material.track_enhancing && plotter.capabilities.track_enhancing,
     };
-    let emitted = emit_job(&paths, plotter, &job.media_id, &settings).map_err(emit_error)?;
+    let emitted = emit_job(&paths, plotter, &media_id, &settings).map_err(emit_error)?;
     Ok(JobResult {
         plan: cut_plan,
         job: emitted,

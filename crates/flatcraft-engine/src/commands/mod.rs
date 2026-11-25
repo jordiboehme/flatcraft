@@ -9,9 +9,9 @@ pub mod project;
 pub mod sources;
 pub mod tools;
 
-use flatcraft_core::document::{Document, Object, ObjectId};
+use flatcraft_core::document::{Document, JobSettings, Object, ObjectId};
 use flatcraft_core::geometry::bounds;
-use flatcraft_device::ProfileError;
+use flatcraft_device::{Media, PlotterProfile, ProfileError};
 use kurbo::{Point, Rect, Vec2};
 use serde::de::DeserializeOwned;
 
@@ -138,16 +138,38 @@ pub(crate) fn normalize_deg(deg: f64) -> f64 {
     if r >= 360.0 { 0.0 } else { r }
 }
 
-/// The cutting area of the active document's plotter and media.
+/// The cutting area of the active document's plotter and media (the
+/// plotter's first mat when the document's mat is gone, see
+/// [`effective_media`]).
 pub(crate) fn cutting_area(s: &Session) -> Result<Rect, CommandError> {
     let job = &s.doc().document.job;
     let plotter = s.profiles.plotter(&job.plotter_id).map_err(profile_error)?;
-    plotter.cutting_area(&job.media_id).ok_or_else(|| {
+    let (media, _) = effective_media(&plotter, job)?;
+    plotter
+        .cutting_area(&media.id)
+        .ok_or_else(|| CommandError::Failed("the mat has no cutting area".into()))
+}
+
+/// The mat a job uses: the document's mat, or the plotter's first mat when
+/// the plotter no longer lists it (hidden or deleted), with the warning
+/// that says so.
+pub fn effective_media<'a>(
+    plotter: &'a PlotterProfile,
+    job: &JobSettings,
+) -> Result<(&'a Media, Option<String>), CommandError> {
+    let (media, fell_back) = plotter.media_or_first(&job.media_id).ok_or_else(|| {
         CommandError::NotFound(format!(
-            "media '{}' is not defined for plotter '{}'",
+            "media '{}' is not defined for plotter '{}', and the plotter has no mat",
             job.media_id, job.plotter_id
         ))
-    })
+    })?;
+    let warning = fell_back.then(|| {
+        format!(
+            "The mat '{}' is not available on this plotter (hidden or deleted), so FlatCraft uses '{}'. Pick a mat in the job settings.",
+            job.media_id, media.name
+        )
+    });
+    Ok((media, warning))
 }
 
 pub(crate) fn profile_error(e: ProfileError) -> CommandError {

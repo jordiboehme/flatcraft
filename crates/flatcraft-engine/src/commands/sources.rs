@@ -580,17 +580,34 @@ command!(
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RelinkParams {
-    /// Id of the object to point to another file.
-    pub id: u64,
+    /// Id of the object to point to another file. Give id and path, or items.
+    pub id: Option<u64>,
     /// The file's new location. It must exist and be of the object's kind: .svg or .svgz for SVG objects, .png, .jpg, .jpeg, .webp or .gif for traced images.
+    pub path: Option<PathBuf>,
+    /// Several objects to relink in one undo step, for example the also_found list of an earlier relink. An item that fails is listed in failed and changes nothing; the others are still relinked.
+    #[serde(default)]
+    pub items: Vec<RelinkItem>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RelinkItem {
+    /// Id of the object.
+    pub id: u64,
+    /// The file's new location, of the object's kind.
     pub path: PathBuf,
 }
 
-fn run_relink(s: &mut Session, p: RelinkParams, _: Origin) -> Result<Value, CommandError> {
-    let id = ObjectId(p.id);
+/// Points one object at `path` and reloads it. A failure changes nothing.
+fn relink_one(
+    s: &mut Session,
+    id: ObjectId,
+    path: &Path,
+    warnings: &mut Vec<String>,
+) -> Result<bool, CommandError> {
     check_exists(&s.doc().document, id)?;
-    let kind = file_kind(&p.path)?;
-    let path = absolute(&p.path);
+    let kind = file_kind(path)?;
+    let path = absolute(path);
     let o = s.doc().document.get(id).expect("checked above");
     match (&o.source, kind) {
         (Source::Svg { .. }, FileKind::Raster) => {
@@ -610,7 +627,8 @@ fn run_relink(s: &mut Session, p: RelinkParams, _: Origin) -> Result<Value, Comm
     if !path.is_file() {
         return Err(CommandError::NotFound(format!("file {}", path.display())));
     }
-    if o.link.is_none() {
+    let before = o.link.clone();
+    if before.is_none() {
         // Linking an unlinked object; `reload_one` fills in the rest.
         let o = s.doc_mut().document.get_mut(id).expect("checked above");
         o.link = Some(SourceLink {
@@ -621,25 +639,82 @@ fn run_relink(s: &mut Session, p: RelinkParams, _: Origin) -> Result<Value, Comm
             anchor_dir: None,
         });
     }
-    let mut warnings = Vec::new();
-    let (mut reloaded, mut unchanged) = (vec![], vec![]);
-    match reload_one(s, id, Some(path.clone()), &mut warnings) {
-        Outcome::Reloaded => reloaded.push(id),
-        Outcome::Unchanged(_) => unchanged.push(id),
-        Outcome::Missing => {
-            return Err(CommandError::NotFound(format!("file {}", path.display())));
+    let mut own = Vec::new();
+    let outcome = reload_one(s, id, Some(path.clone()), &mut own);
+    let result = match outcome {
+        Outcome::Reloaded => Ok(true),
+        Outcome::Unchanged(_) => Ok(false),
+        Outcome::Missing => Err(CommandError::NotFound(format!("file {}", path.display()))),
+        Outcome::Failed | Outcome::NoLink => Err(CommandError::Failed(own.join("; "))),
+    };
+    if result.is_err() {
+        // `reload_one` changes nothing when it fails, but the link above.
+        if let Some(o) = s.doc_mut().document.get_mut(id) {
+            o.link = before;
         }
-        Outcome::Failed | Outcome::NoLink => {
-            return Err(CommandError::Failed(warnings.join("; ")));
+    } else {
+        warnings.extend(own);
+    }
+    result
+}
+
+fn run_relink(s: &mut Session, p: RelinkParams, _: Origin) -> Result<Value, CommandError> {
+    let items: Vec<(ObjectId, PathBuf)> = match (p.id, p.path, p.items.is_empty()) {
+        (Some(id), Some(path), true) => vec![(ObjectId(id), path)],
+        (None, None, false) => p
+            .items
+            .into_iter()
+            .map(|i| (ObjectId(i.id), i.path))
+            .collect(),
+        _ => {
+            return Err(CommandError::InvalidParams(
+                "give id and path, or items".into(),
+            ));
+        }
+    };
+    let single = items.len() == 1;
+    let mut warnings = Vec::new();
+    let (mut reloaded, mut unchanged, mut failed) = (vec![], vec![], vec![]);
+    let mut last_error = None;
+    for (id, path) in &items {
+        match relink_one(s, *id, path, &mut warnings) {
+            Ok(true) => reloaded.push(*id),
+            Ok(false) => unchanged.push(*id),
+            Err(e) if single => return Err(e),
+            Err(e) => {
+                failed.push(json!({ "id": id.0, "path": path, "error": e.to_string() }));
+                last_error = Some(e);
+            }
         }
     }
-    let also_found = siblings(s, id, &path);
-    Ok(json!({
+    if reloaded.is_empty() && unchanged.is_empty() {
+        return Err(last_error.unwrap_or_else(|| CommandError::InvalidParams("no items".into())));
+    }
+    let done: Vec<ObjectId> = reloaded.iter().chain(&unchanged).copied().collect();
+    let mut also_found: Vec<Value> = Vec::new();
+    for (id, path) in &items {
+        if done.contains(id) {
+            for found in siblings(s, *id, &absolute(path)) {
+                let known = also_found.iter().any(|f| f["id"] == found["id"]);
+                let relinked = found["id"]
+                    .as_u64()
+                    .is_some_and(|i| done.contains(&ObjectId(i)));
+                if !known && !relinked {
+                    also_found.push(found);
+                }
+            }
+        }
+    }
+    let mut out = json!({
         "reloaded": ids_json(&reloaded),
         "unchanged": ids_json(&unchanged),
         "also_found": also_found,
         "warnings": warnings,
-    }))
+    });
+    if !single {
+        out["failed"] = Value::Array(failed);
+    }
+    Ok(out)
 }
 
 /// Other objects whose file is missing but whose file name exists in the
@@ -674,7 +749,7 @@ command!(
     mutates: true,
     params: RelinkParams,
     run: run_relink,
-    description: "Points an object's link to a file at a new location (after it was moved or renamed) and reloads it from there, keeping position, scale, rotation, mirror, cut options, name and visibility. An unlinked object gets a link. The file must exist and match the object's kind (.svg/.svgz for SVG objects, .png/.jpg/.jpeg/.webp/.gif for traced images); a file that cannot be read or parsed fails the call and changes nothing. One undo step. Returns {reloaded: [id] (the content changed), unchanged: [id] (same content, only the link moved), also_found: [{id, path}] (other objects whose file is missing but whose file name exists in the new folder; relink them too), warnings: [text]}.",
+    description: "Points an object's link to a file at a new location (after it was moved or renamed) and reloads it from there, keeping position, scale, rotation, mirror, cut options, name and visibility. An unlinked object gets a link. The file must exist and match the object's kind (.svg/.svgz for SVG objects, .png/.jpg/.jpeg/.webp/.gif for traced images); a file that cannot be read or parsed fails the call and changes nothing. One undo step. items: [{id, path}] instead of id and path relinks several objects in one undo step (for example the also_found list); an item that fails changes nothing and is listed in failed: [{id, path, error}], the others are still relinked, and the call fails only when every item failed. Returns {reloaded: [id] (the content changed), unchanged: [id] (same content, only the link moved), also_found: [{id, path}] (other objects whose file is missing but whose file name exists in the new folder; relink them too, in one call with items), warnings: [text]}, plus failed with items.",
 );
 
 // ---------------------------------------------------------------- unlink

@@ -7,9 +7,6 @@ use serde_json::{Value, json};
 use super::{NoParams, command, profile_error};
 use crate::session::{CommandError, Origin, Session};
 
-/// Largest accepted pass count.
-const MAX_PASSES: u32 = 20;
-
 fn info_json(i: &PresetInfo) -> Value {
     json!({ "id": i.id, "name": i.name, "system": i.system, "inherits": i.inherits })
 }
@@ -63,7 +60,7 @@ command!(
     mutates: false,
     params: IdParams,
     run: run_get,
-    description: "Returns one plotter or material preset with inheritance resolved, as JSON with an extra field kind (plotter or material). Plotters list their media (mm; each with kind, physical size, printed grid origin and size, calibrated), speed_range and force_range; materials list speed, force, passes, overcut_mm and per-plotter overrides.",
+    description: "Returns one plotter or material preset with inheritance resolved, as JSON with an extra field kind (plotter or material). Plotters list their media (mm; each with kind, physical size, printed grid origin and size, calibrated), speed_range, force_range and passes_range; materials list speed, force, passes, overcut_mm and per-plotter overrides.",
 );
 
 fn run_set_plotter(s: &mut Session, p: IdParams, _: Origin) -> Result<Value, CommandError> {
@@ -85,6 +82,11 @@ fn run_set_plotter(s: &mut Session, p: IdParams, _: Origin) -> Result<Value, Com
         job.force = None;
         cleared.push("force");
     }
+    let [lo, hi] = plotter.passes_range;
+    if job.passes.is_some_and(|v| v < lo.max(1) || v > hi) {
+        job.passes = None;
+        cleared.push("passes");
+    }
     job.plotter_id = plotter.id.clone();
     Ok(json!({
         "plotter_id": job.plotter_id,
@@ -100,7 +102,7 @@ command!(
     mutates: true,
     params: IdParams,
     run: run_set_plotter,
-    description: "Sets the plotter preset of the active document. If the current media is not available on it, the plotter's first media is used. Speed or force overrides outside the new plotter's ranges are cleared. Returns {plotter_id, media_id, cleared_overrides: [name]}.",
+    description: "Sets the plotter preset of the active document. If the current media is not available on it, the plotter's first media is used. Speed, force or passes overrides outside the new plotter's ranges are cleared. Returns {plotter_id, media_id, cleared_overrides: [name]}.",
 );
 
 fn run_set_material(s: &mut Session, p: IdParams, _: Origin) -> Result<Value, CommandError> {
@@ -154,15 +156,28 @@ command!(
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OverridesParams {
-    /// Speed override; must be inside the plotter's speed_range.
-    pub speed: Option<u32>,
-    /// Force (blade pressure) override; must be inside the plotter's force_range.
-    pub force: Option<u32>,
-    /// Number of passes, 1 to 20.
-    pub passes: Option<u32>,
+    /// Speed override; must be inside the plotter's speed_range. null removes the override, so the material value applies again.
+    #[serde(default, deserialize_with = "present")]
+    pub speed: Option<Option<u32>>,
+    /// Force (blade pressure) override; must be inside the plotter's force_range. null removes the override.
+    #[serde(default, deserialize_with = "present")]
+    pub force: Option<Option<u32>>,
+    /// Number of passes; must be inside the plotter's passes_range (1 to 20 by default). null removes the override.
+    #[serde(default, deserialize_with = "present")]
+    pub passes: Option<Option<u32>>,
     /// First remove all overrides, so the material values apply again (default false).
     #[serde(default)]
     pub clear: bool,
+}
+
+/// A field that is present: `Some(None)` for `null`, `Some(Some(v))` for a
+/// value. A missing field stays `None` (`#[serde(default)]`).
+fn present<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
 }
 
 fn check_range(name: &str, v: u32, r: [u8; 2]) -> Result<u8, CommandError> {
@@ -185,17 +200,25 @@ fn run_set_overrides(
     let plotter = s.profiles.plotter(&plotter_id).map_err(profile_error)?;
     let speed = p
         .speed
-        .map(|v| check_range("speed", v, plotter.speed_range))
+        .map(|v| {
+            v.map(|v| check_range("speed", v, plotter.speed_range))
+                .transpose()
+        })
         .transpose()?;
     let force = p
         .force
-        .map(|v| check_range("force", v, plotter.force_range))
+        .map(|v| {
+            v.map(|v| check_range("force", v, plotter.force_range))
+                .transpose()
+        })
         .transpose()?;
-    if let Some(n) = p.passes
-        && !(1..=MAX_PASSES).contains(&n)
+    let [lo, hi] = plotter.passes_range;
+    if let Some(Some(n)) = p.passes
+        && !(lo.max(1)..=hi).contains(&n)
     {
         return Err(CommandError::InvalidParams(format!(
-            "passes {n} is outside 1 to {MAX_PASSES}"
+            "passes {n} is outside the plotter's range {} to {hi}",
+            lo.max(1)
         )));
     }
     let job = &mut s.doc_mut().document.job;
@@ -204,14 +227,14 @@ fn run_set_overrides(
         job.force = None;
         job.passes = None;
     }
-    if speed.is_some() {
-        job.speed = speed;
+    if let Some(v) = speed {
+        job.speed = v;
     }
-    if force.is_some() {
-        job.force = force;
+    if let Some(v) = force {
+        job.force = v;
     }
-    if p.passes.is_some() {
-        job.passes = p.passes;
+    if let Some(v) = p.passes {
+        job.passes = v;
     }
     Ok(json!({ "speed": job.speed, "force": job.force, "passes": job.passes }))
 }
@@ -223,5 +246,5 @@ command!(
     mutates: true,
     params: OverridesParams,
     run: run_set_overrides,
-    description: "Overrides the material's speed, force or passes for the active document. Values are checked against the plotter's speed_range and force_range (Cameo 2: speed 1-10, force 1-33); passes 1-20. Fields you leave out stay as they are; clear: true first removes all overrides. Returns {speed, force, passes}, where null means the material value.",
+    description: "Overrides the material's speed, force or passes for the active document. Values are checked against the plotter's speed_range, force_range and passes_range (Cameo 2: speed 1-10, force 1-33, passes 1-20). Fields you leave out stay as they are; a field set to null removes that override, so the material value applies again; clear: true first removes all overrides. Returns {speed, force, passes}, where null means the material value.",
 );

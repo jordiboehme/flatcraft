@@ -1342,3 +1342,235 @@ fn raster_import_reports_removed_specks() {
     assert_eq!(r["despeckled"], 3, "{r}");
     assert_eq!(r["dropped_small"], 0, "{r}");
 }
+
+#[test]
+fn a_command_that_changes_nothing_records_no_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 20.0, 20.0);
+    run(
+        &mut s,
+        "project.save",
+        json!({ "path": dir.path().join("p.flatcraft") }),
+    );
+    let undo = s.doc().undo.undo_len();
+    let revision = s.doc().revision();
+    for (command, params) in [
+        (
+            "object.move",
+            json!({ "ids": [id], "dx_mm": 0.0, "dy_mm": 0.0 }),
+        ),
+        (
+            "object.set_visible",
+            json!({ "ids": [id], "visible": true }),
+        ),
+        ("object.scale", json!({ "ids": [id], "factor": 1.0 })),
+        (
+            "job.set_material",
+            json!({ "id": s.doc().document.job.material_id.clone() }),
+        ),
+    ] {
+        run(&mut s, command, params);
+        assert_eq!(
+            s.doc().undo.undo_len(),
+            undo,
+            "{command} recorded an undo step"
+        );
+        assert!(!s.doc().dirty, "{command} marked the document as changed");
+        assert_eq!(
+            s.doc().revision(),
+            revision,
+            "{command} raised the revision"
+        );
+    }
+    run(&mut s, "object.move", json!({ "ids": [id], "dx_mm": 1.0 }));
+    assert_eq!(s.doc().undo.undo_len(), undo + 1);
+    assert!(s.doc().dirty);
+}
+
+#[test]
+fn null_clears_one_override() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    run(
+        &mut s,
+        "job.set_overrides",
+        json!({ "speed": 5, "force": 10, "passes": 2 }),
+    );
+    let r = run(&mut s, "job.set_overrides", json!({ "force": null }));
+    assert_eq!(r, json!({ "speed": 5, "force": null, "passes": 2 }));
+    let job = &s.doc().document.job;
+    assert_eq!((job.speed, job.force, job.passes), (Some(5), None, Some(2)));
+    // A missing field stays as it is.
+    let r = run(&mut s, "job.set_overrides", json!({ "passes": 3 }));
+    assert_eq!(r, json!({ "speed": 5, "force": null, "passes": 3 }));
+}
+
+#[test]
+fn passes_follow_the_plotter_range() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("plotters")).unwrap();
+    std::fs::write(
+        dir.path().join("plotters/many-passes.toml"),
+        "id = \"many-passes\"\nname = \"Many passes\"\ninherits = \"file-output-gpgl-cameo2\"\npasses_range = [1, 30]\n",
+    )
+    .unwrap();
+    let mut s = session(&dir);
+    let r = run(&mut s, "job.set_overrides", json!({ "passes": 20 }));
+    assert_eq!(r["passes"], 20);
+    let e = s
+        .execute("job.set_overrides", json!({ "passes": 21 }), Origin::User)
+        .unwrap_err();
+    assert!(e.to_string().contains("1 to 20"), "{e}");
+    run(&mut s, "job.set_plotter", json!({ "id": "many-passes" }));
+    let r = run(&mut s, "job.set_overrides", json!({ "passes": 25 }));
+    assert_eq!(r["passes"], 25);
+    // Back on a plotter with fewer passes, the override is cleared.
+    let r = run(
+        &mut s,
+        "job.set_plotter",
+        json!({ "id": "file-output-gpgl-cameo2" }),
+    );
+    assert_eq!(r["cleared_overrides"], json!(["passes"]));
+    assert_eq!(s.doc().document.job.passes, None);
+}
+
+#[test]
+fn a_missing_mat_falls_back_to_the_first_one_with_a_warning() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    import(&mut s, 20.0, 20.0);
+    // An edited project file, or a mat hidden in the Profiles window.
+    s.doc_mut().document.job.media_id = "gone".into();
+    let st = run(&mut s, "document.state", json!({}));
+    assert_eq!(st["job"]["media_id"], "gone");
+    assert_eq!(st["mat"]["id"], "mat-12x12", "{st}");
+    assert!(st["cutting_area_mm"].is_object(), "{st}");
+    let warnings = st["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{st}");
+    let w = warnings[0].as_str().unwrap();
+    assert!(w.contains("'gone'") && w.contains("Mat 12x12"), "{w}");
+    let r = run(&mut s, "job.preview", json!({}));
+    assert!(
+        r["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x.as_str() == Some(w)),
+        "{r}"
+    );
+    run(
+        &mut s,
+        "arrange.align",
+        json!({ "ids": [], "mode": "left", "relative_to": "cutting_area" }),
+    )
+    .as_object()
+    .unwrap();
+}
+
+#[test]
+fn a_headless_session_rereads_changed_preferences() {
+    use std::time::{Duration, Instant, SystemTime};
+    let dir = tempfile::tempdir().unwrap();
+    let write = |text: &str, age: u64| {
+        let path = dir.path().join(flatcraft_engine::prefs::FILE_NAME);
+        std::fs::write(&path, text).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(SystemTime::now() + Duration::from_secs(age))
+            .unwrap();
+    };
+    write("allow_agent_cuts = false\n", 0);
+    let mut s = session(&dir);
+    s.watch_prefs_file();
+    let t0 = Instant::now();
+    assert!(!s.refresh_prefs(t0), "nothing changed");
+    write("allow_agent_cuts = true\n", 60);
+    assert!(
+        !s.refresh_prefs(t0 + Duration::from_millis(500)),
+        "checked at most once per second"
+    );
+    assert!(!s.prefs.allow_agent_cuts);
+    assert!(s.refresh_prefs(t0 + Duration::from_millis(1100)));
+    assert!(s.prefs.allow_agent_cuts);
+    // A broken file keeps what was read last, not the defaults.
+    write("allow_agent_cuts = [", 120);
+    assert!(!s.refresh_prefs(t0 + Duration::from_millis(2200)));
+    assert!(s.prefs.allow_agent_cuts);
+}
+
+fn state_bounds(s: &mut Session, id: u64) -> Rect {
+    let st = run(s, "document.state", json!({}));
+    let o = st["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["id"] == id)
+        .unwrap()["bounds_mm"]
+        .clone();
+    let f = |k: &str| o[k].as_f64().unwrap();
+    Rect::new(f("x0"), f("y0"), f("x1"), f("y1"))
+}
+
+#[test]
+fn group_scale_keeps_the_layout_about_one_anchor() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = import(&mut s, 10.0, 10.0);
+    let b = import(&mut s, 20.0, 10.0);
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [b], "dx_mm": 30.0, "dy_mm": 15.0 }),
+    );
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [b], "degrees": 90.0 }),
+    );
+    let (ra, rb) = (state_bounds(&mut s, a), state_bounds(&mut s, b));
+    let group = ra.union(rb);
+    let undo = s.doc().undo.undo_len();
+    run(
+        &mut s,
+        "object.scale",
+        json!({ "ids": [a, b], "factor": 2.0, "anchor": "top_left", "group": true }),
+    );
+    assert_eq!(s.doc().undo.undo_len(), undo + 1, "one undo step");
+    let anchor = Point::new(group.x0, group.y0);
+    let expect = |r: Rect| {
+        let p0 = anchor + (Point::new(r.x0, r.y0) - anchor) * 2.0;
+        let p1 = anchor + (Point::new(r.x1, r.y1) - anchor) * 2.0;
+        Rect::from_points(p0, p1)
+    };
+    for (id, before) in [(a, ra), (b, rb)] {
+        let now = state_bounds(&mut s, id);
+        let want = expect(before);
+        for (x, y) in [
+            (now.x0, want.x0),
+            (now.y0, want.y0),
+            (now.x1, want.x1),
+            (now.y1, want.y1),
+        ] {
+            assert!(close(x, y), "object {id}: {now:?} != {want:?}");
+        }
+    }
+    // Width and height set the group box.
+    run(
+        &mut s,
+        "object.scale",
+        json!({ "ids": [a, b], "width_mm": 100.0, "anchor": "center", "group": true }),
+    );
+    let group2 = state_bounds(&mut s, a).union(state_bounds(&mut s, b));
+    assert!(close(group2.width(), 100.0), "{group2:?}");
+    let e = s
+        .execute(
+            "object.scale",
+            json!({ "ids": [a, b], "width_mm": 50.0, "keep_aspect": false, "group": true }),
+            Origin::User,
+        )
+        .unwrap_err();
+    assert!(matches!(e, CommandError::InvalidParams(_)), "{e}");
+}

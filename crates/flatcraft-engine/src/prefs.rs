@@ -53,25 +53,29 @@ impl Preferences {
     /// Loads the preferences. A missing file gives the defaults; a broken file
     /// gives the defaults and a warning on stderr.
     pub fn load(config_dir: &Path) -> Self {
+        Self::read(config_dir).unwrap_or_else(|e| {
+            eprintln!("warning: {e}. Using default preferences.");
+            Self::default()
+        })
+    }
+
+    /// Reads the preferences. A missing file gives the defaults; a file that
+    /// cannot be read or parsed is an error that names it.
+    pub fn read(config_dir: &Path) -> Result<Self, String> {
         let path = config_dir.join(FILE_NAME);
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Self::default(),
-            Err(e) => {
-                eprintln!(
-                    "warning: cannot read {}: {e}. Using default preferences.",
-                    path.display()
-                );
-                return Self::default();
-            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
         };
-        toml::from_str(&text).unwrap_or_else(|e| {
-            eprintln!(
-                "warning: {} is broken: {e}. Using default preferences.",
-                path.display()
-            );
-            Self::default()
-        })
+        toml::from_str(&text).map_err(|e| format!("{} is broken: {e}", path.display()))
+    }
+
+    /// Modification time of the preferences file, `None` when it is missing.
+    pub fn modified(config_dir: &Path) -> Option<std::time::SystemTime> {
+        std::fs::metadata(config_dir.join(FILE_NAME))
+            .and_then(|m| m.modified())
+            .ok()
     }
 
     /// Writes the preferences crash-safely (temp file, sync, rename).

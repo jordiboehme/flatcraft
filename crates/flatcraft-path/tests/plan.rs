@@ -1,6 +1,6 @@
 use flatcraft_core::document::ObjectId;
 use flatcraft_path::clean::length;
-use flatcraft_path::{PathRef, PipelineSettings, PlacedPath, PlanError, plan};
+use flatcraft_path::{PathRef, PipelineSettings, PlacedPath, PlanError, SettingsField, plan};
 use kurbo::{BezPath, Circle, Point, Rect, Shape};
 use proptest::prelude::*;
 
@@ -264,7 +264,7 @@ fn zero_length_ring_is_dropped() {
 #[test]
 fn invalid_settings_message_is_readable() {
     let msg = PlanError::InvalidSettings {
-        field: "flatten_tolerance_mm",
+        field: SettingsField::FlattenTolerance,
         value: f64::NAN,
     }
     .to_string();
@@ -273,10 +273,10 @@ fn invalid_settings_message_is_readable() {
         "The flatten tolerance must be a number of at least 0.001 mm (got NaN)."
     );
     for (field, label) in [
-        ("join_tolerance_mm", "join tolerance"),
-        ("overcut_mm", "overcut"),
-        ("passes", "number of passes"),
-        ("cutting_area", "cutting area"),
+        (SettingsField::JoinTolerance, "join tolerance"),
+        (SettingsField::Overcut, "overcut"),
+        (SettingsField::Passes, "number of passes"),
+        (SettingsField::CuttingArea, "cutting area"),
     ] {
         let msg = PlanError::InvalidSettings { field, value: -1.0 }.to_string();
         assert!(msg.starts_with(&format!("The {label} must")), "{msg}");
@@ -284,7 +284,7 @@ fn invalid_settings_message_is_readable() {
     }
 }
 
-fn invalid(s: PipelineSettings, field: &str) {
+fn invalid(s: PipelineSettings, field: SettingsField) {
     let out = plan(&[placed(1, rect_path(10.0, 10.0, 10.0, 10.0))], &s);
     match out {
         Err(PlanError::InvalidSettings { field: f, .. }) => {
@@ -298,7 +298,7 @@ fn invalid(s: PipelineSettings, field: &str) {
                 .contains('\u{2014}')
             );
         }
-        other => panic!("expected InvalidSettings({field}), got {other:?}"),
+        other => panic!("expected InvalidSettings({field:?}), got {other:?}"),
     }
 }
 
@@ -306,7 +306,7 @@ fn invalid(s: PipelineSettings, field: &str) {
 fn zero_flatten_tolerance_is_refused() {
     let mut s = settings();
     s.flatten_tolerance_mm = 0.0;
-    invalid(s, "flatten_tolerance_mm");
+    invalid(s, SettingsField::FlattenTolerance);
 }
 
 #[test]
@@ -314,7 +314,7 @@ fn bad_flatten_tolerances_are_refused() {
     for v in [-0.01, f64::NAN, f64::INFINITY, 0.0005] {
         let mut s = settings();
         s.flatten_tolerance_mm = v;
-        invalid(s, "flatten_tolerance_mm");
+        invalid(s, SettingsField::FlattenTolerance);
     }
 }
 
@@ -323,7 +323,7 @@ fn bad_join_tolerances_are_refused() {
     for v in [0.0, -1.0, f64::NAN, f64::INFINITY, 0.0005] {
         let mut s = settings();
         s.join_tolerance_mm = v;
-        invalid(s, "join_tolerance_mm");
+        invalid(s, SettingsField::JoinTolerance);
     }
 }
 
@@ -340,7 +340,7 @@ fn bad_overcut_is_refused() {
     for v in [-0.1, f64::NAN, f64::INFINITY] {
         let mut s = settings();
         s.overcut_mm = v;
-        invalid(s, "overcut_mm");
+        invalid(s, SettingsField::Overcut);
     }
 }
 
@@ -348,7 +348,7 @@ fn bad_overcut_is_refused() {
 fn zero_passes_is_refused() {
     let mut s = settings();
     s.passes = 0;
-    invalid(s, "passes");
+    invalid(s, SettingsField::Passes);
 }
 
 #[test]
@@ -361,7 +361,7 @@ fn bad_cutting_area_is_refused() {
     ] {
         let mut s = settings();
         s.cutting_area = r;
-        invalid(s, "cutting_area");
+        invalid(s, SettingsField::CuttingArea);
     }
 }
 

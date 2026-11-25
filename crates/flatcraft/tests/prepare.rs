@@ -153,10 +153,18 @@ fn settings_override_marks_modified() {
     h.run();
     assert_eq!(s.lock().unwrap().doc().document.job.speed, Some(3));
     h.get_by_label("Speed (modified)");
-    // The reset button puts the material value back.
+    s.lock()
+        .unwrap()
+        .execute("job.set_overrides", json!({ "force": 9 }), Origin::User)
+        .unwrap();
+    h.run();
+    let undo = undo_len(&s);
+    // The reset button puts the material value back, for speed only.
     h.get_by_role_and_label(Role::Button, "Reset speed").click();
     h.run();
-    assert_eq!(s.lock().unwrap().doc().document.job.speed, None);
+    let job = s.lock().unwrap().doc().document.job.clone();
+    assert_eq!((job.speed, job.force), (None, Some(9)));
+    assert_eq!(undo_len(&s), undo + 1);
     assert!(h.query_by_label("Speed (modified)").is_none());
 }
 
@@ -353,8 +361,10 @@ fn missing_source_shows_reconnect_and_relink_works() {
     std::fs::create_dir(&old).unwrap();
     write_square(&old.join("a.svg"), 20.0);
     write_square(&old.join("b.svg"), 25.0);
+    write_square(&old.join("c.svg"), 30.0);
     let a = import_file(&s, &old.join("a.svg"));
     let b = import_file(&s, &old.join("b.svg"));
+    let c = import_file(&s, &old.join("c.svg"));
     s.lock()
         .unwrap()
         .execute("object.select", json!({ "ids": [a] }), Origin::User)
@@ -367,8 +377,8 @@ fn missing_source_shows_reconnect_and_relink_works() {
     let mut h = harness_with(&dir, s.clone(), move |app| app.with_file_picker(p));
     to_prepare(&mut h);
     focus_window(&mut h);
-    h.get_by_label("2 source files not found");
-    assert_eq!(h.query_all_by_label("Source file not found").count(), 2);
+    h.get_by_label("3 source files not found");
+    assert_eq!(h.query_all_by_label("Source file not found").count(), 3);
     // The details of the selected object show its last known path.
     h.get_by_label(&old.join("a.svg").display().to_string());
     h.get_by_role_and_label(Role::Button, "Reconnect...")
@@ -389,12 +399,16 @@ fn missing_source_shows_reconnect_and_relink_works() {
             .clone()
     };
     assert_eq!(link(a), new.join("a.svg"));
-    // b's file is in the same new folder: one click reconnects it too.
-    h.get_by_label("1 more file found in that folder");
+    // b's and c's files are in the same new folder: one click, one undo
+    // step reconnects them too.
+    h.get_by_label("2 more files found in that folder");
+    let undo = undo_len(&s);
     h.get_by_role_and_label(Role::Button, "Reconnect them too")
         .click();
     h.run();
     assert_eq!(link(b), new.join("b.svg"));
+    assert_eq!(link(c), new.join("c.svg"));
+    assert_eq!(undo_len(&s), undo + 1);
     assert!(h.query_by_label_contains("not found").is_none());
 }
 
@@ -620,6 +634,10 @@ fn trace_button_opens_the_dialog_and_apply_retraces() {
     h.run_steps(3);
     assert!(app(&h).ui.trace.is_some());
     assert_eq!(undo_len(&s), before);
+    // Settings that change the result: an Apply that changes nothing
+    // records no undo step.
+    h.get_by_label("Invert").click();
+    h.run_steps(3);
     h.get_by_role_and_label(Role::Button, "Apply").click();
     h.run_steps(3);
     assert!(app(&h).ui.toasts.is_empty(), "{:?}", app(&h).ui.toasts);
@@ -827,6 +845,75 @@ fn huge_shapes_are_built_off_the_ui_thread() {
     assert_eq!(app(&h).ui.prepare.cache.building(), 0);
     let shape = app(&h).ui.prepare.cache.shape(doc, id).unwrap();
     assert!(!shape.lines.is_empty());
+}
+
+#[test]
+fn a_missing_mat_still_shows_a_cutting_area() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    s.lock().unwrap().doc_mut().document.job.media_id = "gone".into();
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    h.get_by_label_contains("The mat 'gone' is not available");
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &egui::Context::default());
+    assert_eq!(snap.mat.as_ref().map(|m| m.id.as_str()), Some("mat-12x12"));
+    assert!(snap.area.is_some());
+}
+
+#[test]
+fn corner_drag_scales_a_multi_selection_as_a_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let b = import_square(&s);
+    {
+        let mut g = s.lock().unwrap();
+        g.execute(
+            "object.move",
+            json!({ "ids": [b], "dx_mm": 60.0, "dy_mm": 0.0 }),
+            Origin::User,
+        )
+        .unwrap();
+        g.execute("object.select", json!({ "ids": [a, b] }), Origin::User)
+            .unwrap();
+    }
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let f = |v: &Value, k: &str| v[k].as_f64().unwrap();
+    let (ba, bb) = (bounds(&s, a), bounds(&s, b));
+    let (x0, y0) = (f(&ba, "x0"), f(&ba, "y0"));
+    let (x1, y1) = (f(&bb, "x1"), f(&bb, "y1"));
+    let view = known_view(&mut h, kurbo::Point::new((x0 + x1) / 2.0, (y0 + y1) / 2.0));
+    let before = undo_len(&s);
+    // The bottom-right handle of the group box, out to twice its size.
+    let from = view.mm_to_screen(kurbo::Point::new(x1, y1));
+    let to = view.mm_to_screen(kurbo::Point::new(
+        x0 + 2.0 * (x1 - x0),
+        y0 + 2.0 * (y1 - y0),
+    ));
+    drag(&mut h, from, to);
+    assert_eq!(undo_len(&s), before + 1, "one undo step");
+    let near = |got: f64, want: f64| (got - want).abs() < 1e-3;
+    let (na, nb) = (bounds(&s, a), bounds(&s, b));
+    assert!(near(f(&na, "x0"), x0) && near(f(&na, "y0"), y0), "{na}");
+    // b keeps its place in the layout: twice as far from the anchor.
+    assert!(near(f(&nb, "x0"), x0 + 2.0 * (f(&bb, "x0") - x0)), "{nb}");
+    assert!(near(f(&nb, "x1"), x0 + 2.0 * (x1 - x0)), "{nb}");
+}
+
+#[test]
+fn settings_rows_have_one_accessible_node_each() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    for label in [
+        "Cut mode", "Strokes", "Plotter", "Mat", "Material", "Speed", "Force", "Passes",
+    ] {
+        assert_eq!(h.query_all_by_label(label).count(), 1, "{label}");
+    }
 }
 
 #[test]
