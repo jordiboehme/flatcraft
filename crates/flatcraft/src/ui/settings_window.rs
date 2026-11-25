@@ -961,6 +961,7 @@ fn sidebar(ui: &mut Ui, rect: Rect, st: &mut SettingsState, t: &Tokens) {
                     },
                     color,
                 );
+                super::groups::card(&resp, page.name(), page.purpose(), None, true);
                 if resp.clicked() {
                     st.page = page;
                     st.search.clear();
@@ -1198,7 +1199,7 @@ fn row_ui(
             t,
         );
         ui.vertical(|ui| {
-            ui.set_max_width((ui.available_width()).min(420.0));
+            ui.set_max_width(ui.available_width().min(520.0));
             control(ui)
         })
         .inner

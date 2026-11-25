@@ -939,7 +939,7 @@ fn plotter_form(ui: &mut Ui, d: &mut Draft<PlotterProfile>, highlight: &Highligh
                                 .unwrap_or_default();
                             let r = ui.add(
                                 egui::TextEdit::singleline(&mut text)
-                                    .hint_text("The App tab's folder"),
+                                    .hint_text("The General page's folder"),
                             );
                             if r.changed() {
                                 *directory = (!text.trim().is_empty()).then(|| text.into());
@@ -1285,7 +1285,13 @@ fn mats(
             ui.end_row();
         }
     };
-    ui.horizontal_top(|ui| {
+    // The drawing goes beside the fields when there is room, else under them.
+    let layout = if ui.available_width() >= 540.0 {
+        egui::Layout::left_to_right(egui::Align::Min)
+    } else {
+        egui::Layout::top_down(egui::Align::Min)
+    };
+    ui.with_layout(layout, |ui| {
         ui.add_enabled_ui(!system, |ui| {
             egui::Grid::new("flatcraft-profiles-mat")
                 .num_columns(2)
