@@ -405,3 +405,99 @@ fn archive_write_and_read_round_trip() {
     assert_eq!(back.sources, sources);
     assert_eq!(back.thumbnail.as_deref(), Some(PNG));
 }
+
+#[test]
+fn duplicate_entry_names_are_refused() {
+    let archive = archive_of(&one_object());
+    let (name, bytes) = archive.sources.iter().next().unwrap();
+    // The writer refuses a second entry of the same name, so the zip gets
+    // one of the same length that is renamed in its headers afterwards.
+    let other = name.replace(".svg", ".svx");
+    let mut zip = zip_with(&other, bytes);
+    let at: Vec<usize> = (0..zip.len() - other.len())
+        .filter(|&i| zip[i..].starts_with(other.as_bytes()))
+        .collect();
+    assert_eq!(at.len(), 2, "the local and the central header");
+    for i in at {
+        zip[i..i + name.len()].copy_from_slice(name.as_bytes());
+    }
+    let e = refused(&zip);
+    assert!(matches!(e, ProjectError::Damaged(_)), "{e:?}");
+    assert!(e.to_string().contains("same name"), "{e}");
+}
+
+#[test]
+fn only_format_version_1_is_read() {
+    for (version, found) in [
+        (serde_json::json!(0), "0"),
+        (serde_json::json!("1"), "\"1\""),
+        (serde_json::json!(-1), "-1"),
+        (serde_json::Value::Null, "null"),
+    ] {
+        let mut archive = archive_of(&one_object());
+        archive.project["format_version"] = version;
+        let e = refused(&archive.to_bytes().unwrap());
+        assert!(matches!(e, ProjectError::UnknownFormat { .. }), "{e:?}");
+        let text = e.to_string();
+        assert!(
+            text.contains(&format!("format version is {found}")) && text.contains("version 1"),
+            "{text}"
+        );
+    }
+    let mut archive = archive_of(&one_object());
+    archive
+        .project
+        .as_object_mut()
+        .unwrap()
+        .remove("format_version");
+    let e = refused(&archive.to_bytes().unwrap());
+    assert!(e.to_string().contains("format version is missing"), "{e}");
+}
+
+/// Changes the sizes the central directory gives for `name` (both the
+/// packed and the unpacked size).
+fn patch_central_size(bytes: &mut [u8], name: &str, size: u32) {
+    let at = (0..bytes.len() - 46)
+        .find(|&i| {
+            bytes[i..i + 4] == *b"PK\x01\x02" && {
+                let n = u16::from_le_bytes([bytes[i + 28], bytes[i + 29]]) as usize;
+                bytes.get(i + 46..i + 46 + n) == Some(name.as_bytes())
+            }
+        })
+        .expect("the entry");
+    bytes[at + 20..at + 24].copy_from_slice(&size.to_le_bytes());
+    bytes[at + 24..at + 28].copy_from_slice(&size.to_le_bytes());
+}
+
+#[test]
+fn a_header_that_understates_the_size_is_a_damaged_file() {
+    let archive = archive_of(&one_object());
+    let mut bytes = zip_with("extra.txt", b"x");
+    let source = archive.sources.keys().next().unwrap().clone();
+    patch_central_size(&mut bytes, &source, 10);
+    let e = refused(&bytes);
+    assert!(matches!(e, ProjectError::Damaged(_)), "{e:?}");
+    let text = e.to_string();
+    assert!(text.contains("damaged"), "{text}");
+    assert!(!text.contains("read or write"), "no disk problem: {text}");
+}
+
+#[test]
+fn a_broken_compressed_stream_is_a_damaged_file() {
+    let mut doc = one_object();
+    doc.add(
+        "Long".into(),
+        svg("long.svg", &b"<svg>".repeat(2000)),
+        vec![],
+    );
+    let archive = project::to_archive(&doc, None).unwrap();
+    let mut bytes = archive.to_bytes().unwrap();
+    // Scramble the middle of project.json's deflate data (it follows the
+    // stored mimetype entry).
+    let start = 30 + 8 + project::MIMETYPE.len() + 30 + "project.json".len();
+    for b in &mut bytes[start + 4..start + 40] {
+        *b ^= 0x5a;
+    }
+    let e = refused(&bytes);
+    assert!(matches!(e, ProjectError::Damaged(_)), "{e:?}");
+}

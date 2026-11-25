@@ -285,14 +285,15 @@ pub type Thumbnailer = std::sync::Arc<
 >;
 
 /// The default [`Thumbnailer`]: the picture the project file carries
-/// (`thumbnail.png`, written by every save). A project file without one is
-/// loaded, rebuilt and drawn by the preview renderer the agents use
-/// (canvas view), as the save would have drawn it.
+/// (`thumbnail.png`, written by every save). A project file without one,
+/// or with one that does not decode, is loaded, rebuilt and drawn by the
+/// preview renderer the agents use (canvas view), as the save would have
+/// drawn it.
 pub fn render_project(
     profiles: &flatcraft_device::ProfileStore,
     path: &Path,
 ) -> Result<Vec<u8>, String> {
-    if let Some(png) = flatcraft_core::project::read_thumbnail(path).map_err(|e| e.to_string())? {
+    if let Some(png) = flatcraft_engine::thumbnails::embedded(path) {
         return Ok(png);
     }
     let doc = flatcraft_engine::commands::project::load_rebuilt(profiles, path)
@@ -306,9 +307,7 @@ fn render_sample(
     profiles: &flatcraft_device::ProfileStore,
     bytes: &[u8],
 ) -> Result<Vec<u8>, String> {
-    if let Some(png) =
-        flatcraft_core::project::thumbnail_from_bytes(bytes).map_err(|e| e.to_string())?
-    {
+    if let Some(png) = flatcraft_engine::thumbnails::embedded_in(bytes) {
         return Ok(png);
     }
     let doc =

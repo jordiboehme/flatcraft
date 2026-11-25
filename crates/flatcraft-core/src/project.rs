@@ -59,6 +59,10 @@ pub enum ProjectError {
     )]
     NewerFormat { found: u32, supported: u32 },
     #[error(
+        "The project file is not valid: its format version is {found}, and this FlatCraft reads version {supported}."
+    )]
+    UnknownFormat { found: String, supported: u32 },
+    #[error(
         "This project was saved by a development build of FlatCraft as plain JSON. This version cannot open it. Please import its designs again."
     )]
     PlainJson,
@@ -82,13 +86,19 @@ pub enum ProjectError {
     MissingGroup { name: String, group: u64 },
 }
 
+/// A zip error while reading an archive is a damaged file, never a disk
+/// problem: the archive is read from memory (or a file that opened fine),
+/// so an I/O error inside it means a header that lies or a broken
+/// compressed stream.
 impl From<zip::result::ZipError> for ProjectError {
     fn from(e: zip::result::ZipError) -> Self {
-        match e {
-            zip::result::ZipError::Io(io) => ProjectError::Io(io),
-            other => ProjectError::Damaged(other.to_string()),
-        }
+        ProjectError::Damaged(e.to_string())
     }
+}
+
+/// An error while reading the bytes of entry `name`: the file is damaged.
+fn damaged_entry(name: &str, e: &std::io::Error) -> ProjectError {
+    ProjectError::Damaged(format!("{name} cannot be unpacked ({e})"))
 }
 
 // ---------------------------------------------------------------- archive
@@ -279,10 +289,18 @@ fn open_zip<'a>(
             limits.max_entries
         )));
     }
+    if z.has_duplicate_names() {
+        return Err(ProjectError::Damaged(
+            "it holds two entries with the same name".into(),
+        ));
+    }
     let mime = match z.by_name(MIMETYPE_ENTRY) {
         Ok(mut f) => {
             let mut text = Vec::new();
-            (&mut f).take(256).read_to_end(&mut text)?;
+            (&mut f)
+                .take(256)
+                .read_to_end(&mut text)
+                .map_err(|e| damaged_entry(MIMETYPE_ENTRY, &e))?;
             text
         }
         Err(_) => return Err(ProjectError::NotAProject),
@@ -321,7 +339,9 @@ fn read_bounded(
     let room = limits.max_total_bytes.saturating_sub(*total);
     let cap = limit.min(room);
     let mut data = Vec::new();
-    f.take(cap + 1).read_to_end(&mut data)?;
+    f.take(cap + 1)
+        .read_to_end(&mut data)
+        .map_err(|e| damaged_entry(name, &e))?;
     let n = data.len() as u64;
     if n > cap {
         return Err(if n > limit {
@@ -335,7 +355,9 @@ fn read_bounded(
 }
 
 /// The thumbnail of a project file, without reading its sources. `None`
-/// when the file has none.
+/// when the file has none. The bytes are not decoded here (core has no
+/// image decoder): a caller that shows them checks that they decode and
+/// draws the project when they do not.
 pub fn read_thumbnail(path: &Path) -> Result<Option<Vec<u8>>, ProjectError> {
     let file = std::fs::File::open(path)?;
     thumbnail_from(file)
@@ -352,7 +374,10 @@ fn thumbnail_from(reader: impl Read + Seek) -> Result<Option<Vec<u8>>, ProjectEr
     match z.by_name(MIMETYPE_ENTRY) {
         Ok(mut f) => {
             let mut text = Vec::new();
-            (&mut f).take(256).read_to_end(&mut text)?;
+            (&mut f)
+                .take(256)
+                .read_to_end(&mut text)
+                .map_err(|e| damaged_entry(MIMETYPE_ENTRY, &e))?;
             if text != MIMETYPE.as_bytes() {
                 return Err(ProjectError::NotAProject);
             }
@@ -633,15 +658,21 @@ pub fn load_archive(archive: Archive) -> Result<(Document, Vec<ObjectId>), Proje
         sources,
         ..
     } = archive;
-    let found = value
-        .get("format_version")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    if found > u64::from(FORMAT_VERSION) {
-        return Err(ProjectError::NewerFormat {
-            found: u32::try_from(found).unwrap_or(u32::MAX),
-            supported: FORMAT_VERSION,
-        });
+    match value.get("format_version") {
+        Some(v) if v.as_u64() == Some(u64::from(FORMAT_VERSION)) => {}
+        Some(v) if v.as_u64().is_some_and(|n| n > u64::from(FORMAT_VERSION)) => {
+            let n = v.as_u64().unwrap_or(u64::MAX);
+            return Err(ProjectError::NewerFormat {
+                found: u32::try_from(n).unwrap_or(u32::MAX),
+                supported: FORMAT_VERSION,
+            });
+        }
+        other => {
+            return Err(ProjectError::UnknownFormat {
+                found: other.map_or_else(|| "missing".to_string(), Value::to_string),
+                supported: FORMAT_VERSION,
+            });
+        }
     }
     unpack_link_groups(&mut value)?;
     // Each member carries its own source reference now, so a missing or

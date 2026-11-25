@@ -530,3 +530,21 @@ fn home_looks_at_recent_files_once_per_visit() {
 fn tiny_png() -> Vec<u8> {
     tiny_skia::Pixmap::new(2, 2).unwrap().encode_png().unwrap()
 }
+
+/// A broken picture in the project file is not shown: the project is drawn
+/// as if it had none.
+#[test]
+fn a_broken_thumbnail_is_drawn_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let path = dir.path().join("coasters.flatcraft");
+    saved_project(&s, &path);
+    flatcraft_core::project::Archive::edit(&path, |a| {
+        a.thumbnail = Some(b"\x89PNG\r\n\x1a\n not a picture".to_vec());
+    })
+    .unwrap();
+    let profiles = s.lock().unwrap().profiles.clone();
+    let png = flatcraft::ui::home::render_project(&profiles, &path).unwrap();
+    let p = tiny_skia::Pixmap::decode_png(&png).expect("a picture that decodes");
+    assert_eq!(p.width().max(p.height()), 512);
+}
