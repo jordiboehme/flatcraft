@@ -641,6 +641,19 @@ impl ProfileStore {
         Ok(p)
     }
 
+    /// The plotter preset `id` with inheritance resolved but without the
+    /// value checks (mats, tolerances), so the Profiles window can load a
+    /// preset with a bad value and let the person fix it. Jobs use
+    /// [`ProfileStore::plotter`].
+    pub fn plotter_unchecked(&self, id: &str) -> Result<PlotterProfile, ProfileError> {
+        self.resolve(Kind::Plotter, id)
+    }
+
+    /// The material preset `id` like [`ProfileStore::plotter_unchecked`].
+    pub fn material_unchecked(&self, id: &str) -> Result<MaterialProfile, ProfileError> {
+        self.resolve(Kind::Material, id)
+    }
+
     /// The material preset `id` with inheritance resolved. Cached until the
     /// next save or delete.
     pub fn material(&self, id: &str) -> Result<MaterialProfile, ProfileError> {

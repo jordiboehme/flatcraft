@@ -463,12 +463,12 @@ fn load(app: &mut FlatCraftApp) -> View {
     let materials = s.profiles.materials();
     if let Some(id) = st.want_plotter.take() {
         let info = plotters.iter().find(|p| p.id == id);
-        match (info, s.profiles.plotter(&id)) {
+        match (info, s.profiles.plotter_unchecked(&id)) {
             (Some(info), Ok(p)) => {
                 let parent_media = match &info.inherits {
                     Some(parent) => s
                         .profiles
-                        .plotter(parent)
+                        .plotter_unchecked(parent)
                         .map(|p| p.media)
                         .unwrap_or_default(),
                     None => p.media.clone(),
@@ -500,7 +500,7 @@ fn load(app: &mut FlatCraftApp) -> View {
     }
     if let Some(id) = st.want_material.take() {
         let info = materials.iter().find(|p| p.id == id);
-        match (info, s.profiles.material(&id)) {
+        match (info, s.profiles.material_unchecked(&id)) {
             (Some(info), Ok(m)) => {
                 st.material = Some(Draft {
                     id: id.clone(),

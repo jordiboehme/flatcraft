@@ -177,6 +177,10 @@ pub(crate) fn profile_error(e: ProfileError) -> CommandError {
         ProfileError::UnknownPreset { id } => {
             CommandError::NotFound(format!("no plotter or material preset with id '{id}'"))
         }
+        // A preset with a bad value can be repaired in the Profiles window.
+        e @ ProfileError::Invalid { .. } => {
+            CommandError::Failed(format!("{e}. Open Settings to fix it."))
+        }
         other => CommandError::Failed(other.to_string()),
     }
 }

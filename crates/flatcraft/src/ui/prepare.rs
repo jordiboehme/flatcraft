@@ -558,6 +558,8 @@ pub struct Snapshot {
     /// Set when the document's mat is gone and the plotter's first mat is
     /// used instead.
     pub mat_warning: Option<String>,
+    /// Why the plotter or material preset cannot be used (a bad value).
+    pub profile_problem: Option<String>,
     pub auto_reload: bool,
     /// The image or the trace settings of the Trace dialog's object
     /// changed since the dialog opened (an agent retraced or reloaded it).
@@ -639,17 +641,30 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
         let st = s.doc();
         let doc_id = st.id();
         let job = st.document.job.clone();
-        let plotter = s.profiles.plotter(&job.plotter_id).ok();
-        let material = s
-            .profiles
-            .material(&job.material_id)
-            .ok()
-            .map(|m| m.for_plotter(&job.plotter_id));
-        let effective = plotter
+        let plotter_result = s.profiles.plotter(&job.plotter_id);
+        let material_result = s.profiles.material(&job.material_id);
+        // A preset with a bad value: say why and how to fix it.
+        let profile_problem = [
+            plotter_result.as_ref().err(),
+            material_result.as_ref().err(),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|e| matches!(e, flatcraft_device::ProfileError::Invalid { .. }))
+        // The same text as `commands::profile_error`.
+        .map(|e| format!("{e}. Open Settings to fix it."));
+        let plotter = plotter_result.ok();
+        let material = material_result.ok().map(|m| m.for_plotter(&job.plotter_id));
+        // The mat is drawn from the unchecked preset, so a bad value never
+        // leaves the canvas blank.
+        let shown_plotter = plotter
+            .clone()
+            .or_else(|| s.profiles.plotter_unchecked(&job.plotter_id).ok());
+        let effective = shown_plotter
             .as_ref()
             .and_then(|p| flatcraft_engine::commands::effective_media(p, &job).ok())
             .map(|(m, warning)| (m.clone(), warning));
-        let area = plotter
+        let area = shown_plotter
             .as_ref()
             .zip(effective.as_ref())
             .and_then(|(p, (m, _))| p.cutting_area(&m.id));
@@ -701,6 +716,7 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
             mat,
             area,
             mat_warning,
+            profile_problem,
             auto_reload: s.prefs.auto_reload,
             trace_source_changed,
             job_input: want_job.then(|| match (&plotter, &material) {
@@ -950,6 +966,11 @@ fn pills(
                         ui.horizontal(|ui| add(ui));
                     });
             };
+            if let Some(w) = &snap.profile_problem {
+                pill(ui, t.danger, &mut |ui| {
+                    ui.label(w.as_str());
+                });
+            }
             if let Some(w) = &snap.mat_warning {
                 pill(ui, t.accent_cut, &mut |ui| {
                     ui.label(w.as_str());

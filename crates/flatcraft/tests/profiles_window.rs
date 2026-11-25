@@ -470,6 +470,51 @@ fn save_as_treats_an_unreadable_file_as_taken() {
 }
 
 #[test]
+fn an_out_of_range_preset_can_be_fixed_in_the_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let materials = dir.path().join("profiles/materials");
+    std::fs::create_dir_all(&materials).unwrap();
+    std::fs::write(
+        materials.join("wild-vinyl.toml"),
+        "id = \"wild-vinyl\"\nname = \"Wild vinyl\"\ninherits = \"vinyl\"\novercut_mm = 8.0\n",
+    )
+    .unwrap();
+    let s = session(&dir);
+    // A document already on it shows why instead of a blank canvas.
+    s.lock().unwrap().doc_mut().document.job.material_id = "wild-vinyl".into();
+    let mut h = harness(&dir, &s);
+    app_mut(&mut h).ui.workspace = Workspace::Prepare;
+    h.run();
+    h.get_by_label_contains("Open Settings to fix it.");
+    // Picking it for a job is refused with the same hint.
+    let e = s
+        .lock()
+        .unwrap()
+        .execute(
+            "job.set_material",
+            json!({ "id": "wild-vinyl" }),
+            Origin::User,
+        )
+        .unwrap_err();
+    assert!(e.to_string().contains("Open Settings to fix it."), "{e}");
+    // The window loads it, shows the problem and blocks Save until fixed.
+    open(&mut h, "Materials");
+    click(&mut h, "Wild vinyl");
+    h.get_by_label_contains("The overcut must be 0 to 5 mm");
+    type_into(&mut h, "Overcut (mm) (modified)", "2");
+    click(&mut h, "Save preset");
+    assert_eq!(store(&s).material("wild-vinyl").unwrap().overcut_mm, 2.0);
+    s.lock()
+        .unwrap()
+        .execute(
+            "job.set_material",
+            json!({ "id": "wild-vinyl" }),
+            Origin::User,
+        )
+        .unwrap();
+}
+
+#[test]
 fn calibration_tab_says_what_comes() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
