@@ -6,7 +6,7 @@ use flatcraft_core::document::{CutMode, StrokeMode};
 use serde_json::{Value, json};
 
 use super::icons::Icon;
-use super::prepare::{Override, PrepareState, Snapshot};
+use super::prepare::{Eleven, Override, PrepareState, Snapshot};
 use super::theme::Tokens;
 use super::{Action, fonts, icon_button};
 
@@ -21,6 +21,13 @@ fn override_key(which: Override) -> &'static str {
 
 /// The speed hint after a typed speed above the plotter's maximum.
 pub const ELEVEN: &str = "These go to eleven.";
+
+/// The speed hint shows while the clamped attempt is still the speed of
+/// this document, plotter and material. On the frame of the attempt the
+/// override command has not run yet, so it shows from the next frame on.
+fn eleven_shown(st: &PrepareState, snap: &Snapshot) -> bool {
+    st.speed_eleven.as_ref().is_some_and(|e| e.current(snap))
+}
 
 /// egui's own number parsing (whitespace ignored, U+2212 as minus), so a
 /// custom parser can look at the typed value before the range clamps it.
@@ -356,12 +363,17 @@ pub fn job(
                 }
                 let resp = ui.add(drag);
                 if let Some(over) = typed_over.get() {
-                    st.speed_eleven = over;
+                    st.speed_eleven = over.then(|| Eleven {
+                        doc_id: snap.doc_id,
+                        plotter_id: snap.job.plotter_id.clone(),
+                        material_id: snap.job.material_id.clone(),
+                        speed: range[1],
+                    });
                 }
                 if which == Override::Speed && resp.dragged() {
-                    st.speed_eleven = false;
+                    st.speed_eleven = None;
                 }
-                let eleven = which == Override::Speed && st.speed_eleven;
+                let eleven = which == Override::Speed && eleven_shown(st, snap);
                 let name = if modified {
                     format!("{label} (modified)")
                 } else {
@@ -411,7 +423,7 @@ pub fn job(
                 ui.end_row();
             }
         });
-    if st.speed_eleven {
+    if eleven_shown(st, snap) {
         ui.label(RichText::new(ELEVEN).color(t.accent_cut));
     }
     if let Some(hint) = &material.blade_depth_hint {

@@ -198,9 +198,10 @@ pub struct PrepareState {
     pub nudge: Option<Nudge>,
     /// A drag value being dragged, and its value so far.
     pub live_override: Option<(Override, f64)>,
-    /// The last speed typed was above the plotter's maximum (and was
-    /// clamped): the speed field says "These go to eleven."
-    pub speed_eleven: bool,
+    /// A speed typed above the plotter's maximum (and clamped): the speed
+    /// field says "These go to eleven." while that clamped value is still
+    /// the document's speed override (see [`Eleven`]).
+    pub speed_eleven: Option<Eleven>,
     /// Warnings of the last import, until dismissed.
     pub notices: Vec<String>,
     pub sources: SourceStatus,
@@ -212,6 +213,26 @@ pub struct PrepareState {
     pub copies: Option<CopiesDialog>,
     /// The settings of the last copies made, for the next dialog.
     pub copies_last: CopiesSettings,
+}
+
+/// The speed attempt above the maximum: the document, plotter and
+/// material it was made for and the clamped value it became.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Eleven {
+    pub doc_id: u64,
+    pub plotter_id: String,
+    pub material_id: String,
+    pub speed: u32,
+}
+
+impl Eleven {
+    /// The attempt is still what the snapshot shows.
+    pub fn current(&self, snap: &Snapshot) -> bool {
+        self.doc_id == snap.doc_id
+            && self.plotter_id == snap.job.plotter_id
+            && self.material_id == snap.job.material_id
+            && snap.job.speed.map(u32::from) == Some(self.speed)
+    }
 }
 
 /// What the Copies dialog asks for.
@@ -293,7 +314,7 @@ impl Default for PrepareState {
             drag: None,
             nudge: None,
             live_override: None,
-            speed_eleven: false,
+            speed_eleven: None,
             notices: Vec::new(),
             sources: SourceStatus::default(),
             source_memory: HashMap::new(),

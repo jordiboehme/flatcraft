@@ -362,3 +362,208 @@ fn keys_do_not_reach_prepare_while_about_is_open() {
     assert!(!app(&h).ui.about.open);
     assert_eq!(common::undo_len(&s), before);
 }
+
+fn speed(s: &flatcraft_mcp::SharedSession) -> Option<u8> {
+    s.lock().unwrap().doc().document.job.speed
+}
+
+/// A square in Prepare with the speed typed above the maximum.
+fn eleven_shown(dir: &tempfile::TempDir) -> (AppHarness, flatcraft_mcp::SharedSession) {
+    let s = session(dir);
+    import_square(&s);
+    let mut h = harness(dir, s.clone(), false);
+    to_prepare(&mut h);
+    type_speed(&mut h, "Speed", "4");
+    type_speed(&mut h, "Speed (modified)", "11");
+    assert_eq!(speed(&s), Some(10));
+    h.get_by_label(flatcraft::ui::settings::ELEVEN);
+    (h, s)
+}
+
+#[test]
+fn reset_speed_ends_eleven() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, s) = eleven_shown(&dir);
+    h.get_by_role_and_label(Role::Button, "Reset speed").click();
+    h.run();
+    assert_eq!(speed(&s), None);
+    assert!(h.query_by_label(flatcraft::ui::settings::ELEVEN).is_none());
+}
+
+#[test]
+fn undo_ends_eleven_and_redo_does_not_bring_it_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, s) = eleven_shown(&dir);
+    let doc = s.lock().unwrap().doc().id();
+    act(&mut h, Action::Undo(doc));
+    assert_eq!(speed(&s), Some(4));
+    assert!(h.query_by_label(flatcraft::ui::settings::ELEVEN).is_none());
+    act(&mut h, Action::Redo(doc));
+    assert_eq!(speed(&s), Some(10));
+    assert!(h.query_by_label(flatcraft::ui::settings::ELEVEN).is_none());
+}
+
+#[test]
+fn an_agents_override_ends_eleven() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, s) = eleven_shown(&dir);
+    s.lock()
+        .unwrap()
+        .execute(
+            "job.set_overrides",
+            serde_json::json!({ "speed": 6 }),
+            flatcraft_engine::session::Origin::Agent,
+        )
+        .unwrap();
+    h.run();
+    assert!(h.query_by_label(flatcraft::ui::settings::ELEVEN).is_none());
+}
+
+#[test]
+fn a_document_switch_ends_eleven() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, s) = eleven_shown(&dir);
+    let first = s.lock().unwrap().doc().id();
+    act(&mut h, Action::NewDocument);
+    assert_ne!(s.lock().unwrap().doc().id(), first);
+    assert!(h.query_by_label(flatcraft::ui::settings::ELEVEN).is_none());
+    act(&mut h, Action::Switch(first));
+    common::wait_for_source_check(&mut h);
+    assert_eq!(speed(&s), Some(10));
+    assert!(h.query_by_label(flatcraft::ui::settings::ELEVEN).is_none());
+}
+
+#[test]
+fn dragging_the_speed_past_the_maximum_is_no_joke() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let from = h
+        .get_by_role_and_label(Role::SpinButton, "Speed")
+        .rect()
+        .center();
+    h.hover_at(from);
+    h.run();
+    h.drag_at(from);
+    h.run();
+    for dx in [50.0, 150.0, 300.0, 400.0] {
+        h.hover_at(from + egui::vec2(dx, 0.0));
+        h.run();
+    }
+    h.drop_at(from + egui::vec2(400.0, 0.0));
+    h.run();
+    assert_eq!(speed(&s), Some(10));
+    assert!(h.query_by_label(flatcraft::ui::settings::ELEVEN).is_none());
+}
+
+/// A seed whose first roll is "Punch it.".
+fn punching_seed() -> u64 {
+    (1..)
+        .find(|&seed| XorShift::new(seed).one_in(PUNCH_IT_ODDS))
+        .unwrap()
+}
+
+#[test]
+fn a_failed_send_never_says_punch_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let seed = punching_seed();
+    let mut h = harness_with(&dir, s.clone(), move |a| a.with_seed(seed));
+    let doc = s.lock().unwrap().doc().id();
+    // Nothing to cut: the send fails.
+    act(&mut h, Action::Send { doc_id: doc });
+    let texts = toasts(&h);
+    assert_eq!(texts.len(), 1, "{texts:?}");
+    assert_ne!(texts[0], PUNCH_IT);
+    assert!(!texts[0].starts_with("Sent"), "{}", texts[0]);
+    // The failed send did not use the roll: the first real send gets it.
+    app_mut(&mut h).ui.toasts.clear();
+    import_square(&s);
+    act(&mut h, Action::Send { doc_id: doc });
+    assert_eq!(toasts(&h), vec![PUNCH_IT.to_string()]);
+}
+
+fn selected_square(dir: &tempfile::TempDir) -> (AppHarness, flatcraft_mcp::SharedSession) {
+    let s = session(dir);
+    let id = import_square(&s);
+    s.lock()
+        .unwrap()
+        .execute(
+            "object.select",
+            serde_json::json!({ "ids": [id] }),
+            flatcraft_engine::session::Origin::User,
+        )
+        .unwrap();
+    let mut h = harness(dir, s.clone(), false);
+    to_prepare(&mut h);
+    (h, s)
+}
+
+fn objects(s: &flatcraft_mcp::SharedSession) -> usize {
+    s.lock().unwrap().doc().document.objects.len()
+}
+
+fn selection(s: &flatcraft_mcp::SharedSession) -> usize {
+    s.lock().unwrap().doc().selection.len()
+}
+
+#[test]
+fn keys_do_not_reach_prepare_under_the_unsaved_dialog() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, s) = selected_square(&dir);
+    let doc = s.lock().unwrap().doc().id();
+    act(&mut h, Action::Close(doc));
+    let question = "You have unsaved changes in Untitled 1.";
+    h.get_by_label(question);
+    h.key_press(egui::Key::Delete);
+    h.run();
+    assert_eq!(objects(&s), 1);
+    assert_eq!(selection(&s), 1);
+    // Escape cancels the dialog, and the selection stays.
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.query_by_label(question).is_none());
+    assert!(app(&h).ui.unsaved.is_none());
+    assert_eq!((objects(&s), selection(&s)), (1, 1));
+}
+
+#[test]
+fn keys_do_not_reach_prepare_under_the_pending_send_dialog() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let id = import_square(&s);
+    let other = import_square(&s);
+    {
+        let mut g = s.lock().unwrap();
+        g.execute(
+            "object.select",
+            serde_json::json!({ "ids": [id] }),
+            flatcraft_engine::session::Origin::User,
+        )
+        .unwrap();
+        g.execute(
+            "job.set_plotter",
+            serde_json::json!({ "id": "silhouette-cameo-2" }),
+            flatcraft_engine::session::Origin::User,
+        )
+        .unwrap();
+        g.execute(
+            "job.send",
+            serde_json::json!({}),
+            flatcraft_engine::session::Origin::Agent,
+        )
+        .unwrap_err();
+        assert!(g.pending_send().is_some());
+    }
+    let _ = other;
+    let mut h = harness(&dir, s.clone(), true);
+    to_prepare(&mut h);
+    h.key_press(egui::Key::Delete);
+    h.run();
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+    h.run();
+    assert_eq!((objects(&s), selection(&s)), (2, 1));
+    assert!(s.lock().unwrap().pending_send().is_some());
+}

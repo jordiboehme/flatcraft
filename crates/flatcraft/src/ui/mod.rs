@@ -1134,8 +1134,10 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     app.ui.number_documents(&open);
     guard_close(&ctx, app);
     refresh_prefs(&ctx, app);
-    // The About dialog is modal: the keys stay with it (Escape closes it).
-    if !app.ui.about.open {
+    // A dialog keeps the keys: Escape closes or cancels it, and Delete or
+    // Cmd+Z must not change the document behind it.
+    let modal = modal_open(app);
+    if !modal {
         shortcuts(&ctx, active, &mut actions);
     }
     dropped_files(&ctx, &app.tokens, &mut actions);
@@ -1155,6 +1157,18 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     if let Some(snap) = &snap {
         app.ui.cut.update(snap);
     }
+    // The speed joke ends once its clamped value is no longer the speed
+    // (reset, undo, an agent, another plotter, material or document). This
+    // runs before the widgets, so an attempt made last frame has had its
+    // command applied.
+    let eleven_gone = match (&app.ui.prepare.speed_eleven, &snap) {
+        (Some(e), Some(snap)) => !e.current(snap),
+        (Some(_), None) => true,
+        (None, _) => false,
+    };
+    if eleven_gone {
+        app.ui.prepare.speed_eleven = None;
+    }
     if app.ui.show_debug && workspace != Workspace::Home {
         app.ui.debug.refresh_log(&app.session);
         app.ui.debug.refresh_last_sent(&app.session);
@@ -1168,9 +1182,9 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     match (&snap, workspace) {
         (Some(snap), Workspace::Cut) => cut::show(ui, app, snap, &mut actions),
         (Some(snap), _) => {
-            // The Trace dialog owns Escape, and Delete must not remove
-            // the image it traces. The About dialog keeps the keys too.
-            if app.ui.trace.is_none() && !app.ui.about.open {
+            // A dialog owns Escape, and Delete must not remove what is
+            // behind it (for the Trace dialog, the image it traces).
+            if !modal {
                 let now = (app.clock)();
                 prepare_keys(&ctx, snap, &mut app.ui.prepare, now, &mut actions);
             }
@@ -1213,6 +1227,15 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
         // Keeps the agent pill current.
         ctx.request_repaint_after(Duration::from_secs(1));
     }
+}
+
+/// A dialog that owns the keyboard is open: About, Trace, unsaved changes
+/// or the agent's pending send.
+pub fn modal_open(app: &FlatCraftApp) -> bool {
+    app.ui.about.open
+        || app.ui.trace.is_some()
+        || app.ui.unsaved.is_some()
+        || lock(&app.session).pending_send().is_some()
 }
 
 /// Keeps the window open while documents have unsaved changes: a close
