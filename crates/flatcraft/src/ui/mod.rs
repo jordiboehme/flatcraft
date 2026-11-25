@@ -1346,8 +1346,12 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     // A collapsed Cut and Job rail shows the job's state dot from the same
     // plan the Cut workspace uses, so the two never disagree. `update`
     // builds only when the input changed.
+    // Not while an object is dragged or nudged: the dot keeps its last
+    // state and the job is built once when the drag or the burst ends.
     let rail_dot = workspace == Workspace::Prepare
-        && app.ui.prepare.panels.collapsed(rails::SidePanel::Settings);
+        && app.ui.prepare.panels.collapsed(rails::SidePanel::Settings)
+        && app.ui.prepare.drag.is_none()
+        && app.ui.prepare.nudge.is_none();
     let wants_job = workspace == Workspace::Cut || app.ui.show_debug || rail_dot;
     let snap = (workspace != Workspace::Home).then(|| prepare::snapshot_with(app, &ctx, wants_job));
     if let Some(snap) = &snap {

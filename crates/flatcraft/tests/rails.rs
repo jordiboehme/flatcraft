@@ -595,3 +595,46 @@ fn a_collapsed_prepare_rail_shows_the_dot_of_the_cut_plan() {
     resize(&mut h, 1400.0);
     assert!(collapse_button(&h, "Cut and Job"));
 }
+
+#[test]
+fn the_rail_dot_does_not_rebuild_the_job_during_a_drag_or_nudge() {
+    use flatcraft::ui::prepare::{Drag, Nudge};
+    let (_d, s, mut h, ids) = four(1000.0);
+    assert!(rail_open(&h, "Cut and Job"));
+    let plan = |h: &AppHarness| app(h).ui.cut.job().expect("a plan");
+    let first = plan(&h);
+    let mut change = |h: &mut AppHarness, dx: f64| {
+        run(&s, "object.move", json!({ "ids": [ids[0]], "dx_mm": dx }));
+        h.run();
+    };
+    // A nudge burst: the plan input changed, nothing is built.
+    app_mut(&mut h).ui.prepare.nudge = Some(Nudge {
+        doc_id: s.lock().unwrap().doc().id(),
+        ids: vec![ids[0]],
+        burst: 1,
+        last: std::time::Instant::now(),
+    });
+    change(&mut h, 1.0);
+    assert!(
+        std::sync::Arc::ptr_eq(&first, &plan(&h)),
+        "no rebuild in a burst"
+    );
+    // A drag: the same.
+    app_mut(&mut h).ui.prepare.nudge = None;
+    app_mut(&mut h).ui.prepare.drag = Some(Drag::Pan);
+    change(&mut h, 1.0);
+    assert!(
+        std::sync::Arc::ptr_eq(&first, &plan(&h)),
+        "no rebuild in a drag"
+    );
+    // After the drag it is built once, with the changes of both.
+    app_mut(&mut h).ui.prepare.drag = None;
+    h.run();
+    let after = plan(&h);
+    assert!(
+        !std::sync::Arc::ptr_eq(&first, &after),
+        "rebuilt after release"
+    );
+    h.run();
+    assert!(std::sync::Arc::ptr_eq(&after, &plan(&h)), "once");
+}
