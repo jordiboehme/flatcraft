@@ -15,6 +15,13 @@ pub trait Command: Send + Sync {
     fn params_schema(&self) -> schemars::Schema;
     /// True if the command changes the active document (one undo step).
     fn mutates_document(&self) -> bool;
+    /// True if a command that does not mutate the document still changes
+    /// session state: open documents, the active one, their selection,
+    /// undo history, path or dirty flag. After a panic such a command is
+    /// rolled back (see `Session::execute`).
+    fn changes_session(&self) -> bool {
+        false
+    }
     fn run(
         &self,
         s: &mut Session,

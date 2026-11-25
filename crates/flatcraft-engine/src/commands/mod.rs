@@ -25,6 +25,7 @@ macro_rules! command {
         id: $id:literal,
         title: $title:literal,
         mutates: $mutates:expr,
+        $(session: $session:expr,)?
         params: $params:ty,
         run: $run:path,
         description: $desc:expr $(,)?
@@ -46,6 +47,9 @@ macro_rules! command {
             }
             fn mutates_document(&self) -> bool {
                 $mutates
+            }
+            fn changes_session(&self) -> bool {
+                false $(|| $session)?
             }
             fn run(
                 &self,

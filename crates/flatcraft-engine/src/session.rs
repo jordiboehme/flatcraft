@@ -324,6 +324,28 @@ fn same_document(a: &Document, b: &Document) -> bool {
         && same_except_links(a, b)
 }
 
+/// What a command that changes session state may change in one open
+/// document, kept to undo a panic (see [`Session::roll_back`]).
+struct DocSnapshot {
+    id: u64,
+    document: Document,
+    selection: BTreeSet<ObjectId>,
+    undo: UndoStack<Document>,
+    path: Option<PathBuf>,
+    dirty: bool,
+    /// Only for a document the command removed: the rest of its state.
+    revision: u64,
+    last_job: Option<Arc<JobResult>>,
+    last_sent: Option<Arc<JobResult>>,
+    last_sent_rev: u64,
+}
+
+/// The open documents and the active one before a command.
+struct SessionSnapshot {
+    docs: Vec<DocSnapshot>,
+    active: usize,
+}
+
 /// The engine state shared by the GUI, the MCP server and tests.
 #[derive(Debug)]
 pub struct Session {
@@ -667,8 +689,14 @@ impl Session {
         origin: Origin,
     ) -> Result<serde_json::Value, CommandError> {
         if !command.mutates_document() {
-            return run_caught(command, self, params, origin)
-                .unwrap_or_else(|()| Err(internal_error()));
+            let snapshot = command.changes_session().then(|| self.snapshot());
+            return run_caught(command, self, params, origin).unwrap_or_else(|()| {
+                // A panic: put the open documents back as they were.
+                if let Some(snapshot) = snapshot {
+                    self.roll_back(snapshot);
+                }
+                Err(internal_error())
+            });
         }
         let index = self.active;
         let doc_id = self.docs[index].id();
@@ -730,6 +758,73 @@ impl Session {
     }
 }
 
+impl Session {
+    /// The open documents as they are, for [`Session::roll_back`]. Never a
+    /// `DocState::clone`, which would give new ids.
+    fn snapshot(&self) -> SessionSnapshot {
+        SessionSnapshot {
+            docs: self
+                .docs
+                .iter()
+                .map(|d| DocSnapshot {
+                    id: d.id,
+                    document: d.document.clone(),
+                    selection: d.selection.clone(),
+                    undo: d.undo.clone(),
+                    path: d.path.clone(),
+                    dirty: d.dirty,
+                    revision: d.revision,
+                    last_job: d.last_job.clone(),
+                    last_sent: d.last_sent.clone(),
+                    last_sent_rev: d.last_sent_rev,
+                })
+                .collect(),
+            active: self.active,
+        }
+    }
+
+    /// Puts the open documents back as `snapshot` saw them, after a command
+    /// panicked half way. A document that is still open gets its contents
+    /// back in place, so its id, its caches and a pending send on it stay;
+    /// one the command removed or replaced comes back with its old id;
+    /// documents the command added are dropped. Every restored document
+    /// gets a new revision, so work started on any state meanwhile is not
+    /// stored.
+    fn roll_back(&mut self, snapshot: SessionSnapshot) {
+        let mut current = std::mem::take(&mut self.docs);
+        for d in snapshot.docs {
+            let st = match current.iter().position(|c| c.id == d.id) {
+                Some(i) => {
+                    let mut st = current.swap_remove(i);
+                    st.document = d.document;
+                    st.selection = d.selection;
+                    st.undo = d.undo;
+                    st.path = d.path;
+                    st.dirty = d.dirty;
+                    st.touch();
+                    st
+                }
+                None => DocState {
+                    id: d.id,
+                    document: d.document,
+                    selection: d.selection,
+                    undo: d.undo,
+                    path: d.path,
+                    dirty: d.dirty,
+                    last_job: d.last_job,
+                    last_sent: d.last_sent,
+                    last_sent_rev: d.last_sent_rev,
+                    revision: d.revision + 1,
+                    bounds_cache: HashMap::new(),
+                },
+            };
+            self.docs.push(st);
+        }
+        // What is left in `current` was added by the command.
+        self.active = snapshot.active.min(self.docs.len().saturating_sub(1));
+    }
+}
+
 /// What a command that panicked returns.
 fn internal_error() -> CommandError {
     CommandError::Failed(
@@ -748,7 +843,12 @@ fn run_caught(
     origin: Origin,
 ) -> Result<Result<serde_json::Value, CommandError>, ()> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        command.run(s, params, origin)
+        let result = command.run(s, params, origin);
+        #[cfg(test)]
+        if tests::PANIC_AFTER.with(std::cell::Cell::get) == Some(command.id()) {
+            panic!("test: {} panics after it ran", command.id());
+        }
+        result
     }))
     .map_err(|_| ())
 }
@@ -761,6 +861,143 @@ mod tests {
 
     thread_local! {
         pub(super) static SOURCE_COMPARES: Cell<usize> = const { Cell::new(0) };
+        /// The command that panics right after it ran (it did all its work).
+        pub(super) static PANIC_AFTER: Cell<Option<&'static str>> = const { Cell::new(None) };
+    }
+
+    const SQUARE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><rect x="20" y="20" width="30" height="30"/></svg>"#;
+
+    /// Runs `id` as the user; it panics after it did its work.
+    fn panicking(s: &mut Session, id: &'static str, params: serde_json::Value) {
+        PANIC_AFTER.with(|p| p.set(Some(id)));
+        let e = s.execute(id, params, Origin::User).unwrap_err();
+        PANIC_AFTER.with(|p| p.set(None));
+        assert!(e.to_string().contains("internal error"), "{id}: {e}");
+    }
+
+    fn ok(s: &mut Session, id: &str, params: serde_json::Value) -> serde_json::Value {
+        s.execute(id, params, Origin::User)
+            .unwrap_or_else(|e| panic!("{id}: {e}"))
+    }
+
+    /// A window session on the Cameo 2 (USB) with one square in document
+    /// A and an agent's cut waiting for confirmation, and a pristine
+    /// document B, active.
+    fn with_pending(dir: &tempfile::TempDir) -> Session {
+        let profiles = flatcraft_device::ProfileStore::load(dir.path()).unwrap();
+        let prefs = Preferences {
+            output_dir: Some(dir.path().join("output")),
+            ..Preferences::default()
+        };
+        let mut s = Session::new(profiles, prefs, true, dir.path().to_path_buf());
+        ok(
+            &mut s,
+            "object.import_svg",
+            serde_json::json!({ "svg": SQUARE, "name": "sq" }),
+        );
+        ok(
+            &mut s,
+            "job.set_plotter",
+            serde_json::json!({ "id": "silhouette-cameo-2" }),
+        );
+        let e = s
+            .execute(
+                "job.send",
+                serde_json::json!({ "name": "wait" }),
+                Origin::Agent,
+            )
+            .unwrap_err();
+        assert!(e.to_string().contains("Waiting for confirmation"), "{e}");
+        ok(&mut s, "document.new", serde_json::json!({}));
+        s
+    }
+
+    fn ids(s: &Session) -> Vec<u64> {
+        s.docs.iter().map(DocState::id).collect()
+    }
+
+    #[test]
+    fn panicking_open_keeps_doc_ids_and_pending_send() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = with_pending(&dir);
+        let file = dir.path().join("p.flatcraft");
+        flatcraft_core::project::save(&s.docs[0].document, &file).unwrap();
+        let pending = s.pending_send().unwrap().id;
+        let before = ids(&s);
+        let revision = s.docs[1].revision();
+        // B is pristine: open replaces it in its slot, then panics.
+        assert!(s.doc().is_pristine());
+        panicking(&mut s, "project.open", serde_json::json!({ "path": file }));
+        assert_eq!(ids(&s), before, "the same documents, same ids");
+        assert_eq!(s.active, 1);
+        assert!(s.doc().is_pristine());
+        assert!(s.doc().revision() > revision, "a restored document is news");
+        assert_eq!(s.pending_send().map(|p| p.id), Some(pending));
+        // A is active and not pristine: open pushes a document, then panics.
+        ok(&mut s, "document.switch", serde_json::json!({ "index": 0 }));
+        let a = s.docs[0].document.clone();
+        panicking(&mut s, "project.open", serde_json::json!({ "path": file }));
+        assert_eq!(ids(&s), before, "the pushed document is gone");
+        assert_eq!(s.active, 0);
+        assert!(same_document(&s.docs[0].document, &a));
+        assert_eq!(s.pending_send().map(|p| p.id), Some(pending));
+    }
+
+    #[test]
+    fn panicking_close_and_undo_put_the_documents_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = with_pending(&dir);
+        let pending = s.pending_send().unwrap().id;
+        let before = ids(&s);
+        let a = s.docs[0].document.clone();
+        let revision = s.docs[0].revision();
+        assert!(s.docs[0].dirty);
+        panicking(
+            &mut s,
+            "document.close",
+            serde_json::json!({ "index": 0, "discard_changes": true }),
+        );
+        assert_eq!(ids(&s), before);
+        assert_eq!(s.active, 1);
+        let st = &s.docs[0];
+        assert!(same_document(&st.document, &a));
+        assert!(st.dirty && st.undo.can_undo());
+        assert!(st.revision() > revision);
+        assert_eq!(s.pending_send().map(|p| p.id), Some(pending));
+        // Undo in A, by id, from B.
+        let id = before[0];
+        let revision = s.docs[0].revision();
+        panicking(&mut s, "edit.undo", serde_json::json!({ "doc_id": id }));
+        let st = &s.docs[0];
+        assert!(same_document(&st.document, &a), "the undo is undone");
+        assert!(st.undo.can_undo() && !st.undo.can_redo());
+        assert!(st.revision() > revision);
+        assert_eq!(ids(&s), before);
+        assert_eq!(s.pending_send().map(|p| p.id), Some(pending));
+    }
+
+    /// Every command that does not change the document either changes no
+    /// session state at all, or is rolled back after a panic. A new
+    /// command must pick one.
+    #[test]
+    fn non_mutating_commands_declare_session_changes() {
+        let read_only: Vec<&str> = registry::all()
+            .iter()
+            .filter(|c| !c.mutates_document() && !c.changes_session())
+            .map(|c| c.id())
+            .collect();
+        assert_eq!(
+            read_only,
+            [
+                "document.state",
+                "document.check_sources",
+                "profiles.list",
+                "profiles.get",
+                "job.preview",
+                "job.send",
+                "document.preview",
+            ]
+        );
     }
 
     /// A mutating command that changes the document and then panics.

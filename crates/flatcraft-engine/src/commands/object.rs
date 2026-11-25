@@ -517,6 +517,7 @@ command!(
     id: "object.select",
     title: "Select",
     mutates: false,
+    session: true,
     params: SelectParams,
     run: run_select,
     description: "Replaces the selection with the given object ids. An empty list clears the selection. Other object commands use the selection when their ids list is empty. Returns {selection: [id]}.",
