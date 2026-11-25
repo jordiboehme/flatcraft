@@ -44,39 +44,24 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 #[test]
-fn file_transport_refuses_forbidden_bytes() {
-    let dir = tempfile::tempdir().unwrap();
-    let out = dir.path().join("out");
-    let job = EmittedJob {
-        bytes: b"FB1\x03H\x03".to_vec(),
-        listing: vec![],
-    };
-    let mut log = ByteLog::new();
-    let mut t = FileTransport::new(out.clone(), "gpgl".into());
-    let e = t.send_job(&job, "bad", &mut log).unwrap_err();
-    assert!(matches!(e, TransportError::Unsafe(_)), "{e:?}");
-    // check_safe runs first: not even the directory was created.
-    assert!(!out.exists());
-    assert!(log.is_empty());
-
-    // An existing directory stays empty.
-    std::fs::create_dir_all(&out).unwrap();
-    let e = t.send_job(&job, "bad", &mut log).unwrap_err();
-    assert!(matches!(e, TransportError::Unsafe(_)), "{e:?}");
-    assert!(names(&out).is_empty());
-    assert!(log.is_empty());
-
-    // A job without the final H is refused too.
-    let job = EmittedJob {
+fn only_checked_jobs_reach_a_transport() {
+    // FB, or a job without the final H, never becomes a CheckedJob, so no
+    // transport can be handed one.
+    for bad in [&b"FB1\x03H\x03"[..], &b"\x1b\x04!5\x03"[..]] {
+        let job = EmittedJob {
+            bytes: bad.to_vec(),
+            listing: vec![],
+        };
+        assert!(CheckedJob::check(job).is_err());
+    }
+    let e = CheckedJob::check(EmittedJob {
         bytes: b"\x1b\x04!5\x03".to_vec(),
         listing: vec![],
-    };
-    let e = t.send_job(&job, "bad", &mut log).unwrap_err();
-    assert!(
-        matches!(e, TransportError::Unsafe(SafetyError::NotTerminated)),
-        "{e:?}"
-    );
-    assert!(names(&out).is_empty());
+    })
+    .unwrap_err();
+    assert_eq!(e, SafetyError::NotTerminated);
+    let good = CheckedJob::check(square_job()).unwrap();
+    assert_eq!(good.bytes, square_job().bytes);
 }
 
 #[test]
@@ -86,7 +71,9 @@ fn file_transport_writes_three_files_and_suffixes() {
     let mut log = ByteLog::new();
     let mut t = FileTransport::new(dir.path().to_path_buf(), "gpgl".into());
 
-    let r = t.send_job(&job, "square", &mut log).unwrap();
+    let r = t
+        .send_job(&CheckedJob::check(job.clone()).unwrap(), "square", &mut log)
+        .unwrap();
     assert_eq!(r.bytes_sent, job.bytes.len());
     let gpgl = dir.path().join("square.gpgl");
     let txt = dir.path().join("square.gpgl.txt");
@@ -132,10 +119,14 @@ fn file_transport_writes_three_files_and_suffixes() {
     assert!(log.entries().all(|e| e.dir == Dir::Out));
 
     // Collisions get -2, -3.
-    let r2 = t.send_job(&job, "square", &mut log).unwrap();
+    let r2 = t
+        .send_job(&CheckedJob::check(job.clone()).unwrap(), "square", &mut log)
+        .unwrap();
     assert_eq!(r2.files[0], dir.path().join("square-2.gpgl"));
     assert_eq!(r2.files[2], dir.path().join("square-2.bytelog.jsonl"));
-    let r3 = t.send_job(&job, "square", &mut log).unwrap();
+    let r3 = t
+        .send_job(&CheckedJob::check(job.clone()).unwrap(), "square", &mut log)
+        .unwrap();
     assert_eq!(r3.files[0], dir.path().join("square-3.gpgl"));
 
     // The per-job byte log holds only its own job.
@@ -165,7 +156,9 @@ fn collision_on_any_of_the_three_files_moves_on() {
     std::fs::write(dir.path().join("job.bytelog.jsonl"), "keep").unwrap();
     let mut log = ByteLog::new();
     let mut t = FileTransport::new(dir.path().to_path_buf(), "gpgl".into());
-    let r = t.send_job(&square_job(), "job", &mut log).unwrap();
+    let r = t
+        .send_job(&CheckedJob::check(square_job()).unwrap(), "job", &mut log)
+        .unwrap();
     assert_eq!(r.files[0], dir.path().join("job-2.gpgl"));
     assert_eq!(
         std::fs::read_to_string(dir.path().join("job.bytelog.jsonl")).unwrap(),
@@ -212,7 +205,9 @@ fn leftover_temp_files_do_not_block_the_job_name_and_are_kept() {
     }
     let mut log = ByteLog::new();
     let mut t = FileTransport::new(dir.path().to_path_buf(), "gpgl".into());
-    let r = t.send_job(&square_job(), "job", &mut log).unwrap();
+    let r = t
+        .send_job(&CheckedJob::check(square_job()).unwrap(), "job", &mut log)
+        .unwrap();
     assert_eq!(r.files[0], dir.path().join("job.gpgl"));
     for f in [&old_style, &fresh] {
         assert_eq!(std::fs::read_to_string(f).unwrap(), "someone else's");

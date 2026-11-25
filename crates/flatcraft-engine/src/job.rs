@@ -6,7 +6,7 @@ use std::sync::Arc;
 use flatcraft_core::document::{CutOptions, Document, JobSettings, ObjectId};
 use flatcraft_core::geometry::CutPath;
 use flatcraft_core::transform::Transform;
-use flatcraft_device::gpgl::{CutSettings, EmitError, EmitPath, EmittedJob, check_safe, emit_job};
+use flatcraft_device::gpgl::{CheckedJob, CutSettings, EmitError, EmitPath, EmittedJob, emit_job};
 use flatcraft_device::{
     FileTransport, MaterialProfile, PlotterProfile, SendReport, Transport, TransportError,
     TransportSpec,
@@ -467,20 +467,21 @@ pub(crate) fn send(
         GateDecision::Refuse(reason) => Err(CommandError::Refused(reason)),
         GateDecision::NeedsConfirmation => {
             let result = build(s)?;
-            check_before_waiting(&result.job)?;
             let summary = summary(&result);
+            let job = checked(result.job)?;
             s.request_confirmation(
                 name,
                 plotter.id.clone(),
                 plotter.transport.clone(),
-                result.job,
+                job,
                 summary,
             );
             Err(CommandError::Refused(WAITING.into()))
         }
         GateDecision::Allow => {
             let mut result = build(s)?;
-            let report = deliver_built(s, &plotter.transport, &result.job, &name, origin)?;
+            let job = checked(result.job.clone())?;
+            let report = deliver_built(s, &plotter.transport, &job, &name, origin)?;
             let value = sent_json(&report, &summary(&result));
             result.sent = Some(report);
             s.doc_mut().set_last_sent(result);
@@ -489,10 +490,10 @@ pub(crate) fn send(
     }
 }
 
-/// Only bytes that pass the safety check may wait for confirmation, so an
-/// unsafe job is refused to the agent at once.
-fn check_before_waiting(job: &EmittedJob) -> Result<(), CommandError> {
-    check_safe(&job.bytes).map_err(|e| CommandError::Failed(TransportError::Unsafe(e).to_string()))
+/// Runs the safety check. Only a checked job can be sent or wait for
+/// confirmation, so an unsafe job is refused at once and nothing is sent.
+fn checked(job: EmittedJob) -> Result<CheckedJob, CommandError> {
+    CheckedJob::check(job).map_err(|e| CommandError::Failed(TransportError::Unsafe(e).to_string()))
 }
 
 /// Sends an already built job through `transport`. The gate must have
@@ -500,7 +501,7 @@ fn check_before_waiting(job: &EmittedJob) -> Result<(), CommandError> {
 pub(crate) fn deliver_built(
     s: &mut Session,
     transport: &TransportSpec,
-    job: &EmittedJob,
+    job: &CheckedJob,
     name: &str,
     origin: Origin,
 ) -> Result<SendReport, CommandError> {
@@ -594,19 +595,19 @@ mod tests {
             bytes: b"FB1\x03H\x03".to_vec(),
             listing: vec![],
         };
-        let e = check_before_waiting(&bad).unwrap_err();
+        let e = checked(bad).unwrap_err();
         assert!(matches!(e, CommandError::Failed(_)), "{e}");
         assert!(e.to_string().contains("safety check"), "{e}");
         let unterminated = EmittedJob {
             bytes: b"\x1b\x04".to_vec(),
             listing: vec![],
         };
-        assert!(check_before_waiting(&unterminated).is_err());
+        assert!(checked(unterminated).is_err());
         let good = EmittedJob {
             bytes: b"\x1b\x04H\x03".to_vec(),
             listing: vec![],
         };
-        check_before_waiting(&good).unwrap();
+        checked(good).unwrap();
     }
 
     #[test]

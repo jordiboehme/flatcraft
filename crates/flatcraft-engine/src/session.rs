@@ -13,7 +13,7 @@ use flatcraft_core::document::{CutOptions, Document, JobSettings, Object, Object
 use flatcraft_core::geometry::CutPath;
 use flatcraft_core::transform::Transform;
 use flatcraft_core::undo::UndoStack;
-use flatcraft_device::gpgl::EmittedJob;
+use flatcraft_device::gpgl::CheckedJob;
 use flatcraft_device::{ByteLog, ProfileStore, TransportSpec};
 use kurbo::Rect;
 use thiserror::Error;
@@ -70,7 +70,8 @@ pub struct PendingSend {
     pub doc: u64,
     pub plotter_id: String,
     pub transport: TransportSpec,
-    pub job: EmittedJob,
+    /// Checked when the agent asked, so only safe bytes ever wait.
+    pub job: CheckedJob,
     pub summary: JobSummary,
 }
 
@@ -466,7 +467,7 @@ impl Session {
         name: String,
         plotter_id: String,
         transport: TransportSpec,
-        job: EmittedJob,
+        job: CheckedJob,
         summary: JobSummary,
     ) -> u64 {
         let id = self.next_pending_id;

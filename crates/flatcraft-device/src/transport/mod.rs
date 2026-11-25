@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 use crate::bytelog::ByteLog;
-use crate::gpgl::{EmittedJob, SafetyError};
+use crate::gpgl::{CheckedJob, SafetyError};
 
 pub use file::FileTransport;
 
@@ -29,11 +29,11 @@ pub enum TransportError {
 }
 
 pub trait Transport {
-    /// Sends a complete job. Every transport runs `check_safe` before the
-    /// first byte leaves and sends nothing when it fails.
+    /// Sends a complete job. Only a [`CheckedJob`] can be sent, so every
+    /// job passed `check_safe` before its first byte leaves.
     fn send_job(
         &mut self,
-        job: &EmittedJob,
+        job: &CheckedJob,
         name: &str,
         log: &mut ByteLog,
     ) -> Result<SendReport, TransportError>;

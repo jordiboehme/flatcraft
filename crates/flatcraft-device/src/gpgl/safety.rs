@@ -18,11 +18,13 @@
 //! (signs, spaces and leading zeros ignored), is reported as [`SafetyError::Forbidden`].
 //! Every other rejection is [`SafetyError::Unrecognised`].
 //!
-//! [`check_safe`] also requires the raw bytes to end with exactly `H` + ETX.
+//! [`check_safe`] also requires the raw bytes to end with exactly `H` + ETX. A
+//! [`CheckedJob`] is a job that passed it; transports take only that.
 //! [`check_safe_fragment`] uses the same allowlist without that rule.
 
 use super::command::{FC_RANGE, FORCE_RANGE, SPEED_RANGE};
 use super::decode::{render_raw, tb_code};
+use super::emit::EmittedJob;
 
 const ESC: u8 = 0x1b;
 const ETX: u8 = 0x03;
@@ -164,6 +166,35 @@ pub fn check_safe(bytes: &[u8]) -> Result<(), SafetyError> {
         return Err(SafetyError::NotTerminated);
     }
     Ok(())
+}
+
+/// A job that passed [`check_safe`]. [`CheckedJob::check`] is the only way
+/// to build one, and [`crate::transport::Transport::send_job`] takes only
+/// this type, so no transport can skip the safety check.
+///
+/// ```compile_fail
+/// use flatcraft_device::gpgl::{CheckedJob, EmittedJob};
+/// let job = EmittedJob { bytes: b"FB1\x03H\x03".to_vec(), listing: vec![] };
+/// let _ = CheckedJob(job);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedJob(EmittedJob);
+
+impl CheckedJob {
+    /// Runs [`check_safe`] on the job's bytes.
+    pub fn check(job: EmittedJob) -> Result<Self, SafetyError> {
+        check_safe(&job.bytes)?;
+        Ok(Self(job))
+    }
+}
+
+/// Read access only: the bytes cannot change after the check.
+impl std::ops::Deref for CheckedJob {
+    type Target = EmittedJob;
+
+    fn deref(&self) -> &EmittedJob {
+        &self.0
+    }
 }
 
 /// Like [`check_safe`] but without the `H` rule, for short sequences such as a status query.

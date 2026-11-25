@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use super::{SendReport, Transport, TransportError, split_commands};
 use crate::bytelog::{ByteLog, Dir};
-use crate::gpgl::{EmittedJob, check_safe};
+use crate::gpgl::CheckedJob;
 
 /// Highest suffix tried before giving up.
 const MAX_SUFFIX: u32 = 10_000;
@@ -140,12 +140,10 @@ fn write_all_atomic(files: &[(&Path, &[u8])]) -> Result<(), TransportError> {
 impl Transport for FileTransport {
     fn send_job(
         &mut self,
-        job: &EmittedJob,
+        job: &CheckedJob,
         name: &str,
         log: &mut ByteLog,
     ) -> Result<SendReport, TransportError> {
-        // The safety check comes before anything touches the file system.
-        check_safe(&job.bytes).map_err(TransportError::Unsafe)?;
         if !valid_part(name) {
             return Err(TransportError::Io(format!(
                 "'{name}' is not a usable job name: use only letters, digits, '.', '_' and '-', and do not start with '.'"
