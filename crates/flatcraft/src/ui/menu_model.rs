@@ -29,7 +29,7 @@ use super::context_menu::{self, Item as Obj};
 use super::help::{self, HelpItem, SHORTCUTS};
 use super::prepare::{PrepareState, Snapshot};
 use super::tools::{self, Act, AlignTo, Section, Tool};
-use super::{Action, MENU_RECENT, Workspace, cut, display_name};
+use super::{Action, MENU_RECENT, Workspace, cut, project_name};
 
 /// A key with Cmd held, plus Shift or Alt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -351,7 +351,7 @@ pub fn object_item(cmd: &Cmd, snap: &Snapshot, st: &PrepareState, ids: &[u64]) -
         .into_iter()
         .flatten()
         .any(|i| i == want);
-    (offered && want.why(snap, ids).is_none()).then_some(want)
+    (offered && want.why(snap, st, ids).is_none()).then_some(want)
 }
 
 impl MenuModel {
@@ -562,7 +562,7 @@ fn file_menu(inp: &MenuInput) -> Sub {
             .iter()
             .take(MENU_RECENT)
             .enumerate()
-            .map(|(i, p)| item(Cmd::OpenRecent(i), display_name(p), true, None))
+            .map(|(i, p)| item(Cmd::OpenRecent(i), project_name(p), true, None))
             .collect()
     };
     let recent = Sub {

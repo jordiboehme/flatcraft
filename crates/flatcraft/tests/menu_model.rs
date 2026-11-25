@@ -465,7 +465,7 @@ fn recent_projects_become_items_that_open_them() {
     ];
     let some = model_of(&mut h, &paths);
     assert!(open_recent(&some));
-    assert_eq!(leaf(&some, &Cmd::OpenRecent(1)).title, "b.flatcraft");
+    assert_eq!(leaf(&some, &Cmd::OpenRecent(1)).title, "b");
     assert_eq!(
         Cmd::OpenRecent(1).action(1, &some.recent),
         Some(Action::Open(paths[1].clone()))

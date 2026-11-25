@@ -126,6 +126,16 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, actions: &mut Vec<Action>) {
 }
 
 fn page(ui: &mut Ui, app: &mut FlatCraftApp, t: &Tokens, width: f32, actions: &mut Vec<Action>) {
+    let focused = ui.ctx().input(|i| {
+        i.raw
+            .events
+            .iter()
+            .any(|e| matches!(e, egui::Event::WindowFocused(true)))
+    });
+    if focused {
+        // A file may have moved while FlatCraft was in the background.
+        app.ui.home.versions.clear();
+    }
     app.ui.home.collect(ui.ctx());
     ui.label(
         RichText::new(TITLE)
@@ -343,7 +353,9 @@ impl std::fmt::Debug for Thumb {
 }
 
 /// A picture a worker finished: id, version and the PNG or the reason.
-type Done = (String, String, Result<Vec<u8>, String>);
+/// `None` as the result: the file changed while it was drawn, so the
+/// picture shows an old version and was dropped.
+type Done = (String, String, Option<Result<Vec<u8>, String>>);
 
 /// What Home keeps between frames.
 #[derive(Debug, Default)]
@@ -358,12 +370,31 @@ pub struct HomeState {
     pub drawing: usize,
     /// The project and workspace last noted for the recent list.
     pub last_seen: Option<(PathBuf, super::Workspace)>,
+    /// Each recent file's version (`None`: missing), read once per visit
+    /// of Home: cleared when another workspace shows, when the window
+    /// gets focus and when FlatCraft saves, opens or removes a project.
+    pub versions: std::collections::HashMap<PathBuf, Option<String>>,
+    /// How often Home looked at a recent file on disk (tests).
+    pub file_checks: usize,
 }
 
 impl HomeState {
-    /// Drops the picture of `id`, so the next frame reads the cache.
+    /// Drops the picture of `id`, so the next frame reads the cache, and
+    /// the file versions, so the next frame reads them again.
     pub fn forget_texture(&mut self, id: &str) {
         self.thumbs.remove(id);
+        self.versions.clear();
+    }
+
+    /// The version of a recent file, from this visit's cache.
+    fn version(&mut self, path: &Path) -> Option<String> {
+        if let Some(v) = self.versions.get(path) {
+            return v.clone();
+        }
+        self.file_checks += 1;
+        let v = flatcraft_engine::thumbnails::project_version(path);
+        self.versions.insert(path.to_path_buf(), v.clone());
+        v
     }
 
     /// The worker still draws pictures.
@@ -379,7 +410,13 @@ impl HomeState {
         let mut finished = false;
         loop {
             match rx.try_recv() {
-                Ok((id, version, result)) => {
+                Ok((id, _, None)) => {
+                    // Drawn from an old version: look again next frame.
+                    self.drawing = self.drawing.saturating_sub(1);
+                    self.thumbs.remove(&id);
+                    self.versions.clear();
+                }
+                Ok((id, version, Some(result))) => {
                     self.drawing = self.drawing.saturating_sub(1);
                     let thumb = match result.as_deref().map(|png| texture(ctx, &id, png)) {
                         Ok(Some(tex)) => Thumb::Ready(tex),
@@ -478,18 +515,30 @@ fn start_worker(app: &mut FlatCraftApp, ctx: &egui::Context, missing: Vec<Wanted
             Source::Text(text) => render_text(&profiles, text),
         };
         // Project pictures go to the cache folder; sample pictures are
-        // kept in memory only (see `render_text`).
-        if let (Ok(png), Source::File(_)) = (&result, source)
-            && let Err(e) = flatcraft_engine::thumbnails::store(&config, id, version, png)
-        {
-            eprintln!("warning: cannot store the picture {id}: {e}");
+        // kept in memory only (see `render_text`). A file that changed
+        // while it was drawn (a save) keeps the newer picture: storing
+        // this one would remove it.
+        if let Source::File(path) = source {
+            let now = flatcraft_engine::thumbnails::project_version(path);
+            if now.as_deref() != Some(version) {
+                return None;
+            }
+            if let Ok(png) = &result
+                && let Err(e) = flatcraft_engine::thumbnails::store(&config, id, version, png)
+            {
+                eprintln!("warning: cannot store the picture {id}: {e}");
+            }
         }
-        result
+        Some(result)
     };
     if app.inline_pictures {
         // Tests: drawn in this frame, so no worker wakes the window later.
         for (id, version, source) in missing {
-            let result = paint(&id, &version, &source);
+            let Some(result) = paint(&id, &version, &source) else {
+                app.ui.home.thumbs.remove(&id);
+                app.ui.home.versions.clear();
+                continue;
+            };
             let thumb = match result.as_deref().map(|png| texture(ctx, &id, png)) {
                 Ok(Some(tex)) => Thumb::Ready(tex),
                 _ => Thumb::Failed,
@@ -640,7 +689,7 @@ fn recent(
                     let x = ui.max_rect().x_range();
                     ui.painter().hline(x, y, egui::Stroke::new(1.0, t.border));
                 }
-                row.version = flatcraft_engine::thumbnails::project_version(&row.path);
+                row.version = app.ui.home.version(&row.path);
                 let thumb = row.version.clone().map(|v| {
                     let id = flatcraft_engine::thumbnails::project_id(&row.path);
                     let source = Source::File(row.path.clone());

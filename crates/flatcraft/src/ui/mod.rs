@@ -1911,6 +1911,10 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     unsaved_modal(&ctx, app, &mut actions);
 
     app.note_workspace();
+    if app.ui.workspace != Workspace::Home {
+        // The next visit of Home looks at the recent files again.
+        app.ui.home.versions.clear();
+    }
     if let Some(users) = app.ui.prepare.panels.take_changed() {
         actions.push(Action::RememberPanels(users));
     }

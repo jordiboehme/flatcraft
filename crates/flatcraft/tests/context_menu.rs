@@ -400,16 +400,16 @@ fn trace_again_with_several_objects_is_dimmed_and_link_follows_the_design() {
     let both = [pic, square];
     assert!(flat(&both).contains(&TraceAgain));
     assert_eq!(
-        TraceAgain.why(&snap, &both),
+        TraceAgain.why(&snap, st, &both),
         Some("Select only one picture to trace it again.")
     );
-    assert_eq!(TraceAgain.why(&snap, &[pic]), None);
+    assert_eq!(TraceAgain.why(&snap, st, &[pic]), None);
     // Only vectors: it can never apply, so it is left out.
     assert!(!flat(&[square]).contains(&TraceAgain));
     // Link copies: one object says why; different designs can never be
     // linked, so it is left out.
     assert!(flat(&[square]).contains(&LinkCopies));
-    assert!(LinkCopies.why(&snap, &[square]).is_some());
+    assert!(LinkCopies.why(&snap, st, &[square]).is_some());
     assert!(!flat(&both).contains(&LinkCopies));
 }
 

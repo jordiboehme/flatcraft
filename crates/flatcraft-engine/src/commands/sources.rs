@@ -284,6 +284,11 @@ fn candidates(link: &SourceLink, project: Option<&Path>, kind: FileKind) -> Vec<
         .collect()
 }
 
+/// How often [`find_linked_file`] looked at the disk, for tests that
+/// check the window does not do it every frame.
+pub static FIND_LINKED_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// Where the linked file of an object is now (`raster`: a picture, else
 /// an SVG), as Reload
 /// reads it: the path relative to the project file `project` while the
@@ -294,6 +299,7 @@ pub fn find_linked_file(
     raster: bool,
     project: Option<&Path>,
 ) -> Option<PathBuf> {
+    FIND_LINKED_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let kind = if raster {
         FileKind::Raster
     } else {

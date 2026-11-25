@@ -299,9 +299,12 @@ fn cached_pictures(dir: &Path) -> Vec<PathBuf> {
 
 #[test]
 fn pictures_are_drawn_once_cached_and_refreshed_on_save() {
+    // The config dir and the project's folder are apart, so a picture
+    // next to the project would show.
     let dir = tempfile::tempdir().unwrap();
+    let projects = tempfile::tempdir().unwrap();
     let s = session(&dir);
-    let path = dir.path().join("coasters.flatcraft");
+    let path = projects.path().join("coasters.flatcraft");
     saved_project(&s, &path);
     s.lock().unwrap().prefs.recent_projects = vec![path.clone()];
     let calls = Arc::new(AtomicUsize::new(0));
@@ -319,12 +322,13 @@ fn pictures_are_drawn_once_cached_and_refreshed_on_save() {
     let png = flatcraft_engine::thumbnails::cached(dir.path(), &id, &v1).unwrap();
     assert_eq!(&png[1..4], b"PNG");
     // Never inside the project's folder: only the project is there.
-    let next_to: Vec<_> = std::fs::read_dir(dir.path())
+    let next_to: Vec<_> = std::fs::read_dir(projects.path())
         .unwrap()
         .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "png"))
+        .map(|e| e.file_name())
         .collect();
-    assert!(next_to.is_empty());
+    assert_eq!(next_to, ["coasters.flatcraft"]);
+    assert_eq!(cached_pictures(dir.path()).len(), 1);
     for _ in 0..5 {
         h.step();
     }
@@ -460,4 +464,89 @@ fn right_click_removes_a_missing_recent_project() {
     removes.last().unwrap().click();
     h.run();
     assert!(s.lock().unwrap().prefs.recent_projects.is_empty());
+}
+
+#[test]
+fn a_picture_of_an_old_version_never_replaces_the_newer_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let projects = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let path = projects.path().join("coasters.flatcraft");
+    saved_project(&s, &path);
+    s.lock().unwrap().prefs.recent_projects = vec![path.clone()];
+    let id = flatcraft_engine::thumbnails::project_id(&path);
+    let config = dir.path().to_path_buf();
+    let newer: Arc<std::sync::Mutex<Option<String>>> = Arc::default();
+    let seen = newer.clone();
+    // While the worker draws, the project is saved again and that save
+    // stores its own picture, as FlatCraftApp::saved does.
+    let mut h = harness_with(&dir, s.clone(), move |a| {
+        a.with_inline_pictures(false).with_thumbnailer(move |p, f| {
+            let png = flatcraft::ui::home::render_project(p, f)?;
+            if seen.lock().unwrap().is_some() {
+                // The second round draws the current version.
+                return Ok(png);
+            }
+            let mut text = std::fs::read_to_string(f).unwrap();
+            text.push_str("\n\n");
+            std::fs::write(f, text).unwrap();
+            let v = flatcraft_engine::thumbnails::project_version(f).unwrap();
+            flatcraft_engine::thumbnails::store(
+                &config,
+                &flatcraft_engine::thumbnails::project_id(f),
+                &v,
+                &tiny_png(),
+            )
+            .unwrap();
+            *seen.lock().unwrap() = Some(v);
+            Ok(png)
+        })
+    });
+    wait_for_pictures(&mut h);
+    let v2 = newer.lock().unwrap().clone().expect("the worker ran");
+    assert_eq!(
+        flatcraft_engine::thumbnails::cached(dir.path(), &id, &v2).as_deref(),
+        Some(&tiny_png()[..]),
+        "the newer picture stays"
+    );
+    assert_eq!(
+        cached_pictures(dir.path()).len(),
+        1,
+        "the old one was not stored"
+    );
+}
+
+#[test]
+fn home_looks_at_recent_files_once_per_visit() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let path = dir.path().join("coasters.flatcraft");
+    saved_project(&s, &path);
+    s.lock().unwrap().prefs.recent_projects = vec![path.clone(), dir.path().join("gone.flatcraft")];
+    let mut h = harness_with(&dir, s.clone(), |a| a);
+    let checks = app(&h).ui.home.file_checks;
+    assert_eq!(checks, 2);
+    for _ in 0..10 {
+        h.step();
+    }
+    assert_eq!(
+        app(&h).ui.home.file_checks,
+        2,
+        "no file looked at per frame"
+    );
+    // A new visit looks again.
+    app_mut(&mut h).ui.workspace = Workspace::Prepare;
+    wait_for_source_check(&mut h);
+    app_mut(&mut h).ui.workspace = Workspace::Home;
+    h.run();
+    assert_eq!(app(&h).ui.home.file_checks, 4);
+    // So does the window getting focus.
+    h.event(egui::Event::WindowFocused(true));
+    h.run();
+    assert_eq!(app(&h).ui.home.file_checks, 6);
+}
+
+/// A 2 x 2 PNG, unlike any mat picture.
+fn tiny_png() -> Vec<u8> {
+    tiny_skia::Pixmap::new(2, 2).unwrap().encode_png().unwrap()
 }

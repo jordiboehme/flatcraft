@@ -400,3 +400,35 @@ fn sample_pictures_come_from_the_preview_renderer() {
     // Kept in memory, never written next to the samples or in the cache.
     assert!(!dir.path().join(flatcraft_engine::thumbnails::DIR).exists());
 }
+
+#[test]
+fn the_gift_tags_cut_each_hole_before_its_tag() {
+    let sample = SAMPLES.iter().find(|x| x.id == "gift-tags").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut st = s.lock().unwrap();
+    flatcraft_engine::commands::project::open_text(&mut st, sample.text, "tags").unwrap();
+    let job = flatcraft_engine::job::build(&st).unwrap();
+    let boxes: Vec<kurbo::Rect> = job
+        .plan
+        .toolpaths
+        .iter()
+        .map(|t| {
+            t.points.iter().fold(
+                kurbo::Rect::from_points(t.points[0], t.points[0]),
+                |r, p| r.union_pt(*p),
+            )
+        })
+        .collect();
+    let holes: Vec<usize> = (0..boxes.len())
+        .filter(|&i| boxes[i].width() < 10.0)
+        .collect();
+    assert_eq!(holes.len(), 6, "one hole per tag");
+    assert_eq!(boxes.len(), 12);
+    for h in holes {
+        let tag = (0..boxes.len())
+            .find(|&i| i != h && boxes[i].width() >= 10.0 && boxes[i].contains(boxes[h].center()))
+            .unwrap_or_else(|| panic!("hole {h} is in no tag"));
+        assert!(h < tag, "hole {h} is cut after its tag {tag}");
+    }
+}

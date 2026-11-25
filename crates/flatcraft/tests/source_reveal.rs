@@ -7,6 +7,7 @@ use std::path::Path;
 
 use common::{
     AppHarness, FakeRevealer, app, app_mut, harness_with, import_square, session, to_prepare,
+    wait_for_workers,
 };
 use flatcraft::ui::context_menu::{self, Item, SOURCE_MISSING, SOURCE_MIXED};
 use flatcraft::ui::menu_model::{Cmd, MenuInput, MenuModel};
@@ -61,7 +62,7 @@ fn items(r: &mut Rig, ids: &[u64]) -> Vec<(Item, Option<&'static str>)> {
     context_menu::items(&snap, &app(&r.h).ui.prepare, ids)
         .into_iter()
         .flatten()
-        .map(|i| (i, i.why(&snap, ids)))
+        .map(|i| (i, i.why(&snap, &app(&r.h).ui.prepare, ids)))
         .collect()
 }
 
@@ -158,6 +159,11 @@ fn a_missing_file_is_dimmed_with_its_reason() {
     write_square(&file);
     let id = import_file(&r.s, &file);
     std::fs::remove_file(&file).unwrap();
+    // The source check (off the UI thread) finds it gone.
+    r.h.event(egui::Event::WindowFocused(false));
+    r.h.run();
+    r.h.event(egui::Event::WindowFocused(true));
+    wait_for_workers(&mut r.h);
     let list = items(&mut r, &[id]);
     assert_eq!(
         reason(&list, Item::RevealSource),
@@ -258,4 +264,51 @@ fn a_project_folder_that_moved_as_a_whole_still_finds_its_file() {
     let shown = r.revealed.0.lock().unwrap().clone();
     assert_eq!(shown.len(), 1);
     assert!(shown[0].ends_with("new/a.svg"), "{shown:?}");
+}
+
+#[test]
+fn twelve_copies_of_one_file_touch_no_file_per_frame() {
+    use std::sync::atomic::Ordering;
+    let mut r = rig();
+    let file = r.dir.path().join("a.svg");
+    write_square(&file);
+    let id = import_file(&r.s, &file);
+    r.s.lock()
+        .unwrap()
+        .execute(
+            "object.copies",
+            json!({ "id": id, "count": 11, "layout": { "grid": { "columns": 4 } }, "linked": true }),
+            Origin::User,
+        )
+        .unwrap();
+    let ids: Vec<u64> =
+        r.s.lock()
+            .unwrap()
+            .doc()
+            .document
+            .objects
+            .iter()
+            .map(|o| o.id.0)
+            .collect();
+    assert_eq!(ids.len(), 12);
+    select(&r.s, &ids);
+    r.h.run();
+    let calls = flatcraft_engine::commands::sources::FIND_LINKED_CALLS.load(Ordering::Relaxed);
+    for _ in 0..10 {
+        r.h.step();
+        // What the context menu and the menu bar ask each frame.
+        let list = items(&mut r, &ids);
+        assert_eq!(reason(&list, Item::RevealSource), Some(None));
+        let m = model(&mut r);
+        assert!(enabled(&m, &Cmd::RevealSource));
+    }
+    let after = flatcraft_engine::commands::sources::FIND_LINKED_CALLS.load(Ordering::Relaxed);
+    assert_eq!(after, calls, "no file was looked at");
+    // A click finds the file once.
+    run(&mut r, Item::RevealSource, &ids);
+    assert_eq!(
+        flatcraft_engine::commands::sources::FIND_LINKED_CALLS.load(Ordering::Relaxed),
+        calls + 1
+    );
+    assert_eq!(*r.revealed.0.lock().unwrap(), vec![file]);
 }

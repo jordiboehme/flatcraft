@@ -156,7 +156,7 @@ impl Item {
     /// Why the item cannot run on `ids` now, as a sentence that says what
     /// to do; `None` when it can. The ribbon actions give the table's
     /// reason, so the ribbon and the menu say the same.
-    pub fn why(self, snap: &Snapshot, ids: &[u64]) -> Option<&'static str> {
+    pub fn why(self, snap: &Snapshot, st: &PrepareState, ids: &[u64]) -> Option<&'static str> {
         let n = ids.len();
         match self {
             Item::Rename => (n > 1).then_some("Select only one object to rename it."),
@@ -168,7 +168,7 @@ impl Item {
                 .objects
                 .is_empty()
                 .then_some("Import something first. There is nothing to select yet."),
-            Item::RevealSource | Item::CopySourcePath => source_file(snap, ids)?.err(),
+            Item::RevealSource | Item::CopySourcePath => source_file(snap, st, ids)?.err(),
             _ => self.tool()?.blocked_for(snap, n),
         }
     }
@@ -177,43 +177,49 @@ impl Item {
 /// Why Reveal source and Copy source path are dimmed: the file is gone.
 pub const SOURCE_MISSING: &str = "The file was moved or deleted. Use Reconnect source.";
 /// Why they are dimmed: the objects come from several files.
-pub const SOURCE_MIXED: &str = "The selected objects come from different files.";
+pub const SOURCE_MIXED: &str =
+    "The selected objects come from different files. Select objects from one file.";
 
-/// The linked file of the objects `ids`: `None` when none of them is
-/// linked to a file (the items are left out), the reason when the file is
-/// gone or the linked objects come from different files, else its path.
-/// Objects that are not linked do not count.
+/// The linked file of the objects `ids`, for Reveal source and Copy
+/// source path: `None` when none of them is linked to a file (the items
+/// are left out); the reason when the file is gone (the source check,
+/// which runs off the UI thread, found it missing) or the linked objects
+/// come from different files; else the id of a linked object, whose file
+/// [`source_path`] finds on a click. Objects that are not linked do not
+/// count. Touches no file, so the menu bar can ask every frame.
 pub fn source_file(
     snap: &Snapshot,
+    st: &PrepareState,
     ids: &[u64],
-) -> Option<Result<std::path::PathBuf, &'static str>> {
-    use flatcraft_engine::commands::sources::find_linked_file;
-    // Where each file is now, as Reload finds it; `None` when it is gone.
-    let files: Vec<(&std::path::PathBuf, Option<std::path::PathBuf>)> = ids
+) -> Option<Result<u64, &'static str>> {
+    let linked: Vec<(u64, &std::path::PathBuf)> = ids
         .iter()
-        .filter_map(|id| {
-            let o = snap.object(*id)?;
-            let link = o.source_link.as_ref()?;
-            Some((
-                &link.path,
-                find_linked_file(link, o.raster, snap.project.as_deref()),
-            ))
-        })
+        .filter_map(|id| Some((*id, &snap.object(*id)?.source_link.as_ref()?.path)))
         .collect();
-    let (first_known, first_now) = files.first()?.clone();
-    let same = |(known, now): &(&std::path::PathBuf, Option<std::path::PathBuf>)| match (
-        now, &first_now,
-    ) {
-        (Some(a), Some(b)) => a == b,
-        _ => *known == first_known,
-    };
-    if !files.iter().all(same) {
+    let (first, path) = *linked.first()?;
+    if linked.iter().any(|(_, p)| *p != path) {
         return Some(Err(SOURCE_MIXED));
     }
-    match first_now {
-        Some(path) => Some(Ok(path)),
-        None => Some(Err(SOURCE_MISSING)),
+    if linked.iter().any(|(id, _)| st.sources.broken(*id)) {
+        return Some(Err(SOURCE_MISSING));
     }
+    Some(Ok(first))
+}
+
+/// Where the linked file of object `id` is now, as Reload finds it (also
+/// after the project folder moved as a whole); its last known path when
+/// it is in neither place. Looks at the disk: only for a click.
+pub fn source_path(snap: &Snapshot, id: u64) -> Option<std::path::PathBuf> {
+    let o = snap.object(id)?;
+    let link = o.source_link.as_ref()?;
+    Some(
+        flatcraft_engine::commands::sources::find_linked_file(
+            link,
+            o.raster,
+            snap.project.as_deref(),
+        )
+        .unwrap_or_else(|| link.path.clone()),
+    )
 }
 
 /// The objects a right-click works on. A click on an object outside the
@@ -352,7 +358,7 @@ fn draw(
     actions: &mut Vec<Action>,
 ) -> bool {
     let doc_id = snap.doc_id;
-    let why = item.why(snap, ids);
+    let why = item.why(snap, st, ids);
     match item {
         Item::Align | Item::Distribute if why.is_none() => {
             let r = ui.menu_button(item.label(), |ui| {
@@ -462,11 +468,19 @@ pub fn run_item(
                 actions.push(Action::Reconnect { doc_id, id: *o });
             }
         }
-        Item::RevealSource | Item::CopySourcePath => match source_file(snap, ids) {
-            Some(Ok(path)) if item == Item::RevealSource => actions.push(Action::Reveal(path)),
-            Some(Ok(path)) => actions.push(Action::CopyPath(path)),
-            _ => return false,
-        },
+        Item::RevealSource | Item::CopySourcePath => {
+            let Some(Ok(id)) = source_file(snap, st, ids) else {
+                return false;
+            };
+            let Some(path) = source_path(snap, id) else {
+                return false;
+            };
+            actions.push(if item == Item::RevealSource {
+                Action::Reveal(path)
+            } else {
+                Action::CopyPath(path)
+            });
+        }
         Item::Delete => actions.push(ribbon::delete_action(doc_id, ids)),
         Item::Import => actions.push(Action::Import { doc_id }),
         Item::SelectAll => actions.push(select_all_action(snap)),
