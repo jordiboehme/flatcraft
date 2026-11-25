@@ -125,7 +125,7 @@ pub(crate) fn add_svg(
     bytes: Vec<u8>,
 ) -> Result<(ObjectId, Value), CommandError> {
     let import = import_svg(&bytes, fonts::system_fonts()).map_err(import_error)?;
-    let warnings: Vec<String> = import.warnings.iter().map(warning_text).collect();
+    let mut warnings: Vec<String> = import.warnings.iter().map(warning_text).collect();
     let id = add_object(
         s,
         name.clone(),
@@ -133,6 +133,7 @@ pub(crate) fn add_svg(
         import.paths,
         import.page_frame_mm,
     )?;
+    warnings.extend(larger_than_area(s, id));
     let out = json!({ "id": id.0, "bounds_mm": bounds_json(s, id), "warnings": warnings });
     Ok((id, out))
 }
@@ -201,15 +202,15 @@ fn add_raster(
     Ok((id, out))
 }
 
-/// A warning if the traced shapes of object `id` do not fit the cutting
-/// area in width or height, so no move can bring them inside.
+/// A warning if the shapes of object `id` do not fit the cutting area in
+/// width or height, so no move can bring them inside.
 fn larger_than_area(s: &Session, id: ObjectId) -> Option<String> {
     let area = cutting_area(s).ok()?;
     let b = s.doc().document.get(id).and_then(placed_bounds)?;
     const EPS: f64 = 1e-6;
     (b.width() > area.width() + EPS || b.height() > area.height() + EPS).then(|| {
         format!(
-            "The traced image is {:.0} x {:.0} mm, larger than the cutting area ({:.0} x {:.0} mm). Scale it down or pick a bigger mat before you cut.",
+            "The shapes are {:.0} x {:.0} mm, larger than the cutting area ({:.0} x {:.0} mm). Scale them down or pick a bigger mat before you cut.",
             b.width(),
             b.height(),
             area.width(),
@@ -451,8 +452,9 @@ fn run_retrace(s: &mut Session, p: RetraceParams, _: Origin) -> Result<Value, Co
         )));
     };
     let t = trace(bytes, &settings, blade).map_err(import_error)?;
+    let size_before = placed_bounds(o).map(|b| b.size());
     let invert = settings.invert;
-    let (warnings, numbers) = trace_report(&t, invert);
+    let (mut warnings, numbers) = trace_report(&t, invert);
     let o = object_mut(&mut s.doc_mut().document, id)?;
     if let Source::Raster { trace, .. } = &mut o.source {
         *trace = settings;
@@ -461,6 +463,16 @@ fn run_retrace(s: &mut Session, p: RetraceParams, _: Origin) -> Result<Value, Co
     // is relative to the centre of the local bounds, which the new trace
     // changes.
     o.set_geometry_anchored(t.paths, Rect::new(0.0, 0.0, t.size_mm.0, t.size_mm.1));
+    // Warn only when the retrace made the shapes grow: a size the user
+    // already had was warned about before.
+    let grew = match (size_before, placed_bounds(o).map(|b| b.size())) {
+        (Some(a), Some(b)) => b.width > a.width + 1e-6 || b.height > a.height + 1e-6,
+        (None, Some(_)) => true,
+        _ => false,
+    };
+    if grew {
+        warnings.extend(larger_than_area(s, id));
+    }
     let mut out = json!({ "id": id.0, "bounds_mm": bounds_json(s, id), "warnings": warnings });
     merge(&mut out, numbers);
     Ok(out)

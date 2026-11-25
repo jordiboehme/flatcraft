@@ -1446,6 +1446,56 @@ fn a_raster_larger_than_the_cutting_area_warns_at_import() {
 }
 
 #[test]
+fn an_svg_larger_than_the_cutting_area_warns_at_import() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let r = run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": rect_svg(400.0, 20.0), "name": "long" }),
+    );
+    let w = r["warnings"].to_string();
+    assert!(
+        w.contains("The shapes are 400 x 20 mm, larger than the cutting area"),
+        "{w}"
+    );
+    let r = run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": rect_svg(40.0, 20.0), "name": "short" }),
+    );
+    assert!(!r["warnings"].to_string().contains("cutting area"), "{r}");
+}
+
+/// A retrace at a lower dpi makes the shapes 30 times larger: that warns.
+/// Retracing the same again does not warn a second time.
+#[test]
+fn a_retrace_that_grows_past_the_cutting_area_warns() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = run(&mut s, "object.import", json!({ "path": square_png(&dir) }))["id"]
+        .as_u64()
+        .unwrap();
+    let r = run(
+        &mut s,
+        "object.retrace",
+        json!({ "id": id, "settings": { "dpi_override": 10.0 } }),
+    );
+    assert!(
+        r["warnings"]
+            .to_string()
+            .contains("larger than the cutting area"),
+        "{r}"
+    );
+    let r = run(
+        &mut s,
+        "object.retrace",
+        json!({ "id": id, "settings": { "dpi_override": 10.0 } }),
+    );
+    assert!(!r["warnings"].to_string().contains("cutting area"), "{r}");
+}
+
+#[test]
 fn oversized_image_error_names_the_size() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = session(&dir);
