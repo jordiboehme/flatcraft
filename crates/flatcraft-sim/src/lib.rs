@@ -24,13 +24,66 @@ pub const PUSHED_DEG: f64 = 150.0;
 /// The sample step is the blade offset divided by this (pinned in Task 10).
 pub const SAMPLE_STEP_FACTOR: f64 = 20.0;
 
-/// `d / SAMPLE_STEP_FACTOR`, at least 0.005 mm so a pen profile does not
+/// The smallest sample step. A step below it (or one that is not a
+/// positive number) is raised to it, so a bad setting can not hang the loop.
+pub const MIN_SAMPLE_STEP_MM: f64 = 0.005;
+
+/// The most samples one simulation makes (about 400 MB of samples).
+pub const MAX_SAMPLES: usize = 5_000_000;
+
+/// Why a simulation could not run.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SimError {
+    /// A run point (`toolpath: Some(i)`) or the home (`toolpath: None`) is not finite.
+    NonFinite {
+        toolpath: Option<usize>,
+        run: usize,
+        index: usize,
+    },
+    /// The blade offset is negative or not finite.
+    BladeOffset { value: f64 },
+    /// The trace would have more than `limit` samples.
+    TooManySamples { limit: usize },
+}
+
+impl std::fmt::Display for SimError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NonFinite { toolpath: None, .. } => {
+                write!(
+                    f,
+                    "The home position has a coordinate that is not a number."
+                )
+            }
+            Self::NonFinite {
+                toolpath: Some(t),
+                run,
+                index,
+            } => write!(
+                f,
+                "Toolpath {t}, run {run}, point {index} has a coordinate that is not a number."
+            ),
+            Self::BladeOffset { value } => write!(
+                f,
+                "The blade offset must be a finite number of at least 0 mm (got {value})."
+            ),
+            Self::TooManySamples { limit } => write!(
+                f,
+                "The simulation would need more than {limit} samples. Simulate fewer paths at a time."
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SimError {}
+
+/// `d / SAMPLE_STEP_FACTOR`, at least `MIN_SAMPLE_STEP_MM` so a pen profile does not
 /// make 1000 samples per mm, and 0.01 mm with no offset.
 fn sample_step_mm(d: f64) -> f64 {
     if d <= 0.0 {
         0.01
     } else {
-        (d / SAMPLE_STEP_FACTOR).max(0.005)
+        (d / SAMPLE_STEP_FACTOR).max(MIN_SAMPLE_STEP_MM)
     }
 }
 

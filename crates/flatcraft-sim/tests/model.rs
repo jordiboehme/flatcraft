@@ -4,7 +4,7 @@ use flatcraft_core::document::ObjectId;
 use flatcraft_device::profile::{Media, PlotterProfile};
 use flatcraft_path::{AxisRun, PathRef, PipelineSettings, PlacedPath, Toolpath, WASTE_SEG, plan};
 use flatcraft_sim::model::{drag, push_angle_deg};
-use flatcraft_sim::{DeviceGrid, Sample, SimSettings, simulate};
+use flatcraft_sim::{DeviceGrid, Sample, SimError, SimSettings, simulate};
 use kurbo::{BezPath, Circle, Point, Rect, Shape, Vec2};
 use proptest::prelude::*;
 
@@ -26,7 +26,7 @@ fn down(samples: &[Sample]) -> impl Iterator<Item = &Sample> {
 #[test]
 fn aligned_line_has_no_deviation() {
     let s = SimSettings::float(0.3);
-    let trace = simulate(&[open(&[(0.0, 0.0), (50.0, 0.0)])], Point::ZERO, &s);
+    let trace = simulate(&[open(&[(0.0, 0.0), (50.0, 0.0)])], Point::ZERO, &s).unwrap();
     assert_eq!(trace.samples[0].tip, Point::new(-0.3, 0.0));
     assert!(down(&trace.samples).count() > 50);
     for x in down(&trace.samples) {
@@ -55,19 +55,23 @@ fn closed_form_matches_small_step_integration() {
     assert!(drag(from, to, start, d).distance(tip) < 1e-4);
 }
 
+/// Analytic: `min_x sqrt(sech^2 x + (x - tanh x)^2) = 0.662743...` at x = 1.1997.
+const CORNER_FACTOR: f64 = 0.662_743_419_349;
+
 #[test]
-fn uncompensated_right_angle_corner_deviates_0_6626_d() {
+fn uncompensated_right_angle_corner_deviates_0_66274_d() {
     let d = 0.3;
     let trace = simulate(
         &[open(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)])],
         Point::ZERO,
         &SimSettings::float(d),
-    );
+    )
+    .unwrap();
     let corner = Point::new(10.0, 0.0);
     let min = down(&trace.samples)
         .map(|s| s.tip.distance(corner))
         .fold(f64::INFINITY, f64::min);
-    assert!((min - 0.6626 * d).abs() <= 0.002, "min {min}");
+    assert!((min - CORNER_FACTOR * d).abs() <= 1e-5, "min {min}");
 }
 
 #[test]
@@ -84,16 +88,29 @@ fn steady_circle_tip_radius_is_sqrt_r2_minus_d2() {
     let mut t = Toolpath::new(points, true, source());
     t.laps = 3;
     t.lap_range = 0..n + 1;
-    let trace = simulate(&[t], Point::new(r, 0.0), &SimSettings::float(d));
+    let trace = simulate(&[t], Point::new(r, 0.0), &SimSettings::float(d)).unwrap();
     let perimeter = std::f64::consts::TAU * r;
     let third: Vec<&Sample> = down(&trace.samples)
         .filter(|s| s.t_mm > 2.0 * perimeter)
         .collect();
     assert!(third.len() > 1000);
     let want = (r * r - d * d).sqrt();
+    // the axis runs counter-clockwise (in x-right, y-up terms) and leads the
+    // tip by asin(d / R): the tip trails, it does not lead
+    let lead = (d / r).asin();
     for s in third {
         let got = s.tip.to_vec2().length();
         assert!((got - want).abs() <= 0.002, "{got} vs {want}");
+        let mut ahead = s.axis.to_vec2().atan2() - s.tip.to_vec2().atan2();
+        if ahead <= -std::f64::consts::PI {
+            ahead += std::f64::consts::TAU;
+        } else if ahead > std::f64::consts::PI {
+            ahead -= std::f64::consts::TAU;
+        }
+        assert!(
+            (ahead - lead).abs() <= 1e-3,
+            "axis ahead by {ahead}, want {lead}"
+        );
     }
 }
 
@@ -107,7 +124,8 @@ fn blade_up_keeps_heading() {
         ],
         Point::ZERO,
         &SimSettings::float(d),
-    );
+    )
+    .unwrap();
     let up: Vec<&Sample> = trace.samples.iter().filter(|s| !s.down).collect();
     assert!(up.iter().any(|s| s.axis.y > 5.0 && s.axis.y < 15.0));
     for s in up {
@@ -127,7 +145,8 @@ fn zero_offset_tip_is_axis() {
         ],
         Point::new(-3.0, -2.0),
         &SimSettings::float(0.0),
-    );
+    )
+    .unwrap();
     assert!(trace.samples.len() > 10);
     for s in &trace.samples {
         assert_eq!(s.tip, s.axis);
@@ -148,7 +167,8 @@ fn reversal_is_marked_pushed() {
         &[open(&[(0.0, 0.0), (10.0, 0.0), (5.0, 0.0)])],
         Point::ZERO,
         &SimSettings::float(0.3),
-    );
+    )
+    .unwrap();
     let forward: Vec<&Sample> = down(&trace.samples).filter(|s| s.seg == 0).collect();
     let backward: Vec<&Sample> = down(&trace.samples).filter(|s| s.seg == 1).collect();
     assert!(!forward.is_empty() && !backward.is_empty());
@@ -162,7 +182,8 @@ fn a_right_angle_turn_is_not_pushed() {
         &[open(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)])],
         Point::ZERO,
         &SimSettings::float(0.3),
-    );
+    )
+    .unwrap();
     assert!(trace.samples.len() > 100);
     assert!(trace.samples.iter().all(|s| !s.pushed));
 }
@@ -220,7 +241,8 @@ fn samples_are_at_most_one_step_apart_and_hit_every_vertex() {
         &[open(&pts), open(&[(20.0, 20.0), (21.0, 23.0)])],
         Point::ZERO,
         &s,
-    );
+    )
+    .unwrap();
     for w in trace.samples.windows(2) {
         assert!(w[0].axis.distance(w[1].axis) <= s.sample_step_mm + 1e-12);
         assert!((w[1].t_mm - w[0].t_mm - w[0].axis.distance(w[1].axis)).abs() < 1e-9);
@@ -245,7 +267,7 @@ fn runs_lift_between() {
             seg: vec![WASTE_SEG, 1],
         },
     ]);
-    let trace = simulate(&[t], Point::ZERO, &SimSettings::float(d));
+    let trace = simulate(&[t], Point::ZERO, &SimSettings::float(d)).unwrap();
     let end0 = trace
         .samples
         .iter()
@@ -286,7 +308,8 @@ fn device_mode_snaps_every_run_point() {
         &[open(&[(1.01, 1.02), (5.333, 1.02), (5.333, 4.977)])],
         Point::ZERO,
         &SimSettings::device(0.3, grid),
-    );
+    )
+    .unwrap();
     for p in [(1.01, 1.02), (5.333, 1.02), (5.333, 4.977)] {
         let want = grid.snap(p.into());
         assert!(down(&trace.samples).any(|s| s.axis == want), "{want:?}");
@@ -335,7 +358,7 @@ fn sim_travel_equals_plan_travel() {
     .collect();
     let out = plan(&input, &settings).unwrap();
     let d = 0.25;
-    let trace = simulate(&out.toolpaths, out.home, &SimSettings::float(d));
+    let trace = simulate(&out.toolpaths, out.home, &SimSettings::float(d)).unwrap();
     let first = trace.samples[0];
     assert_eq!((first.axis, first.down, first.t_mm), (out.home, false, 0.0));
     assert_eq!(
@@ -357,4 +380,88 @@ fn sim_travel_equals_plan_travel() {
         out.travel_mm
     );
     assert!((cut - out.cut_mm).abs() < 1e-9, "{cut} vs {}", out.cut_mm);
+}
+
+#[test]
+fn a_bad_sample_step_is_floored() {
+    for step in [0.0, -1.0, f64::NAN, 1e-300] {
+        let mut s = SimSettings::float(0.3);
+        s.sample_step_mm = step;
+        let trace = simulate(&[open(&[(0.0, 0.0), (1.0, 0.0)])], Point::ZERO, &s).unwrap();
+        for w in trace.samples.windows(2) {
+            assert!(
+                w[0].axis.distance(w[1].axis) <= 0.005 + 1e-12,
+                "step {step}"
+            );
+        }
+        assert!(
+            trace.samples.len() <= 2 + 1.0f64.div_euclid(0.005) as usize + 2,
+            "step {step}"
+        );
+    }
+    let mut s = SimSettings::float(0.3);
+    s.sample_step_mm = f64::INFINITY;
+    let trace = simulate(&[open(&[(0.0, 0.0), (1.0, 0.0)])], Point::ZERO, &s).unwrap();
+    assert_eq!(trace.samples.last().unwrap().axis, Point::new(1.0, 0.0));
+}
+
+#[test]
+fn non_finite_input_is_refused() {
+    let s = SimSettings::float(0.3);
+    let bad = open(&[(0.0, 0.0), (f64::NAN, 1.0)]);
+    assert_eq!(
+        simulate(&[open(&[(0.0, 0.0), (1.0, 0.0)]), bad], Point::ZERO, &s),
+        Err(SimError::NonFinite {
+            toolpath: Some(1),
+            run: 0,
+            index: 1
+        })
+    );
+    let inf = open(&[(f64::INFINITY, 0.0), (1.0, 0.0)]);
+    assert!(matches!(
+        simulate(&[inf], Point::ZERO, &s),
+        Err(SimError::NonFinite {
+            toolpath: Some(0),
+            run: 0,
+            index: 0
+        })
+    ));
+    let line = [open(&[(0.0, 0.0), (1.0, 0.0)])];
+    assert!(matches!(
+        simulate(&line, Point::new(f64::NAN, 0.0), &s),
+        Err(SimError::NonFinite { toolpath: None, .. })
+    ));
+    for d in [f64::NAN, f64::INFINITY, -0.1] {
+        assert!(
+            matches!(
+                simulate(&line, Point::ZERO, &SimSettings::float(d)),
+                Err(SimError::BladeOffset { .. })
+            ),
+            "d {d}"
+        );
+    }
+}
+
+#[test]
+fn a_huge_trace_is_refused_before_it_is_built() {
+    let s = SimSettings::float(0.3);
+    let far = open(&[(0.0, 0.0), (1e9, 0.0)]);
+    assert_eq!(
+        simulate(&[far], Point::ZERO, &s),
+        Err(SimError::TooManySamples {
+            limit: flatcraft_sim::MAX_SAMPLES
+        })
+    );
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "one seg per run point")]
+fn a_short_seg_is_a_bug_in_debug() {
+    let mut t = open(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)]);
+    t.axis = Some(vec![AxisRun {
+        points: t.points.clone(),
+        seg: vec![WASTE_SEG, 0],
+    }]);
+    let _ = simulate(&[t], Point::ZERO, &SimSettings::float(0.3));
 }

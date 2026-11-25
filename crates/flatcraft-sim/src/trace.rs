@@ -7,11 +7,11 @@
 //! point is then repeated blade down, so the moves into `down` samples sum
 //! to the cut length and the others to the travel.
 
-use flatcraft_path::{Toolpath, WASTE_SEG};
+use flatcraft_path::{AxisRun, Toolpath, WASTE_SEG};
 use kurbo::{Point, Vec2};
 
 use crate::model::{drag, push_angle_deg};
-use crate::{PUSHED_DEG, SimSettings};
+use crate::{MAX_SAMPLES, MIN_SAMPLE_STEP_MM, PUSHED_DEG, SimError, SimSettings};
 
 /// One point of the simulated job.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -49,16 +49,72 @@ struct Head {
 
 /// Simulate `toolpaths` in order, starting at `home` (the plan's home) with
 /// the blade up and the tip at `home - d * start_heading`. Samples are at
-/// most `sample_step_mm` of axis travel apart and on every run point. With a
-/// grid, every run point is snapped first.
-pub fn simulate(toolpaths: &[Toolpath], home: Point, s: &SimSettings) -> SimTrace {
+/// most `sample_step_mm` of axis travel apart (at least
+/// [`MIN_SAMPLE_STEP_MM`]) and on every run point. With a grid, every run
+/// point is snapped first.
+///
+/// Refused, before any sample is made: a home or run point that is not
+/// finite ([`SimError::NonFinite`]), a negative or non-finite blade offset
+/// ([`SimError::BladeOffset`]) and a job that would need more than
+/// [`MAX_SAMPLES`] samples ([`SimError::TooManySamples`]).
+pub fn simulate(
+    toolpaths: &[Toolpath],
+    home: Point,
+    s: &SimSettings,
+) -> Result<SimTrace, SimError> {
     let d = s.blade_offset_mm;
+    if !(d.is_finite() && d >= 0.0) {
+        return Err(SimError::BladeOffset { value: d });
+    }
+    if !home.is_finite() {
+        return Err(SimError::NonFinite {
+            toolpath: None,
+            run: 0,
+            index: 0,
+        });
+    }
+    let step = sample_step(s.sample_step_mm);
+    let snap = |p: Point| s.grid.map_or(p, |g| g.snap(p));
+    let runs: Vec<Vec<AxisRun>> = toolpaths.iter().map(Toolpath::runs).collect();
+
+    // First pass: check every point and count the samples, so a bad job
+    // fails before it allocates.
+    let mut count = 1usize;
+    let mut here = home;
+    for (ti, t_runs) in runs.iter().enumerate() {
+        for (ri, run) in t_runs.iter().enumerate() {
+            debug_assert_eq!(
+                run.seg.len(),
+                run.points.len(),
+                "one seg per run point (toolpath {ti}, run {ri})"
+            );
+            for (j, &p) in run.points.iter().enumerate() {
+                let p = snap(p);
+                if !p.is_finite() {
+                    return Err(SimError::NonFinite {
+                        toolpath: Some(ti),
+                        run: ri,
+                        index: j,
+                    });
+                }
+                count = count
+                    .saturating_add(steps(here, p, step))
+                    .saturating_add(usize::from(j == 0));
+                here = p;
+            }
+        }
+    }
+    if count > MAX_SAMPLES {
+        return Err(SimError::TooManySamples { limit: MAX_SAMPLES });
+    }
+
     let mut head = Head {
         axis: home,
         tip: home - d * unit_or_x(s.start_heading),
         t_mm: 0.0,
     };
-    let mut samples = vec![Sample {
+    let mut samples = Vec::with_capacity(count);
+    samples.push(Sample {
         axis: head.axis,
         tip: head.tip,
         down: false,
@@ -67,10 +123,9 @@ pub fn simulate(toolpaths: &[Toolpath], home: Point, s: &SimSettings) -> SimTrac
         seg: WASTE_SEG,
         t_mm: 0.0,
         pushed: false,
-    }];
-    let snap = |p: Point| s.grid.map_or(p, |g| g.snap(p));
-    for (ti, t) in toolpaths.iter().enumerate() {
-        for (ri, run) in t.runs().iter().enumerate() {
+    });
+    for (ti, t_runs) in runs.iter().enumerate() {
+        for (ri, run) in t_runs.iter().enumerate() {
             let Some(&first) = run.points.first() else {
                 continue;
             };
@@ -90,7 +145,7 @@ pub fn simulate(toolpaths: &[Toolpath], home: Point, s: &SimSettings) -> SimTrac
                 &mut head,
                 &mut samples,
                 snap(first),
-                s,
+                step,
                 at(WASTE_SEG, false),
                 |_, a, _| (a - offset, false),
             );
@@ -107,7 +162,7 @@ pub fn simulate(toolpaths: &[Toolpath], home: Point, s: &SimSettings) -> SimTrac
                     &mut head,
                     &mut samples,
                     snap(p),
-                    s,
+                    step,
                     at(seg, true),
                     |from, a, tip| {
                         let pushed = push_angle_deg(from, a, tip) > PUSHED_DEG;
@@ -117,24 +172,45 @@ pub fn simulate(toolpaths: &[Toolpath], home: Point, s: &SimSettings) -> SimTrac
             }
         }
     }
-    SimTrace { samples }
+    Ok(SimTrace { samples })
 }
 
-/// Move the axis straight to `to` in steps of at most `sample_step_mm`,
-/// pushing one sample per step. `step(from, to, tip)` gives the tip after
-/// the axis step `from -> to` with the tip at `tip`, and whether that step
-/// pushes the blade. A zero-length blade-down move still gets its sample.
+/// The sample step to use: at least [`MIN_SAMPLE_STEP_MM`], and that when
+/// the setting is not a number.
+fn sample_step(step: f64) -> f64 {
+    if step.is_nan() {
+        MIN_SAMPLE_STEP_MM
+    } else {
+        step.max(MIN_SAMPLE_STEP_MM)
+    }
+}
+
+/// How many samples `move_to` makes from `from` to `to` (both finite):
+/// one per step, and one for a zero-length move (only blade-down moves
+/// push it, so this can count one too many, never too few).
+fn steps(from: Point, to: Point, step: f64) -> usize {
+    let n = (from.distance(to) / step).ceil();
+    if n >= usize::MAX as f64 {
+        usize::MAX
+    } else {
+        (n as usize).max(1)
+    }
+}
+
+/// Move the axis straight to `to` in steps of at most `step`, pushing one
+/// sample per step. `advance(from, to, tip)` gives the tip after the axis
+/// step `from -> to` with the tip at `tip`, and whether that step pushes
+/// the blade. A zero-length blade-down move still gets its sample.
 fn move_to(
     head: &mut Head,
     samples: &mut Vec<Sample>,
     to: Point,
-    s: &SimSettings,
+    step: f64,
     template: Sample,
-    mut step: impl FnMut(Point, Point, Point) -> (Point, bool),
+    mut advance: impl FnMut(Point, Point, Point) -> (Point, bool),
 ) {
     let from = head.axis;
-    let len = from.distance(to);
-    if len == 0.0 {
+    if from == to {
         if template.down {
             samples.push(Sample {
                 axis: head.axis,
@@ -145,7 +221,7 @@ fn move_to(
         }
         return;
     }
-    let n = (len / s.sample_step_mm).ceil().max(1.0) as usize;
+    let n = steps(from, to, step);
     let mut prev = from;
     for k in 1..=n {
         let axis = if k == n {
@@ -153,7 +229,7 @@ fn move_to(
         } else {
             from.lerp(to, k as f64 / n as f64)
         };
-        let (tip, pushed) = step(prev, axis, head.tip);
+        let (tip, pushed) = advance(prev, axis, head.tip);
         head.t_mm += prev.distance(axis);
         head.axis = axis;
         head.tip = tip;

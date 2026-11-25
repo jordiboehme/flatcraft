@@ -567,15 +567,15 @@ fn the_first_path_is_the_one_nearest_the_home() {
 fn lap_is_the_first_ring_without_overcut_in_every_pass() {
     let mut s = settings();
     s.overcut_mm = 0.5;
-    s.passes = 2;
-    for reverse in [false, true] {
+    for (passes, reverse) in [1, 2, 3].into_iter().flat_map(|n| [(n, false), (n, true)]) {
+        s.passes = passes;
         s.reverse_alternate_passes = reverse;
         let input = [
             placed(1, rect_path(10.0, 10.0, 10.0, 10.0)),
             placed(2, Circle::new((60.0, 60.0), 5.0).to_path(0.1)),
         ];
         let out = plan(&input, &s).unwrap();
-        assert_eq!(out.toolpaths.len(), 4);
+        assert_eq!(out.toolpaths.len(), 2 * passes as usize);
         for t in &out.toolpaths {
             let lap = t.lap();
             assert_eq!(

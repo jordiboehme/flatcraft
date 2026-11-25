@@ -132,8 +132,8 @@ impl Toolpath {
         match &self.axis {
             Some(runs) => runs.clone(),
             None => {
-                let seg = std::iter::once(WASTE_SEG)
-                    .chain((0..self.points.len().saturating_sub(1)).map(|i| i as u32))
+                let seg = (0..self.points.len())
+                    .map(|j| if j == 0 { WASTE_SEG } else { j as u32 - 1 })
                     .collect();
                 vec![AxisRun {
                     points: self.points.clone(),

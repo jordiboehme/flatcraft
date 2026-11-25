@@ -29,6 +29,15 @@ pub fn drag(axis_from: Point, axis_to: Point, tip: Point, d: f64) -> Point {
     }
     let u = step / s;
     let phi0 = signed_angle(u, axis_from - tip);
+    // Modelling choice at the exact push (phi0 = pi): the pursuit equation
+    // has an unstable fixed point there, and an exact solution keeps the tip
+    // in front of the axis forever, carried along. A move a hair away from
+    // pi (more than 1e-9 rad) takes the closed form instead, where the tip
+    // swings round to trail within a few d. So the result is discontinuous
+    // at phi0 near pi. Neither branch is what a real blade does when pushed
+    // (it flips or digs in), so the trace marks such moves `pushed` (push
+    // angle above `PUSHED_DEG`) and the metrics report them instead of
+    // trusting the tip position.
     if (std::f64::consts::PI - phi0.abs()).abs() < 1e-9 {
         return tip + step;
     }
