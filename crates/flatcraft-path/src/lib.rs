@@ -1,7 +1,7 @@
 //! FlatCraft path crate: turns placed vector paths into ordered toolpaths.
 //!
 //! The pipeline is a chain of small pure functions, one per module, in
-//! pipeline order: `flatten`, `clean`, `order`, `overcut`, `passes`. `plan`
+//! pipeline order: `flatten`, `clean`, `order`, `overcut`, `passes`. `feed` holds the feed bands the order can work in. `plan`
 //! wires them together. `containment` holds the ring geometry they share:
 //! the containment tree, the kept side of each ring and the job's kept
 //! material. `rings` holds the ring direction, entry candidates and exit
@@ -9,6 +9,7 @@
 
 pub mod clean;
 pub mod containment;
+pub mod feed;
 pub mod flatten;
 pub mod order;
 pub mod overcut;

@@ -310,7 +310,7 @@ pub fn construct_with_stats(
     let mut found = Vec::new();
     let mut scored: Vec<(f64, usize, usize)> = Vec::new();
     let mut out = Vec::with_capacity(n);
-    let (mut head, mut heading) = (start, ASSUMED_START_HEADING);
+    let (mut head, mut heading) = (start, s.start_heading);
 
     while out.len() < n {
         query += 1;
@@ -392,24 +392,110 @@ pub fn construct_with_stats(
 /// `paths` in cut order ([`construct`], then [`improve`]): each ring turned
 /// to `s.direction` and started at its chosen entry (closed again), each
 /// open path run from its chosen end. `keep` stays as `plan` set it; `lap_range` is the whole ring.
+///
+/// With `s.monotonic_feed` the paths are cut in feed bands ([`crate::feed`]),
+/// in increasing band order, and each band is ordered on its own. The head
+/// position and blade heading carry over from one band to the next, and the
+/// improvement budget is shared by the bands in proportion to their paths.
+/// A path whose parent lies in a later band is not a root in its band, but
+/// the tree of a band only holds the paths of the band, so with
+/// `outlines_last` it waits as an outline of that band.
 pub fn order(
     paths: Vec<Toolpath>,
     tree: &ContainmentTree,
     start: Point,
     s: &PipelineSettings,
 ) -> Vec<Toolpath> {
+    if !s.monotonic_feed {
+        return order_group(paths, tree, start, s).0;
+    }
+    let band = crate::feed::bands(&paths, tree);
+    let mut distinct = band.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    let total = paths.len().max(1) as u64;
+    let mut slots: Vec<Option<Toolpath>> = paths.into_iter().map(Some).collect();
+    let (mut head, mut heading) = (start, s.start_heading);
+    let mut out = Vec::with_capacity(slots.len());
+    for b in distinct {
+        let members: Vec<usize> = (0..slots.len()).filter(|&i| band[i] == b).collect();
+        let local: HashMap<usize, usize> =
+            members.iter().enumerate().map(|(l, &g)| (g, l)).collect();
+        let map = |g: usize| local.get(&g).copied();
+        let sub = ContainmentTree {
+            parent: members
+                .iter()
+                .map(|&g| tree.parent.get(g).copied().flatten().and_then(map))
+                .collect(),
+            children: members
+                .iter()
+                .map(|&g| {
+                    let kids = tree.children.get(g).map_or(&[][..], Vec::as_slice);
+                    kids.iter().filter_map(|&c| map(c)).collect()
+                })
+                .collect(),
+            roots: members
+                .iter()
+                .filter(|&&g| {
+                    tree.parent
+                        .get(g)
+                        .copied()
+                        .flatten()
+                        .and_then(map)
+                        .is_none()
+                })
+                .filter_map(|&g| map(g))
+                .collect(),
+            depth: members
+                .iter()
+                .map(|&g| tree.depth.get(g).copied().unwrap_or(0))
+                .collect(),
+            own_depth: members
+                .iter()
+                .map(|&g| tree.own_depth.get(g).copied().unwrap_or(0))
+                .collect(),
+        };
+        let mut band_settings = s.clone();
+        band_settings.start_heading = heading;
+        band_settings.strategy.budget =
+            (u128::from(s.strategy.budget) * members.len() as u128 / u128::from(total)) as u64;
+        let group: Vec<Toolpath> = members.iter().filter_map(|&g| slots[g].take()).collect();
+        let (ordered, exit) = order_group(group, &sub, head, &band_settings);
+        if let Some((h, hd)) = exit {
+            (head, heading) = (h, hd);
+        }
+        out.extend(ordered);
+    }
+    out
+}
+
+/// One group of `paths` in cut order from `start`, and the head and blade
+/// heading after the last one (`None` when the group has no usable entry).
+fn order_group(
+    paths: Vec<Toolpath>,
+    tree: &ContainmentTree,
+    start: Point,
+    s: &PipelineSettings,
+) -> (Vec<Toolpath>, Option<(Point, Vec2)>) {
     let units: Vec<Unit> = paths.iter().map(|t| Unit::new(t, s)).collect();
     let mut tour = construct(&units, tree, start, s);
     improve(&units, &mut tour, tree, start, s);
+    let exit = tour
+        .iter()
+        .rev()
+        .find_map(|p| units[p.unit].candidates.get(p.candidate))
+        .map(|e| (e.exit, e.exit_heading));
     let mut slots: Vec<Option<Toolpath>> = paths.into_iter().map(Some).collect();
-    tour.iter()
+    let ordered = tour
+        .iter()
         .filter_map(|p| {
             let mut t = slots[p.unit].take()?;
             t.points = units[p.unit].path(p.candidate);
             t.lap_range = 0..t.points.len();
             Some(t)
         })
-        .collect()
+        .collect();
+    (ordered, exit)
 }
 
 /// How many nearest units each unit's improvement moves look at (R8).
@@ -453,7 +539,7 @@ pub struct ImproveStats {
 /// term: what [`improve`] and [`entry_dp`] lower. A unit without an entry
 /// costs nothing and leaves the head where it is, as in [`construct`].
 pub fn tour_cost(units: &[Unit], tour: &[Placement], start: Point, s: &PipelineSettings) -> f64 {
-    let (mut head, mut heading) = (start, ASSUMED_START_HEADING);
+    let (mut head, mut heading) = (start, s.start_heading);
     let mut total = 0.0;
     for p in tour {
         let u = &units[p.unit];
@@ -572,7 +658,7 @@ fn entry_dp_choice(
         for (b, e) in u.candidates.iter().enumerate() {
             for (a, &before) in prev_cost.iter().enumerate() {
                 let (head, heading) = match prev_at {
-                    None => (start, ASSUMED_START_HEADING),
+                    None => (start, s.start_heading),
                     Some(pk) => {
                         let pe = &units[tour[pk].unit].candidates[a];
                         (pe.exit, pe.exit_heading)
@@ -635,7 +721,7 @@ fn apply_dp_runs(
                 let e = &units[place(lp).unit].candidates[place(lp).candidate];
                 (e.exit, e.exit_heading)
             }
-            None => (start, ASSUMED_START_HEADING),
+            None => (start, s.start_heading),
         };
         let u = &units[to.unit];
         let e = &u.candidates[to.candidate];
@@ -1208,7 +1294,7 @@ impl<'a> Search<'a> {
     /// The cost of going on to `to` after `from` (the start for `None`).
     fn cost(&self, from: Option<Placement>, to: Placement) -> f64 {
         let (head, heading) = match from {
-            None => (self.start, ASSUMED_START_HEADING),
+            None => (self.start, self.s.start_heading),
             Some(p) => {
                 let e = &self.units[p.unit].candidates[p.candidate];
                 (e.exit, e.exit_heading)

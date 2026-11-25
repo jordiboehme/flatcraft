@@ -8,8 +8,8 @@ use flatcraft_core::geometry::CutPath;
 use flatcraft_core::transform::Transform;
 use flatcraft_device::gpgl::{CheckedJob, CutSettings, EmitError, EmitPath, EmittedJob, emit_job};
 use flatcraft_device::{
-    FileTransport, MaterialProfile, PlotterProfile, SendReport, Transport, TransportError,
-    TransportSpec,
+    FileTransport, MaterialProfile, MediaKind, PlotterProfile, SendReport, Transport,
+    TransportError, TransportSpec,
 };
 use flatcraft_path::{
     CutPlan, PathRef, PipelineSettings, PlacedPath, PlanError, StrategySettings, plan,
@@ -327,6 +327,8 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         passes,
         reverse_alternate_passes: material.reverse_alternate_passes,
         strategy: StrategySettings::for_strategy(job.strategy),
+        // Without a mat the feed motor moves the sheet: cut it in bands.
+        monotonic_feed: media.kind == MediaKind::NoMat,
         // Half a device step: anything shorter moves no motor at all.
         min_cut_mm: 0.5 / plotter.units_per_mm,
         ..PipelineSettings::with_defaults(area, plotter.home_mm(media))

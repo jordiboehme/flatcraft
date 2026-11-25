@@ -1081,3 +1081,42 @@ fn travel_starts_at_the_media_corner_not_the_grid_origin() {
     let travel = r["travel_mm"].as_f64().unwrap();
     assert!((travel - expected).abs() < 1e-6, "{travel} vs {expected}");
 }
+
+/// Two pieces that a plain nearest-neighbour order cuts low-then-high-then
+/// back: from the media corner the near one (feed band 1) comes first. With
+/// feed bands the one in band 0 comes first.
+const TWO_PIECES: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="100mm" viewBox="0 0 200 100"><rect x="0" y="60" width="5" height="5"/><rect x="150" y="10" width="5" height="5"/></svg>"#;
+
+/// The largest y of each toolpath of the job, in cut order.
+fn cut_order_tops(s: &mut Session, media: &str) -> Vec<f64> {
+    run(s, "job.set_media", json!({ "id": media }));
+    run(s, "job.preview", json!({}));
+    let plan = &s.doc().last_job().unwrap().plan;
+    plan.toolpaths
+        .iter()
+        .map(|t| t.points.iter().map(|p| p.y).fold(f64::MIN, f64::max))
+        .collect()
+}
+
+#[test]
+fn no_mat_media_turns_it_on() {
+    let d = dirs();
+    let mut s = session(&d);
+    run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": TWO_PIECES, "name": "two" }),
+    );
+    let on_mat = cut_order_tops(&mut s, "mat-12x12");
+    assert_eq!(on_mat.len(), 2);
+    assert!(
+        on_mat[0] > on_mat[1],
+        "a mat keeps the nearest order: {on_mat:?}"
+    );
+    let no_mat = cut_order_tops(&mut s, "no-mat");
+    assert_eq!(no_mat.len(), 2);
+    assert!(
+        no_mat[0] < no_mat[1],
+        "no mat cuts in feed bands: {no_mat:?}"
+    );
+}

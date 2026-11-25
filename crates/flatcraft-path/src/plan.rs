@@ -41,8 +41,12 @@ pub struct PipelineSettings {
     pub home: Point,
     /// The direction every ring is cut in.
     pub direction: RingDirection,
-    /// Order the cuts in feed bands (Task 7). Off until then.
+    /// Order the cuts in feed bands ([`crate::feed`]): the head never goes
+    /// back more than a band, for media without a mat.
     pub monotonic_feed: bool,
+    /// The blade heading at the start of the order. The order sets it per
+    /// feed band; leave it at [`ASSUMED_START_HEADING`].
+    pub start_heading: Vec2,
     /// What the cut order optimises for.
     pub strategy: StrategySettings,
     /// Paths shorter than this are dropped and counted in
@@ -74,6 +78,7 @@ impl PipelineSettings {
             home,
             direction: RingDirection::Ccw,
             monotonic_feed: false,
+            start_heading: ASSUMED_START_HEADING,
             strategy: StrategySettings::default(),
             min_cut_mm: DEFAULT_MIN_CUT_MM,
         }
