@@ -16,7 +16,7 @@ flatcraft-import = { path = "../flatcraft-import" }
 flatcraft-path = { path = "../flatcraft-path" }
 flatcraft-sim = { path = "../flatcraft-sim" }
 kurbo.workspace = true
-eframe = { workspace = true, features = ["glow", "accesskit", "x11", "wayland"] }
+eframe = { workspace = true, features = ["glow", "accesskit", "links", "x11", "wayland"] }
 egui.workspace = true
 resvg.workspace = true
 usvg.workspace = true
