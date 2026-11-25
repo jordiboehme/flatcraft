@@ -454,7 +454,7 @@ impl FlatCraftApp {
                     self.toast(Toast::warning(w));
                 }
                 for f in result["failed"].as_array().into_iter().flatten() {
-                    if let Some(e) = f["error"].as_str() {
+                    if let Some(e) = f["reason"].as_str() {
                         self.toast(Toast::error(e.to_string()));
                     }
                 }

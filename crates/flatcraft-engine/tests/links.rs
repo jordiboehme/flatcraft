@@ -1157,3 +1157,31 @@ fn relink_items_with_one_entry_reports_like_several() {
     assert_eq!(r["unchanged"], json!([id]), "{r}");
     assert_eq!(r["failed"], json!([]), "{r}");
 }
+
+#[test]
+fn a_relink_where_every_item_fails_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(dir.path());
+    let a = dir.path().join("a.svg");
+    write(&a, svg(false));
+    let id = import(&mut s, &a);
+    run(
+        &mut s,
+        "project.save",
+        json!({ "path": dir.path().join("p.flatcraft") }),
+    );
+    let undo = s.doc().undo.undo_len();
+    let r = run(
+        &mut s,
+        "object.relink",
+        json!({ "items": [
+            { "id": id, "path": dir.path().join("gone.svg") },
+            { "id": id, "path": dir.path().join("gone.png") },
+        ] }),
+    );
+    let failed = r["failed"].as_array().unwrap();
+    assert_eq!(failed.len(), 2, "{r}");
+    assert!(failed.iter().all(|f| f["reason"].is_string()), "{r}");
+    assert_eq!(s.doc().undo.undo_len(), undo, "no undo step");
+    assert!(!s.doc().dirty, "the document stays clean");
+}
