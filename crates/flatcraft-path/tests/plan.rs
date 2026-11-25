@@ -1,6 +1,8 @@
 use flatcraft_core::document::ObjectId;
 use flatcraft_path::clean::length;
-use flatcraft_path::{PathRef, PipelineSettings, PlacedPath, PlanError, SettingsField, plan};
+use flatcraft_path::{
+    KeepSide, PathRef, PipelineSettings, PlacedPath, PlanError, SettingsField, plan,
+};
 use kurbo::{BezPath, Circle, Point, Rect, Shape};
 use proptest::prelude::*;
 
@@ -630,7 +632,8 @@ fn default_run_is_the_points_with_their_segments() {
         (t.laps, t.keep, t.kind),
         (
             1,
-            flatcraft_path::KeepSide::Both,
+            // A lone closed ring is a piece (Ruling M2-P13).
+            flatcraft_path::KeepSide::Inside,
             flatcraft_path::ToolpathKind::Cut
         )
     );
@@ -653,4 +656,39 @@ fn explicit_axis_runs_are_returned_as_they_are() {
     ];
     t.axis = Some(runs.clone());
     assert_eq!(t.runs(), runs);
+}
+
+#[test]
+fn plan_sets_the_keep_side_of_every_toolpath() {
+    // Object 1: an outline with a hole. Object 2: a piece on object 1's
+    // hole-free band, and an open line. Pieces is the default mode.
+    let mut frame = rect_path(10.0, 10.0, 100.0, 100.0);
+    frame.extend(rect_path(40.0, 40.0, 20.0, 20.0));
+    let mut line = BezPath::new();
+    line.move_to((200.0, 20.0));
+    line.line_to((220.0, 20.0));
+    let out = plan(
+        &[
+            placed(1, frame),
+            placed(2, rect_path(15.0, 15.0, 10.0, 10.0)),
+            placed(3, line),
+        ],
+        &settings(),
+    )
+    .unwrap();
+    let side = |x: f64, y: f64| {
+        out.toolpaths
+            .iter()
+            .find(|t| t.lap().contains(&Point::new(x, y)))
+            .map(|t| t.keep)
+            .unwrap()
+    };
+    assert_eq!(side(10.0, 10.0), KeepSide::Inside, "outline");
+    assert_eq!(side(40.0, 40.0), KeepSide::Outside, "hole");
+    assert_eq!(
+        side(15.0, 15.0),
+        KeepSide::Inside,
+        "piece of another object"
+    );
+    assert_eq!(side(200.0, 20.0), KeepSide::Both, "open line");
 }

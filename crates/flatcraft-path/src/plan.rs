@@ -6,6 +6,7 @@ use flatcraft_core::document::ObjectId;
 use flatcraft_core::limits::{MAX_OVERCUT_MM, MAX_TOLERANCE_MM, MIN_TOLERANCE_MM};
 use kurbo::{BezPath, PathEl, Point, Rect, Vec2};
 
+use crate::containment::{self, KeepMode};
 use crate::{clean, flatten, order, overcut, passes};
 
 /// Which path of which object a toolpath came from.
@@ -330,6 +331,13 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
     }
 
     let mut toolpaths = order::nearest_neighbour(toolpaths, s.home);
+    // Ruling M2-P13: every toolpath's keep side comes from the containment
+    // tree. Every object is Pieces until Task 29 supplies the real modes.
+    let mode_of = |_: ObjectId| KeepMode::Pieces;
+    let tree = containment::build(&toolpaths);
+    for (i, t) in toolpaths.iter_mut().enumerate() {
+        t.keep = containment::keep_side(&tree, i, t.closed, mode_of(t.source.object));
+    }
     for t in toolpaths.iter_mut().filter(|t| t.closed) {
         t.lap_range = 0..t.points.len();
         t.points = overcut::apply(&t.points, s.overcut_mm);

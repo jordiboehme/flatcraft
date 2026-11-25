@@ -9,8 +9,9 @@ use std::collections::HashMap;
 
 use kurbo::{ParamCurveNearest as _, Point, Rect};
 
-use crate::clean::Polyline;
-use crate::plan::KeepSide;
+use flatcraft_core::document::ObjectId;
+
+use crate::plan::{KeepSide, Toolpath, ToolpathKind};
 
 /// Points closer than this to a ring count as on it.
 pub const EPS: f64 = 1e-9;
@@ -22,6 +23,8 @@ pub const PROBES: usize = 3;
 thread_local! {
     /// Even-odd tests run on this thread (`point_in_ring`).
     pub(crate) static INSIDE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Grid cells `is_kept` walked on this thread.
+    pub(crate) static CELL_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Shoelace area of a ring in mat coordinates (y down). A ring that runs
@@ -84,7 +87,9 @@ fn box_in(inner: Rect, outer: Rect) -> bool {
 /// True if closed ring `inner` lies in closed ring `outer` (spec 8.3,
 /// R32a, Ruling F4): its box lies in the outer box, its absolute area `ia`
 /// is smaller than `oa`, and the first of up to [`PROBES`] vertices that
-/// is not on the outer boundary is inside. Partial overlaps fail the box
+/// is not on the outer boundary is inside. When all of them lie on the
+/// boundary (a diamond inscribed in a square), the midpoints of the first
+/// [`PROBES`] edges are tried the same way. Partial overlaps fail the box
 /// test. A ring that pokes out of a parent sharing its box can nest
 /// wrongly; M1 accepted that cost.
 pub(crate) fn nested(
@@ -102,6 +107,12 @@ pub(crate) fn nested(
         .iter()
         .take(PROBES)
         .find_map(|p| point_in_ring(*p, outer))
+        .or_else(|| {
+            inner
+                .windows(2)
+                .take(PROBES)
+                .find_map(|w| point_in_ring(w[0].midpoint(w[1]), outer))
+        })
         .unwrap_or(false)
 }
 
@@ -117,10 +128,13 @@ pub struct ContainmentTree {
     pub roots: Vec<usize>,
     /// The number of closed paths around each path.
     pub depth: Vec<usize>,
+    /// The number of closed paths of the same object around each path.
+    pub own_depth: Vec<usize>,
 }
 
-/// Build the containment tree of `paths` (spec 8.3). Toolpath callers pass
-/// one lap per ring (`Toolpath::lap()`).
+/// Build the containment tree of `paths` (spec 8.3). Rings are read
+/// through `Toolpath::lap()` (Ruling F3) and grouped by
+/// `source.object` for [`ContainmentTree::own_depth`].
 ///
 /// - A closed path B lies in a closed path A by [`nested`].
 /// - An open path lies in a closed path when its box lies in the ring's
@@ -129,14 +143,14 @@ pub struct ContainmentTree {
 /// - The parent is the smallest container. Candidates are searched from
 ///   the smallest larger ring upward and the first hit wins, so deep
 ///   nesting costs about one nesting test per ring.
-pub fn build(paths: &[Polyline]) -> ContainmentTree {
+pub fn build(paths: &[Toolpath]) -> ContainmentTree {
     let n = paths.len();
     // (index, box, absolute area) of every closed path, smallest first.
     let mut rings: Vec<(usize, Rect, f64)> = paths
         .iter()
         .enumerate()
         .filter(|(_, p)| p.closed)
-        .filter_map(|(i, p)| Some((i, bbox(&p.points)?, signed_area(&p.points).abs())))
+        .filter_map(|(i, p)| Some((i, bbox(p.lap())?, signed_area(p.lap()).abs())))
         .collect();
     rings.sort_by(|a, b| a.2.total_cmp(&b.2).then(a.0.cmp(&b.0)));
 
@@ -146,12 +160,12 @@ pub fn build(paths: &[Polyline]) -> ContainmentTree {
         let larger = &larger[larger.partition_point(|r| r.2 <= ja)..];
         parent[j] = larger
             .iter()
-            .find(|&&(i, ib, ia)| nested(&paths[j].points, jb, ja, &paths[i].points, ib, ia))
+            .find(|&&(i, ib, ia)| nested(paths[j].lap(), jb, ja, paths[i].lap(), ib, ia))
             .map(|r| r.0);
     }
     let open: Vec<usize> = (0..n).filter(|&j| !paths[j].closed).collect();
     for &j in &open {
-        let Some(jb) = bbox(&paths[j].points) else {
+        let Some(jb) = bbox(paths[j].lap()) else {
             continue;
         };
         parent[j] = rings
@@ -160,9 +174,9 @@ pub fn build(paths: &[Polyline]) -> ContainmentTree {
                 ia > 0.0
                     && box_in(jb, ib)
                     && paths[j]
-                        .points
+                        .lap()
                         .iter()
-                        .all(|q| point_in_ring(*q, &paths[i].points) != Some(false))
+                        .all(|q| point_in_ring(*q, paths[i].lap()) != Some(false))
             })
             .map(|r| r.0);
     }
@@ -170,9 +184,20 @@ pub fn build(paths: &[Polyline]) -> ContainmentTree {
     // A parent is a larger closed ring, so going from the largest down
     // sets every parent's depth before its children's.
     let mut depth = vec![0; n];
+    let mut own_depth = vec![0; n];
     for j in rings.iter().rev().map(|r| r.0).chain(open) {
         if let Some(p) = parent[j] {
             depth[j] = depth[p] + 1;
+        }
+        // The nearest ancestor of the same object, usually the parent.
+        let object = paths[j].source.object;
+        let mut up = parent[j];
+        while let Some(a) = up {
+            if paths[a].source.object == object {
+                own_depth[j] = own_depth[a] + 1;
+                break;
+            }
+            up = parent[a];
         }
     }
     let mut children = vec![Vec::new(); n];
@@ -188,16 +213,25 @@ pub fn build(paths: &[Polyline]) -> ContainmentTree {
         children,
         roots,
         depth,
+        own_depth,
     }
 }
 
-/// The side of path `i` the kept material lies on: inside for a ring at
-/// even depth (a piece), outside at odd depth (a hole), both for an open
-/// path.
-pub fn keep_side(tree: &ContainmentTree, i: usize, closed: bool) -> KeepSide {
-    if !closed {
-        KeepSide::Both
-    } else if tree.depth[i].is_multiple_of(2) {
+/// The side of path `i` the kept material lies on, for a path of an
+/// object in `mode`. Depth counts only the rings of the path's own object
+/// ([`ContainmentTree::own_depth`]), so a piece lying on another object
+/// stays a piece.
+///
+/// - [`KeepMode::Pieces`]: inside at even depth (a piece), outside at odd
+///   depth (a hole).
+/// - [`KeepMode::Stencil`]: the other way round.
+/// - [`KeepMode::Both`] and open paths: both.
+pub fn keep_side(tree: &ContainmentTree, i: usize, closed: bool, mode: KeepMode) -> KeepSide {
+    if !closed || mode == KeepMode::Both {
+        return KeepSide::Both;
+    }
+    let piece = tree.own_depth[i].is_multiple_of(2);
+    if piece != (mode == KeepMode::Stencil) {
         KeepSide::Inside
     } else {
         KeepSide::Outside
@@ -222,9 +256,9 @@ pub enum KeepMode {
 
 /// The closed `Cut` rings of one object, one lap each, and its keep mode.
 #[derive(Debug, Clone)]
-pub struct KeptObject<'a> {
-    pub rings: Vec<&'a [Point]>,
-    pub mode: KeepMode,
+struct KeptObject<'a> {
+    rings: Vec<&'a [Point]>,
+    mode: KeepMode,
 }
 
 /// The edge of a grid cell of [`KeptMaterial`], in millimetres.
@@ -266,25 +300,63 @@ pub struct KeptMaterial {
 }
 
 impl KeptMaterial {
-    /// Index all closed `Cut` rings of the job, one lap each, as one
-    /// [`KeepMode::Pieces`] object: a point is kept when it lies strictly
-    /// inside an odd number of them.
-    pub fn new(rings: &[&[Point]]) -> Self {
+    /// The kept material of a job: the closed `Cut` toolpaths grouped by
+    /// source object, one lap each (Ruling F3) from pass 1 only, so passes
+    /// and overcut never cancel a ring. Open paths and the alignment stroke
+    /// add no rings. `mode_of` gives each object's [`KeepMode`],
+    /// `cutting_area` is the sheet a [`KeepMode::Stencil`] keeps, and
+    /// `clearance_mm` how far from a [`KeepMode::Both`] object's rings
+    /// everything is kept.
+    pub fn from_toolpaths(
+        toolpaths: &[Toolpath],
+        mode_of: impl Fn(ObjectId) -> KeepMode,
+        cutting_area: Rect,
+        clearance_mm: f64,
+    ) -> Self {
+        let mut index: HashMap<ObjectId, usize> = HashMap::new();
+        let mut objects: Vec<KeptObject> = Vec::new();
+        for t in toolpaths
+            .iter()
+            .filter(|t| t.closed && t.kind == ToolpathKind::Cut && t.pass == 1)
+        {
+            let o = t.source.object;
+            let k = *index.entry(o).or_insert_with(|| {
+                objects.push(KeptObject {
+                    rings: Vec::new(),
+                    mode: mode_of(o),
+                });
+                objects.len() - 1
+            });
+            objects[k].rings.push(t.lap());
+        }
+        Self::with_modes(&objects, cutting_area, clearance_mm)
+    }
+
+    /// One object of `rings` in `mode`, for tests.
+    #[cfg(test)]
+    fn single_object(rings: &[&[Point]], mode: KeepMode) -> Self {
         Self::with_modes(
             &[KeptObject {
                 rings: rings.to_vec(),
-                mode: KeepMode::Pieces,
+                mode,
             }],
-            Rect::ZERO,
+            Rect::new(-1000.0, -1000.0, 1000.0, 1000.0),
             0.0,
         )
+    }
+
+    /// True when no ring lies within `clearance_mm` of `p` (the distance
+    /// is strictly larger). The search stops at the clearance. A
+    /// non-finite `p` is never clear.
+    pub fn is_clear(&self, p: Point, clearance_mm: f64) -> bool {
+        p.is_finite() && self.nearest(p, |_| true, clearance_mm) > clearance_mm
     }
 
     /// Index the closed `Cut` rings of each object, one lap each.
     /// `cutting_area` is the sheet a [`KeepMode::Stencil`] keeps, and
     /// `clearance_mm` how far from a [`KeepMode::Both`] object's rings
     /// everything is kept.
-    pub fn with_modes(objects: &[KeptObject], cutting_area: Rect, clearance_mm: f64) -> Self {
+    fn with_modes(objects: &[KeptObject], cutting_area: Rect, clearance_mm: f64) -> Self {
         let mut kept = Self {
             segs: Vec::new(),
             ring_object: Vec::new(),
@@ -345,7 +417,7 @@ impl KeptMaterial {
     /// ring's own object counts only its other rings.
     fn odd_objects(&self, p: Point) -> Vec<usize> {
         let (pc, pr) = (cell(p.x), cell(p.y));
-        let Some(&end) = self.row_end.get(&pr) else {
+        let (Some(&end), Some((c0, ..))) = (self.row_end.get(&pr), self.extent) else {
             return Vec::new();
         };
         // An edge within EPS of p is indexed in p's own cell.
@@ -361,7 +433,10 @@ impl KeptMaterial {
         let mut objects = Vec::new();
         // Walk p's row towards +x. Each crossing is counted in the one cell
         // that holds the crossing point.
-        for col in pc..=end {
+        // Cells left of the extent hold nothing: start at the extent.
+        for col in pc.max(c0)..=end {
+            #[cfg(test)]
+            CELL_VISITS.with(|c| c.set(c.get() + 1));
             for &id in self.cells.get(&(col, pr)).into_iter().flatten() {
                 let (a, b, ring) = self.segs[id];
                 if let Some(x) = crosses_ray(a, b, p)
@@ -383,7 +458,18 @@ impl KeptMaterial {
     }
 
     /// True when `p` is kept material: some object calls it kept.
+    ///
+    /// A point on a ring (within [`EPS`]) is not inside that ring. So a
+    /// point on a [`KeepMode::Pieces`] outline counts as waste, and a point
+    /// on a [`KeepMode::Stencil`] outline counts as kept (the sheet). This
+    /// only says which side a point is on: a waste check must also keep
+    /// off the cut itself with [`Self::distance_to_cut`] or
+    /// [`Self::is_clear`]. A non-finite `p` is kept, so it is never
+    /// judged safe.
     pub fn is_kept(&self, p: Point) -> bool {
+        if !p.is_finite() {
+            return true;
+        }
         let odd = self.odd_objects(p);
         if odd.iter().any(|&o| self.modes[o] != KeepMode::Stencil) {
             return true;
@@ -407,8 +493,11 @@ impl KeptMaterial {
     }
 
     /// The distance from `p` to the nearest ring, `f64::INFINITY` when
-    /// there is none.
+    /// there is none and 0 for a non-finite `p`.
     pub fn distance_to_cut(&self, p: Point) -> f64 {
+        if !p.is_finite() {
+            return 0.0;
+        }
         self.nearest(p, |_| true, f64::INFINITY)
     }
 
@@ -419,6 +508,30 @@ impl KeptMaterial {
         let Some((c0, r0, c1, r1)) = self.extent else {
             return f64::INFINITY;
         };
+        let dist = |id: usize| {
+            let (a, b, ring) = self.segs[id];
+            take(self.ring_object[ring])
+                .then(|| kurbo::Line::new(a, b).nearest(p, 0.0).distance_sq.sqrt())
+        };
+        // The indexed area in millimetres, and how far p lies outside it.
+        let (x0, y0) = (c0 as f64 * CELL_MM, r0 as f64 * CELL_MM);
+        let (x1, y1) = ((c1 + 1) as f64 * CELL_MM, (r1 + 1) as f64 * CELL_MM);
+        let off = (x0 - p.x)
+            .max(p.x - x1)
+            .max(0.0)
+            .hypot((y0 - p.y).max(p.y - y1).max(0.0));
+        if off > limit {
+            return off;
+        }
+        if off > (x1 - x0).max(y1 - y0) {
+            // Far off the grid the rings of cells would be mostly empty:
+            // look at every edge once instead.
+            return (0..self.segs.len())
+                .filter_map(dist)
+                .fold(f64::INFINITY, f64::min);
+        }
+        // From here p lies within a few extents of the grid, so cell
+        // arithmetic cannot overflow.
         let (pc, pr) = (cell(p.x), cell(p.y));
         // Cells nearer to p's cell than the extent hold no edges.
         let mut k = (c0 - pc).max(pc - c1).max(r0 - pr).max(pr - r1).max(0);
@@ -427,19 +540,18 @@ impl KeptMaterial {
         loop {
             for row in (pr - k).max(r0)..=(pr + k).min(r1) {
                 let edge_row = row == pr - k || row == pr + k;
-                let cols: Vec<i64> = if edge_row {
-                    ((pc - k).max(c0)..=(pc + k).min(c1)).collect()
+                let (lo, hi) = ((pc - k).max(c0), (pc + k).min(c1));
+                // A middle row of ring k holds only its two side cells.
+                // (A middle row exists only for k > 0.)
+                let cols = if edge_row {
+                    (lo..=hi).step_by(1)
                 } else {
-                    [pc - k, pc + k]
-                        .into_iter()
-                        .filter(|c| (c0..=c1).contains(c))
-                        .collect()
-                };
+                    (pc - k..=pc + k).step_by((2 * k) as usize)
+                }
+                .filter(|c| (lo..=hi).contains(c));
                 for col in cols {
                     for &id in self.cells.get(&(col, row)).into_iter().flatten() {
-                        let (a, b, ring) = self.segs[id];
-                        if take(self.ring_object[ring]) {
-                            let d = kurbo::Line::new(a, b).nearest(p, 0.0).distance_sq.sqrt();
+                        if let Some(d) = dist(id) {
                             best = best.min(d);
                         }
                     }
@@ -461,23 +573,28 @@ mod tests {
     use flatcraft_core::document::ObjectId;
     use kurbo::Rect;
 
-    /// A toolpath of the given points (Ruling F3: rings are read through `lap()`).
+    /// A toolpath of object 1 (Ruling F3: rings are read through `lap()`).
     fn tp(pts: &[(f64, f64)], closed: bool) -> Toolpath {
+        tpo(1, pts, closed)
+    }
+
+    /// A toolpath of object `id`.
+    fn tpo(id: u64, pts: &[(f64, f64)], closed: bool) -> Toolpath {
         Toolpath::new(
             pts.iter().map(|&p| p.into()).collect(),
             closed,
             PathRef {
-                object: ObjectId(1),
+                object: ObjectId(id),
                 path_index: 0,
             },
         )
     }
 
-    fn poly(t: &Toolpath) -> Polyline {
-        Polyline {
-            points: t.lap().to_vec(),
-            closed: t.closed,
-        }
+    /// A square ring of object `id`.
+    fn sqo(id: u64, x0: f64, y0: f64, x1: f64, y1: f64) -> Toolpath {
+        let mut t = sq(x0, y0, x1, y1);
+        t.source.object = ObjectId(id);
+        t
     }
 
     /// A closed axis-aligned square ring from `(x0, y0)` to `(x1, y1)`.
@@ -498,14 +615,14 @@ mod tests {
     }
 
     fn tree_of(paths: &[Toolpath]) -> ContainmentTree {
-        build(&paths.iter().map(poly).collect::<Vec<_>>())
+        build(paths)
     }
 
     fn sides(tree: &ContainmentTree, paths: &[Toolpath]) -> Vec<KeepSide> {
         paths
             .iter()
             .enumerate()
-            .map(|(i, t)| keep_side(tree, i, t.closed))
+            .map(|(i, t)| keep_side(tree, i, t.closed, KeepMode::Pieces))
             .collect()
     }
 
@@ -707,9 +824,8 @@ mod tests {
         let paths: Vec<Toolpath> = (1..=200)
             .map(|k| circle((300.0, 300.0), k as f64, 400))
             .collect();
-        let polys: Vec<Polyline> = paths.iter().map(poly).collect();
         reset_even_odd_calls();
-        let tree = build(&polys);
+        let tree = build(&paths);
         let calls = even_odd_calls();
         assert!(calls <= PROBES * 199, "{calls} even-odd tests");
         let want: Vec<usize> = (0..200).map(|k| 199 - k).collect();
@@ -730,11 +846,10 @@ mod tests {
             let y0 = (k / 50) as f64 * 3.0;
             sq(x0, y0, x0 + 2.0, y0 + 2.0)
         }));
-        let polys: Vec<Polyline> = paths.iter().map(poly).collect();
         reset_even_odd_calls();
-        let tree = build(&polys);
+        let tree = build(&paths);
         let calls = even_odd_calls();
-        assert!(calls <= PROBES * polys.len(), "{calls} even-odd tests");
+        assert!(calls <= PROBES * paths.len(), "{calls} even-odd tests");
         for k in 0..2000 {
             assert_eq!(tree.depth[k], 1999 - k, "concentric ring {k}");
         }
@@ -747,7 +862,10 @@ mod tests {
         let outer = sq(0.0, 0.0, 50.0, 50.0);
         let hole = sq(20.0, 20.0, 30.0, 30.0);
         let neighbour = sq(60.0, 0.0, 80.0, 20.0);
-        let kept = KeptMaterial::new(&[outer.lap(), hole.lap(), neighbour.lap()]);
+        let kept = KeptMaterial::single_object(
+            &[outer.lap(), hole.lap(), neighbour.lap()],
+            KeepMode::Pieces,
+        );
         assert!(kept.is_kept(Point::new(10.0, 10.0)), "band");
         assert!(!kept.is_kept(Point::new(25.0, 25.0)), "hole");
         assert!(!kept.is_kept(Point::new(55.0, 25.0)), "outside");
@@ -760,7 +878,8 @@ mod tests {
         let outer = sq(0.0, 0.0, 50.0, 50.0);
         let hole = sq(10.0, 10.0, 40.0, 40.0);
         let piece = sq(20.0, 20.0, 30.0, 30.0);
-        let kept = KeptMaterial::new(&[outer.lap(), hole.lap(), piece.lap()]);
+        let kept =
+            KeptMaterial::single_object(&[outer.lap(), hole.lap(), piece.lap()], KeepMode::Pieces);
         assert!(kept.is_kept(Point::new(5.0, 5.0)));
         assert!(!kept.is_kept(Point::new(15.0, 15.0)));
         assert!(kept.is_kept(Point::new(25.0, 25.0)));
@@ -770,7 +889,7 @@ mod tests {
     fn a_point_on_a_cut_is_not_strictly_inside_it() {
         let outer = sq(0.0, 0.0, 50.0, 50.0);
         let hole = sq(20.0, 20.0, 30.0, 30.0);
-        let kept = KeptMaterial::new(&[outer.lap(), hole.lap()]);
+        let kept = KeptMaterial::single_object(&[outer.lap(), hole.lap()], KeepMode::Pieces);
         // On the outline: inside nothing.
         assert!(!kept.is_kept(Point::new(0.0, 25.0)));
         // On the hole's edge: inside the outline only.
@@ -793,7 +912,7 @@ mod tests {
         let ring = t.points.clone();
         t.points.extend_from_slice(&ring[1..]);
         t.laps = 2;
-        let kept = KeptMaterial::new(&[t.lap()]);
+        let kept = KeptMaterial::single_object(&[t.lap()], KeepMode::Pieces);
         assert!(kept.is_kept(Point::new(5.0, 5.0)));
     }
 
@@ -801,7 +920,7 @@ mod tests {
     fn distance_to_cut_is_the_nearest_ring() {
         let outer = sq(0.0, 0.0, 50.0, 50.0);
         let hole = sq(20.0, 20.0, 30.0, 30.0);
-        let kept = KeptMaterial::new(&[outer.lap(), hole.lap()]);
+        let kept = KeptMaterial::single_object(&[outer.lap(), hole.lap()], KeepMode::Pieces);
         let close = |p: (f64, f64), d: f64| {
             let got = kept.distance_to_cut(p.into());
             assert!((got - d).abs() < 1e-9, "{p:?}: {got} != {d}");
@@ -814,7 +933,7 @@ mod tests {
         // Far away and off the grid.
         close((-300.0, 25.0), 300.0);
         close((53.0, 54.0), 5.0);
-        let none = KeptMaterial::new(&[]);
+        let none = KeptMaterial::single_object(&[], KeepMode::Pieces);
         assert_eq!(none.distance_to_cut(Point::ZERO), f64::INFINITY);
         assert!(!none.is_kept(Point::ZERO));
     }
@@ -822,7 +941,7 @@ mod tests {
     #[test]
     fn distance_to_cut_matches_brute_force_on_a_circle() {
         let c = circle((40.0, 40.0), 17.3, 97);
-        let kept = KeptMaterial::new(&[c.lap()]);
+        let kept = KeptMaterial::single_object(&[c.lap()], KeepMode::Pieces);
         let ring = c.lap();
         for i in 0..40 {
             for j in 0..40 {
@@ -976,5 +1095,169 @@ mod tests {
             "no stencil: outside is waste"
         );
         assert_eq!(KeepMode::default(), KeepMode::Pieces);
+    }
+    #[test]
+    fn keep_side_follows_the_keep_mode() {
+        let paths = [sq(0.0, 0.0, 50.0, 50.0), sq(20.0, 20.0, 30.0, 30.0)];
+        let tree = tree_of(&paths);
+        let side = |i: usize, mode| keep_side(&tree, i, true, mode);
+        assert_eq!(side(0, KeepMode::Pieces), KeepSide::Inside);
+        assert_eq!(side(1, KeepMode::Pieces), KeepSide::Outside, "hole");
+        assert_eq!(side(0, KeepMode::Stencil), KeepSide::Outside);
+        assert_eq!(side(1, KeepMode::Stencil), KeepSide::Inside);
+        assert_eq!(side(0, KeepMode::Both), KeepSide::Both);
+        assert_eq!(side(1, KeepMode::Both), KeepSide::Both);
+        assert_eq!(
+            keep_side(&tree, 0, false, KeepMode::Stencil),
+            KeepSide::Both
+        );
+    }
+
+    #[test]
+    fn a_pieces_object_inside_another_object_keeps_its_inside() {
+        // Object 2 lies on object 1's piece, and object 1's hole lies on
+        // object 2's piece. Depth counts within each object only.
+        let paths = [
+            sqo(1, 0.0, 0.0, 100.0, 100.0),
+            sqo(2, 20.0, 20.0, 80.0, 80.0),
+            sqo(1, 40.0, 40.0, 60.0, 60.0),
+        ];
+        let tree = tree_of(&paths);
+        assert_eq!(tree.depth, vec![0, 1, 2]);
+        assert_eq!(tree.own_depth, vec![0, 0, 1]);
+        assert_eq!(
+            sides(&tree, &paths),
+            vec![KeepSide::Inside, KeepSide::Inside, KeepSide::Outside]
+        );
+    }
+
+    #[test]
+    fn a_diamond_inscribed_in_a_square_nests() {
+        // Every vertex of the diamond lies on the square, so the vertex
+        // probes all say "on the boundary".
+        let paths = [
+            sq(0.0, 0.0, 10.0, 10.0),
+            tp(
+                &[(5.0, 0.0), (10.0, 5.0), (5.0, 10.0), (0.0, 5.0), (5.0, 0.0)],
+                true,
+            ),
+        ];
+        let tree = tree_of(&paths);
+        assert_eq!(tree.parent, vec![None, Some(0)]);
+    }
+
+    #[test]
+    fn non_finite_points_are_kept_and_on_the_cut() {
+        let outer = sq(0.0, 0.0, 50.0, 50.0);
+        let kept = KeptMaterial::single_object(&[outer.lap()], KeepMode::Pieces);
+        for p in [
+            Point::new(f64::NAN, 5.0),
+            Point::new(5.0, f64::INFINITY),
+            Point::new(f64::NEG_INFINITY, 5.0),
+        ] {
+            assert!(kept.is_kept(p), "{p:?}");
+            assert_eq!(kept.distance_to_cut(p), 0.0, "{p:?}");
+            assert!(!kept.is_clear(p, 1.0), "{p:?}");
+        }
+        // Huge but finite coordinates neither overflow nor hang.
+        assert!(!kept.is_kept(Point::new(-1e300, 5.0)));
+        assert!(kept.distance_to_cut(Point::new(1e300, 5.0)) > 1e299);
+    }
+
+    #[test]
+    fn a_point_far_to_the_left_walks_only_the_occupied_cells() {
+        let outer = sq(0.0, 0.0, 50.0, 50.0);
+        let kept = KeptMaterial::single_object(&[outer.lap()], KeepMode::Pieces);
+        CELL_VISITS.with(|c| c.set(0));
+        assert!(!kept.is_kept(Point::new(-1e6, 25.0)));
+        let visits = CELL_VISITS.with(|c| c.get());
+        assert!(visits <= 52, "{visits} cells visited");
+    }
+
+    #[test]
+    fn is_clear_matches_the_distance() {
+        let outer = sq(0.0, 0.0, 50.0, 50.0);
+        let kept = KeptMaterial::single_object(&[outer.lap()], KeepMode::Pieces);
+        assert!(kept.is_clear(Point::new(25.0, 25.0), 5.0));
+        assert!(!kept.is_clear(Point::new(25.0, 3.0), 5.0));
+        assert!(kept.is_clear(Point::new(-500.0, 25.0), 5.0));
+        assert!(
+            !kept.is_clear(Point::new(-5.0, 25.0), 5.0),
+            "exactly at the clearance"
+        );
+        let none = KeptMaterial::single_object(&[], KeepMode::Pieces);
+        assert!(none.is_clear(Point::ZERO, 5.0));
+    }
+
+    fn mat() -> Rect {
+        Rect::new(0.0, 0.0, 300.0, 300.0)
+    }
+
+    #[test]
+    fn from_toolpaths_groups_rings_by_object() {
+        // Two overlapping pieces of two objects: the overlap stays kept.
+        let paths = [sqo(1, 0.0, 0.0, 20.0, 20.0), sqo(2, 10.0, 0.0, 30.0, 20.0)];
+        let kept = KeptMaterial::from_toolpaths(&paths, |_| KeepMode::Pieces, mat(), 1.0);
+        assert!(kept.is_kept(Point::new(15.0, 10.0)));
+        assert!(kept.is_kept(Point::new(5.0, 10.0)));
+        assert!(!kept.is_kept(Point::new(50.0, 10.0)));
+    }
+
+    #[test]
+    fn from_toolpaths_reads_the_mode_per_object() {
+        let paths = [
+            sqo(1, 0.0, 0.0, 20.0, 20.0),
+            sqo(2, 100.0, 100.0, 120.0, 120.0),
+        ];
+        let mode = |o: ObjectId| {
+            if o == ObjectId(2) {
+                KeepMode::Stencil
+            } else {
+                KeepMode::Pieces
+            }
+        };
+        let kept = KeptMaterial::from_toolpaths(&paths, mode, mat(), 1.0);
+        assert!(kept.is_kept(Point::new(10.0, 10.0)), "piece of object 1");
+        assert!(
+            !kept.is_kept(Point::new(110.0, 110.0)),
+            "cut-out of the stencil"
+        );
+        assert!(kept.is_kept(Point::new(200.0, 200.0)), "stencil sheet");
+    }
+
+    #[test]
+    fn from_toolpaths_reads_one_lap_of_pass_one_and_skips_the_rest() {
+        let ring = sq(0.0, 0.0, 20.0, 20.0);
+        let mut paths = crate::passes::expand(vec![ring], 2, true);
+        // An alignment stroke and an open path add no rings.
+        let mut align = tp(&[(5.0, 5.0), (15.0, 5.0), (15.0, 15.0), (5.0, 5.0)], true);
+        align.kind = ToolpathKind::Alignment;
+        paths.push(align);
+        paths.push(tp(&[(5.0, 10.0), (15.0, 10.0)], false));
+        let kept = KeptMaterial::from_toolpaths(&paths, |_| KeepMode::Pieces, mat(), 1.0);
+        assert!(kept.is_kept(Point::new(10.0, 12.0)));
+        assert!(kept.is_kept(Point::new(10.0, 10.0)), "on the open path");
+        assert!(
+            kept.is_kept(Point::new(10.0, 6.0)),
+            "inside the alignment triangle"
+        );
+        assert!(!kept.is_kept(Point::new(25.0, 10.0)));
+    }
+
+    #[test]
+    fn stencil_with_an_island_in_a_counter() {
+        // Outline, counter and island of one stencil object (3 levels):
+        // the band and the island fall out, the counter stays.
+        let outer = sq(50.0, 50.0, 110.0, 110.0);
+        let counter = sq(60.0, 60.0, 100.0, 100.0);
+        let island = sq(70.0, 70.0, 90.0, 90.0);
+        let kept = KeptMaterial::single_object(
+            &[outer.lap(), counter.lap(), island.lap()],
+            KeepMode::Stencil,
+        );
+        assert!(!kept.is_kept(Point::new(55.0, 80.0)), "band");
+        assert!(kept.is_kept(Point::new(65.0, 80.0)), "counter");
+        assert!(!kept.is_kept(Point::new(80.0, 80.0)), "island");
+        assert!(kept.is_kept(Point::new(30.0, 80.0)), "sheet");
     }
 }

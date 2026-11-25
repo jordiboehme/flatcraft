@@ -15,7 +15,7 @@ pub mod passes;
 pub mod plan;
 
 pub use clean::Polyline;
-pub use containment::{KeepMode, KeptMaterial, KeptObject};
+pub use containment::{KeepMode, KeptMaterial};
 pub use plan::{
     ASSUMED_START_HEADING, AlignmentStroke, AppliedCompensation, AxisRun, CORNER_DEG, CutPlan,
     KeepSide, PathRef, PipelineSettings, PlacedPath, PlanError, SettingsField, Toolpath,
