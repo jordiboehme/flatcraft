@@ -59,7 +59,8 @@ pub struct PathMetrics {
     /// Closed `Cut` toolpaths: the distance from the last path tip to the
     /// early trace (the first half lap) of the same ring. About 0 when
     /// the overcut closes the ring, and about `d` for an uncompensated
-    /// ring that starts and ends at a corner without overcut.
+    /// ring that starts and ends at a corner without overcut. `None` when
+    /// the ring has no path move with tip travel.
     pub closure_gap_mm: Option<f64>,
     /// Intended length with no path move within [`UNCUT_LIMIT_MM`]: the
     /// material is not severed there (Ruling M2-P14).
@@ -638,13 +639,14 @@ pub fn measure(
             // The first half lap, or half the trace when it is shorter, so
             // the last tip is never measured against its own moves.
             let early = 0.5 * lap.min(st.tip_len);
-            m.closure_gap_mm = Some(
-                st.early
-                    .iter()
-                    .filter(|e| e.0 < early)
-                    .map(|&(_, a, b)| segment_distance(st.last_tip, a, b))
-                    .fold(f64::INFINITY, f64::min),
-            );
+            let gap = st
+                .early
+                .iter()
+                .filter(|e| e.0 < early)
+                .map(|&(_, a, b)| segment_distance(st.last_tip, a, b))
+                .fold(f64::INFINITY, f64::min);
+            // No early trace (the tip never moved): there is no gap to measure.
+            m.closure_gap_mm = gap.is_finite().then_some(gap);
         }
     }
     for (c, &(_, i)) in corner_grid.corners.iter().enumerate() {

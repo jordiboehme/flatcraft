@@ -627,3 +627,35 @@ fn worst_spots_rank_and_keep_apart() {
             .all(|p| p.distance(Point::new(51.0, 0.9)) > 1e-9)
     );
 }
+
+#[test]
+fn a_drop_into_a_neighbour_followed_by_a_cut_is_into_kept() {
+    // The drop rule: a drop point takes the path tolerance when a path move
+    // follows, and a plunge deeper than that is still reported. The blade
+    // trails towards -x, so it plunges 0.2 mm inside the neighbour B.
+    let a = closed(square(0.0, 0.0, 10.0), 1);
+    let b = closed(square(-10.1, -5.0, 10.0), 2);
+    let (trace, m, _) = sim(&[a, b], Point::ZERO, &SimSettings::float(0.3));
+    let drop = trace.samples.iter().find(|x| x.down).unwrap();
+    assert!(drop.tip.distance(Point::new(-0.3, 0.0)) < 1e-12, "{drop:?}");
+    // The drop itself is the deepest point: 0.2 mm from B's edge at x = -0.1.
+    assert!(
+        (m.max_into_kept_mm - 0.2).abs() < 1e-9,
+        "{}",
+        m.max_into_kept_mm
+    );
+    assert_eq!(m.worst_spots[0].kind, SpotKind::IntoKept);
+}
+
+#[test]
+fn a_ring_cut_without_tip_travel_has_no_closure_gap() {
+    // Path samples, but the knife never moves: no early trace to measure.
+    let t = with_runs(
+        closed(square(0.0, 0.0, 10.0), 1),
+        vec![(pts(&[(0.0, 0.0), (0.0, 0.0), (0.0, 0.0)]), vec![W, 0, 1])],
+    );
+    let (trace, m, _) = sim(&[t], Point::ZERO, &SimSettings::float(0.0));
+    assert!(trace.samples.iter().any(|x| x.down && x.seg != W));
+    assert_eq!(m.per_path[0].closure_gap_mm, None);
+    assert_eq!(m.max_closure_gap_mm, 0.0);
+}
