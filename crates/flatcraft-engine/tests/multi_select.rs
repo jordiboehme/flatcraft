@@ -150,10 +150,20 @@ fn each_object_turns_around_its_own_centre() {
 fn one_object_turns_the_same_either_way() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = session(dir.path());
-    let a = rect_at(&mut s, 20.0, 20.0);
-    // An off-centre stroke outline would move the bounds centre away from
-    // the object's centre; one object still turns about its own centre.
+    // A thick stroke on the right edge only: the cut outline reaches out
+    // on that side, so the placed bounds' centre is not the object's
+    // centre. One object still turns about its own centre.
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="300mm" height="300mm" viewBox="0 0 300 300"><rect x="20" y="20" width="40" height="20"/><line x1="60" y1="20" x2="60" y2="40" stroke="black" stroke-width="10"/></svg>"#;
+    let a = run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": svg, "name": "lopsided" }),
+    )["id"]
+        .as_u64()
+        .unwrap();
     let start = transform(&s, a);
+    let off = bounds(&s, a).center() - start.center_mm;
+    assert!(off.hypot() > 0.5, "the fixture is lopsided: {off:?}");
     run(
         &mut s,
         "object.rotate",
@@ -168,6 +178,14 @@ fn one_object_turns_the_same_either_way() {
     );
     assert_eq!(transform(&s, a), group);
     assert_eq!(group.center_mm, start.center_mm);
+    // The same for a mirror.
+    run(&mut s, "edit.undo", json!({}));
+    run(
+        &mut s,
+        "object.mirror",
+        json!({ "ids": [a], "axis": "horizontal" }),
+    );
+    assert_eq!(transform(&s, a).center_mm, start.center_mm);
 }
 
 #[test]
@@ -438,10 +456,14 @@ fn a_burst_that_ends_where_it_started_leaves_no_step() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = session(dir.path());
     let a = rect_at(&mut s, 20.0, 20.0);
+    // As if just saved.
+    s.doc_mut().dirty = false;
     let n0 = undo_len(&s);
     nudge(&mut s, &[a], 1.0, "k").unwrap();
+    assert!(s.doc().dirty);
     nudge(&mut s, &[a], -1.0, "k").unwrap();
     assert_eq!(undo_len(&s), n0, "back where it started: nothing to undo");
+    assert!(!s.doc().dirty, "and nothing to save");
     // The next move of that key is a step of its own again.
     nudge(&mut s, &[a], 1.0, "k").unwrap();
     assert_eq!(undo_len(&s), n0 + 1);

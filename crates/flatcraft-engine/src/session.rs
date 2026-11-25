@@ -132,6 +132,9 @@ struct Burst {
     /// The document revision after the burst's last move. Any other change
     /// (a command, undo, redo, a save) raises it and ends the burst.
     revision: u64,
+    /// `dirty` before the burst's first move, for a burst that ends where
+    /// it started.
+    dirty_before: bool,
 }
 
 /// Everything `placed_bounds` of an object depends on.
@@ -819,14 +822,17 @@ impl Session {
                 Err(CommandError::Refused(TOO_LARGE.into()))
             }
             Ok(value) => {
-                let joins = match (&coalesce, &state.burst) {
-                    (Some((key, ids)), Some(b)) => {
-                        b.key == *key && b.ids == *ids && b.revision == state.revision
+                let joined = match (&coalesce, &state.burst) {
+                    (Some((key, ids)), Some(b))
+                        if b.key == *key && b.ids == *ids && b.revision == state.revision =>
+                    {
+                        Some(b.dirty_before)
                     }
-                    _ => false,
+                    _ => None,
                 };
+                let dirty_before = joined.unwrap_or(state.dirty);
                 state.touch();
-                if !joins {
+                if joined.is_none() {
                     state.undo.record(before);
                 }
                 state.dirty = true;
@@ -834,15 +840,18 @@ impl Session {
                     key,
                     ids,
                     revision: state.revision,
+                    dirty_before,
                 });
-                if joins
+                if joined.is_some()
                     && state
                         .undo
                         .last()
                         .is_some_and(|start| same_document(start, &state.document))
                 {
-                    // Back where the burst started: nothing to undo.
+                    // Back where the burst started: nothing to undo, and
+                    // nothing more to save than before it.
                     state.undo.discard_last();
+                    state.dirty = dirty_before;
                     state.burst = None;
                 }
                 state.prune_selection();
