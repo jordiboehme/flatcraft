@@ -1357,6 +1357,15 @@ impl FlatCraftApp {
                     ));
                     return;
                 }
+                // Changed while it was written (an agent): the file holds
+                // the older state, so the question comes again.
+                if choice == UnsavedChoice::Save && self.dirty_docs().contains(&asking) {
+                    self.toast(Toast::warning(
+                        "The document changed while it was saved, so FlatCraft asks again.",
+                    ));
+                    self.ui.unsaved = Some(Unsaved::Quit { asking, answered });
+                    return;
+                }
                 // The revision after the answer (and after a save), so a
                 // later change by an agent is asked about again.
                 if let Some(rev) = self.doc_revision(asking) {

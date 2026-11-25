@@ -488,7 +488,12 @@ pub fn finish_save(
         if let Some(st) = st
             && unchanged
         {
+            let relinked = !job.previous.is_empty();
             restore_links(&mut st.document, job.previous);
+            if relinked {
+                // Views keyed on the revision show the old links again.
+                st.touch();
+            }
         }
         return Err(e);
     }

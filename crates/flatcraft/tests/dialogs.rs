@@ -593,3 +593,54 @@ fn two_documents_with_one_name_do_not_share_their_key_state() {
     assert_eq!(frame(&ctx, &second, vec![enter(true)]), None);
     assert_eq!(frame(&ctx, &second, vec![enter(true)]), None);
 }
+
+#[test]
+fn quit_asks_again_when_an_agent_changes_the_document_during_its_save() {
+    let (dir, s) = dirty_docs(1);
+    let asking = doc_id(&s, 0);
+    let path = dir.path().join("a.flatcraft");
+    // An agent adds a shape while the file is written (the session lock is
+    // free then); only during the first save.
+    let agent = s.clone();
+    let once = std::sync::atomic::AtomicBool::new(false);
+    s.lock().unwrap().save_write_hook = Some(flatcraft_engine::session::SaveWriteHook(
+        std::sync::Arc::new(move |_: &std::path::Path| {
+            if !once.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                agent
+                    .lock()
+                    .unwrap()
+                    .execute(
+                        "object.import_svg",
+                        json!({ "svg": SQUARE_SVG, "name": "late" }),
+                        Origin::Agent,
+                    )
+                    .unwrap();
+            }
+        }),
+    ));
+    let picker = FakePicker::answering([path.clone()]);
+    let mut h = harness_with(&dir, s.clone(), |a| a.with_file_picker(picker.clone()));
+    act(&mut h, Action::Quit);
+    h.get_by_label("Save changes to Untitled 1?");
+    h.key_press(Key::Enter);
+    h.run();
+    assert!(path.exists(), "the first save wrote the file");
+    assert_eq!(
+        flatcraft_core::project::load(&path).unwrap().objects.len(),
+        1
+    );
+    assert!(!closing(&h), "the late shape is not saved yet");
+    assert!(
+        matches!(app(&h).ui.unsaved, Some(Unsaved::Quit { asking: a, .. }) if a == asking),
+        "asked again: {:?}",
+        app(&h).ui.unsaved
+    );
+    // Save again: now nothing is lost and FlatCraft quits.
+    h.key_press(Key::Enter);
+    h.run();
+    assert_eq!(
+        flatcraft_core::project::load(&path).unwrap().objects.len(),
+        2
+    );
+    assert!(closing(&h));
+}
