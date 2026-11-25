@@ -542,15 +542,24 @@ fn hit_test(snap: &Snapshot, view: &CanvasView, at: Pos2) -> Hit {
             }
         }
         // Then the rotate zone, just outside a corner. A handle always wins
-        // inside its own pick area (above).
+        // inside its own pick area (above), and an object that is not
+        // selected wins over the zone: a click or drag there is for it.
         if !screen.contains(at) {
             for (i, c) in handle_points(b).into_iter().take(4).enumerate() {
                 if view.mm_to_screen(c).distance(at) <= ROTATE_REACH {
-                    return Hit::Rotate(i);
+                    return match object_at(snap, view, at) {
+                        Some(id) if !snap.selection.contains(&id) => Hit::Object(id),
+                        _ => Hit::Rotate(i),
+                    };
                 }
             }
         }
     }
+    object_at(snap, view, at).map_or(Hit::Nothing, Hit::Object)
+}
+
+/// The topmost visible object under `at`, with 3 points of slack.
+fn object_at(snap: &Snapshot, view: &CanvasView, at: Pos2) -> Option<u64> {
     let mm = view.screen_to_mm(at);
     let slack = f64::from(3.0 / view.px_per_mm);
     snap.objects
@@ -561,7 +570,7 @@ fn hit_test(snap: &Snapshot, view: &CanvasView, at: Pos2) -> Hit {
             o.bounds()
                 .is_some_and(|b| b.inflate(slack, slack).contains(mm))
         })
-        .map_or(Hit::Nothing, |o| Hit::Object(o.id))
+        .map(|o| o.id)
 }
 
 /// How a dragged object is shown before the drag is sent. A scale also

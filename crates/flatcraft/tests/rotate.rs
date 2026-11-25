@@ -503,3 +503,68 @@ fn a_typed_angle_too_large_to_be_exact_is_refused() {
     assert!(toast.text.contains("Type at most"), "{}", toast.text);
     assert!(!toast.text.contains('\u{2014}'));
 }
+
+/// Square a selected, square b (not selected) just past a's bottom-right
+/// corner, under its rotate zone.
+fn neighbour(dir: &tempfile::TempDir) -> (SharedSession, u64, u64, AppHarness, CanvasView) {
+    let s = session(dir);
+    let a = import_square(&s);
+    let b = import_square(&s);
+    run(
+        &s,
+        "object.move",
+        json!({ "ids": [b], "dx_mm": 52.0, "dy_mm": 52.0 }),
+    );
+    run(&s, "object.select", json!({ "ids": [a] }));
+    let (h, v) = rig(dir, s.clone(), kurbo::Point::new(70.0, 70.0));
+    (s, a, b, h, v)
+}
+
+#[test]
+fn an_object_under_the_rotate_zone_wins_a_click() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _a, b, mut h, v) = neighbour(&dir);
+    let at = zone(&v, kurbo::Point::new(70.0, 70.0));
+    h.hover_at(at);
+    h.run();
+    h.run();
+    assert_ne!(cursor(&h), CursorIcon::None, "no rotate cursor over b");
+    h.drag_at(at);
+    h.run();
+    h.drop_at(at);
+    h.run();
+    h.run();
+    let sel: Vec<u64> = s
+        .lock()
+        .unwrap()
+        .doc()
+        .selection
+        .iter()
+        .map(|i| i.0)
+        .collect();
+    assert_eq!(sel, vec![b]);
+}
+
+#[test]
+fn an_object_under_the_rotate_zone_wins_a_drag() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, a, b, mut h, v) = neighbour(&dir);
+    let at = zone(&v, kurbo::Point::new(70.0, 70.0));
+    let before = transform(&s, b).center_mm;
+    h.hover_at(at);
+    h.run();
+    h.drag_at(at);
+    h.run();
+    for t in [0.5, 1.0] {
+        h.hover_at(at + Vec2::new(20.0, 0.0) * t);
+        h.run();
+    }
+    h.drop_at(at + Vec2::new(20.0, 0.0));
+    h.run();
+    assert!(near(transform(&s, a).rotation_deg, 0.0));
+    let after = transform(&s, b).center_mm;
+    assert!(
+        near(after.x - before.x, 10.0) && near(after.y, before.y),
+        "{after:?}"
+    );
+}
