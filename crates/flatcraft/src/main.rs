@@ -84,11 +84,9 @@ fn run_window(
     config_dir: PathBuf,
     agent: Option<Arc<Mutex<Option<egui::Context>>>>,
 ) -> anyhow::Result<()> {
-    let mut viewport = egui::ViewportBuilder::default()
-        .with_title("FlatCraft")
-        .with_app_id(APP_ID)
-        .with_inner_size([1280.0, 800.0])
-        .with_min_inner_size(flatcraft::ui::MIN_WINDOW);
+    // On macOS the app bar is the title bar (see `app_bar::viewport`).
+    let mut viewport =
+        flatcraft::ui::app_bar::viewport(cfg!(target_os = "macos")).with_app_id(APP_ID);
     match eframe::icon_data::from_png_bytes(ICON_PNG) {
         Ok(icon) => viewport = viewport.with_icon(icon),
         Err(e) => eprintln!("warning: cannot load the app icon: {e}"),

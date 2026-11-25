@@ -306,6 +306,8 @@ fn search_box(ui: &mut Ui, cx: &mut Cx) {
         egui::TextEdit::singleline(&mut st.fields.search)
             .id(id)
             .hint_text("Search commands")
+            // The panel colour, so the field shows on the tab bar.
+            .background_color(Tokens::of(ui.visuals()).panel)
             .desired_width(SEARCH_WIDTH),
     );
     set_name(ui, &resp, "Search commands");

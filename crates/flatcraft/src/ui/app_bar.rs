@@ -1,19 +1,83 @@
-//! The app bar: name, Home, File, Save, Undo, Redo and the document tabs on
-//! the left; the agent pill, Settings, Help and the version on the right.
+//! The app bar: the app icon and name, Home, File, Save, Undo, Redo and
+//! the document tabs on the left; the agent pill, Settings, Help and the
+//! version on the right. On macOS it is the window's title bar: the
+//! window content runs under a transparent title bar, the traffic lights
+//! stay at the left, and dragging the bar's empty space moves the window.
 
 use std::time::Instant;
 
 use egui::{RichText, Ui};
 
-use super::icons::Icon;
+use super::icons::{self, Icon};
 use super::settings::set_name;
-use super::{Action, FlatCraftApp, ICON_SIZE, Workspace, display_name, fonts, icon_button, lock};
+use super::theme::Tokens;
+use super::{Action, FlatCraftApp, ICON_SIZE, Workspace, display_name, fonts, lock};
+
+/// Height of the app bar. On macOS it is the title bar's height, so the
+/// traffic lights sit in its middle.
+pub const BAR_HEIGHT: f32 = 32.0;
+
+/// The room the macOS traffic lights take at the left of the title bar.
+///
+/// Measured on macOS 27.2.1 (`NSWindow standardWindowButton` frames in a
+/// window with a full-size content view and a transparent title bar):
+/// the title bar is 32 pt tall, the close button starts at x 9 and the
+/// zoom button ends at x 69 (three 14 pt buttons, 9 pt apart). The bar
+/// keeps the same 9 pt after them: 69 + 9 = 78. Older macOS versions draw
+/// them smaller (they end at about x 61), so this leaves room there too.
+pub const TRAFFIC_LIGHTS: f32 = 78.0;
+
+/// The window options of FlatCraft's window. With `title_bar` (macOS) the
+/// content fills the whole window under a transparent title bar without
+/// a title, and the app bar takes the title bar's place.
+pub fn viewport(title_bar: bool) -> egui::ViewportBuilder {
+    let v = egui::ViewportBuilder::default()
+        .with_title("FlatCraft")
+        .with_inner_size([1280.0, 800.0])
+        .with_min_inner_size(super::MIN_WINDOW);
+    if title_bar {
+        v.with_fullsize_content_view(true)
+            .with_titlebar_shown(false)
+            .with_title_shown(false)
+    } else {
+        v
+    }
+}
+
+/// The room at the left of the bar that stays free for the traffic
+/// lights: [`TRAFFIC_LIGHTS`] in the macOS title bar, none in full screen
+/// (macOS hides them there) or under a system title bar.
+pub fn left_inset(title_bar: bool, ctx: &egui::Context) -> f32 {
+    let fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+    if title_bar && !fullscreen {
+        TRAFFIC_LIGHTS
+    } else {
+        0.0
+    }
+}
 
 /// One open document as the tabs show it.
 struct Tab {
     id: u64,
     name: String,
     dirty: bool,
+}
+
+/// The mark after the name of a document with unsaved changes.
+pub const DIRTY: &str = "\u{2022}";
+
+/// What a tab says: the name, and the dot when it has unsaved changes.
+pub fn tab_label(name: &str, dirty: bool) -> String {
+    if dirty {
+        format!("{name} {DIRTY}")
+    } else {
+        name.to_string()
+    }
+}
+
+/// The id of the bar's background, which moves the window.
+pub fn drag_id() -> egui::Id {
+    egui::Id::unique("flatcraft-title-bar-drag")
 }
 
 pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
@@ -36,28 +100,44 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
         (tabs, doc.id(), doc.undo.can_undo(), doc.undo.can_redo())
     };
     let agent = app.agent_status(Instant::now());
+    let inset = left_inset(app.title_bar, ui.ctx());
     // The two sides are separate closures; the right one collects here.
     let mut right_actions = Vec::new();
 
     egui::Panel::top("flatcraft-app-bar")
-        .frame(
-            egui::Frame::new()
-                .fill(t.panel)
-                .inner_margin(egui::Margin::symmetric(
-                    t.spacing as i8,
-                    (t.spacing / 2.0) as i8,
-                )),
-        )
+        .exact_size(BAR_HEIGHT)
+        .show_separator_line(false)
+        .frame(egui::Frame::new().fill(t.rail).inner_margin(egui::Margin {
+            left: (t.spacing + inset) as i8,
+            right: t.spacing as i8,
+            top: 0,
+            bottom: 0,
+        }))
         .show(ui, |ui| {
-            egui::Sides::new().shrink_left().show(
+            // The empty bar, under every widget: a drag moves the window and
+            // a double-click zooms it, as the system title bar does. The
+            // widgets come later, so they win the clicks on them.
+            let whole = ui.max_rect().expand2(egui::vec2(t.spacing + inset, 0.0));
+            let empty = ui.interact(whole, drag_id(), egui::Sense::click_and_drag());
+            // The widgets that take a click: a drag that starts on one of
+            // them is theirs, not the window's (egui hands a drag to the
+            // background when the widget on top only takes clicks).
+            let mut hot: Vec<egui::Rect> = Vec::new();
+            let mut hot_right: Vec<egui::Rect> = Vec::new();
+            ui.set_height(BAR_HEIGHT);
+            ui.spacing_mut().item_spacing.x = 2.0;
+            egui::Sides::new().shrink_left().height(BAR_HEIGHT).show(
                 ui,
                 |ui| {
-                    ui.label(RichText::new("FlatCraft").font(fonts::semibold(16.0)));
+                    app_name(ui, &t);
                     ui.add_space(t.spacing);
-                    if icon_button(ui, Icon::Home, "Home", true).clicked() {
+                    let home = flat_icon(ui, Icon::Home, "Home", true);
+                    hot.push(home.rect);
+                    if home.clicked() {
                         actions.push(Action::SetWorkspace(Workspace::Home));
                     }
-                    ui.menu_button("File", |ui| {
+                    let file = egui::Button::new("File").frame_when_inactive(false);
+                    let file = egui::containers::menu::MenuButton::from_button(file).ui(ui, |ui| {
                         if ui.button("New").clicked() {
                             actions.push(Action::NewProject);
                         }
@@ -71,17 +151,24 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                             actions.push(Action::SaveAs { doc_id: active });
                         }
                     });
-                    if icon_button(ui, Icon::Save, "Save", true).clicked() {
+                    hot.push(file.0.rect);
+                    let save = flat_icon(ui, Icon::Save, "Save", true);
+                    let undo = flat_icon(ui, Icon::Undo, "Undo", can_undo);
+                    let redo = flat_icon(ui, Icon::Redo, "Redo", can_redo);
+                    hot.extend([save.rect, undo.rect, redo.rect]);
+                    if save.clicked() {
                         actions.push(Action::Save { doc_id: active });
                     }
-                    if icon_button(ui, Icon::Undo, "Undo", can_undo).clicked() {
+                    if undo.clicked() {
                         actions.push(Action::Undo(active));
                     }
-                    if icon_button(ui, Icon::Redo, "Redo", can_redo).clicked() {
+                    if redo.clicked() {
                         actions.push(Action::Redo(active));
                     }
-                    ui.separator();
-                    doc_tabs(ui, &tabs, active, actions);
+                    ui.add_space(t.spacing / 2.0);
+                    thin_separator(ui, &t);
+                    ui.add_space(t.spacing / 2.0);
+                    doc_tabs(ui, &t, &tabs, active, actions, &mut hot);
                 },
                 |ui| {
                     let actions = &mut right_actions;
@@ -96,9 +183,12 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                     if version.clicked() {
                         actions.push(Action::ShowAbout);
                     }
-                    let help = icon_button(ui, Icon::Help, "Help", true);
+                    ui.add_space(t.spacing / 2.0);
+                    let help = flat_icon(ui, Icon::Help, "Help", true);
                     egui::Popup::menu(&help).show(|ui| super::help::menu(ui, actions));
-                    if icon_button(ui, Icon::Settings, "Settings", true).clicked() {
+                    let settings = flat_icon(ui, Icon::Settings, "Settings", true);
+                    hot_right.extend([version.rect, help.rect, settings.rect]);
+                    if settings.clicked() {
                         actions.push(Action::ShowProfiles);
                     }
                     if let Some(status) = agent {
@@ -117,8 +207,79 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                     }
                 },
             );
+            hot.extend(hot_right);
+            if app.title_bar {
+                let on_empty = |pos: Option<egui::Pos2>| {
+                    pos.is_some_and(|p| !hot.iter().any(|r| r.contains(p)))
+                };
+                let origin = ui.input(|i| i.pointer.press_origin());
+                if empty.drag_started() && on_empty(origin) {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+                if empty.double_clicked() && on_empty(empty.interact_pointer_pos()) {
+                    let zoomed = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::Maximized(!zoomed));
+                }
+            }
         });
     actions.extend(right_actions);
+}
+
+/// The app icon and the name "FlatCraft".
+fn app_name(ui: &mut Ui, t: &Tokens) {
+    let tex = app_icon(ui.ctx(), t.is_dark());
+    ui.add(egui::Image::from_texture(egui::load::SizedTexture::new(
+        tex.id(),
+        egui::Vec2::splat(ICON_SIZE),
+    )));
+    ui.add_space(2.0);
+    ui.label(RichText::new("FlatCraft").font(fonts::semibold(14.0)));
+}
+
+/// The app icon for a dark or a light bar, decoded once per context.
+fn app_icon(ctx: &egui::Context, dark: bool) -> egui::TextureHandle {
+    const DARK: &[u8] = include_bytes!("../../../../assets/branding/icon-dark-256.png");
+    const LIGHT: &[u8] = include_bytes!("../../../../assets/branding/icon-light-256.png");
+    let id = egui::Id::unique(("flatcraft-app-icon", dark));
+    if let Some(tex) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return tex;
+    }
+    let png = if dark { DARK } else { LIGHT };
+    let image = match tiny_skia::Pixmap::decode_png(png) {
+        Ok(p) => egui::ColorImage::from_rgba_premultiplied(
+            [p.width() as usize, p.height() as usize],
+            p.data(),
+        ),
+        // The PNG is built in, so this does not happen.
+        Err(_) => egui::ColorImage::filled([1, 1], egui::Color32::TRANSPARENT),
+    };
+    let tex = ctx.load_texture("flatcraft-app-icon", image, egui::TextureOptions::LINEAR);
+    ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
+    tex
+}
+
+/// A flat icon button: no box, only a hover fill. `name` is its
+/// accessible name and its tooltip.
+pub fn flat_icon(ui: &mut Ui, icon: Icon, name: &str, enabled: bool) -> egui::Response {
+    let tex = icons::texture(ui.ctx(), icon, ICON_SIZE);
+    let image = egui::Image::from_texture(egui::load::SizedTexture::new(
+        tex.id(),
+        egui::Vec2::splat(ICON_SIZE),
+    ))
+    .alt_text(name);
+    ui.add_enabled(
+        enabled,
+        egui::Button::image(image).frame_when_inactive(false),
+    )
+    .on_hover_text(name)
+    .on_disabled_hover_text(name)
+}
+
+/// A thin vertical line between the commands and the tabs.
+fn thin_separator(ui: &mut Ui, t: &Tokens) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, 18.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 0.0, t.border);
 }
 
 /// The narrowest a tab's name gets before tabs move into the "»" list.
@@ -205,72 +366,170 @@ pub fn fit_tabs(natural: &[f32], extra: f32, room: f32, more: f32, active: usize
     }
 }
 
+/// Height of a document tab.
+const TAB_HEIGHT: f32 = 26.0;
+/// Room left of a tab's name.
+const TAB_PAD: f32 = 10.0;
+/// The close button inside a tab, and the room around it.
+const CLOSE: f32 = 16.0;
+const CLOSE_PAD: f32 = 5.0;
+
+/// What a tab takes besides its name and dot: the padding and the close
+/// button, which always has its room so a tab does not grow on hover.
+fn tab_extra() -> f32 {
+    TAB_PAD + CLOSE_PAD + CLOSE + CLOSE_PAD
+}
+
+/// The width of a tab's name, cut to `cap` with an ellipsis.
+fn name_galley(
+    ui: &Ui,
+    name: &str,
+    cap: Option<f32>,
+    color: egui::Color32,
+) -> std::sync::Arc<egui::Galley> {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let mut job = egui::text::LayoutJob::simple_singleline(name.to_string(), font, color);
+    if let Some(cap) = cap {
+        job.wrap = egui::text::TextWrapping::truncate_at_width(cap.max(0.0));
+    }
+    ui.painter().layout_job(job)
+}
+
+/// One document tab: the name (cut with "..." when the room is short),
+/// the dot when it has unsaved changes and the close button inside. The
+/// active tab is raised in the panel colour; the others are quiet. The
+/// close button shows on hover, and always on the active tab. Returns the
+/// tab and the close button.
+fn doc_tab(
+    ui: &mut Ui,
+    t: &Tokens,
+    tab: &Tab,
+    active: bool,
+    cap: Option<f32>,
+) -> (egui::Response, egui::Response) {
+    let color = if active { t.text } else { t.text_dim };
+    let name = name_galley(ui, &tab.name, cap, color);
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let dot = tab.dirty.then(|| {
+        ui.painter()
+            .layout_no_wrap(format!(" {DIRTY}"), font, color)
+    });
+    let dot_w = dot.as_ref().map_or(0.0, |d| d.size().x);
+    let width = name.size().x + dot_w + tab_extra();
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, TAB_HEIGHT), egui::Sense::click());
+    let label = tab_label(&tab.name, tab.dirty);
+    resp.widget_info(|| {
+        egui::WidgetInfo::selected(egui::accesskit::Role::Button, true, active, &label)
+    });
+    let close_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.right() - CLOSE_PAD - CLOSE / 2.0, rect.center().y),
+        egui::Vec2::splat(CLOSE),
+    );
+    let close = ui.interact(
+        close_rect,
+        egui::Id::unique(("flatcraft-tab-close", tab.id)),
+        egui::Sense::click(),
+    );
+    let close_name = format!("Close {}", tab.name);
+    close.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::accesskit::Role::Button, true, &close_name)
+    });
+    let hovered = resp.hovered() || close.hovered();
+    if ui.is_rect_visible(rect) {
+        let radius = egui::CornerRadius::same(t.ribbon_radius);
+        if active {
+            ui.painter().rect(
+                rect,
+                radius,
+                t.panel,
+                egui::Stroke::new(1.0, t.border),
+                egui::StrokeKind::Inside,
+            );
+        } else if hovered {
+            ui.painter()
+                .rect_filled(rect, radius, t.surface.gamma_multiply(0.6));
+        }
+        let text_y = rect.center().y - name.size().y / 2.0;
+        let x = rect.left() + TAB_PAD;
+        ui.painter()
+            .galley(egui::pos2(x, text_y), name.clone(), color);
+        if let Some(dot) = dot {
+            let at = egui::pos2(x + name.size().x, rect.center().y - dot.size().y / 2.0);
+            ui.painter().galley(at, dot, t.accent_cut);
+        }
+        if active || hovered {
+            if close.hovered() {
+                ui.painter().rect_filled(close_rect, radius, t.surface);
+            }
+            let tex = icons::texture(ui.ctx(), Icon::Close, 12.0);
+            egui::Image::from_texture(egui::load::SizedTexture::new(
+                tex.id(),
+                egui::Vec2::splat(12.0),
+            ))
+            .tint(color)
+            .paint_at(
+                ui,
+                egui::Rect::from_center_size(close_rect.center(), egui::Vec2::splat(12.0)),
+            );
+        }
+    }
+    let resp = resp.on_hover_text(label);
+    let close = close.on_hover_text(close_name);
+    (resp, close)
+}
+
 /// The document tabs, the "»" list when they do not all fit, and the New
 /// document button.
-fn doc_tabs(ui: &mut Ui, tabs: &[Tab], active: u64, actions: &mut Vec<Action>) {
+fn doc_tabs(
+    ui: &mut Ui,
+    t: &Tokens,
+    tabs: &[Tab],
+    active: u64,
+    actions: &mut Vec<Action>,
+    hot: &mut Vec<egui::Rect>,
+) {
     let pad = ui.spacing().button_padding.x;
     let gap = ui.spacing().item_spacing.x;
     let icon_w = ICON_SIZE + 2.0 * pad;
     let font = egui::TextStyle::Button.resolve(ui.style());
-    let labels: Vec<String> = tabs
-        .iter()
-        .map(|t| {
-            if t.dirty {
-                format!("{} *", t.name)
-            } else {
-                t.name.clone()
-            }
-        })
-        .collect();
-    let natural: Vec<f32> = labels
-        .iter()
-        .map(|l| {
-            let g =
-                ui.painter()
-                    .layout_no_wrap(l.clone(), font.clone(), egui::Color32::PLACEHOLDER);
-            g.size().x + 2.0 * pad
-        })
-        .collect();
-    let more_w = {
-        let g = ui
-            .painter()
-            .layout_no_wrap("»".into(), font, egui::Color32::PLACEHOLDER);
-        g.size().x + 2.0 * pad + gap
+    let width = |text: String| {
+        ui.painter()
+            .layout_no_wrap(text, font.clone(), egui::Color32::PLACEHOLDER)
+            .size()
+            .x
     };
+    let dot_w = width(format!(" {DIRTY}"));
+    // A tab's name, plus its dot, is what narrows; the rest is fixed.
+    let natural: Vec<f32> = tabs
+        .iter()
+        .map(|tab| width(tab.name.clone()) + if tab.dirty { dot_w } else { 0.0 })
+        .collect();
+    let more_w = width("»".into()) + 2.0 * pad + gap;
     // Room for the tabs: all that is left but the New document button.
     let room = ui.available_width() - icon_w - gap;
     let active_ix = tabs.iter().position(|t| t.id == active).unwrap_or(0);
-    let fit = fit_tabs(&natural, icon_w + 2.0 * gap, room, more_w, active_ix);
+    let fit = fit_tabs(&natural, tab_extra() + gap, room, more_w, active_ix);
     for &i in &fit.shown {
         let tab = &tabs[i];
-        let label = &labels[i];
-        let mut button = egui::Button::selectable(tab.id == active, label.as_str());
-        let r = match fit.cap {
-            Some(cap) if natural[i] > cap => {
-                button = button.truncate();
-                ui.scope(|ui| {
-                    ui.set_max_width(cap);
-                    ui.add_sized(egui::vec2(cap, ui.spacing().interact_size.y), button)
-                })
-                .inner
-            }
-            _ => ui.add(button),
-        };
-        set_name(ui, &r, label);
-        let r = r.on_hover_text(label.as_str());
+        let cap = fit.cap.map(|c| c - if tab.dirty { dot_w } else { 0.0 });
+        let (r, close) = doc_tab(ui, t, tab, tab.id == active, cap);
+        hot.push(r.rect);
         if r.clicked() && tab.id != active {
             actions.push(Action::Switch(tab.id));
         }
-        let close = format!("Close {}", tab.name);
-        if icon_button(ui, Icon::Close, &close, true).clicked() {
+        if close.clicked() {
             actions.push(Action::Close(tab.id));
         }
     }
     if fit.more {
-        let resp = ui.button("»").on_hover_text("Every open document");
+        let resp = ui
+            .add(egui::Button::new("»").frame_when_inactive(false))
+            .on_hover_text("Every open document");
         set_name(ui, &resp, ALL_DOCUMENTS);
+        hot.push(resp.rect);
         egui::Popup::menu(&resp).show(|ui| {
-            for (tab, label) in tabs.iter().zip(&labels) {
+            for tab in tabs {
+                let label = tab_label(&tab.name, tab.dirty);
                 let r = ui.add(egui::Button::selectable(tab.id == active, label.as_str()));
                 set_name(ui, &r, &format!("{label} (documents)"));
                 if r.clicked() {
@@ -282,7 +541,9 @@ fn doc_tabs(ui: &mut Ui, tabs: &[Tab], active: u64, actions: &mut Vec<Action>) {
             }
         });
     }
-    if icon_button(ui, Icon::Plus, "New document", true).clicked() {
+    let plus = flat_icon(ui, Icon::Plus, "New document", true);
+    hot.push(plus.rect);
+    if plus.clicked() {
         actions.push(Action::NewDocument);
     }
 }

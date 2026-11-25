@@ -767,7 +767,7 @@ fn switching_back_restores_link_status() {
         .click();
     wait_for_source_check(&mut h);
     assert!(h.query_by_label("1 source file not found").is_none());
-    h.get_by_role_and_label(Role::Button, "Untitled 1 *")
+    h.get_by_role_and_label(Role::Button, "Untitled 1 \u{2022}")
         .click();
     wait_for_workers(&mut h);
     h.get_by_label("1 source file not found");

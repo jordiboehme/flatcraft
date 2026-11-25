@@ -316,6 +316,10 @@ pub struct FlatCraftApp {
     /// owns the Cmd keys, so a click on Undo, Select All and the like
     /// hands the key to the text field itself. They enter the next frame.
     pub injected: Vec<egui::Event>,
+    /// The app bar is the window's title bar (macOS, see
+    /// [`app_bar::viewport`]): it leaves room for the traffic lights and
+    /// moves the window. Tests turn it on with [`Self::with_title_bar`].
+    pub title_bar: bool,
     /// The macOS menu bar; it must live as long as the app.
     #[cfg(target_os = "macos")]
     menu: Option<menu::AppMenu>,
@@ -357,9 +361,17 @@ impl FlatCraftApp {
             source_check_job: None,
             rng: rng::XorShift::default(),
             injected: Vec::new(),
+            title_bar: cfg!(target_os = "macos"),
             #[cfg(target_os = "macos")]
             menu: None,
         }
+    }
+
+    /// Whether the app bar is the window's title bar (see
+    /// [`FlatCraftApp::title_bar`]).
+    pub fn with_title_bar(mut self, on: bool) -> Self {
+        self.title_bar = on;
+        self
     }
 
     /// Marks a window started by `flatcraft mcp --window`.
