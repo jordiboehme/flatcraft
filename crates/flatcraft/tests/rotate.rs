@@ -452,3 +452,19 @@ fn tab_from_the_percent_field_reaches_the_angle() {
     h.run();
     assert_eq!(undo_len(&s), before);
 }
+
+#[test]
+fn the_rotate_card_opens_next_to_the_pointer() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_s, _id, mut h, v) = square(&dir);
+    let at = zone(&v, kurbo::Point::new(70.0, 70.0));
+    h.hover_at(at);
+    for _ in 0..4 {
+        h.run();
+    }
+    let card = h.get_by_label(&help::rotate_card(Os::CURRENT)).rect();
+    let canvas = app(&h).ui.prepare.canvas_rect;
+    // On the canvas, not up over the ribbon, and close to the pointer.
+    assert!(card.top() >= canvas.top(), "{card:?} {canvas:?}");
+    assert!(card.distance_to_pos(at) < 60.0, "{card:?} {at:?}");
+}
