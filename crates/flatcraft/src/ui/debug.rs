@@ -117,8 +117,8 @@ pub struct Capture {
 #[derive(Debug, Clone, Default)]
 pub struct DebugState {
     pub tab: DebugTab,
-    /// Length, last time and last size of the log the rows were made from.
-    log_key: Option<(usize, u64, usize)>,
+    /// `ByteLog::revision` of the log the rows were made from.
+    log_key: Option<u64>,
     pub log_rows: Vec<Row>,
     /// Entries of the log, including those not shown.
     pub log_len: usize,
@@ -137,10 +137,7 @@ impl DebugState {
         let tail = {
             let s = lock(app_session);
             let log = &s.byte_log;
-            let key = log
-                .entries()
-                .last()
-                .map(|e| (log.len(), e.t_ms, e.bytes.len()));
+            let key = Some(log.revision());
             if key == self.log_key {
                 None
             } else {
@@ -390,5 +387,37 @@ mod tests {
         ];
         assert_eq!(listing_file(&files), Some(&files[0]));
         assert_eq!(listing_file(&files[1..]), None);
+    }
+
+    #[test]
+    fn a_full_log_with_a_same_sized_entry_refreshes_the_rows() {
+        use flatcraft_device::bytelog::{CAPACITY, LogEntry};
+        let dir = tempfile::tempdir().unwrap();
+        let profiles = flatcraft_device::ProfileStore::load(dir.path()).unwrap();
+        let prefs = flatcraft_engine::prefs::Preferences {
+            output_dir: Some(dir.path().join("output")),
+            ..Default::default()
+        };
+        let session = std::sync::Arc::new(std::sync::Mutex::new(
+            flatcraft_engine::session::Session::new(profiles, prefs, true, dir.path().into()),
+        ));
+        let entry = |b: u8| LogEntry {
+            t_ms: 7,
+            dir: Dir::Out,
+            bytes: vec![b],
+        };
+        {
+            let mut s = session.lock().unwrap();
+            for _ in 0..CAPACITY {
+                s.byte_log.push_entry(entry(b'A'));
+            }
+        }
+        let mut d = DebugState::default();
+        d.refresh_log(&session);
+        assert_eq!(d.log_rows.last().unwrap().hex, "41");
+        // Same length, same time, same size: only the bytes differ.
+        session.lock().unwrap().byte_log.push_entry(entry(b'B'));
+        d.refresh_log(&session);
+        assert_eq!(d.log_rows.last().unwrap().hex, "42");
     }
 }

@@ -719,60 +719,164 @@ enum Check {
     Unreadable,
 }
 
-/// Checks one link without reading more than needed: the modification time
-/// first, then the size, and only for an equal size the sha256. Files that
-/// are too large or not regular files are never read.
-fn check_one(link: &SourceLink, source: &Source, project: Option<&Path>) -> Check {
+/// The content the file must have to count as unchanged.
+enum Expected {
+    /// sha256 of the embedded bytes, from the link.
+    Sha(String),
+    /// The embedded bytes, when the link holds no usable sha256.
+    Bytes(Vec<u8>),
+}
+
+/// What the stat step found for one link.
+enum Probe {
+    Known(Check),
+    /// Same size, other time: only the content can tell.
+    Hash {
+        path: PathBuf,
+        expected: Expected,
+    },
+}
+
+/// True for 64 lower-case hex digits.
+fn is_sha256(s: &str) -> bool {
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Stats one link, without reading any file: the modification time first,
+/// then the size. Files that are too large or not regular files are never
+/// read.
+fn probe(link: &SourceLink, source: &Source, project: Option<&Path>) -> Probe {
     let kind = source_kind(source);
     let Some(path) = locate(link, project, kind) else {
-        return match locate_other(link, project, kind) {
+        return Probe::Known(match locate_other(link, project, kind) {
             Some(_) => Check::Unreadable,
             None => Check::Missing,
-        };
+        });
     };
     let meta = match std::fs::metadata(&path) {
         Ok(m) => m,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Check::Missing,
-        Err(_) => return Check::Unreadable,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Probe::Known(Check::Missing),
+        Err(_) => return Probe::Known(Check::Unreadable),
     };
     if !meta.is_file() || meta.len() > MAX_SOURCE_BYTES {
-        return Check::Unreadable;
+        return Probe::Known(Check::Unreadable);
     }
     let modified = meta.modified().ok().and_then(rfc3339);
     if modified.is_some() && modified == link.modified {
-        return Check::Same;
+        return Probe::Known(Check::Same);
     }
     let embedded = embedded_bytes(source);
     if meta.len() != embedded.len() as u64 {
-        return Check::Changed;
+        return Probe::Known(Check::Changed);
     }
-    match sha256_file(&path) {
-        Ok(sha) if sha == sha256_hex(embedded) => Check::Same,
-        Ok(_) => Check::Changed,
-        Err(_) => Check::Unreadable,
+    let expected = if is_sha256(&link.sha256) {
+        Expected::Sha(link.sha256.clone())
+    } else {
+        Expected::Bytes(embedded.to_vec())
+    };
+    Probe::Hash { path, expected }
+}
+
+/// The first step of a change check, taken under the session lock: it only
+/// stats files. [`SourceCheck::run`] hashes what is left without the lock,
+/// and [`accept_check`] takes the result only while the document is
+/// unchanged.
+pub struct SourceCheck {
+    doc_id: u64,
+    revision: u64,
+    probes: Vec<(ObjectId, Probe)>,
+}
+
+/// What a change check found, for the document `doc_id` at `revision`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckResult {
+    pub doc_id: u64,
+    pub revision: u64,
+    pub changed: Vec<ObjectId>,
+    pub missing: Vec<ObjectId>,
+    pub unreadable: Vec<ObjectId>,
+}
+
+impl CheckResult {
+    /// The result as `document.check_sources` returns it.
+    pub fn to_json(&self) -> Value {
+        json!({
+            "changed": ids_json(&self.changed),
+            "missing": ids_json(&self.missing),
+            "unreadable": ids_json(&self.unreadable),
+        })
     }
+}
+
+/// Stats the linked files of the active document (see [`SourceCheck`]).
+pub fn plan_check(s: &Session) -> SourceCheck {
+    let st = s.doc();
+    let project = st.path.as_deref();
+    let probes = st
+        .document
+        .objects
+        .iter()
+        .filter_map(|o| Some((o.id, probe(o.link.as_ref()?, &o.source, project))))
+        .collect();
+    SourceCheck {
+        doc_id: st.id(),
+        revision: st.revision(),
+        probes,
+    }
+}
+
+impl SourceCheck {
+    /// Hashes the files whose time changed but whose size did not. Call it
+    /// without the session lock.
+    pub fn run(self) -> CheckResult {
+        let mut out = CheckResult {
+            doc_id: self.doc_id,
+            revision: self.revision,
+            changed: Vec::new(),
+            missing: Vec::new(),
+            unreadable: Vec::new(),
+        };
+        for (id, probe) in self.probes {
+            let check = match probe {
+                Probe::Known(c) => c,
+                Probe::Hash { path, expected } => {
+                    let expected = match expected {
+                        Expected::Sha(sha) => sha,
+                        Expected::Bytes(bytes) => sha256_hex(&bytes),
+                    };
+                    match sha256_file(&path) {
+                        Ok(sha) if sha == expected => Check::Same,
+                        Ok(_) => Check::Changed,
+                        Err(_) => Check::Unreadable,
+                    }
+                }
+            };
+            match check {
+                Check::Same => {}
+                Check::Changed => out.changed.push(id),
+                Check::Missing => out.missing.push(id),
+                Check::Unreadable => out.unreadable.push(id),
+            }
+        }
+        out
+    }
+}
+
+/// The result as JSON while its document is still open and unchanged since
+/// [`plan_check`]; `None` when the check is stale and must run again.
+pub fn accept_check(s: &Session, result: &CheckResult) -> Option<Value> {
+    let index = s.doc_index(result.doc_id).ok()?;
+    (s.docs[index].revision() == result.revision).then(|| result.to_json())
 }
 
 /// The change check. Only `changed` is meant for an automatic reload
 /// (`Preferences::auto_reload`): `missing` and `unreadable` would fail again
-/// on every check and must wait for the user.
+/// on every check and must wait for the user. An agent's call holds the
+/// session lock for the whole check; the GUI uses the three steps.
 fn run_check(s: &mut Session, _: NoParams, _: Origin) -> Result<Value, CommandError> {
-    let project = s.doc().path.as_deref();
-    let (mut changed, mut missing, mut unreadable) = (Vec::new(), Vec::new(), Vec::new());
-    for o in &s.doc().document.objects {
-        let Some(link) = &o.link else { continue };
-        match check_one(link, &o.source, project) {
-            Check::Same => {}
-            Check::Changed => changed.push(o.id),
-            Check::Missing => missing.push(o.id),
-            Check::Unreadable => unreadable.push(o.id),
-        }
-    }
-    Ok(json!({
-        "changed": ids_json(&changed),
-        "missing": ids_json(&missing),
-        "unreadable": ids_json(&unreadable),
-    }))
+    Ok(plan_check(s).run().to_json())
 }
 
 command!(
@@ -907,6 +1011,49 @@ mod tests {
         let r = check(&mut s);
         assert_eq!(r["changed"], json!([ids[1], ids[2]]), "{r}");
         assert_eq!(HASHED.with(Cell::get), 1);
+    }
+
+    /// A linked object whose file has the same size as the embedded copy
+    /// but other content and a newer time, so only a hash can tell.
+    fn same_size_change(dir: &Path, s: &mut Session) -> u64 {
+        let f = dir.join("same.svg");
+        std::fs::write(&f, SVG).unwrap();
+        let r = s
+            .execute("object.import", json!({ "path": f }), Origin::User)
+            .unwrap();
+        std::fs::write(&f, SVG.replace("x=\"2\"", "x=\"3\"")).unwrap();
+        later(&f);
+        r["id"].as_u64().unwrap()
+    }
+
+    #[test]
+    fn planning_a_check_never_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = session(dir.path());
+        let id = same_size_change(dir.path(), &mut s);
+        HASHED.with(|n| n.set(0));
+        let plan = plan_check(&s);
+        assert_eq!(HASHED.with(Cell::get), 0, "the lock step only stats");
+        let result = plan.run();
+        assert_eq!(HASHED.with(Cell::get), 1);
+        assert_eq!(result.changed, vec![ObjectId(id)]);
+        assert_eq!(accept_check(&s, &result), Some(result.to_json()));
+    }
+
+    #[test]
+    fn a_check_of_a_changed_document_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = session(dir.path());
+        let id = same_size_change(dir.path(), &mut s);
+        let plan = plan_check(&s);
+        s.execute(
+            "object.move",
+            json!({ "ids": [id], "dx_mm": 1.0 }),
+            Origin::User,
+        )
+        .unwrap();
+        let result = plan.run();
+        assert_eq!(accept_check(&s, &result), None);
     }
 
     #[test]

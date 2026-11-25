@@ -68,6 +68,8 @@ pub fn cut_paths(object: &Object, placed_affine: Affine, tolerance_mm: f64) -> V
 /// its parts, so no booleans run. A fill-only path with no area (cut as
 /// nothing) still counts with its centre line.
 pub fn cut_bounds(object: &Object) -> Option<Rect> {
+    #[cfg(test)]
+    tests::CUT_BOUNDS_CALLS.with(|n| n.set(n.get() + 1));
     let affine = object.transform.affine(object.local_bounds);
     object
         .geometry
@@ -830,7 +832,12 @@ fn ring(c: &[[f64; 2]]) -> BezPath {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    thread_local! {
+        /// How often `cut_bounds` ran on this thread.
+        pub(crate) static CUT_BOUNDS_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
     use super::*;
 
     #[test]

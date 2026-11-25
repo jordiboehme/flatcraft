@@ -1,8 +1,9 @@
 //! Preset store: system presets plus user presets with inheritance.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -283,11 +284,35 @@ impl Kind {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ProfileStore {
     user_dir: PathBuf,
     plotters: BTreeMap<String, Entry>,
     materials: BTreeMap<String, Entry>,
+    /// Counts saves and deletes.
+    revision: u64,
+    /// Resolved profiles of this revision, so a GUI can ask every frame.
+    cache: Mutex<Resolved>,
+}
+
+/// Profiles resolved since the last save or delete. Only good ones: an
+/// error is resolved again (it is rare and its type is not `Clone`).
+#[derive(Debug, Clone, Default)]
+struct Resolved {
+    plotters: HashMap<String, PlotterProfile>,
+    materials: HashMap<String, MaterialProfile>,
+}
+
+impl Clone for ProfileStore {
+    fn clone(&self) -> Self {
+        Self {
+            user_dir: self.user_dir.clone(),
+            plotters: self.plotters.clone(),
+            materials: self.materials.clone(),
+            revision: self.revision,
+            cache: Mutex::new(self.resolved().clone()),
+        }
+    }
 }
 
 fn parse_system(src: &str, id: &str) -> Table {
@@ -307,6 +332,8 @@ impl ProfileStore {
             user_dir: user_dir.to_path_buf(),
             plotters: BTreeMap::new(),
             materials: BTreeMap::new(),
+            revision: 0,
+            cache: Mutex::default(),
         };
         for (id, src) in presets::PLOTTERS {
             store.plotters.insert(
@@ -330,6 +357,23 @@ impl ProfileStore {
             store.load_user_dir(kind)?;
         }
         Ok(store)
+    }
+
+    fn resolved(&self) -> std::sync::MutexGuard<'_, Resolved> {
+        self.cache.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Counts the saves and deletes of this store. Resolved profiles are
+    /// cached per revision.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Notes a change of the presets: every cached profile may be stale
+    /// (a parent changes its children).
+    fn changed(&mut self) {
+        self.revision += 1;
+        *self.resolved() = Resolved::default();
     }
 
     fn map(&self, kind: Kind) -> &BTreeMap<String, Entry> {
@@ -496,6 +540,8 @@ impl ProfileStore {
     }
 
     fn resolve<T: DeserializeOwned>(&self, kind: Kind, id: &str) -> Result<T, ProfileError> {
+        #[cfg(test)]
+        tests::RESOLVES.with(|n| n.set(n.get() + 1));
         let table = self.resolve_table(kind, id, &mut Vec::new())?;
         table
             .try_into()
@@ -505,14 +551,27 @@ impl ProfileStore {
             })
     }
 
+    /// The plotter preset `id` with inheritance resolved. Cached until the
+    /// next save or delete.
     pub fn plotter(&self, id: &str) -> Result<PlotterProfile, ProfileError> {
+        if let Some(p) = self.resolved().plotters.get(id) {
+            return Ok(p.clone());
+        }
         let p: PlotterProfile = self.resolve(Kind::Plotter, id)?;
         validate_media(id, &p)?;
+        self.resolved().plotters.insert(id.to_string(), p.clone());
         Ok(p)
     }
 
+    /// The material preset `id` with inheritance resolved. Cached until the
+    /// next save or delete.
     pub fn material(&self, id: &str) -> Result<MaterialProfile, ProfileError> {
-        self.resolve(Kind::Material, id)
+        if let Some(m) = self.resolved().materials.get(id) {
+            return Ok(m.clone());
+        }
+        let m: MaterialProfile = self.resolve(Kind::Material, id)?;
+        self.resolved().materials.insert(id.to_string(), m.clone());
+        Ok(m)
     }
 
     /// Sorted dotted keys the user preset sets itself. Empty for system presets
@@ -643,6 +702,7 @@ impl ProfileStore {
         // A crash mid-write must never leave a broken preset: that would
         // stop the next start.
         crate::fsio::write_atomic(&path, text.as_bytes()).map_err(|e| io(&path, e))?;
+        self.changed();
         self.map_mut(kind).insert(
             id.to_string(),
             Entry {
@@ -703,6 +763,7 @@ impl ProfileStore {
             Err(source) => return Err(ProfileError::Io { path, source }),
         }
         self.map_mut(kind).remove(id);
+        self.changed();
         Ok(())
     }
 
@@ -716,5 +777,53 @@ impl ProfileStore {
     /// [`ProfileStore::delete_user_plotter`].
     pub fn delete_user_material(&mut self, id: &str) -> Result<(), ProfileError> {
         self.delete(Kind::Material, id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    thread_local! {
+        /// How often a profile was resolved from TOML on this thread.
+        pub(super) static RESOLVES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    fn resolves() -> usize {
+        RESOLVES.with(Cell::get)
+    }
+
+    #[test]
+    fn resolved_profiles_are_cached_until_a_save_or_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = ProfileStore::load(dir.path()).unwrap();
+        let id = "file-output-gpgl-cameo2";
+        let first = store.plotter(id).unwrap();
+        store.material("vinyl").unwrap();
+        let before = resolves();
+        for _ in 0..3 {
+            assert_eq!(store.plotter(id).unwrap(), first);
+            store.material("vinyl").unwrap();
+        }
+        assert_eq!(resolves(), before, "a cached profile needs no TOML work");
+
+        let mut mine = first.clone();
+        mine.id = "mine".into();
+        mine.name = "Mine".into();
+        mine.scale_x = 1.01;
+        store.save_user_plotter(&mine, id).unwrap();
+        assert_eq!(store.plotter("mine").unwrap().scale_x, 1.01);
+        mine.scale_x = 1.02;
+        store.save_user_plotter(&mine, id).unwrap();
+        assert_eq!(
+            store.plotter("mine").unwrap().scale_x,
+            1.02,
+            "a save drops the cache"
+        );
+        let clone = store.clone();
+        store.delete_user_plotter("mine").unwrap();
+        assert!(store.plotter("mine").is_err(), "a delete drops the cache");
+        assert_eq!(clone.plotter("mine").unwrap().scale_x, 1.02);
     }
 }

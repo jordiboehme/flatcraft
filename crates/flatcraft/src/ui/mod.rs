@@ -854,7 +854,7 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
 
     let workspace = app.ui.workspace;
     let wants_job = workspace == Workspace::Cut || app.ui.show_debug;
-    let snap = (workspace != Workspace::Home).then(|| prepare::snapshot_with(app, wants_job));
+    let snap = (workspace != Workspace::Home).then(|| prepare::snapshot_with(app, &ctx, wants_job));
     if let Some(snap) = &snap {
         app.ui.cut.update(snap);
     }

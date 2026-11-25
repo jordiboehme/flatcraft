@@ -709,6 +709,127 @@ fn switching_back_restores_link_status() {
 }
 
 #[test]
+fn agent_switching_in_a_loop_does_not_check_each_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let file = dir.path().join("gone.svg");
+    write_square(&file, 20.0);
+    import_file(&s, &file);
+    std::fs::remove_file(&file).unwrap();
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    focus_window(&mut h);
+    h.get_by_label("1 source file not found");
+    let a = s.lock().unwrap().doc().id();
+    s.lock()
+        .unwrap()
+        .execute("document.new", json!({}), Origin::Agent)
+        .unwrap();
+    // The new document is checked once.
+    h.run();
+    let first = app(&h).ui.prepare.sources.last_check;
+    assert!(first.is_some());
+    for _ in 0..3 {
+        s.lock()
+            .unwrap()
+            .execute("document.switch", json!({ "doc_id": a }), Origin::Agent)
+            .unwrap();
+        h.run();
+        // The status of the document comes back without a new check.
+        h.get_by_label("1 source file not found");
+        s.lock()
+            .unwrap()
+            .execute("document.switch", json!({ "index": 1 }), Origin::Agent)
+            .unwrap();
+        h.run();
+    }
+    assert_eq!(
+        app(&h).ui.prepare.sources.last_check,
+        first,
+        "switching within the check interval reuses the last result"
+    );
+}
+
+#[test]
+fn shapes_survive_a_document_switch() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let id = import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let doc = s.lock().unwrap().doc().id();
+    let shape = app(&h).ui.prepare.cache.shape(doc, id).unwrap();
+    s.lock()
+        .unwrap()
+        .execute("document.new", json!({}), Origin::User)
+        .unwrap();
+    h.run();
+    s.lock()
+        .unwrap()
+        .execute("document.switch", json!({ "doc_id": doc }), Origin::User)
+        .unwrap();
+    h.run();
+    let again = app(&h).ui.prepare.cache.shape(doc, id).unwrap();
+    assert!(
+        std::sync::Arc::ptr_eq(&shape, &again),
+        "the shape was not rebuilt"
+    );
+}
+
+/// An SVG path with `n` short segments.
+fn zigzag_svg(n: usize) -> String {
+    let mut d = String::from("M 0 0");
+    for i in 0..n {
+        d.push_str(&format!(" L {} {}", i as f64 * 0.01, (i % 2) as f64));
+    }
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="10mm" viewBox="0 0 100 10"><path d="{d}" fill="none" stroke="black" stroke-width="0.1"/></svg>"#
+    )
+}
+
+#[test]
+fn huge_shapes_are_built_off_the_ui_thread() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let id = s
+        .lock()
+        .unwrap()
+        .execute(
+            "object.import_svg",
+            json!({ "svg": zigzag_svg(9000), "name": "zigzag" }),
+            Origin::User,
+        )
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    let mut h = harness(&dir, s.clone(), false);
+    let (release, gate) = std::sync::mpsc::channel::<()>();
+    let gate = std::sync::Mutex::new(gate);
+    app_mut(&mut h).ui.prepare.cache.set_builder(move |input| {
+        let _ = gate.lock().unwrap().recv();
+        flatcraft::ui::prepare::build_shape(input)
+    });
+    to_prepare(&mut h);
+    let doc = s.lock().unwrap().doc().id();
+    // The frame finished although the shape is still being built.
+    assert_eq!(app(&h).ui.prepare.cache.building(), 1);
+    assert!(app(&h).ui.prepare.cache.shape(doc, id).is_none());
+    release.send(()).unwrap();
+    let start = std::time::Instant::now();
+    while app(&h).ui.prepare.cache.shape(doc, id).is_none() {
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "never built"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        h.run();
+    }
+    assert_eq!(app(&h).ui.prepare.cache.building(), 0);
+    let shape = app(&h).ui.prepare.cache.shape(doc, id).unwrap();
+    assert!(!shape.lines.is_empty());
+}
+
+#[test]
 fn pills_stay_clear_of_the_cutting_area_corner() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);

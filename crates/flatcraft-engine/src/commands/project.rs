@@ -13,12 +13,12 @@ use serde_json::{Value, json};
 
 use super::object::{blade_offset_for, warning_text};
 use super::sources::{project_dir, relink_for_save, restore_links};
-use super::{NoParams, command, cutting_area, ids_json, placed_bounds, point_arr, rect_json};
+use super::{NoParams, command, cutting_area, ids_json, point_arr, rect_json};
 use crate::session::{CommandError, DocState, Origin, Session};
 
 // ---------------------------------------------------------------- document.state
 
-fn object_json(o: &Object) -> Value {
+fn object_json(o: &Object, bounds: Option<Rect>) -> Value {
     let kind = match o.source {
         Source::Svg { .. } => "svg",
         Source::Raster { .. } => "raster",
@@ -29,7 +29,7 @@ fn object_json(o: &Object) -> Value {
         "name": o.name,
         "kind": kind,
         "visible": o.visible,
-        "bounds_mm": placed_bounds(o).map(rect_json).unwrap_or(Value::Null),
+        "bounds_mm": bounds.map(rect_json).unwrap_or(Value::Null),
         "transform": {
             "center_mm": point_arr(t.center_mm),
             "scale_x": t.scale_x,
@@ -74,6 +74,7 @@ fn mat_json(s: &Session) -> Value {
 fn run_state(s: &mut Session, _: NoParams, _: Origin) -> Result<Value, CommandError> {
     let mat = mat_json(s);
     let area = cutting_area(s).ok().map(rect_json).unwrap_or(Value::Null);
+    let bounds = s.doc_mut().placed_bounds_all();
     let st = s.doc();
     let job = &st.document.job;
     let selection: Vec<_> = st.selection.iter().copied().collect();
@@ -82,7 +83,13 @@ fn run_state(s: &mut Session, _: NoParams, _: Origin) -> Result<Value, CommandEr
         "documents": s.docs.len(),
         "doc_id": st.id(),
         "doc_ids": s.docs.iter().map(|d| d.id()).collect::<Vec<_>>(),
-        "objects": st.document.objects.iter().map(object_json).collect::<Vec<_>>(),
+        "objects": st
+            .document
+            .objects
+            .iter()
+            .zip(bounds)
+            .map(|(o, b)| object_json(o, b))
+            .collect::<Vec<_>>(),
         "selection": ids_json(&selection),
         "job": {
             "plotter_id": job.plotter_id,
@@ -291,6 +298,9 @@ fn run_save(s: &mut Session, p: SaveParams, origin: Origin) -> Result<Value, Com
         restore_links(&mut st.document, previous);
         return Err(CommandError::Failed(e.to_string()));
     }
+    if !previous.is_empty() {
+        st.touch();
+    }
     st.path = Some(path.clone());
     st.dirty = false;
     Ok(json!({ "path": path }))
@@ -383,3 +393,58 @@ command!(
     run: run_open,
     description: "Opens a project file and makes it the active document. It replaces the active document only if that one is empty and untouched; otherwise it opens as an extra document. The cut shapes are rebuilt from the embedded sources, so a project opens even when the imported files are gone; use document.check_sources to see which linked files changed or are missing. Returns {index, path, objects (count), warnings: [text]}.",
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cutgeom::tests::CUT_BOUNDS_CALLS;
+
+    const SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20mm" height="20mm" viewBox="0 0 20 20"><rect x="2" y="2" width="5" height="5"/></svg>"#;
+
+    fn calls() -> usize {
+        CUT_BOUNDS_CALLS.with(std::cell::Cell::get)
+    }
+
+    #[test]
+    fn state_computes_cut_bounds_once_per_object_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles = flatcraft_device::ProfileStore::load(dir.path()).unwrap();
+        let prefs = crate::prefs::Preferences {
+            output_dir: Some(dir.path().join("output")),
+            ..Default::default()
+        };
+        let mut s = Session::new(profiles, prefs, false, dir.path().to_path_buf());
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let r = s
+                .execute(
+                    "object.import_svg",
+                    json!({ "svg": SVG, "name": "sq" }),
+                    Origin::User,
+                )
+                .unwrap();
+            ids.push(r["id"].as_u64().unwrap());
+        }
+        let state = |s: &mut Session| {
+            s.execute("document.state", json!({}), Origin::User)
+                .unwrap()
+        };
+        let first = state(&mut s);
+        let before = calls();
+        assert_eq!(state(&mut s), first);
+        assert_eq!(calls(), before, "nothing changed, nothing is recomputed");
+        s.execute(
+            "object.move",
+            json!({ "ids": [ids[0]], "dx_mm": 1.0 }),
+            Origin::User,
+        )
+        .unwrap();
+        let before = calls();
+        let moved = state(&mut s);
+        assert_eq!(calls(), before + 1, "only the moved object is recomputed");
+        assert_eq!(
+            moved["objects"][0]["bounds_mm"]["x0"].as_f64().unwrap(),
+            first["objects"][0]["bounds_mm"]["x0"].as_f64().unwrap() + 1.0
+        );
+    }
+}

@@ -1,15 +1,18 @@
 //! Engine session: open documents, profiles, preferences and command dispatch.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use flatcraft_core::document::{Document, JobSettings, ObjectId};
+use flatcraft_core::document::{CutOptions, Document, JobSettings, Object, ObjectId};
+use flatcraft_core::geometry::CutPath;
+use flatcraft_core::transform::Transform;
 use flatcraft_core::undo::UndoStack;
 use flatcraft_device::gpgl::EmittedJob;
 use flatcraft_device::{ByteLog, ProfileStore, TransportSpec};
+use kurbo::Rect;
 use thiserror::Error;
 
 use crate::prefs::Preferences;
@@ -103,6 +106,40 @@ pub struct DocState {
     last_sent: Option<Arc<JobResult>>,
     /// How many jobs were sent from this document.
     last_sent_rev: u64,
+    /// Counts changes of `document`, so work done outside the session lock
+    /// can tell whether the document changed meanwhile.
+    revision: u64,
+    /// `placed_bounds` of each object, for `document.state`.
+    bounds_cache: HashMap<ObjectId, BoundsEntry>,
+}
+
+/// Everything `placed_bounds` of an object depends on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct BoundsKey {
+    geometry: usize,
+    transform: Transform,
+    local_bounds: Rect,
+    cut: CutOptions,
+}
+
+/// A cached bounding box. The geometry `Arc` is kept so its address cannot
+/// be reused by other geometry while the key names it.
+#[derive(Debug, Clone)]
+struct BoundsEntry {
+    key: BoundsKey,
+    _geometry: Arc<Vec<CutPath>>,
+    bounds: Option<Rect>,
+}
+
+impl BoundsKey {
+    fn of(o: &Object) -> Self {
+        Self {
+            geometry: Arc::as_ptr(&o.geometry) as usize,
+            transform: o.transform,
+            local_bounds: o.local_bounds,
+            cut: o.cut,
+        }
+    }
 }
 
 fn next_doc_id() -> u64 {
@@ -124,6 +161,8 @@ impl Clone for DocState {
             last_job: self.last_job.clone(),
             last_sent: self.last_sent.clone(),
             last_sent_rev: self.last_sent_rev,
+            revision: self.revision,
+            bounds_cache: self.bounds_cache.clone(),
         }
     }
 }
@@ -145,7 +184,50 @@ impl DocState {
             last_job: None,
             last_sent: None,
             last_sent_rev: 0,
+            revision: 0,
+            bounds_cache: HashMap::new(),
         }
+    }
+
+    /// Counts changes of the document. Commands that change it, undo, redo
+    /// and saving (links) raise it.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// `commands::placed_bounds` of every object, in document order. Only
+    /// objects whose geometry, transform or cut options changed since the
+    /// last call are computed again.
+    pub fn placed_bounds_all(&mut self) -> Vec<Option<Rect>> {
+        let cache = &mut self.bounds_cache;
+        let objects = &self.document.objects;
+        cache.retain(|id, _| objects.iter().any(|o| o.id == *id));
+        objects
+            .iter()
+            .map(|o| {
+                let key = BoundsKey::of(o);
+                match cache.get(&o.id) {
+                    Some(e) if e.key == key => e.bounds,
+                    _ => {
+                        let bounds = crate::commands::placed_bounds(o);
+                        cache.insert(
+                            o.id,
+                            BoundsEntry {
+                                key,
+                                _geometry: o.geometry.clone(),
+                                bounds,
+                            },
+                        );
+                        bounds
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// Notes a change of the document.
+    pub(crate) fn touch(&mut self) {
+        self.revision += 1;
     }
 
     /// The job last built by `job.preview` or `job.send`.
@@ -439,10 +521,12 @@ impl Session {
                     same_except_links(&before, &state.document),
                     "a command marked as no user change changed the document"
                 );
+                state.touch();
                 state.prune_selection();
                 Ok(value)
             }
             Ok(value) => {
+                state.touch();
                 state.undo.record(before);
                 state.dirty = true;
                 state.prune_selection();

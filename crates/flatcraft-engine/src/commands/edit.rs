@@ -30,6 +30,7 @@ fn run_undo(s: &mut Session, p: HistoryParams, _: Origin) -> Result<Value, Comma
         .ok_or_else(|| CommandError::Refused("there is nothing to undo".into()))?;
     st.document = previous;
     st.dirty = true;
+    st.touch();
     st.prune_selection();
     Ok(json!({ "can_undo": st.undo.can_undo(), "can_redo": st.undo.can_redo() }))
 }
@@ -53,6 +54,7 @@ fn run_redo(s: &mut Session, p: HistoryParams, _: Origin) -> Result<Value, Comma
         .ok_or_else(|| CommandError::Refused("there is nothing to redo".into()))?;
     st.document = next;
     st.dirty = true;
+    st.touch();
     st.prune_selection();
     Ok(json!({ "can_undo": st.undo.can_undo(), "can_redo": st.undo.can_redo() }))
 }

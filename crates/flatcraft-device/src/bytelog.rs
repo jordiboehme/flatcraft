@@ -36,6 +36,9 @@ pub struct ByteLog {
     in_ep: u8,
     start: Instant,
     entries: VecDeque<LogEntry>,
+    /// Counts the entries ever added, so a viewer can spot a change even
+    /// when a full log keeps its length.
+    revision: u64,
 }
 
 impl Default for ByteLog {
@@ -56,6 +59,7 @@ impl ByteLog {
             in_ep,
             start: Instant::now(),
             entries: VecDeque::new(),
+            revision: 0,
         }
     }
 
@@ -81,6 +85,13 @@ impl ByteLog {
             self.entries.pop_front();
         }
         self.entries.push_back(entry);
+        self.revision += 1;
+    }
+
+    /// Counts the entries ever added. It changes with every entry, also
+    /// when a full log drops its oldest one.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn entries(&self) -> impl Iterator<Item = &LogEntry> {

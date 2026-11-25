@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use egui::{Rect, RichText, Ui};
@@ -15,7 +15,7 @@ use flatcraft_core::document::{CutOptions, JobSettings, Object, Source};
 use flatcraft_core::geometry::CutPath;
 use flatcraft_core::transform::Transform;
 use flatcraft_device::{MaterialProfile, Media, MediaKind, PlotterProfile, PresetInfo};
-use flatcraft_engine::commands::placed_bounds;
+use flatcraft_engine::commands::{placed_bounds, sources};
 use flatcraft_engine::job::JobInput;
 use serde_json::json;
 
@@ -88,9 +88,10 @@ pub struct SourceStatus {
     pub check_pending: bool,
     /// The pending check skips the debounce (a document switch).
     pub check_now: bool,
+    /// When the last check ran, for any document (the debounce).
     pub last_check: Option<Instant>,
-    /// Kinds of check errors already shown, so each kind toasts once.
-    pub reported: Vec<String>,
+    /// When a check last filled these lists.
+    pub checked_at: Option<Instant>,
     /// Objects whose file `object.relink` also found in the new folder.
     pub also_found: Vec<(u64, PathBuf)>,
 }
@@ -168,6 +169,9 @@ pub struct PrepareState {
     /// Warnings of the last import, until dismissed.
     pub notices: Vec<String>,
     pub sources: SourceStatus,
+    /// The link status of the other open documents, so switching back
+    /// shows it at once and a quick switch does not check again.
+    pub source_memory: HashMap<u64, SourceStatus>,
     pub cache: ShapeCache,
 }
 
@@ -189,6 +193,7 @@ impl Default for PrepareState {
             live_override: None,
             notices: Vec::new(),
             sources: SourceStatus::default(),
+            source_memory: HashMap::new(),
             cache: ShapeCache::default(),
         }
     }
@@ -225,36 +230,238 @@ struct ShapeKey {
     cut: CutOptions,
 }
 
-impl ShapeKey {
+/// A cached shape, its key and the geometry the key points to.
+type CacheEntry = (ShapeKey, Arc<Vec<CutPath>>, Arc<Shape>);
+
+/// Shapes with more path elements than this are built on a worker thread,
+/// so scaling or rotating a huge object never freezes the window. Smaller
+/// ones are built at once, in the frame that needs them.
+pub const INLINE_ELEMENTS: usize = 4000;
+
+/// What a shape is built from: the parts of an object it depends on. The
+/// geometry is shared with the document (one `Arc`), so taking it under the
+/// session lock is cheap.
+#[derive(Debug, Clone)]
+pub struct ShapeInput {
+    pub geometry: Arc<Vec<CutPath>>,
+    pub transform: Transform,
+    pub local_bounds: kurbo::Rect,
+    pub cut: CutOptions,
+}
+
+impl ShapeInput {
     fn of(o: &Object) -> Self {
-        let t = &o.transform;
         Self {
-            geometry: Arc::as_ptr(&o.geometry) as usize,
-            scale_x: t.scale_x,
-            scale_y: t.scale_y,
-            rotation_deg: t.rotation_deg,
-            mirror: t.mirror,
+            geometry: o.geometry.clone(),
+            transform: o.transform,
             local_bounds: o.local_bounds,
             cut: o.cut,
         }
     }
+
+    fn key(&self) -> ShapeKey {
+        let t = &self.transform;
+        ShapeKey {
+            geometry: Arc::as_ptr(&self.geometry) as usize,
+            scale_x: t.scale_x,
+            scale_y: t.scale_y,
+            rotation_deg: t.rotation_deg,
+            mirror: t.mirror,
+            local_bounds: self.local_bounds,
+            cut: self.cut,
+        }
+    }
+
+    fn elements(&self) -> usize {
+        self.geometry.iter().map(|p| p.path.elements().len()).sum()
+    }
+
+    /// An object with only what drawing and bounds read.
+    fn object(&self) -> Object {
+        Object {
+            id: flatcraft_core::document::ObjectId(0),
+            name: String::new(),
+            source: Source::Svg {
+                name: String::new(),
+                bytes: Vec::new(),
+            },
+            transform: self.transform,
+            visible: true,
+            cut: self.cut,
+            link: None,
+            geometry: self.geometry.clone(),
+            local_bounds: self.local_bounds,
+            frame: kurbo::Rect::ZERO,
+        }
+    }
 }
 
-/// A cached shape, its key and the geometry the key points to.
-type CacheEntry = (ShapeKey, Arc<Vec<CutPath>>, Arc<Shape>);
+/// Builds a shape on the worker thread; tests replace it.
+pub type ShapeBuilder = Arc<dyn Fn(&ShapeInput) -> Shape + Send + Sync>;
 
-/// Shapes of the active document by object id.
-#[derive(Debug, Clone, Default)]
-pub struct ShapeCache {
+/// A shape for the worker: document, object, input.
+struct ShapeJob {
     doc_id: u64,
+    id: u64,
+    input: ShapeInput,
+    ctx: egui::Context,
+}
+
+/// A finished shape from the worker.
+struct ShapeDone {
+    doc_id: u64,
+    id: u64,
+    key: ShapeKey,
+    geometry: Arc<Vec<CutPath>>,
+    shape: Arc<Shape>,
+}
+
+/// Shapes by document id, then object id. Kept for every open document,
+/// so switching back to a document needs no rebuild.
+pub struct ShapeCache {
     /// The geometry `Arc` is kept so its address cannot be reused by
     /// other geometry while the key names it.
-    shapes: HashMap<u64, CacheEntry>,
+    docs: HashMap<u64, HashMap<u64, CacheEntry>>,
+    /// Shapes the worker is building, with the key they are built for.
+    pending: HashMap<(u64, u64), ShapeKey>,
+    builder: ShapeBuilder,
+    jobs: Option<mpsc::Sender<ShapeJob>>,
+    done: Option<mpsc::Receiver<ShapeDone>>,
+}
+
+impl Default for ShapeCache {
+    fn default() -> Self {
+        Self {
+            docs: HashMap::new(),
+            pending: HashMap::new(),
+            builder: Arc::new(build_shape),
+            jobs: None,
+            done: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for ShapeCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShapeCache")
+            .field("docs", &self.docs.len())
+            .field("pending", &self.pending.len())
+            .finish()
+    }
+}
+
+/// A clone starts empty: it never shares the worker.
+impl Clone for ShapeCache {
+    fn clone(&self) -> Self {
+        Self {
+            builder: self.builder.clone(),
+            ..Self::default()
+        }
+    }
+}
+
+impl ShapeCache {
+    /// Builds worker shapes with `f` instead of [`build_shape`] (tests).
+    pub fn set_builder(&mut self, f: impl Fn(&ShapeInput) -> Shape + Send + Sync + 'static) {
+        self.builder = Arc::new(f);
+        self.jobs = None;
+        self.done = None;
+    }
+
+    /// The cached shape of an object, whatever transform it was built for.
+    pub fn shape(&self, doc_id: u64, id: u64) -> Option<Arc<Shape>> {
+        self.docs.get(&doc_id)?.get(&id).map(|e| e.2.clone())
+    }
+
+    /// How many shapes the worker is building.
+    pub fn building(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// The shape for this key, or `None` when it must be built.
+    fn current(&self, doc_id: u64, id: u64, key: &ShapeKey) -> Option<Arc<Shape>> {
+        match self.docs.get(&doc_id)?.get(&id) {
+            Some((k, _, shape)) if k == key => Some(shape.clone()),
+            _ => None,
+        }
+    }
+
+    /// Takes the shapes the worker finished.
+    fn collect(&mut self) {
+        let Some(done) = &self.done else { return };
+        while let Ok(d) = done.try_recv() {
+            if self.pending.get(&(d.doc_id, d.id)) == Some(&d.key) {
+                self.pending.remove(&(d.doc_id, d.id));
+            }
+            self.docs
+                .entry(d.doc_id)
+                .or_default()
+                .insert(d.id, (d.key, d.geometry, d.shape));
+        }
+    }
+
+    /// Hands a shape to the worker, unless it is being built already. The
+    /// worker starts on first use.
+    fn submit(&mut self, job: ShapeJob) {
+        let key = job.input.key();
+        if self.pending.get(&(job.doc_id, job.id)) == Some(&key) {
+            return;
+        }
+        if self.jobs.is_none() {
+            let (jobs, rx) = mpsc::channel::<ShapeJob>();
+            let (tx, done) = mpsc::channel();
+            let builder = self.builder.clone();
+            let spawned = std::thread::Builder::new()
+                .name("shape-cache".into())
+                .spawn(move || {
+                    for job in rx {
+                        let shape = Arc::new(builder(&job.input));
+                        let reply = ShapeDone {
+                            doc_id: job.doc_id,
+                            id: job.id,
+                            key: job.input.key(),
+                            geometry: job.input.geometry.clone(),
+                            shape,
+                        };
+                        if tx.send(reply).is_err() {
+                            break;
+                        }
+                        job.ctx.request_repaint();
+                    }
+                });
+            if spawned.is_err() {
+                // No thread: build it here rather than never.
+                let shape = Arc::new(build_shape(&job.input));
+                self.docs
+                    .entry(job.doc_id)
+                    .or_default()
+                    .insert(job.id, (key, job.input.geometry, shape));
+                return;
+            }
+            self.jobs = Some(jobs);
+            self.done = Some(done);
+        }
+        self.pending.insert((job.doc_id, job.id), key);
+        if let Some(jobs) = &self.jobs {
+            let _ = jobs.send(job);
+        }
+    }
+
+    /// Forgets closed documents and deleted objects.
+    fn prune(&mut self, open: &[u64], doc_id: u64, ids: &BTreeSet<u64>) {
+        self.docs.retain(|d, _| open.contains(d));
+        if let Some(shapes) = self.docs.get_mut(&doc_id) {
+            shapes.retain(|id, _| ids.contains(id));
+        }
+        self.pending
+            .retain(|(d, id), _| open.contains(d) && (*d != doc_id || ids.contains(id)));
+    }
 }
 
 /// The shape of an object, built from the engine's placed paths and bounds
 /// with the object's centre moved to 0,0.
-fn build_shape(mut o: Object) -> Shape {
+pub fn build_shape(input: &ShapeInput) -> Shape {
+    let mut o = input.object();
     o.transform.center_mm = kurbo::Point::ORIGIN;
     let mut lines = Vec::new();
     for p in o.placed_paths() {
@@ -408,22 +615,25 @@ impl Snapshot {
 
 /// Takes the snapshot. The lock is held only to copy what is needed;
 /// shapes that changed are rebuilt after it is released.
-pub fn snapshot(app: &mut FlatCraftApp) -> Snapshot {
-    snapshot_with(app, false)
+pub fn snapshot(app: &mut FlatCraftApp, ctx: &egui::Context) -> Snapshot {
+    snapshot_with(app, ctx, false)
 }
 
-/// [`snapshot`], plus the job input when `want_job` is true.
-pub fn snapshot_with(app: &mut FlatCraftApp, want_job: bool) -> Snapshot {
+/// [`snapshot`], plus the job input when `want_job` is true. Shapes with
+/// more than [`INLINE_ELEMENTS`] path elements are built on a worker
+/// thread; until one is ready the object shows its last shape (or none),
+/// and the window repaints when it arrives.
+pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool) -> Snapshot {
     let cache = &mut app.ui.prepare.cache;
+    cache.collect();
     let trace = &mut app.ui.trace;
-    let mut misses: Vec<(usize, Object)> = Vec::new();
+    let mut misses: Vec<(usize, ShapeInput)> = Vec::new();
+    let open: Vec<u64>;
     let mut snap = {
         let s = lock(&app.session);
+        open = s.docs.iter().map(|d| d.id()).collect();
         let st = s.doc();
-        if cache.doc_id != st.id() {
-            cache.doc_id = st.id();
-            cache.shapes.clear();
-        }
+        let doc_id = st.id();
         let job = st.document.job.clone();
         let plotter = s.profiles.plotter(&job.plotter_id).ok();
         let material = s
@@ -449,12 +659,13 @@ pub fn snapshot_with(app: &mut FlatCraftApp, want_job: bool) -> Snapshot {
         });
         let mut objects = Vec::with_capacity(st.document.objects.len());
         for (i, o) in st.document.objects.iter().enumerate() {
-            let key = ShapeKey::of(o);
-            let shape = match cache.shapes.get(&o.id.0) {
-                Some((k, _, shape)) if *k == key => shape.clone(),
-                _ => {
-                    misses.push((i, o.clone()));
-                    Arc::new(Shape::default())
+            let input = ShapeInput::of(o);
+            let shape = match cache.current(doc_id, o.id.0, &input.key()) {
+                Some(shape) => shape,
+                None => {
+                    let stale = cache.shape(doc_id, o.id.0);
+                    misses.push((i, input));
+                    stale.unwrap_or_default()
                 }
             };
             objects.push(ObjView {
@@ -489,32 +700,52 @@ pub fn snapshot_with(app: &mut FlatCraftApp, want_job: bool) -> Snapshot {
             config_dir: s.config_dir.clone(),
         }
     };
-    for (i, o) in misses {
-        let key = ShapeKey::of(&o);
-        let id = o.id.0;
-        let geometry = o.geometry.clone();
-        let shape = Arc::new(build_shape(o));
-        cache.shapes.insert(id, (key, geometry, shape.clone()));
+    let doc_id = snap.doc_id;
+    for (i, input) in misses {
+        let id = snap.objects[i].id;
+        if input.elements() > INLINE_ELEMENTS {
+            cache.submit(ShapeJob {
+                doc_id,
+                id,
+                input,
+                ctx: ctx.clone(),
+            });
+            continue;
+        }
+        let shape = Arc::new(build_shape(&input));
+        cache
+            .docs
+            .entry(doc_id)
+            .or_default()
+            .insert(id, (input.key(), input.geometry, shape.clone()));
         snap.objects[i].shape = shape;
     }
     let ids: BTreeSet<u64> = snap.objects.iter().map(|o| o.id).collect();
-    cache.shapes.retain(|id, _| ids.contains(id));
+    cache.prune(&open, doc_id, &ids);
 
-    let src = &mut app.ui.prepare.sources;
+    let p = &mut app.ui.prepare;
+    let src = &mut p.sources;
     if src.doc_id != snap.doc_id {
-        // The lists belong to the old document. Check the new one at once
-        // (not the very first document: a new window has nothing linked,
-        // and opening a project asks for its own check).
+        // The lists belong to the old document: keep them for a switch
+        // back. Check the new one soon (not the very first document: a new
+        // window has nothing linked, and opening a project asks for its
+        // own check).
         let switched = src.doc_id != 0;
+        let old = std::mem::take(src);
+        let next = p.source_memory.remove(&snap.doc_id).unwrap_or_default();
         *src = SourceStatus {
             doc_id: snap.doc_id,
-            check_pending: src.check_pending || switched,
+            check_pending: old.check_pending || switched,
             check_now: switched,
-            last_check: src.last_check,
-            reported: std::mem::take(&mut src.reported),
-            ..SourceStatus::default()
+            last_check: old.last_check,
+            ..next
         };
+        if switched {
+            p.source_memory.insert(old.doc_id, old);
+        }
     }
+    p.source_memory.retain(|id, _| open.contains(id));
+    let src = &mut p.sources;
     // Objects deleted since the check are no longer reported.
     let gone: Vec<u64> = [&src.changed, &src.missing, &src.unreadable]
         .into_iter()
@@ -528,85 +759,62 @@ pub fn snapshot_with(app: &mut FlatCraftApp, want_job: bool) -> Snapshot {
 
 // ---------------------------------------------------------------- sources
 
-/// A short name for the kind of a command error.
-fn error_kind(e: &flatcraft_engine::CommandError) -> &'static str {
-    use flatcraft_engine::CommandError as E;
-    match e {
-        E::UnknownCommand(_) => "unknown",
-        E::InvalidParams(_) => "invalid",
-        E::NotFound(_) => "not found",
-        E::Refused(_) => "refused",
-        E::Failed(_) => "failed",
-    }
-}
-
 impl FlatCraftApp {
     /// Runs a pending check of linked files unless a drag is in progress or
-    /// the last check was less than [`CHECK_INTERVAL`] ago. With the
-    /// `auto_reload` preference on, changed files are reloaded right away
-    /// (only those; never missing or unreadable ones).
+    /// the last check was less than [`CHECK_INTERVAL`] ago. A document
+    /// switch checks at once, unless the document's lists are younger than
+    /// [`CHECK_INTERVAL`] (an agent switching in a loop). Files are only
+    /// stated under the session lock; hashing runs without it, and a result
+    /// for a document that changed meanwhile is dropped and checked again.
+    /// With the `auto_reload` preference on, changed files are reloaded
+    /// right away (only those; never missing or unreadable ones).
     pub fn check_sources(&mut self, ctx: &egui::Context, now: Instant) {
         let p = &mut self.ui.prepare;
         if !p.sources.check_pending || p.drag.is_some() {
             return;
         }
-        if !p.sources.check_now
-            && let Some(last) = p.sources.last_check
-        {
-            let since = now.saturating_duration_since(last);
-            if since < CHECK_INTERVAL {
-                ctx.request_repaint_after(CHECK_INTERVAL - since);
+        let recent = |t: Option<Instant>| {
+            t.map(|t| now.saturating_duration_since(t))
+                .filter(|since| *since < CHECK_INTERVAL)
+        };
+        if p.sources.check_now {
+            if recent(p.sources.checked_at).is_some() {
+                p.sources.check_pending = false;
+                p.sources.check_now = false;
                 return;
             }
+        } else if let Some(since) = recent(p.sources.last_check) {
+            ctx.request_repaint_after(CHECK_INTERVAL - since);
+            return;
         }
         p.sources.check_pending = false;
         p.sources.check_now = false;
         p.sources.last_check = Some(now);
-        let (doc_id, result, auto) = {
-            let mut s = lock(&self.session);
-            let doc_id = s.doc().id();
-            let auto = s.prefs.auto_reload;
-            let r = s.execute(
-                "document.check_sources",
-                json!({}),
-                flatcraft_engine::Origin::User,
-            );
-            (doc_id, r, auto)
+        let (plan, auto) = {
+            let s = lock(&self.session);
+            (sources::plan_check(&s), s.prefs.auto_reload)
         };
-        let v = match result {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("warning: cannot check the linked files: {e}");
-                let kind = error_kind(&e).to_string();
-                if !self.ui.prepare.sources.reported.contains(&kind) {
-                    self.ui.prepare.sources.reported.push(kind);
-                    self.toast(super::Toast::warning(format!(
-                        "Cannot check the linked files: {}",
-                        super::person_text(&e)
-                    )));
-                }
-                return;
-            }
-        };
-        let ids = |k: &str| -> Vec<u64> {
-            v[k].as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(serde_json::Value::as_u64)
-                .collect()
-        };
+        let result = plan.run();
+        let current = sources::accept_check(&lock(&self.session), &result).is_some();
         let src = &mut self.ui.prepare.sources;
-        src.doc_id = doc_id;
-        src.changed = ids("changed");
-        src.missing = ids("missing");
-        src.unreadable = ids("unreadable");
+        if !current || src.doc_id != result.doc_id {
+            // The document changed while its files were hashed.
+            src.check_pending = true;
+            ctx.request_repaint_after(CHECK_INTERVAL);
+            return;
+        }
+        let ids = |v: &[flatcraft_core::document::ObjectId]| v.iter().map(|i| i.0).collect();
+        src.changed = ids(&result.changed);
+        src.missing = ids(&result.missing);
+        src.unreadable = ids(&result.unreadable);
+        src.checked_at = Some(now);
         if auto && !src.changed.is_empty() {
             let changed = src.changed.clone();
             src.auto_reloaded = changed.clone();
             self.apply(
                 ctx,
                 vec![Action::run(
-                    doc_id,
+                    result.doc_id,
                     "object.reload",
                     json!({ "ids": changed }),
                 )],
