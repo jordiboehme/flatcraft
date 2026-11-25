@@ -81,6 +81,53 @@ fn out_of_area_names_objects() {
     assert!(!err.to_string().contains('\u{2014}'));
 }
 
+/// A MoveTo with no drawing after it moves no blade: it does not count
+/// for the area check, wherever it lies.
+#[test]
+fn a_stray_move_outside_the_area_is_ignored() {
+    for stray in [
+        // before the drawing, followed by another move
+        {
+            let mut p = BezPath::new();
+            p.move_to((-50.0, -50.0));
+            p.extend(rect_path(10.0, 10.0, 10.0, 10.0));
+            p
+        },
+        // after the drawing, at the end of the path
+        {
+            let mut p = rect_path(10.0, 10.0, 10.0, 10.0);
+            p.move_to((500.0, 500.0));
+            p
+        },
+        // followed by a close only
+        {
+            let mut p = rect_path(10.0, 10.0, 10.0, 10.0);
+            p.move_to((500.0, 500.0));
+            p.close_path();
+            p
+        },
+    ] {
+        let out = plan(&[placed(1, stray.clone())], &settings());
+        let out = out.unwrap_or_else(|e| panic!("{e}: {stray:?}"));
+        assert_eq!(out.toolpaths.len(), 1);
+    }
+}
+
+/// The MoveTo that starts a drawn line is where the blade goes down: it
+/// is checked.
+#[test]
+fn a_move_that_starts_a_line_outside_the_area_is_refused() {
+    let mut p = BezPath::new();
+    p.move_to((1.0, 10.0));
+    p.line_to((20.0, 10.0));
+    assert_eq!(
+        plan(&[placed(1, p)], &settings()),
+        Err(PlanError::OutOfArea {
+            objects: vec![ObjectId(1)]
+        })
+    );
+}
+
 #[test]
 fn curve_bulging_out_of_area_is_caught() {
     // control points inside, but circle edge pokes out: area check uses flattened points

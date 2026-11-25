@@ -105,14 +105,18 @@ fn validate(s: &PipelineSettings) -> Result<(), PlanError> {
 }
 
 /// Every point of the flattened path lies in `area`, with a 1e-6 mm epsilon so
-/// an object aligned exactly to the margin passes.
+/// an object aligned exactly to the margin passes. A MoveTo that no LineTo
+/// follows draws nothing and moves no blade, so it is not checked.
 fn inside_area(flat: &BezPath, area: Rect) -> bool {
     const EPS: f64 = 1e-6;
-    flat.elements().iter().all(|el| match el {
-        PathEl::MoveTo(p) | PathEl::LineTo(p) => {
-            (area.x0 - EPS..=area.x1 + EPS).contains(&p.x)
-                && (area.y0 - EPS..=area.y1 + EPS).contains(&p.y)
-        }
+    let inside = |p: &Point| {
+        (area.x0 - EPS..=area.x1 + EPS).contains(&p.x)
+            && (area.y0 - EPS..=area.y1 + EPS).contains(&p.y)
+    };
+    let els = flat.elements();
+    els.iter().enumerate().all(|(k, el)| match el {
+        PathEl::LineTo(p) => inside(p),
+        PathEl::MoveTo(p) => !matches!(els.get(k + 1), Some(PathEl::LineTo(_))) || inside(p),
         _ => true,
     })
 }
