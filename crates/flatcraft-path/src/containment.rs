@@ -25,6 +25,8 @@ thread_local! {
     pub(crate) static INSIDE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// Grid cells `is_kept` walked on this thread.
     pub(crate) static CELL_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Container candidates the parent search looked at on this thread.
+    pub(crate) static PARENT_CANDIDATES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Shoelace area of a ring in mat coordinates (y down). A ring that runs
@@ -220,22 +222,49 @@ type Ring = (usize, Rect, f64);
 /// Set the parent of every ring in `rings` (smallest first) and every path
 /// in `open` to its smallest container among `rings`. Each ring tries the
 /// larger rings from the smallest upward and stops at the first hit.
+///
+/// A container's box holds the inner path's box, so it holds its top-left
+/// corner: only the rings whose boxes cover that corner's cell in a
+/// [`BoxIndex`] are tried, in the same order. The answer is the same as
+/// trying every larger ring, without the n^2 box tests of a job with many
+/// small paths.
 fn find_parents(paths: &[Toolpath], rings: &[Ring], open: &[usize], parent: &mut [Option<usize>]) {
-    for (k, &(j, jb, ja)) in rings.iter().enumerate() {
-        let larger = &rings[k..];
-        let larger = &larger[larger.partition_point(|r| r.2 <= ja)..];
+    let index = BoxIndex::new(rings);
+    let all: Vec<u32> = (0..rings.len() as u32).collect();
+    let candidates = |b: Rect| -> &[u32] {
+        index
+            .as_ref()
+            .map_or(&all[..], |index| index.at(Point::new(b.x0, b.y0)))
+    };
+    let count = |_n: usize| {
+        #[cfg(test)]
+        PARENT_CANDIDATES.with(|c| c.set(c.get() + _n));
+    };
+    for &(j, jb, ja) in rings {
+        let ranks = candidates(jb);
+        // Ranks follow the area, so the larger rings are a suffix.
+        let larger = &ranks[ranks.partition_point(|&r| rings[r as usize].2 <= ja)..];
+        let mut tried = 0;
         parent[j] = larger
             .iter()
-            .find(|&&(i, ib, ia)| nested(paths[j].lap(), jb, ja, paths[i].lap(), ib, ia))
+            .map(|&r| rings[r as usize])
+            .find(|&(i, ib, ia)| {
+                tried += 1;
+                nested(paths[j].lap(), jb, ja, paths[i].lap(), ib, ia)
+            })
             .map(|r| r.0);
+        count(tried);
     }
     for &j in open {
         let Some(jb) = bbox(paths[j].lap()) else {
             continue;
         };
-        parent[j] = rings
+        let mut tried = 0;
+        parent[j] = candidates(jb)
             .iter()
-            .find(|&&(i, ib, ia)| {
+            .map(|&r| rings[r as usize])
+            .find(|&(i, ib, ia)| {
+                tried += 1;
                 ia > 0.0
                     && box_in(jb, ib)
                     && paths[j]
@@ -244,6 +273,66 @@ fn find_parents(paths: &[Toolpath], rings: &[Ring], open: &[usize], parent: &mut
                         .all(|q| point_in_ring(*q, paths[i].lap()) != Some(false))
             })
             .map(|r| r.0);
+        count(tried);
+    }
+}
+
+/// The boxes of rings sorted by area, in square cells: each cell lists the
+/// ranks (positions in that order) of the rings whose boxes cover it, in
+/// rank order.
+struct BoxIndex {
+    cell: f64,
+    cells: HashMap<(i64, i64), Vec<u32>>,
+}
+
+impl BoxIndex {
+    /// The smallest cell edge, in millimetres.
+    const MIN_CELL_MM: f64 = 1.0;
+    /// The cells all boxes cover, at most this many per ring.
+    const CELLS_PER_RING: f64 = 16.0;
+
+    /// `None` when a box is not finite (the caller then tries every ring).
+    /// The cell edge starts at the root of a quarter of the mean box area
+    /// and doubles until the boxes cover at most [`Self::CELLS_PER_RING`]
+    /// cells per ring, so one large outline cannot blow it up.
+    fn new(rings: &[Ring]) -> Option<Self> {
+        if rings.iter().any(|r| {
+            let b = r.1;
+            !(b.x0.is_finite() && b.y0.is_finite() && b.x1.is_finite() && b.y1.is_finite())
+        }) {
+            return None;
+        }
+        let n = rings.len().max(1) as f64;
+        let mean_area = rings.iter().map(|r| r.1.area()).sum::<f64>() / n;
+        let mut cell = (mean_area / 4.0).sqrt().max(Self::MIN_CELL_MM);
+        let span = |v0: f64, v1: f64, cell: f64| (v1 / cell).floor() - (v0 / cell).floor() + 1.0;
+        while rings
+            .iter()
+            .map(|r| span(r.1.x0, r.1.x1, cell) * span(r.1.y0, r.1.y1, cell))
+            .sum::<f64>()
+            > Self::CELLS_PER_RING * n
+        {
+            cell *= 2.0;
+        }
+        let at = |v: f64| (v / cell).floor() as i64;
+        let mut cells: HashMap<(i64, i64), Vec<u32>> = HashMap::new();
+        for (rank, r) in rings.iter().enumerate() {
+            for row in at(r.1.y0)..=at(r.1.y1) {
+                for col in at(r.1.x0)..=at(r.1.x1) {
+                    cells.entry((col, row)).or_default().push(rank as u32);
+                }
+            }
+        }
+        Some(Self { cell, cells })
+    }
+
+    /// The ranks of the rings whose boxes cover the cell of `p`.
+    fn at(&self, p: Point) -> &[u32] {
+        let key = (
+            (p.x / self.cell).floor() as i64,
+            (p.y / self.cell).floor() as i64,
+        );
+        self.cells.get(&key).map_or(&[], Vec::as_slice)
     }
 }
 
@@ -890,6 +979,97 @@ mod tests {
         }
         assert!(tree.depth[2000..].iter().all(|&d| d == 0));
         assert_eq!(tree.roots.len(), 2001);
+    }
+
+    /// The parent by the rule alone: of the larger closed rings in (area,
+    /// index) order, the first that holds path `j`; every ring is tried.
+    fn parent_by_brute_force(paths: &[Toolpath], j: usize) -> Option<usize> {
+        let mut rings: Vec<Ring> = paths
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.closed)
+            .filter_map(|(i, p)| Some((i, bbox(p.lap())?, signed_area(p.lap()).abs())))
+            .collect();
+        rings.sort_by(|a, b| a.2.total_cmp(&b.2).then(a.0.cmp(&b.0)));
+        let jb = bbox(paths[j].lap())?;
+        if paths[j].closed {
+            let ja = signed_area(paths[j].lap()).abs();
+            rings
+                .iter()
+                .filter(|r| r.2 > ja)
+                .find(|&&(i, ib, ia)| nested(paths[j].lap(), jb, ja, paths[i].lap(), ib, ia))
+                .map(|r| r.0)
+        } else {
+            rings
+                .iter()
+                .find(|&&(i, ib, ia)| {
+                    ia > 0.0
+                        && box_in(jb, ib)
+                        && paths[j]
+                            .lap()
+                            .iter()
+                            .all(|q| point_in_ring(*q, paths[i].lap()) != Some(false))
+                })
+                .map(|r| r.0)
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn box_index_finds_the_brute_force_parent(
+            shapes in proptest::collection::vec(
+                (0.0f64..100.0, 0.0f64..100.0, 0.5f64..80.0, 0.5f64..80.0, proptest::bool::weighted(0.2)),
+                1..60,
+            ),
+        ) {
+            let paths: Vec<Toolpath> = shapes
+                .iter()
+                .map(|&(x, y, w, h, open)| {
+                    if open {
+                        tp(&[(x, y), (x + w / 3.0, y + h / 3.0)], false)
+                    } else {
+                        sq(x, y, x + w, y + h)
+                    }
+                })
+                .collect();
+            let tree = build(&paths);
+            for j in 0..paths.len() {
+                proptest::prop_assert_eq!(tree.parent[j], parent_by_brute_force(&paths, j), "path {}", j);
+            }
+        }
+    }
+
+    #[test]
+    fn parent_search_of_many_small_rings_is_local() {
+        // 20000 small squares of random sizes on a 600 x 900 mm sheet, and
+        // one frame around them all. Trying every larger ring would look at
+        // about n * n / 2 = 200 million candidates; the box index looks at
+        // the few whose boxes cover each square's corner. The count is the
+        // check, not the clock (Ruling F30).
+        let mut seed = 7u64;
+        let mut next = || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut paths: Vec<Toolpath> = (0..20_000)
+            .map(|_| {
+                let (x, y, side) = (
+                    10.0 + next() * 580.0,
+                    10.0 + next() * 880.0,
+                    0.5 + next() * 2.0,
+                );
+                sq(x, y, x + side, y + side)
+            })
+            .collect();
+        paths.push(sq(0.0, 0.0, 600.0, 900.0));
+        PARENT_CANDIDATES.with(|c| c.set(0));
+        let tree = build(&paths);
+        let tried = PARENT_CANDIDATES.with(|c| c.get());
+        eprintln!("{tried} candidates");
+        assert!(tried <= 4 * paths.len(), "{tried} candidates");
+        assert_eq!(tree.roots, vec![20_000]);
     }
 
     #[test]
