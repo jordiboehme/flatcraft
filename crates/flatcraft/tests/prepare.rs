@@ -957,14 +957,22 @@ fn the_shape_worker_builds_only_the_newest_shape() {
     let (release, gate) = std::sync::mpsc::channel::<()>();
     let gate = std::sync::Mutex::new(gate);
     let count = builds.clone();
+    // The builder says when it is inside the first build, so the scales
+    // below cannot overtake the worker picking that build up.
+    let (started_tx, started) = std::sync::mpsc::channel::<()>();
+    let started_tx = std::sync::Mutex::new(started_tx);
     app_mut(&mut h).ui.prepare.cache.set_builder(move |input| {
+        let _ = started_tx.lock().unwrap().send(());
         let _ = gate.lock().unwrap().recv();
         count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         flatcraft::ui::prepare::build_shape(input)
     });
     to_prepare(&mut h);
     let doc = s.lock().unwrap().doc().id();
-    // Two more scales while the first build waits.
+    // Two more scales while the first build waits inside the builder.
+    started
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the worker never started the first build");
     for f in [1.5, 1.2] {
         s.lock()
             .unwrap()
