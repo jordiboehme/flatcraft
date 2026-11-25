@@ -1,16 +1,21 @@
 //! Stage 5: nearest-neighbour ordering, inside first.
 
-use kurbo::{Point, Rect};
+use kurbo::{ParamCurveNearest as _, Point, Rect};
 
 use crate::plan::Toolpath;
 
-/// Even-odd test of `p` against the polygon `ring`.
-fn inside_ring(p: Point, ring: &[Point]) -> bool {
+/// Even-odd test of `p` against the polygon `ring`. `None` when `p` lies
+/// on (or within `EPS` of) the boundary, where the answer is ambiguous.
+fn inside_ring(p: Point, ring: &[Point]) -> Option<bool> {
+    const EPS: f64 = 1e-9;
     let mut inside = false;
     let n = ring.len();
     for i in 0..n {
         let a = ring[i];
         let b = ring[(i + 1) % n];
+        if kurbo::Line::new(a, b).nearest(p, 0.0).distance_sq <= EPS * EPS {
+            return None;
+        }
         if (a.y > p.y) != (b.y > p.y) {
             let x = a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x);
             if p.x < x {
@@ -18,7 +23,19 @@ fn inside_ring(p: Point, ring: &[Point]) -> bool {
             }
         }
     }
-    inside
+    Some(inside)
+}
+
+/// Absolute shoelace area of a ring.
+fn area(points: &[Point]) -> f64 {
+    let n = points.len();
+    let twice: f64 = (0..n)
+        .map(|i| {
+            let (a, b) = (points[i], points[(i + 1) % n]);
+            a.x * b.y - b.x * a.y
+        })
+        .sum();
+    (twice / 2.0).abs()
 }
 
 fn bbox(points: &[Point]) -> Option<Rect> {
@@ -29,42 +46,65 @@ fn bbox(points: &[Point]) -> Option<Rect> {
     )
 }
 
-/// For each path, the closed paths that lie fully inside it (every vertex
-/// inside by even-odd, after a bounding-box check). Open paths neither
-/// block nor are blocked.
-fn blockers(paths: &[Toolpath]) -> Vec<Vec<usize>> {
-    let boxes: Vec<Option<Rect>> = paths
+/// How many vertices of the inner ring are tried before giving up.
+const PROBES: usize = 3;
+
+/// True if closed ring `inner` lies in closed ring `outer` (spec 8.3): its
+/// box lies in the outer box, it is smaller, and one of its vertices is
+/// inside by even-odd. The first of up to [`PROBES`] vertices that is not
+/// on the outer boundary decides.
+fn nested(inner: &[Point], ib: Rect, ia: f64, outer: &[Point], ob: Rect, oa: f64) -> bool {
+    if ib.x0 < ob.x0 || ib.y0 < ob.y0 || ib.x1 > ob.x1 || ib.y1 > ob.y1 || ia >= oa {
+        return false;
+    }
+    inner
         .iter()
-        .map(|t| if t.closed { bbox(&t.points) } else { None })
-        .collect();
-    let mut out = vec![Vec::new(); paths.len()];
-    for (i, outer) in paths.iter().enumerate() {
-        let Some(ob) = boxes[i] else { continue };
-        for (j, inner) in paths.iter().enumerate() {
-            let Some(ib) = boxes[j] else { continue };
-            if i == j || ib.x0 < ob.x0 || ib.y0 < ob.y0 || ib.x1 > ob.x1 || ib.y1 > ob.y1 {
-                continue;
+        .take(PROBES)
+        .find_map(|p| inside_ring(*p, outer))
+        .unwrap_or(false)
+}
+
+/// For each path, how many closed paths lie inside it, and for each path
+/// the paths it lies inside. Open paths neither block nor are blocked.
+/// One even-odd test per box-nested pair keeps this at O(n^2 * v).
+fn containment(paths: &[Toolpath]) -> (Vec<usize>, Vec<Vec<usize>>) {
+    let rings: Vec<Option<(Rect, f64)>> = paths
+        .iter()
+        .map(|t| {
+            if t.closed {
+                bbox(&t.points).map(|b| (b, area(&t.points)))
+            } else {
+                None
             }
-            if inner.points.iter().all(|p| inside_ring(*p, &outer.points)) {
-                out[i].push(j);
+        })
+        .collect();
+    let mut inside_count = vec![0; paths.len()];
+    let mut parents = vec![Vec::new(); paths.len()];
+    for (i, outer) in paths.iter().enumerate() {
+        let Some((ob, oa)) = rings[i] else { continue };
+        for (j, inner) in paths.iter().enumerate() {
+            let Some((ib, ia)) = rings[j] else { continue };
+            if i != j && nested(&inner.points, ib, ia, &outer.points, ob, oa) {
+                inside_count[i] += 1;
+                parents[j].push(i);
             }
         }
     }
-    out
+    (inside_count, parents)
 }
 
 /// Greedy nearest-neighbour order, beginning at `start`. An open path is
 /// reversed when its end is nearer than its start. A closed path keeps its
 /// source start and direction. Ties go to the earlier path.
 ///
-/// Inside first (spec 8.3, ruling R32): a closed path waits while an uncut
-/// closed path lies fully inside it, so holes and inner parts are cut
+/// Inside first (spec 8.3, rulings R32 and R32a): a closed path waits while
+/// an uncut closed path lies inside it, so holes and inner parts are cut
 /// before the outline that frees them. If every remaining path waits
-/// (rings inside each other, which proper nesting never gives), the
-/// nearest one goes. This is the minimal rule for M1; the M2 plan (Tasks 2
-/// and 5) replaces it with a containment tree.
+/// (which proper nesting never gives), the nearest one goes. This is the
+/// minimal rule for M1; the M2 plan (Tasks 2 and 5) replaces it with a
+/// containment tree.
 pub fn nearest_neighbour(paths: Vec<Toolpath>, start: Point) -> Vec<Toolpath> {
-    let blocked_by = blockers(&paths);
+    let (mut waiting_on, parents) = containment(&paths);
     let mut slots: Vec<Option<Toolpath>> = paths.into_iter().map(Some).collect();
     let mut out = Vec::with_capacity(slots.len());
     let mut here = start;
@@ -78,7 +118,7 @@ pub fn nearest_neighbour(paths: Vec<Toolpath>, start: Point) -> Vec<Toolpath> {
                 any.get_or_insert((f64::INFINITY, i, false));
                 continue;
             };
-            let free = blocked_by[i].iter().all(|j| slots[*j].is_none());
+            let free = waiting_on[i] == 0;
             let mut consider = |d: f64, rev: bool| {
                 if any.is_none_or(|b| d < b.0) {
                     any = Some((d, i, rev));
@@ -96,6 +136,9 @@ pub fn nearest_neighbour(paths: Vec<Toolpath>, start: Point) -> Vec<Toolpath> {
             break;
         };
         let mut t = slots[i].take().expect("picked a remaining path");
+        for p in &parents[i] {
+            waiting_on[*p] = waiting_on[*p].saturating_sub(1);
+        }
         if reversed {
             t.points.reverse();
         }
@@ -213,6 +256,72 @@ mod tests {
         let b = ring(2, 10.0, 10.0, 60.0, 60.0);
         let out = nearest_neighbour(vec![a, b], Point::ZERO);
         assert_eq!(out.len(), 2);
+        assert_eq!(ids(&out), vec![1, 2]);
+    }
+
+    /// A circle of `n` vertices, closed by repeating the first.
+    fn circle(id: u64, c: (f64, f64), r: f64, n: usize) -> Toolpath {
+        let mut pts: Vec<(f64, f64)> = (0..n)
+            .map(|k| {
+                let a = k as f64 / n as f64 * std::f64::consts::TAU;
+                (c.0 + r * a.cos(), c.1 + r * a.sin())
+            })
+            .collect();
+        pts.push(pts[0]);
+        tp(id, &pts, true)
+    }
+
+    #[test]
+    fn deep_nesting_orders_fast() {
+        // Ruling R32a: 200 concentric rings of 400 vertices.
+        let rings: Vec<Toolpath> = (1..=200)
+            .map(|k| circle(k, (300.0, 300.0), k as f64, 400))
+            .collect();
+        let t = std::time::Instant::now();
+        let out = nearest_neighbour(rings, Point::ZERO);
+        let took = t.elapsed();
+        assert_eq!(ids(&out), (1..=200).collect::<Vec<u64>>());
+        let limit = if cfg!(debug_assertions) {
+            std::time::Duration::from_secs(3)
+        } else {
+            std::time::Duration::from_millis(150)
+        };
+        assert!(took < limit, "took {took:?}, limit {limit:?}");
+    }
+
+    #[test]
+    fn a_ring_touching_the_outline_still_counts_as_inside() {
+        // The inner ring shares its first vertex's x with the outline's
+        // left edge, so a vertex is tried that is clearly inside.
+        let outer = ring(1, 10.0, 10.0, 60.0, 60.0);
+        let inner = tp(
+            2,
+            &[(10.0, 30.0), (30.0, 25.0), (30.0, 35.0), (10.0, 30.0)],
+            true,
+        );
+        let out = nearest_neighbour(vec![outer, inner], Point::ZERO);
+        assert_eq!(ids(&out), vec![2, 1]);
+    }
+
+    #[test]
+    fn a_ring_beside_another_in_its_box_does_not_block() {
+        // An L-shaped outline whose box holds a square that lies outside
+        // the L itself.
+        let l = tp(
+            1,
+            &[
+                (0.0, 0.0),
+                (100.0, 0.0),
+                (100.0, 20.0),
+                (20.0, 20.0),
+                (20.0, 100.0),
+                (0.0, 100.0),
+                (0.0, 0.0),
+            ],
+            true,
+        );
+        let square = ring(2, 50.0, 50.0, 70.0, 70.0);
+        let out = nearest_neighbour(vec![l, square], Point::ZERO);
         assert_eq!(ids(&out), vec![1, 2]);
     }
 }
