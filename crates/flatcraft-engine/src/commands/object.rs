@@ -47,14 +47,10 @@ pub(crate) fn warning_text(w: &ImportWarning) -> String {
     }
 }
 
+/// Import errors are sentences; a parse error carries foreign detail, so
+/// it is clipped.
 fn import_error(e: ImportError) -> CommandError {
-    match e {
-        ImportError::ImageTooLarge { .. } => CommandError::Failed(e.to_string()),
-        other => CommandError::Failed(format!(
-            "cannot import the file: {}",
-            clip(other.to_string())
-        )),
-    }
+    CommandError::Failed(clip(e.to_string()))
 }
 
 /// Blade offset of the active document's plotter, mm. 0.25 if the plotter

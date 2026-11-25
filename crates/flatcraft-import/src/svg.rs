@@ -224,7 +224,7 @@ mod tests {
     fn an_unpacked_svgz_over_the_limit_says_so() {
         assert_eq!(
             ImportError::UnpacksTooLarge.to_string(),
-            "the file unpacks to more than 50 MB"
+            "The file unpacks to more than 50 MB."
         );
     }
 }
