@@ -678,7 +678,7 @@ fn trace_button_opens_the_dialog_and_apply_retraces() {
     to_prepare(&mut h);
     let before = undo_len(&s);
     // Trace opens the dialog; Apply is one retrace.
-    h.get_by_role_and_label(Role::Button, "Trace").click();
+    h.get_by_role_and_label(Role::Button, "Trace...").click();
     h.run_steps(3);
     assert!(app(&h).ui.trace.is_some());
     assert_eq!(undo_len(&s), before);

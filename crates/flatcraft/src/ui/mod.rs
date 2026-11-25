@@ -129,6 +129,8 @@ pub enum Unsaved {
     Quit(Vec<u64>),
     /// Closing this document with unsaved changes.
     Close(u64),
+    /// Quitting while an agent waits for the person's OK to send a cut.
+    PendingSend,
 }
 
 /// The answer in the unsaved-changes dialog.
@@ -506,8 +508,14 @@ impl FlatCraftApp {
             | Cmd::ToggleHide
             | Cmd::Rename => {
                 // The menu is dimmed outside Prepare; a late click does
-                // nothing.
+                // nothing. A text field keeps the keys of Duplicate, Import
+                // and Delete.
                 if self.ui.workspace != Workspace::Prepare {
+                    return;
+                }
+                if text
+                    && matches!(cmd, Cmd::Tool(id) if tools::by_id(id).is_some_and(menu_model::has_shortcut))
+                {
                     return;
                 }
                 let snap = prepare::snapshot(self, ctx);
@@ -951,10 +959,12 @@ impl FlatCraftApp {
             Action::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
             Action::Quit => {
                 let dirty = self.dirty_docs();
-                if dirty.is_empty() {
-                    self.close_window(ctx);
-                } else {
+                if !dirty.is_empty() {
                     self.ui.unsaved = Some(Unsaved::Quit(dirty));
+                } else if self.send_waiting() {
+                    self.ui.unsaved = Some(Unsaved::PendingSend);
+                } else {
+                    self.close_window(ctx);
                 }
             }
             Action::Unsaved(choice) => self.answer_unsaved(ctx, choice),
@@ -966,6 +976,11 @@ impl FlatCraftApp {
     pub fn dirty_docs(&self) -> Vec<u64> {
         let s = lock(&self.session);
         s.docs.iter().filter(|d| d.dirty).map(|d| d.id()).collect()
+    }
+
+    /// An agent waits for the person's OK to send a cut.
+    fn send_waiting(&self) -> bool {
+        lock(&self.session).pending_send().is_some()
     }
 
     /// Closes the window without asking again.
@@ -982,6 +997,7 @@ impl FlatCraftApp {
         };
         match (asked, choice) {
             (_, UnsavedChoice::Cancel) => {}
+            (Unsaved::PendingSend, _) => self.close_window(ctx),
             (Unsaved::Close(doc_id), UnsavedChoice::Discard) => {
                 self.execute(
                     "document.close",
@@ -1392,12 +1408,23 @@ impl FlatCraftApp {
     /// [`modal_open`]) only Quit goes through, which asks about unsaved
     /// changes itself.
     pub fn menu_gate(&self, actions: Vec<Action>) -> Vec<Action> {
+        self.menu_gate_with(actions, false)
+    }
+
+    /// [`Self::menu_gate`], knowing whether a text field has the keyboard.
+    /// The Edit items then act on that field only (a dialog's name field,
+    /// say), never on the document, so they go through a dialog too.
+    pub fn menu_gate_with(&self, actions: Vec<Action>, text_focused: bool) -> Vec<Action> {
         if !modal_open(self) {
             return actions;
         }
         actions
             .into_iter()
-            .filter(|a| matches!(a, Action::Quit))
+            .filter(|a| match a {
+                Action::Quit => true,
+                Action::Menu(cmd) => text_focused && cmd.edits_text(),
+                _ => false,
+            })
             .collect()
     }
 }
@@ -1424,11 +1451,16 @@ pub fn guard_close(ctx: &egui::Context, app: &mut FlatCraftApp) {
         return;
     }
     let dirty = app.dirty_docs();
-    if dirty.is_empty() {
+    let waiting = app.send_waiting();
+    if dirty.is_empty() && !waiting {
         return;
     }
     ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-    if !matches!(app.ui.unsaved, Some(Unsaved::Quit(_))) {
+    if dirty.is_empty() {
+        if app.ui.unsaved.is_none() {
+            app.ui.unsaved = Some(Unsaved::PendingSend);
+        }
+    } else if !matches!(app.ui.unsaved, Some(Unsaved::Quit(_))) {
         app.ui.unsaved = Some(Unsaved::Quit(dirty));
     }
 }
@@ -1451,22 +1483,44 @@ fn unsaved_modal(ctx: &egui::Context, app: &mut FlatCraftApp, actions: &mut Vec<
             format!("You have unsaved changes in {}.", app.doc_name(*doc_id)),
             "Save",
         ),
+        Unsaved::PendingSend => (
+            "An agent is waiting for your OK to send a cut. Quit anyway?".to_string(),
+            "",
+        ),
     };
+    let waiting = app.send_waiting() && !matches!(asked, Unsaved::PendingSend);
+    let pending_only = matches!(asked, Unsaved::PendingSend);
     let t = app.tokens;
     let modal = egui::Modal::new(egui::Id::unique("flatcraft-unsaved")).show(ctx, |ui| {
         ui.set_max_width(420.0);
         ui.label(egui::RichText::new(text).font(fonts::semibold(15.0)));
         ui.add_space(t.spacing);
-        ui.label(
-            egui::RichText::new("Discard drops them for good. No undo past this point.")
+        if pending_only {
+            ui.label(
+                egui::RichText::new("Quitting drops the request. Nothing is sent.")
+                    .color(t.text_dim),
+            );
+        } else {
+            ui.label(
+                egui::RichText::new("Discard drops them for good. No undo past this point.")
+                    .color(t.text_dim),
+            );
+        }
+        if waiting {
+            ui.label(
+                egui::RichText::new(
+                    "An agent is also waiting for your OK to send a cut. Quitting drops that request.",
+                )
                 .color(t.text_dim),
-        );
+            );
+        }
         ui.add_space(t.spacing);
         ui.horizontal(|ui| {
-            if ui.button(save).clicked() {
+            if !pending_only && ui.button(save).clicked() {
                 actions.push(Action::Unsaved(UnsavedChoice::Save));
             }
-            if ui.button("Discard").clicked() {
+            let discard = if pending_only { "Quit anyway" } else { "Discard" };
+            if ui.button(discard).clicked() {
                 actions.push(Action::Unsaved(UnsavedChoice::Discard));
             }
             if ui.button("Cancel").clicked() {
@@ -1709,7 +1763,7 @@ impl eframe::App for FlatCraftApp {
             let active = lock(&self.session).doc().id();
             let actions = self.menu.as_mut().map(|m| m.actions(active));
             if let Some(actions) = actions {
-                let actions = self.menu_gate(actions);
+                let actions = self.menu_gate_with(actions, ctx.text_edit_focused());
                 self.apply(ctx, actions);
             }
         }

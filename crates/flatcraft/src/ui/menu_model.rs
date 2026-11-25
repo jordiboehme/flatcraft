@@ -94,6 +94,7 @@ pub enum Cmd {
     /// Hide, or Show.
     ToggleHide,
     Rename,
+    Reconnect,
     Workspace(Workspace),
     Help(HelpItem),
 }
@@ -123,6 +124,7 @@ impl Cmd {
             Cmd::ToggleCut => "toggle-cut",
             Cmd::ToggleHide => "toggle-hide",
             Cmd::Rename => "rename",
+            Cmd::Reconnect => "reconnect",
             Cmd::OpenRecent(i) => return format!("flatcraft.recent.{i}"),
             Cmd::Tool(id) => return format!("flatcraft.tool.{id}"),
             Cmd::Workspace(w) => return format!("flatcraft.workspace.{}", w.name()),
@@ -174,9 +176,18 @@ impl Cmd {
             Cmd::ToggleCut,
             Cmd::ToggleHide,
             Cmd::Rename,
+            Cmd::Reconnect,
         ]
         .into_iter()
         .find(|c| c.id() == id)
+    }
+
+    /// The Edit items: with a text field focused they act on its text.
+    pub fn edits_text(&self) -> bool {
+        matches!(
+            self,
+            Cmd::Undo | Cmd::Redo | Cmd::Cut | Cmd::Copy | Cmd::Paste | Cmd::SelectAll
+        )
     }
 
     /// The action of a click, for the document `active` and the recent
@@ -318,6 +329,7 @@ pub fn object_item(cmd: &Cmd, snap: &Snapshot, st: &PrepareState, ids: &[u64]) -
         Cmd::LinkCopies => Obj::LinkCopies,
         Cmd::Unlink => Obj::UnlinkCopies,
         Cmd::Rename => Obj::Rename,
+        Cmd::Reconnect => Obj::Reconnect,
         Cmd::ToggleHide => hide_item(snap, ids),
         Cmd::ToggleCut => cut_item(snap, ids),
         _ => return None,
@@ -434,7 +446,10 @@ fn item(cmd: Cmd, title: impl Into<String>, enabled: bool, accel: Option<Accel>)
 /// table.
 fn tool_item(id: &'static str, inp: &MenuInput) -> Entry {
     let t = tools::by_id(id).expect("the menu names actions of the table");
-    let enabled = inp.prepare_open() && inp.snap.is_some_and(|s| t.blocked(s).is_none());
+    // A text field wants the keys of Duplicate, Import and Delete.
+    let field_has_keys = inp.text_focused && has_shortcut(t);
+    let enabled =
+        inp.prepare_open() && !field_has_keys && inp.snap.is_some_and(|s| t.blocked(s).is_none());
     Entry::Item(Leaf {
         checked: t.selected(inp.prepare, inp.show_debug).filter(|_| {
             matches!(
@@ -445,6 +460,11 @@ fn tool_item(id: &'static str, inp: &MenuInput) -> Entry {
         accel: tool_accel(t),
         ..leaf(Cmd::Tool(t.id), t.title, enabled)
     })
+}
+
+/// Whether the action has a row in the shortcut table.
+pub fn has_shortcut(t: &Tool) -> bool {
+    SHORTCUTS.iter().any(|s| s.tool == Some(t.id))
 }
 
 /// The accelerator of an action: its row in the shortcut table, when the
@@ -531,9 +551,15 @@ fn file_menu(inp: &MenuInput) -> Sub {
                 Entry::Separator,
                 item(Cmd::Save, "Save", true, Accel::of("Save")),
                 item(Cmd::SaveAs, "Save As...", true, Accel::of("Save As")),
-                item(Cmd::Close, "Close", true, Accel::of("Close the document")),
+                item(
+                    Cmd::Close,
+                    "Close",
+                    inp.workspace != Workspace::Home,
+                    Accel::of("Close the document"),
+                ),
                 Entry::Separator,
                 import,
+                tool_item("test_patterns", inp),
                 item(
                     Cmd::SendToFile,
                     send_title,
@@ -662,6 +688,15 @@ fn object_menu(inp: &MenuInput) -> Sub {
                 item(Cmd::ToggleCut, skip.label(), on(Cmd::ToggleCut), None),
                 item(Cmd::ToggleHide, hide.label(), on(Cmd::ToggleHide), None),
                 item(Cmd::Rename, Obj::Rename.label(), on(Cmd::Rename), None),
+                Entry::Separator,
+                tool_item("trace", inp),
+                tool_item("reload", inp),
+                item(
+                    Cmd::Reconnect,
+                    Obj::Reconnect.label(),
+                    on(Cmd::Reconnect),
+                    None,
+                ),
                 Entry::Separator,
                 tool_item("delete", inp),
             ],

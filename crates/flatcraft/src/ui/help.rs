@@ -162,6 +162,12 @@ impl Shortcut {
         self
     }
 
+    /// Whether a text field wants this key for its own text (undo and redo):
+    /// the key handler leaves it to the field while one has the keyboard.
+    pub fn field_key(&self) -> bool {
+        self.run.is_some() && matches!(self.what, "Undo" | "Redo")
+    }
+
     /// Whether the key handler or the sheet has this row on this system.
     pub fn here(&self) -> bool {
         !self.mac_only || cfg!(target_os = "macos")
@@ -378,10 +384,14 @@ impl Shortcut {
 /// the rows with `menu_on_macos`: its items have these keys, so the key
 /// never reaches the handler twice.
 pub fn run_shortcuts(ctx: &egui::Context, active: u64, actions: &mut Vec<Action>) {
+    let field = ctx.text_edit_focused();
     ctx.input_mut(|i| {
         for s in &SHORTCUTS {
             let Some(run) = s.run else { continue };
             if !s.here() || (s.menu_on_macos && cfg!(target_os = "macos")) {
+                continue;
+            }
+            if field && s.field_key() {
                 continue;
             }
             if i.consume_shortcut(&KeyboardShortcut::new(s.modifiers, s.key)) {

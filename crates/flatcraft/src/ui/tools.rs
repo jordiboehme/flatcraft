@@ -322,7 +322,7 @@ pub const TOOLS: [Tool; 38] = [
     tool(
         "import",
         Act::Import,
-        "Import",
+        "Import...",
         Icon::Import,
         G::Add,
         Wide,
@@ -331,7 +331,7 @@ pub const TOOLS: [Tool; 38] = [
     tool(
         "trace",
         Act::Trace,
-        "Trace",
+        "Trace...",
         Icon::Trace,
         G::Add,
         Wide,

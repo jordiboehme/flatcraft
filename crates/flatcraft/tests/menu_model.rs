@@ -6,7 +6,7 @@ mod common;
 
 use std::path::PathBuf;
 
-use common::{AppHarness, app, app_mut, harness, import_square, session, to_prepare};
+use common::{AppHarness, app, app_mut, harness, import_square, session, to_prepare, undo_len};
 use flatcraft::ui::help::{self, SHORTCUTS};
 use flatcraft::ui::menu_model::{Cmd, Entry, Leaf, MenuInput, MenuModel, Sub};
 use flatcraft::ui::tools::{self, Act, TOOLS};
@@ -121,7 +121,8 @@ fn the_menus_and_their_items_come_in_order() {
             "Save As...",
             "Close",
             "-",
-            "Import",
+            "Import...",
+            "Test patterns",
             "Send to File Output"
         ]
     );
@@ -142,6 +143,10 @@ fn the_menus_and_their_items_come_in_order() {
             "Skip cutting",
             "Hide",
             "Rename",
+            "-",
+            "Trace...",
+            "Reload",
+            "Reconnect source...",
             "-",
             "Delete"
         ]
@@ -483,13 +488,10 @@ fn ids_are_unique_and_parse_back() {
     assert_eq!(listed, TOOLS.iter().filter(|t| in_menu(t)).count());
 }
 
-/// The actions the menu lists (Trace, Reload, Test patterns, the one-click
-/// Auto arrange and the Debug panel stay in the ribbon).
+/// The actions the menu lists (the one-click Auto arrange and the Debug
+/// panel stay in the ribbon).
 fn in_menu(t: &tools::Tool) -> bool {
-    !matches!(
-        t.act,
-        Act::Trace | Act::Reload | Act::TestPatterns | Act::AutoArrange | Act::DebugPanel
-    )
+    !matches!(t.act, Act::AutoArrange | Act::DebugPanel)
 }
 
 #[test]
@@ -699,4 +701,240 @@ fn undo_in_a_text_field_undoes_the_text() {
     };
     frame(&ctx, vec![key], &mut text);
     assert_eq!(text, "", "the text edit undid the typing");
+}
+
+use egui_kittest::kittest::Queryable as _;
+use flatcraft::ui::Unsaved;
+
+fn rename_open(h: &mut AppHarness) {
+    let ctx = h.ctx.clone();
+    app_mut(h).apply(&ctx, vec![Action::Menu(Cmd::Rename)]);
+    h.run();
+    h.run();
+    assert!(app(h).ui.prepare.rename.is_some());
+    assert!(h.ctx.text_edit_focused(), "the name field has the focus");
+}
+
+const EDIT_CMDS: [Cmd; 6] = [
+    Cmd::Undo,
+    Cmd::Redo,
+    Cmd::Cut,
+    Cmd::Copy,
+    Cmd::Paste,
+    Cmd::SelectAll,
+];
+
+#[test]
+fn the_edit_items_reach_a_text_field_in_a_dialog() {
+    let (_d, s, mut h, _) = with_selection(1);
+    rename_open(&mut h);
+    let all: Vec<Action> = EDIT_CMDS.iter().cloned().map(Action::Menu).collect();
+    // The dialog is open: the gate lets the Edit items through only while a
+    // text field has the keys, and nothing else.
+    assert_eq!(app(&h).menu_gate_with(all.clone(), true), all);
+    assert!(app(&h).menu_gate_with(all.clone(), false).is_empty());
+    let mixed = vec![Action::Menu(Cmd::Tool("delete")), Action::Menu(Cmd::Copy)];
+    assert_eq!(
+        app(&h).menu_gate_with(mixed, true),
+        vec![Action::Menu(Cmd::Copy)]
+    );
+    // The model has the items enabled, so the menu takes the keys.
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    let a = app(&h);
+    let m = MenuModel::build(&MenuInput {
+        workspace: a.ui.workspace,
+        snap: Some(&snap),
+        prepare: &a.ui.prepare,
+        show_debug: false,
+        can_undo: false,
+        can_redo: false,
+        text_focused: true,
+        send_ready: false,
+        recent: &[],
+    });
+    for c in &EDIT_CMDS {
+        assert!(leaf(&m, c).enabled, "{c:?}");
+    }
+    // Select All, typing and Undo act on the field, not on the document.
+    let steps = undo_len(&s);
+    app_mut(&mut h).apply(&ctx, vec![Action::Menu(Cmd::SelectAll)]);
+    h.run();
+    h.event(egui::Event::Text("zz".into()));
+    h.run();
+    fn name(h: &AppHarness) -> String {
+        app(h).ui.prepare.rename.as_ref().unwrap().name.clone()
+    }
+    assert_eq!(name(&h), "zz", "Select All selected the name");
+    app_mut(&mut h).apply(&ctx, vec![Action::Menu(Cmd::Undo)]);
+    h.run();
+    assert_ne!(name(&h), "zz", "Undo undid the typing");
+    assert_eq!(undo_len(&s), steps, "the document was not touched");
+    // Cut, Copy and Paste ask the window for the clipboard.
+    app_mut(&mut h).apply(
+        &ctx,
+        vec![
+            Action::Menu(Cmd::Copy),
+            Action::Menu(Cmd::Cut),
+            Action::Menu(Cmd::Paste),
+        ],
+    );
+    h.run();
+}
+
+#[test]
+fn a_text_field_keeps_the_keys_of_duplicate_import_and_delete() {
+    let (_d, s, mut h, _) = with_selection(1);
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    let a = app(&h);
+    let build = |text_focused| {
+        MenuModel::build(&MenuInput {
+            workspace: Workspace::Prepare,
+            snap: Some(&snap),
+            prepare: &a.ui.prepare,
+            show_debug: false,
+            can_undo: true,
+            can_redo: true,
+            text_focused,
+            send_ready: false,
+            recent: &[],
+        })
+    };
+    let typing = build(true);
+    let idle = build(false);
+    for id in ["duplicate", "import", "delete"] {
+        assert!(!tool(&typing, id).enabled, "{id} while typing");
+    }
+    assert!(tool(&idle, "duplicate").enabled);
+    assert!(tool(&typing, "rotate").enabled, "no key, no clash");
+    // And a late click does not duplicate behind the dialog's field.
+    rename_open(&mut h);
+    app_mut(&mut h).apply(&ctx, vec![Action::Menu(Cmd::Tool("duplicate"))]);
+    h.run();
+    let n = s
+        .lock()
+        .unwrap()
+        .execute("document.state", json!({}), Origin::User)
+        .unwrap()["objects"]
+        .as_array()
+        .unwrap()
+        .len();
+    assert_eq!(n, 3);
+}
+
+#[test]
+fn trace_reload_reconnect_and_test_patterns_are_listed_with_their_rules() {
+    let (_d, _s, mut h, _) = with_selection(1);
+    let m = model_of(&mut h, &[]);
+    assert_eq!(tool(&m, "trace").title, "Trace...");
+    assert!(!tool(&m, "trace").enabled, "a vector is not a picture");
+    assert!(!tool(&m, "reload").enabled, "not imported from a file");
+    assert!(!leaf(&m, &Cmd::Reconnect).enabled);
+    assert!(tool(&m, "test_patterns").enabled);
+    assert_eq!(tool(&m, "import").title, "Import...");
+}
+
+#[test]
+fn close_is_dimmed_on_home() {
+    let (_d, _s, h, _) = with_selection(0);
+    assert!(!leaf(&home_model(&h), &Cmd::Close).enabled);
+}
+
+#[test]
+fn redo_with_cmd_y_leaves_a_text_field_its_own_undo() {
+    let ctx = egui::Context::default();
+    let mut text = String::new();
+    let id = egui::Id::unique("field");
+    let mut run = |events: Vec<egui::Event>, field: bool| {
+        let mut actions = Vec::new();
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                help::run_shortcuts(ui, 7, &mut actions);
+                if field {
+                    let r = ui.add(egui::TextEdit::singleline(&mut text).id(id));
+                    if !r.has_focus() {
+                        r.request_focus();
+                    }
+                }
+            },
+        );
+        out.textures_delta.clear();
+        actions
+    };
+    let key = |key, modifiers| egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    };
+    run(vec![], true);
+    run(vec![], true);
+    assert!(ctx.text_edit_focused());
+    // Cmd+Y and Cmd+Z in the field: no document undo or redo.
+    let redo = key(egui::Key::Y, egui::Modifiers::COMMAND);
+    assert!(run(vec![redo.clone()], true).is_empty());
+    let undo = key(egui::Key::Z, egui::Modifiers::COMMAND);
+    assert!(run(vec![undo], true).is_empty());
+    // Without a field the key redoes the document.
+    run(vec![], false);
+    run(vec![], false);
+    assert!(!ctx.text_edit_focused());
+    assert_eq!(run(vec![redo], false), vec![Action::Redo(7)]);
+}
+
+fn pending_send(dir: &tempfile::TempDir) -> SharedSession {
+    let s = session(dir);
+    import_square(&s);
+    {
+        let mut g = s.lock().unwrap();
+        g.execute(
+            "job.set_plotter",
+            json!({ "id": "silhouette-cameo-2" }),
+            Origin::User,
+        )
+        .unwrap();
+        g.execute("job.send", json!({}), Origin::Agent).unwrap_err();
+        assert!(g.pending_send().is_some());
+        g.doc_mut().dirty = false;
+    }
+    s
+}
+
+fn closes(h: &AppHarness) -> bool {
+    h.output()
+        .viewport_output
+        .get(&egui::ViewportId::ROOT)
+        .is_some_and(|v| v.commands.contains(&egui::ViewportCommand::Close))
+}
+
+#[test]
+fn quit_with_a_pending_send_asks_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = pending_send(&dir);
+    let mut h = harness(&dir, s.clone(), true);
+    let ctx = h.ctx.clone();
+    app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
+    h.run();
+    assert_eq!(app(&h).ui.unsaved, Some(Unsaved::PendingSend));
+    h.get_by_label("An agent is waiting for your OK to send a cut. Quit anyway?");
+    assert!(!closes(&h) && !app(&h).ui.closing);
+    // Cancel keeps the window and the request.
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Cancel")
+        .click();
+    h.run();
+    assert!(app(&h).ui.unsaved.is_none() && !app(&h).ui.closing);
+    assert!(s.lock().unwrap().pending_send().is_some());
+    // The window's close button asks the same way.
+    app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
+    h.run();
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Quit anyway")
+        .click();
+    h.run();
+    assert!(app(&h).ui.closing);
 }
