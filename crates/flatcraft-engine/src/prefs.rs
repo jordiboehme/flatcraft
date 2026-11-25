@@ -3,6 +3,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use flatcraft_core::document::CutStrategy;
 use serde::{Deserialize, Serialize};
 
 /// File name of the preferences inside the config dir.
@@ -78,6 +79,10 @@ pub struct Preferences {
     pub panel_objects: PanelUser,
     pub panel_settings: PanelUser,
     pub panel_stage: PanelUser,
+    /// The cut strategy new documents start with. Only the Settings window
+    /// writes it (a UI preference); no registry command reads or changes
+    /// it. A file without the key gets Quality.
+    pub default_strategy: CutStrategy,
 }
 
 /// Every id `ribbon_pins` can hold, in the order of the ribbon's table
@@ -270,6 +275,7 @@ impl Default for Preferences {
             panel_objects: PanelUser::None,
             panel_settings: PanelUser::None,
             panel_stage: PanelUser::None,
+            default_strategy: CutStrategy::Quality,
         }
     }
 }

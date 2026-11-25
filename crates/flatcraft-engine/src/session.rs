@@ -482,7 +482,7 @@ impl Session {
             speed: None,
             force: None,
             passes: None,
-            strategy: Default::default(),
+            strategy: self.prefs.default_strategy,
         }))
     }
 
