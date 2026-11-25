@@ -1568,7 +1568,7 @@ fn project_open_refuses_a_broken_transform() {
     }
 }
 
-const TOO_LARGE: &str = "That would make the object too large (over 1 km). Undo or scale it down.";
+const TOO_LARGE: &str = "That would put an object more than 1 km from the mat, or make it over 1 km in size. Undo it, or move or scale it back.";
 
 /// project.open refuses a placement beyond 1e6 mm, so no command may
 /// make one: group scaling by 1000 stops before it overflows.
@@ -2803,4 +2803,51 @@ fn copies_that_would_land_too_far_away_are_refused() {
     assert!(e.to_string().contains("1 km"), "{e}");
     assert_eq!(undo_len(&s), before);
     assert_eq!(s.doc().document.objects.len(), 1);
+}
+
+/// Rotates object `id` by `deg` about its centre.
+fn rotate(s: &mut Session, id: u64, deg: f64) {
+    run(s, "object.rotate", json!({ "ids": [id], "degrees": deg }));
+}
+
+#[test]
+fn distribute_and_copies_use_the_bounds_of_rotated_objects() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = rect_at(&mut s, 30.0, 10.0, 20.0, 20.0);
+    let b = rect_at(&mut s, 50.0, 20.0, 90.0, 60.0);
+    let c = rect_at(&mut s, 20.0, 40.0, 220.0, 30.0);
+    rotate(&mut s, a, 30.0);
+    rotate(&mut s, b, -45.0);
+    rotate(&mut s, c, 72.0);
+    let r = run(
+        &mut s,
+        "arrange.distribute",
+        json!({ "ids": [a, b, c], "axis": "horizontal" }),
+    );
+    let gap = r["gap_mm"].as_f64().unwrap();
+    let bs: Vec<Rect> = ids_of(&r).iter().map(|id| cmd_bounds(&s, *id)).collect();
+    for w in bs.windows(2) {
+        assert!((w[1].x0 - w[0].x1 - gap).abs() < EPS, "{bs:?} {gap}");
+    }
+
+    let orig = cmd_bounds(&s, b);
+    let r = run(
+        &mut s,
+        "object.copies",
+        json!({ "id": b, "count": 3, "layout": { "grid": { "columns": 2 } }, "gap_mm": 4.0 }),
+    );
+    let ids = ids_of(&r);
+    let first = cmd_bounds(&s, ids[0]);
+    let below = cmd_bounds(&s, ids[1]);
+    assert!((first.x0 - orig.x1 - 4.0).abs() < EPS, "{orig:?} {first:?}");
+    assert!((below.y0 - orig.y1 - 4.0).abs() < EPS, "{orig:?} {below:?}");
+    assert!((below.x0 - orig.x0).abs() < EPS, "{orig:?} {below:?}");
+}
+
+#[test]
+fn copies_description_names_the_refusal_and_the_shared_link() {
+    let d = registry::get("object.copies").unwrap().description();
+    assert!(d.contains("refuses the whole call"), "{d}");
+    assert!(d.contains("file link"), "{d}");
 }

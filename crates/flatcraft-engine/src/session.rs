@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// A command result that `project.open` would refuse to place.
-const TOO_LARGE: &str = "That would make the object too large (over 1 km). Undo or scale it down.";
+const TOO_LARGE: &str = "That would put an object more than 1 km from the mat, or make it over 1 km in size. Undo it, or move or scale it back.";
 
 use flatcraft_core::document::{CutOptions, Document, JobSettings, Object, ObjectId};
 use flatcraft_core::geometry::CutPath;

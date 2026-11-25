@@ -133,7 +133,8 @@ pub(crate) fn placed_bounds_or_center(o: &Object) -> Rect {
 }
 
 /// True if `r` lies inside `area`, with a little slack for float noise.
-pub(crate) fn inside(r: Rect, area: Rect) -> bool {
+/// The window's out-of-area count uses it too, so both always agree.
+pub fn inside(r: Rect, area: Rect) -> bool {
     const SLACK: f64 = 1e-6;
     r.x0 >= area.x0 - SLACK
         && r.y0 >= area.y0 - SLACK

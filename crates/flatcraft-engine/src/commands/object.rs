@@ -706,7 +706,11 @@ fn run_copies(s: &mut Session, p: CopiesParams, _: Origin) -> Result<Value, Comm
     check_exists(&s.doc().document, id)?;
     let area = cutting_area(s).ok();
     let st = s.doc_mut();
-    let b = placed_bounds_or_center(object_mut(&mut st.document, id)?);
+    let original = object_mut(&mut st.document, id)?;
+    // Measured once: a copy's bounds are the original's, moved.
+    let measured = placed_bounds(original);
+    let visible = original.visible;
+    let b = measured.unwrap_or_else(|| placed_bounds_or_center(original));
     let (step_x, step_y) = (b.width() + p.gap_mm, b.height() + p.gap_mm);
     let mut new_ids = Vec::with_capacity(p.count as usize);
     let mut outside = Vec::new();
@@ -715,15 +719,14 @@ fn run_copies(s: &mut Session, p: CopiesParams, _: Origin) -> Result<Value, Comm
         // From the original each time, so rounding does not add up.
         let offset = Vec2::new(col as f64 * step_x, row as f64 * step_y);
         let new_id = add_copy(&mut st.document, id, offset)?;
-        let copy = object_mut(&mut st.document, new_id)?;
-        if !copy.placement_is_valid() {
+        if !object_mut(&mut st.document, new_id)?.placement_is_valid() {
             return Err(CommandError::Refused(format!(
                 "Copy {k} would land more than 1 km from the mat. Make fewer copies or a smaller gap."
             )));
         }
-        if let (Some(area), Some(cb)) = (area, placed_bounds(copy))
-            && copy.visible
-            && !inside(cb, area)
+        if let (Some(area), Some(m)) = (area, measured)
+            && visible
+            && !inside(m + offset, area)
         {
             outside.push(new_id);
         }
@@ -754,7 +757,7 @@ command!(
     mutates: true,
     params: CopiesParams,
     run: run_copies,
-    description: "Adds count copies (1 to 500) of one object in one undo step, laid out next to it by its bounding box plus gap_mm (default 5). layout \"row\" (default) puts them in a row to the right of the original. layout {\"grid\": {\"columns\": n}} fills rows of n cells left to right, then goes down; the original is the first cell, so copy k sits in column k mod n and row k div n. Units mm, origin the 0,0 of the grid printed on the mat, x right, y down. Copies that land outside the cutting area are still added; they are listed in outside_area and get a warning. linked: true is refused for now (linked copies come later). The copies become the selection. Returns {ids: [new id], outside_area: [id], warnings}.",
+    description: "Adds count copies (1 to 500) of one object in one undo step, laid out next to it by its bounding box plus gap_mm (default 5). layout \"row\" (default) puts them in a row to the right of the original. layout {\"grid\": {\"columns\": n}} fills rows of n cells left to right, then goes down; the original is the first cell, so copy k sits in column k mod n and row k div n. Units mm, origin the 0,0 of the grid printed on the mat, x right, y down. Copies that land outside the cutting area are still added; they are listed in outside_area and get a warning. If a copy would land more than 1 km away, it refuses the whole call and adds nothing. Copies keep the original's file link, so a reload of that file updates all of them. linked: true is refused for now (linked copies come later). The copies become the selection. Returns {ids: [new id], outside_area: [id], warnings}.",
 );
 
 // ---------------------------------------------------------------- move
@@ -1224,6 +1227,41 @@ command!(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copies_measure_the_original_once() {
+        use crate::cutgeom::tests::CUT_BOUNDS_CALLS;
+        let dir = tempfile::tempdir().unwrap();
+        let profiles = flatcraft_device::ProfileStore::load(dir.path()).unwrap();
+        let prefs = crate::prefs::Preferences {
+            output_dir: Some(dir.path().join("output")),
+            ..Default::default()
+        };
+        let mut s = Session::new(profiles, prefs, false, dir.path().to_path_buf());
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20mm" height="20mm" viewBox="0 0 20 20"><rect x="2" y="2" width="5" height="5"/></svg>"#;
+        let id = s
+            .execute(
+                "object.import_svg",
+                json!({ "svg": svg, "name": "sq" }),
+                Origin::User,
+            )
+            .unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        let mut calls_for = |count: u32| {
+            let before = CUT_BOUNDS_CALLS.with(std::cell::Cell::get);
+            s.execute(
+                "object.copies",
+                json!({ "id": id, "count": count, "layout": { "grid": { "columns": 7 } } }),
+                Origin::User,
+            )
+            .unwrap();
+            CUT_BOUNDS_CALLS.with(std::cell::Cell::get) - before
+        };
+        let one = calls_for(1);
+        let many = calls_for(40);
+        assert_eq!(one, many, "cut_bounds runs per copy");
+    }
 
     #[test]
     fn import_errors_are_clipped() {
