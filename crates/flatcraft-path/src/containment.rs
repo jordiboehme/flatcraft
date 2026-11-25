@@ -678,6 +678,11 @@ mod tests {
         // A ray along an edge of the hole must not count it.
         assert!(kept.is_kept(Point::new(10.0, 20.0)));
         assert!(!kept.is_kept(Point::new(60.0, 20.0)));
+        // Inside the hole within EPS of its right edge, which lies on a
+        // grid line, so p falls in the cell left of the edge's own cell.
+        // The edge is still found: p is on the hole, inside the outline.
+        assert!(kept.is_kept(Point::new(30.0 - 0.5e-9, 25.0)));
+        assert!(kept.is_kept(Point::new(25.0, 30.0 - 0.5e-9)));
     }
 
     #[test]
