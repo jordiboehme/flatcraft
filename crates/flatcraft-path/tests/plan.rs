@@ -270,7 +270,7 @@ fn invalid_settings_message_is_readable() {
     .to_string();
     assert_eq!(
         msg,
-        "The flatten tolerance must be a number of at least 0.001 mm (got NaN)."
+        "The flatten tolerance must be a number from 0.001 to 1 mm (got NaN)."
     );
     for (field, label) in [
         (SettingsField::JoinTolerance, "join tolerance"),
@@ -369,10 +369,12 @@ fn bad_cutting_area_is_refused() {
 fn overcut_larger_than_the_ring_is_one_lap() {
     // Found by closed_rings_stay_closed: a triangle whose requested overcut
     // (2.49 x its first edge) exceeds its perimeter. The pipeline caps at one lap.
+    // Shrunk to 4 % so the overcut stays below the 5 mm limit.
+    let k = 0.04;
     let pts = [
-        (150.0 + 24.63864338450413, 200.0),
-        (150.0 - 13.237620590007365, 200.0 + 22.93),
-        (150.0 - 2.5, 200.0 - 4.330127018922193),
+        (150.0 + k * 24.63864338450413, 200.0),
+        (150.0 - k * 13.237620590007365, 200.0 + k * 22.93),
+        (150.0 - k * 2.5, 200.0 - k * 4.330127018922193),
     ];
     let mut path = BezPath::new();
     path.move_to(pts[0]);
@@ -396,7 +398,8 @@ fn overcut_larger_than_the_ring_is_one_lap() {
 proptest! {
     #[test]
     fn closed_rings_stay_closed(
-        radii in proptest::collection::vec(5.0f64..40.0, 3..64),
+        // small rings, so 2.5 edges of overcut stay below the 5 mm limit
+        radii in proptest::collection::vec(0.5f64..1.0, 3..64),
         overcut_factor in 0.0f64..2.5,
     ) {
         // star-shaped polygon: increasing angles, so it is simple
@@ -470,4 +473,17 @@ proptest! {
         rev.reverse();
         prop_assert_eq!(&a.points, &rev);
     }
+}
+
+#[test]
+fn huge_tolerances_and_overcut_are_refused() {
+    let mut s = settings();
+    s.flatten_tolerance_mm = 50.0;
+    invalid(s, SettingsField::FlattenTolerance);
+    let mut s = settings();
+    s.join_tolerance_mm = 50.0;
+    invalid(s, SettingsField::JoinTolerance);
+    let mut s = settings();
+    s.overcut_mm = 80.0;
+    invalid(s, SettingsField::Overcut);
 }

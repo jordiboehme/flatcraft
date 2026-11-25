@@ -3,7 +3,8 @@
 
 pub mod bytelog;
 pub mod capture;
-pub mod fsio;
+/// Crash-safe writes; they live in `flatcraft-core` so project files use them too.
+pub use flatcraft_core::fsio;
 pub mod gpgl;
 pub mod presets;
 pub mod profile;
@@ -16,5 +17,5 @@ pub use profile::{
     KnifeCompensation, MaterialOverride, MaterialProfile, Media, MediaError, MediaField, MediaKind,
     PlotterProfile, Protocol, TransportSpec, UNCALIBRATED_MARGIN_MM,
 };
-pub use store::{PresetInfo, ProfileError, ProfileStore};
+pub use store::{PresetDiagnostic, PresetInfo, ProfileError, ProfileStore};
 pub use transport::{FileTransport, SendReport, Transport, TransportError};

@@ -302,6 +302,37 @@ fn default_passes_range() -> [u32; 2] {
 }
 
 impl PlotterProfile {
+    /// Checks the cut tolerances against sane limits
+    /// ([`flatcraft_core::limits`]): the flatten tolerance, and the blade
+    /// offset and pivot threshold of host knife compensation. The text says
+    /// what to fix.
+    pub fn validate_values(&self) -> Result<(), String> {
+        use flatcraft_core::limits::*;
+        if !(MIN_TOLERANCE_MM..=MAX_TOLERANCE_MM).contains(&self.flatten_tolerance_mm) {
+            return Err(format!(
+                "the flatten tolerance must be {MIN_TOLERANCE_MM} to {MAX_TOLERANCE_MM} mm (got {})",
+                self.flatten_tolerance_mm
+            ));
+        }
+        if let KnifeCompensation::Host {
+            offset_mm,
+            pivot_threshold_deg,
+        } = self.knife_compensation
+        {
+            if !(offset_mm.is_finite() && offset_mm >= 0.0) {
+                return Err(format!(
+                    "the host blade offset must not be negative (got {offset_mm})"
+                ));
+            }
+            if !(0.0..=MAX_PIVOT_THRESHOLD_DEG).contains(&pivot_threshold_deg) {
+                return Err(format!(
+                    "the pivot threshold must be 0 to {MAX_PIVOT_THRESHOLD_DEG} deg (got {pivot_threshold_deg})"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// The mat `media_id`, or the plotter's first mat when it no longer
     /// lists that one (hidden or deleted in a user preset, or a project
     /// from elsewhere). The flag is true for that fallback; `None` only for
@@ -363,6 +394,22 @@ pub struct MaterialProfile {
 }
 
 impl MaterialProfile {
+    /// Checks the overcut, also of the per-plotter overrides, against
+    /// [`flatcraft_core::limits::MAX_OVERCUT_MM`].
+    pub fn validate_values(&self) -> Result<(), String> {
+        use flatcraft_core::limits::MAX_OVERCUT_MM;
+        let overcuts = std::iter::once(self.overcut_mm)
+            .chain(self.overrides.values().filter_map(|o| o.overcut_mm));
+        for v in overcuts {
+            if !(0.0..=MAX_OVERCUT_MM).contains(&v) {
+                return Err(format!(
+                    "the overcut must be 0 to {MAX_OVERCUT_MM} mm (got {v})"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// This material with the override for `plotter_id` applied, if any.
     pub fn for_plotter(&self, plotter_id: &str) -> MaterialProfile {
         let mut out = self.clone();

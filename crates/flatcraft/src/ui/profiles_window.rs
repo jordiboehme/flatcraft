@@ -176,6 +176,8 @@ struct View {
     auto_reload: bool,
     /// (plotter id, mat id) pairs open jobs and new documents use.
     mats_in_use: Vec<(String, String)>,
+    /// User preset files the store could not read.
+    diagnostics: Vec<flatcraft_device::PresetDiagnostic>,
 }
 
 /// The (plotter id, mat id) pairs the open documents use, plus the mat new
@@ -232,7 +234,12 @@ pub fn parse_hex(s: &str) -> Option<[u8; 3]> {
 /// and the field whose row shows it.
 pub fn mat_problem(m: &Media) -> Option<(MediaField, String)> {
     let e = m.validate().err()?;
-    let mut chars = e.reason.chars();
+    Some((e.field, sentence(&e.reason)))
+}
+
+/// A check result as a sentence: capital first letter, full stop.
+fn sentence(text: &str) -> String {
+    let mut chars = text.chars();
     let mut out: String = chars
         .next()
         .map(|c| c.to_uppercase().chain(chars).collect())
@@ -240,7 +247,7 @@ pub fn mat_problem(m: &Media) -> Option<(MediaField, String)> {
     if !out.ends_with('.') {
         out.push('.');
     }
-    Some((e.field, out))
+    out
 }
 
 /// Problems of a plotter draft that block Save.
@@ -259,8 +266,8 @@ pub fn plotter_problems(p: &PlotterProfile) -> Vec<String> {
     if !(p.blade_offset_mm.is_finite() && p.blade_offset_mm >= 0.0) {
         out.push("The blade offset must not be negative.".into());
     }
-    if !pos(p.flatten_tolerance_mm) {
-        out.push("The flatten tolerance must be above 0.".into());
+    if let Err(e) = p.validate_values() {
+        out.push(sentence(&e));
     }
     if p.speed_range[0] > p.speed_range[1] || p.speed_range[0] == 0 {
         out.push("The speed range must start at 1 or more and not run backwards.".into());
@@ -270,18 +277,6 @@ pub fn plotter_problems(p: &PlotterProfile) -> Vec<String> {
     }
     if p.passes_range[0] > p.passes_range[1] || p.passes_range[0] == 0 {
         out.push("The passes range must start at 1 or more and not run backwards.".into());
-    }
-    if let KnifeCompensation::Host {
-        offset_mm,
-        pivot_threshold_deg,
-    } = p.knife_compensation
-        && (!(offset_mm.is_finite() && offset_mm >= 0.0)
-            || !(0.0..=180.0).contains(&pivot_threshold_deg))
-    {
-        out.push(
-            "The host offset must not be negative and the pivot threshold must be 0 to 180 deg."
-                .into(),
-        );
     }
     if let TransportSpec::File { extension, .. } = &p.transport
         && extension.trim().is_empty()
@@ -302,7 +297,6 @@ pub fn plotter_problems(p: &PlotterProfile) -> Vec<String> {
 /// Problems of a material draft that block Save.
 pub fn material_problems(m: &MaterialProfile) -> Vec<String> {
     let mut out = Vec::new();
-    let mm_ok = |v: f64| v.is_finite() && v >= 0.0;
     if m.name.trim().is_empty() {
         out.push("Give the preset a name.".into());
     }
@@ -312,16 +306,12 @@ pub fn material_problems(m: &MaterialProfile) -> Vec<String> {
     if m.passes == 0 {
         out.push("Passes must be 1 or more.".into());
     }
-    if !mm_ok(m.overcut_mm) {
-        out.push("The overcut must not be negative.".into());
+    if let Err(e) = m.validate_values() {
+        out.push(sentence(&e));
     }
     for o in m.overrides.values() {
         if o.speed == Some(0) || o.force == Some(0) || o.passes == Some(0) {
             out.push("Override values must be 1 or more.".into());
-            break;
-        }
-        if o.overcut_mm.is_some_and(|v| !mm_ok(v)) {
-            out.push("An override overcut must not be negative.".into());
             break;
         }
     }
@@ -356,6 +346,16 @@ pub fn show(ctx: &egui::Context, app: &mut FlatCraftApp, actions: &mut Vec<Actio
                 }
             });
             ui.separator();
+            for d in &view.diagnostics {
+                ui.label(
+                    RichText::new(format!(
+                        "This preset file can't be read: {}",
+                        d.reason
+                    ))
+                    .color(t.danger),
+                )
+                .on_hover_text(d.path.display().to_string());
+            }
             if st.leave.is_some() {
                 discard_banner(ui, st, &t);
             }
@@ -513,6 +513,7 @@ fn load(app: &mut FlatCraftApp) -> View {
         default_material: s.prefs.default_material.clone(),
         output_dir: s.prefs.output_dir.clone(),
         auto_reload: s.prefs.auto_reload,
+        diagnostics: s.profiles.diagnostics().to_vec(),
     }
 }
 

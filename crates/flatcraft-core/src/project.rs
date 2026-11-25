@@ -20,17 +20,12 @@ pub enum ProjectError {
     NewerFormat { found: u32, supported: u32 },
 }
 
-/// Writes the project to `<path>.tmp` in the same directory, then renames it.
+/// Writes the project crash-safely ([`crate::fsio::write_atomic`]: a new
+/// temp file in the same folder, synced, then renamed over `path`).
 pub fn save(doc: &Document, path: &Path) -> Result<(), ProjectError> {
     let json = serde_json::to_string_pretty(doc)?;
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = std::path::PathBuf::from(tmp);
-    let result = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, path));
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    Ok(result?)
+    crate::fsio::write_atomic(path, json.as_bytes())?;
+    Ok(())
 }
 
 /// Loads a project. Objects come back with empty geometry; the engine

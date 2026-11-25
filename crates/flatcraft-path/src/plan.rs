@@ -71,8 +71,7 @@ pub enum PlanError {
 /// Anything shorter than this has no length.
 const ZERO_LEN_MM: f64 = 1e-9;
 
-/// Smallest tolerance accepted; below it kurbo's flattening takes ages.
-const MIN_TOLERANCE_MM: f64 = 0.001;
+use flatcraft_core::limits::{MAX_OVERCUT_MM, MAX_TOLERANCE_MM, MIN_TOLERANCE_MM};
 
 fn validate(s: &PipelineSettings) -> Result<(), PlanError> {
     use SettingsField as F;
@@ -81,11 +80,11 @@ fn validate(s: &PipelineSettings) -> Result<(), PlanError> {
         (F::FlattenTolerance, s.flatten_tolerance_mm),
         (F::JoinTolerance, s.join_tolerance_mm),
     ] {
-        if !(v.is_finite() && v >= MIN_TOLERANCE_MM) {
+        if !(MIN_TOLERANCE_MM..=MAX_TOLERANCE_MM).contains(&v) {
             return bad(field, v);
         }
     }
-    if !(s.overcut_mm.is_finite() && s.overcut_mm >= 0.0) {
+    if !(0.0..=MAX_OVERCUT_MM).contains(&s.overcut_mm) {
         return bad(F::Overcut, s.overcut_mm);
     }
     if s.passes < 1 {
@@ -128,10 +127,12 @@ fn invalid_settings_message(field: SettingsField, value: f64) -> String {
                 "join"
             };
             format!(
-                "The {label} tolerance must be a number of at least {MIN_TOLERANCE_MM} mm (got {value})."
+                "The {label} tolerance must be a number from {MIN_TOLERANCE_MM} to {MAX_TOLERANCE_MM} mm (got {value})."
             )
         }
-        F::Overcut => format!("The overcut must be a number of at least 0 mm (got {value})."),
+        F::Overcut => {
+            format!("The overcut must be a number from 0 to {MAX_OVERCUT_MM} mm (got {value}).")
+        }
         F::Passes => format!("The number of passes must be at least 1 (got {value})."),
         F::CuttingArea => format!(
             "The cutting area must have finite coordinates and a positive width and height (got {value})."

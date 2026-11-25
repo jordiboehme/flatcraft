@@ -411,6 +411,36 @@ fn default_material_persists_and_new_documents_use_it() {
 }
 
 #[test]
+fn a_broken_preset_file_is_named_in_the_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let plotters = dir.path().join("profiles/plotters");
+    std::fs::create_dir_all(&plotters).unwrap();
+    std::fs::write(plotters.join("broken.toml"), "id = [").unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    open(&mut h, "Plotters");
+    h.get_by_label_contains("This preset file can't be read:");
+    h.get_by_label_contains("broken.toml");
+}
+
+#[test]
+fn a_huge_flatten_tolerance_blocks_save() {
+    let p = {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ProfileStore::load(dir.path()).unwrap();
+        store.plotter("silhouette-cameo-2").unwrap()
+    };
+    let mut wild = p.clone();
+    wild.flatten_tolerance_mm = 50.0;
+    let problems = flatcraft::ui::profiles_window::plotter_problems(&wild);
+    assert!(
+        problems.iter().any(|x| x.contains("flatten tolerance")),
+        "{problems:?}"
+    );
+    assert!(flatcraft::ui::profiles_window::plotter_problems(&p).is_empty());
+}
+
+#[test]
 fn calibration_tab_says_what_comes() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);

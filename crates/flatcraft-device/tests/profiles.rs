@@ -232,10 +232,14 @@ fn user_preset_cannot_shadow_system() {
         "silhouette-cameo-2",
         "id = \"silhouette-cameo-2\"\nname = \"X\"\ninherits = \"file-output-gpgl-cameo2\"\n",
     );
-    assert!(matches!(
-        ProfileStore::load(d.path()),
-        Err(ProfileError::ShadowsSystem { .. })
-    ));
+    let s = ProfileStore::load(d.path()).unwrap();
+    assert_eq!(s.diagnostics().len(), 1);
+    assert!(
+        s.diagnostics()[0].reason.contains("shadow"),
+        "{:?}",
+        s.diagnostics()
+    );
+    assert!(s.plotters().iter().all(|p| p.system));
 }
 
 #[test]
@@ -347,10 +351,12 @@ fn load_rejects_stem_id_mismatch() {
         "file-name",
         "id = \"other\"\nname = \"A\"\n",
     );
-    assert!(matches!(
-        ProfileStore::load(d.path()),
-        Err(ProfileError::Invalid { .. })
-    ));
+    let s = ProfileStore::load(d.path()).unwrap();
+    assert!(
+        s.diagnostics()[0].reason.contains("file name"),
+        "{:?}",
+        s.diagnostics()
+    );
     let d = tempdir().unwrap();
     write(
         d.path(),
@@ -358,10 +364,12 @@ fn load_rejects_stem_id_mismatch() {
         "Bad Id",
         "id = \"Bad Id\"\nname = \"A\"\n",
     );
-    assert!(matches!(
-        ProfileStore::load(d.path()),
-        Err(ProfileError::Invalid { .. })
-    ));
+    let s = ProfileStore::load(d.path()).unwrap();
+    assert!(
+        s.diagnostics()[0].reason.contains("lowercase"),
+        "{:?}",
+        s.diagnostics()
+    );
 }
 
 #[test]
@@ -818,4 +826,97 @@ fn modified_fields_by_kind_when_ids_are_shared() {
     s.save_user_material(&m, "vinyl").unwrap();
     assert_eq!(s.modified_plotter_fields("shared"), ["scale_x"]);
     assert_eq!(s.modified_material_fields("shared"), ["passes"]);
+}
+
+#[test]
+fn a_broken_user_preset_is_skipped_with_a_diagnostic() {
+    let d = tempdir().unwrap();
+    write(d.path(), "plotters", "broken", "id = \"broken\"\nname = [");
+    write(d.path(), "materials", "no-id", "name = \"No id\"\n");
+    write(
+        d.path(),
+        "plotters",
+        "fine",
+        "id = \"fine\"\nname = \"Fine\"\ninherits = \"silhouette-cameo-2\"\n",
+    );
+    let s = ProfileStore::load(d.path()).unwrap();
+    assert!(s.plotter("fine").is_ok());
+    assert!(s.plotter("broken").is_err());
+    let diags = s.diagnostics();
+    assert_eq!(diags.len(), 2, "{diags:?}");
+    let broken = diags
+        .iter()
+        .find(|x| x.path.ends_with("broken.toml"))
+        .unwrap();
+    assert!(broken.reason.contains("parse"), "{}", broken.reason);
+    assert!(
+        diags
+            .iter()
+            .any(|x| x.path.ends_with("no-id.toml") && x.reason.contains("no id"))
+    );
+}
+
+#[test]
+fn replace_keys_apply_only_at_the_top_level() {
+    let t = |s: &str| s.parse::<toml::Table>().unwrap();
+    let base = t("[a.protocol]\nx = 1\ny = 2\n[protocol]\nx = 1\ny = 2\n");
+    let over = t("[a.protocol]\nx = 3\n[protocol]\nx = 3\n");
+    let m = store::merge_tables(&base, &over, &["protocol"]);
+    assert_eq!(
+        m["protocol"],
+        t("x = 3").into(),
+        "the top-level key is replaced whole"
+    );
+    assert_eq!(
+        m["a"]["protocol"],
+        t("x = 3\ny = 2").into(),
+        "a nested key merges"
+    );
+}
+
+#[test]
+fn tolerances_have_sane_maxima() {
+    let (_d, mut s) = store();
+    let mut p = s.plotter("silhouette-cameo-2").unwrap();
+    p.id = "wild".into();
+    p.flatten_tolerance_mm = 50.0;
+    let e = s.save_user_plotter(&p, "silhouette-cameo-2").unwrap_err();
+    assert!(e.to_string().contains("flatten tolerance"), "{e}");
+    p.flatten_tolerance_mm = 0.01;
+    p.knife_compensation = KnifeCompensation::Host {
+        offset_mm: 0.25,
+        pivot_threshold_deg: 400.0,
+    };
+    let e = s.save_user_plotter(&p, "silhouette-cameo-2").unwrap_err();
+    assert!(e.to_string().contains("pivot threshold"), "{e}");
+    let mut m = s.material("vinyl").unwrap();
+    m.id = "wild-vinyl".into();
+    m.overcut_mm = 80.0;
+    let e = s.save_user_material(&m, "vinyl").unwrap_err();
+    assert!(e.to_string().contains("overcut"), "{e}");
+    // A hand-edited file is refused when it is used.
+    write(
+        _d.path(),
+        "plotters",
+        "edited",
+        "id = \"edited\"\nname = \"E\"\ninherits = \"silhouette-cameo-2\"\nflatten_tolerance_mm = 50.0\n",
+    );
+    let s = ProfileStore::load(_d.path()).unwrap();
+    assert!(matches!(
+        s.plotter("edited"),
+        Err(ProfileError::Invalid { .. })
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn write_atomic_never_follows_a_planted_temp_symlink() {
+    let d = tempdir().unwrap();
+    let victim = d.path().join("victim.txt");
+    fs::write(&victim, "keep me").unwrap();
+    let path = d.path().join("a.toml");
+    std::os::unix::fs::symlink(&victim, d.path().join("a.toml.tmp")).unwrap();
+    flatcraft_device::fsio::write_atomic(&path, b"new").unwrap();
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "keep me");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "new");
 }

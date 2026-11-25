@@ -51,6 +51,16 @@ pub enum ProfileError {
     MissingId { path: PathBuf },
 }
 
+/// A user preset file that was skipped at load, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresetDiagnostic {
+    pub path: PathBuf,
+    pub reason: String,
+}
+
+/// Longest reason a diagnostic keeps, in chars.
+const MAX_REASON_CHARS: usize = 300;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PresetInfo {
     pub id: String,
@@ -59,14 +69,15 @@ pub struct PresetInfo {
     pub inherits: Option<String>,
 }
 
-/// Merge `over` onto `base`. Plain sub-tables merge key by key. Keys in
-/// `replace_keys` and any array value are replaced whole.
+/// Merge `over` onto `base`. Plain sub-tables merge key by key. Top-level
+/// keys in `replace_keys` and any array value are replaced whole; a nested
+/// key with such a name merges like any other table.
 pub fn merge_tables(base: &Table, over: &Table, replace_keys: &[&str]) -> Table {
     let mut out = base.clone();
     for (k, v) in over {
         let merged = match (out.get(k), v) {
             (Some(Value::Table(b)), Value::Table(o)) if !replace_keys.contains(&k.as_str()) => {
-                Value::Table(merge_tables(b, o, replace_keys))
+                Value::Table(merge_tables(b, o, &[]))
             }
             _ => v.clone(),
         };
@@ -84,7 +95,7 @@ fn diff_tables(parent: &Table, profile: &Table, replace_keys: &[&str]) -> Table 
         }
         match (parent.get(k), v) {
             (Some(Value::Table(p)), Value::Table(c)) if !replace_keys.contains(&k.as_str()) => {
-                let d = diff_tables(p, c, replace_keys);
+                let d = diff_tables(p, c, &[]);
                 if !d.is_empty() {
                     out.insert(k.clone(), Value::Table(d));
                 }
@@ -117,7 +128,7 @@ fn find_removed(
         match (child.get(k), pv) {
             (None, _) => return Some(key),
             (Some(Value::Table(c)), Value::Table(p)) if !replace_keys.contains(&k.as_str()) => {
-                if let Some(r) = find_removed(&key, p, c, replace_keys) {
+                if let Some(r) = find_removed(&key, p, c, &[]) {
                     return Some(r);
                 }
             }
@@ -244,7 +255,7 @@ fn flatten_keys(prefix: &str, t: &Table, replace_keys: &[&str], out: &mut Vec<St
         };
         match v {
             Value::Table(sub) if !replace_keys.contains(&k.as_str()) => {
-                flatten_keys(&key, sub, replace_keys, out)
+                flatten_keys(&key, sub, &[], out)
             }
             Value::Array(mats) if prefix.is_empty() && k == "media" => {
                 out.extend(
@@ -290,6 +301,8 @@ pub struct ProfileStore {
     user_dir: PathBuf,
     plotters: BTreeMap<String, Entry>,
     materials: BTreeMap<String, Entry>,
+    /// User preset files that could not be loaded.
+    diagnostics: Vec<PresetDiagnostic>,
     /// Counts saves and deletes.
     revision: u64,
     /// Resolved profiles of this revision, so a GUI can ask every frame.
@@ -310,15 +323,26 @@ impl Clone for ProfileStore {
             user_dir: self.user_dir.clone(),
             plotters: self.plotters.clone(),
             materials: self.materials.clone(),
+            diagnostics: self.diagnostics.clone(),
             revision: self.revision,
             cache: Mutex::new(self.resolved().clone()),
         }
     }
 }
 
-fn parse_system(src: &str, id: &str) -> Table {
-    src.parse::<Table>()
-        .unwrap_or_else(|e| panic!("embedded preset '{id}' is broken: {e}"))
+/// A preset compiled into the app. A broken one is an error, never a panic.
+fn parse_system(src: &str, id: &str) -> Result<Table, ProfileError> {
+    src.parse::<Table>().map_err(|e| ProfileError::Invalid {
+        id: id.to_string(),
+        reason: format!("the built-in preset is broken: {e}"),
+    })
+}
+
+fn invalid(id: &str, reason: String) -> ProfileError {
+    ProfileError::Invalid {
+        id: id.to_string(),
+        reason,
+    }
 }
 
 fn id_of(t: &Table) -> Option<&str> {
@@ -333,6 +357,7 @@ impl ProfileStore {
             user_dir: user_dir.to_path_buf(),
             plotters: BTreeMap::new(),
             materials: BTreeMap::new(),
+            diagnostics: Vec::new(),
             revision: 0,
             cache: Mutex::default(),
         };
@@ -340,7 +365,7 @@ impl ProfileStore {
             store.plotters.insert(
                 id.to_string(),
                 Entry {
-                    table: parse_system(src, id),
+                    table: parse_system(src, id)?,
                     system: true,
                 },
             );
@@ -349,7 +374,7 @@ impl ProfileStore {
             store.materials.insert(
                 id.to_string(),
                 Entry {
-                    table: parse_system(src, id),
+                    table: parse_system(src, id)?,
                     system: true,
                 },
             );
@@ -410,50 +435,82 @@ impl ProfileStore {
         files.sort();
         let mut seen: BTreeMap<String, PathBuf> = BTreeMap::new();
         for path in files {
-            let text = fs::read_to_string(&path).map_err(|e| io(&path, e))?;
-            let table = text.parse::<Table>().map_err(|source| ProfileError::Toml {
-                path: path.clone(),
-                source,
-            })?;
-            let mut table = table;
-            if kind == Kind::Plotter {
-                for k in LEGACY_PLOTTER_KEYS {
-                    table.remove(*k);
+            match self.load_user_file(kind, &path, &seen) {
+                Ok((id, table)) => {
+                    seen.insert(id.clone(), path.clone());
+                    self.map_mut(kind).insert(
+                        id,
+                        Entry {
+                            table,
+                            system: false,
+                        },
+                    );
+                }
+                Err(e) => {
+                    let mut reason = e.to_string();
+                    if let Some((cut, _)) = reason.char_indices().nth(MAX_REASON_CHARS) {
+                        reason.truncate(cut);
+                        reason.push_str("...");
+                    }
+                    self.diagnostics.push(PresetDiagnostic { path, reason });
                 }
             }
-            let id = id_of(&table)
-                .ok_or_else(|| ProfileError::MissingId { path: path.clone() })?
-                .to_string();
-            validate_id(&id)?;
-            if path.file_stem().and_then(|s| s.to_str()) != Some(id.as_str()) {
-                return Err(ProfileError::Invalid {
-                    id,
-                    reason: format!("the file name of {} must match the id", path.display()),
-                });
-            }
-            if self.map(kind).get(&id).is_some_and(|e| e.system) {
-                return Err(ProfileError::ShadowsSystem { id });
-            }
-            if let Some(first) = seen.get(&id) {
-                return Err(ProfileError::Invalid {
-                    id,
-                    reason: format!(
-                        "defined twice, in {} and {}",
-                        first.display(),
-                        path.display()
-                    ),
-                });
-            }
-            seen.insert(id.clone(), path.clone());
-            self.map_mut(kind).insert(
-                id,
-                Entry {
-                    table,
-                    system: false,
-                },
-            );
         }
         Ok(())
+    }
+
+    /// Reads one user preset file. The first file of an id wins.
+    fn load_user_file(
+        &self,
+        kind: Kind,
+        path: &Path,
+        seen: &BTreeMap<String, PathBuf>,
+    ) -> Result<(String, Table), ProfileError> {
+        let text = fs::read_to_string(path).map_err(|source| ProfileError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let mut table = text.parse::<Table>().map_err(|source| ProfileError::Toml {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        if kind == Kind::Plotter {
+            for k in LEGACY_PLOTTER_KEYS {
+                table.remove(*k);
+            }
+        }
+        let id = id_of(&table)
+            .ok_or_else(|| ProfileError::MissingId {
+                path: path.to_path_buf(),
+            })?
+            .to_string();
+        validate_id(&id)?;
+        if path.file_stem().and_then(|s| s.to_str()) != Some(id.as_str()) {
+            return Err(ProfileError::Invalid {
+                id,
+                reason: format!("the file name of {} must match the id", path.display()),
+            });
+        }
+        if self.map(kind).get(&id).is_some_and(|e| e.system) {
+            return Err(ProfileError::ShadowsSystem { id });
+        }
+        if let Some(first) = seen.get(&id) {
+            return Err(ProfileError::Invalid {
+                id,
+                reason: format!(
+                    "defined twice, in {} and {}",
+                    first.display(),
+                    path.display()
+                ),
+            });
+        }
+        Ok((id, table))
+    }
+
+    /// User preset files that were skipped at load because they cannot be
+    /// read, and why. A save to the same file drops its entry.
+    pub fn diagnostics(&self) -> &[PresetDiagnostic] {
+        &self.diagnostics
     }
 
     fn infos(&self, kind: Kind) -> Vec<PresetInfo> {
@@ -560,6 +617,7 @@ impl ProfileStore {
         }
         let p: PlotterProfile = self.resolve(Kind::Plotter, id)?;
         validate_media(id, &p)?;
+        p.validate_values().map_err(|reason| invalid(id, reason))?;
         self.resolved().plotters.insert(id.to_string(), p.clone());
         Ok(p)
     }
@@ -571,6 +629,7 @@ impl ProfileStore {
             return Ok(m.clone());
         }
         let m: MaterialProfile = self.resolve(Kind::Material, id)?;
+        m.validate_values().map_err(|reason| invalid(id, reason))?;
         self.resolved().materials.insert(id.to_string(), m.clone());
         Ok(m)
     }
@@ -686,6 +745,7 @@ impl ProfileStore {
         // A crash mid-write must never leave a broken preset: that would
         // stop the next start.
         crate::fsio::write_atomic(&path, text.as_bytes()).map_err(|e| io(&path, e))?;
+        self.diagnostics.retain(|d| d.path != path);
         self.changed();
         self.map_mut(kind).insert(
             id.to_string(),
@@ -703,6 +763,9 @@ impl ProfileStore {
         parent: &str,
     ) -> Result<(), ProfileError> {
         validate_media(&profile.id, profile)?;
+        profile
+            .validate_values()
+            .map_err(|reason| invalid(&profile.id, reason))?;
         self.save(Kind::Plotter, profile, &profile.id, &profile.name, parent)
     }
 
@@ -711,6 +774,9 @@ impl ProfileStore {
         profile: &MaterialProfile,
         parent: &str,
     ) -> Result<(), ProfileError> {
+        profile
+            .validate_values()
+            .map_err(|reason| invalid(&profile.id, reason))?;
         self.save(Kind::Material, profile, &profile.id, &profile.name, parent)
     }
 
@@ -776,6 +842,15 @@ mod tests {
 
     fn resolves() -> usize {
         RESOLVES.with(Cell::get)
+    }
+
+    #[test]
+    fn a_broken_embedded_preset_is_an_error() {
+        assert!(matches!(
+            parse_system("id = [", "broken"),
+            Err(ProfileError::Invalid { .. })
+        ));
+        assert!(parse_system("id = \"fine\"", "fine").is_ok());
     }
 
     #[test]

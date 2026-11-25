@@ -767,11 +767,11 @@ fn invalid_pipeline_settings_are_refused() {
     user_plotter(d.config.path(), "flatten_tolerance_mm = 0.0\n");
     let mut s = session(&d);
     import_square(&mut s, "square");
-    run(&mut s, "job.set_plotter", json!({ "id": "custom" }));
+    // The profile check refuses the preset before any job is built.
     let e = s
-        .execute("job.preview", json!({}), Origin::User)
+        .execute("job.set_plotter", json!({ "id": "custom" }), Origin::User)
         .unwrap_err();
-    assert!(matches!(e, CommandError::Refused(_)), "{e}");
+    assert!(e.to_string().contains("flatten tolerance"), "{e}");
 }
 
 #[test]
