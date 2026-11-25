@@ -465,6 +465,9 @@ fn run_retrace(s: &mut Session, p: RetraceParams, _: Origin) -> Result<Value, Co
     // is relative to the centre of the local bounds, which the new trace
     // changes.
     o.set_geometry_anchored(t.paths, Rect::new(0.0, 0.0, t.size_mm.0, t.size_mm.1));
+    // Linked copies share the trace settings and the geometry.
+    s.doc_mut().document.spread_shared(id);
+    let o = object_mut(&mut s.doc_mut().document, id)?;
     // Warn only when the retrace made the shapes grow: a size the user
     // already had was warned about before.
     let grew = match (size_before, placed_bounds(o).map(|b| b.size())) {
@@ -487,7 +490,7 @@ command!(
     mutates: true,
     params: RetraceParams,
     run: run_retrace,
-    description: "Traces a raster object again with new settings and keeps its position, scale, rotation and mirror. Settings (all optional, omitted ones use the defaults): threshold (0-255, null = automatic), invert (cut the light pixels), despeckle_mm2 (default 0.5), corner_threshold_deg (default 60), smoothing (0-10, default 5), min_feature_mm (null = 6 times the blade offset of the plotter), dpi_override (null = dpi of the file, else 300). Only raster objects can be retraced. Returns {id, bounds_mm, warnings, dropped_small (shapes below the minimum feature size), despeckled (specks below the despeckle area), threshold_used, size_mm}.",
+    description: "Traces a raster object again with new settings and keeps its position, scale, rotation and mirror. Settings (all optional, omitted ones use the defaults): threshold (0-255, null = automatic), invert (cut the light pixels), despeckle_mm2 (default 0.5), corner_threshold_deg (default 60), smoothing (0-10, default 5), min_feature_mm (null = 6 times the blade offset of the plotter), dpi_override (null = dpi of the file, else 300). Only raster objects can be retraced. Linked copies (see object.copies) share the trace settings, so all members of the group are retraced in the same undo step, each keeping its own position, rotation and mirror. Returns {id, bounds_mm, warnings, dropped_small (shapes below the minimum feature size), despeckled (specks below the despeckle area), threshold_used, size_mm}.",
 );
 
 // ---------------------------------------------------------------- select / visible / delete
@@ -598,12 +601,14 @@ pub struct DuplicateParams {
 }
 
 /// Adds a copy of object `id`, moved by `offset`, with a new id, at the end
-/// of the document. Returns the new id.
+/// of the document. The copy shares the original's data (`Arc`s) but is
+/// not linked to it. Returns the new id.
 fn add_copy(doc: &mut Document, id: ObjectId, offset: Vec2) -> Result<ObjectId, CommandError> {
     let mut copy = object_mut(doc, id)?.clone();
     let new_id = ObjectId(doc.next_id);
     doc.next_id += 1;
     copy.id = new_id;
+    copy.link_group = None;
     translate(&mut copy, offset);
     doc.objects.push(copy);
     Ok(new_id)
@@ -628,16 +633,13 @@ command!(
     mutates: true,
     params: DuplicateParams,
     run: run_duplicate,
-    description: "Copies objects and moves the copies by offset_mm [dx, dy] (default [10, 10]; mm, y down). The copies become the selection. An empty ids list means the current selection. Returns {ids: [new id]} in the order of the originals.",
+    description: "Copies objects and moves the copies by offset_mm [dx, dy] (default [10, 10]; mm, y down). The copies become the selection. A copy of a linked copy is independent: it does not join the original's group (use object.copies with linked true, or object.link, for that). An empty ids list means the current selection. Returns {ids: [new id]} in the order of the originals.",
 );
 
 // ---------------------------------------------------------------- copies
 
 /// Most copies one `object.copies` call makes.
 pub const MAX_COPIES: u32 = 500;
-
-/// The refusal while linked copies are not there yet.
-pub const LINKED_LATER: &str = "Linked copies arrive with the next update.";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -670,7 +672,7 @@ pub struct CopiesParams {
     /// Gap between neighbouring bounding boxes in mm (default 5), 0 or more.
     #[serde(default = "default_gap")]
     pub gap_mm: f64,
-    /// Linked copies follow the original. Not available yet: only false is accepted.
+    /// true makes linked copies: they share the source, the geometry, the trace settings, the cut options, the scale and the file link with the original; each keeps its own position, rotation and mirror.
     #[serde(default)]
     pub linked: bool,
 }
@@ -684,9 +686,6 @@ fn cell(layout: CopiesLayout, k: u32) -> (u32, u32) {
 }
 
 fn run_copies(s: &mut Session, p: CopiesParams, _: Origin) -> Result<Value, CommandError> {
-    if p.linked {
-        return Err(CommandError::Refused(LINKED_LATER.into()));
-    }
     if !(1..=MAX_COPIES).contains(&p.count) {
         return Err(CommandError::InvalidParams(format!(
             "count must be 1 to {MAX_COPIES}"
@@ -706,7 +705,16 @@ fn run_copies(s: &mut Session, p: CopiesParams, _: Origin) -> Result<Value, Comm
     check_exists(&s.doc().document, id)?;
     let area = cutting_area(s).ok();
     let st = s.doc_mut();
+    let group = p.linked.then(|| {
+        st.document
+            .get(id)
+            .and_then(|o| o.link_group)
+            .unwrap_or_else(|| st.document.new_group_id())
+    });
     let original = object_mut(&mut st.document, id)?;
+    if group.is_some() {
+        original.link_group = group;
+    }
     // Measured once: a copy's bounds are the original's, moved.
     let measured = placed_bounds(original);
     let visible = original.visible;
@@ -719,7 +727,9 @@ fn run_copies(s: &mut Session, p: CopiesParams, _: Origin) -> Result<Value, Comm
         // From the original each time, so rounding does not add up.
         let offset = Vec2::new(col as f64 * step_x, row as f64 * step_y);
         let new_id = add_copy(&mut st.document, id, offset)?;
-        if !object_mut(&mut st.document, new_id)?.placement_is_valid() {
+        let copy = object_mut(&mut st.document, new_id)?;
+        copy.link_group = group;
+        if !copy.placement_is_valid() {
             return Err(CommandError::Refused(format!(
                 "Copy {k} would land more than 1 km from the mat. Make fewer copies or a smaller gap."
             )));
@@ -757,7 +767,91 @@ command!(
     mutates: true,
     params: CopiesParams,
     run: run_copies,
-    description: "Adds count copies (1 to 500) of one object in one undo step, laid out next to it by its bounding box plus gap_mm (default 5). layout \"row\" (default) puts them in a row to the right of the original. layout {\"grid\": {\"columns\": n}} fills rows of n cells left to right, then goes down; the original is the first cell, so copy k sits in column k mod n and row k div n. Units mm, origin the 0,0 of the grid printed on the mat, x right, y down. Copies that land outside the cutting area are still added; they are listed in outside_area and get a warning. If a copy would land more than 1 km away, it refuses the whole call and adds nothing. Copies keep the original's file link, so a reload of that file updates all of them. linked: true is refused for now (linked copies come later). The copies become the selection. Returns {ids: [new id], outside_area: [id], warnings}.",
+    description: "Adds count copies (1 to 500) of one object in one undo step, laid out next to it by its bounding box plus gap_mm (default 5). layout \"row\" (default) puts them in a row to the right of the original. layout {\"grid\": {\"columns\": n}} fills rows of n cells left to right, then goes down; the original is the first cell, so copy k sits in column k mod n and row k div n. Units mm, origin the 0,0 of the grid printed on the mat, x right, y down. Copies that land outside the cutting area are still added; they are listed in outside_area and get a warning. If a copy would land more than 1 km away, it refuses the whole call and adds nothing. Copies keep the original's file link, so a reload of that file updates all of them. linked: true (default false) makes linked copies: they and the original share the source, the geometry, the trace settings, the cut options, the scale and the file link, stored once in the project, so a change of one of these on any of them (object.scale, object.set_cut_options, object.retrace, object.reload, object.relink, object.unlink) changes all of them in the same undo step; each keeps its own position, rotation, mirror, name and visibility. Copies of a linked copy join its group. object.unlink_copies makes copies independent again. The copies become the selection. Returns {ids: [new id], outside_area: [id], warnings}.",
+);
+
+// ---------------------------------------------------------------- link copies
+
+/// The embedded file of a source, whatever its kind and settings.
+fn source_bytes(source: &Source) -> (bool, &[u8]) {
+    match source {
+        Source::Svg { bytes, .. } => (false, bytes),
+        Source::Raster { bytes, .. } => (true, bytes),
+    }
+}
+
+fn run_link(s: &mut Session, p: IdsParams, _: Origin) -> Result<Value, CommandError> {
+    let ids = resolve_ids(s, &p.ids)?;
+    let doc = &mut s.doc_mut().document;
+    let lead_id = ids[0];
+    // Members of a group that one of the ids is in come along.
+    let mut all: Vec<ObjectId> = Vec::new();
+    for id in &ids {
+        for m in doc.members(*id) {
+            if !all.contains(&m) {
+                all.push(m);
+            }
+        }
+    }
+    if all.len() < 2 {
+        return Err(CommandError::InvalidParams(
+            "linking needs at least 2 objects".into(),
+        ));
+    }
+    let lead = doc.get(lead_id).cloned().expect("resolved above");
+    for id in &all {
+        let o = doc.get(*id).expect("resolved above");
+        // By value: two imports of one file hold equal bytes in two Arcs.
+        if source_bytes(&o.source) != source_bytes(&lead.source) {
+            return Err(CommandError::InvalidParams(format!(
+                "object {} does not have the same source as object {}; only copies of the same file or image can be linked",
+                id.0, lead_id.0
+            )));
+        }
+    }
+    let group = lead.link_group.unwrap_or_else(|| doc.new_group_id());
+    for id in &all {
+        let o = object_mut(doc, *id)?;
+        o.link_group = Some(group);
+        if *id != lead_id {
+            o.take_shared(&lead);
+        }
+    }
+    let members = doc.group_members(group);
+    Ok(json!({ "group": group.0, "ids": ids_json(&members) }))
+}
+
+command!(
+    ObjectLink,
+    id: "object.link",
+    title: "Link copies",
+    mutates: true,
+    params: IdsParams,
+    run: run_link,
+    description: "Makes objects linked copies of the first one in ids, in one undo step. They must have the same source (the same SVG or image content, for example copies or two imports of one file); otherwise it refuses and changes nothing. Every object takes the first one's shared fields: the source with its trace settings, the geometry, the cut options, the scale and the file link. Each keeps its own position, rotation, mirror, name and visibility; new geometry stays anchored to the object's page frame and a new scale keeps the object's own centre (mm, origin the 0,0 of the grid printed on the mat, y down). Objects that are linked copies already bring their whole group along. From then on a change of a shared field on one member (object.scale, object.set_cut_options, object.retrace, object.reload, object.relink, object.unlink) changes all of them. Needs 2 or more objects. An empty ids list means the current selection. Returns {group, ids: [every member]}.",
+);
+
+fn run_unlink_copies(s: &mut Session, p: IdsParams, _: Origin) -> Result<Value, CommandError> {
+    let ids = resolve_ids(s, &p.ids)?;
+    let doc = &mut s.doc_mut().document;
+    let mut out = Vec::new();
+    for id in &ids {
+        let o = object_mut(doc, *id)?;
+        if o.link_group.take().is_some() {
+            out.push(*id);
+        }
+    }
+    Ok(json!({ "ids": ids_json(&out) }))
+}
+
+command!(
+    ObjectUnlinkCopies,
+    id: "object.unlink_copies",
+    title: "Unlink copy",
+    mutates: true,
+    params: IdsParams,
+    run: run_unlink_copies,
+    description: "Makes linked copies independent again, in one undo step. Each object keeps everything it had (source, trace settings, geometry, cut options, scale, file link, position, rotation and mirror; mm, origin the 0,0 of the grid printed on the mat), but from then on a change to it no longer changes the others, and theirs no longer change it. The other members stay linked to each other; a group left with one member is no group. This does not forget the file: object.unlink does that. Objects that are not linked copies are skipped. An empty ids list means the current selection. Returns {ids: [ids that were unlinked]}.",
 );
 
 // ---------------------------------------------------------------- move
@@ -895,11 +989,43 @@ fn run_scale(s: &mut Session, p: ScaleParams, _: Origin) -> Result<Value, Comman
         return scale_group(s, &ids, factor, width, height, &p);
     }
     let doc = &mut s.doc_mut().document;
+    // Measured first: a linked copy may scale before its turn comes.
+    let mut olds = Vec::with_capacity(ids.len());
     for id in &ids {
-        let o = object_mut(doc, *id)?;
-        let old = placed_bounds(o).ok_or_else(|| {
+        olds.push(placed_bounds(object_mut(doc, *id)?).ok_or_else(|| {
             CommandError::InvalidParams(format!("object {} has no geometry to scale", id.0))
-        })?;
+        })?);
+    }
+    // Objects whose scale is set already, through a linked copy earlier in
+    // `ids`: a group scales once, by its first member in `ids`.
+    let mut scaled: Vec<ObjectId> = Vec::new();
+    for (id, &old) in ids.iter().zip(&olds) {
+        if !scaled.contains(id) {
+            scale_one(doc, *id, old, factor, width, height, p.keep_aspect)?;
+            // Linked copies share the scale; the others keep their centre.
+            doc.spread_shared(*id);
+            scaled.extend(doc.members(*id));
+        }
+        let o = object_mut(doc, *id)?;
+        if let Some(new) = placed_bounds(o) {
+            translate(o, p.anchor.point(old) - p.anchor.point(new));
+        }
+    }
+    Ok(json!({ "ids": ids_json(&ids) }))
+}
+
+/// Scales one object so its placed bounds `old` get the factor or the size.
+fn scale_one(
+    doc: &mut Document,
+    id: ObjectId,
+    old: Rect,
+    factor: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
+    keep_aspect: bool,
+) -> Result<(), CommandError> {
+    let o = object_mut(doc, id)?;
+    {
         let ratio =
             |target: Option<f64>, have: f64, what: &str| -> Result<Option<f64>, CommandError> {
                 match target {
@@ -916,7 +1042,7 @@ fn run_scale(s: &mut Session, p: ScaleParams, _: Origin) -> Result<Value, Comman
         } else {
             let rw = ratio(width, old.width(), "width")?;
             let rh = ratio(height, old.height(), "height")?;
-            if p.keep_aspect {
+            if keep_aspect {
                 let f = match (rw, rh) {
                     (Some(a), Some(b)) => a.min(b),
                     (Some(a), None) | (None, Some(a)) => a,
@@ -948,11 +1074,8 @@ fn run_scale(s: &mut Session, p: ScaleParams, _: Origin) -> Result<Value, Comman
                 o.transform.scale_y *= fy;
             }
         }
-        if let Some(new) = placed_bounds(o) {
-            translate(o, p.anchor.point(old) - p.anchor.point(new));
-        }
     }
-    Ok(json!({ "ids": ids_json(&ids) }))
+    Ok(())
 }
 
 /// `object.scale` with `group`: one uniform factor for all objects about
@@ -1010,6 +1133,11 @@ fn scale_group(
         o.transform.scale_y *= f;
         o.transform.center_mm = anchor + (o.transform.center_mm - anchor) * f;
     }
+    // Linked copies outside `ids` take the scale and keep their centre.
+    // Members inside scaled once each from the same scale, so they agree.
+    for id in ids {
+        doc.spread_shared(*id);
+    }
     // Cut outlines may not scale exactly (a stroke crossing the auto
     // threshold): put the anchor back where it was.
     let d = anchor - p.anchor.point(group_box(doc)?);
@@ -1026,7 +1154,7 @@ command!(
     mutates: true,
     params: ScaleParams,
     run: run_scale,
-    description: "Scales each object on its own (one undo step for all), or with group true all of them as one group about one anchor of their common bounding box, so their layout stays (the canvas does this for a multi-selection). Either a uniform factor, or width_mm and/or height_mm for the placed bounding box in mm. keep_aspect (default true) scales uniformly: with one size given it follows that size, with both it fits inside them. With keep_aspect false only the given sides change; this needs a rotation that is a multiple of 90 degrees. anchor (center, top_left, top_right, bottom_left, bottom_right; default center) is the point of each bounding box that stays fixed. Origin the 0,0 of the grid printed on the mat, y down. With strokes on auto (see object.set_cut_options), scaling can move a stroke across the 0.5 mm threshold and change how it is cut. An empty ids list means the current selection. Returns {ids}.",
+    description: "Scales each object on its own (one undo step for all), or with group true all of them as one group about one anchor of their common bounding box, so their layout stays (the canvas does this for a multi-selection). Either a uniform factor, or width_mm and/or height_mm for the placed bounding box in mm. keep_aspect (default true) scales uniformly: with one size given it follows that size, with both it fits inside them. With keep_aspect false only the given sides change; this needs a rotation that is a multiple of 90 degrees. anchor (center, top_left, top_right, bottom_left, bottom_right; default center) is the point of each bounding box that stays fixed. Origin the 0,0 of the grid printed on the mat, y down. With strokes on auto (see object.set_cut_options), scaling can move a stroke across the 0.5 mm threshold and change how it is cut. Linked copies (see object.copies) share the scale: scaling one scales all members of its group in the same undo step, and each other member keeps its own centre, rotation and mirror; a group with several members in ids scales once, by its first member there. An empty ids list means the current selection. Returns {ids}.",
 );
 
 // ---------------------------------------------------------------- rotate
@@ -1198,7 +1326,11 @@ fn run_set_cut_options(
     let ids = resolve_ids(s, &p.ids)?;
     let doc = &mut s.doc_mut().document;
     let mut out = Vec::new();
+    let mut done = Vec::new();
     for id in &ids {
+        if done.contains(id) {
+            continue;
+        }
         let c = &mut object_mut(doc, *id)?.cut;
         if let Some(m) = p.mode {
             c.mode = m.into();
@@ -1209,7 +1341,13 @@ fn run_set_cut_options(
         if let Some(t) = p.auto_threshold_mm {
             c.auto_threshold_mm = t;
         }
-        out.push(json!({ "id": id.0, "cut": cut_json(c) }));
+        let c = *c;
+        // Linked copies share the cut options.
+        doc.spread_shared(*id);
+        for m in doc.members(*id) {
+            out.push(json!({ "id": m.0, "cut": cut_json(&c) }));
+            done.push(m);
+        }
     }
     Ok(json!({ "objects": out }))
 }
@@ -1221,7 +1359,7 @@ command!(
     mutates: true,
     params: SetCutOptionsParams,
     run: run_set_cut_options,
-    description: "Sets what is cut of each object (one undo step). mode: all_lines cuts every path as drawn (its centre line), whatever its fill or stroke; object_outlines (default) cuts the outline of every visible shape: fills, plus strokes as set by strokes. strokes: auto (default) cuts strokes at least auto_threshold_mm wide (default 0.5, range 0.05 to 10; measured after scaling) around their outline and thinner ones as centre line; centre_line cuts the path itself; outline cuts around the visible stroke shape with its corner and end style (sharp miter corners stay sharp). A path with a fill and an outline stroke is cut along the edge of fill and stroke together; holes stay holes. Different paths that overlap are each cut completely. Fields you omit keep their value; give at least one. Traced images are fills; the cut mode only normalises their outlines (direction and start point), what is cut stays the same. A filled path with a centre-line stroke is cut along the edge of its fill. An empty ids list means the current selection. Returns {objects: [{id, cut: {mode, strokes, auto_threshold_mm}}]}.",
+    description: "Sets what is cut of each object (one undo step). mode: all_lines cuts every path as drawn (its centre line), whatever its fill or stroke; object_outlines (default) cuts the outline of every visible shape: fills, plus strokes as set by strokes. strokes: auto (default) cuts strokes at least auto_threshold_mm wide (default 0.5, range 0.05 to 10; measured after scaling) around their outline and thinner ones as centre line; centre_line cuts the path itself; outline cuts around the visible stroke shape with its corner and end style (sharp miter corners stay sharp). A path with a fill and an outline stroke is cut along the edge of fill and stroke together; holes stay holes. Different paths that overlap are each cut completely. Fields you omit keep their value; give at least one. Traced images are fills; the cut mode only normalises their outlines (direction and start point), what is cut stays the same. A filled path with a centre-line stroke is cut along the edge of its fill. Linked copies (see object.copies) share their cut options, so setting them on one sets them on all members of its group, in the same undo step. An empty ids list means the current selection. Returns {objects: [{id, cut: {mode, strokes, auto_threshold_mm}}]}, with every changed object, linked copies included.",
 );
 
 #[cfg(test)]

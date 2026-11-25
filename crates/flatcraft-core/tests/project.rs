@@ -77,10 +77,10 @@ fn roundtrip_keeps_sources_and_transforms() {
 fn newer_format_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("p.flatcraft");
-    std::fs::write(&path, r#"{"format_version": 2, "objects": []}"#).unwrap();
+    std::fs::write(&path, r#"{"format_version": 3, "objects": []}"#).unwrap();
     match project::load(&path) {
         Err(ProjectError::NewerFormat { found, supported }) => {
-            assert_eq!((found, supported), (2, 1));
+            assert_eq!((found, supported), (3, 2));
         }
         other => panic!("unexpected {other:?}"),
     }

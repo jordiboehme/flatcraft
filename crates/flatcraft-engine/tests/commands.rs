@@ -399,12 +399,9 @@ fn error_texts_have_no_em_dash() {
         ("object.copies", json!({ "id": id, "count": 0 })),
         (
             "object.copies",
-            json!({ "id": id, "count": 2, "linked": true }),
-        ),
-        (
-            "object.copies",
             json!({ "id": id, "count": 2, "gap_mm": -5.0 }),
         ),
+        ("object.link", json!({ "ids": [id] })),
     ];
     for (cmd, params) in cases {
         let e = s
@@ -2736,24 +2733,12 @@ fn copies_outside_the_cutting_area_are_added_and_named() {
 }
 
 #[test]
-fn copies_refuse_bad_params_and_linked_copies() {
+fn copies_refuse_bad_params() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = session(&dir);
     let id = import(&mut s, 20.0, 20.0);
     let before = undo_len(&s);
-    let e = s
-        .execute(
-            "object.copies",
-            json!({ "id": id, "count": 2, "linked": true }),
-            Origin::Agent,
-        )
-        .unwrap_err();
-    assert!(matches!(e, CommandError::Refused(_)), "{e}");
-    assert_eq!(
-        e.to_string(),
-        "Refused: Linked copies arrive with the next update."
-    );
-    // false is accepted.
+    // false is accepted (true too, see tests/linked_copies.rs).
     run(
         &mut s,
         "object.copies",

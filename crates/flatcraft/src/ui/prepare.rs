@@ -355,6 +355,7 @@ impl ShapeInput {
             geometry: self.geometry.clone(),
             local_bounds: self.local_bounds,
             frame: kurbo::Rect::ZERO,
+            link_group: None,
         }
     }
 }
@@ -1064,7 +1065,7 @@ fn copies_window(
     t: &Tokens,
     actions: &mut Vec<Action>,
 ) -> Option<CopiesSettings> {
-    use flatcraft_engine::commands::object::{LINKED_LATER, MAX_COPIES};
+    use flatcraft_engine::commands::object::MAX_COPIES;
     let Some(d) = dialog else {
         return None;
     };
@@ -1125,7 +1126,7 @@ fn copies_window(
             });
         let mut linked = false;
         ui.add_enabled(false, egui::Checkbox::new(&mut linked, "Linked copies"))
-            .on_disabled_hover_text(LINKED_LATER);
+            .on_disabled_hover_text("Linked copies arrive with the next update.");
         ui.label(
             RichText::new(
                 "Copies that land off the mat still arrive. The red pill tells you how many.",

@@ -2,7 +2,10 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use flatcraft_core::document::{CutOptions, Object, Source};
+use std::sync::Arc;
+
+use flatcraft_core::document::{CutOptions, GroupId, Object, ObjectId, Source};
+use flatcraft_core::geometry::{CutPath, bounds};
 use flatcraft_core::project::{self, ProjectError};
 use flatcraft_device::MediaKind;
 use flatcraft_import::fonts;
@@ -39,6 +42,7 @@ fn object_json(o: &Object, bounds: Option<Rect>) -> Value {
         },
         "cut": super::object::cut_json(&o.cut),
         "link": o.link.as_ref().map(|l| json!({ "path": l.path, "relative": l.relative })),
+        "link_group": o.link_group.map(|g| g.0),
     })
 }
 
@@ -448,54 +452,43 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
         }
     }
     let mut warnings = Vec::new();
+    let blade = blade_offset_for(s, &document.job.plotter_id);
+    // Linked copies share one source: it is rebuilt once per group, and the
+    // members share the geometry `Arc`.
+    let mut groups: Vec<(GroupId, Option<Shared>)> = Vec::new();
     for o in &mut document.objects {
+        let known = o
+            .link_group
+            .and_then(|g| groups.iter().find(|(id, _)| *id == g).cloned());
+        // Members after the first say nothing the first did not say.
+        let first = known.is_none();
         if !o.cut.is_valid() {
             o.cut = CutOptions::default();
-            warnings.push(format!(
-                "{}: the cut options were broken and are back to the defaults",
-                o.name
-            ));
+            if first {
+                warnings.push(format!(
+                    "{}: the cut options were broken and are back to the defaults",
+                    o.name
+                ));
+            }
         }
-        let rebuilt = match &o.source {
-            Source::Svg { bytes, .. } => match import_svg(bytes, fonts::system_fonts()) {
-                Ok(import) => {
-                    for w in &import.warnings {
-                        warnings.push(format!("{}: {}", o.name, warning_text(w)));
-                    }
-                    Some((import.paths, import.page_frame_mm))
+        let rebuilt = match known {
+            Some((_, shared)) => shared,
+            None => {
+                let shared = rebuild_shared(o, blade, &mut warnings);
+                if let Some(g) = o.link_group {
+                    groups.push((g, shared.clone()));
                 }
-                Err(e) => {
-                    warnings.push(format!(
-                        "{}: cannot rebuild the shape: {}",
-                        o.name,
-                        joined(&e.to_string())
-                    ));
-                    None
-                }
-            },
-            Source::Raster { bytes, trace, .. } => {
-                let blade = blade_offset_for(s, &document.job.plotter_id);
-                match flatcraft_import::trace::trace(bytes, trace, blade) {
-                    Ok(t) => Some((t.paths, Rect::new(0.0, 0.0, t.size_mm.0, t.size_mm.1))),
-                    Err(e) => {
-                        warnings.push(format!(
-                            "{}: cannot trace the image: {}",
-                            o.name,
-                            joined(&e.to_string())
-                        ));
-                        None
-                    }
-                }
+                shared
             }
         };
-        if let Some((paths, frame)) = rebuilt {
+        if let Some((geometry, local_bounds, frame)) = rebuilt {
             let saved = o.local_bounds != Rect::ZERO || o.frame != Rect::ZERO;
             let mut anchored = None;
             if saved && rect_is_sane(o.local_bounds) && rect_is_sane(o.frame) {
                 // The saved bounds and frame are what the transform was
                 // made against: keep the frame in place, as reload does.
                 let mut a = o.clone();
-                a.set_geometry_anchored(paths.clone(), frame);
+                a.share_geometry_anchored(geometry.clone(), local_bounds, frame);
                 let c = a.transform.center_mm;
                 if c.x.is_finite() && c.y.is_finite() {
                     anchored = Some(a);
@@ -506,7 +499,8 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
                     // Text in an SVG is set with the fonts of this
                     // computer; other fonts give other shapes.
                     let svg = matches!(o.source, Source::Svg { .. });
-                    if svg
+                    if first
+                        && svg
                         && o.local_bounds != Rect::ZERO
                         && bounds_differ(o.local_bounds, a.local_bounds)
                     {
@@ -518,7 +512,7 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
                     *o = a;
                 }
                 None => {
-                    if saved {
+                    if saved && first {
                         warnings.push(format!(
                             "{}: the saved position data is broken; the object is placed by its shapes, as in older projects",
                             o.name
@@ -526,10 +520,30 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
                     }
                     // A project from before the saved bounds: the
                     // transform was made against the rebuilt bounds.
-                    o.set_geometry(paths);
+                    o.geometry = geometry;
+                    o.local_bounds = local_bounds;
                     o.frame = frame;
                 }
             }
+        }
+    }
+    // The file keeps the shared fields once per group, and a member's own
+    // copy of them is replaced by the group's when it loads, so members
+    // agree. A group of one (the others were removed by hand) is no group.
+    document.dissolve_lonely_groups();
+    if !document.link_groups_agree() {
+        // Never expected. Repaired, so the project opens and later
+        // commands are not refused for a mismatch they did not make.
+        let leads: Vec<(ObjectId, String)> = document
+            .group_leads()
+            .into_iter()
+            .filter_map(|id| document.get(id).map(|o| (id, o.name.clone())))
+            .collect();
+        for (id, name) in leads {
+            document.spread_shared(id);
+            warnings.push(format!(
+                "{name}: its linked copies did not match, so they now follow it"
+            ));
         }
     }
     if let Some(o) = document.objects.iter().find(|o| !o.placement_is_valid()) {
@@ -559,6 +573,48 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
         "objects": objects,
         "warnings": warnings,
     }))
+}
+
+/// Geometry rebuilt from a source: the paths, their local bounds and the
+/// page frame.
+type Shared = (Arc<Vec<CutPath>>, Rect, Rect);
+
+/// Rebuilds the geometry of `o` from its embedded source. A failure is a
+/// warning and `None`: the object opens without shapes.
+fn rebuild_shared(o: &Object, blade: f64, warnings: &mut Vec<String>) -> Option<Shared> {
+    let (paths, frame) = match &o.source {
+        Source::Svg { bytes, .. } => match import_svg(bytes, fonts::system_fonts()) {
+            Ok(import) => {
+                for w in &import.warnings {
+                    warnings.push(format!("{}: {}", o.name, warning_text(w)));
+                }
+                (import.paths, import.page_frame_mm)
+            }
+            Err(e) => {
+                warnings.push(format!(
+                    "{}: cannot rebuild the shape: {}",
+                    o.name,
+                    joined(&e.to_string())
+                ));
+                return None;
+            }
+        },
+        Source::Raster { bytes, trace, .. } => {
+            match flatcraft_import::trace::trace(bytes, trace, blade) {
+                Ok(t) => (t.paths, Rect::new(0.0, 0.0, t.size_mm.0, t.size_mm.1)),
+                Err(e) => {
+                    warnings.push(format!(
+                        "{}: cannot trace the image: {}",
+                        o.name,
+                        joined(&e.to_string())
+                    ));
+                    return None;
+                }
+            }
+        }
+    };
+    let local_bounds = bounds(&paths).unwrap_or(Rect::ZERO);
+    Some((Arc::new(paths), local_bounds, frame))
 }
 
 /// A sentence joined after a colon: its first letter in lower case.

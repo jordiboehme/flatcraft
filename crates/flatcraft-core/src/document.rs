@@ -13,6 +13,10 @@ use crate::transform::Transform;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ObjectId(pub u64);
 
+/// A group of linked copies (see [`Object::link_group`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct GroupId(pub u64);
+
 /// Raster trace settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -213,6 +217,12 @@ pub struct Object {
     /// project for the same reason as `local_bounds`.
     #[serde(default, rename = "frame_mm", skip_serializing_if = "is_zero_rect")]
     pub frame: Rect,
+    /// The group of linked copies this object belongs to. Members share
+    /// the source (with the trace settings), the geometry, the cut options,
+    /// the scale and the file link; each keeps its own position, rotation,
+    /// mirror, name and visibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_group: Option<GroupId>,
 }
 
 impl Object {
@@ -238,12 +248,63 @@ impl Object {
     /// `center_mm` changes, because the placement is relative to the centre
     /// of `local_bounds`.
     pub fn set_geometry_anchored(&mut self, geometry: Vec<CutPath>, frame: Rect) {
+        let local_bounds = bounds(&geometry).unwrap_or(Rect::ZERO);
+        self.share_geometry_anchored(Arc::new(geometry), local_bounds, frame);
+    }
+
+    /// [`Object::set_geometry_anchored`] with geometry another object
+    /// already holds: the `Arc` is shared, not copied. `local_bounds` must
+    /// be the bounds of `geometry`.
+    pub fn share_geometry_anchored(
+        &mut self,
+        geometry: Arc<Vec<CutPath>>,
+        local_bounds: Rect,
+        frame: Rect,
+    ) {
         let old_origin = self.anchor_frame().origin();
         let old_placement = self.transform.affine(self.local_bounds);
-        self.set_geometry(geometry);
+        self.geometry = geometry;
+        self.local_bounds = local_bounds;
         self.frame = frame;
         let offset = old_origin - self.anchor_frame().origin();
         self.transform.center_mm = old_placement * (self.local_bounds.center() + offset);
+    }
+
+    /// True if `self` and `other` agree on every field linked copies share:
+    /// the same geometry and source bytes (one `Arc` each), the same source
+    /// with its trace settings, cut options, file link, local bounds, frame
+    /// and scale.
+    pub fn shares_with(&self, other: &Object) -> bool {
+        let bytes = |o: &Object| match &o.source {
+            Source::Svg { bytes, .. } | Source::Raster { bytes, .. } => bytes.clone(),
+        };
+        Arc::ptr_eq(&self.geometry, &other.geometry)
+            && Arc::ptr_eq(&bytes(self), &bytes(other))
+            && self.source == other.source
+            && self.cut == other.cut
+            && self.link == other.link
+            && self.local_bounds == other.local_bounds
+            && self.frame == other.frame
+            && self.transform.scale_x == other.transform.scale_x
+            && self.transform.scale_y == other.transform.scale_y
+    }
+
+    /// Takes the shared fields of `from` (see [`Object::shares_with`]) and
+    /// keeps its own place: new geometry stays anchored to its frame, as a
+    /// reload does, and a new scale keeps its own centre. Position,
+    /// rotation, mirror, name, visibility and group stay its own.
+    pub fn take_shared(&mut self, from: &Object) {
+        if !Arc::ptr_eq(&self.geometry, &from.geometry)
+            || self.local_bounds != from.local_bounds
+            || self.frame != from.frame
+        {
+            self.share_geometry_anchored(from.geometry.clone(), from.local_bounds, from.frame);
+        }
+        self.source = from.source.clone();
+        self.cut = from.cut;
+        self.link = from.link.clone();
+        self.transform.scale_x = from.transform.scale_x;
+        self.transform.scale_y = from.transform.scale_y;
     }
 
     /// True if the object's placement is one `project.open` accepts: a
@@ -322,6 +383,7 @@ impl Document {
             geometry: Arc::default(),
             local_bounds: Rect::ZERO,
             frame: Rect::ZERO,
+            link_group: None,
         };
         object.set_geometry(geometry);
         self.objects.push(object);
@@ -339,5 +401,110 @@ impl Document {
     pub fn remove(&mut self, id: ObjectId) -> Option<Object> {
         let index = self.objects.iter().position(|o| o.id == id)?;
         Some(self.objects.remove(index))
+    }
+
+    /// The members of `id`'s group of linked copies in document order, or
+    /// just `id` when it is not linked. Empty for an unknown id.
+    pub fn members(&self, id: ObjectId) -> Vec<ObjectId> {
+        match self.get(id).map(|o| o.link_group) {
+            None => Vec::new(),
+            Some(None) => vec![id],
+            Some(Some(g)) => self.group_members(g),
+        }
+    }
+
+    /// The members of group `g` in document order.
+    pub fn group_members(&self, g: GroupId) -> Vec<ObjectId> {
+        self.objects
+            .iter()
+            .filter(|o| o.link_group == Some(g))
+            .map(|o| o.id)
+            .collect()
+    }
+
+    /// The first member of every group of linked copies, in document order.
+    pub fn group_leads(&self) -> Vec<ObjectId> {
+        let mut seen = Vec::new();
+        let mut out = Vec::new();
+        for o in &self.objects {
+            if let Some(g) = o.link_group
+                && !seen.contains(&g)
+            {
+                seen.push(g);
+                out.push(o.id);
+            }
+        }
+        out
+    }
+
+    /// A group id no object uses.
+    pub fn new_group_id(&self) -> GroupId {
+        let max = self
+            .objects
+            .iter()
+            .filter_map(|o| o.link_group)
+            .map(|g| g.0)
+            .max()
+            .unwrap_or(0);
+        GroupId(max + 1)
+    }
+
+    /// Gives the shared fields of `from` to every other member of its group
+    /// ([`Object::take_shared`]): each keeps its own position, rotation and
+    /// mirror. Commands that change a shared field of one member call this,
+    /// so the whole group changes in the same undo step.
+    pub fn spread_shared(&mut self, from: ObjectId) {
+        let Some(lead) = self.get(from).filter(|o| o.link_group.is_some()).cloned() else {
+            return;
+        };
+        for o in &mut self.objects {
+            if o.id != from && o.link_group == lead.link_group {
+                o.take_shared(&lead);
+            }
+        }
+    }
+
+    /// Makes the members of every group share the first member's shared
+    /// fields as one `Arc` each, without moving anything. For a freshly
+    /// loaded project, whose members hold equal values in separate `Arc`s.
+    pub fn share_link_groups(&mut self) {
+        let mut leads: Vec<Object> = Vec::new();
+        for o in &mut self.objects {
+            let Some(g) = o.link_group else { continue };
+            match leads.iter().find(|l| l.link_group == Some(g)) {
+                Some(lead) => {
+                    o.source = lead.source.clone();
+                    o.geometry = lead.geometry.clone();
+                }
+                None => leads.push(o.clone()),
+            }
+        }
+    }
+
+    /// Drops groups with a single member: a group of one is no group.
+    pub fn dissolve_lonely_groups(&mut self) {
+        let mut counts = std::collections::HashMap::<GroupId, usize>::new();
+        for g in self.objects.iter().filter_map(|o| o.link_group) {
+            *counts.entry(g).or_default() += 1;
+        }
+        for o in &mut self.objects {
+            if o.link_group.is_some_and(|g| counts[&g] < 2) {
+                o.link_group = None;
+            }
+        }
+    }
+
+    /// True if the members of every group agree on their shared fields
+    /// ([`Object::shares_with`]). The engine checks this after every
+    /// command, so linked copies never drift apart.
+    pub fn link_groups_agree(&self) -> bool {
+        let mut first = std::collections::HashMap::<GroupId, &Object>::new();
+        self.objects.iter().all(|o| match o.link_group {
+            None => true,
+            Some(g) => {
+                let lead = *first.entry(g).or_insert(o);
+                std::ptr::eq(lead, o) || o.shares_with(lead)
+            }
+        })
     }
 }

@@ -9,6 +9,9 @@ use std::time::{Duration, Instant};
 /// A command result that `project.open` would refuse to place.
 const TOO_LARGE: &str = "That would put an object more than 1 km from the mat, or make it over 1 km in size. Undo it, or move or scale it back.";
 
+/// A command result whose linked copies no longer match (a bug).
+const LINKS_DRIFTED: &str = "That would make linked copies differ from each other, so nothing was changed. This is a bug, please report it.";
+
 use flatcraft_core::document::{CutOptions, Document, JobSettings, Object, ObjectId};
 use flatcraft_core::geometry::CutPath;
 use flatcraft_core::transform::Transform;
@@ -307,6 +310,7 @@ fn same_except_links(a: &Document, b: &Document) -> bool {
                 && x.cut == y.cut
                 && x.frame == y.frame
                 && x.local_bounds == y.local_bounds
+                && x.link_group == y.link_group
         })
         && pairs().all(|(x, y)| {
             std::sync::Arc::ptr_eq(&x.geometry, &y.geometry) || x.geometry == y.geometry
@@ -723,6 +727,16 @@ impl Session {
             return Err(internal_error(command.id()));
         };
         let state = &mut self.docs[index];
+        if result.is_ok() {
+            // A group of one is no group, and members never drift apart:
+            // the one place every document change passes.
+            state.document.dissolve_lonely_groups();
+            if !state.document.link_groups_agree() {
+                state.document = before;
+                state.prune_selection();
+                return Err(CommandError::Failed(LINKS_DRIFTED.into()));
+            }
+        }
         match result {
             Ok(value) if no_user_change => {
                 debug_assert!(
@@ -1126,6 +1140,94 @@ mod tests {
         assert_eq!(s.doc().document.objects[0].name, "whole");
         assert!(!s.doc().dirty);
         assert!(!s.doc().undo.can_undo());
+    }
+
+    /// A mutating command that changes a shared field of one linked copy
+    /// only (a bug the session must catch).
+    struct Drifts;
+
+    impl registry::Command for Drifts {
+        fn id(&self) -> &'static str {
+            "test.drifts"
+        }
+        fn title(&self) -> &'static str {
+            "Drifts"
+        }
+        fn description(&self) -> &'static str {
+            "Changes the cut options of the first object only."
+        }
+        fn params_schema(&self) -> schemars::Schema {
+            schemars::json_schema!({})
+        }
+        fn mutates_document(&self) -> bool {
+            true
+        }
+        fn run(
+            &self,
+            s: &mut Session,
+            _: serde_json::Value,
+            _: Origin,
+        ) -> Result<serde_json::Value, CommandError> {
+            s.doc_mut().document.objects[0].cut.auto_threshold_mm = 2.0;
+            Ok(serde_json::json!({}))
+        }
+    }
+
+    #[test]
+    fn linked_copies_that_would_drift_apart_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles = flatcraft_device::ProfileStore::load(dir.path()).unwrap();
+        let prefs = Preferences {
+            output_dir: Some(dir.path().join("output")),
+            ..Preferences::default()
+        };
+        let mut s = Session::new(profiles, prefs, false, dir.path().to_path_buf());
+        let id = ok(
+            &mut s,
+            "object.import_svg",
+            serde_json::json!({ "svg": SQUARE, "name": "sq" }),
+        )["id"]
+            .as_u64()
+            .unwrap();
+        ok(
+            &mut s,
+            "object.copies",
+            serde_json::json!({ "id": id, "count": 1, "linked": true }),
+        );
+        let undo = s.doc().undo.undo_len();
+        let revision = s.doc().revision();
+        let e = s
+            .run_command(&Drifts, serde_json::json!({}), Origin::Agent)
+            .unwrap_err();
+        assert_eq!(e, CommandError::Failed(LINKS_DRIFTED.into()));
+        assert!(s.doc().document.link_groups_agree());
+        assert_eq!(s.doc().document.objects[0].cut, CutOptions::default());
+        assert_eq!(s.doc().undo.undo_len(), undo);
+        assert_eq!(s.doc().revision(), revision);
+    }
+
+    #[test]
+    fn a_change_of_the_link_group_alone_is_a_change() {
+        let mut a = Document::new(JobSettings {
+            plotter_id: "p".into(),
+            material_id: "m".into(),
+            media_id: "x".into(),
+            speed: None,
+            force: None,
+            passes: None,
+        });
+        a.add(
+            "a".into(),
+            Source::Svg {
+                name: "a.svg".into(),
+                bytes: Vec::new().into(),
+            },
+            Vec::new(),
+        );
+        let mut b = a.clone();
+        b.objects[0].link_group = Some(flatcraft_core::document::GroupId(1));
+        assert!(!same_document(&a, &b));
+        assert!(!same_except_links(&a, &b));
     }
 
     #[test]
