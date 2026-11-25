@@ -1472,6 +1472,7 @@ dependencies = [
 name = "flatcraft-import"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "flatcraft-core",
  "flatcraft-path",
  "flate2",

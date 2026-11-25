@@ -210,6 +210,12 @@ fn splines(cluster: &Cluster, corner: f64, segment_length: f64) -> Vec<Spline> {
 }
 
 /// Scales the image down to `MAX_TRACE_PIXELS`, keeping the aspect ratio.
+/// Area averaging keeps the ink of thin lines: down to a scale of 0.5
+/// (64 MP) a 1 px line stays at least half dark. A smoothing filter
+/// (Triangle) spreads it wider and lighter, so a threshold loses it.
+/// A 2 px line stays nearly black down to about 0.7. Below 0.5 thin
+/// lines fade with any filter, because the ink of a line is spread over
+/// a larger pixel.
 fn fit_budget(grey: GrayImage) -> (GrayImage, Option<(u32, u32)>) {
     let (w, h) = grey.dimensions();
     let pixels = u64::from(w) * u64::from(h);
@@ -219,7 +225,7 @@ fn fit_budget(grey: GrayImage) -> (GrayImage, Option<(u32, u32)>) {
     let k = (MAX_TRACE_PIXELS as f64 / pixels as f64).sqrt();
     let nw = ((f64::from(w) * k) as u32).max(1);
     let nh = ((f64::from(h) * k) as u32).max(1);
-    let small = image::imageops::resize(&grey, nw, nh, image::imageops::FilterType::Triangle);
+    let small = image::imageops::thumbnail(&grey, nw, nh);
     (small, Some((w, h)))
 }
 
@@ -268,4 +274,52 @@ fn to_cut_path(spline: &Spline, mm_x: f64, mm_y: f64) -> Option<CutPath> {
         // Traced shapes are fills, so cut modes change nothing for them.
         paint: Paint::default(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::Luma;
+
+    /// The darkest pixel within 3 px of where each source column lands.
+    fn darkest_near(small: &GrayImage, xs: &[u32], k: f64) -> Vec<u8> {
+        let y = small.height() / 2;
+        xs.iter()
+            .map(|&x| {
+                let c = ((f64::from(x) + 0.5) * k) as u32;
+                (c.saturating_sub(3)..=(c + 3).min(small.width() - 1))
+                    .map(|x| small.get_pixel(x, y).0[0])
+                    .min()
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    /// 32 MP is scaled by about 0.71. Lines of 1 and 2 px at every phase
+    /// against the output grid must keep their ink: a 1 px line at least
+    /// half dark (128), a 2 px line nearly black. Triangle smeared a 1 px
+    /// line to 161, lighter than a threshold of 128.
+    #[test]
+    fn downscaling_keeps_thin_lines() {
+        let (w, h) = (8000u32, 4000u32);
+        let mut img = GrayImage::from_pixel(w, h, Luma([255]));
+        let ones: Vec<u32> = (0..30).map(|i| 100 + i * 101).collect();
+        let twos: Vec<u32> = (0..30).map(|i| 4100 + i * 103).collect();
+        for y in 0..h {
+            for &x in &ones {
+                img.put_pixel(x, y, Luma([0]));
+            }
+            for &x in &twos {
+                img.put_pixel(x, y, Luma([0]));
+                img.put_pixel(x + 1, y, Luma([0]));
+            }
+        }
+        let (small, from) = fit_budget(img);
+        assert_eq!(from, Some((w, h)));
+        let k = f64::from(small.width()) / f64::from(w);
+        let one = darkest_near(&small, &ones, k);
+        assert!(one.iter().all(|&v| v <= 128), "1 px lines: {one:?}");
+        let two = darkest_near(&small, &twos, k);
+        assert!(two.iter().all(|&v| v <= 32), "2 px lines: {two:?}");
+    }
 }

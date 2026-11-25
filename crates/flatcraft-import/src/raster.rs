@@ -38,6 +38,14 @@ pub fn decode(bytes: &[u8]) -> Result<GrayImage, ImportError> {
             height: h,
         });
     }
+    // The decoders do not all check `max_alloc` against the pixel buffer
+    // before they allocate it (PNG does not), so check it here.
+    if decoder.total_bytes() > MAX_ALLOC_BYTES {
+        return Err(ImportError::ImageTooLarge {
+            width: w,
+            height: h,
+        });
+    }
     decoder.set_limits(limits).map_err(|e| map_error(e, w, h))?;
     let image = DynamicImage::from_decoder(decoder).map_err(|e| map_error(e, w, h))?;
     Ok(to_grey(image))

@@ -13,6 +13,9 @@ pub enum ImportError {
     Parse(String),
     #[error("the file is larger than 50 MB")]
     TooLarge,
+    /// A compressed file (.svgz) that is small itself but unpacks to more.
+    #[error("the file unpacks to more than 50 MB")]
+    UnpacksTooLarge,
     #[error("{}", image_too_large_text(*width, *height))]
     ImageTooLarge { width: u32, height: u32 },
 }

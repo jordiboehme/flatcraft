@@ -146,6 +146,18 @@ fn svgz_is_decompressed() {
     assert_bounds(&r.paths, (0.0, 0.0, 50.0, 20.0));
 }
 
+/// `gzip -c a b > c` and `cat a.gz b.gz` give one file of several gzip
+/// members; all of them are part of the SVG.
+#[test]
+fn svgz_with_several_gzip_members_is_read_whole() {
+    let svg = fixture("mm.svg");
+    let (a, b) = svg.split_at(svg.len() / 2);
+    let mut bytes = gzip(a);
+    bytes.extend(gzip(b));
+    let r = import_svg(&bytes, Arc::new(usvg::fontdb::Database::new())).unwrap();
+    assert_bounds(&r.paths, (0.0, 0.0, 50.0, 20.0));
+}
+
 #[test]
 fn entity_expansion_is_refused_or_bounded() {
     let start = std::time::Instant::now();
@@ -200,10 +212,43 @@ fn text_bounds_follow_group_transform() {
     assert!((b.y0 - a.y0).abs() < 1e-4 && (b.y1 - a.y1).abs() < 1e-4);
 }
 
+fn tiny_png() -> Vec<u8> {
+    let img = image::GrayImage::from_pixel(4, 4, image::Luma([0]));
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+    out.into_inner()
+}
+
+/// usvg makes an image node only for an href it could load, and every
+/// image node gives an `ImagesSkipped` warning. So a real PNG behind the
+/// href shows whether the file was read.
 #[test]
 fn external_image_file_is_not_read() {
-    let r = load("external.svg");
-    assert!(r.paths.is_empty());
+    use base64::Engine as _;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("pixel.png");
+    std::fs::write(&file, tiny_png()).unwrap();
+    let svg = |href: &str| {
+        format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="10" height="10"><image width="5" height="5" xlink:href="{href}"/><rect width="1" height="1"/></svg>"#
+        )
+    };
+    let skipped = |svg: String| {
+        import_text(&svg)
+            .warnings
+            .iter()
+            .any(|w| matches!(w, ImportWarning::ImagesSkipped { .. }))
+    };
+    // The check can see an image: an embedded one is decoded and skipped.
+    let data = base64::engine::general_purpose::STANDARD.encode(tiny_png());
+    assert!(skipped(svg(&format!("data:image/png;base64,{data}"))));
+    // A file on disk is never opened, by absolute path or file URL.
+    let path = file.display().to_string();
+    assert!(!skipped(svg(&path)), "the file {path} was read");
+    assert!(
+        !skipped(svg(&format!("file://{path}"))),
+        "the file URL was read"
+    );
 }
 
 // ---------------------------------------------------------------- paint

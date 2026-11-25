@@ -24,7 +24,8 @@ pub struct SvgImport {
 }
 
 /// Returns the plain SVG bytes. Gzip input is decompressed here with a hard
-/// cap, because usvg would read it unbounded.
+/// cap, because usvg would read it unbounded. Every gzip member is read, as
+/// `gunzip` does.
 fn plain_bytes(bytes: &[u8], cap: usize) -> Result<std::borrow::Cow<'_, [u8]>, ImportError> {
     use std::io::Read;
     if bytes.len() > cap {
@@ -34,12 +35,12 @@ fn plain_bytes(bytes: &[u8], cap: usize) -> Result<std::borrow::Cow<'_, [u8]>, I
         return Ok(bytes.into());
     }
     let mut out = Vec::new();
-    flate2::read::GzDecoder::new(bytes)
+    flate2::read::MultiGzDecoder::new(bytes)
         .take(cap as u64 + 1)
         .read_to_end(&mut out)
         .map_err(|e| ImportError::Parse(format!("invalid gzip data: {e}")))?;
     if out.len() > cap {
-        return Err(ImportError::TooLarge);
+        return Err(ImportError::UnpacksTooLarge);
     }
     Ok(out.into())
 }
@@ -215,7 +216,15 @@ mod tests {
         let gz = e.finish().unwrap();
         let start = std::time::Instant::now();
         let r = import_svg_capped(&gz, Arc::new(usvg::fontdb::Database::new()), 1024 * 1024);
-        assert!(matches!(r, Err(ImportError::TooLarge)));
+        assert!(matches!(r, Err(ImportError::UnpacksTooLarge)), "{r:?}");
         assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn an_unpacked_svgz_over_the_limit_says_so() {
+        assert_eq!(
+            ImportError::UnpacksTooLarge.to_string(),
+            "the file unpacks to more than 50 MB"
+        );
     }
 }

@@ -266,6 +266,74 @@ fn decode_supports_png_jpeg_gif_and_rejects_garbage() {
 }
 
 #[test]
+fn webp_is_decoded_and_traced() {
+    let img = image::DynamicImage::ImageLuma8(square_img()).to_rgba8();
+    let mut out = Vec::new();
+    image::codecs::webp::WebPEncoder::new_lossless(&mut out)
+        .encode(img.as_raw(), 300, 300, image::ExtendedColorType::Rgba8)
+        .unwrap();
+    assert_eq!(image::guess_format(&out).unwrap(), ImageFormat::WebP);
+    let t = trace(&out, &TraceSettings::default(), BLADE).unwrap();
+    assert_eq!(t.paths.len(), 1);
+    assert!(
+        (width_of(&t) - 200.0 * 25.4 / 300.0).abs() < 0.5,
+        "{}",
+        width_of(&t)
+    );
+}
+
+/// The first frame is traced: a square on the left. The second frame has
+/// it on the right.
+#[test]
+fn an_animated_gif_is_traced_from_its_first_frame() {
+    use image::codecs::gif::{GifEncoder, Repeat};
+    let frame = |x0: u32| {
+        let mut g = white(300, 100);
+        fill(&mut g, x0, 25, 50, 50, 0);
+        image::Frame::new(image::DynamicImage::ImageLuma8(g).to_rgba8())
+    };
+    let mut out = Vec::new();
+    {
+        let mut enc = GifEncoder::new(&mut out);
+        enc.set_repeat(Repeat::Infinite).unwrap();
+        enc.encode_frames([frame(20), frame(230)]).unwrap();
+    }
+    let t = trace(&out, &TraceSettings::default(), BLADE).unwrap();
+    assert_eq!(t.paths.len(), 1);
+    let b = bounds(&t.paths).unwrap();
+    let mm = |px: f64| px * 25.4 / 300.0;
+    assert!((b.x0 - mm(20.0)).abs() < 0.5, "{b:?}");
+    assert!(b.x1 < mm(100.0), "{b:?}");
+}
+
+/// 16000 x 16000 RGBA at 16 bit is within the side limit but needs 2 GB:
+/// the decoder's memory limit refuses it before any pixel is decoded.
+#[test]
+fn an_image_over_the_memory_limit_is_refused() {
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&16000u32.to_be_bytes());
+    ihdr.extend_from_slice(&16000u32.to_be_bytes());
+    ihdr.extend_from_slice(&[16, 6, 0, 0, 0]); // 16 bit, RGBA
+    let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    bytes.extend(chunk(b"IHDR", &ihdr));
+    bytes.extend(chunk(b"IDAT", &[0x78, 0x9c, 0x63, 0x00]));
+    bytes.extend(chunk(b"IEND", &[]));
+    let start = Instant::now();
+    let e = raster::decode(&bytes).unwrap_err();
+    assert!(
+        matches!(
+            e,
+            ImportError::ImageTooLarge {
+                width: 16000,
+                height: 16000
+            }
+        ),
+        "{e:?}"
+    );
+    assert!(start.elapsed() < Duration::from_secs(2));
+}
+
+#[test]
 fn transparent_pixels_count_as_white() {
     let mut rgba = image::RgbaImage::from_pixel(100, 100, image::Rgba([0, 0, 0, 0]));
     for y in 20..80 {
