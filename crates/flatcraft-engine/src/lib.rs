@@ -6,6 +6,7 @@ pub mod cutgeom;
 pub mod gate;
 pub mod job;
 pub mod patterns;
+pub mod placement;
 pub mod prefs;
 pub mod preview;
 pub mod registry;

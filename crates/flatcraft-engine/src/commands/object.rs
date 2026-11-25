@@ -20,6 +20,7 @@ use super::{
     placed_bounds_or_center, rect_json, resolve_ids, translate,
 };
 use crate::commands::normalize_deg;
+use crate::placement;
 use crate::session::{CommandError, Origin, Session};
 
 /// Text for an import warning, for people and agents.
@@ -670,6 +671,13 @@ pub struct DuplicateParams {
     /// Offset of the copies in mm, [dx, dy]; y points down.
     #[serde(default = "default_offset")]
     pub offset_mm: [f64; 2],
+    /// Copies of each object, 1 (default) to 500 in all; copy k is moved by k times offset_mm.
+    #[serde(default = "one")]
+    pub count: u32,
+}
+
+fn one() -> u32 {
+    1
 }
 
 /// Adds a copy of object `id`, moved by `offset`, with a new id, at the end
@@ -688,11 +696,32 @@ fn add_copy(doc: &mut Document, id: ObjectId, offset: Vec2) -> Result<ObjectId, 
 
 fn run_duplicate(s: &mut Session, p: DuplicateParams, _: Origin) -> Result<Value, CommandError> {
     let ids = resolve_ids(s, &p.ids)?;
+    if p.count == 0 || u64::from(p.count) * ids.len() as u64 > u64::from(MAX_COPIES) {
+        return Err(CommandError::InvalidParams(format!(
+            "count must be 1 or more, and {MAX_COPIES} copies in all at most"
+        )));
+    }
+    if !p.offset_mm.iter().all(|v| v.is_finite()) {
+        return Err(CommandError::InvalidParams(
+            "offset_mm must be two numbers".into(),
+        ));
+    }
     let offset = Vec2::new(p.offset_mm[0], p.offset_mm[1]);
+    // The window's ghost preview uses the same function.
+    let offsets = placement::step_offsets(offset, p.count);
     let st = s.doc_mut();
     let mut new_ids = Vec::new();
-    for id in &ids {
-        new_ids.push(add_copy(&mut st.document, *id, offset)?);
+    for (k, step) in offsets.iter().enumerate() {
+        for id in &ids {
+            let new_id = add_copy(&mut st.document, *id, *step)?;
+            if !object_mut(&mut st.document, new_id)?.placement_is_valid() {
+                return Err(CommandError::Refused(format!(
+                    "Copy {} would land more than 1 km from the mat. Make fewer copies or a smaller offset.",
+                    k + 1
+                )));
+            }
+            new_ids.push(new_id);
+        }
     }
     st.selection = new_ids.iter().copied().collect();
     Ok(json!({ "ids": ids_json(&new_ids) }))
@@ -705,7 +734,7 @@ command!(
     mutates: true,
     params: DuplicateParams,
     run: run_duplicate,
-    description: "Copies objects and moves the copies by offset_mm [dx, dy] (default [10, 10]; mm, y down). The copies become the selection. A copy of a linked copy is a linked copy too: it joins the original's group and shares its source, geometry, trace settings, cut options, scale and file link (object.unlink_copies makes it independent). An empty ids list means the current selection. Returns {ids: [new id]} in the order of the originals.",
+    description: "Copies objects and moves the copies by offset_mm [dx, dy] (default [10, 10]; mm, origin the 0,0 of the grid printed on the mat, y down), in one undo step. count (default 1) makes that many copies of each object, copy k moved by k times offset_mm, 500 copies in all at most; if a copy would land more than 1 km away, it refuses the whole call and adds nothing. The copies become the selection. A copy of a linked copy is a linked copy too: it joins the original's group and shares its source, geometry, trace settings, cut options, scale and file link (object.unlink_copies makes it independent). An empty ids list means the current selection. Returns {ids: [new id]}: the first copies of the originals in their order, then the second copies, and so on.",
 );
 
 // ---------------------------------------------------------------- copies
@@ -744,16 +773,22 @@ pub struct CopiesParams {
     /// Gap between neighbouring bounding boxes in mm (default 5), 0 or more.
     #[serde(default = "default_gap")]
     pub gap_mm: f64,
+    /// Gap between columns in mm, 0 or more; default gap_mm.
+    pub gap_x_mm: Option<f64>,
+    /// Gap between rows in mm, 0 or more; default gap_mm.
+    pub gap_y_mm: Option<f64>,
     /// true makes linked copies: they share the source, the geometry, the trace settings, the cut options, the scale and the file link with the original; each keeps its own position, rotation and mirror.
     #[serde(default)]
     pub linked: bool,
 }
 
-/// Grid cell (column, row) of copy `k` (1-based); the original is cell 0.
-fn cell(layout: CopiesLayout, k: u32) -> (u32, u32) {
-    match layout {
-        CopiesLayout::Row => (k, 0),
-        CopiesLayout::Grid { columns } => (k % columns, k / columns),
+impl CopiesLayout {
+    /// The columns of a grid, `None` for a row.
+    pub fn columns(self) -> Option<u32> {
+        match self {
+            CopiesLayout::Row => None,
+            CopiesLayout::Grid { columns } => Some(columns),
+        }
     }
 }
 
@@ -763,10 +798,18 @@ fn run_copies(s: &mut Session, p: CopiesParams, _: Origin) -> Result<Value, Comm
             "count must be 1 to {MAX_COPIES}"
         )));
     }
-    if !(p.gap_mm.is_finite() && p.gap_mm >= 0.0) {
-        return Err(CommandError::InvalidParams(
-            "gap_mm must be 0 or more".into(),
-        ));
+    let gap_x = p.gap_x_mm.unwrap_or(p.gap_mm);
+    let gap_y = p.gap_y_mm.unwrap_or(p.gap_mm);
+    for (name, v) in [
+        ("gap_mm", p.gap_mm),
+        ("gap_x_mm", gap_x),
+        ("gap_y_mm", gap_y),
+    ] {
+        if !(v.is_finite() && v >= 0.0) {
+            return Err(CommandError::InvalidParams(format!(
+                "{name} must be 0 or more"
+            )));
+        }
     }
     if p.layout == (CopiesLayout::Grid { columns: 0 }) {
         return Err(CommandError::InvalidParams(
@@ -792,13 +835,11 @@ fn run_copies(s: &mut Session, p: CopiesParams, _: Origin) -> Result<Value, Comm
     let visible = original.visible;
     let cut_enabled = original.cut_enabled;
     let b = measured.unwrap_or_else(|| placed_bounds_or_center(original));
-    let (step_x, step_y) = (b.width() + p.gap_mm, b.height() + p.gap_mm);
+    // The window's ghost preview uses the same function.
+    let offsets = placement::grid_offsets(b, p.layout.columns(), p.count, gap_x, gap_y);
     let mut new_ids = Vec::with_capacity(p.count as usize);
     let mut outside = Vec::new();
-    for k in 1..=p.count {
-        let (col, row) = cell(p.layout, k);
-        // From the original each time, so rounding does not add up.
-        let offset = Vec2::new(col as f64 * step_x, row as f64 * step_y);
+    for (k, offset) in (1..).zip(offsets) {
         let new_id = add_copy(&mut st.document, id, offset)?;
         let copy = object_mut(&mut st.document, new_id)?;
         // Without linked, a copy is independent, even of a linked copy.
@@ -818,7 +859,16 @@ fn run_copies(s: &mut Session, p: CopiesParams, _: Origin) -> Result<Value, Comm
         new_ids.push(new_id);
     }
     st.selection = new_ids.iter().copied().collect();
-    let warnings: Vec<String> = match outside.len() {
+    Ok(json!({
+        "ids": ids_json(&new_ids),
+        "outside_area": ids_json(&outside),
+        "warnings": outside_warnings(outside.len()),
+    }))
+}
+
+/// The warning about `n` copies outside the cutting area.
+fn outside_warnings(n: usize) -> Vec<String> {
+    match n {
         0 => Vec::new(),
         1 => vec![
             "1 copy is outside the cutting area. Move it, or pick a bigger mat, before you cut."
@@ -827,12 +877,7 @@ fn run_copies(s: &mut Session, p: CopiesParams, _: Origin) -> Result<Value, Comm
         n => vec![format!(
             "{n} copies are outside the cutting area. Move them, or pick a bigger mat, before you cut."
         )],
-    };
-    Ok(json!({
-        "ids": ids_json(&new_ids),
-        "outside_area": ids_json(&outside),
-        "warnings": warnings,
-    }))
+    }
 }
 
 command!(
@@ -842,7 +887,138 @@ command!(
     mutates: true,
     params: CopiesParams,
     run: run_copies,
-    description: "Adds count copies (1 to 500) of one object in one undo step, laid out next to it by its bounding box plus gap_mm (default 5). layout \"row\" (default) puts them in a row to the right of the original. layout {\"grid\": {\"columns\": n}} fills rows of n cells left to right, then goes down; the original is the first cell, so copy k sits in column k mod n and row k div n. Units mm, origin the 0,0 of the grid printed on the mat, x right, y down. Copies that land outside the cutting area are still added; they are listed in outside_area and get a warning. If a copy would land more than 1 km away, it refuses the whole call and adds nothing. Copies keep the original's file link, so a reload of that file updates all of them. linked: true (default false) makes linked copies: they and the original share the source, the geometry, the trace settings, the cut options, the scale and the file link, stored once in the project, so a change of one of these on any of them (object.scale, object.set_cut_options, object.retrace, object.reload, object.relink, object.unlink) changes all of them in the same undo step; each keeps its own position, rotation, mirror, name and visibility. Copies of a linked copy join its group. object.unlink_copies makes copies independent again. The copies become the selection. Returns {ids: [new id], outside_area: [id], warnings}.",
+    description: "Adds count copies (1 to 500) of one object in one undo step, laid out next to it by its bounding box plus gap_mm (default 5); gap_x_mm and gap_y_mm set the gap between columns and between rows on their own (each defaults to gap_mm). layout \"row\" (default) puts them in a row to the right of the original. layout {\"grid\": {\"columns\": n}} fills rows of n cells left to right, then goes down; the original is the first cell, so copy k sits in column k mod n and row k div n. Units mm, origin the 0,0 of the grid printed on the mat, x right, y down. Copies that land outside the cutting area are still added; they are listed in outside_area and get a warning. If a copy would land more than 1 km away, it refuses the whole call and adds nothing. Copies keep the original's file link, so a reload of that file updates all of them. linked: true (default false) makes linked copies: they and the original share the source, the geometry, the trace settings, the cut options, the scale and the file link, stored once in the project, so a change of one of these on any of them (object.scale, object.set_cut_options, object.retrace, object.reload, object.relink, object.unlink) changes all of them in the same undo step; each keeps its own position, rotation, mirror, name and visibility. Copies of a linked copy join its group. object.unlink_copies makes copies independent again. The copies become the selection. Returns {ids: [new id], outside_area: [id], warnings}.",
+);
+
+// ---------------------------------------------------------------- circular copies
+
+fn default_total_deg() -> f64 {
+    360.0
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CircularCopiesParams {
+    /// Object ids; empty means the current selection.
+    #[serde(default)]
+    pub ids: Vec<u64>,
+    /// Instances around the circle, the original included: 2 or more (so count - 1 copies of each object, 500 copies in all at most).
+    pub count: u32,
+    /// The angle the instances spread over in degrees, clockwise on screen (default 360). Not 0, at most 360 either way.
+    #[serde(default = "default_total_deg")]
+    pub total_deg: f64,
+    /// The centre of the circle [x, y] in mm. Default: the centre of the objects' common bounding box.
+    pub center_mm: Option<[f64; 2]>,
+    /// true (default): each copy also turns by its angle, like spokes. false: copies keep the original's rotation.
+    #[serde(default = "default_true")]
+    pub rotate_copies: bool,
+    /// true makes linked copies, as in object.copies: they share the source, the geometry, the trace settings, the cut options, the scale and the file link with their original.
+    #[serde(default)]
+    pub linked: bool,
+}
+
+fn run_circular_copies(
+    s: &mut Session,
+    p: CircularCopiesParams,
+    _: Origin,
+) -> Result<Value, CommandError> {
+    let ids = resolve_ids(s, &p.ids)?;
+    if p.count < 2 || u64::from(p.count - 1) * ids.len() as u64 > u64::from(MAX_COPIES) {
+        return Err(CommandError::InvalidParams(format!(
+            "count must be 2 or more, and {MAX_COPIES} copies in all at most"
+        )));
+    }
+    if !(p.total_deg.is_finite() && p.total_deg != 0.0 && p.total_deg.abs() <= 360.0) {
+        return Err(CommandError::InvalidParams(
+            "total_deg must not be 0 and at most 360 either way".into(),
+        ));
+    }
+    let pivot = match p.center_mm {
+        Some([x, y]) if x.is_finite() && y.is_finite() => Point::new(x, y),
+        Some(_) => {
+            return Err(CommandError::InvalidParams(
+                "center_mm must be two numbers".into(),
+            ));
+        }
+        None => {
+            let doc = &s.doc().document;
+            let boxes: Vec<Rect> = ids
+                .iter()
+                .filter_map(|id| doc.get(*id))
+                .map(placed_bounds_or_center)
+                .collect();
+            placement::pattern_centre(&boxes).unwrap_or_default()
+        }
+    };
+    let area = cutting_area(s).ok();
+    let st = s.doc_mut();
+    let mut new_ids = Vec::new();
+    let mut outside = Vec::new();
+    for id in &ids {
+        let group = p.linked.then(|| {
+            st.document
+                .get(*id)
+                .and_then(|o| o.link_group)
+                .unwrap_or_else(|| st.document.new_group_id())
+        });
+        let original = object_mut(&mut st.document, *id)?;
+        if group.is_some() {
+            original.link_group = group;
+        }
+        let (visible, cut_enabled) = (original.visible, original.cut_enabled);
+        let center = original.transform.center_mm;
+        // Measured once; a copy that does not turn is the original, moved.
+        let measured = if p.rotate_copies {
+            None
+        } else {
+            placed_bounds(original)
+        };
+        // The window's ghost preview uses the same function.
+        let turned =
+            placement::circular_copies(center, pivot, p.count, p.total_deg, p.rotate_copies);
+        for (k, t) in (1..).zip(turned) {
+            let offset = t.center - center;
+            let new_id = add_copy(&mut st.document, *id, offset)?;
+            let copy = object_mut(&mut st.document, new_id)?;
+            copy.link_group = group;
+            copy.transform.rotation_deg = normalize_deg(copy.transform.rotation_deg + t.rotate_deg);
+            if !copy.placement_is_valid() {
+                return Err(CommandError::Refused(format!(
+                    "Copy {k} would land more than 1 km from the mat. Make fewer copies or pick a centre closer to the objects."
+                )));
+            }
+            if let Some(area) = area
+                && visible
+                && cut_enabled
+            {
+                let b = match measured {
+                    Some(m) => Some(m + offset),
+                    None => placed_bounds(copy),
+                };
+                if b.is_some_and(|b| !inside(b, area)) {
+                    outside.push(new_id);
+                }
+            }
+            new_ids.push(new_id);
+        }
+    }
+    st.selection = new_ids.iter().copied().collect();
+    Ok(json!({
+        "ids": ids_json(&new_ids),
+        "center_mm": [pivot.x, pivot.y],
+        "outside_area": ids_json(&outside),
+        "warnings": outside_warnings(outside.len()),
+    }))
+}
+
+command!(
+    ObjectCircularCopies,
+    id: "object.circular_copies",
+    title: "Circular pattern",
+    mutates: true,
+    params: CircularCopiesParams,
+    run: run_circular_copies,
+    description: "Copies objects around a circle in one undo step, like the numbers on a clock. count is the number of instances with the original (2 or more; 500 copies in all at most). total_deg (default 360, not 0, at most 360 either way) is the angle they spread over, clockwise on screen with y down: a full turn divides by count, so 4 over 360 puts copies at 90, 180 and 270; a smaller arc divides by count - 1, so the last copy sits at its end (3 over 180 puts copies at 90 and 180). center_mm [x, y] is the centre of the circle; the default is the centre of the objects' common bounding box. Units mm, origin the 0,0 of the grid printed on the mat, x right, y down. Each object's centre turns about the centre of the circle. rotate_copies (default true) also turns each copy by its angle; false keeps the original's rotation. linked (default false) makes linked copies with the same rules as object.copies: a copy shares the source, the geometry, the trace settings, the cut options, the scale and the file link with its original, and keeps its own position, rotation, mirror, name and visibility; copies of a linked copy join its group. Without linked the copies are independent. Copies outside the cutting area are still added; they are listed in outside_area and get a warning. If a copy would land more than 1 km away, it refuses the whole call and adds nothing. An empty ids list means the current selection. The copies become the selection. Returns {ids: [new id], center_mm: [x, y], outside_area: [id], warnings}.",
 );
 
 // ---------------------------------------------------------------- link copies
@@ -1273,47 +1449,26 @@ fn group_centre(doc: &Document, ids: &[ObjectId], about: About) -> Option<Point>
     if about == About::Each || ids.len() < 2 {
         return None;
     }
-    let centres: Vec<Point> = ids
-        .iter()
-        .filter_map(|id| doc.get(*id))
-        .map(|o| o.transform.center_mm)
-        .collect();
-    let n = centres.len() as f64;
-    (n > 0.0).then(|| {
-        let sum = centres.iter().fold(Vec2::ZERO, |acc, c| acc + c.to_vec2());
-        (sum / n).to_point()
-    })
+    placement::mean_centre(&centres(doc, ids))
 }
 
-/// Sine and cosine of `degrees`, exact at multiples of 90 degrees, so a
-/// quarter turn of a group lands its centres on round numbers.
-fn sin_cos_deg(degrees: f64) -> (f64, f64) {
-    let quarter = degrees / 90.0;
-    if quarter == quarter.round() {
-        match (quarter.round() as i64).rem_euclid(4) {
-            0 => (0.0, 1.0),
-            1 => (1.0, 0.0),
-            2 => (0.0, -1.0),
-            _ => (-1.0, 0.0),
-        }
-    } else {
-        degrees.to_radians().sin_cos()
-    }
+/// The centres of the objects `ids` that exist, in order.
+fn centres(doc: &Document, ids: &[ObjectId]) -> Vec<Point> {
+    ids.iter()
+        .filter_map(|id| doc.get(*id))
+        .map(|o| o.transform.center_mm)
+        .collect()
 }
 
 fn run_rotate(s: &mut Session, p: RotateParams, _: Origin) -> Result<Value, CommandError> {
     let ids = resolve_ids(s, &p.ids)?;
     let doc = &mut s.doc_mut().document;
-    let centre = group_centre(doc, &ids, p.about);
-    let (sin, cos) = sin_cos_deg(p.degrees);
+    // The window's ghost preview uses the same function.
+    let turned = placement::rotated_centres(&centres(doc, &ids), p.degrees, p.about == About::Each);
     let mut out = Vec::new();
-    for id in &ids {
+    for (id, centre) in ids.iter().zip(turned) {
         let t = &mut object_mut(doc, *id)?.transform;
-        if let Some(c) = centre {
-            // Clockwise on screen with y down, as `Transform::affine`.
-            let d = t.center_mm - c;
-            t.center_mm = c + Vec2::new(d.x * cos - d.y * sin, d.x * sin + d.y * cos);
-        }
+        t.center_mm = centre;
         t.rotation_deg = normalize_deg(t.rotation_deg + p.degrees);
         out.push(json!({
             "id": id.0,
