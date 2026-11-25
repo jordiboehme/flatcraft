@@ -108,6 +108,7 @@ fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) {
                 e.shown = nf.current.clone();
                 e.doc_id = cx.snap.doc_id;
                 e.ids = cx.snap.selection.iter().copied().collect();
+                e.free = canvas::free_aspect(cx.snap, &e.ids);
             }
         }
     }
@@ -132,23 +133,26 @@ fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) {
     if resp.has_focus() {
         if !editing {
             // Another field still editing lost the focus in this pass.
-            finish_edit(ui.ctx(), cx.st, cx.snap, cx.actions);
+            finish_edit(ui.ctx(), cx.st, cx.actions);
+            let ids: Vec<u64> = cx.snap.selection.iter().copied().collect();
             cx.st.fields.editing = Some(FieldEdit {
                 field: nf.field,
                 shown: nf.current,
                 doc_id: cx.snap.doc_id,
-                ids: cx.snap.selection.iter().copied().collect(),
+                free: canvas::free_aspect(cx.snap, &ids),
+                ids,
             });
         }
     } else if editing {
-        finish_edit(ui.ctx(), cx.st, cx.snap, cx.actions);
+        finish_edit(ui.ctx(), cx.st, cx.actions);
     }
 }
 
 /// Once a frame, before the ribbon: ends the editing of a field that lost
 /// the focus outside the group (a click on the canvas, another ribbon
-/// tab), or whose group is not on screen (`on_screen` false: another tab
-/// or workspace), so its value applies at once and in order.
+/// tab), whose group is not on screen (`on_screen` false: another tab or
+/// workspace), or whose document is no longer the active one, so its value
+/// applies at once, in order and in its own document.
 pub fn finish_pending(
     ctx: &egui::Context,
     st: &mut PrepareState,
@@ -157,19 +161,14 @@ pub fn finish_pending(
     actions: &mut Vec<Action>,
 ) {
     let Some(e) = &st.fields.editing else { return };
-    if !on_screen || !ctx.memory(|m| m.has_focus(e.field.id())) {
-        finish_edit(ctx, st, snap, actions);
+    if !on_screen || e.doc_id != snap.doc_id || !ctx.memory(|m| m.has_focus(e.field.id())) {
+        finish_edit(ctx, st, actions);
     }
 }
 
 /// Ends the editing of the field that lost the focus: Escape puts its
 /// shown text back, a changed number is applied as one command.
-fn finish_edit(
-    ctx: &egui::Context,
-    st: &mut PrepareState,
-    snap: &Snapshot,
-    actions: &mut Vec<Action>,
-) {
+fn finish_edit(ctx: &egui::Context, st: &mut PrepareState, actions: &mut Vec<Action>) {
     let Some(edit) = st.fields.editing.take() else {
         return;
     };
@@ -184,24 +183,18 @@ fn finish_edit(
         *buf = edit.shown.clone();
         return;
     };
-    if edit.ids.is_empty() || edit.doc_id != snap.doc_id || !v.is_finite() {
+    if edit.ids.is_empty() || !v.is_finite() {
         return;
     }
-    if let Some(a) = size_action(snap, &st.fields, &edit, v) {
+    if let Some(a) = size_action(&st.fields, &edit, v) {
         actions.push(a);
     }
 }
 
-/// The command a typed value of a Position and size field runs.
-fn size_action(snap: &Snapshot, f: &Fields, edit: &FieldEdit, v: f64) -> Option<Action> {
+/// The command a typed value of a Position and size field runs, in the
+/// document it was typed for.
+fn size_action(f: &Fields, edit: &FieldEdit, v: f64) -> Option<Action> {
     let ids = &edit.ids;
-    let doc_id = edit.doc_id;
-    let have = snap
-        .objects
-        .iter()
-        .filter(|o| ids.contains(&o.id))
-        .filter_map(super::prepare::ObjView::bounds)
-        .reduce(|a, b| a.union(b));
     let single = ids.len() == 1;
     let params = match edit.field {
         SizeField::X => json!({ "ids": ids, "x_mm": v }),
@@ -211,24 +204,15 @@ fn size_action(snap: &Snapshot, f: &Fields, edit: &FieldEdit, v: f64) -> Option<
             json!({ "ids": ids, "factor": v / 100.0, "group": !single && !f.each })
         }
         SizeField::Width | SizeField::Height if v > 0.0 => {
-            let (key, have) = if edit.field == SizeField::Width {
-                ("width_mm", have.map(|b| b.width()))
+            let key = if edit.field == SizeField::Width {
+                "width_mm"
             } else {
-                ("height_mm", have.map(|b| b.height()))
+                "height_mm"
             };
-            let keep = f.keep_aspect || !canvas::free_aspect(snap, ids);
-            if single {
-                json!({ "ids": ids, key: v, "keep_aspect": keep })
-            } else if !keep {
-                // Several straight objects: only this side of the common
-                // box changes, and the layout stretches with it.
-                json!({ "ids": ids, key: v, "keep_aspect": false, "group": true })
-            } else {
-                // Several objects: one factor from the common box, which
-                // scales as one group so its layout stays.
-                let have = have.filter(|h| *h > 1e-9)?;
-                json!({ "ids": ids, "factor": v / have, "group": true })
-            }
+            // Several objects scale as one group, so the layout stays: the
+            // common box gets the size, with its shape kept or not.
+            let keep = f.keep_aspect || !edit.free;
+            json!({ "ids": ids, key: v, "keep_aspect": keep, "group": !single })
         }
         _ => return None,
     };
@@ -236,7 +220,11 @@ fn size_action(snap: &Snapshot, f: &Fields, edit: &FieldEdit, v: f64) -> Option<
         SizeField::X | SizeField::Y => "object.move",
         _ => "object.scale",
     };
-    Some(Action::run(doc_id, command, params))
+    Some(Action::RunIn {
+        doc_id: edit.doc_id,
+        command,
+        params,
+    })
 }
 
 /// What the search box does with a command.
@@ -980,6 +968,12 @@ fn size_scale(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
     ui.allocate_exact_size(egui::Vec2::ZERO, egui::Sense::hover());
     let f = &mut cx.st.fields;
     let forced = canvas::aspect_lock(cx.snap, &ids).filter(|_| any);
+    // With linked copies selected the card says how they follow.
+    let card = if cx.snap.selected().any(|o| o.link_group.is_some()) {
+        Setting::KeepAspectLinked
+    } else {
+        Setting::KeepAspect
+    };
     if let Some(why) = forced {
         let mut on = true;
         switch(
@@ -988,7 +982,7 @@ fn size_scale(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
             &mut on,
             Icon::KeepAspect,
             "Keep aspect",
-            Setting::KeepAspect,
+            card,
             Some(why),
         );
     } else {
@@ -998,7 +992,7 @@ fn size_scale(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
             &mut f.keep_aspect,
             Icon::KeepAspect,
             "Keep aspect",
-            Setting::KeepAspect,
+            card,
             (!any).then_some("Select something first."),
         );
     }

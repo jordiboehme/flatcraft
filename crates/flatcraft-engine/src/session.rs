@@ -719,6 +719,26 @@ impl Session {
         result
     }
 
+    /// Runs a registry command in the open document `doc_id`, active or
+    /// not, and leaves the active document as it was. For a value typed
+    /// into the window for one document and applied after another became
+    /// active. Only for commands that change one document's objects
+    /// (`object.move`, `object.scale`), never ones that open, close or
+    /// switch documents.
+    pub fn execute_in(
+        &mut self,
+        doc_id: u64,
+        id: &str,
+        params: serde_json::Value,
+        origin: Origin,
+    ) -> Result<serde_json::Value, CommandError> {
+        let index = self.doc_index(doc_id)?;
+        let active = std::mem::replace(&mut self.active, index);
+        let result = self.execute(id, params, origin);
+        self.active = active.min(self.docs.len().saturating_sub(1));
+        result
+    }
+
     /// Called by a mutating command whose run changed nothing the user would
     /// undo (`object.reload` when no file changed). A command that leaves the
     /// document exactly as it was needs no call: `run_command` notices that

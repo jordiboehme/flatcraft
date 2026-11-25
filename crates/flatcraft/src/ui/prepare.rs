@@ -166,6 +166,9 @@ pub struct FieldEdit {
     /// The document and the objects selected when the editing began.
     pub doc_id: u64,
     pub ids: Vec<u64>,
+    /// Width and height of those objects may change apart (see
+    /// `canvas::free_aspect`).
+    pub free: bool,
 }
 
 /// Edit buffers of the ribbon's number fields.

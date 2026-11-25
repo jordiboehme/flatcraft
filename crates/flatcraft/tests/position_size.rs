@@ -596,3 +596,34 @@ fn a_field_tabbed_into_shows_the_new_value() {
     h.run();
     assert_eq!(undo_len(&s), before);
 }
+
+#[test]
+fn a_typed_value_applies_to_its_document_when_the_document_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, id, mut h, _) = square(&dir);
+    let first = s.lock().unwrap().doc().id();
+    let before = undo_len(&s);
+    type_text(&mut h, "Width (mm)", "80");
+    h.get_by_role_and_label(Role::Button, "New document")
+        .click();
+    h.run();
+    h.run();
+    let g = s.lock().unwrap();
+    assert_eq!(g.docs.len(), 2);
+    assert_ne!(g.doc().id(), first, "the new document is active");
+    let a = &g.docs[g.doc_index(first).unwrap()];
+    assert_eq!(
+        a.undo.undo_len(),
+        before + 1,
+        "one undo step in its document"
+    );
+    assert!(g.docs[1].document.objects.is_empty());
+    let o = a
+        .document
+        .get(flatcraft_core::document::ObjectId(id))
+        .unwrap();
+    let b = flatcraft_engine::commands::placed_bounds(o).unwrap();
+    drop(g);
+    assert!(near(b.width(), 80.0), "{b:?}");
+    assert!(fields(&h).editing.is_none());
+}

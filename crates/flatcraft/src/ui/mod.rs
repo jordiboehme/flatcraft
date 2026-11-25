@@ -191,6 +191,15 @@ pub enum Action {
         command: &'static str,
         params: Value,
     },
+    /// A registry command, as `Origin::User`, in the document it was made
+    /// for even when another one became active meanwhile: a value typed
+    /// into a Position and size field, which applies when the field is
+    /// left (see `ribbon::finish_pending`).
+    RunIn {
+        doc_id: u64,
+        command: &'static str,
+        params: Value,
+    },
     /// Store the "Each object" switch of the Arrange group in the
     /// preferences, so the next start has it as it was.
     RememberEach(bool),
@@ -843,6 +852,21 @@ impl FlatCraftApp {
                 params,
             } => {
                 self.run_on(doc_id, command, params);
+            }
+            Action::RunIn {
+                doc_id,
+                command,
+                params,
+            } => {
+                let result = lock(&self.session).execute_in(doc_id, command, params, Origin::User);
+                match result {
+                    Err(e) => self.toast(Toast::error(person_text(&e))),
+                    Ok(v) => {
+                        if lock(&self.session).doc().id() == doc_id {
+                            self.after_command(command, &v);
+                        }
+                    }
+                }
             }
             Action::Import { doc_id } => {
                 if let Some(path) = self.files.pick_file(&import_dialog::import_request()) {

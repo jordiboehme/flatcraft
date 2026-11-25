@@ -3154,3 +3154,33 @@ fn a_straight_group_scales_width_and_height_apart() {
         "{err:?}"
     );
 }
+
+#[test]
+fn execute_in_runs_in_another_document_and_keeps_the_active_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 40.0, 20.0);
+    let first = s.doc().id();
+    run(&mut s, "document.new", json!({}));
+    let second = s.doc().id();
+    s.execute_in(
+        first,
+        "object.move",
+        json!({ "ids": [id], "x_mm": 5.0 }),
+        Origin::User,
+    )
+    .unwrap();
+    assert_eq!(s.doc().id(), second, "the active document stays");
+    assert!(s.doc().undo.undo_len() == 0);
+    let a = &s.docs[s.doc_index(first).unwrap()];
+    assert_eq!(a.undo.undo_len(), 2, "the import and the move");
+    assert!(
+        s.execute_in(
+            999,
+            "object.move",
+            json!({ "ids": [id], "x_mm": 1.0 }),
+            Origin::User
+        )
+        .is_err()
+    );
+}

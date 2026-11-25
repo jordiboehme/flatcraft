@@ -1026,6 +1026,7 @@ pub enum Setting {
     Height,
     ScalePercent,
     KeepAspect,
+    KeepAspectLinked,
     ScaleHandle,
     EachObject,
     Search,
@@ -1092,13 +1093,14 @@ pub enum Setting {
 }
 
 impl Setting {
-    pub const ALL: [Setting; 69] = [
+    pub const ALL: [Setting; 70] = [
         Setting::PositionX,
         Setting::PositionY,
         Setting::Width,
         Setting::Height,
         Setting::ScalePercent,
         Setting::KeepAspect,
+        Setting::KeepAspectLinked,
         Setting::ScaleHandle,
         Setting::EachObject,
         Setting::Search,
@@ -1185,6 +1187,9 @@ impl Setting {
             }
             Setting::KeepAspect => {
                 "On: width and height change together, so the shape does not get squashed, in the fields and with the handles on the mat. Off: change one without the other. Hold Shift while you drag a handle to get the opposite for that drag."
+            }
+            Setting::KeepAspectLinked => {
+                "On: width and height change together, so the shape does not get squashed, in the fields and with the handles on the mat. Off: change one without the other. Hold Shift while you drag a handle to get the opposite for that drag. Linked copies share one shape: stretching one stretches every copy along its own sides, so a copy turned by 90 degrees stretches the other way on the mat. Unlink copies first if they should not follow."
             }
             Setting::ScaleHandle if cfg!(target_os = "linux") => {
                 "Drag to resize the selection. A corner changes width and height, a side only its own, unless Keep aspect is on. Hold Shift to get the opposite of Keep aspect for this drag, and Alt to grow from the centre instead of the far side. Some desktops use Alt-drag to move windows: if so, change that key in your desktop settings."
