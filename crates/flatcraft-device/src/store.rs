@@ -508,9 +508,28 @@ impl ProfileStore {
     }
 
     /// User preset files that were skipped at load because they cannot be
-    /// read, and why. A save to the same file drops its entry.
+    /// read, and why. Such a file is never overwritten: a save with its id
+    /// is refused until the file is fixed or removed (and the store loaded
+    /// again).
     pub fn diagnostics(&self) -> &[PresetDiagnostic] {
         &self.diagnostics
+    }
+
+    fn broken_file(&self, kind: Kind, id: &str) -> Option<&PresetDiagnostic> {
+        let path = self.user_dir.join(kind.dir()).join(format!("{id}.toml"));
+        self.diagnostics.iter().find(|d| d.path == path)
+    }
+
+    /// The diagnostic of an unreadable plotter preset file named `<id>.toml`.
+    /// Its id counts as taken.
+    pub fn broken_plotter_file(&self, id: &str) -> Option<&PresetDiagnostic> {
+        self.broken_file(Kind::Plotter, id)
+    }
+
+    /// The diagnostic of an unreadable material preset file named
+    /// `<id>.toml`. Its id counts as taken.
+    pub fn broken_material_file(&self, id: &str) -> Option<&PresetDiagnostic> {
+        self.broken_file(Kind::Material, id)
     }
 
     fn infos(&self, kind: Kind) -> Vec<PresetInfo> {
@@ -665,6 +684,16 @@ impl ProfileStore {
         if self.map(kind).get(id).is_some_and(|e| e.system) {
             return Err(ProfileError::ShadowsSystem { id: id.to_string() });
         }
+        if let Some(d) = self.broken_file(kind, id) {
+            // Never overwrite a file the user may still want to repair.
+            return Err(ProfileError::Invalid {
+                id: id.to_string(),
+                reason: format!(
+                    "A preset file with this name exists but can't be read: {}. Fix or remove it first.",
+                    d.reason
+                ),
+            });
+        }
         // Walk the parent chain: it must not lead back to this id.
         let mut cur = Some(parent.to_string());
         let mut hops = 0;
@@ -745,7 +774,6 @@ impl ProfileStore {
         // A crash mid-write must never leave a broken preset: that would
         // stop the next start.
         crate::fsio::write_atomic(&path, text.as_bytes()).map_err(|e| io(&path, e))?;
-        self.diagnostics.retain(|d| d.path != path);
         self.changed();
         self.map_mut(kind).insert(
             id.to_string(),

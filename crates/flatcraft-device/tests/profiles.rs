@@ -920,3 +920,27 @@ fn write_atomic_never_follows_a_planted_temp_symlink() {
     assert_eq!(fs::read_to_string(&victim).unwrap(), "keep me");
     assert_eq!(fs::read_to_string(&path).unwrap(), "new");
 }
+
+#[test]
+fn a_save_never_overwrites_an_unreadable_preset_file() {
+    let d = tempdir().unwrap();
+    write(d.path(), "plotters", "mine", "id = \"mine\"\nname = [");
+    let before = fs::read(d.path().join("plotters/mine.toml")).unwrap();
+    let mut s = ProfileStore::load(d.path()).unwrap();
+    let mut p = s.plotter("silhouette-cameo-2").unwrap();
+    p.id = "mine".into();
+    p.name = "Mine".into();
+    let e = s.save_user_plotter(&p, "silhouette-cameo-2").unwrap_err();
+    assert!(
+        e.to_string()
+            .contains("A preset file with this name exists but can't be read"),
+        "{e}"
+    );
+    assert_eq!(
+        fs::read(d.path().join("plotters/mine.toml")).unwrap(),
+        before
+    );
+    assert_eq!(s.diagnostics().len(), 1, "the diagnostic stays");
+    assert!(s.broken_plotter_file("mine").is_some());
+    assert!(s.broken_material_file("mine").is_none());
+}

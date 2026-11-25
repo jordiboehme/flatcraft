@@ -441,6 +441,35 @@ fn a_huge_flatten_tolerance_blocks_save() {
 }
 
 #[test]
+fn save_as_treats_an_unreadable_file_as_taken() {
+    let dir = tempfile::tempdir().unwrap();
+    let plotters = dir.path().join("profiles/plotters");
+    std::fs::create_dir_all(&plotters).unwrap();
+    let file = plotters.join("my-cameo.toml");
+    std::fs::write(&file, "id = [").unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    save_as_my_cameo(&mut h);
+    h.get_by_label("A preset with the id 'my-cameo' already exists. Pick another name.");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "id = [");
+    // The window's own request is refused by the store too.
+    let mut p = store(&s).plotter("silhouette-cameo-2").unwrap();
+    p.id = "my-cameo".into();
+    p.name = "My Cameo".into();
+    let ctx = h.ctx.clone();
+    flatcraft::ui::profiles_window::apply(
+        app_mut(&mut h),
+        &ctx,
+        flatcraft::ui::profiles_window::Request::SavePlotter {
+            profile: Box::new(p),
+            parent: "silhouette-cameo-2".into(),
+            new: true,
+        },
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "id = [");
+}
+
+#[test]
 fn calibration_tab_says_what_comes() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);

@@ -180,6 +180,22 @@ struct View {
     diagnostics: Vec<flatcraft_device::PresetDiagnostic>,
 }
 
+impl View {
+    /// Ids of unreadable preset files of `kind` (their file stems).
+    fn broken_ids(&self, kind: Kind) -> impl Iterator<Item = &str> {
+        let folder = match kind {
+            Kind::Plotter => "plotters",
+            Kind::Material => "materials",
+        };
+        self.diagnostics.iter().filter_map(move |d| {
+            let parent = d.path.parent()?.file_name()?.to_str()?;
+            (parent == folder)
+                .then(|| d.path.file_stem()?.to_str())
+                .flatten()
+        })
+    }
+}
+
 /// The (plotter id, mat id) pairs the open documents use, plus the mat new
 /// documents start on with the default device.
 fn mats_in_use(s: &flatcraft_engine::session::Session) -> Vec<(String, String)> {
@@ -1743,7 +1759,9 @@ fn save_as_dialog(
                     Kind::Plotter => &view.plotters,
                     Kind::Material => &view.materials,
                 };
-                let taken = same_kind.iter().any(|p| p.id == id);
+                // A file that can't be read keeps its name taken.
+                let taken =
+                    same_kind.iter().any(|p| p.id == id) || view.broken_ids(kind).any(|b| b == id);
                 if id.is_empty() {
                     dialog.error =
                         Some("Give the preset a name with at least one letter or digit.".into());
@@ -1861,7 +1879,10 @@ pub fn apply(app: &mut FlatCraftApp, ctx: &egui::Context, req: Request) {
                     Err(problems.join(" "))
                 } else if drops_used {
                     Err(MAT_IN_USE.to_string())
-                } else if new && s.profiles.plotters().iter().any(|p| p.id == profile.id) {
+                } else if new
+                    && (s.profiles.plotters().iter().any(|p| p.id == profile.id)
+                        || s.profiles.broken_plotter_file(&profile.id).is_some())
+                {
                     Err(format!(
                         "A preset with the id '{}' already exists.",
                         profile.id
@@ -1884,7 +1905,10 @@ pub fn apply(app: &mut FlatCraftApp, ctx: &egui::Context, req: Request) {
                 let problems = material_problems(&profile);
                 if !problems.is_empty() {
                     Err(problems.join(" "))
-                } else if new && s.profiles.materials().iter().any(|p| p.id == profile.id) {
+                } else if new
+                    && (s.profiles.materials().iter().any(|p| p.id == profile.id)
+                        || s.profiles.broken_material_file(&profile.id).is_some())
+                {
                     Err(format!(
                         "A preset with the id '{}' already exists.",
                         profile.id
