@@ -1104,7 +1104,7 @@ fn size_scale(ui: &mut Ui, cx: &mut Cx) {
 const LOCK_COLUMN: f32 = 16.0;
 
 /// The size of the lock icon.
-const LOCK_ICON: f32 = 13.0;
+const LOCK_ICON: f32 = 14.0;
 
 /// Keep aspect: a small lock (closed: on, open: off) in `column`, left of
 /// the W and H fields (`wh`), on a thin bracket that joins W and H. Lock
@@ -1147,7 +1147,7 @@ fn keep_aspect(ui: &mut Ui, cx: &mut Cx, column: egui::Rect, wh: [egui::Rect; 2]
     } else if resp.hovered() || resp.has_focus() {
         v.strong_text_color()
     } else {
-        v.weak_text_color()
+        v.text_color()
     };
     let painter = ui.painter();
     if enabled && (resp.hovered() || resp.has_focus()) {
