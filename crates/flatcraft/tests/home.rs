@@ -425,3 +425,39 @@ fn the_recent_list_keeps_more_than_the_menu_shows() {
     const { assert!(flatcraft::ui::MAX_RECENT > flatcraft::ui::home::SHOWN_RECENT) };
     const { assert!(flatcraft::ui::MENU_RECENT < flatcraft::ui::MAX_RECENT) };
 }
+
+#[test]
+fn right_click_removes_a_missing_recent_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let gone = dir.path().join("gone.flatcraft");
+    s.lock().unwrap().prefs.recent_projects = vec![gone];
+    let mut h = harness_with(&dir, s.clone(), |a| a);
+    let at = h
+        .get_by_role_and_label(Role::Button, "Locate...")
+        .rect()
+        .left_center()
+        - egui::vec2(200.0, 0.0);
+    h.hover_at(at);
+    h.event(egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Secondary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.event(egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Secondary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+    // The row's own button and the menu's.
+    let removes: Vec<_> = h
+        .get_all_by_role_and_label(Role::Button, "Remove from list")
+        .collect();
+    assert_eq!(removes.len(), 2, "the menu opened");
+    removes.last().unwrap().click();
+    h.run();
+    assert!(s.lock().unwrap().prefs.recent_projects.is_empty());
+}

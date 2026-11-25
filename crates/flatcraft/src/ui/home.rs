@@ -686,9 +686,14 @@ fn recent_row(
 ) {
     let name = project_name(&row.path);
     let gone = row.version.is_none();
-    let sense = if gone { Sense::hover() } else { Sense::click() };
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), sense);
-    if !gone {
+    // A missing row also senses clicks, for its right-click menu; a left
+    // click on it does nothing.
+    let (rect, resp) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click());
+    if gone {
+        let label = format!("{name}: file moved or deleted");
+        resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, &label));
+    } else {
         // Not the bare name: an open project's tab has that one.
         let label = if row.open.is_some() {
             format!("Go to {name}")
