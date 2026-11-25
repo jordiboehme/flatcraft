@@ -16,6 +16,7 @@ pub struct FileRequest {
 pub trait FilePicker {
     fn pick_file(&mut self, req: &FileRequest) -> Option<PathBuf>;
     fn save_file(&mut self, req: &FileRequest) -> Option<PathBuf>;
+    fn pick_folder(&mut self, req: &FileRequest) -> Option<PathBuf>;
 }
 
 /// The platform dialogs (rfd).
@@ -45,6 +46,10 @@ impl FilePicker for NativePicker {
 
     fn save_file(&mut self, req: &FileRequest) -> Option<PathBuf> {
         Self::dialog(req).save_file()
+    }
+
+    fn pick_folder(&mut self, req: &FileRequest) -> Option<PathBuf> {
+        Self::dialog(req).pick_folder()
     }
 }
 

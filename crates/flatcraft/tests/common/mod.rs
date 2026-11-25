@@ -44,8 +44,20 @@ pub fn harness_with(
     s: SharedSession,
     setup: impl FnOnce(FlatCraftApp) -> FlatCraftApp,
 ) -> AppHarness {
+    harness_steps(dir, s, 4, setup)
+}
+
+/// Like [`harness_with`], allowing `max_steps` frames to settle. Windows
+/// with nested grids need a few frames to measure their columns.
+pub fn harness_steps(
+    dir: &tempfile::TempDir,
+    s: SharedSession,
+    max_steps: u64,
+    setup: impl FnOnce(FlatCraftApp) -> FlatCraftApp,
+) -> AppHarness {
     let mut h = Harness::builder()
         .with_size([1400.0, 900.0])
+        .with_max_steps(max_steps)
         .with_context_setup(fonts::install)
         .build_ui_state(
             |ui, app: &mut Option<FlatCraftApp>| {
@@ -115,6 +127,10 @@ impl FilePicker for FakePicker {
     }
 
     fn save_file(&mut self, req: &FileRequest) -> Option<PathBuf> {
+        self.next(req)
+    }
+
+    fn pick_folder(&mut self, req: &FileRequest) -> Option<PathBuf> {
         self.next(req)
     }
 }

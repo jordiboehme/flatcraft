@@ -14,6 +14,7 @@ pub mod import_dialog;
 pub mod menu;
 pub mod objects;
 pub mod prepare;
+pub mod profiles_window;
 pub mod ribbon;
 pub mod settings;
 pub mod switcher;
@@ -88,6 +89,7 @@ pub struct UiState {
     pub toasts: Vec<Toast>,
     pub show_debug: bool,
     pub show_profiles: bool,
+    pub profiles: profiles_window::ProfilesState,
     pub prepare: prepare::PrepareState,
     /// The number of each untitled document's name, by stable document id,
     /// so "Untitled 3" keeps its name when "Untitled 2" closes.
@@ -191,7 +193,10 @@ pub enum Action {
     Reveal(PathBuf),
     /// Ask for a capture fixture and show it in the Debug panel.
     OpenCapture,
+    /// Open the Profiles window (Settings button, Preferences menu, Cmd+,).
     ShowProfiles,
+    /// A save, delete or preference change from the Profiles window.
+    Profiles(profiles_window::Request),
     Help,
     Quit,
 }
@@ -628,6 +633,7 @@ impl FlatCraftApp {
                 }
             }
             Action::ShowProfiles => self.ui.show_profiles = true,
+            Action::Profiles(req) => profiles_window::apply(self, ctx, req),
             Action::Help => ctx.open_url(egui::OpenUrl::new_tab(HELP_URL)),
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
         }
@@ -810,6 +816,10 @@ fn shortcuts(ctx: &egui::Context, active: u64, actions: &mut Vec<Action>) {
             actions.push(Action::NewProject);
         }
         if !cfg!(target_os = "macos") {
+            // On macOS the menu's Preferences item owns Cmd+,.
+            if i.consume_shortcut(&cmd(Key::Comma)) {
+                actions.push(Action::ShowProfiles);
+            }
             if i.consume_shortcut(&cmd_shift(Key::Z)) || i.consume_shortcut(&cmd(Key::Y)) {
                 actions.push(Action::Redo(active));
             }
@@ -881,6 +891,9 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     }
     if app.ui.show_debug && workspace != Workspace::Home {
         debug::show(&ctx, app, &mut actions);
+    }
+    if app.ui.show_profiles {
+        profiles_window::show(&ctx, app, &mut actions);
     }
     pending_modal(&ctx, app, &mut actions);
 
