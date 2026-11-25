@@ -126,6 +126,8 @@ pub struct DebugState {
     pub listing: ListingView,
     /// The active document's last sent job, copied when it changed.
     pub last_sent: Option<Arc<JobResult>>,
+    /// Document id and `last_job_rev` the copy was made from.
+    last_sent_key: Option<(u64, u64)>,
 }
 
 impl DebugState {
@@ -158,27 +160,36 @@ impl DebugState {
 }
 
 impl DebugState {
-    /// Copies the active document's last sent job when it changed. The
-    /// check compares the bytes and the written files, without a copy.
+    /// Copies the active document's last sent job when its `last_job_rev`
+    /// (or the active document) changed.
     pub fn refresh_last_sent(&mut self, session: &flatcraft_mcp::SharedSession) {
         let s = lock(session);
-        let now = s.doc().last_job.as_ref().filter(|j| j.sent.is_some());
-        let same = match (now, &self.last_sent) {
-            (Some(n), Some(c)) => n.sent == c.sent && n.job.bytes == c.job.bytes,
-            (None, None) => true,
-            _ => false,
-        };
-        if !same {
-            self.last_sent = now.cloned().map(Arc::new);
+        let doc = s.doc();
+        let key = Some((doc.id(), doc.last_job_rev()));
+        if key != self.last_sent_key {
+            self.last_sent_key = key;
+            // A preview after a send keeps showing that send.
+            match doc.last_job.as_ref() {
+                Some(j) if j.sent.is_some() => self.last_sent = Some(Arc::new(j.clone())),
+                Some(_) => {}
+                None => self.last_sent = None,
+            }
         }
     }
 }
 
+/// The written listing (`.txt`) among the files of a send.
+pub fn listing_file(files: &[std::path::PathBuf]) -> Option<&std::path::PathBuf> {
+    files
+        .iter()
+        .find(|f| f.extension().is_some_and(|e| e == "txt"))
+}
+
 /// The listing lines of a job, as the `.gpgl.txt` file has them.
-fn listing(ui: &mut Ui, job: &JobResult) {
+fn listing(ui: &mut Ui, id: &str, job: &JobResult) {
     let lines = &job.job.listing;
     egui::ScrollArea::both()
-        .id_salt("flatcraft-debug-listing")
+        .id_salt(id)
         .auto_shrink([false, false])
         .show_rows(ui, 15.0, lines.len(), |ui, range| {
             for l in &lines[range] {
@@ -314,17 +325,17 @@ pub fn show(ctx: &egui::Context, app: &mut FlatCraftApp, actions: &mut Vec<Actio
                             let name = sent
                                 .sent
                                 .as_ref()
-                                .and_then(|r| r.files.get(1))
+                                .and_then(|r| listing_file(&r.files))
                                 .map_or_else(|| "the last job".into(), |f| super::display_name(f));
                             ui.label(RichText::new(format!("Last sent: {name}")).color(t.text_dim));
-                            listing(ui, sent);
+                            listing(ui, "flatcraft-debug-last-sent", sent);
                         }
                         (_, Some(job), _) => {
                             ui.label(
                                 RichText::new("Preview of the current job (.gpgl.txt)")
                                     .color(t.text_dim),
                             );
-                            listing(ui, job);
+                            listing(ui, "flatcraft-debug-preview", job);
                         }
                         _ => {
                             ui.label(
@@ -379,5 +390,17 @@ mod tests {
         let long = row(0.0, Dir::Out, &[0x41; 40]);
         assert!(long.hex.ends_with("..."));
         assert_eq!(long.hex.len(), HEX_CHARS + 3);
+    }
+
+    #[test]
+    fn the_listing_file_is_found_by_its_extension() {
+        use std::path::PathBuf;
+        let files = [
+            PathBuf::from("/out/job.gpgl.txt"),
+            PathBuf::from("/out/job.gpgl"),
+            PathBuf::from("/out/job.bytelog.jsonl"),
+        ];
+        assert_eq!(listing_file(&files), Some(&files[0]));
+        assert_eq!(listing_file(&files[1..]), None);
     }
 }
