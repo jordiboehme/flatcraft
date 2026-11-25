@@ -886,8 +886,9 @@ fn with_defaults_uses_the_spec_defaults() {
 /// job (20000 overlapping squares): run by hand or by the quality bench.
 /// Measured 0.6 to 1.1 s locally before the order improvement (Task 6),
 /// 1.25 to 1.6 s with it, and 1.5 to 1.9 s once the improvement scores
-/// crossings (Apple silicon, test profile, load about 50; single runs right
-/// after a build reached 3 to 4 s), so the bound is the plan's 3 s.
+/// crossings (Apple silicon, test profile, load about 50, runs interleaved
+/// with the version before). At load 56 to 58, two runs in a row took 3.2
+/// and 4.2 s. The bound stays the plan's 3 s.
 #[test]
 #[ignore = "wall-clock perf check, run by hand or by the quality bench"]
 fn plan_of_20000_squares_is_fast() {
