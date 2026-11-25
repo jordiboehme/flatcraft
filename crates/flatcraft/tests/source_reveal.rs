@@ -213,3 +213,49 @@ fn objects_from_different_files_are_dimmed() {
     let m = model(&mut r);
     assert!(!enabled(&m, &Cmd::CopySourcePath));
 }
+
+#[test]
+fn a_project_folder_that_moved_as_a_whole_still_finds_its_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let old = dir.path().join("old");
+    std::fs::create_dir(&old).unwrap();
+    let file = old.join("a.svg");
+    write_square(&file);
+    import_file(&s, &file);
+    s.lock()
+        .unwrap()
+        .execute(
+            "project.save",
+            json!({ "path": old.join("p.flatcraft") }),
+            Origin::User,
+        )
+        .unwrap();
+    let new = dir.path().join("new");
+    std::fs::rename(&old, &new).unwrap();
+    s.lock()
+        .unwrap()
+        .execute(
+            "project.open",
+            json!({ "path": new.join("p.flatcraft") }),
+            Origin::User,
+        )
+        .unwrap();
+    let id = s.lock().unwrap().doc().document.objects[0].id.0;
+    let revealed = FakeRevealer::default();
+    let r = revealed.clone();
+    let mut h = harness_with(&dir, s.clone(), move |a| a.with_revealer(r));
+    to_prepare(&mut h);
+    let mut r = Rig {
+        dir,
+        s,
+        h,
+        revealed,
+    };
+    let list = items(&mut r, &[id]);
+    assert_eq!(reason(&list, Item::RevealSource), Some(None), "{list:?}");
+    run(&mut r, Item::RevealSource, &[id]);
+    let shown = r.revealed.0.lock().unwrap().clone();
+    assert_eq!(shown.len(), 1);
+    assert!(shown[0].ends_with("new/a.svg"), "{shown:?}");
+}

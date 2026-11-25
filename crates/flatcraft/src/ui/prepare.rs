@@ -696,6 +696,9 @@ pub struct ObjView {
     pub cut: CutOptions,
     /// Last known path of the linked file.
     pub link: Option<PathBuf>,
+    /// The whole link, to find the file where Reload would read it
+    /// ([`flatcraft_engine::commands::sources::find_linked_file`]).
+    pub source_link: Option<flatcraft_core::document::SourceLink>,
     /// The group of linked copies the object belongs to.
     pub link_group: Option<u64>,
     /// The source bytes, shared with the document. See [`ObjView::same_source`].
@@ -752,6 +755,8 @@ pub struct Snapshot {
     /// The output folder of the preferences.
     pub output_pref: Option<PathBuf>,
     pub config_dir: PathBuf,
+    /// The document's project file, if it has one.
+    pub project: Option<PathBuf>,
 }
 
 impl Snapshot {
@@ -915,6 +920,7 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
                 transform: o.transform,
                 cut: o.cut,
                 link: o.link.as_ref().map(|l| l.path.clone()),
+                source_link: o.link.clone(),
                 link_group: o.link_group.map(|g| g.0),
                 source: match &o.source {
                     Source::Svg { bytes, .. } | Source::Raster { bytes, .. } => bytes.clone(),
@@ -945,6 +951,7 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
             }),
             output_pref: s.prefs.output_dir.clone(),
             config_dir: s.config_dir.clone(),
+            project: st.path.clone(),
         }
     };
     let doc_id = snap.doc_id;

@@ -187,19 +187,33 @@ pub fn source_file(
     snap: &Snapshot,
     ids: &[u64],
 ) -> Option<Result<std::path::PathBuf, &'static str>> {
-    let mut files: Vec<&std::path::PathBuf> = ids
+    use flatcraft_engine::commands::sources::find_linked_file;
+    // Where each file is now, as Reload finds it; `None` when it is gone.
+    let files: Vec<(&std::path::PathBuf, Option<std::path::PathBuf>)> = ids
         .iter()
-        .filter_map(|id| snap.object(*id)?.link.as_ref())
+        .filter_map(|id| {
+            let o = snap.object(*id)?;
+            let link = o.source_link.as_ref()?;
+            Some((
+                &link.path,
+                find_linked_file(link, o.raster, snap.project.as_deref()),
+            ))
+        })
         .collect();
-    files.dedup();
-    let first = *files.first()?;
-    if files.iter().any(|f| *f != first) {
+    let (first_known, first_now) = files.first()?.clone();
+    let same = |(known, now): &(&std::path::PathBuf, Option<std::path::PathBuf>)| match (
+        now, &first_now,
+    ) {
+        (Some(a), Some(b)) => a == b,
+        _ => *known == first_known,
+    };
+    if !files.iter().all(same) {
         return Some(Err(SOURCE_MIXED));
     }
-    if !first.is_file() {
-        return Some(Err(SOURCE_MISSING));
+    match first_now {
+        Some(path) => Some(Ok(path)),
+        None => Some(Err(SOURCE_MISSING)),
     }
-    Some(Ok(first.clone()))
 }
 
 /// The objects a right-click works on. A click on an object outside the

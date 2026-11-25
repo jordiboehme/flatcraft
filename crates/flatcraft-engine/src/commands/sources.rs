@@ -284,6 +284,24 @@ fn candidates(link: &SourceLink, project: Option<&Path>, kind: FileKind) -> Vec<
         .collect()
 }
 
+/// Where the linked file of an object is now (`raster`: a picture, else
+/// an SVG), as Reload
+/// reads it: the path relative to the project file `project` while the
+/// project is in the folder it was made for, else the absolute path.
+/// `None` when it is in neither place.
+pub fn find_linked_file(
+    link: &SourceLink,
+    raster: bool,
+    project: Option<&Path>,
+) -> Option<PathBuf> {
+    let kind = if raster {
+        FileKind::Raster
+    } else {
+        FileKind::Svg
+    };
+    locate(link, project, kind)
+}
+
 /// Where a linked file is now: the first candidate that is a regular file,
 /// so a folder or FIFO with the file's name is never taken for it.
 pub(crate) fn locate(link: &SourceLink, project: Option<&Path>, kind: FileKind) -> Option<PathBuf> {
