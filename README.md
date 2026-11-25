@@ -8,7 +8,9 @@
 <h1 align="center">FlatCraft</h1>
 
 <p align="center">
-  <strong>Your cutting plotter, back in the game. Agents welcome.</strong><br>
+  <strong>Your cutting plotter, leveled up.</strong><br>
+  You bought it, so you're in control: every setting, every cut, on your own computer.
+  Pro results for every plotter. Agents welcome.<br>
   An open-source desktop app for cutting plotters. Bring in a design,
   place it on the mat and cut it. Or let your AI agent prepare the job through the built-in MCP server.
 </p>
@@ -156,6 +158,7 @@ So FlatCraft is long-life software for the plotters we already own. It's in the 
 
 Super massive stability stuff, as Felix Schelhasse would say. Here's FlatCraft's version:
 
+- **Yours:** you bought the plotter, so you decide how it cuts. Your files, your machine, your settings. No account, no cloud, no subscription.
 - **Local only:** no cloud services, no telemetry. Your designs stay on your machine.
 - **Measured, not guessed:** cut quality gets tested with a knife simulator (M2) and with a ruler on real paper (M3).
 - **Clean licenses:** FlatCraft uses only libraries with permissive or MPL licenses.
