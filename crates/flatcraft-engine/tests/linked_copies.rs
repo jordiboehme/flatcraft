@@ -791,6 +791,11 @@ const UNLINKED_WARNING: &str = "odd: it no longer matched its linked copies, so 
 /// no `link_groups`, every member carries its own fields. The second
 /// member is named "odd".
 fn hand_written(dir: &Path) -> (Vec<u64>, Value) {
+    hand_written_odd(dir, 1)
+}
+
+/// [`hand_written`] with the member at `odd` named "odd".
+fn hand_written_odd(dir: &Path, odd: usize) -> (Vec<u64>, Value) {
     let mut s = session(dir);
     let id = import_text(&mut s);
     let all = linked(&mut s, id, 2);
@@ -809,7 +814,7 @@ fn hand_written(dir: &Path) -> (Vec<u64>, Value) {
             o["transform"][k] = g[k].clone();
         }
     }
-    v["objects"][1]["name"] = json!("odd");
+    v["objects"][odd]["name"] = json!("odd");
     (all, v)
 }
 
@@ -852,6 +857,25 @@ fn open_unlinks_a_member_whose_own_cut_differs() {
 }
 
 #[test]
+fn open_names_the_odd_member_when_it_comes_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let (all, mut v) = hand_written_odd(dir.path(), 0);
+    v["objects"][0]["cut"]["mode"] = json!("all_lines");
+    let (s, r) = open_value(dir.path(), &v);
+    assert_eq!(r["warnings"], json!([UNLINKED_WARNING]), "{r}");
+    assert_eq!(obj(&s, all[0]).link_group, None);
+    assert_eq!(
+        obj(&s, all[0]).cut.mode,
+        flatcraft_core::document::CutMode::AllLines
+    );
+    assert_shared(&s, &[all[1], all[2]]);
+    assert_eq!(
+        obj(&s, all[1]).cut.mode,
+        flatcraft_core::document::CutMode::ObjectOutlines
+    );
+}
+
+#[test]
 fn open_unlinks_a_member_whose_own_source_differs() {
     let dir = tempfile::tempdir().unwrap();
     let (all, mut v) = hand_written(dir.path());
@@ -860,9 +884,9 @@ fn open_unlinks_a_member_whose_own_source_differs() {
     v["objects"][1]["source"]["Svg"]["bytes"] =
         json!(base64::engine::general_purpose::STANDARD.encode(circle));
     let (s, r) = open_value(dir.path(), &v);
-    // Only the bytes were swapped, so the saved bounds are the square's and
-    // open also says the circle looks different.
-    assert_eq!(r["warnings"][0], UNLINKED_WARNING, "{r}");
+    // Only the unlink is named: the saved bounds are the square's, but a
+    // shape from another source is no font problem.
+    assert_eq!(r["warnings"], json!([UNLINKED_WARNING]), "{r}");
     assert_eq!(obj(&s, all[1]).link_group, None);
     // Each keeps its own design: the circle is 30 mm, the squares 50 mm.
     assert_eq!(&**bytes_of(obj(&s, all[1])), circle.as_bytes());

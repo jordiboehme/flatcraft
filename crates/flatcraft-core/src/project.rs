@@ -4,7 +4,7 @@ use std::path::Path;
 
 use thiserror::Error;
 
-use crate::document::Document;
+use crate::document::{Document, ObjectId};
 
 pub const FORMAT_VERSION: u32 = 1;
 
@@ -185,10 +185,10 @@ pub fn load(path: &Path) -> Result<Document, ProjectError> {
     load_report(path).map(|(doc, _)| doc)
 }
 
-/// [`load`], plus a warning for every linked copy whose own fields no
-/// longer matched its group (a hand-edited file): it was unlinked and kept
-/// its own design.
-pub fn load_report(path: &Path) -> Result<(Document, Vec<String>), ProjectError> {
+/// [`load`], plus the ids of the linked copies whose own fields no longer
+/// matched their group (a hand-edited file): they were unlinked and kept
+/// their own design (see [`unlinked_warning`]).
+pub fn load_report(path: &Path) -> Result<(Document, Vec<ObjectId>), ProjectError> {
     let text = std::fs::read_to_string(path)?;
     let value: serde_json::Value = serde_json::from_str(&text)?;
     let found = value
@@ -204,15 +204,11 @@ pub fn load_report(path: &Path) -> Result<(Document, Vec<String>), ProjectError>
     let mut value = value;
     unpack_link_groups(&mut value)?;
     let mut doc: Document = serde_json::from_value(value)?;
-    let warnings = doc
-        .share_link_groups()
-        .into_iter()
-        .map(|name| unlinked_warning(&name))
-        .collect();
+    let unlinked = doc.share_link_groups();
     let min_next = doc.objects.iter().map(|o| o.id.0 + 1).max().unwrap_or(1);
     doc.next_id = doc.next_id.max(min_next);
     doc.format_version = FORMAT_VERSION;
-    Ok((doc, warnings))
+    Ok((doc, unlinked))
 }
 
 /// The warning for a linked copy that was unlinked on open.

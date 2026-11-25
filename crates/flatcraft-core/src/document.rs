@@ -504,54 +504,78 @@ impl Document {
         }
     }
 
-    /// Makes the members of every group share the first member's shared
-    /// fields as one `Arc` each, without moving anything. For a freshly
-    /// loaded project, whose members hold equal values in separate `Arc`s.
-    /// A member whose shared fields differ from the first member's (a
-    /// hand-edited file) is never overwritten: it leaves its group and
-    /// keeps its own design. Returns the names of those members. Groups of
-    /// one are dissolved.
-    pub fn share_link_groups(&mut self) -> Vec<String> {
+    /// Makes the members of every group share their shared fields as one
+    /// `Arc` each, without moving anything. For a freshly loaded project,
+    /// whose members hold equal values in separate `Arc`s. Members whose
+    /// shared fields differ (a hand-edited file) are never overwritten: the
+    /// group keeps its majority ([`Document::unlink_minority`]) and the
+    /// others leave it with their own design. Returns the ids of those.
+    pub fn share_link_groups(&mut self) -> Vec<ObjectId> {
+        let unlinked = self.unlink_minority(Object::shared_values_eq);
         let mut leads: Vec<Object> = Vec::new();
-        let mut unlinked = Vec::new();
         for o in &mut self.objects {
             let Some(g) = o.link_group else { continue };
             match leads.iter().find(|l| l.link_group == Some(g)) {
-                Some(lead) if o.shared_values_eq(lead) => {
+                Some(lead) => {
                     o.source = lead.source.clone();
                     o.geometry = lead.geometry.clone();
                 }
-                Some(_) => {
-                    o.link_group = None;
-                    unlinked.push(o.name.clone());
-                }
                 None => leads.push(o.clone()),
             }
         }
-        self.dissolve_lonely_groups();
         unlinked
     }
 
-    /// Unlinks every member that does not share its fields with the first
-    /// member of its group ([`Object::shares_with`]); each keeps its own
-    /// design. Returns the names of the unlinked members. Groups of one
-    /// are dissolved.
-    pub fn unlink_mismatched(&mut self) -> Vec<String> {
-        let mut leads: Vec<Object> = Vec::new();
+    /// Unlinks every member that does not share its fields with the
+    /// majority of its group ([`Object::shares_with`]); each keeps its own
+    /// design. Returns the ids of the unlinked members.
+    pub fn unlink_mismatched(&mut self) -> Vec<ObjectId> {
+        self.unlink_minority(Object::shares_with)
+    }
+
+    /// Splits each group into classes of members that are `same` as each
+    /// other and keeps the largest class linked (on a tie, the one with the
+    /// earliest member). Members outside it leave the group and keep their
+    /// own data. Groups of one are dissolved. Returns the unlinked ids in
+    /// document order.
+    fn unlink_minority(&mut self, same: impl Fn(&Object, &Object) -> bool) -> Vec<ObjectId> {
         let mut unlinked = Vec::new();
-        for o in &mut self.objects {
-            let Some(g) = o.link_group else { continue };
-            match leads.iter().find(|l| l.link_group == Some(g)) {
-                Some(lead) if o.shares_with(lead) => {}
-                Some(_) => {
-                    o.link_group = None;
-                    unlinked.push(o.name.clone());
+        let groups: Vec<GroupId> = self
+            .group_leads()
+            .into_iter()
+            .filter_map(|id| self.get(id)?.link_group)
+            .collect();
+        for g in groups {
+            // Classes in order of their first member: (first index, members).
+            let mut classes: Vec<(usize, Vec<usize>)> = Vec::new();
+            for (i, o) in self.objects.iter().enumerate() {
+                if o.link_group != Some(g) {
+                    continue;
                 }
-                None => leads.push(o.clone()),
+                match classes
+                    .iter_mut()
+                    .find(|(first, _)| same(o, &self.objects[*first]))
+                {
+                    Some((_, members)) => members.push(i),
+                    None => classes.push((i, vec![i])),
+                }
+            }
+            // The first class of the largest size has the earliest member.
+            let largest = classes.iter().map(|(_, m)| m.len()).max().unwrap_or(0);
+            let keep = classes.iter().position(|(_, m)| m.len() == largest);
+            for (k, (_, members)) in classes.iter().enumerate() {
+                if Some(k) != keep {
+                    for &i in members {
+                        self.objects[i].link_group = None;
+                        unlinked.push(i);
+                    }
+                }
             }
         }
+        unlinked.sort_unstable();
+        let ids = unlinked.into_iter().map(|i| self.objects[i].id).collect();
         self.dissolve_lonely_groups();
-        unlinked
+        ids
     }
 
     /// Drops groups with a single member: a group of one is no group.

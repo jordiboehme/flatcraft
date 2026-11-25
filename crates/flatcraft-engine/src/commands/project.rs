@@ -433,7 +433,7 @@ fn bounds_differ(a: Rect, b: Rect) -> bool {
 }
 
 fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandError> {
-    let (mut document, mut warnings) = project::load_report(&p.path).map_err(|e| match e {
+    let (mut document, unlinked) = project::load_report(&p.path).map_err(|e| match e {
         ProjectError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => {
             CommandError::NotFound(format!("file {}", p.path.display()))
         }
@@ -448,6 +448,11 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
             )));
         }
     }
+    let mut warnings: Vec<String> = unlinked
+        .iter()
+        .filter_map(|id| document.get(*id))
+        .map(|o| project::unlinked_warning(&o.name))
+        .collect();
     let blade = blade_offset_for(s, &document.job.plotter_id);
     // Linked copies share one source: it is rebuilt once per group, and the
     // members share the geometry `Arc`.
@@ -495,8 +500,11 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
                     // Text in an SVG is set with the fonts of this
                     // computer; other fonts give other shapes.
                     let svg = matches!(o.source, Source::Svg { .. });
+                    // A member unlinked on load was edited by hand; its
+                    // saved bounds may belong to another source.
                     if first
                         && svg
+                        && !unlinked.contains(&o.id)
                         && o.local_bounds != Rect::ZERO
                         && bounds_differ(o.local_bounds, a.local_bounds)
                     {
@@ -526,8 +534,10 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
     // Loading already unlinked members whose own fields differ, so the
     // members agree. Should the rebuild still leave one apart, it is
     // unlinked too and keeps its own design: open never overwrites it.
-    for name in document.unlink_mismatched() {
-        warnings.push(project::unlinked_warning(&name));
+    for id in document.unlink_mismatched() {
+        if let Some(o) = document.get(id) {
+            warnings.push(project::unlinked_warning(&o.name));
+        }
     }
     if let Some(o) = document.objects.iter().find(|o| !o.placement_is_valid()) {
         return Err(CommandError::Failed(format!(
