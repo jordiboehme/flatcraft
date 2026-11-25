@@ -102,7 +102,7 @@ pub enum ListingView {
     /// The job the Cut workspace planned for the document as it is now.
     #[default]
     Preview,
-    /// The job last sent from the active document (`DocState.last_job`).
+    /// The job last sent from the active document (`DocState::last_sent`).
     LastSent,
 }
 
@@ -124,7 +124,7 @@ pub struct DebugState {
     pub log_len: usize,
     pub capture: Option<Capture>,
     pub listing: ListingView,
-    /// The active document's last sent job, copied when it changed.
+    /// The active document's last sent job, shared with the engine (one `Arc`), refreshed when `last_sent_rev` changes.
     pub last_sent: Option<Arc<JobResult>>,
     /// Document id and `last_sent_rev` the copy was made from.
     last_sent_key: Option<(u64, u64)>,
