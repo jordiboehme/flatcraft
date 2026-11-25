@@ -393,7 +393,11 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
                 // Otherwise [a, b, a] is a line, cut once as an open path
                 // (same as clean does for a two-point ring).
                 if clean::length(&points) < ZERO_LEN_MM {
-                    dropped_short += 1;
+                    // Counted as too short only when there is a shortest
+                    // cut to be shorter than.
+                    if s.min_cut_mm > 0.0 {
+                        dropped_short += 1;
+                    }
                     continue;
                 }
                 points.truncate(2);

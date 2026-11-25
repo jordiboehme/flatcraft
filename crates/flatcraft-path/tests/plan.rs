@@ -308,12 +308,16 @@ fn zero_length_ring_is_dropped() {
     p.line_to((10.0, 10.0005));
     p.close_path();
     assert_eq!(
-        plan(&[placed(1, p)], &settings()),
+        plan(&[placed(1, p.clone())], &settings()),
         Err(PlanError::TooShort {
             dropped: 1,
             min_cut_mm: 0.025
         })
     );
+    // With no shortest cut there is nothing to be shorter than.
+    let mut s = settings();
+    s.min_cut_mm = 0.0;
+    assert_eq!(plan(&[placed(1, p)], &s), Err(PlanError::Empty));
 }
 
 #[test]

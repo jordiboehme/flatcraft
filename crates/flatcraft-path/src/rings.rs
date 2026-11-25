@@ -225,7 +225,8 @@ pub fn entry_candidates(ring: &[Point], keep: KeepSide) -> Vec<Candidate> {
 /// (Ruling F28). The test ring (0,0), (10,0), (10,10), (0,10) has a positive
 /// shoelace area, which is clockwise by the sign rule, and that is intended.
 /// `index` is taken modulo the ring length. Exactly on a vertex the tangent
-/// is the edge just travelled; at zero overcut it is the first edge. The
+/// is the edge just travelled; at zero overcut it is the closing edge into
+/// the start, the blade's real heading when the ring is finished. The
 /// overcut is capped at the perimeter, as `overcut::apply` does: the result
 /// is then the start point with the last edge's direction. An empty ring
 /// gives the origin and a zero tangent; a ring with no length gives its
@@ -243,6 +244,12 @@ pub fn exit_state(ring: &[Point], index: usize, overcut_mm: f64) -> (Point, Vec2
         return (start, Vec2::ZERO);
     }
     let mut remaining = overcut_mm.max(0.0).min(perimeter);
+    if remaining == 0.0 {
+        // The cut ends where it started, coming in along the closing edge.
+        let closing =
+            neighbours(ring, index).map_or(Vec2::ZERO, |(prev, _)| (start - prev).normalize());
+        return (start, closing);
+    }
     let mut last_dir = Vec2::ZERO;
     for step in 0..n {
         let a = ring[(index + step) % n];
@@ -427,6 +434,11 @@ mod tests {
         let (pt, t) = exit_state(&sq, 0, 10.0);
         assert_eq!(pt, p(10.0, 0.0));
         assert_eq!(t, Vec2::new(1.0, 0.0));
+        // Zero overcut: at the start, heading along the closing edge.
+        for oc in [0.0, -1.0] {
+            assert_eq!(exit_state(&sq, 0, oc), (p(0.0, 0.0), Vec2::new(0.0, -1.0)));
+        }
+        assert_eq!(exit_state(&sq, 1, 0.0), (p(10.0, 0.0), Vec2::new(1.0, 0.0)));
         // Capped at the perimeter: back at the start, heading of the last edge.
         for oc in [40.0, 40.5] {
             let (pt, t) = exit_state(&sq, 0, oc);
