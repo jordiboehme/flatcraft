@@ -158,6 +158,48 @@ pub fn pattern_centre(boxes: &[Rect]) -> Option<Point> {
         .map(|r| r.center())
 }
 
+/// Slack when checking that a box fits the area.
+const FIT_EPS: f64 = 1e-9;
+
+/// Where Auto arrange (`arrange.auto`) puts each box: shelf packing into
+/// `area`, tallest first (equal heights keep their order), left to right
+/// from the top-left, `spacing` mm apart. Returns the move of each box
+/// that is placed, and the keys of those that do not fit, in that order.
+/// The command and the window's preview both use it.
+pub fn shelf_pack<K: Copy>(
+    boxes: &[(K, Rect)],
+    area: Rect,
+    spacing: f64,
+) -> (Vec<(K, Vec2)>, Vec<K>) {
+    let mut items: Vec<(K, Rect)> = boxes.to_vec();
+    // Stable: equal heights keep their order.
+    items.sort_by(|a, b| b.1.height().total_cmp(&a.1.height()));
+    let mut placed = Vec::new();
+    let mut did_not_fit = Vec::new();
+    let (mut x, mut y, mut row_h) = (area.x0, area.y0, 0.0_f64);
+    for (key, b) in items {
+        let (w, h) = (b.width(), b.height());
+        if w > area.width() + FIT_EPS || h > area.height() + FIT_EPS {
+            did_not_fit.push(key);
+            continue;
+        }
+        // Wrap when the row already holds something, even zero-height lines.
+        if x + w > area.x1 + FIT_EPS && x > area.x0 {
+            y += row_h + spacing;
+            x = area.x0;
+            row_h = 0.0;
+        }
+        if y + h > area.y1 + FIT_EPS {
+            did_not_fit.push(key);
+            continue;
+        }
+        placed.push((key, Point::new(x, y) - Point::new(b.x0, b.y0)));
+        x += w + spacing;
+        row_h = row_h.max(h);
+    }
+    (placed, did_not_fit)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

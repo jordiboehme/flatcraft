@@ -1,7 +1,7 @@
 //! Arrange commands: align, distribute and automatic shelf packing.
 
 use flatcraft_core::document::{Object, ObjectId};
-use kurbo::{Point, Rect, Vec2};
+use kurbo::{Rect, Vec2};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -9,10 +9,8 @@ use super::{
     command, cutting_area, ids_json, inside, object_mut, placed_bounds, placed_bounds_or_center,
     resolve_ids, translate,
 };
+use crate::placement;
 use crate::session::{CommandError, Origin, Session};
-
-/// Slack for float noise when testing whether something fits.
-const FIT_EPS: f64 = 1e-9;
 
 #[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -215,38 +213,18 @@ fn run_auto(s: &mut Session, p: AutoParams, _: Origin) -> Result<Value, CommandE
             None => did_not_fit.push(o.id),
         }
     }
-    // Stable: equal heights keep document order.
-    items.sort_by(|a, b| b.1.height().total_cmp(&a.1.height()));
-
+    let (moves, too_big) = placement::shelf_pack(&items, area, p.spacing_mm);
     let mut placed = Vec::new();
-    let (mut x, mut y, mut row_h) = (area.x0, area.y0, 0.0_f64);
-    for (id, b) in items {
-        let (w, h) = (b.width(), b.height());
-        if w > area.width() + FIT_EPS || h > area.height() + FIT_EPS {
-            did_not_fit.push(id);
-            continue;
-        }
-        // Wrap when the row already holds something, even zero-height lines.
-        if x + w > area.x1 + FIT_EPS && x > area.x0 {
-            y += row_h + p.spacing_mm;
-            x = area.x0;
-            row_h = 0.0;
-        }
-        if y + h > area.y1 + FIT_EPS {
-            did_not_fit.push(id);
-            continue;
-        }
+    for (id, d) in moves {
         let o = object_mut(doc, id)?;
-        let d = Point::new(x, y) - Point::new(b.x0, b.y0);
         // Never report an object as placed unless it really is inside.
-        if !place(o, d, area) {
+        if place(o, d, area) {
+            placed.push(id);
+        } else {
             did_not_fit.push(id);
-            continue;
         }
-        placed.push(id);
-        x += w + p.spacing_mm;
-        row_h = row_h.max(h);
     }
+    did_not_fit.extend(too_big);
     Ok(json!({ "placed": ids_json(&placed), "did_not_fit": ids_json(&did_not_fit) }))
 }
 
@@ -265,6 +243,7 @@ mod tests {
     use super::*;
     use flatcraft_core::document::{Document, JobSettings, Source};
     use flatcraft_core::geometry::CutPath;
+    use kurbo::Point;
 
     #[test]
     fn an_object_that_does_not_fit_keeps_its_exact_centre() {
