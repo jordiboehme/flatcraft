@@ -253,8 +253,8 @@ fn halve(w: usize, h: usize, rgba: &[u8]) -> egui::ColorImage {
     egui::ColorImage::from_rgba_premultiplied([hw, hh], &out)
 }
 
-/// Lays a row out centred: it is measured in one frame and centred from
-/// the next one on.
+/// Lays a row out centred: a row whose width changed is measured and the
+/// frame is laid out again (`request_discard`), so it never shows off-centre.
 fn centered_row(ui: &mut Ui, id: &str, add: impl FnOnce(&mut Ui)) {
     let key = ui.scope_id().with(id);
     let width: f32 = ui.data(|d| d.get_temp(key)).unwrap_or(0.0);
@@ -264,7 +264,11 @@ fn centered_row(ui: &mut Ui, id: &str, add: impl FnOnce(&mut Ui)) {
         let start = ui.cursor().min.x;
         add(ui);
         let used = ui.min_rect().right() - start;
-        ui.data_mut(|d| d.insert_temp(key, used));
+        if (used - width).abs() > 0.5 {
+            ui.data_mut(|d| d.insert_temp(key, used));
+            // Lay the frame out again with the measured width.
+            ui.ctx().request_discard("centred row measured");
+        }
     });
 }
 

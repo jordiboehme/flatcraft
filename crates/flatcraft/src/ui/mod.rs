@@ -1134,7 +1134,10 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     app.ui.number_documents(&open);
     guard_close(&ctx, app);
     refresh_prefs(&ctx, app);
-    shortcuts(&ctx, active, &mut actions);
+    // The About dialog is modal: the keys stay with it (Escape closes it).
+    if !app.ui.about.open {
+        shortcuts(&ctx, active, &mut actions);
+    }
     dropped_files(&ctx, &app.tokens, &mut actions);
     let focused = ctx.input(|i| {
         i.raw
@@ -1166,8 +1169,8 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
         (Some(snap), Workspace::Cut) => cut::show(ui, app, snap, &mut actions),
         (Some(snap), _) => {
             // The Trace dialog owns Escape, and Delete must not remove
-            // the image it traces.
-            if app.ui.trace.is_none() {
+            // the image it traces. The About dialog keeps the keys too.
+            if app.ui.trace.is_none() && !app.ui.about.open {
                 let now = (app.clock)();
                 prepare_keys(&ctx, snap, &mut app.ui.prepare, now, &mut actions);
             }

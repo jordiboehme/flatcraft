@@ -332,3 +332,33 @@ fn the_banner_spans_the_dialog_and_the_buttons_are_centred() {
     let gap_right = banner.right() - right.right();
     assert!((gap_left - gap_right).abs() < 2.0, "{gap_left} {gap_right}");
 }
+
+#[test]
+fn keys_do_not_reach_prepare_while_about_is_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let id = import_square(&s);
+    s.lock()
+        .unwrap()
+        .execute(
+            "object.select",
+            serde_json::json!({ "ids": [id] }),
+            flatcraft_engine::session::Origin::User,
+        )
+        .unwrap();
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    open_about(&mut h);
+    let before = common::undo_len(&s);
+    h.key_press(egui::Key::Delete);
+    h.run();
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+    h.run();
+    h.key_press(egui::Key::ArrowRight);
+    h.run();
+    assert_eq!(common::undo_len(&s), before);
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(!app(&h).ui.about.open);
+    assert_eq!(common::undo_len(&s), before);
+}
