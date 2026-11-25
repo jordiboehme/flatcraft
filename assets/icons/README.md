@@ -68,8 +68,6 @@ https://raw.githubusercontent.com/lucide-icons/lucide/1.79.0/icons/<name>.svg, u
 | Edit group | pencil |
 | Zoom group | zoom-in |
 | Panels group | panels-top-left |
-| Keep aspect on (closed lock) | lock |
-| Keep aspect off (open lock) | lock-open |
 | Each object on (each on its own) | ungroup |
 | Each object off (one group) | group |
 | Auto arrange... (panel) | layout-dashboard |

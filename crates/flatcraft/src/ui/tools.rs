@@ -670,7 +670,7 @@ pub const TOOLS: [Tool; 38] = [
 /// the one accent part that tells what happens, in the accent colour.
 /// Every other child is ink. Every icon of an action, a group or a
 /// switch has an entry; the framed Align icons use their base icon's.
-pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 44] = [
+pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 42] = [
     (Icon::Import, &[2], &[0, 1]),
     (Icon::Trace, &[], &[2]),
     (Icon::TestPatterns, &[0], &[1]),
@@ -708,8 +708,6 @@ pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 44] = [
     (Icon::ZoomIn, &[], &[2, 3]),
     (Icon::Eye, &[], &[1]),
     (Icon::Panels, &[0], &[1, 2]),
-    (Icon::KeepAspect, &[0], &[1]),
-    (Icon::KeepAspectOff, &[0], &[1]),
     (Icon::EachObject, &[1], &[0]),
     (Icon::AsGroup, &[4, 5], &[0, 1, 2, 3]),
     (Icon::AutoArrangePanel, &[0, 2], &[1, 3]),
@@ -1456,12 +1454,7 @@ mod tests {
             .iter()
             .map(|t| t.icon)
             .chain(GROUPS.iter().map(|g| g.icon))
-            .chain([
-                Icon::KeepAspect,
-                Icon::KeepAspectOff,
-                Icon::EachObject,
-                Icon::AsGroup,
-            ]);
+            .chain([Icon::EachObject, Icon::AsGroup]);
         for icon in icons {
             let (paper, accent) = icon_roles(icon).unwrap_or_else(|| panic!("{icon:?}"));
             assert!(!accent.is_empty(), "{icon:?} has no accent part");

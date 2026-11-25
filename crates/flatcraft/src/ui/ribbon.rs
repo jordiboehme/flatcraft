@@ -1100,10 +1100,81 @@ fn size_scale(ui: &mut Ui, cx: &mut Cx) {
 }
 
 /// The width of the Keep aspect column: the lock and the bracket's arms.
-const LOCK_COLUMN: f32 = 16.0;
+const LOCK_COLUMN: f32 = 18.0;
 
-/// The size of the lock icon.
-const LOCK_ICON: f32 = 14.0;
+/// Where the lock's centre sits in its column, from the column's left:
+/// room for an open shackle on the left.
+const LOCK_X: f32 = 7.5;
+
+/// How far the bracket's line stays away from the lock's centre, up and
+/// down.
+const LOCK_GAP: f32 = 8.5;
+
+/// The lock, drawn with the painter: a solid body and a shackle line of
+/// the bracket's width. Open, the shackle is lifted and swung out to the
+/// left of the body, its right leg free.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LockShape {
+    pub body: egui::Rect,
+    /// The shackle as one line: a leg, the arc, the other leg.
+    pub shackle: Vec<egui::Pos2>,
+}
+
+/// The lock around `c`, closed or open, snapped to the pixels of `ppp`
+/// (a 1 pt line sits on pixel centres at 1x and on pixel edges at 2x).
+pub fn lock_shape(c: egui::Pos2, open: bool, ppp: f32) -> LockShape {
+    let line = |v: f32| snap_line(v, ppp);
+    let px = |v: f32| (v * ppp).round() / ppp;
+    // Body: 7 x 6 pt, below the centre.
+    let body = egui::Rect::from_min_max(
+        egui::pos2(px(c.x - 3.5), px(c.y - 0.5)),
+        egui::pos2(px(c.x + 3.5), px(c.y + 5.5)),
+    );
+    let r = 2.0;
+    // Closed: legs at the body's middle +-r, the arc on top. Open: lifted
+    // 1.5 pt and swung left about the left leg, so the arc's other end
+    // (the right leg) hangs free beside the body.
+    let (left_leg, lift) = if open {
+        (c.x - r - 2.0 * r, 1.5)
+    } else {
+        (c.x - r, 0.0)
+    };
+    let right_leg = left_leg + 2.0 * r;
+    let arc_y = c.y - 3.0 - lift;
+    let (lx, rx) = (line(left_leg), line(right_leg));
+    let mut shackle = Vec::new();
+    // The leg that goes into the body: the right one when closed (both
+    // do), the right one of the swung shackle when open.
+    // Legs end on the body's edge (only their x needs the pixel grid).
+    let (left_end, right_end) = if open {
+        (arc_y + 2.0, body.top())
+    } else {
+        (body.top(), body.top())
+    };
+    shackle.push(egui::pos2(lx, left_end));
+    shackle.push(egui::pos2(lx, arc_y));
+    let steps = 10;
+    for k in 1..steps {
+        let a = std::f32::consts::PI * (1.0 + k as f32 / steps as f32);
+        let mid = (lx + rx) / 2.0;
+        let rr = (rx - lx) / 2.0;
+        shackle.push(egui::pos2(mid + rr * a.cos(), arc_y + rr * a.sin()));
+    }
+    shackle.push(egui::pos2(rx, arc_y));
+    shackle.push(egui::pos2(rx, right_end));
+    LockShape { body, shackle }
+}
+
+/// A 1 pt line's coordinate on the pixel grid of `ppp`: on a pixel's
+/// centre when the line is an odd number of pixels wide, else on an edge.
+fn snap_line(v: f32, ppp: f32) -> f32 {
+    let width_px = ppp.round().max(1.0) as i32;
+    if width_px % 2 == 1 {
+        ((v * ppp - 0.5).round() + 0.5) / ppp
+    } else {
+        (v * ppp).round() / ppp
+    }
+}
 
 /// Keep aspect: a small lock (closed: on, open: off) in `column`, left of
 /// the W and H fields (`wh`), on a thin bracket that joins W and H. Lock
@@ -1152,18 +1223,19 @@ fn keep_aspect(ui: &mut Ui, cx: &mut Cx, column: egui::Rect, wh: [egui::Rect; 2]
     if enabled && (resp.hovered() || resp.has_focus()) {
         painter.rect_filled(hit, 3.0, v.widgets.hovered.weak_bg_fill);
     }
-    // The bracket: arms from W and H to a line on the left, broken by the
-    // lock in the middle.
-    let x = hit.left() + LOCK_ICON / 2.0;
+    // The bracket: arms from W and H to a line through the lock, broken
+    // around it with room to spare.
+    let ppp = ui.ctx().pixels_per_point();
+    let x = snap_line(hit.left() + LOCK_X, ppp);
     let right = hit.right() - 1.0;
+    let (top, bottom) = (snap_line(top, ppp), snap_line(bottom, ppp));
     let middle = (top + bottom) / 2.0;
     let stroke = egui::Stroke::new(1.0, colour);
-    let half = LOCK_ICON / 2.0 + 1.0;
     painter.line(
         vec![
             egui::pos2(right, top),
             egui::pos2(x, top),
-            egui::pos2(x, middle - half),
+            egui::pos2(x, snap_line(middle - LOCK_GAP, ppp)),
         ],
         stroke,
     );
@@ -1171,22 +1243,13 @@ fn keep_aspect(ui: &mut Ui, cx: &mut Cx, column: egui::Rect, wh: [egui::Rect; 2]
         vec![
             egui::pos2(right, bottom),
             egui::pos2(x, bottom),
-            egui::pos2(x, middle + half),
+            egui::pos2(x, snap_line(middle + LOCK_GAP, ppp)),
         ],
         stroke,
     );
-    let icon = if on {
-        Icon::KeepAspect
-    } else {
-        Icon::KeepAspectOff
-    };
-    let tex = super::icons::texture_colored(ui.ctx(), icon, LOCK_ICON, colour);
-    painter.image(
-        tex.id(),
-        egui::Rect::from_center_size(egui::pos2(x, middle), egui::Vec2::splat(LOCK_ICON)),
-        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-        egui::Color32::WHITE,
-    );
+    let lock = lock_shape(egui::pos2(hit.left() + LOCK_X, middle), !on, ppp);
+    painter.rect_filled(lock.body, 1.0, colour);
+    painter.line(lock.shackle, stroke);
     groups::card(&resp, "Keep aspect", card.card(), why, false);
 }
 
@@ -1240,6 +1303,42 @@ fn each_switch(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_open_lock_swings_its_shackle_out_to_the_left() {
+        let c = egui::pos2(100.0, 50.0);
+        for ppp in [1.0, 2.0] {
+            let closed = lock_shape(c, false, ppp);
+            let open = lock_shape(c, true, ppp);
+            assert_eq!(closed.body, open.body, "the body stays");
+            let min_x = |l: &LockShape| l.shackle.iter().map(|p| p.x).fold(f32::MAX, f32::min);
+            let max_x = |l: &LockShape| l.shackle.iter().map(|p| p.x).fold(f32::MIN, f32::max);
+            let top = |l: &LockShape| l.shackle.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+            // Closed: the shackle stands on the body, both legs in it.
+            assert!(min_x(&closed) > closed.body.left() && max_x(&closed) < closed.body.right());
+            assert_eq!(closed.shackle.first().unwrap().y, closed.body.top());
+            assert_eq!(closed.shackle.last().unwrap().y, closed.body.top());
+            // Open: lifted, out past the body's left side, one leg free.
+            assert!(min_x(&open) < open.body.left() - 1.0, "{ppp}");
+            assert!(top(&open) < top(&closed), "{ppp}");
+            assert!(
+                open.shackle.first().unwrap().y < open.body.top() - 1.0,
+                "a free leg"
+            );
+            assert_eq!(open.shackle.last().unwrap().y, open.body.top());
+            // Narrow and inside the column with the bracket.
+            assert!(closed.body.width() <= 7.0);
+            assert!(min_x(&open) >= c.x - LOCK_X, "{ppp}");
+        }
+    }
+
+    #[test]
+    fn a_one_point_line_sits_on_the_pixel_grid() {
+        // 1x: on pixel centres; 2x: on pixel edges.
+        assert_eq!(snap_line(10.2, 1.0), 10.5);
+        assert_eq!(snap_line(10.2, 2.0), 10.0);
+        assert_eq!(snap_line(10.3, 2.0), 10.5);
+    }
 
     #[test]
     fn hyphens_and_case_do_not_matter() {
