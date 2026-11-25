@@ -78,18 +78,16 @@ pub fn ribbon(
                         // the place of the ribbon panel.
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing.y = 0.0;
-                            ui.add_space(ribbon_tabs::TAB_ROW);
                             egui::Frame::new()
                                 .fill(t.panel)
                                 .stroke(egui::Stroke::new(1.0, t.border))
                                 .corner_radius(t.ribbon_radius)
                                 .inner_margin(egui::Margin::symmetric(6, 4))
                                 .show(ui, |ui| {
-                                    ui.set_min_height(groups::ROW_HEIGHT - 2.0);
+                                    ui.set_min_height(TILE_HEIGHT - 10.0);
                                     // The stage bar sits in the middle of the
                                     // panel's height.
-                                    let room =
-                                        groups::ROW_HEIGHT - 2.0 - ui.spacing().interact_size.y;
+                                    let room = TILE_HEIGHT - 10.0 - ui.spacing().interact_size.y;
                                     ui.add_space(room / 2.0);
                                     super::cut::stage_bar(
                                         ui,
@@ -134,7 +132,22 @@ fn switcher(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
         let fresh = ui.data(|d| d.get_temp::<usize>(cursor_id)).is_none();
         let mut cursor = ui
             .data(|d| d.get_temp::<usize>(cursor_id))
-            .unwrap_or_else(|| CHOICES.iter().position(|w| *w == current).unwrap_or(0));
+            .unwrap_or_else(|| {
+                // Start on the row under the pointer, else on the current one.
+                let top = ui.cursor().min;
+                let pointer = ui.input(|i| i.pointer.hover_pos());
+                (0..CHOICES.len())
+                    .find(|i| {
+                        let y = top.y + *i as f32 * (ROW_HEIGHT + ui.spacing().item_spacing.y);
+                        let r = Rect::from_min_size(
+                            egui::pos2(top.x, y),
+                            Vec2::new(LIST_WIDTH, ROW_HEIGHT),
+                        );
+                        pointer.is_some_and(|p| r.contains(p))
+                    })
+                    .or_else(|| CHOICES.iter().position(|w| *w == current))
+                    .unwrap_or(0)
+            });
         let mut picked = None;
         if !fresh {
             let (down, up, enter) = ui.input_mut(|i| {

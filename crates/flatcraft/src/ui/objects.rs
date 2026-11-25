@@ -89,7 +89,7 @@ fn object_row(
             name_text.clone(),
         )
     });
-    let over = ui.rect_contains_pointer(rect);
+    let over = row.contains_pointer();
     let quiet = !(o.visible && o.cut_enabled);
     if ui.is_rect_visible(rect) {
         let fill = if selected {
@@ -236,7 +236,7 @@ fn toggle(
         let loud = on || resp.hovered();
         let alpha = if loud {
             1.0
-        } else if row_hovered || row_selected {
+        } else if row_hovered || row_selected || resp.has_focus() {
             0.55
         } else {
             0.0
@@ -246,6 +246,14 @@ fn toggle(
             painter.rect_filled(rect, t.radius, t.border);
         } else if on {
             painter.rect_filled(rect, t.radius, t.warn.gamma_multiply(0.18));
+        }
+        if resp.has_focus() {
+            ui.painter().rect_stroke(
+                rect,
+                t.radius,
+                egui::Stroke::new(1.5, t.accent_prepare),
+                egui::StrokeKind::Inside,
+            );
         }
         if alpha > 0.0 {
             let colour = if on { t.warn } else { t.text };

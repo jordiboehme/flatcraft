@@ -255,3 +255,29 @@ fn a_row_click_selects_and_a_double_click_renames() {
     }
     assert!(app(&h).ui.prepare.rename.is_some());
 }
+
+#[test]
+fn in_cut_the_stage_panel_is_flush_with_the_tile() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(&dir, session(&dir), false);
+    app_mut(&mut h).ui.workspace = Workspace::Cut;
+    h.run();
+    h.run();
+    let tile = h.get_by_role_and_label(Role::Button, "Workspace").rect();
+    let border = app(&h).tokens.border;
+    let panel = painted(&h)
+        .iter()
+        .find_map(|s| match s {
+            egui::Shape::Rect(r)
+                if r.stroke.color == border
+                    && (r.rect.height() - switcher::TILE_HEIGHT).abs() < 1.0
+                    && r.rect.width() > 300.0 =>
+            {
+                Some(r.rect)
+            }
+            _ => None,
+        })
+        .expect("the stage panel");
+    assert!((panel.top() - tile.top()).abs() < 0.5, "{panel:?} {tile:?}");
+    assert!((panel.bottom() - tile.bottom()).abs() < 0.5);
+}
