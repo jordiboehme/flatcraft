@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use super::icons::Icon;
 use super::prepare::{Eleven, Override, PrepareState, Snapshot};
 use super::theme::Tokens;
+use super::tools::Setting;
 use super::{Action, fonts, icon_button};
 
 /// The `job.set_overrides` field of an override.
@@ -81,9 +82,11 @@ fn strokes_name(m: StrokeMode) -> &'static str {
 
 /// A labelled combo box. Returns the picked value when it differs from
 /// `current`; `selected` is the entry shown as selected (usually the same).
+#[allow(clippy::too_many_arguments)]
 fn combo<T: Clone + PartialEq>(
     ui: &mut Ui,
     label: &str,
+    setting: Option<Setting>,
     text: &str,
     choices: &[(T, String)],
     selected: Option<&T>,
@@ -108,6 +111,10 @@ fn combo<T: Clone + PartialEq>(
                 }
             });
         set_name(ui, &r.response, label);
+        if let Some(setting) = setting {
+            let why = (!enabled).then_some("Select an object first.");
+            super::groups::card(&r.response, label, setting.card(), why, false);
+        }
     });
     ui.end_row();
     picked
@@ -146,6 +153,7 @@ pub fn show(
             if let Some(m) = combo(
                 ui,
                 "Cut mode",
+                Some(Setting::CutMode),
                 text,
                 &modes,
                 mode.as_ref(),
@@ -173,6 +181,7 @@ pub fn show(
             if let Some(m) = combo(
                 ui,
                 "Strokes",
+                Some(Setting::Strokes),
                 text,
                 &choices,
                 strokes.as_ref(),
@@ -226,6 +235,7 @@ pub fn job(
             if let Some(id) = combo(
                 ui,
                 "Plotter",
+                None,
                 name,
                 &plotters,
                 Some(&snap.job.plotter_id),
@@ -259,6 +269,7 @@ pub fn job(
             if let Some(id) = combo(
                 ui,
                 "Mat",
+                None,
                 &name,
                 &mats,
                 shown.as_ref(),
@@ -279,6 +290,7 @@ pub fn job(
             if let Some(id) = combo(
                 ui,
                 "Material",
+                None,
                 name,
                 &materials,
                 Some(&snap.job.material_id),
@@ -380,14 +392,22 @@ pub fn job(
                     label.to_string()
                 };
                 set_name(ui, &resp, &name);
-                let resp = if eleven {
-                    resp.on_hover_text(ELEVEN)
-                } else {
-                    resp.on_hover_text(format!(
-                        "{label}: {} to {}. The material says {base}.",
-                        range[0], range[1]
-                    ))
+                let setting = match which {
+                    Override::Speed => Setting::Speed,
+                    Override::Force => Setting::Force,
+                    Override::Passes => Setting::Passes,
                 };
+                let what = format!(
+                    "{} From {} to {}. The material says {base}.",
+                    setting.card(),
+                    range[0],
+                    range[1]
+                );
+                if eleven {
+                    super::groups::card(&resp, label, &what, Some(ELEVEN), false);
+                } else {
+                    super::groups::card(&resp, label, &what, None, false);
+                }
                 // One command when a drag ends or a typed value lands,
                 // never one per frame of a drag.
                 if resp.dragged() {

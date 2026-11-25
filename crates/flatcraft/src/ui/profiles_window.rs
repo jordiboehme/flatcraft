@@ -9,6 +9,7 @@
 //! thread never sees half a change. No registry command changes the
 //! preferences: this window is the only way (agent limit).
 
+use super::tools::Setting;
 use std::path::PathBuf;
 
 use egui::{Color32, Response, RichText, Sense, Ui, vec2};
@@ -603,12 +604,17 @@ impl Form<'_> {
         }
     }
 
-    /// A label cell, the widget, its accessible name, end of row.
+    /// A label cell, the widget, its accessible name, end of row. A field
+    /// the hints explain (speed, force, passes, overcut, blade offset) gets
+    /// its hover card.
     fn row(&self, ui: &mut Ui, label: &str, key: &str, add: impl FnOnce(&mut Ui) -> Response) {
         let dot = self.is_modified(key).then_some(self.t.accent_prepare);
         paint_text(ui, label, ui.visuals().text_color(), dot);
         let r = add(ui);
         set_name(ui, &r, &self.name(label, key));
+        if let Some(setting) = setting_of(key) {
+            super::groups::card(&r, label, setting.card(), None, false);
+        }
         ui.end_row();
     }
 
@@ -620,6 +626,18 @@ impl Form<'_> {
         set_name(ui, &r, &self.name(label, key));
         ui.end_row();
     }
+}
+
+/// The setting a form key shows, for its hover card.
+fn setting_of(key: &str) -> Option<Setting> {
+    Some(match key {
+        "speed" | "speed_range" => Setting::Speed,
+        "force" | "force_range" => Setting::Force,
+        "passes" | "passes_range" => Setting::Passes,
+        "overcut_mm" => Setting::Overcut,
+        "blade_offset_mm" => Setting::BladeOffset,
+        _ => return None,
+    })
 }
 
 fn num(v: &mut f64, decimals: usize) -> egui::DragValue<'_> {

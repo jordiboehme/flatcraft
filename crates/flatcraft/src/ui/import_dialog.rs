@@ -7,6 +7,7 @@
 //! generation number, and results of older generations are dropped. Apply
 //! sends one `object.retrace` to the object's document.
 
+use super::tools::Setting;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
@@ -609,30 +610,27 @@ fn controls(ui: &mut Ui, d: &mut TraceDialog) -> bool {
 
     ui.horizontal(|ui| {
         let mut auto = s.threshold.is_none();
-        let r = ui
-            .add_enabled(
-                !auto,
-                egui::Slider::new(&mut d.manual_threshold, 0..=255).text("Threshold"),
-            )
-            .on_hover_text("Pixels darker than this are cut");
+        let r = ui.add_enabled(
+            !auto,
+            egui::Slider::new(&mut d.manual_threshold, 0..=255).text("Threshold"),
+        );
+        super::groups::card(&r, "Threshold", Setting::Threshold.card(), None, false);
         set_name(ui, &r, "Threshold");
         if r.changed() {
             s.threshold = Some(d.manual_threshold);
             changed = true;
         }
-        let r = ui
-            .checkbox(&mut auto, "Auto")
-            .on_hover_text("Let Otsu's method pick the threshold");
+        let r = ui.checkbox(&mut auto, "Auto");
+        super::groups::card(&r, "Auto", Setting::AutoThreshold.card(), None, false);
         set_name(ui, &r, "Automatic threshold");
         if r.changed() {
             s.threshold = (!auto).then_some(d.manual_threshold);
             changed = true;
         }
     });
-    changed |= ui
-        .checkbox(&mut s.invert, "Invert")
-        .on_hover_text("Cut the light parts instead of the dark ones")
-        .changed();
+    let r = ui.checkbox(&mut s.invert, "Invert");
+    super::groups::card(&r, "Invert", Setting::Invert.card(), None, false);
+    changed |= r.changed();
     ui.horizontal(|ui| {
         let r = ui.add(
             egui::DragValue::new(&mut s.despeckle_mm2)
@@ -642,18 +640,24 @@ fn controls(ui: &mut Ui, d: &mut TraceDialog) -> bool {
                 .suffix(" mm²"),
         );
         set_name(ui, &r, "Despeckle (mm²)");
+        super::groups::card(&r, "Despeckle", Setting::Despeckle.card(), None, false);
         changed |= r.changed();
-        ui.label("Despeckle")
-            .on_hover_text("Specks smaller than this area vanish");
+        let l = ui.label("Despeckle");
+        super::groups::card(&l, "Despeckle", Setting::Despeckle.card(), None, false);
     });
     let r = ui
-        .add(egui::Slider::new(&mut s.corner_threshold_deg, 0.0..=180.0).text("Corner threshold"))
-        .on_hover_text("Angles sharper than this stay corners (degrees)");
+        .add(egui::Slider::new(&mut s.corner_threshold_deg, 0.0..=180.0).text("Corner threshold"));
+    super::groups::card(
+        &r,
+        "Corner threshold",
+        Setting::CornerThreshold.card(),
+        None,
+        false,
+    );
     set_name(ui, &r, "Corner threshold (deg)");
     changed |= r.changed();
-    let r = ui
-        .add(egui::Slider::new(&mut s.smoothing, 0..=10).text("Smoothing"))
-        .on_hover_text("0 follows the pixels, 10 gives the smoothest curves");
+    let r = ui.add(egui::Slider::new(&mut s.smoothing, 0..=10).text("Smoothing"));
+    super::groups::card(&r, "Smoothing", Setting::Smoothing.card(), None, false);
     set_name(ui, &r, "Smoothing");
     changed |= r.changed();
     ui.horizontal(|ui| {
@@ -671,12 +675,23 @@ fn controls(ui: &mut Ui, d: &mut TraceDialog) -> bool {
             s.min_feature_mm = Some(d.manual_min_feature);
             changed = true;
         }
-        ui.label("Minimum feature").on_hover_text(
-            "Shapes thinner than this are dropped. A blade cannot cut what it cannot turn in.",
+        super::groups::card(
+            &r,
+            "Minimum feature",
+            Setting::MinFeature.card(),
+            None,
+            false,
         );
-        let r = ui
-            .checkbox(&mut auto, "Auto")
-            .on_hover_text("6 times the blade offset of the plotter");
+        let l = ui.label("Minimum feature");
+        super::groups::card(
+            &l,
+            "Minimum feature",
+            Setting::MinFeature.card(),
+            None,
+            false,
+        );
+        let r = ui.checkbox(&mut auto, "Auto");
+        super::groups::card(&r, "Auto", Setting::AutoMinFeature.card(), None, false);
         set_name(ui, &r, "Automatic minimum feature");
         if r.changed() {
             s.min_feature_mm = (!auto).then_some(d.manual_min_feature);
