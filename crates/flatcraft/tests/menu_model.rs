@@ -149,6 +149,8 @@ fn the_menus_and_their_items_come_in_order() {
             "Trace...",
             "Reload",
             "Reconnect source...",
+            flatcraft::ui::files::reveal_source_label(),
+            "Copy source path",
             "-",
             "Delete"
         ]
@@ -955,6 +957,7 @@ struct Fixture {
     s: SharedSession,
     h: AppHarness,
     picker: common::FakePicker,
+    revealed: common::FakeRevealer,
     recent: Vec<PathBuf>,
 }
 
@@ -987,7 +990,11 @@ fn fixture() -> Fixture {
     select(&s, &[linked, a]);
     let picker = common::FakePicker::default();
     let p = picker.clone();
-    let mut h = common::harness_with(&dir, s.clone(), |app| app.with_file_picker(p));
+    let revealed = common::FakeRevealer::default();
+    let r = revealed.clone();
+    let mut h = common::harness_with(&dir, s.clone(), |app| {
+        app.with_file_picker(p).with_revealer(r)
+    });
     to_prepare(&mut h);
     app_mut(&mut h).ui.prepare.sources.doc_id = s.lock().unwrap().doc().id();
     app_mut(&mut h).ui.prepare.sources.missing.push(linked);
@@ -999,6 +1006,7 @@ fn fixture() -> Fixture {
         s,
         h,
         picker,
+        revealed,
         recent: vec![PathBuf::from("/nowhere/a.flatcraft")],
     }
 }
@@ -1021,8 +1029,9 @@ fn effects(f: &Fixture) -> String {
     let commands = format!("{commands} {:?}", f.h.output().platform_output.commands);
     let p = &a.ui.prepare;
     let requests = f.picker.requests.lock().unwrap().len();
+    let revealed = f.revealed.0.lock().unwrap().len();
     format!(
-        "{doc} {docs} {requests} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {commands}",
+        "{doc} {docs} {requests} {revealed} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {commands}",
         a.ui.workspace,
         (p.rename.is_some(), p.panel.is_some(), p.fit_pending),
         (p.show_grid, p.show_rulers, p.panels.clone()),

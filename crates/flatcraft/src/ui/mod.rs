@@ -631,7 +631,9 @@ impl FlatCraftApp {
             | Cmd::ToggleCut
             | Cmd::ToggleHide
             | Cmd::Rename
-            | Cmd::Reconnect => {
+            | Cmd::Reconnect
+            | Cmd::RevealSource
+            | Cmd::CopySourcePath => {
                 // The menu is dimmed outside Prepare; a late click does
                 // nothing. A text field keeps the keys of Duplicate, Import
                 // and Delete.
@@ -1062,7 +1064,11 @@ impl FlatCraftApp {
                     self.toast(Toast::info("Cut request denied. Nothing was sent."));
                 }
             }
-            Action::CopyPath(path) => ctx.copy_text(path.display().to_string()),
+            Action::CopyPath(path) => {
+                let text = path.display().to_string();
+                ctx.copy_text(text.clone());
+                self.toast(Toast::info("Path copied").with_detail(text));
+            }
             Action::CloseOthers(keep) => {
                 let others: Vec<u64> = {
                     let s = lock(&self.session);

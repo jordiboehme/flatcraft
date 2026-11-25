@@ -48,6 +48,10 @@ pub enum Item {
     TraceAgain,
     Reload,
     Reconnect,
+    /// Show the linked file in the file manager.
+    RevealSource,
+    /// Copy the linked file's path.
+    CopySourcePath,
     Delete,
     // The empty mat.
     Import,
@@ -93,6 +97,8 @@ impl Item {
             Item::TraceAgain => "Trace again...",
             Item::Reload => "Reload source",
             Item::Reconnect => "Reconnect source...",
+            Item::RevealSource => super::files::reveal_source_label(),
+            Item::CopySourcePath => "Copy source path",
             Item::SelectAll => "Select all",
             _ => unreachable!("the other items are ribbon actions"),
         }
@@ -127,6 +133,12 @@ impl Item {
             Item::TraceAgain => "Trace the picture again with other settings.",
             Item::Reload => "Read the linked file again after you changed it in another app.",
             Item::Reconnect => "The linked file moved or is gone. Show FlatCraft where it is now.",
+            Item::RevealSource => {
+                "Opens the folder of the design file this object was imported from, with the file selected."
+            }
+            Item::CopySourcePath => {
+                "Copies the full path of the design file this object was imported from."
+            }
             Item::SelectAll => "Select every visible object on the mat.",
             _ => unreachable!("the other items are ribbon actions"),
         }
@@ -156,9 +168,38 @@ impl Item {
                 .objects
                 .is_empty()
                 .then_some("Import something first. There is nothing to select yet."),
+            Item::RevealSource | Item::CopySourcePath => source_file(snap, ids)?.err(),
             _ => self.tool()?.blocked_for(snap, n),
         }
     }
+}
+
+/// Why Reveal source and Copy source path are dimmed: the file is gone.
+pub const SOURCE_MISSING: &str = "The file was moved or deleted. Use Reconnect source.";
+/// Why they are dimmed: the objects come from several files.
+pub const SOURCE_MIXED: &str = "The selected objects come from different files.";
+
+/// The linked file of the objects `ids`: `None` when none of them is
+/// linked to a file (the items are left out), the reason when the file is
+/// gone or the linked objects come from different files, else its path.
+/// Objects that are not linked do not count.
+pub fn source_file(
+    snap: &Snapshot,
+    ids: &[u64],
+) -> Option<Result<std::path::PathBuf, &'static str>> {
+    let mut files: Vec<&std::path::PathBuf> = ids
+        .iter()
+        .filter_map(|id| snap.object(*id)?.link.as_ref())
+        .collect();
+    files.dedup();
+    let first = *files.first()?;
+    if files.iter().any(|f| *f != first) {
+        return Some(Err(SOURCE_MIXED));
+    }
+    if !first.is_file() {
+        return Some(Err(SOURCE_MISSING));
+    }
+    Some(Ok(first.clone()))
 }
 
 /// The objects a right-click works on. A click on an object outside the
@@ -250,6 +291,10 @@ pub fn items(snap: &Snapshot, st: &PrepareState, ids: &[u64]) -> Vec<Vec<Item>> 
     }
     if objs.iter().any(|o| o.link.is_some() && src.broken(o.id)) {
         g.push(Item::Reconnect);
+    }
+    if objs.iter().any(|o| o.link.is_some()) {
+        g.push(Item::RevealSource);
+        g.push(Item::CopySourcePath);
     }
     groups.push(g);
 
@@ -403,6 +448,11 @@ pub fn run_item(
                 actions.push(Action::Reconnect { doc_id, id: *o });
             }
         }
+        Item::RevealSource | Item::CopySourcePath => match source_file(snap, ids) {
+            Some(Ok(path)) if item == Item::RevealSource => actions.push(Action::Reveal(path)),
+            Some(Ok(path)) => actions.push(Action::CopyPath(path)),
+            _ => return false,
+        },
         Item::Delete => actions.push(ribbon::delete_action(doc_id, ids)),
         Item::Import => actions.push(Action::Import { doc_id }),
         Item::SelectAll => actions.push(select_all_action(snap)),

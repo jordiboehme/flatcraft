@@ -95,6 +95,8 @@ pub enum Cmd {
     ToggleHide,
     Rename,
     Reconnect,
+    RevealSource,
+    CopySourcePath,
     Workspace(Workspace),
     Help(HelpItem),
 }
@@ -125,6 +127,8 @@ impl Cmd {
             Cmd::ToggleHide => "toggle-hide",
             Cmd::Rename => "rename",
             Cmd::Reconnect => "reconnect",
+            Cmd::RevealSource => "reveal-source",
+            Cmd::CopySourcePath => "copy-source-path",
             Cmd::OpenRecent(i) => return format!("flatcraft.recent.{i}"),
             Cmd::Tool(id) => return format!("flatcraft.tool.{id}"),
             Cmd::Workspace(w) => return format!("flatcraft.workspace.{}", w.name()),
@@ -177,6 +181,8 @@ impl Cmd {
             Cmd::ToggleHide,
             Cmd::Rename,
             Cmd::Reconnect,
+            Cmd::RevealSource,
+            Cmd::CopySourcePath,
         ]
         .into_iter()
         .find(|c| c.id() == id)
@@ -335,6 +341,8 @@ pub fn object_item(cmd: &Cmd, snap: &Snapshot, st: &PrepareState, ids: &[u64]) -
         Cmd::Unlink => Obj::UnlinkCopies,
         Cmd::Rename => Obj::Rename,
         Cmd::Reconnect => Obj::Reconnect,
+        Cmd::RevealSource => Obj::RevealSource,
+        Cmd::CopySourcePath => Obj::CopySourcePath,
         Cmd::ToggleHide => hide_item(snap, ids),
         Cmd::ToggleCut => cut_item(snap, ids),
         _ => return None,
@@ -722,6 +730,18 @@ fn object_menu(inp: &MenuInput) -> Sub {
                     Cmd::Reconnect,
                     Obj::Reconnect.label(),
                     on(Cmd::Reconnect),
+                    None,
+                ),
+                item(
+                    Cmd::RevealSource,
+                    Obj::RevealSource.label(),
+                    on(Cmd::RevealSource),
+                    None,
+                ),
+                item(
+                    Cmd::CopySourcePath,
+                    Obj::CopySourcePath.label(),
+                    on(Cmd::CopySourcePath),
                     None,
                 ),
                 Entry::Separator,
