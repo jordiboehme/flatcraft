@@ -17,7 +17,9 @@ use kurbo::{Point, Rect, Vec2};
 
 use crate::grid::{SegmentGrid, segment_distance};
 use crate::trace::sample_step;
-use crate::{ALGORITHM_LIMIT_MM, END_TO_END_LIMIT_MM, Sample, SimSettings, SimTrace};
+use crate::{
+    ALGORITHM_LIMIT_MM, END_TO_END_LIMIT_MM, Sample, SimSettings, SimTrace, UNCUT_LIMIT_MM,
+};
 
 /// The start deviation looks at this much tip travel after the first path sample.
 pub const START_WINDOW_MM: f64 = 3.0;
@@ -54,12 +56,18 @@ pub struct PathMetrics {
     pub max_twist_deg: f64,
     /// The largest correspondence deviation in the first [`START_WINDOW_MM`] of tip travel.
     pub max_start_deviation_mm: f64,
-    /// Closed `Cut` toolpaths: how far the end of the last lap stays from the start.
+    /// Closed `Cut` toolpaths: the distance from the last path tip to the
+    /// early trace (the first half lap) of the same ring. About 0 when
+    /// the overcut closes the ring, and about `d` for an uncompensated
+    /// ring that starts and ends at a corner without overcut.
     pub closure_gap_mm: Option<f64>,
-    /// Intended length with no path sample within `uncut_eps_mm`.
+    /// Intended length with no path move within [`UNCUT_LIMIT_MM`]: the
+    /// material is not severed there (Ruling M2-P14).
     pub uncut_mm: f64,
     /// Path-sample tip length that strays more than `END_TO_END_LIMIT_MM`
     /// from the intended path, or that the blade cut pushed from behind.
+    /// A trace 0.05 to 0.1 mm off is stray only; farther off it is stray
+    /// and (where nothing else cuts) uncut too.
     pub stray_mm: f64,
     /// Waste-sample tip length.
     pub waste_mm: f64,
@@ -113,9 +121,13 @@ pub struct JobMetrics {
     pub max_span_frechet_mm: f64,
     pub max_corner_deviation_mm: f64,
     /// Over all down samples, waste included: the largest distance to the
-    /// nearest cut of a tip that lies in kept material more than
-    /// `uncut_eps_mm` from any cut. A cut is a closed ring or an open
-    /// `Cut` path.
+    /// nearest cut of a tip that lies in kept material farther from any
+    /// cut than a tolerance. A cut is a closed ring or an open `Cut` path.
+    /// The tolerance is `END_TO_END_LIMIT_MM` for path samples (their
+    /// deviation is judged by stray) and the strict `uncut_eps_mm` for
+    /// waste samples (lead-ins, overshoots, alignment), which should
+    /// never touch kept material (Ruling M2-P14). A drop point takes the
+    /// tolerance of the move after it.
     pub max_into_kept_mm: f64,
     pub max_twist_deg: f64,
     pub max_start_deviation_mm: f64,
@@ -210,6 +222,15 @@ fn thin(points: &[Point], max: usize) -> Vec<Point> {
 /// [`FRECHET_MAX_POINTS`]. The coupling cost of a trace point and an
 /// intended segment is the point-to-segment distance, so two identical
 /// curves score 0 whatever their sample spacing.
+///
+/// Limits of this form:
+/// - The value is at most the continuous Frechet distance plus the
+///   spacing of the (thinned) trace points.
+/// - It is not order-sensitive inside one intended segment: trace points
+///   that run back and forth along one segment all couple to it.
+/// - Thinning keeps points evenly by index, so an excursion of the trace
+///   shorter than the thinned spacing can be dropped. Hausdorff and
+///   correspondence see every sample, so they still catch it.
 fn span_frechet(path: &[Point], trace: &[Point]) -> f64 {
     let a = thin(path, FRECHET_MAX_POINTS);
     let b = thin(trace, FRECHET_MAX_POINTS);
@@ -296,12 +317,12 @@ impl CornerGrid {
 /// Running state of one toolpath while the samples are walked.
 struct PathState {
     started: bool,
-    start_tip: Point,
     last_tip: Point,
     tip_len: f64,
-    /// Closed `Cut` toolpaths: the tip length from which the close is measured.
-    closure_from: Option<f64>,
-    closure: f64,
+    /// Closed `Cut` toolpaths: the length of one lap.
+    lap_mm: Option<f64>,
+    /// The path moves of the first half lap, with the tip length before each.
+    early: Vec<(f64, Point, Point)>,
     /// Per span: the tips of its path samples, in trace order.
     span_tips: Vec<Vec<Point>>,
     /// Interior vertex indices where spans start.
@@ -377,12 +398,10 @@ pub fn measure(
         let span_starts: Vec<usize> = starts.into_iter().filter(|&j| j > 0).collect();
         state.push(PathState {
             started: false,
-            start_tip: Point::ZERO,
             last_tip: Point::ZERO,
             tip_len: 0.0,
-            closure_from: (cut && t.closed)
-                .then(|| (f64::from(t.laps.max(1)) - 0.5) * length(t.lap())),
-            closure: f64::INFINITY,
+            lap_mm: (cut && t.closed).then(|| length(t.lap())),
+            early: Vec::new(),
             span_tips: vec![Vec::new(); span_starts.len() + 1],
             span_starts,
         });
@@ -407,7 +426,7 @@ pub fn measure(
 
     let mut dev = vec![f32::NAN; samples.len()];
     let mut moves = SegmentGrid::default();
-    let mut spots: Vec<Spot> = Vec::new();
+    let mut spots = SpotCells::default();
     let mut max_into_kept = 0.0f64;
     let (mut travel_mm, mut travel_crossings) = (0.0, 0usize);
     let mut travel_from = samples.first().map_or(Point::ZERO, |x| x.axis);
@@ -451,7 +470,20 @@ pub fn measure(
         };
         dev[k] = deviation as f32;
 
-        if kept.is_clear(x.tip, eps) && kept.is_kept(x.tip) {
+        // The drop point is judged with the move that follows it: on a cut
+        // that starts straight away it is the start of the path trace.
+        let drop = classes[k - 1] == Class::Up || prev.toolpath != i || prev.run != x.run;
+        let judged = if drop {
+            classes.get(k + 1).copied().unwrap_or(classes[k])
+        } else {
+            classes[k]
+        };
+        let tolerance = if judged == Class::Path {
+            END_TO_END_LIMIT_MM
+        } else {
+            eps
+        };
+        if kept.is_clear(x.tip, tolerance) && kept.is_kept(x.tip) {
             // `KeptMaterial` knows only the closed rings. An open cut (a
             // score line inside a piece) is a cut too, not kept material.
             let to_open_cut = if classes[k] == Class::Waste {
@@ -460,9 +492,9 @@ pub fn measure(
                 intended.nearest(x.tip, |_| true, 0.0)
             };
             let depth = kept.distance_to_cut(x.tip).min(to_open_cut);
-            if depth > eps {
+            if depth > tolerance {
                 max_into_kept = max_into_kept.max(depth);
-                spots.push(Spot {
+                spots.offer(Spot {
                     at: x.tip,
                     deviation_mm: depth,
                     toolpath: i,
@@ -472,7 +504,7 @@ pub fn measure(
         }
         if x.pushed && !(prev.pushed && prev.down && prev.toolpath == i) {
             per[i].pushed += 1;
-            spots.push(Spot {
+            spots.offer(Spot {
                 at: x.tip,
                 deviation_mm: deviation,
                 toolpath: i,
@@ -521,7 +553,7 @@ pub fn measure(
             m.stray_mm += len;
         }
         if deviation > ALGORITHM_LIMIT_MM {
-            spots.push(Spot {
+            spots.offer(Spot {
                 at: x.tip,
                 deviation_mm: deviation,
                 toolpath: i,
@@ -529,20 +561,15 @@ pub fn measure(
             });
         }
         let st = &mut state[i];
-        if !st.started {
-            st.started = true;
-            st.start_tip = prev.tip;
-        }
+        st.started = true;
         if st.tip_len < START_WINDOW_MM {
             m.max_start_deviation_mm = m.max_start_deviation_mm.max(corr);
         }
+        if st.lap_mm.is_some_and(|lap| st.tip_len < 0.5 * lap) {
+            st.early.push((st.tip_len, prev.tip, x.tip));
+        }
         st.tip_len += len;
         st.last_tip = x.tip;
-        if st.closure_from.is_some_and(|from| st.tip_len >= from) {
-            st.closure = st
-                .closure
-                .min(segment_distance(st.start_tip, prev.tip, x.tip));
-        }
         let span = st.span_starts.partition_point(|&j| j <= x.seg as usize);
         st.span_tips[span].push(x.tip);
     }
@@ -554,9 +581,9 @@ pub fn measure(
         let near = |p: Point| moves.nearest(p, own, 0.0);
         let m = &mut per[i];
         let mut stretch: Option<(f64, Point)> = None;
-        let close = |stretch: &mut Option<(f64, Point)>, spots: &mut Vec<Spot>| {
+        let close = |stretch: &mut Option<(f64, Point)>, spots: &mut SpotCells| {
             if let Some((miss, at)) = stretch.take() {
-                spots.push(Spot {
+                spots.offer(Spot {
                     at,
                     deviation_mm: miss,
                     toolpath: i,
@@ -579,7 +606,7 @@ pub fn measure(
                     .miss_mm
                     .max(near(a.lerp(b, q as f64 / n as f64)))
                     .max(at_mid);
-                if at_mid > eps {
+                if at_mid > UNCUT_LIMIT_MM {
                     m.uncut_mm += piece;
                     if stretch.is_none_or(|(miss, _)| at_mid > miss) {
                         stretch = Some((at_mid, mid));
@@ -605,12 +632,19 @@ pub fn measure(
                 m.max_span_frechet_mm = m.max_span_frechet_mm.max(span_frechet(path, tips));
             }
         }
-        if st.closure_from.is_some() && st.started {
-            m.closure_gap_mm = Some(if st.closure.is_finite() {
-                st.closure
-            } else {
-                st.start_tip.distance(st.last_tip)
-            });
+        if let Some(lap) = st.lap_mm
+            && st.started
+        {
+            // The first half lap, or half the trace when it is shorter, so
+            // the last tip is never measured against its own moves.
+            let early = 0.5 * lap.min(st.tip_len);
+            m.closure_gap_mm = Some(
+                st.early
+                    .iter()
+                    .filter(|e| e.0 < early)
+                    .map(|&(_, a, b)| segment_distance(st.last_tip, a, b))
+                    .fold(f64::INFINITY, f64::min),
+            );
         }
     }
     for (c, &(_, i)) in corner_grid.corners.iter().enumerate() {
@@ -664,23 +698,57 @@ pub fn measure(
         pushed,
         score,
         grade,
-        worst_spots: worst_spots(spots),
+        worst_spots: worst_spots(spots.into_vec()),
         per_path: per,
     };
     (metrics, dev)
 }
 
+/// The worst spot candidates, one per cell of half the spot separation
+/// and rank, so memory grows with the area cut, not with the samples.
+/// A spot lower than its cell's best but farther than the separation from
+/// every chosen spot can be lost; the cell's best is at most
+/// `SPOT_SEPARATION_MM / sqrt(2)` from it.
+#[derive(Default)]
+struct SpotCells(HashMap<(i64, i64, u8), Spot>);
+
+impl SpotCells {
+    fn offer(&mut self, s: Spot) {
+        let size = SPOT_SEPARATION_MM / 2.0;
+        let key = (
+            (s.at.x / size).floor() as i64,
+            (s.at.y / size).floor() as i64,
+            rank(&s),
+        );
+        let best = self.0.entry(key).or_insert(s);
+        if s.deviation_mm > best.deviation_mm {
+            *best = s;
+        }
+    }
+
+    fn into_vec(self) -> Vec<Spot> {
+        self.0.into_values().collect()
+    }
+}
+
+/// Into-kept and pushed spots rank 0, the rest 1.
+fn rank(s: &Spot) -> u8 {
+    match s.kind {
+        SpotKind::IntoKept | SpotKind::Pushed => 0,
+        SpotKind::Deviation | SpotKind::Uncut => 1,
+    }
+}
+
 /// Into-kept and pushed spots first, then by deviation; greedy, at least
 /// [`SPOT_SEPARATION_MM`] apart, at most [`WORST_SPOTS`].
 fn worst_spots(mut spots: Vec<Spot>) -> Vec<Spot> {
-    let rank = |s: &Spot| match s.kind {
-        SpotKind::IntoKept | SpotKind::Pushed => 0,
-        SpotKind::Deviation | SpotKind::Uncut => 1,
-    };
+    // The position breaks ties, so the order does not depend on the map.
     spots.sort_by(|a, b| {
         rank(a)
             .cmp(&rank(b))
             .then(b.deviation_mm.total_cmp(&a.deviation_mm))
+            .then(a.at.x.total_cmp(&b.at.x))
+            .then(a.at.y.total_cmp(&b.at.y))
     });
     let mut out: Vec<Spot> = Vec::with_capacity(WORST_SPOTS);
     for s in spots {

@@ -3,8 +3,8 @@ use flatcraft_path::{
     AxisRun, PathRef, PipelineSettings, PlacedPath, Toolpath, ToolpathKind, WASTE_SEG, plan,
 };
 use flatcraft_sim::{
-    Grade, JobMetrics, SimSettings, SimTrace, SpotKind, TimeModel, estimate_seconds, measure, run,
-    simulate,
+    DeviceGrid, Grade, JobMetrics, SimSettings, SimTrace, SpotKind, TimeModel, UNCUT_LIMIT_MM,
+    estimate_seconds, measure, run, simulate,
 };
 use kurbo::{BezPath, Circle, Point, Rect, Shape};
 
@@ -104,7 +104,17 @@ fn uncompensated_square_is_not_good() {
         "{}",
         m.max_corner_deviation_mm
     );
-    assert_ne!(m.grade, Grade::Good, "score {}", m.score);
+    // Measured (M2-P14 rules, 2026-11-25): score 98.67, Hausdorff 0.285,
+    // into-kept 0.1427 at three corners, uncut 1.125, stray 1.535. The
+    // corner rounding cuts 0.14 mm into the piece, beyond the 0.05 mm path
+    // tolerance, so H1 makes it Poor although the score is above 98.
+    assert!(m.score >= 98.0, "{}", m.score);
+    assert!(
+        (m.max_into_kept_mm - 0.1427).abs() < 0.001,
+        "{}",
+        m.max_into_kept_mm
+    );
+    assert_eq!(m.grade, Grade::Poor, "score {}", m.score);
     let first = m.worst_spots.first().expect("a worst spot");
     assert!(
         corners.iter().any(|c| c.distance(first.at) < 1.0),
@@ -123,7 +133,9 @@ fn removed_segment_is_uncut() {
         ],
     );
     let (_, m, _) = sim(&[t], Point::ZERO, &s);
-    assert!((m.uncut_mm - 5.0).abs() <= 0.05, "{}", m.uncut_mm);
+    // M2-P14: the cut severs up to UNCUT_LIMIT_MM past each end of the gap.
+    let expected = 5.0 - 2.0 * UNCUT_LIMIT_MM;
+    assert!((m.uncut_mm - expected).abs() <= 0.05, "{}", m.uncut_mm);
     assert!(m.per_path[0].miss_mm > 1.0, "{}", m.per_path[0].miss_mm);
     assert_eq!(m.lifts, 2);
     assert!(
@@ -385,4 +397,233 @@ fn metrics_of_long_path_are_fast() {
     let took = start.elapsed();
     assert!((m.cut_mm - 2000.0).abs() < 1.0, "{}", m.cut_mm);
     assert!(took.as_secs_f64() < 1.0, "{took:?}");
+}
+
+/// A 20 mm square piece whose knife runs `offset` inside it (d = 0).
+fn offset_square(offset: f64) -> JobMetrics {
+    let o = offset;
+    let axis = pts(&[
+        (o, o),
+        (20.0 - o, o),
+        (20.0 - o, 20.0 - o),
+        (o, 20.0 - o),
+        (o, o),
+    ]);
+    let t = with_runs(
+        closed(square(0.0, 0.0, 20.0), 1),
+        vec![(axis, vec![W, 0, 1, 2, 3])],
+    );
+    sim(&[t], Point::new(o, o), &SimSettings::float(0.0)).1
+}
+
+#[test]
+fn uncut_limit_is_twice_the_end_to_end_limit() {
+    // structural: Ruling M2-P14 pins the constant
+    assert_eq!(UNCUT_LIMIT_MM, 2.0 * flatcraft_sim::END_TO_END_LIMIT_MM);
+}
+
+#[test]
+fn a_small_inward_offset_is_good() {
+    // M2-P14: 0.03 mm off is within the end-to-end limit: no stray, no
+    // uncut, and not into kept material.
+    let m = offset_square(0.03);
+    assert_eq!((m.uncut_mm, m.stray_mm), (0.0, 0.0));
+    assert_eq!(m.max_into_kept_mm, 0.0);
+    assert!(m.score >= 98.0, "{}", m.score);
+    assert_eq!(m.grade, Grade::Good);
+}
+
+#[test]
+fn an_offset_between_the_limits_is_stray_not_uncut() {
+    // M2-P14: 0.07 mm off severs the material, in the wrong place.
+    let m = offset_square(0.07);
+    assert!(m.stray_mm > 70.0, "{}", m.stray_mm);
+    assert_eq!(m.uncut_mm, 0.0);
+}
+
+#[test]
+fn a_large_offset_is_stray_and_uncut() {
+    // M2-P14: 0.5 mm off is a wrong cut and a missing cut.
+    let m = offset_square(0.5);
+    assert!(m.stray_mm > 70.0, "{}", m.stray_mm);
+    assert!(m.uncut_mm > 70.0, "{}", m.uncut_mm);
+}
+
+#[test]
+fn device_quantization_alone_is_not_uncut() {
+    // M2-P14: a perfect knife on the device grid (d = 0) leaves no uncut.
+    let grid = DeviceGrid {
+        units_per_mm: 20.0,
+        origin: Point::new(3.33, 7.12),
+    };
+    let s = SimSettings::device(0.0, grid);
+    let ring: Vec<Point> = (0..=37)
+        .map(|k| {
+            let a = std::f64::consts::TAU * (k % 37) as f64 / 37.0;
+            Point::new(50.0 + 12.3 * a.cos(), 40.0 + 9.7 * a.sin())
+        })
+        .collect();
+    let diagonal = open(pts(&[(10.013, 10.027), (30.0377, 22.4113)]));
+    let (_, m, _) = sim(&[closed(ring, 1), diagonal], Point::ZERO, &s);
+    assert_eq!(m.uncut_mm, 0.0);
+    assert!(m.max_hausdorff_mm > 0.0);
+}
+
+#[test]
+fn a_shallow_lead_in_into_kept_material_is_reported() {
+    // M2-P14: waste keeps the strict tolerance. The lead-in starts 0.03 mm
+    // inside the piece.
+    let mut axis = pts(&[(5.0, 0.03)]);
+    axis.extend(square(0.0, 0.0, 20.0));
+    let t = with_runs(
+        closed(square(0.0, 0.0, 20.0), 1),
+        vec![(axis, vec![W, W, 0, 1, 2, 3])],
+    );
+    let (_, m, _) = sim(&[t], Point::new(5.0, 0.03), &SimSettings::float(0.0));
+    assert!(
+        (m.max_into_kept_mm - 0.03).abs() < 1e-6,
+        "{}",
+        m.max_into_kept_mm
+    );
+}
+
+/// The uncompensated d = 0.3 square of 50 mm, plus `overcut` along the first edge.
+fn uncompensated_square_gap(overcut: f64) -> f64 {
+    let mut ring = square(10.0, 10.0, 50.0);
+    if overcut > 0.0 {
+        ring.push(Point::new(10.0 + overcut, 10.0));
+    }
+    let (_, m, _) = sim(
+        &[closed(ring, 1)],
+        Point::new(10.0, 10.0),
+        &SimSettings::float(0.3),
+    );
+    m.per_path[0]
+        .closure_gap_mm
+        .expect("a closed path has a gap")
+}
+
+#[test]
+fn closure_gap_without_overcut_is_the_lag() {
+    // M2-P14: the last tip stops d short of the start corner, beside the
+    // first edge's trace.
+    let gap = uncompensated_square_gap(0.0);
+    assert!((gap - 0.3).abs() < 0.01, "{gap}");
+}
+
+#[test]
+fn closure_gap_with_overcut_is_the_tractrix_lag() {
+    // After the start corner the uncompensated tip swings back onto the
+    // first edge along a tractrix: after an overcut `o` it is still
+    // d * sin(2 atan(exp(-o / d))) beside it. With 0.5 mm at d = 0.3 that
+    // is 0.1094 mm; with 2 mm the ring closes.
+    let d: f64 = 0.3;
+    let lag = |o: f64| d * (2.0 * (-o / d).exp().atan()).sin();
+    let gap = uncompensated_square_gap(0.5);
+    assert!((gap - lag(0.5)).abs() < 1e-6, "{gap} vs {}", lag(0.5));
+    let gap = uncompensated_square_gap(2.0);
+    assert!(gap < 0.001, "{gap}");
+}
+
+#[test]
+fn a_pivot_at_a_corner_twists_90_degrees() {
+    // Host-style pivot: the axis swings round the tip at the corner (10, 0).
+    let d = 0.3;
+    let mut axis = pts(&[(d, 0.0), (10.0 + d, 0.0)]);
+    let mut seg = vec![W, 0];
+    for k in 1..=90 {
+        let a = (k as f64).to_radians();
+        axis.push(Point::new(10.0 + d * a.cos(), d * a.sin()));
+        seg.push(0);
+    }
+    axis.push(Point::new(10.0, 10.0 + d));
+    seg.push(1);
+    let t = with_runs(
+        open(pts(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)])),
+        vec![(axis, seg)],
+    );
+    let (_, m, _) = sim(&[t], Point::new(d, 0.0), &SimSettings::float(d));
+    assert!((m.max_twist_deg - 90.0).abs() < 2.0, "{}", m.max_twist_deg);
+    assert!(
+        m.max_corner_deviation_mm < 0.01,
+        "{}",
+        m.max_corner_deviation_mm
+    );
+}
+
+#[test]
+fn a_misaligned_start_deviates_about_d() {
+    // The blade trails towards +x and the cut starts along +y.
+    let s = SimSettings::float(0.3);
+    let t = open(pts(&[(0.0, 0.0), (0.0, 20.0)]));
+    let (_, m, _) = sim(&[t], Point::ZERO, &s);
+    assert!(
+        (m.max_start_deviation_mm - 0.2996).abs() < 0.001,
+        "{}",
+        m.max_start_deviation_mm
+    );
+    assert_eq!(
+        m.max_start_deviation_mm,
+        m.per_path[0].max_start_deviation_mm
+    );
+}
+
+#[test]
+fn worst_spots_rank_and_keep_apart() {
+    let s = SimSettings::float(0.0);
+    // A piece, and a line with spikes of 0.1 to 1.0 mm. Its run starts with
+    // a lead-in from inside the piece.
+    let piece = closed(square(0.0, 10.0, 10.0), 2);
+    let mut axis = pts(&[(5.0, 15.0), (0.0, 0.0)]);
+    let mut seg = vec![W, W];
+    for (x, h) in [
+        (5.0, 0.1),
+        (10.0, 0.2),
+        (20.0, 0.4),
+        (30.0, 0.6),
+        (40.0, 0.8),
+        (50.0, 1.0),
+        (51.0, 0.9),
+    ] {
+        axis.extend(pts(&[(x - 0.5, 0.0), (x, h), (x + 0.5, 0.0)]));
+        seg.extend([0, 0, 0]);
+    }
+    axis.push(Point::new(60.0, 0.0));
+    seg.push(0);
+    let line = with_runs(open(pts(&[(0.0, 0.0), (60.0, 0.0)])), vec![(axis, seg)]);
+    let (_, m, _) = sim(&[line, piece], Point::new(5.0, 15.0), &s);
+    let spots = &m.worst_spots;
+    assert_eq!(spots.len(), 5, "{spots:?}");
+    assert_eq!(spots[0].kind, SpotKind::IntoKept);
+    assert!(
+        spots[0].at.distance(Point::new(5.0, 15.0)) < 1e-9,
+        "{spots:?}"
+    );
+    for (i, a) in spots.iter().enumerate() {
+        for b in &spots[i + 1..] {
+            assert!(a.at.distance(b.at) >= 2.0, "{a:?} {b:?}");
+        }
+    }
+    let rank = |k: SpotKind| matches!(k, SpotKind::IntoKept | SpotKind::Pushed);
+    for w in spots.windows(2) {
+        assert!(rank(w[0].kind) >= rank(w[1].kind), "{spots:?}");
+        if rank(w[0].kind) == rank(w[1].kind) {
+            assert!(w[0].deviation_mm >= w[1].deviation_mm, "{spots:?}");
+        }
+    }
+    let deviation: Vec<Point> = spots
+        .iter()
+        .filter(|x| x.kind == SpotKind::Deviation)
+        .map(|x| x.at)
+        .collect();
+    // The 1.0 spike leads; the 0.9 spike is within 2 mm of it.
+    assert!(
+        deviation[0].distance(Point::new(50.0, 1.0)) < 1e-9,
+        "{spots:?}"
+    );
+    assert!(
+        deviation
+            .iter()
+            .all(|p| p.distance(Point::new(51.0, 0.9)) > 1e-9)
+    );
 }

@@ -25,6 +25,10 @@ pub const ALGORITHM_LIMIT_MM: f64 = 0.005;
 pub const DEVICE_LIMIT_MM: f64 = 0.03;
 /// The spec target: device deviation plus the upstream error (R7).
 pub const END_TO_END_LIMIT_MM: f64 = 0.05;
+/// Intended length with no trace within this is not severed: uncut
+/// (Ruling M2-P14, twice `END_TO_END_LIMIT_MM`). Device quantization alone
+/// stays well below it.
+pub const UNCUT_LIMIT_MM: f64 = 2.0 * END_TO_END_LIMIT_MM;
 /// A blade-down move whose push angle is above this is pushed from behind.
 pub const PUSHED_DEG: f64 = 150.0;
 /// The sample step is the blade offset divided by this (pinned in Task 10).
@@ -125,12 +129,15 @@ pub struct SimSettings {
     pub sample_step_mm: f64,
     /// Snap every run point to this grid first (device mode).
     pub grid: Option<DeviceGrid>,
-    /// A distance below which an intended point counts as cut.
+    /// The strict tolerance: a waste tip (lead-in, overshoot, alignment)
+    /// closer than this to a cut is on the cut, and farther inside kept
+    /// material is into-kept. Uncut uses [`UNCUT_LIMIT_MM`] instead
+    /// (Ruling M2-P14).
     pub uncut_eps_mm: f64,
 }
 
 impl SimSettings {
-    /// The float simulation: no grid, and an intended point within 0.02 mm counts as cut (R7).
+    /// The float simulation: no grid, and a strict tolerance of 0.02 mm (R7).
     pub fn float(blade_offset_mm: f64) -> Self {
         Self {
             blade_offset_mm,
@@ -141,8 +148,8 @@ impl SimSettings {
         }
     }
 
-    /// The device simulation: every run point snapped to `grid`, and an
-    /// intended point within `DEVICE_LIMIT_MM` counts as cut.
+    /// The device simulation: every run point snapped to `grid`, and a
+    /// strict tolerance of `DEVICE_LIMIT_MM`.
     pub fn device(blade_offset_mm: f64, grid: DeviceGrid) -> Self {
         Self {
             grid: Some(grid),
