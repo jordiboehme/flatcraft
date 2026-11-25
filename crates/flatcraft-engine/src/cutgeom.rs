@@ -617,11 +617,16 @@ fn hairline_ends(ring: &[[f64; 2]]) -> Option<(usize, usize)> {
         return None;
     }
     // The point `reach` along the ring from vertex `k`, forwards or back,
-    // relative to the vertex.
+    // relative to the vertex. The walk stops after `MAX_ARM_STEPS`
+    // vertices: in a tiny ring (reach a quarter of the ring) or a long run
+    // of repeated vertices, every vertex would otherwise walk most of the
+    // ring, O(n^2) in all. A stopped arm ends at the vertex it reached; on
+    // a run of copies that is no direction, so no end there.
+    const MAX_ARM_STEPS: usize = 64;
     let arm = |k: usize, forwards: bool| {
         let mut left = reach;
         let mut at = k;
-        loop {
+        for _ in 0..MAX_ARM_STEPS {
             let next = if forwards {
                 (at + 1) % n
             } else {
@@ -639,6 +644,7 @@ fn hairline_ends(ring: &[[f64; 2]]) -> Option<(usize, usize)> {
             left -= len;
             at = next;
         }
+        [ring[at][0] - ring[k][0], ring[at][1] - ring[k][1]]
     };
     // How sharply the ring turns around at every vertex: the cosine of
     // the angle between its two arms, 1 where it folds back onto itself.
@@ -860,6 +866,23 @@ pub(crate) mod tests {
                 );
             }
         }
+    }
+
+    /// A tiny ring (its reach is a quarter of the ring) with a run of
+    /// 60000 copies of one vertex: every vertex in the run used to walk
+    /// the whole run, about 7e9 steps.
+    #[test]
+    fn hairline_ends_of_a_tiny_ring_with_many_duplicates_are_quick() {
+        let mut ring = vec![[0.0, 0.0]];
+        ring.extend(std::iter::repeat_n([0.3, 0.0], 60_000));
+        ring.extend([[0.6, 0.0], [0.6, 0.02], [0.0, 0.02]]);
+        let start = std::time::Instant::now();
+        let _ = hairline_ends(&ring);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "{:?}",
+            start.elapsed()
+        );
     }
 
     #[test]
