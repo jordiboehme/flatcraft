@@ -125,7 +125,7 @@ pub struct JobInput {
 
 impl JobInput {
     /// The objects of `doc` as the build reads them.
-    pub fn objects_of(doc: &Document) -> Vec<JobObject> {
+    fn objects_of(doc: &Document) -> Vec<JobObject> {
         doc.objects
             .iter()
             .map(|o| JobObject {
@@ -153,12 +153,20 @@ impl JobInput {
             .material(&job.material_id)
             .map_err(profile_error)?
             .for_plotter(&plotter.id);
-        Ok(Self {
+        Ok(Self::from_parts(doc, plotter, material))
+    }
+
+    /// The input of `doc` with profiles the caller already resolved: the
+    /// plotter of `doc.job`, and its material with the plotter's overrides
+    /// applied (`MaterialProfile::for_plotter`). The GUI uses it with the
+    /// profiles of its snapshot, so it never assembles an input itself.
+    pub fn from_parts(doc: &Document, plotter: PlotterProfile, material: MaterialProfile) -> Self {
+        Self {
             objects: Self::objects_of(doc),
-            job: job.clone(),
+            job: doc.job.clone(),
             plotter,
             material,
-        })
+        }
     }
 }
 

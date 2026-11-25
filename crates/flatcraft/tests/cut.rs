@@ -75,6 +75,10 @@ fn send_writes_file_from_stage_4() {
         names.iter().any(|n| n.ends_with(".gpgl")),
         "no .gpgl in {names:?}"
     );
+    // The file holds exactly the job the Cut workspace previewed.
+    let gpgl_name = names.iter().find(|n| n.ends_with(".gpgl")).unwrap();
+    let written = std::fs::read(out.join(gpgl_name)).unwrap();
+    assert_eq!(written, app(&h).ui.cut.job().unwrap().job.bytes);
     let toast = app(&h).ui.toasts.last().cloned().unwrap();
     assert!(toast.text.starts_with("Sent!"), "{}", toast.text);
     assert!(toast.text.contains(".gpgl.txt"), "{}", toast.text);

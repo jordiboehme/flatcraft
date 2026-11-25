@@ -482,12 +482,7 @@ pub fn snapshot_with(app: &mut FlatCraftApp, want_job: bool) -> Snapshot {
             auto_reload: s.prefs.auto_reload,
             trace_source_changed,
             job_input: want_job.then(|| match (&plotter, &material) {
-                (Some(p), Some(m)) => Ok(JobInput {
-                    objects: JobInput::objects_of(&st.document),
-                    job: st.document.job.clone(),
-                    plotter: p.clone(),
-                    material: m.clone(),
-                }),
+                (Some(p), Some(m)) => Ok(JobInput::from_parts(&st.document, p.clone(), m.clone())),
                 _ => JobInput::of(&s),
             }),
             output_pref: s.prefs.output_dir.clone(),
