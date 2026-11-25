@@ -376,6 +376,35 @@ pub struct SaveParams {
 }
 
 fn run_save(s: &mut Session, p: SaveParams, origin: Origin) -> Result<Value, CommandError> {
+    let job = begin_save(s, p, origin)?;
+    let written = job.write();
+    finish_save(s, job, written)
+}
+
+/// A save in three steps, so the slow middle (drawing the thumbnail,
+/// packing and writing the archive) can run without the session lock:
+/// [`begin_save`] under the lock, [`SaveJob::write`] without it,
+/// [`finish_save`] under it again. [`save_unlocked`] does all three.
+#[derive(Debug)]
+pub struct SaveJob {
+    doc_id: u64,
+    path: PathBuf,
+    target: PathBuf,
+    /// The document as it is saved (shapes and sources are shared `Arc`s).
+    document: flatcraft_core::document::Document,
+    plotter: Option<flatcraft_device::PlotterProfile>,
+    /// The document's revision when the save began.
+    revision: u64,
+    /// The links before `relink_for_save`, to put back if the save fails.
+    previous: Vec<(
+        flatcraft_core::document::ObjectId,
+        Option<flatcraft_core::document::SourceLink>,
+    )>,
+}
+
+/// The first step of a save: checks the target, refreshes the paths of
+/// linked files for the new place of the project and takes a snapshot.
+pub fn begin_save(s: &mut Session, p: SaveParams, origin: Origin) -> Result<SaveJob, CommandError> {
     let index = match p.doc_id {
         Some(id) => s.doc_index(id)?,
         None => s.active,
@@ -389,24 +418,90 @@ fn run_save(s: &mut Session, p: SaveParams, origin: Origin) -> Result<Value, Com
             )
         })?;
     let target = write_target(&path, &s.config_dir, origin)?;
+    let plotter = s
+        .profiles
+        .plotter(&s.docs[index].document.job.plotter_id)
+        .ok();
     // Linked files: refresh their paths for the new place of the project.
     // Only metadata, so it is not an undo step; a failed save puts it back.
     let st = &mut s.docs[index];
+    let revision = st.revision();
     let previous = relink_for_save(&mut st.document, st.path.as_deref(), &path);
-    let thumbnail = thumbnail_png(&s.profiles, &s.docs[index].document);
-    let st = &mut s.docs[index];
-    if let Err(e) = project::save_at(&st.document, &target, thumbnail.as_deref()) {
-        restore_links(&mut st.document, previous);
-        return Err(CommandError::Failed(e.to_string()));
+    Ok(SaveJob {
+        doc_id: st.id(),
+        path,
+        target,
+        document: st.document.clone(),
+        plotter,
+        revision,
+        previous,
+    })
+}
+
+impl SaveJob {
+    /// The slow step, without the session lock: draws the thumbnail and
+    /// writes the archive crash-safely.
+    pub fn write(&self) -> Result<(), CommandError> {
+        let thumbnail = self.plotter.as_ref().and_then(|plotter| {
+            crate::preview::render_document_png(plotter, &self.document, project::THUMBNAIL_PX).ok()
+        });
+        project::save_at(&self.document, &self.target, thumbnail.as_deref())
+            .map_err(|e| CommandError::Failed(e.to_string()))
     }
-    if !previous.is_empty() {
-        st.touch();
+}
+
+/// The last step of a save: the document gets its path and, if nothing
+/// changed it while it was written, is no longer dirty. A failed write
+/// puts the old links back (unless the document changed meanwhile).
+pub fn finish_save(
+    s: &mut Session,
+    job: SaveJob,
+    written: Result<(), CommandError>,
+) -> Result<Value, CommandError> {
+    let st = s.docs.iter_mut().find(|d| d.id() == job.doc_id);
+    let unchanged = st.as_ref().is_some_and(|d| d.revision() == job.revision);
+    if let Err(e) = written {
+        if let Some(st) = st
+            && unchanged
+        {
+            restore_links(&mut st.document, job.previous);
+        }
+        return Err(e);
     }
-    st.path = Some(path.clone());
-    st.dirty = false;
-    // The file is the new reference: a later nudge is a step of its own.
-    st.end_burst();
-    Ok(json!({ "path": path }))
+    if let Some(st) = st {
+        if !job.previous.is_empty() {
+            st.touch();
+        }
+        st.path = Some(job.path.clone());
+        if unchanged {
+            st.dirty = false;
+            // The file is the new reference: a later nudge is a step of its own.
+            st.end_burst();
+        }
+    }
+    Ok(json!({ "path": job.path }))
+}
+
+/// `project.save` with the slow part outside the lock: an agent's or the
+/// window's save does not hold up the other while the thumbnail is drawn
+/// and the file written. `params` as for `project.save`.
+pub fn save_unlocked(
+    session: &std::sync::Mutex<Session>,
+    params: Value,
+    origin: Origin,
+) -> Result<Value, CommandError> {
+    let p: SaveParams =
+        serde_json::from_value(params).map_err(|e| CommandError::InvalidParams(e.to_string()))?;
+    let lock = || session.lock().unwrap_or_else(|e| e.into_inner());
+    let job = {
+        let mut s = lock();
+        if origin == Origin::Agent {
+            s.last_agent_activity = Some(std::time::Instant::now());
+        }
+        begin_save(&mut s, p, origin)?
+    };
+    let written = job.write();
+    finish_save(&mut lock(), job, written)
 }
 
 /// The picture a project file carries (`thumbnail.png`): the canvas view

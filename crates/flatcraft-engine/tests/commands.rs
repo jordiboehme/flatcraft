@@ -3424,3 +3424,94 @@ fn project_save_embeds_a_thumbnail_that_decodes() {
     assert_eq!(&raw[0..4], b"PK\x03\x04");
     assert_eq!(&raw[30..38], b"mimetype");
 }
+
+/// How long the 512 px thumbnail takes in a save of 500 traced objects.
+/// A measurement, not a check: run it in release mode with
+/// `cargo nextest run --release -p flatcraft-engine --run-ignored only thumbnail_timing`.
+#[test]
+#[ignore = "timing measurement"]
+fn thumbnail_timing_for_500_traced_objects() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let mut img = image::GrayImage::from_pixel(600, 600, image::Luma([255]));
+    for row in 0..6 {
+        for col in 0..6 {
+            for y in 0..60 {
+                for x in 0..60 {
+                    let (x0, y0) = (20 + col * 95, 20 + row * 95);
+                    let inside = (x as i32 - 30).pow(2) + (y as i32 - 30).pow(2) < 900;
+                    if inside {
+                        img.put_pixel(x0 + x, y0 + y, image::Luma([0]));
+                    }
+                }
+            }
+        }
+    }
+    let png = dir.path().join("dots.png");
+    img.save(&png).unwrap();
+    let id = run(&mut s, "object.import", json!({ "path": png }))["id"]
+        .as_u64()
+        .unwrap();
+    run(
+        &mut s,
+        "object.copies",
+        json!({ "id": id, "count": 499, "gap_mm": 1.0, "layout": { "grid": { "columns": 25 } } }),
+    );
+    let doc = s.doc().document.clone();
+    assert_eq!(doc.objects.len(), 500);
+    let paths: usize = doc.objects.iter().map(|o| o.geometry.len()).sum();
+    let t = std::time::Instant::now();
+    let placed: usize = doc.objects.iter().map(|o| o.placed_paths().len()).sum();
+    let transform = t.elapsed();
+    let mut empty = doc.clone();
+    empty.objects.clear();
+    let t = std::time::Instant::now();
+    flatcraft_engine::commands::project::thumbnail_png(&s.profiles, &empty).unwrap();
+    let mat = t.elapsed();
+    eprintln!("TIMING placing {placed} paths {transform:?}, empty mat {mat:?}");
+    let t = std::time::Instant::now();
+    let pic = flatcraft_engine::commands::project::thumbnail_png(&s.profiles, &doc).unwrap();
+    let render = t.elapsed();
+    let out = tempfile::tempdir().unwrap();
+    let path = out.path().join("big.flatcraft");
+    let t = std::time::Instant::now();
+    run(&mut s, "project.save", json!({ "path": path }));
+    let save = t.elapsed();
+    eprintln!(
+        "TIMING 500 objects, {paths} paths: thumbnail {render:?} ({} bytes), whole project.save {save:?}",
+        pic.len()
+    );
+}
+
+/// The slow part of a save runs without the session lock: a change made
+/// meanwhile is not in the file and keeps the document dirty.
+#[test]
+fn a_change_during_an_unlocked_save_keeps_the_document_dirty() {
+    use flatcraft_engine::commands::project::{SaveParams, begin_save, finish_save};
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 10.0, 10.0);
+    let out = tempfile::tempdir().unwrap();
+    let path = out.path().join("p.flatcraft");
+    let params: SaveParams = serde_json::from_value(json!({ "path": path })).unwrap();
+    let job = begin_save(&mut s, params, Origin::User).unwrap();
+    // Without the lock: someone moves the object.
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [id], "dx_mm": 20.0, "dy_mm": 0.0 }),
+    );
+    let written = job.write();
+    finish_save(&mut s, job, written).unwrap();
+    assert_eq!(s.doc().path.as_deref(), Some(path.as_path()));
+    assert!(s.doc().dirty, "the move is not in the file");
+    let saved = flatcraft_core::project::load(&path).unwrap();
+    let t = saved.get(ObjectId(id)).unwrap().transform;
+    let now = s.doc().document.get(ObjectId(id)).unwrap().transform;
+    assert!((now.center_mm.x - t.center_mm.x - 20.0).abs() < 1e-6);
+
+    // Without a change in between, the save leaves it clean.
+    let session = std::sync::Mutex::new(s);
+    flatcraft_engine::commands::project::save_unlocked(&session, json!({}), Origin::User).unwrap();
+    assert!(!session.lock().unwrap().doc().dirty);
+}

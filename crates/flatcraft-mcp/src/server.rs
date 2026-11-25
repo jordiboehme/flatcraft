@@ -128,6 +128,25 @@ impl FlatcraftMcp {
         }
     }
 
+    /// `project.save` with the thumbnail drawn and the file written
+    /// without the session lock, so the window keeps drawing meanwhile.
+    async fn save(&self, params: Value) -> CallToolResult {
+        let session = Arc::clone(&self.session);
+        let on_change = Arc::clone(&self.on_change);
+        let done = tokio::task::spawn_blocking(move || {
+            let r =
+                flatcraft_engine::commands::project::save_unlocked(&session, params, Origin::Agent);
+            on_change();
+            r
+        })
+        .await;
+        match done {
+            Ok(Ok(v)) => text_ok(&v),
+            Ok(Err(e)) => error_result(&e),
+            Err(_) => text_err("The call stopped with an internal error"),
+        }
+    }
+
     /// Runs `f` on the session on tokio's blocking pool. The lock is never held
     /// across an await. Marks the agent activity; tells the GUI afterwards only if `notify`.
     async fn with_session<T: Send + 'static>(
@@ -229,6 +248,9 @@ impl FlatcraftMcp {
         let command = args.command;
         if command == "document.check_sources" && params.as_object().is_some_and(|o| o.is_empty()) {
             return self.check_sources().await;
+        }
+        if command == "project.save" {
+            return self.save(params).await;
         }
         match self
             .with_session(true, move |s| s.execute(&command, params, Origin::Agent))

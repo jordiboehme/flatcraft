@@ -744,6 +744,21 @@ impl FlatCraftApp {
         }
     }
 
+    /// `project.save` with the thumbnail drawn and the file written
+    /// without the session lock (an agent can work meanwhile). Errors
+    /// become toasts.
+    fn save_project(&mut self, params: Value) -> Option<Value> {
+        let result =
+            flatcraft_engine::commands::project::save_unlocked(&self.session, params, Origin::User);
+        match result {
+            Ok(v) => Some(v),
+            Err(e) => {
+                self.toast(Toast::error(person_text(&e)));
+                None
+            }
+        }
+    }
+
     fn execute(&mut self, id: &str, params: Value) -> Option<Value> {
         let result = lock(&self.session).execute(id, params, Origin::User);
         match result {
@@ -966,7 +981,7 @@ impl FlatCraftApp {
                 };
                 match path {
                     Ok(true) => {
-                        if let Some(v) = self.execute("project.save", json!({ "doc_id": doc_id })) {
+                        if let Some(v) = self.save_project(json!({ "doc_id": doc_id })) {
                             self.saved(&v);
                         }
                     }
@@ -989,9 +1004,7 @@ impl FlatCraftApp {
                 }
             }
             Action::SaveTo { doc_id, path } => {
-                if let Some(v) =
-                    self.execute("project.save", json!({ "doc_id": doc_id, "path": path }))
-                {
+                if let Some(v) = self.save_project(json!({ "doc_id": doc_id, "path": path })) {
                     self.saved(&v);
                 }
             }
@@ -1427,7 +1440,7 @@ impl FlatCraftApp {
                 None => return false,
             }
         };
-        match self.execute("project.save", params) {
+        match self.save_project(params) {
             Some(v) => {
                 self.saved(&v);
                 true
