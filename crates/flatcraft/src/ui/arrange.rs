@@ -182,11 +182,13 @@ pub struct MoveCopyValues {
     pub count: u32,
 }
 
-/// What the Rotate panel asks for. Group or each is the "Each object"
-/// preference (`Fields::each`).
+/// What the Rotate panel asks for.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RotateValues {
     pub degrees: f64,
+    /// Each object about its own centre. Starts as the "Each object"
+    /// preference (`Fields::each`); OK stores it back, Cancel does not.
+    pub each: bool,
 }
 
 /// What the Rectangular pattern panel asks for; the original is the first
@@ -231,7 +233,10 @@ impl Default for PanelValues {
                 copy: false,
                 count: 1,
             },
-            rotate: RotateValues { degrees: 90.0 },
+            rotate: RotateValues {
+                degrees: 90.0,
+                each: false,
+            },
             rect: RectValues {
                 columns: 3,
                 rows: 2,
@@ -259,12 +264,15 @@ pub struct ArrangePanel {
     pub values: PanelValues,
 }
 
-/// Opens the panel `kind` with the values used last.
+/// Opens the panel `kind` with the values used last, and the "Each
+/// object" switch as it is now.
 pub fn open(st: &mut PrepareState, snap: &Snapshot, kind: PanelKind) {
+    let mut values = st.panel_last.clone();
+    values.rotate.each = st.fields.each;
     st.panel = Some(ArrangePanel {
         doc_id: snap.doc_id,
         kind,
-        values: st.panel_last.clone(),
+        values,
     });
 }
 
@@ -312,13 +320,16 @@ fn not_ready(snap: &Snapshot, p: &ArrangePanel) -> Option<String> {
             0 => Some("One cell is just the original. Add a column or a row.".into()),
             c => too_many(u64::from(c)),
         },
+        PanelKind::CircularPattern if v.circular.total_deg == 0.0 => {
+            Some("A total angle of 0 stacks every copy on the original. Pick another angle.".into())
+        }
         PanelKind::CircularPattern => too_many(u64::from(v.circular.count.saturating_sub(1))),
         _ => None,
     }
 }
 
 /// The command OK runs, for the selection. `None` when it cannot run.
-pub fn ok_action(snap: &Snapshot, p: &ArrangePanel, each: bool) -> Option<Action> {
+pub fn ok_action(snap: &Snapshot, p: &ArrangePanel) -> Option<Action> {
     if not_ready(snap, p).is_some() {
         return None;
     }
@@ -342,7 +353,7 @@ pub fn ok_action(snap: &Snapshot, p: &ArrangePanel, each: bool) -> Option<Action
                 )
             }
         }
-        PanelKind::Rotate => ribbon::rotate_action(doc_id, &ids, v.rotate.degrees, each),
+        PanelKind::Rotate => ribbon::rotate_action(doc_id, &ids, v.rotate.degrees, v.rotate.each),
         PanelKind::RectangularPattern => {
             let r = &v.rect;
             Action::run(
@@ -381,7 +392,7 @@ pub fn ok_action(snap: &Snapshot, p: &ArrangePanel, each: bool) -> Option<Action
 /// The would-be objects of the open panel: for each, the object it shows
 /// and the affine from its centre-relative shape to mat mm. Built with the
 /// same `placement` functions as the commands.
-pub fn ghosts(snap: &Snapshot, p: &ArrangePanel, each: bool) -> Vec<(u64, Affine)> {
+pub fn ghosts(snap: &Snapshot, p: &ArrangePanel) -> Vec<(u64, Affine)> {
     if not_ready(snap, p).is_some() {
         return Vec::new();
     }
@@ -410,7 +421,7 @@ pub fn ghosts(snap: &Snapshot, p: &ArrangePanel, each: bool) -> Vec<(u64, Affine
             let deg = v.rotate.degrees;
             for (o, c) in objs
                 .iter()
-                .zip(placement::rotated_centres(&centres, deg, each))
+                .zip(placement::rotated_centres(&centres, deg, v.rotate.each))
             {
                 out.push((o.id, turned(c, deg)));
             }
@@ -418,13 +429,14 @@ pub fn ghosts(snap: &Snapshot, p: &ArrangePanel, each: bool) -> Vec<(u64, Affine
         PanelKind::RectangularPattern => {
             let r = &v.rect;
             let o = objs[0];
-            for off in placement::grid_offsets(
-                bounds(o),
-                Some(r.columns),
-                copies_count(r),
-                r.gap_x_mm,
-                r.gap_y_mm,
-            ) {
+            // No box yet (a big shape still building): no preview rather
+            // than a wrong one.
+            let Some(b) = o.bounds() else {
+                return out;
+            };
+            for off in
+                placement::grid_offsets(b, Some(r.columns), copies_count(r), r.gap_x_mm, r.gap_y_mm)
+            {
                 out.push((o.id, at(o.transform.center_mm + off)));
             }
         }
@@ -486,13 +498,7 @@ fn count(
 }
 
 /// The panel's fields.
-fn fields(
-    ui: &mut Ui,
-    p: &mut ArrangePanel,
-    snap: &Snapshot,
-    each: &mut bool,
-    actions: &mut Vec<Action>,
-) {
+fn fields(ui: &mut Ui, p: &mut ArrangePanel, snap: &Snapshot, each_now: bool) {
     let spacing = ui.spacing().item_spacing;
     let v = &mut p.values;
     match p.kind {
@@ -545,14 +551,16 @@ fn fields(
                 });
             ui.label(RichText::new("Positive turns clockwise.").weak());
             let several = snap.selection.len() > 1;
-            let before = *each;
+            let each = &mut v.rotate.each;
             ui.add_enabled_ui(several, |ui| {
                 ui.radio_value(each, false, "As one group")
                     .on_hover_text("The selection turns about its common centre, like Voltron");
                 ui.radio_value(each, true, "Each about its own centre");
             });
-            if *each != before {
-                actions.push(Action::RememberEach(*each));
+            if *each != each_now {
+                ui.label(
+                    RichText::new("OK also sets the Each object switch on the ribbon.").weak(),
+                );
             }
         }
         PanelKind::RectangularPattern => {
@@ -660,7 +668,7 @@ pub fn panel_ui(
         });
     });
     ui.separator();
-    fields(ui, p, snap, &mut st.fields.each, actions);
+    fields(ui, p, snap, st.fields.each);
     ui.add_space(t.spacing);
     let why = not_ready(snap, p);
     if let Some(why) = &why {
@@ -680,7 +688,7 @@ pub fn panel_ui(
     ui.horizontal(|ui| {
         let r = ui.add_enabled(why.is_none(), egui::Button::new("OK"));
         if r.clicked() {
-            ok = ok_action(snap, p, st.fields.each);
+            ok = ok_action(snap, p);
         }
         let cancel =
             egui::Button::new("Cancel").shortcut_text(help::hint(PrepareKey::ClearSelection));
@@ -690,6 +698,10 @@ pub fn panel_ui(
     });
     if let Some(a) = ok {
         actions.push(a);
+        if p.kind == PanelKind::Rotate && p.values.rotate.each != st.fields.each {
+            st.fields.each = p.values.rotate.each;
+            actions.push(Action::RememberEach(st.fields.each));
+        }
         st.panel_last = p.values.clone();
         close = true;
     }
@@ -824,27 +836,69 @@ pub fn group(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut 
         let label = cmd.label().trim_end_matches("...");
         if has_submenu(cmd) {
             // Distribute's items say themselves what is missing.
-            let enabled = !snap.selection.is_empty();
-            ui.add_enabled_ui(enabled, |ui| {
-                ui.menu_image_text_button(image(ui, cmd.icon()), label, |ui| {
-                    submenu(ui, cmd, snap, st, actions);
-                })
-                .response
-                .on_hover_text(&hint)
-                .on_disabled_hover_text(&hint);
-            });
-        } else if ui
-            .add_enabled(
-                blocked.is_none(),
-                egui::Button::image_and_text(image(ui, cmd.icon()), label),
-            )
-            .on_hover_text(&hint)
-            .on_disabled_hover_text(&hint)
-            .clicked()
-        {
+            let resp = big_button(ui, cmd.icon(), label, !snap.selection.is_empty(), &hint);
+            egui::Popup::menu(&resp)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| submenu(ui, cmd, snap, st, actions));
+        } else if big_button(ui, cmd.icon(), label, blocked.is_none(), &hint).clicked() {
             pick(cmd, snap, st, actions);
         }
     }
+}
+
+/// Height of the ribbon's big buttons, and so of its tools row on every
+/// tab.
+pub const BIG_HEIGHT: f32 = 48.0;
+
+/// A big ribbon button: a 24 pt icon above a small label. Its accessible
+/// name is the label.
+fn big_button(ui: &mut Ui, icon: Icon, label: &str, enabled: bool, hint: &str) -> egui::Response {
+    const ICON: f32 = 24.0;
+    let resp = ui
+        .add_enabled_ui(enabled, |ui| {
+            let font = egui::TextStyle::Small.resolve(ui.style());
+            let galley =
+                ui.painter()
+                    .layout_no_wrap(label.to_string(), font, egui::Color32::PLACEHOLDER);
+            let width = (galley.size().x + 12.0).max(BIG_HEIGHT);
+            let (rect, resp) =
+                ui.allocate_exact_size(egui::vec2(width, BIG_HEIGHT), egui::Sense::click());
+            let on = ui.is_enabled();
+            resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::accesskit::Role::Button, on, label)
+            });
+            if ui.is_rect_visible(rect) {
+                let visuals = ui.style().interact(&resp);
+                if resp.hovered() || resp.has_focus() {
+                    ui.painter().rect(
+                        rect,
+                        visuals.corner_radius,
+                        visuals.weak_bg_fill,
+                        visuals.bg_stroke,
+                        egui::StrokeKind::Inside,
+                    );
+                }
+                let tex = icons::texture(ui.ctx(), icon, ICON);
+                let icon_rect = egui::Rect::from_center_size(
+                    egui::pos2(rect.center().x, rect.top() + 4.0 + ICON / 2.0),
+                    egui::Vec2::splat(ICON),
+                );
+                // A disabled Ui fades what its painter draws.
+                egui::Image::from_texture(egui::load::SizedTexture::new(
+                    tex.id(),
+                    egui::Vec2::splat(ICON),
+                ))
+                .paint_at(ui, icon_rect);
+                let at = egui::pos2(
+                    rect.center().x - galley.size().x / 2.0,
+                    rect.bottom() - 4.0 - galley.size().y,
+                );
+                ui.painter().galley(at, galley, visuals.text_color());
+            }
+            resp
+        })
+        .inner;
+    resp.on_hover_text(hint).on_disabled_hover_text(hint)
 }
 
 /// The rows of the drop-down. Hovering a row shows its pin toggle.

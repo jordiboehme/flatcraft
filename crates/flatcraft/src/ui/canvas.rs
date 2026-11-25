@@ -266,13 +266,7 @@ pub fn show(
         drag_preview(st.drag.as_ref(), snap, id)
     });
     if let Some(p) = &st.panel {
-        draw_ghosts(
-            &painter,
-            snap,
-            &view,
-            t,
-            &super::arrange::ghosts(snap, p, st.fields.each),
-        );
+        draw_ghosts(&painter, snap, &view, t, &super::arrange::ghosts(snap, p));
     }
     draw_area(&painter, rect, snap, &view, t, contrast);
     if let Some(r) = draw_selection(&painter, snap, st, contrast) {
@@ -366,6 +360,11 @@ pub(crate) fn draw_objects(
     }
 }
 
+/// The colour of the ghost preview's dashes.
+pub fn ghost_colour(t: &Tokens) -> Color32 {
+    t.accent_prepare.gamma_multiply(0.6)
+}
+
 /// Draws the would-be objects of an open Arrange panel faintly: each
 /// ghost is an object's shape placed by its affine (see
 /// [`super::arrange::ghosts`]). Nothing in the document changes.
@@ -376,7 +375,7 @@ pub(crate) fn draw_ghosts(
     t: &Tokens,
     ghosts: &[(u64, kurbo::Affine)],
 ) {
-    let stroke = Stroke::new(1.0, t.accent_prepare.gamma_multiply(0.6));
+    let stroke = Stroke::new(1.0, ghost_colour(t));
     for (id, place) in ghosts {
         let Some(o) = snap.object(*id) else {
             continue;

@@ -1486,6 +1486,12 @@ fn object_count(s: &SharedSession) -> usize {
     s.lock().unwrap().doc().document.objects.len()
 }
 
+/// The accessible name of the panels' Cancel button, with its key hint.
+fn cancel_name() -> String {
+    let hint = flatcraft::ui::help::hint(flatcraft::ui::help::PrepareKey::ClearSelection);
+    format!("Cancel {hint}")
+}
+
 fn click_ok(h: &mut AppHarness) {
     h.get_by_role_and_label(Role::Button, "OK").click();
     h.run();
@@ -1569,7 +1575,8 @@ fn panels_remember_the_last_values_that_ran() {
     );
     // Cancel keeps the last values that ran, not the edits.
     values(&mut h).rect.columns = 7;
-    h.get_by_role_and_label(Role::Button, "Cancel Esc").click();
+    h.get_by_role_and_label(Role::Button, &cancel_name())
+        .click();
     h.run();
     h.get_by_role_and_label(Role::Button, "Copies...").click();
     h.run();
@@ -1587,7 +1594,7 @@ fn cancel_close_and_escape_change_nothing() {
     to_prepare(&mut h);
     let rev = revision(&s);
     for label in ["Move / Copy...", "Rotate...", "Circular pattern..."] {
-        for how in ["Cancel Esc", "Close panel", "escape"] {
+        for how in [cancel_name().as_str(), "Close panel", "escape"] {
             open_panel(&mut h, label);
             assert!(app(&h).ui.prepare.panel.is_some(), "{label}");
             if how == "escape" {
@@ -1702,15 +1709,30 @@ fn rotate_panel_turns_in_one_step() {
     click_ok(&mut h);
     assert_eq!(undo_len(&s), before + 1);
     assert!((object_centre(&s, a) - cb).hypot() < 1e-5, "group turn");
-    // Each about its own centre: the switch is the Each object preference.
+    // Each about its own centre, then Cancel: the Each object switch and
+    // its preference stay as they were.
+    let rev = revision(&s);
     open_panel(&mut h, "Rotate...");
     h.get_by_label("Each about its own centre").click();
     h.run();
-    assert!(app(&h).ui.prepare.fields.each);
-    assert!(s.lock().unwrap().prefs.rotate_each, "stored");
+    h.get_by_role_and_label(Role::Button, &cancel_name())
+        .click();
+    h.run();
+    assert!(!app(&h).ui.prepare.fields.each);
+    assert!(
+        !s.lock().unwrap().prefs.rotate_each,
+        "Cancel stores nothing"
+    );
+    assert_eq!(revision(&s), rev);
+    // OK turns each about its own centre and stores the switch.
+    open_panel(&mut h, "Rotate...");
+    h.get_by_label("Each about its own centre").click();
+    h.run();
     let (na, nb) = (object_centre(&s, a), object_centre(&s, b));
     click_ok(&mut h);
     assert_eq!((object_centre(&s, a), object_centre(&s, b)), (na, nb));
+    assert!(app(&h).ui.prepare.fields.each);
+    assert!(s.lock().unwrap().prefs.rotate_each, "stored");
 }
 
 #[test]
@@ -1721,26 +1743,33 @@ fn circular_panel_previews_exactly_what_ok_makes() {
     select(&s, &[a]);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    let painted_before = painted(&h).len();
+    let rev = revision(&s);
     open_panel(&mut h, "Circular pattern...");
     {
         let c = &mut values(&mut h).circular;
-        c.count = 4;
+        c.count = 2;
         c.own_centre = true;
         c.center_mm = [120.0, 120.0];
     }
     h.run();
-    let rev = revision(&s);
-    assert!(painted(&h).len() > painted_before, "the ghosts are drawn");
+    let one = ghost_points(&h);
+    values(&mut h).circular.count = 4;
+    h.run();
+    let three = ghost_points(&h);
+    assert!(!one.is_empty(), "the ghost is drawn");
+    assert_eq!(three.len(), 3 * one.len(), "one ghost per copy");
     assert_eq!(revision(&s), rev, "the preview changes nothing");
-    let ghosts = {
-        let ctx = h.ctx.clone();
-        let app = app_mut(&mut h);
-        let snap = flatcraft::ui::prepare::snapshot(app, &ctx);
-        let p = app.ui.prepare.panel.as_ref().unwrap();
-        flatcraft::ui::arrange::ghosts(&snap, p, app.ui.prepare.fields.each)
-    };
+    let ghosts = current_ghosts(&mut h);
     assert_eq!(ghosts.len(), 3);
+    // Each ghost is drawn where its copy will be: its dashes surround the
+    // copy's centre on screen.
+    let view = app(&h).ui.prepare.view;
+    for (_, g) in &ghosts {
+        let c = view.mm_to_screen(*g * kurbo::Point::ZERO);
+        let near: Vec<&egui::Pos2> = three.iter().filter(|p| p.distance(c) < 60.0).collect();
+        let r = egui::Rect::from_points(&near.iter().map(|p| **p).collect::<Vec<_>>());
+        assert!(r.expand(1.0).contains(c), "no ghost around {c:?}");
+    }
     let before = undo_len(&s);
     click_ok(&mut h);
     assert_eq!(undo_len(&s), before + 1);
@@ -1761,6 +1790,58 @@ fn circular_panel_previews_exactly_what_ok_makes() {
             .transform
             .rotation_deg;
         assert!((deg - rot).abs() < 1e-6, "{deg} vs {rot}");
+    }
+}
+
+/// The end points of the ghost preview's dashes painted last frame.
+fn ghost_points(h: &AppHarness) -> Vec<egui::Pos2> {
+    let colour = flatcraft::ui::canvas::ghost_colour(&app(h).tokens);
+    painted(h)
+        .into_iter()
+        .filter_map(|s| match s {
+            Shape::LineSegment { points, stroke } if stroke.color == colour => Some(points),
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+/// The ghosts of the open panel, as the canvas draws them.
+fn current_ghosts(h: &mut AppHarness) -> Vec<(u64, kurbo::Affine)> {
+    let ctx = h.ctx.clone();
+    let app = app_mut(h);
+    let snap = flatcraft::ui::prepare::snapshot(app, &ctx);
+    let p = app.ui.prepare.panel.as_ref().unwrap();
+    flatcraft::ui::arrange::ghosts(&snap, p)
+}
+
+#[test]
+fn rectangular_panel_previews_exactly_what_ok_makes() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    h.get_by_role_and_label(Role::Button, "Copies...").click();
+    h.run();
+    {
+        let r = &mut values(&mut h).rect;
+        r.columns = 3;
+        r.rows = 2;
+        r.gap_x_mm = 2.5;
+        r.gap_y_mm = 7.0;
+    }
+    h.run();
+    assert!(!ghost_points(&h).is_empty());
+    let ghosts = current_ghosts(&mut h);
+    assert_eq!(ghosts.len(), 5);
+    click_ok(&mut h);
+    let copies = selection(&s);
+    assert_eq!(copies.len(), 5);
+    for ((_, g), id) in ghosts.iter().zip(&copies) {
+        let at = *g * kurbo::Point::ZERO;
+        assert!((at - object_centre(&s, *id)).hypot() < 1e-9, "{at:?}");
     }
 }
 
