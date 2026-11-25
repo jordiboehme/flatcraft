@@ -370,11 +370,18 @@ fn crossing_penalty_lowers_simulated_travel_crossings() {
     // the order goes left first and crosses the square once, on the way
     // to the right; without it, it crosses on the way right and again on
     // the way back.
+    //
+    // The improvement after the construction does not score crossings
+    // (plan decision, review H7) and would take the shorter [1, 2, 3], so
+    // this test runs the construction alone (no improvement rounds).
     let mut settings = PipelineSettings {
         overcut_mm: 0.0,
-        strategy: flatcraft_path::StrategySettings::for_strategy(
-            flatcraft_core::document::CutStrategy::Fast,
-        ),
+        strategy: flatcraft_path::StrategySettings {
+            rounds: 0,
+            ..flatcraft_path::StrategySettings::for_strategy(
+                flatcraft_core::document::CutStrategy::Fast,
+            )
+        },
         ..PipelineSettings::with_defaults(Rect::new(0.0, 0.0, 300.0, 300.0), Point::new(49.0, 49.0))
     };
     let line = |a: (f64, f64), b: (f64, f64)| {
@@ -404,6 +411,52 @@ fn crossing_penalty_lowers_simulated_travel_crossings() {
     };
     assert_eq!(crossings(true), (1, vec![1, 3, 2]));
     assert_eq!(crossings(false), (2, vec![1, 2, 3]));
+}
+
+#[test]
+fn order_improvement_lowers_simulated_travel_and_time() {
+    // 100 small squares from a fixed generator. The same job is planned
+    // with the nearest-neighbour construction alone (no improvement rounds)
+    // and with the default 2-opt, Or-opt and entry DP rounds, then run
+    // through the simulator.
+    let mut seed = 7u64;
+    let mut next = || {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let input: Vec<PlacedPath> = (0..100)
+        .map(|i| {
+            let (x, y) = (5.0 + next() * 280.0, 5.0 + next() * 280.0);
+            PlacedPath {
+                path: Rect::new(x, y, x + 2.0, y + 2.0).to_path(0.1),
+                source: source(i + 1),
+            }
+        })
+        .collect();
+    let base =
+        PipelineSettings::with_defaults(Rect::new(0.0, 0.0, 300.0, 300.0), Point::new(0.0, 0.0));
+    let s = SimSettings::float(0.25);
+    let time = TimeModel::PROVISIONAL;
+    let measured = |rounds: u32| {
+        let settings = PipelineSettings {
+            strategy: flatcraft_path::StrategySettings {
+                rounds,
+                ..base.strategy
+            },
+            ..base.clone()
+        };
+        let out = plan(&input, &settings).unwrap();
+        let (_, m, _) = sim(&out.toolpaths, out.home, &s);
+        let secs = estimate_seconds(&out.toolpaths, out.home, 5, &time);
+        (m.travel_mm, secs)
+    };
+    let (nn_travel, nn_secs) = measured(0);
+    let (travel, secs) = measured(base.strategy.rounds);
+    eprintln!("travel {nn_travel} -> {travel} mm, time {nn_secs} -> {secs} s");
+    assert!(travel < 0.95 * nn_travel, "{nn_travel} -> {travel}");
+    assert!(secs < nn_secs, "{nn_secs} -> {secs}");
 }
 
 /// A closed 20000-gon of 2000 mm.

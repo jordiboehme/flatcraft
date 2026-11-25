@@ -10,8 +10,12 @@
 //! Only units that are ready sit in a uniform grid of their entry points,
 //! and each step searches rings of cells around the head, so a job of
 //! thousands of paths stays fast.
+//!
+//! [`improve`] then shortens that tour with 2-opt and Or-opt moves over
+//! neighbour lists and picks every entry again with the exact [`entry_dp`],
+//! within an evaluation [`BUDGET`]. No move puts a child after its parent.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use kurbo::{Point, Rect, Vec2};
 
@@ -384,9 +388,9 @@ pub fn construct_with_stats(
     (out, stats)
 }
 
-/// `paths` in cut order: each ring turned to `s.direction` and started at
-/// its chosen entry (closed again), each open path run from its chosen
-/// end. `keep` stays as `plan` set it; `lap_range` is the whole ring.
+/// `paths` in cut order ([`construct`], then [`improve`]): each ring turned
+/// to `s.direction` and started at its chosen entry (closed again), each
+/// open path run from its chosen end. `keep` stays as `plan` set it; `lap_range` is the whole ring.
 pub fn order(
     paths: Vec<Toolpath>,
     tree: &ContainmentTree,
@@ -394,7 +398,8 @@ pub fn order(
     s: &PipelineSettings,
 ) -> Vec<Toolpath> {
     let units: Vec<Unit> = paths.iter().map(|t| Unit::new(t, s)).collect();
-    let tour = construct(&units, tree, start, s);
+    let mut tour = construct(&units, tree, start, s);
+    improve(&units, &mut tour, tree, start, s);
     let mut slots: Vec<Option<Toolpath>> = paths.into_iter().map(Some).collect();
     tour.iter()
         .filter_map(|p| {
@@ -404,6 +409,849 @@ pub fn order(
             Some(t)
         })
         .collect()
+}
+
+/// How many nearest units each unit's improvement moves look at (R8).
+pub const NEIGHBOURS: usize = 8;
+
+/// The longest chain an Or-opt move carries.
+pub const OR_OPT_CHAIN: usize = 3;
+
+/// A move is applied only when it lowers the tour cost by more than this
+/// (or the rounding bound of the cached sums, when larger), so float noise
+/// never makes the search go round in circles.
+const MIN_GAIN_MM: f64 = 1e-9;
+
+/// What an [`improve`] run did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ImproveStats {
+    /// 2-opt and Or-opt move evaluations plus entry DP edge evaluations.
+    /// Never more than the strategy's budget.
+    pub evaluations: u64,
+    /// Rounds started.
+    pub rounds: u32,
+    /// 2-opt moves applied.
+    pub two_opt_moves: u64,
+    /// Or-opt moves applied.
+    pub or_opt_moves: u64,
+    /// Entry DP runs that changed an entry.
+    pub entry_dp_changes: u32,
+}
+
+/// The cost of `tour` from `start` under [`cost`], without the crossing
+/// term: what [`improve`] and [`entry_dp`] lower. A unit without an entry
+/// costs nothing and leaves the head where it is, as in [`construct`].
+pub fn tour_cost(units: &[Unit], tour: &[Placement], start: Point, s: &PipelineSettings) -> f64 {
+    let (mut head, mut heading) = (start, ASSUMED_START_HEADING);
+    let mut total = 0.0;
+    for p in tour {
+        let u = &units[p.unit];
+        if let Some(e) = u.candidates.get(p.candidate) {
+            total += cost(head, heading, u, e, s);
+            head = e.exit;
+            heading = e.exit_heading;
+        }
+    }
+    total
+}
+
+/// True when every child in `tree` comes before its parent and, with
+/// `outlines_last`, every unit inside another before any root.
+pub fn respects_precedence(
+    tour: &[Placement],
+    tree: &ContainmentTree,
+    outlines_last: bool,
+) -> bool {
+    let n = tree.parent.len();
+    if tour.len() != n {
+        return false;
+    }
+    let mut pos = vec![usize::MAX; n];
+    for (k, p) in tour.iter().enumerate() {
+        if p.unit >= n || pos[p.unit] != usize::MAX {
+            return false;
+        }
+        pos[p.unit] = k;
+    }
+    let children_first = (0..n).all(|u| tree.parent[u].is_none_or(|p| pos[u] < pos[p]));
+    let roots_last = !outlines_last || {
+        let inner = (0..n).filter(|&u| tree.parent[u].is_some()).count();
+        tour[..inner].iter().all(|p| tree.parent[p.unit].is_some())
+    };
+    children_first && roots_last
+}
+
+/// The entry of every unit in `tour`, chosen for the fixed order by a
+/// layered shortest path over the candidates under [`cost`] (R8). It is
+/// exact: no other choice of entries gives a lower [`tour_cost`]. The tour
+/// changes only when the cost drops. Returns the edges evaluated.
+pub fn entry_dp(units: &[Unit], tour: &mut [Placement], start: Point, s: &PipelineSettings) -> u64 {
+    let layers: Vec<usize> = (0..tour.len())
+        .filter(|&k| !units[tour[k].unit].candidates.is_empty())
+        .collect();
+    let Some(&last) = layers.last() else {
+        return 0;
+    };
+    let mut evaluations = 0u64;
+    let mut back: Vec<Vec<u32>> = Vec::with_capacity(layers.len());
+    let mut prev_cost = vec![0.0];
+    let mut prev_at: Option<usize> = None;
+    for &k in &layers {
+        let u = &units[tour[k].unit];
+        let mut here = vec![f64::INFINITY; u.candidates.len()];
+        let mut from = vec![0u32; u.candidates.len()];
+        for (b, e) in u.candidates.iter().enumerate() {
+            for (a, &before) in prev_cost.iter().enumerate() {
+                let (head, heading) = match prev_at {
+                    None => (start, ASSUMED_START_HEADING),
+                    Some(pk) => {
+                        let pe = &units[tour[pk].unit].candidates[a];
+                        (pe.exit, pe.exit_heading)
+                    }
+                };
+                evaluations += 1;
+                let c = before + cost(head, heading, u, e, s);
+                // Ties keep the lower predecessor, so the result is stable.
+                if c < here[b] {
+                    here[b] = c;
+                    from[b] = a as u32;
+                }
+            }
+        }
+        back.push(from);
+        prev_cost = here;
+        prev_at = Some(k);
+    }
+    debug_assert_eq!(prev_at, Some(last));
+    let mut pick = (0..prev_cost.len())
+        .min_by(|&a, &b| prev_cost[a].total_cmp(&prev_cost[b]).then(a.cmp(&b)))
+        .unwrap_or(0);
+    let mut chosen = tour.to_vec();
+    for (li, &k) in layers.iter().enumerate().rev() {
+        chosen[k].candidate = pick;
+        pick = back[li][pick] as usize;
+    }
+    if tour_cost(units, &chosen, start, s) < tour_cost(units, tour, start, s) {
+        tour.copy_from_slice(&chosen);
+    }
+    evaluations
+}
+
+/// The edges [`entry_dp`] evaluates on `tour`.
+fn entry_dp_edges(units: &[Unit], tour: &[Placement]) -> u64 {
+    let mut prev = 1u64;
+    let mut total = 0u64;
+    for p in tour {
+        let c = units[p.unit].candidates.len() as u64;
+        if c > 0 {
+            total += prev * c;
+            prev = c;
+        }
+    }
+    total
+}
+
+/// Improve the [`construct`] tour (R8): 2-opt over neighbour lists with
+/// don't-look bits, then Or-opt chains of 1 to [`OR_OPT_CHAIN`] units,
+/// optionally reversed, then the [`entry_dp`], for up to
+/// `s.strategy.rounds` rounds or until a round gains nothing.
+///
+/// Each unit's moves join it to one of its [`NEIGHBOURS`] nearest units by
+/// [`travel_cost`] between entry points (or to the start, when that is as
+/// near). Reversing a run flips its open paths; a ring keeps its entry, so
+/// its exit state stays the same. A move that puts a child after its parent
+/// (or, with `outlines_last`, mixes roots and inner units) is never applied,
+/// and a move is applied only when its exact cost change, without the
+/// crossing term, is negative. `s.strategy.budget` caps the evaluations;
+/// when it runs out, the best tour so far is kept. A tour that already
+/// breaks precedence keeps its order, and the DP still runs.
+pub fn improve(
+    units: &[Unit],
+    tour: &mut Vec<Placement>,
+    tree: &ContainmentTree,
+    start: Point,
+    s: &PipelineSettings,
+) -> ImproveStats {
+    let mut stats = ImproveStats::default();
+    let budget = s.strategy.budget;
+    let valid_entries = tour
+        .iter()
+        .all(|p| p.unit < units.len() && p.candidate < units[p.unit].candidates.len().max(1));
+    if tour.is_empty() || !valid_entries {
+        return stats;
+    }
+    let finite = |e: &Entry| {
+        e.at.is_finite()
+            && e.exit.is_finite()
+            && e.tangent.is_finite()
+            && e.exit_heading.is_finite()
+    };
+    let searchable = tour.len() > 1
+        && tour.iter().all(|p| {
+            units[p.unit]
+                .candidates
+                .get(p.candidate)
+                .is_some_and(finite)
+        })
+        && respects_precedence(tour, tree, s.strategy.outlines_last);
+    let neighbours = if searchable && s.strategy.rounds > 0 {
+        neighbour_lists(units, start, NEIGHBOURS)
+    } else {
+        Vec::new()
+    };
+    for _ in 0..s.strategy.rounds {
+        stats.rounds += 1;
+        let before = tour_cost(units, tour, start, s);
+        let mut spent = false;
+        if searchable {
+            let mut search = Search::new(units, tree, start, s, std::mem::take(tour), &mut stats);
+            spent = !search.run(&neighbours);
+            *tour = search.tour;
+        }
+        if s.strategy.entry_dp && !spent {
+            let edges = entry_dp_edges(units, tour);
+            if stats.evaluations + edges <= budget {
+                let old = tour.clone();
+                stats.evaluations += entry_dp(units, tour, start, s);
+                stats.entry_dp_changes += u32::from(*tour != old);
+            } else {
+                spent = true;
+            }
+        }
+        debug_assert!(!searchable || respects_precedence(tour, tree, s.strategy.outlines_last));
+        let after = tour_cost(units, tour, start, s);
+        if spent || after >= before - MIN_GAIN_MM {
+            break;
+        }
+    }
+    stats
+}
+
+/// The [`NEIGHBOURS`] nearest units of each unit, nearest first (ties to the
+/// lower index), by the least [`travel_cost`] between their entry points,
+/// and whether the start is as near as the farthest of them.
+fn neighbour_lists(units: &[Unit], start: Point, k: usize) -> Vec<(Vec<usize>, bool)> {
+    let n = units.len();
+    let mut grid = EntryGrid::new(units);
+    for (u, unit) in units.iter().enumerate() {
+        grid.insert(u, unit);
+    }
+    let by = |a: &(f64, usize), b: &(f64, usize)| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1));
+    let mut seen = vec![0u32; n];
+    let mut query = 0u32;
+    let mut found = Vec::new();
+    let mut stats = ConstructStats::default();
+    let mut nearest: Vec<(f64, usize)> = Vec::new();
+    let mut merged: Vec<(f64, usize)> = Vec::new();
+    let mut out = Vec::with_capacity(n);
+    for (u, unit) in units.iter().enumerate() {
+        merged.clear();
+        // The k nearest of u are among the k nearest of its entry points.
+        for e in unit.candidates.iter().filter(|e| e.at.is_finite()) {
+            query += 1;
+            found.clear();
+            nearest.clear();
+            grid.search(e.at, &mut seen, query, &mut found, &mut stats, |new| {
+                for &v in new.iter().filter(|&&v| v != u) {
+                    let d = units[v]
+                        .candidates
+                        .iter()
+                        .map(|c| travel_cost(e.at, c.at))
+                        .fold(f64::INFINITY, f64::min);
+                    nearest.push((d, v));
+                }
+                nearest.sort_by(by);
+                nearest.truncate(k);
+                if nearest.len() < k {
+                    f64::INFINITY
+                } else {
+                    nearest[k - 1].0
+                }
+            });
+            merged.extend_from_slice(&nearest);
+        }
+        merged.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.total_cmp(&b.0)));
+        merged.dedup_by_key(|x| x.1);
+        merged.sort_by(by);
+        merged.truncate(k);
+        let to_start = unit
+            .candidates
+            .iter()
+            .map(|c| travel_cost(start, c.at))
+            .fold(f64::INFINITY, f64::min);
+        let start_near = merged.len() < k || merged.last().is_some_and(|x| to_start <= x.0);
+        out.push((merged.iter().map(|x| x.1).collect(), start_near));
+    }
+    out
+}
+
+/// Prefix sums of a cost array in blocks of [`Sums::BLOCK`], so a change in
+/// a window updates the window's blocks and the block offsets only.
+#[derive(Default)]
+struct Sums {
+    /// The sum from the start of `k`'s block up to (not including) `k`.
+    local: Vec<f64>,
+    /// The sum of all blocks before block `b`.
+    offset: Vec<f64>,
+}
+
+impl Sums {
+    const BLOCK: usize = 256;
+
+    /// The sum of `v[..k]`, for `k` up to `v.len()`.
+    fn upto(&self, k: usize) -> f64 {
+        self.offset[k / Self::BLOCK] + self.local[k]
+    }
+
+    /// Recompute after `v[lo..hi]` changed.
+    fn update(&mut self, v: &[f64], lo: usize, hi: usize) {
+        let n = v.len();
+        let blocks = n / Self::BLOCK + 1;
+        if self.local.len() != n + 1 {
+            self.local = vec![0.0; n + 1];
+            self.offset = vec![0.0; blocks + 1];
+            return self.update(v, 0, n);
+        }
+        let first = lo / Self::BLOCK;
+        let last = (hi.max(lo + 1) - 1).min(n.saturating_sub(1)) / Self::BLOCK;
+        for b in first..=last.min(blocks - 1) {
+            let start = b * Self::BLOCK;
+            let end = (start + Self::BLOCK).min(n + 1);
+            let mut acc = 0.0;
+            for (local, &x) in self.local[start..end]
+                .iter_mut()
+                .zip(v[start..].iter().chain(std::iter::once(&0.0)))
+            {
+                *local = acc;
+                acc += x;
+            }
+        }
+        for b in first..blocks {
+            let start = b * Self::BLOCK;
+            let end = (start + Self::BLOCK).min(n);
+            let block_sum = if start < n {
+                self.local[end - 1] + v[end - 1]
+            } else {
+                0.0
+            };
+            self.offset[b + 1] = self.offset[b] + block_sum;
+        }
+    }
+}
+
+/// A range minimum over positions, for the 2-opt precedence check.
+#[derive(Default)]
+struct MinTree {
+    size: usize,
+    t: Vec<usize>,
+}
+
+impl MinTree {
+    fn rebuild(&mut self, vals: &[usize]) {
+        self.size = vals.len().next_power_of_two();
+        self.t.clear();
+        self.t.resize(2 * self.size, usize::MAX);
+        self.t[self.size..self.size + vals.len()].copy_from_slice(vals);
+        for k in (1..self.size).rev() {
+            self.t[k] = self.t[2 * k].min(self.t[2 * k + 1]);
+        }
+    }
+
+    /// Set position `k` to `v`. The walk up stops at the first node that
+    /// keeps its value, so a window of unchanged values costs little.
+    fn set(&mut self, k: usize, v: usize) {
+        let mut k = k + self.size;
+        if self.t[k] == v {
+            return;
+        }
+        self.t[k] = v;
+        while k > 1 {
+            k >>= 1;
+            let m = self.t[2 * k].min(self.t[2 * k + 1]);
+            if self.t[k] == m {
+                break;
+            }
+            self.t[k] = m;
+        }
+    }
+
+    /// The least value at positions `l..=r`.
+    fn min(&self, l: usize, r: usize) -> usize {
+        let (mut l, mut r) = (l + self.size, r + self.size + 1);
+        let mut m = usize::MAX;
+        while l < r {
+            if l & 1 == 1 {
+                m = m.min(self.t[l]);
+                l += 1;
+            }
+            if r & 1 == 1 {
+                r -= 1;
+                m = m.min(self.t[r]);
+            }
+            l >>= 1;
+            r >>= 1;
+        }
+        m
+    }
+}
+
+/// An improvement move: reverse `tour[i..=j]`, or carry the chain
+/// `tour[i..i + len]` (reversed or not) to before position `slot`.
+#[derive(Debug, Clone, Copy)]
+enum Move {
+    Reverse {
+        i: usize,
+        j: usize,
+    },
+    Shift {
+        i: usize,
+        len: usize,
+        slot: usize,
+        reversed: bool,
+    },
+}
+
+/// The 2-opt and Or-opt local search over one tour. Every unit in the tour
+/// has a finite entry, and the tour keeps precedence.
+struct Search<'a> {
+    units: &'a [Unit],
+    tree: &'a ContainmentTree,
+    s: &'a PipelineSettings,
+    start: Point,
+    stats: &'a mut ImproveStats,
+    tour: Vec<Placement>,
+    pos: Vec<usize>,
+    /// `edge[k]`: the cost into position k (from the start for k = 0).
+    edge: Vec<f64>,
+    /// `back[k]`: the cost between positions k - 1 and k when both are
+    /// reversed and run the other way (0 for k = 0).
+    back: Vec<f64>,
+    /// Prefix sums of `edge` and `back`.
+    edge_sum: Sums,
+    back_sum: Sums,
+    /// The position of each position's parent (`usize::MAX` for a root).
+    parent_at: MinTree,
+    /// With `outlines_last`: the first root position.
+    roots_from: Option<usize>,
+}
+
+impl<'a> Search<'a> {
+    fn new(
+        units: &'a [Unit],
+        tree: &'a ContainmentTree,
+        start: Point,
+        s: &'a PipelineSettings,
+        tour: Vec<Placement>,
+        stats: &'a mut ImproveStats,
+    ) -> Self {
+        let roots_from = s
+            .strategy
+            .outlines_last
+            .then(|| tree.parent.iter().filter(|p| p.is_some()).count());
+        let mut search = Self {
+            units,
+            tree,
+            s,
+            start,
+            stats,
+            pos: vec![0; units.len()],
+            edge: Vec::new(),
+            back: Vec::new(),
+            edge_sum: Sums::default(),
+            back_sum: Sums::default(),
+            parent_at: MinTree::default(),
+            roots_from,
+            tour,
+        };
+        search.rebuild();
+        search
+    }
+
+    /// Fill the caches for the whole tour.
+    fn rebuild(&mut self) {
+        let n = self.tour.len();
+        self.edge = vec![0.0; n];
+        self.back = vec![0.0; n];
+        self.parent_at.rebuild(&vec![usize::MAX; n]);
+        self.refresh(0, n, &[]);
+    }
+
+    /// Update the caches after `tour[lo..hi]` was rewritten: the positions
+    /// and edges there, the edge after it, the sums from `lo` on, and the
+    /// parent positions of the window and of its units' children.
+    ///
+    /// `src` gives, for each new position in the window, the old position
+    /// of its unit and whether it lies in a reversed run (empty: compute
+    /// every edge). A pair that was adjacent before keeps its cached edge,
+    /// and a reversed pair swaps its two directions, so only the joins are
+    /// computed again. The values are the same as computed afresh.
+    fn refresh(&mut self, lo: usize, hi: usize, src: &[(usize, bool)]) {
+        let n = self.tour.len();
+        for k in lo..hi {
+            self.pos[self.tour[k].unit] = k;
+        }
+        let old_edge = self.edge[lo..hi].to_vec();
+        let old_back = self.back[lo..hi].to_vec();
+        for k in lo..(hi + 1).min(n) {
+            let kept = (k > lo && k < hi && !src.is_empty())
+                .then(|| {
+                    let ((a, ra), (b, rb)) = (src[k - 1 - lo], src[k - lo]);
+                    if !ra && !rb && b == a + 1 {
+                        Some((old_edge[b - lo], old_back[b - lo]))
+                    } else if ra && rb && a == b + 1 {
+                        Some((old_back[a - lo], old_edge[a - lo]))
+                    } else {
+                        None
+                    }
+                })
+                .flatten();
+            let (edge, back) = kept.unwrap_or_else(|| {
+                let prev = k.checked_sub(1).map(|j| self.tour[j]);
+                let back = match prev {
+                    Some(p) => self.cost(Some(self.flip(self.tour[k])), self.flip(p)),
+                    None => 0.0,
+                };
+                (self.cost(prev, self.tour[k]), back)
+            });
+            self.edge[k] = edge;
+            self.back[k] = back;
+        }
+        let changed = (hi + 1).min(n);
+        self.edge_sum.update(&self.edge, lo, changed);
+        self.back_sum.update(&self.back, lo, changed);
+        for k in lo..hi {
+            let u = self.tour[k].unit;
+            let at = self.parent(u).map_or(usize::MAX, |q| self.pos[q]);
+            self.parent_at.set(k, at);
+            for &c in self.tree.children.get(u).into_iter().flatten() {
+                self.parent_at.set(self.pos[c], k);
+            }
+        }
+    }
+
+    fn parent(&self, u: usize) -> Option<usize> {
+        self.tree.parent.get(u).copied().flatten()
+    }
+
+    /// `p` cut the other way: an open path from its other end. A ring
+    /// keeps its entry and direction.
+    fn flip(&self, p: Placement) -> Placement {
+        let u = &self.units[p.unit];
+        if !u.closed && u.candidates.len() == 2 {
+            Placement {
+                unit: p.unit,
+                candidate: 1 - p.candidate,
+            }
+        } else {
+            p
+        }
+    }
+
+    fn flippable(&self, p: Placement) -> bool {
+        self.flip(p) != p
+    }
+
+    /// The cost of going on to `to` after `from` (the start for `None`).
+    fn cost(&self, from: Option<Placement>, to: Placement) -> f64 {
+        let (head, heading) = match from {
+            None => (self.start, ASSUMED_START_HEADING),
+            Some(p) => {
+                let e = &self.units[p.unit].candidates[p.candidate];
+                (e.exit, e.exit_heading)
+            }
+        };
+        let u = &self.units[to.unit];
+        cost(head, heading, u, &u.candidates[to.candidate], self.s)
+    }
+
+    fn prev(&self, i: usize) -> Option<Placement> {
+        i.checked_sub(1).map(|k| self.tour[k])
+    }
+
+    /// The least gain a move must show. The delta comes from prefix sums,
+    /// whose rounding grows with the tour; above this bound a move that
+    /// looks better is better.
+    fn min_gain(&self) -> f64 {
+        let n = self.tour.len();
+        let total = self.edge_sum.upto(n).abs() + self.back_sum.upto(n).abs();
+        MIN_GAIN_MM.max(4.0 * n as f64 * f64::EPSILON * total)
+    }
+
+    /// Count one evaluation, or false when the budget is spent.
+    fn spend(&mut self) -> bool {
+        if self.stats.evaluations >= self.s.strategy.budget {
+            return false;
+        }
+        self.stats.evaluations += 1;
+        true
+    }
+
+    /// The zone of position k: false for inner units, true for roots.
+    fn zone(&self, k: usize) -> bool {
+        self.roots_from.is_some_and(|m| k >= m)
+    }
+
+    fn legal(&self, m: Move) -> bool {
+        let pos_of = |u: usize| self.pos[u];
+        match m {
+            Move::Reverse { i, j } => {
+                // No unit in the run may have its parent in the run.
+                self.zone(i) == self.zone(j) && self.parent_at.min(i, j) > j
+            }
+            Move::Shift {
+                i,
+                len,
+                slot,
+                reversed,
+            } => {
+                let end = i + len;
+                if self.zone(i) != self.zone(end - 1) {
+                    return false;
+                }
+                if let Some(roots) = self.roots_from {
+                    if slot > end && end - 1 < roots && slot > roots {
+                        return false;
+                    }
+                    if slot < i && i >= roots && slot < roots {
+                        return false;
+                    }
+                }
+                self.tour[i..end].iter().all(|c| {
+                    let parent_in_chain = self
+                        .parent(c.unit)
+                        .map(pos_of)
+                        .is_some_and(|q| (i..end).contains(&q));
+                    if reversed && parent_in_chain {
+                        return false;
+                    }
+                    if slot > end {
+                        // Moved later: its parent must not be passed.
+                        self.parent(c.unit)
+                            .map(pos_of)
+                            .is_none_or(|q| q < end || q >= slot)
+                    } else {
+                        // Moved earlier: no passed unit may be its child.
+                        self.tree
+                            .children
+                            .get(c.unit)
+                            .is_none_or(|ch| ch.iter().all(|&x| !(slot..i).contains(&pos_of(x))))
+                    }
+                })
+            }
+        }
+    }
+
+    /// The cost change of `m`, from the cached edges.
+    fn delta(&self, m: Move) -> f64 {
+        let n = self.tour.len();
+        match m {
+            Move::Reverse { i, j } => {
+                let mut old = self.edge_sum.upto(j + 1) - self.edge_sum.upto(i);
+                let mut new = self.cost(self.prev(i), self.flip(self.tour[j]))
+                    + (self.back_sum.upto(j + 1) - self.back_sum.upto(i + 1));
+                if j + 1 < n {
+                    old += self.edge[j + 1];
+                    new += self.cost(Some(self.flip(self.tour[i])), self.tour[j + 1]);
+                }
+                new - old
+            }
+            Move::Shift {
+                i,
+                len,
+                slot,
+                reversed,
+            } => {
+                let end = i + len;
+                let (first, last, inner) = if reversed {
+                    (
+                        self.flip(self.tour[end - 1]),
+                        self.flip(self.tour[i]),
+                        self.back_sum.upto(end) - self.back_sum.upto(i + 1),
+                    )
+                } else {
+                    (
+                        self.tour[i],
+                        self.tour[end - 1],
+                        self.edge_sum.upto(end) - self.edge_sum.upto(i + 1),
+                    )
+                };
+                let mut old = self.edge_sum.upto(end) - self.edge_sum.upto(i);
+                let mut new = self.cost(self.prev(slot), first) + inner;
+                if end < n {
+                    old += self.edge[end];
+                    new += self.cost(self.prev(i), self.tour[end]);
+                }
+                if slot < n {
+                    old += self.edge[slot];
+                    new += self.cost(Some(last), self.tour[slot]);
+                }
+                new - old
+            }
+        }
+    }
+
+    /// The window `lo..hi` the move rewrites, and its new contents: each
+    /// placement with its old position and whether it is in a reversed run.
+    fn rewrite(&self, m: Move) -> (usize, usize, Vec<(Placement, usize, bool)>) {
+        let kept = |k: usize| (self.tour[k], k, false);
+        let turned = |k: usize| (self.flip(self.tour[k]), k, true);
+        match m {
+            Move::Reverse { i, j } => (i, j + 1, (i..=j).rev().map(turned).collect()),
+            Move::Shift {
+                i,
+                len,
+                slot,
+                reversed,
+            } => {
+                let end = i + len;
+                let chain: Vec<_> = if reversed {
+                    (i..end).rev().map(turned).collect()
+                } else {
+                    (i..end).map(kept).collect()
+                };
+                if slot < i {
+                    (
+                        slot,
+                        end,
+                        chain.into_iter().chain((slot..i).map(kept)).collect(),
+                    )
+                } else {
+                    (i, slot, (end..slot).map(kept).chain(chain).collect())
+                }
+            }
+        }
+    }
+
+    /// Evaluate `m` and apply it when it gains. `None` when the budget is
+    /// spent; otherwise whether it was applied, with the units whose edges
+    /// changed pushed onto `touched`.
+    fn attempt(&mut self, m: Move, touched: &mut Vec<usize>) -> Option<bool> {
+        if !self.legal(m) {
+            return Some(false);
+        }
+        if !self.spend() {
+            return None;
+        }
+        if self.delta(m) >= -self.min_gain() {
+            return Some(false);
+        }
+        let (lo, hi, seq) = self.rewrite(m);
+        touched.clear();
+        let around = [lo.checked_sub(1), Some(lo), Some(hi - 1), Some(hi)];
+        let mut ends: Vec<usize> = around.into_iter().flatten().collect();
+        if let Move::Shift { i, len, .. } = m {
+            ends.extend(
+                [i.checked_sub(1), Some(i), Some(i + len - 1), Some(i + len)]
+                    .into_iter()
+                    .flatten(),
+            );
+        }
+        touched.extend(
+            ends.into_iter()
+                .filter_map(|k| self.tour.get(k))
+                .map(|p| p.unit),
+        );
+        for (k, &(p, _, _)) in seq.iter().enumerate() {
+            self.tour[lo + k] = p;
+        }
+        match m {
+            Move::Reverse { .. } => self.stats.two_opt_moves += 1,
+            Move::Shift { .. } => self.stats.or_opt_moves += 1,
+        }
+        let src: Vec<(usize, bool)> = seq.iter().map(|&(_, at, rev)| (at, rev)).collect();
+        self.refresh(lo, hi, &src);
+        Some(true)
+    }
+
+    /// Try the moves of unit `u` until one gains (first improvement).
+    fn improve_unit(
+        &mut self,
+        u: usize,
+        neighbours: &(Vec<usize>, bool),
+        touched: &mut Vec<usize>,
+    ) -> Option<bool> {
+        let n = self.tour.len();
+        let x = self.pos[u];
+        // 2-opt: reverse a run so u and a neighbour (or the start) meet.
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        if neighbours.1 && x > 0 {
+            runs.push((0, x));
+        }
+        for &v in &neighbours.0 {
+            let y = self.pos[v];
+            let (lo, hi) = (x.min(y), x.max(y));
+            runs.push((lo + 1, hi));
+            runs.push((lo, hi - 1));
+        }
+        for (i, j) in runs {
+            if i > j || (i == j && !self.flippable(self.tour[i])) {
+                continue;
+            }
+            if self.attempt(Move::Reverse { i, j }, touched)? {
+                return Some(true);
+            }
+        }
+        if !self.s.strategy.or_opt {
+            return Some(false);
+        }
+        // Or-opt: carry the chain from u next to a neighbour (or the start).
+        for len in 1..=OR_OPT_CHAIN.min(n - x) {
+            let mut slots: Vec<usize> = Vec::new();
+            if neighbours.1 {
+                slots.push(0);
+            }
+            for &v in &neighbours.0 {
+                let y = self.pos[v];
+                slots.extend([y + 1, y]);
+            }
+            for slot in slots {
+                if (x..=x + len).contains(&slot) {
+                    continue;
+                }
+                for reversed in [false, true] {
+                    if reversed && len == 1 && !self.flippable(self.tour[x]) {
+                        continue;
+                    }
+                    let m = Move::Shift {
+                        i: x,
+                        len,
+                        slot,
+                        reversed,
+                    };
+                    if self.attempt(m, touched)? {
+                        return Some(true);
+                    }
+                }
+            }
+        }
+        Some(false)
+    }
+
+    /// Run until no unit's moves gain. False when the budget ran out.
+    fn run(&mut self, neighbours: &[(Vec<usize>, bool)]) -> bool {
+        let mut queue: VecDeque<usize> = self.tour.iter().map(|p| p.unit).collect();
+        let mut queued = vec![false; self.units.len()];
+        for &u in &queue {
+            queued[u] = true;
+        }
+        let mut touched = Vec::new();
+        while let Some(u) = queue.pop_front() {
+            queued[u] = false;
+            match self.improve_unit(u, &neighbours[u], &mut touched) {
+                None => return false,
+                Some(false) => {}
+                Some(true) => {
+                    for &t in touched.iter().chain(std::iter::once(&u)) {
+                        if !queued[t] {
+                            queued[t] = true;
+                            queue.push_back(t);
+                        }
+                    }
+                }
+            }
+        }
+        true
+    }
 }
 
 /// The entry points of the ready units, in square cells over the box of all
@@ -1013,16 +1861,18 @@ mod tests {
     /// Wall-clock check (Ruling F30): run by hand or by the quality bench.
     /// Measured 0.33 to 0.40 s locally with the exact stop rule (Apple
     /// silicon, test profile, on a busy machine), so the bound is 1.2 s,
-    /// not the plan's 3 s.
+    /// not the plan's 3 s. It times the construction alone; the
+    /// improvement has its own timing test.
     #[test]
     #[ignore = "wall-clock perf check, run by hand or by the quality bench"]
     fn nn_of_20000_squares_is_fast_in_debug() {
         let s = settings(CutStrategy::Quality);
         let (paths, tree) = prepared(random_squares(20_000));
+        let units: Vec<Unit> = paths.iter().map(|t| Unit::new(t, &s)).collect();
         let t0 = std::time::Instant::now();
-        let out = order(paths, &tree, Point::ZERO, &s);
+        let out = construct(&units, &tree, Point::ZERO, &s);
         let secs = t0.elapsed().as_secs_f64();
-        eprintln!("order of 20000 squares: {secs} s");
+        eprintln!("nn of 20000 squares: {secs} s");
         assert_eq!(out.len(), 20_000);
         assert!(secs < 1.2, "{secs} s");
     }
@@ -1081,6 +1931,240 @@ mod tests {
                     prop_assert!(a < b, "an outline before an inner path");
                 }
             }
+        }
+    }
+
+    fn placements(units: &[usize]) -> Vec<Placement> {
+        units
+            .iter()
+            .map(|&unit| Placement { unit, candidate: 0 })
+            .collect()
+    }
+
+    fn unit_order(tour: &[Placement]) -> Vec<usize> {
+        tour.iter().map(|pl| pl.unit).collect()
+    }
+
+    #[test]
+    fn two_opt_fixes_a_crossing_tour() {
+        // Four short lines at the corners of a tall box. The tour A, C, B,
+        // D runs A->C and B->D, which cross; 2-opt uncrosses it.
+        let line = |id: u64, x: f64, y: f64| tp(id, &[(x, y), (x + 0.1, y)], false);
+        let paths = vec![
+            line(0, 10.0, 0.0),
+            line(1, 20.0, 0.0),
+            line(2, 20.0, 50.0),
+            line(3, 10.0, 50.0),
+        ];
+        let (paths, tree) = prepared(paths);
+        let mut s = settings(CutStrategy::Fast);
+        s.strategy.or_opt = false;
+        s.strategy.entry_dp = false;
+        let units: Vec<Unit> = paths.iter().map(|t| Unit::new(t, &s)).collect();
+        let mut tour = placements(&[0, 2, 1, 3]);
+        let before = tour_cost(&units, &tour, Point::ZERO, &s);
+        let stats = improve(&units, &mut tour, &tree, Point::ZERO, &s);
+        assert_eq!(unit_order(&tour), vec![0, 1, 2, 3]);
+        assert!(stats.two_opt_moves >= 1, "{stats:?}");
+        assert_eq!(stats.or_opt_moves, 0);
+        let after = tour_cost(&units, &tour, Point::ZERO, &s);
+        assert!(after < before - 50.0, "{before} -> {after}");
+    }
+
+    /// Three pieces with a hole each on a row, and a stray square far
+    /// below the row, cut between the first and second piece. Every 2-opt
+    /// run that could carry the stray holds a hole and its outline, so only
+    /// Or-opt can move it.
+    fn stray_job() -> (Vec<Unit>, ContainmentTree, Vec<Placement>, PipelineSettings) {
+        let mut paths = Vec::new();
+        for (k, x) in [20.0, 40.0, 60.0].into_iter().enumerate() {
+            paths.push(ring(2 * k as u64, x - 2.0, -2.0, x + 2.0, 2.0));
+            paths.push(ring(2 * k as u64 + 1, x - 5.0, -5.0, x + 5.0, 5.0));
+        }
+        paths.push(ring(6, 38.0, 98.0, 42.0, 102.0));
+        let (paths, tree) = prepared(paths);
+        let mut s = settings(CutStrategy::Fast);
+        s.strategy.entry_dp = false;
+        let units: Vec<Unit> = paths.iter().map(|t| Unit::new(t, &s)).collect();
+        let tour = placements(&[0, 1, 6, 2, 3, 4, 5]);
+        assert!(respects_precedence(&tour, &tree, false));
+        (units, tree, tour, s)
+    }
+
+    #[test]
+    fn or_opt_moves_a_stray_unit() {
+        let (units, tree, mut tour, s) = stray_job();
+        let before = tour_cost(&units, &tour, Point::ZERO, &s);
+        let stats = improve(&units, &mut tour, &tree, Point::ZERO, &s);
+        assert!(stats.or_opt_moves >= 1, "{stats:?}");
+        assert_eq!(unit_order(&tour), vec![0, 1, 2, 3, 4, 5, 6]);
+        assert!(respects_precedence(&tour, &tree, false));
+        let after = tour_cost(&units, &tour, Point::ZERO, &s);
+        assert!(after < before - 50.0, "{before} -> {after}");
+    }
+
+    #[test]
+    fn or_opt_off_skips_or_opt() {
+        // Ruling F6: the same job without Or-opt keeps the stray.
+        let (units, tree, mut tour, mut s) = stray_job();
+        s.strategy.or_opt = false;
+        let stats = improve(&units, &mut tour, &tree, Point::ZERO, &s);
+        assert_eq!(stats.or_opt_moves, 0, "{stats:?}");
+        assert_eq!(unit_order(&tour), vec![0, 1, 6, 2, 3, 4, 5]);
+    }
+
+    /// Six squares of different sizes on a zigzag, every corner a waste
+    /// corner, in a fixed order.
+    fn dp_job() -> (Vec<Unit>, Vec<Placement>, PipelineSettings) {
+        let s = settings(CutStrategy::Quality);
+        let units: Vec<Unit> = (0..6)
+            .map(|k| {
+                let (x, y) = (15.0 * k as f64, if k % 2 == 0 { 0.0 } else { 12.0 });
+                let side = 3.0 + k as f64;
+                let mut t = ring(k as u64, x, y, x + side, y + side);
+                t.keep = KeepSide::Inside;
+                Unit::new(&t, &s)
+            })
+            .collect();
+        for u in &units {
+            assert_eq!(u.candidates.len(), 4);
+            assert!(u.candidates.iter().all(|c| c.waste_corner));
+        }
+        (units, placements(&[0, 1, 2, 3, 4, 5]), s)
+    }
+
+    #[test]
+    fn entry_dp_is_exact() {
+        let (units, mut tour, s) = dp_job();
+        let start = p(-5.0, 3.0);
+        let mut best = f64::INFINITY;
+        let mut trial = tour.clone();
+        for code in 0..4usize.pow(6) {
+            for (k, pl) in trial.iter_mut().enumerate() {
+                pl.candidate = code / 4usize.pow(k as u32) % 4;
+            }
+            best = best.min(tour_cost(&units, &trial, start, &s));
+        }
+        let first = tour_cost(&units, &tour, start, &s);
+        assert!(first > best + 1.0, "not vacuous: {first} vs {best}");
+        let evaluations = entry_dp(&units, &mut tour, start, &s);
+        assert_eq!(evaluations, 4 + 5 * 16);
+        let got = tour_cost(&units, &tour, start, &s);
+        assert!((got - best).abs() < 1e-9, "{got} vs {best}");
+        assert_eq!(unit_order(&tour), vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn entry_dp_off_keeps_the_entries() {
+        // Ruling F6. The order is already right, so only the DP can lower
+        // the cost, by changing entries.
+        let (units, tour, mut s) = dp_job();
+        let tree = ContainmentTree {
+            parent: vec![None; 6],
+            children: vec![Vec::new(); 6],
+            roots: (0..6).collect(),
+            depth: vec![0; 6],
+            own_depth: vec![0; 6],
+        };
+        let start = p(-5.0, 3.0);
+        let mut on = tour.clone();
+        let stats = improve(&units, &mut on, &tree, start, &s);
+        assert_eq!(stats.entry_dp_changes, 1, "{stats:?}");
+        assert_ne!(on, tour);
+        s.strategy.entry_dp = false;
+        let mut off = tour.clone();
+        let stats = improve(&units, &mut off, &tree, start, &s);
+        assert_eq!(stats.entry_dp_changes, 0, "{stats:?}");
+        let entries = |t: &[Placement]| t.iter().map(|pl| pl.candidate).collect::<Vec<_>>();
+        assert_eq!(entries(&off), entries(&tour));
+    }
+
+    #[test]
+    fn order_budget_bounds_large_jobs() {
+        // The guard is the evaluation count (Ruling F30); the timing twin
+        // below is ignored.
+        let n = 5000;
+        let s = settings(CutStrategy::Quality);
+        let (paths, tree) = prepared(random_squares(n));
+        let units: Vec<Unit> = paths.iter().map(|t| Unit::new(t, &s)).collect();
+        let mut tour = construct(&units, &tree, Point::ZERO, &s);
+        let before = tour_cost(&units, &tour, Point::ZERO, &s);
+        let stats = improve(&units, &mut tour, &tree, Point::ZERO, &s);
+        let after = tour_cost(&units, &tour, Point::ZERO, &s);
+        eprintln!("{stats:?}: {before} -> {after}");
+        assert!(stats.evaluations <= BUDGET, "{stats:?}");
+        assert!(respects_precedence(&tour, &tree, false));
+        assert!(after < before, "{before} -> {after}");
+    }
+
+    /// Wall-clock check (Ruling F30): construct plus improve of 5000
+    /// squares in a debug build, bound 5 s from the plan.
+    #[test]
+    #[ignore = "wall-clock perf check, run by hand or by the quality bench"]
+    fn order_of_5000_squares_improves_in_under_5_s() {
+        let s = settings(CutStrategy::Quality);
+        let (paths, tree) = prepared(random_squares(5000));
+        let t0 = std::time::Instant::now();
+        let out = order(paths, &tree, Point::ZERO, &s);
+        let secs = t0.elapsed().as_secs_f64();
+        eprintln!("order of 5000 squares with improvement: {secs} s");
+        assert_eq!(out.len(), 5000);
+        assert!(secs < 5.0, "{secs} s");
+    }
+
+    #[test]
+    fn a_small_budget_stops_early_and_keeps_a_valid_tour() {
+        let mut s = settings(CutStrategy::Quality);
+        s.strategy.budget = 50;
+        let (paths, tree) = prepared(random_squares(300));
+        let units: Vec<Unit> = paths.iter().map(|t| Unit::new(t, &s)).collect();
+        let mut tour = construct(&units, &tree, Point::ZERO, &s);
+        let before = tour_cost(&units, &tour, Point::ZERO, &s);
+        let stats = improve(&units, &mut tour, &tree, Point::ZERO, &s);
+        assert_eq!(stats.evaluations, 50, "{stats:?}");
+        assert_eq!(stats.entry_dp_changes, 0, "the DP does not fit");
+        assert!(respects_precedence(&tour, &tree, false));
+        assert!(tour_cost(&units, &tour, Point::ZERO, &s) <= before);
+    }
+
+    proptest! {
+        #[test]
+        fn improvement_never_increases_cost_and_keeps_precedence(
+            rects in rects(),
+            strategy in 0usize..3,
+            start in (-50.0f64..250.0, -50.0f64..250.0),
+        ) {
+            let paths: Vec<Toolpath> = rects
+                .iter()
+                .enumerate()
+                .map(|(i, &(x, y, w, h, open))| {
+                    if open {
+                        tp(i as u64, &[(x, y), (x + w / 4.0, y + h / 4.0)], false)
+                    } else {
+                        ring(i as u64, x, y, x + w, y + h)
+                    }
+                })
+                .collect();
+            let (paths, tree) = prepared(paths);
+            let strategy = [CutStrategy::Quality, CutStrategy::Fast, CutStrategy::KeepSheet][strategy];
+            let s = settings(strategy);
+            let start = p(start.0, start.1);
+            let units: Vec<Unit> = paths.iter().map(|t| Unit::new(t, &s)).collect();
+            let built = construct(&units, &tree, start, &s);
+            let before = tour_cost(&units, &built, start, &s);
+            let mut tour = built.clone();
+            let stats = improve(&units, &mut tour, &tree, start, &s);
+            prop_assert!(stats.evaluations <= s.strategy.budget);
+            prop_assert!(respects_precedence(&tour, &tree, s.strategy.outlines_last));
+            for pl in &tour {
+                prop_assert!(pl.candidate < units[pl.unit].candidates.len());
+            }
+            let after = tour_cost(&units, &tour, start, &s);
+            prop_assert!(after <= before + 1e-9, "{} -> {}", before, after);
+            // The same input gives the same tour.
+            let mut again = built.clone();
+            improve(&units, &mut again, &tree, start, &s);
+            prop_assert_eq!(again, tour);
         }
     }
 }

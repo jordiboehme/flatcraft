@@ -199,8 +199,12 @@ fn travel_and_cut_totals() {
     let out = plan(&input, &s).unwrap();
     assert_eq!(out.toolpaths.len(), 4);
     assert!((out.cut_mm - 160.0).abs() < 1e-9);
-    // origin -> (10,10); (10,10) -> (10,10); (10,10) -> (40,10); (40,10) -> (40,10)
-    let expected = Point::ZERO.distance(Point::new(10.0, 10.0)) + 30.0;
+    // The entry DP enters the first square at (20,20), so it ends heading
+    // +x and the second square, entered at (40,20), needs no blade turn:
+    // origin -> (20,20); (20,20) -> (20,20); (20,20) -> (40,20); (40,20) -> (40,20)
+    assert_eq!(out.toolpaths[0].points[0], Point::new(20.0, 20.0));
+    assert_eq!(out.toolpaths[2].points[0], Point::new(40.0, 20.0));
+    let expected = Point::ZERO.distance(Point::new(20.0, 20.0)) + 20.0;
     assert!((out.travel_mm - expected).abs() < 1e-9, "{}", out.travel_mm);
 }
 
