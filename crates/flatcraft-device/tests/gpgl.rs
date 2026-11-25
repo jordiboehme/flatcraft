@@ -43,7 +43,8 @@ fn frame(cmds: &[&str]) -> Vec<u8> {
     want
 }
 
-// PROVISIONAL golden (spec 14a): re-check against captures
+// PROVISIONAL golden (docs/protocol/gpgl.md section 9): re-check against
+// captures of the vendor software
 #[test]
 fn square_job_golden() {
     // 10 mm square at (10,10), overcut point included, file-output profile, Mat 12x12,

@@ -125,7 +125,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn brief_values() {
+    fn token_values() {
         let d = Tokens::dark();
         assert_eq!(d.bg, Color32::from_rgb(0x15, 0x17, 0x1A));
         assert_eq!(d.accent_prepare, Color32::from_rgb(0x2B, 0xB3, 0xA3));

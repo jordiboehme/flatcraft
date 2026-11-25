@@ -196,7 +196,7 @@ If Studio is already running, quit it first. Run 0 must see the plug-in.
 
 For each run, also write in the note file how the cut looked (corners, overcut, was the paper cut through).
 
-### 6.2 Mat runs (needed for the mat assistant, spec section 9.1)
+### 6.2 Mat runs (needed for the mat assistant)
 
 FlatCraft puts its 0,0 on the printed grid of the mat. To get the offsets right we need to know where the vendor software puts things. Use a small square (for example 20 mm x 20 mm) placed so its top-left corner is at exactly 10 mm, 10 mm on the printed grid. In Studio you set this in the Transform panel, Position. Cut it on copy paper.
 

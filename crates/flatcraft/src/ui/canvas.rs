@@ -536,7 +536,7 @@ fn wheel_events(events: &[egui::Event]) -> Vec<Wheel> {
         .collect()
 }
 
-/// Ruling R29: trackpad scrolling pans; a mouse wheel, Cmd/Ctrl+scroll
+/// Trackpad scrolling pans; a mouse wheel, Cmd/Ctrl+scroll
 /// and pinch zoom around the pointer. egui turns Cmd/Ctrl+scroll and
 /// pinch into `zoom_delta`.
 fn scroll(

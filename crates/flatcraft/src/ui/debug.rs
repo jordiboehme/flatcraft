@@ -193,7 +193,8 @@ fn listing(ui: &mut Ui, id: &str, job: &JobResult) {
         });
 }
 
-/// Reads a capture fixture (`.jsonl`, Task 19's format) into rows.
+/// Reads a capture fixture (`.jsonl`, the format of
+/// `flatcraft_device::capture`) into rows.
 pub fn read_capture(path: &Path) -> Result<Capture, String> {
     let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let records: Vec<CaptureRecord> = read_jsonl(&text)?;

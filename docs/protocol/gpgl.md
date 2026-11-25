@@ -244,7 +244,7 @@ normalized to (direction, endpoint, hex) lines for replay tests. [1] U
 
 ## 9. M1 job sequence, exact bytes
 
-This section is the reference for the emitter's golden test (Task 6). If code and this section
+This section is the reference for the emitter's golden test (`square_job_golden`). If code and this section
 disagree, this section wins: the implementer stops and reports.
 
 ### The job
