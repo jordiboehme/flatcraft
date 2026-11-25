@@ -860,14 +860,26 @@ pub(crate) fn mats_page(
                     t,
                 );
                 ui.add_space(t.spacing * 2.0);
-                ui.label(RichText::new("Calibration").font(fonts::semibold(14.0)));
-                ui.label(CALIBRATION_LATER);
-                ui.label(
-                    RichText::new(
-                        "The mat assistant, which finds where the printed grid of your mat starts, arrives there too.",
-                    )
-                    .color(t.text_dim),
-                );
+                // A row search can jump to, like the form rows.
+                let at = ui
+                    .vertical(|ui| {
+                        ui.label(RichText::new("Calibration").font(fonts::semibold(14.0)));
+                        ui.label(CALIBRATION_LATER);
+                        ui.label(
+                            RichText::new(
+                                "The mat assistant, which finds where the printed grid of your mat starts, arrives there too.",
+                            )
+                            .color(t.text_dim),
+                        );
+                    })
+                    .response
+                    .rect;
+                let f = Form {
+                    modified: &[],
+                    t,
+                    highlight,
+                };
+                f.mark(ui, "Calibration", at);
             });
     });
 }

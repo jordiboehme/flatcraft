@@ -167,14 +167,15 @@ impl Panels {
         })
     }
 
-    /// Stores the choices in a preferences value.
     /// Takes the stored choices of `p` (the Settings window applied them),
-    /// keeping the window width.
+    /// keeping the window width. They count as stored, so nothing is
+    /// written back.
     pub fn adopt(&mut self, p: &Preferences) {
         self.users = [p.panel_objects, p.panel_settings, p.panel_stage];
         self.saved = self.users;
     }
 
+    /// Stores the choices in a preferences value.
     pub fn write(users: [PanelUser; 3], p: &mut Preferences) {
         [p.panel_objects, p.panel_settings, p.panel_stage] = users;
     }

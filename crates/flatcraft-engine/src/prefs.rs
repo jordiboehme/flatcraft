@@ -259,6 +259,11 @@ pub fn ribbon_pins_from_arrange(old: &[String]) -> Vec<String> {
 /// engine's `arrange.auto` default.
 pub const DEFAULT_AUTO_SPACING_MM: f64 = 5.0;
 
+/// The Auto arrange spacing the panel and the Settings window offer, in
+/// mm. A stored value outside it is kept as it is until the person
+/// changes it.
+pub const AUTO_SPACING_RANGE_MM: std::ops::RangeInclusive<f64> = 0.0..=100.0;
+
 impl Default for Preferences {
     fn default() -> Self {
         Self {

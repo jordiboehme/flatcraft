@@ -8,7 +8,7 @@ use egui::accesskit::{Role, Toggled};
 use egui::{Modifiers, Rect};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use flatcraft::ui::rails::SidePanel;
-use flatcraft::ui::settings_window::{CLOSE_NAME, Page, ROWS, SEARCH_NAME};
+use flatcraft::ui::settings_window::{self, CLOSE_NAME, Page, ROWS, SEARCH_NAME};
 use flatcraft::ui::theme::Tokens;
 use flatcraft_core::document::CutStrategy;
 use flatcraft_engine::prefs::{PanelUser, Preferences, Theme};
@@ -44,68 +44,72 @@ fn is_open(h: &AppHarness) -> bool {
     app(h).ui.show_settings
 }
 
-/// Every setting the old Settings and Profiles window had, and the new
-/// ones, by the page that holds it now and the control's name.
-const REACHABLE: [(&str, &[&str]); 9] = [
+/// The controls of every row of the window (every setting the old
+/// Settings and Profiles window had, and the new ones), by row id. The
+/// test fails when a row has no entry here, so a new setting needs one.
+const REACHABLE: [(&str, &[&str]); 24] = [
+    ("output_dir", &["Choose folder...", "Use the default"]),
+    ("auto_reload", &["Reload changed files automatically"]),
+    ("theme", &["Theme: Dark", "Theme: Light", "Theme: System"]),
     (
-        "General",
-        &[
-            "Choose folder...",
-            "Use the default",
-            "Reload changed files automatically",
-        ],
-    ),
-    (
-        "Appearance",
-        &["Theme: Dark", "Theme: Light", "Theme: System"],
-    ),
-    (
-        "Layout",
+        "panel_objects",
         &[
             "Objects panel: Auto",
             "Objects panel: Open",
             "Objects panel: Collapsed",
-            "Cut and Job panel: Auto",
-            "Cut stage panel: Auto",
-            "Reset pins",
         ],
     ),
+    ("panel_settings", &["Cut and Job panel: Auto"]),
+    ("panel_stage", &["Cut stage panel: Auto"]),
+    ("ribbon_pins", &["Reset pins"]),
+    ("default_plotter", &["Default device"]),
+    ("default_material", &["Default material"]),
     (
-        "Cutting",
+        "default_strategy",
         &[
-            "Default device",
-            "Default material",
             "Cut strategy: Quality",
             "Cut strategy: Fast",
             "Cut strategy: Keep sheet",
-            "Turn and scale each object about its own centre",
+        ],
+    ),
+    (
+        "rotate_each",
+        &["Turn and scale each object about its own centre"],
+    ),
+    (
+        "auto_arrange_spacing_mm",
+        &[
             "Auto arrange spacing",
             "Less Auto arrange spacing",
             "More Auto arrange spacing",
         ],
     ),
+    ("allow_agent_cuts", &["Allow agents to start cuts"]),
     (
-        "Agents",
+        "mcp",
         &[
-            "Allow agents to start cuts",
             "Copy the Claude Code command",
             "Copy the Claude Desktop config",
         ],
     ),
-    ("Shortcuts", &["Select all objects"]),
+    ("shortcuts", &["Select all objects"]),
     (
-        "Plotters",
-        &[
-            "Silhouette Cameo 2",
-            "Knife compensation",
-            "Blade offset (mm)",
-            "Save as user preset...",
-        ],
+        "plotter.knife",
+        &["Silhouette Cameo 2", "Knife compensation"],
     ),
-    ("Materials", &["Vinyl", "Speed", "Overcut (mm)"]),
+    ("plotter.blade_offset", &["Blade offset (mm)"]),
+    ("plotter.units", &["Units per mm", "Save as user preset..."]),
+    ("material.speed", &["Vinyl", "Speed"]),
+    ("material.force", &["Force"]),
+    ("material.passes", &["Passes"]),
+    ("material.overcut", &["Overcut (mm)"]),
     (
-        "Mats",
+        "mat.origin",
         &["Mat name", "Grid origin x (mm)", "Mat colour (hex)"],
+    ),
+    (
+        "mat.calibration",
+        &[flatcraft::ui::profiles_window::CALIBRATION_LATER],
     ),
 ];
 
@@ -115,21 +119,27 @@ fn every_setting_is_reachable() {
     let s = session(&dir);
     let mut h = harness(&dir, &s);
     open(&mut h, "General");
-    for (page, names) in REACHABLE {
-        h.get_by_role_and_label(Role::Tab, page).click();
+    // Every row has its controls listed, and every listed id is a row.
+    for r in ROWS {
+        assert!(
+            REACHABLE.iter().any(|(id, _)| *id == r.id),
+            "row {} has no controls in REACHABLE",
+            r.id
+        );
+    }
+    for (id, names) in REACHABLE {
+        let page = settings_window::row(id).page;
+        h.get_by_role_and_label(Role::Tab, page.name()).click();
         h.run();
         for name in names {
             assert!(
                 h.query_by_label(name).is_some(),
-                "{name} is not on the {page} page"
+                "{name} ({id}) is not on the {} page",
+                page.name()
             );
         }
     }
-    // Every preference has a row, and every row's page is in the list.
-    for r in ROWS {
-        assert!(REACHABLE.iter().any(|(p, _)| *p == r.page.name()));
-    }
-    assert_eq!(REACHABLE.len(), Page::ALL.len());
+    assert_eq!(REACHABLE.len(), ROWS.len());
 }
 
 #[test]
@@ -448,4 +458,143 @@ fn the_window_fits_at_900_by_600() {
             }
         }
     }
+}
+
+#[test]
+fn opening_settings_never_changes_a_stored_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    // Above what the stepper offers, as an older build or a hand edit
+    // may have stored it.
+    s.lock()
+        .unwrap()
+        .update_prefs(|p| p.auto_arrange_spacing_mm = 180.0)
+        .unwrap();
+    let mut h = harness(&dir, &s);
+    for value in [80.0, 180.0] {
+        s.lock()
+            .unwrap()
+            .update_prefs(|p| p.auto_arrange_spacing_mm = value)
+            .unwrap();
+        open(&mut h, "Cutting");
+        h.get_by_label("Auto arrange spacing");
+        let st = &app(&h).ui.settings;
+        assert_eq!(st.draft.as_ref().unwrap().auto_arrange_spacing_mm, value);
+        assert!(!st.dirty(), "{value}");
+        assert!(disabled(&h, "Apply"), "{value}");
+        click(&mut h, "OK");
+        assert_eq!(stored(&dir).auto_arrange_spacing_mm, value);
+    }
+}
+
+#[test]
+fn cancel_with_unsaved_preset_edits_keeps_everything_until_discard() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    open(&mut h, "General");
+    click(&mut h, "Reload changed files automatically");
+    h.get_by_role_and_label(Role::Tab, "Plotters").click();
+    h.run();
+    click(&mut h, "Silhouette Cameo 2");
+    click(&mut h, "Save as user preset...");
+    h.get_by_label("Preset name").type_text(" X");
+    h.run();
+    click(&mut h, "Create");
+    app_mut(&mut h)
+        .ui
+        .profiles
+        .plotter
+        .as_mut()
+        .unwrap()
+        .edit
+        .scale_x = 1.5;
+    h.run();
+    for how in ["cancel", "escape"] {
+        click(&mut h, "Cancel");
+        h.get_by_label("Discard your changes?");
+        // The staged preference waits for the answer.
+        assert!(app(&h).ui.settings.dirty(), "{how}");
+        if how == "cancel" {
+            click(&mut h, "Keep editing");
+        } else {
+            // Escape on the question means Keep editing.
+            h.key_press(egui::Key::Escape);
+            h.run();
+        }
+        assert!(is_open(&h), "{how}");
+        assert!(h.query_by_label("Discard your changes?").is_none(), "{how}");
+        assert!(app(&h).ui.settings.dirty(), "{how}");
+        assert_eq!(
+            app(&h).ui.profiles.plotter.as_ref().unwrap().edit.scale_x,
+            1.5
+        );
+    }
+    // Discard after Cancel drops both.
+    click(&mut h, "Cancel");
+    click(&mut h, "Discard");
+    assert!(!is_open(&h));
+    assert!(!stored(&dir).auto_reload);
+}
+
+#[test]
+fn command_f_alone_gives_the_search_field_the_keyboard() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    open(&mut h, "General");
+    // Without Cmd+F, typed text goes nowhere.
+    h.event(egui::Event::Text("theme".into()));
+    h.run();
+    assert!(app(&h).ui.settings.search.is_empty());
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::F);
+    h.run();
+    // Raw key events, not aimed at any widget.
+    h.event(egui::Event::Text("theme".into()));
+    h.run();
+    assert_eq!(app(&h).ui.settings.search, "theme");
+    h.get_by_label("Theme (Appearance)");
+}
+
+#[test]
+fn search_scrolls_to_the_calibration_note() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness_sized(&dir, s.clone(), [900.0, 600.0], 8, |app| app);
+    h.get_by_role_and_label(Role::Button, "Settings").click();
+    h.run();
+    let window: Rect = h
+        .ctx
+        .memory(|m| m.area_rect(egui::Id::unique("flatcraft-settings")))
+        .unwrap();
+    h.get_by_label(SEARCH_NAME).click();
+    h.run();
+    h.get_by_label(SEARCH_NAME).type_text("wizard");
+    h.run();
+    click(&mut h, "Calibration (Mats)");
+    assert_eq!(app(&h).ui.settings.page, Page::Mats);
+    let note = h
+        .get_by_label(flatcraft::ui::profiles_window::CALIBRATION_LATER)
+        .rect();
+    // Far below the mat form at this size: in view only after the scroll.
+    assert!(window.contains_rect(note), "{note:?} not in {window:?}");
+    let t = app(&h).tokens;
+    let outlined = common::painted(&h).iter().any(|shape| match shape {
+        egui::Shape::Rect(r) => r.stroke.color == t.accent_prepare && r.rect.contains_rect(note),
+        _ => false,
+    });
+    assert!(outlined, "the calibration note is not highlighted");
+}
+
+#[test]
+fn the_panel_choices_are_explained_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    open(&mut h, "Layout");
+    assert_eq!(
+        h.query_all_by_label(settings_window::PANELS_HELP).count(),
+        1
+    );
+    assert!(h.query_by_label_contains("Stays open at every").is_none());
 }

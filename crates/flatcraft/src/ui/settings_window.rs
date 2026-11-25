@@ -708,7 +708,12 @@ pub fn show(ctx: &egui::Context, app: &mut FlatCraftApp, actions: &mut Vec<Actio
 
     if idle && modal.is_top_modal && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
     {
-        close = true;
+        if app.ui.profiles.leave.is_some() {
+            // Escape on "Discard your changes?" means Keep editing.
+            app.ui.profiles.leave = None;
+        } else {
+            close = true;
+        }
     }
     if let Some(n) = profiles_window::take_notice(&mut app.ui.profiles) {
         app.toast(Toast::warning(n));
@@ -726,7 +731,6 @@ pub fn show(ctx: &egui::Context, app: &mut FlatCraftApp, actions: &mut Vec<Actio
         None => {}
     }
     if close {
-        app.ui.settings.preview_theme = None;
         request_close(app, ctx, false);
     }
     // "Discard" answered the question a close asked.
@@ -741,13 +745,9 @@ pub fn show(ctx: &egui::Context, app: &mut FlatCraftApp, actions: &mut Vec<Actio
 fn request_close(app: &mut FlatCraftApp, ctx: &egui::Context, apply: bool) {
     if profiles_window::unsaved(&app.ui.profiles) {
         app.ui.profiles.leave = Some(Leave::Close);
+        // The staged preferences wait for the answer: Keep editing keeps
+        // them, Discard closes (and stores them after OK).
         app.ui.settings.close_apply = apply;
-        if !apply {
-            // Cancel drops the staged preferences now; only the preset
-            // question is left.
-            let base = app.ui.settings.base.clone();
-            app.ui.settings.draft = base;
-        }
     } else {
         finish(app, ctx, apply);
     }
@@ -1261,6 +1261,7 @@ fn segmented<T: Copy + PartialEq>(
     row: &Row,
     value: &mut T,
     options: &[(T, &str, &str)],
+    explain: bool,
 ) {
     let font = egui::TextStyle::Button.resolve(ui.style());
     let widths: Vec<f32> = options
@@ -1318,6 +1319,9 @@ fn segmented<T: Copy + PartialEq>(
         egui::Stroke::new(1.0, t.border),
         egui::StrokeKind::Inside,
     );
+    if !explain {
+        return;
+    }
     if let Some((_, _, why)) = options.iter().find(|(v, _, _)| *v == *value) {
         ui.add(egui::Label::new(RichText::new(*why).color(t.text_dim)).wrap());
     }
@@ -1353,8 +1357,11 @@ fn stepper(
             *v = v.clamp(lo, hi);
         }
         let r = ui.add(
+            // A stored value outside the range stays as it is: opening
+            // Settings never changes a preference.
             egui::DragValue::new(v)
                 .range(range.clone())
+                .clamp_existing_to_range(false)
                 .speed(0.1)
                 .max_decimals(1)
                 .suffix(unit)
@@ -1450,11 +1457,15 @@ fn appearance(ui: &mut Ui, cx: &mut Cx<'_>, d: &mut Preferences) {
                     (Theme::Light, "Light", "Light panels for a bright room."),
                     (Theme::System, "System", profiles_window::THEME_HELP),
                 ],
+                true,
             );
             None
         });
     });
 }
+
+/// What the side panel choices do, once under the panel rows.
+pub const PANELS_HELP: &str = "Auto opens a panel when the window is wide enough and folds it to a slim rail when it is not. Open and Collapsed keep your choice at every width; click a rail to open it for a moment.";
 
 const PANEL_CHOICES: [(PanelUser, &str, &str); 3] = [
     (
@@ -1479,10 +1490,12 @@ fn layout(ui: &mut Ui, cx: &mut Cx<'_>, d: &mut Preferences) {
             ("panel_stage", &mut d.panel_stage),
         ] {
             row_ui(ui, cx, id, |ui| {
-                segmented(ui, &t, row(id), v, &PANEL_CHOICES);
+                segmented(ui, &t, row(id), v, &PANEL_CHOICES, false);
                 None
             });
         }
+        // One explanation for the three rows.
+        ui.add(egui::Label::new(RichText::new(PANELS_HELP).color(t.text_dim)).wrap());
     });
     section(ui, cx, "Ribbon", |ui, cx| {
         let t = *cx.t;
@@ -1586,6 +1599,7 @@ fn cutting(ui: &mut Ui, cx: &mut Cx<'_>, d: &mut Preferences, view: &profiles_wi
                         "Like Quality, but every outline comes last, so the sheet holds together until the end.",
                     ),
                 ],
+                true,
             );
             None
         });
@@ -1613,7 +1627,7 @@ fn cutting(ui: &mut Ui, cx: &mut Cx<'_>, d: &mut Preferences, view: &profiles_wi
                         "Auto arrange spacing",
                         &mut d.auto_arrange_spacing_mm,
                         0.5,
-                        0.0..=50.0,
+                        flatcraft_engine::prefs::AUTO_SPACING_RANGE_MM,
                         " mm",
                     );
                     ui.add_space(t.spacing);
@@ -1659,6 +1673,28 @@ fn spacing_example(ui: &mut Ui, mm: f64, t: &Tokens) {
     );
 }
 
+/// The Claude Code command that adds FlatCraft, with the binary path in
+/// double quotes for the shell (paths with spaces work).
+pub fn claude_code_command(bin: &str) -> String {
+    let mut quoted = String::from('"');
+    for c in bin.chars() {
+        if matches!(c, '"' | '\\' | '$' | '`') {
+            quoted.push('\\');
+        }
+        quoted.push(c);
+    }
+    quoted.push('"');
+    format!("claude mcp add flatcraft -- {quoted} mcp --window")
+}
+
+/// The Claude Desktop config entry, with the binary path as a JSON string.
+pub fn claude_desktop_config(bin: &str) -> String {
+    let command = serde_json::to_string(bin).unwrap_or_else(|_| "\"flatcraft\"".into());
+    format!(
+        "{{\n  \"mcpServers\": {{\n    \"flatcraft\": {{\n      \"command\": {command},\n      \"args\": [\"mcp\", \"--window\"]\n    }}\n  }}\n}}"
+    )
+}
+
 /// The path of this FlatCraft binary for the setup snippets.
 fn binary_path() -> String {
     std::env::current_exe()
@@ -1695,14 +1731,19 @@ fn agents(ui: &mut Ui, cx: &mut Cx<'_>, d: &mut Preferences) {
             let bin = binary_path();
             ui.add_space(4.0);
             ui.label(RichText::new("For Claude Code:").strong());
-            let cli = format!("claude mcp add flatcraft -- {bin} mcp --window");
-            snippet(ui, &cli, "Copy the Claude Code command", &t);
-            ui.label(RichText::new("For Claude Desktop, in claude_desktop_config.json:").strong());
-            let json = format!(
-                "{{\n  \"mcpServers\": {{\n    \"flatcraft\": {{\n      \"command\": \"{}\",\n      \"args\": [\"mcp\", \"--window\"]\n    }}\n  }}\n}}",
-                bin.replace('\\', "\\\\")
+            snippet(
+                ui,
+                &claude_code_command(&bin),
+                "Copy the Claude Code command",
+                &t,
             );
-            snippet(ui, &json, "Copy the Claude Desktop config", &t);
+            ui.label(RichText::new("For Claude Desktop, in claude_desktop_config.json:").strong());
+            snippet(
+                ui,
+                &claude_desktop_config(&bin),
+                "Copy the Claude Desktop config",
+                &t,
+            );
             ui.add(
                 egui::Label::new(
                     RichText::new(
@@ -1922,6 +1963,25 @@ mod tests {
         restore_page(Page::Appearance, &mut d);
         assert_eq!(d.theme, Theme::System);
         assert!(d.auto_reload);
+    }
+
+    #[test]
+    fn setup_snippets_quote_a_path_with_spaces() {
+        let bin = "/Applications/Flat Craft.app/Contents/MacOS/flatcraft";
+        assert_eq!(
+            claude_code_command(bin),
+            "claude mcp add flatcraft -- \"/Applications/Flat Craft.app/Contents/MacOS/flatcraft\" mcp --window"
+        );
+        assert_eq!(
+            claude_code_command("/a/\"$x\""),
+            "claude mcp add flatcraft -- \"/a/\\\"\\$x\\\"\" mcp --window"
+        );
+        let json: serde_json::Value = serde_json::from_str(&claude_desktop_config(bin)).unwrap();
+        assert_eq!(json["mcpServers"]["flatcraft"]["command"], bin);
+        let windows = r"C:\Program Files\FlatCraft\flatcraft.exe";
+        let json: serde_json::Value =
+            serde_json::from_str(&claude_desktop_config(windows)).unwrap();
+        assert_eq!(json["mcpServers"]["flatcraft"]["command"], windows);
     }
 
     #[test]

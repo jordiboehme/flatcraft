@@ -555,7 +555,14 @@ fn fields(ui: &mut Ui, p: &mut ArrangePanel, snap: &Snapshot, each_now: bool) {
                 .num_columns(2)
                 .spacing(spacing)
                 .show(ui, |ui| {
-                    number(ui, "Spacing", &mut v.spacing_mm, 0.0..=100.0, " mm", true);
+                    number(
+                        ui,
+                        "Spacing",
+                        &mut v.spacing_mm,
+                        flatcraft_engine::prefs::AUTO_SPACING_RANGE_MM,
+                        " mm",
+                        true,
+                    );
                 });
             ui.label(RichText::new(Setting::AutoArrangeSpacing.card()).weak());
             ui.label(
