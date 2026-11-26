@@ -167,7 +167,7 @@ fn the_switches_are_compact_and_inside_their_group() {
     let a = import_square(&s);
     let b = import_square(&s);
     select_all(&s, &[a, b]);
-    // Every pin: the Arrange group is at its widest.
+    // Every pin: the Transform group is at its widest.
     s.lock()
         .unwrap()
         .update_prefs(|p| p.ribbon_pins = RIBBON_PIN_IDS.iter().map(|s| s.to_string()).collect())
@@ -176,7 +176,7 @@ fn the_switches_are_compact_and_inside_their_group() {
         let mut h = rig(&dir, s.clone(), width);
         show_tab(&mut h, RibbonTab::Layout);
         let l = layout(&h);
-        let group = node_rect(&h, Role::Button, "Arrange");
+        let group = node_rect(&h, Role::Button, "Transform");
         let each = node_rect(&h, Role::CheckBox, "Each object");
         assert_eq!(each.height(), COMPACT_HEIGHT);
         assert!(

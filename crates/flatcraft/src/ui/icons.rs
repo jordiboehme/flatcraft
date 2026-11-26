@@ -82,6 +82,8 @@ pub enum Icon {
     Ungroup,
     /// "Auto arrange...", the panel (the one-click one uses Arrange).
     AutoArrangePanel,
+    /// "Transform" group: a frame with four handles.
+    Transform,
     /// The badges of the dialogs.
     Warning,
     Info,
@@ -124,7 +126,7 @@ macro_rules! svg {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 84] = [
+    pub const ALL: [Icon; 85] = [
         Icon::Import,
         Icon::Trace,
         Icon::Duplicate,
@@ -190,6 +192,7 @@ impl Icon {
         Icon::Group,
         Icon::Ungroup,
         Icon::AutoArrangePanel,
+        Icon::Transform,
         Icon::Warning,
         Icon::Info,
         Icon::Error,
@@ -297,6 +300,7 @@ impl Icon {
             Icon::Group => svg!("group"),
             Icon::Ungroup => svg!("ungroup"),
             Icon::AutoArrangePanel => svg!("layout-dashboard"),
+            Icon::Transform => svg!("vector-square"),
             Icon::Warning => svg!("triangle-exclamation-point"),
             Icon::Info => svg!("info"),
             Icon::Error => svg!("circle-x"),

@@ -15,6 +15,7 @@ use serde_json::json;
 
 use super::arrange::{self, PanelKind};
 use super::canvas::{CanvasView, PX_PER_MM_100};
+use super::collapse::Fold;
 use super::help::PrepareKey;
 use super::icons::Icon;
 use super::prepare::{PrepareState, RibbonTab, Snapshot};
@@ -28,6 +29,7 @@ pub enum GroupId {
     Edit,
     Files,
     Size,
+    Transform,
     Arrange,
     Zoom,
     Show,
@@ -42,23 +44,33 @@ pub struct GroupDef {
     pub title: &'static str,
     pub icon: Icon,
     pub description: &'static str,
+    /// Its places in its tab's fold order: the step at which it goes
+    /// icon-only and the one at which it becomes its tile (see
+    /// [`super::collapse`]). The least used group folds first.
+    pub fold: Fold,
+}
+
+const fn fold(icons: u8, tile: Option<u8>) -> Fold {
+    Fold { icons, tile }
 }
 
 /// Every group, left to right on its tab.
-pub const GROUPS: [GroupDef; 8] = [
+pub const GROUPS: [GroupDef; 9] = [
     GroupDef {
         id: GroupId::Add,
         tab: RibbonTab::Layout,
         title: "Add",
         icon: Icon::Plus,
         description: "Bring designs onto the mat: SVG files (the drawing format most design apps save), pictures to trace, or the test sheet.",
+        fold: fold(8, Some(11)),
     },
     GroupDef {
         id: GroupId::Edit,
         tab: RibbonTab::Layout,
         title: "Edit",
         icon: Icon::Pencil,
-        description: "Copy or remove what you selected. Undo takes back any step.",
+        description: "Copy or remove what you selected: one copy, many copies, or copies in rows or around a centre. Undo takes back any step.",
+        fold: fold(7, Some(10)),
     },
     GroupDef {
         id: GroupId::Size,
@@ -66,13 +78,23 @@ pub const GROUPS: [GroupDef; 8] = [
         title: "Position and size",
         icon: Icon::Scale,
         description: "Where the selection sits on the mat and how big it is, in millimetres, or its scale in percent. Type a number, then press Tab or Enter or click elsewhere. Esc puts the old value back.",
+        fold: fold(6, None),
+    },
+    GroupDef {
+        id: GroupId::Transform,
+        tab: RibbonTab::Layout,
+        title: "Transform",
+        icon: Icon::Transform,
+        description: "Move, turn and flip the selection by exact amounts. Each object decides whether every object turns and flips about its own centre or the selection moves as one piece. Pin the ones you use most to the ribbon.",
+        fold: fold(5, Some(9)),
     },
     GroupDef {
         id: GroupId::Arrange,
         tab: RibbonTab::Layout,
         title: "Arrange",
         icon: Icon::Arrange,
-        description: "Move, turn, flip, line up and copy your objects. Pin the ones you use most to the ribbon.",
+        description: "Line objects up, space them evenly, pack them onto the cutting area, or group them so they act as one. Pin the ones you use most to the ribbon.",
+        fold: fold(3, Some(4)),
     },
     GroupDef {
         id: GroupId::Files,
@@ -80,6 +102,7 @@ pub const GROUPS: [GroupDef; 8] = [
         title: "Linked files",
         icon: Icon::Linked,
         description: "An imported object stays linked to its file. Change the file in another app, then read it again here.",
+        fold: fold(1, Some(2)),
     },
     GroupDef {
         id: GroupId::Zoom,
@@ -87,6 +110,7 @@ pub const GROUPS: [GroupDef; 8] = [
         title: "Zoom",
         icon: Icon::ZoomIn,
         description: "How close you look at the mat. It never changes what is cut.",
+        fold: fold(4, Some(6)),
     },
     GroupDef {
         id: GroupId::Show,
@@ -94,6 +118,7 @@ pub const GROUPS: [GroupDef; 8] = [
         title: "Show",
         icon: Icon::Eye,
         description: "Helpers drawn on the canvas to place things by eye. They are never cut.",
+        fold: fold(3, Some(5)),
     },
     GroupDef {
         id: GroupId::Panels,
@@ -101,6 +126,7 @@ pub const GROUPS: [GroupDef; 8] = [
         title: "Panels",
         icon: Icon::Panels,
         description: "Show or hide the side panels to make room for the mat.",
+        fold: fold(1, Some(2)),
     },
 ];
 
@@ -121,6 +147,13 @@ impl GroupId {
 /// The groups of a tab, left to right.
 pub fn groups_of(tab: RibbonTab) -> impl Iterator<Item = &'static GroupDef> {
     GROUPS.iter().filter(move |g| g.tab == tab)
+}
+
+/// The fold table of a tab: which of its groups (by place, left to right)
+/// goes icon-only or to its tile at each step, from [`GroupDef::fold`].
+pub fn fold_table(tab: RibbonTab) -> Vec<(usize, super::collapse::Mode)> {
+    let folds: Vec<Option<Fold>> = groups_of(tab).map(|g| Some(g.fold)).collect();
+    super::collapse::ordered_steps(&folds).expect("every group has its fold places")
 }
 
 /// An edge or centre line Align lines up.
@@ -372,6 +405,24 @@ pub const TOOLS: [Tool; 41] = [
         "Many copies of one object in columns and rows. It opens the Rectangular pattern panel.",
     ),
     tool(
+        "pattern.rectangular",
+        Act::RectangularPattern,
+        "Rectangular pattern...",
+        Icon::RectangularPattern,
+        G::Edit,
+        Big,
+        "Copies of one object in columns and rows, with the gap you choose. Sticker sheet, engage!",
+    ),
+    tool(
+        "pattern.circular",
+        Act::CircularPattern,
+        "Circular pattern...",
+        Icon::CircularPattern,
+        G::Edit,
+        Big,
+        "Copies around a centre point, like the numbers on a clock.",
+    ),
+    tool(
         "delete",
         Act::Delete,
         "Delete",
@@ -394,7 +445,7 @@ pub const TOOLS: [Tool; 41] = [
         Act::MoveCopy,
         "Move / Copy...",
         Icon::Move,
-        G::Arrange,
+        G::Transform,
         Big,
         "Move the selection by an exact distance in mm, or leave copies behind at every step.",
     ),
@@ -403,7 +454,7 @@ pub const TOOLS: [Tool; 41] = [
         Act::Rotate,
         "Rotate...",
         Icon::Rotate,
-        G::Arrange,
+        G::Transform,
         Big,
         "Turn the selection by an exact angle in degrees. A positive angle turns clockwise.",
     ),
@@ -412,7 +463,7 @@ pub const TOOLS: [Tool; 41] = [
         Act::RotateLeft,
         "Rotate -90",
         Icon::RotateLeft,
-        G::Arrange,
+        G::Transform,
         Small,
         "A quarter turn anticlockwise. With Each object on, every object turns about its own centre.",
     ),
@@ -421,7 +472,7 @@ pub const TOOLS: [Tool; 41] = [
         Act::RotateRight,
         "Rotate +90",
         Icon::Rotate,
-        G::Arrange,
+        G::Transform,
         Small,
         "A quarter turn clockwise. With Each object on, every object turns about its own centre.",
     ),
@@ -431,7 +482,7 @@ pub const TOOLS: [Tool; 41] = [
             Act::MirrorHorizontal,
             "Mirror horizontally",
             Icon::Mirror,
-            G::Arrange,
+            G::Transform,
             Small,
             "Flip left and right. Use it for iron-on vinyl, which is cut from the back.",
         ),
@@ -443,7 +494,7 @@ pub const TOOLS: [Tool; 41] = [
             Act::MirrorVertical,
             "Mirror vertically",
             Icon::MirrorVertical,
-            G::Arrange,
+            G::Transform,
             Small,
             "Flip top and bottom, like a reflection in a lake.",
         ),
@@ -569,6 +620,24 @@ pub const TOOLS: [Tool; 41] = [
         ),
         Section::Distribute,
     ),
+    tool(
+        "auto_arrange",
+        Act::AutoArrange,
+        "Auto arrange",
+        Icon::Arrange,
+        G::Arrange,
+        Big,
+        "Packs the selected objects onto the cutting area, Tetris style, in one click. Everything else stays where you put it, and the packed objects fit around it. Nothing selected: it packs every visible object. It uses the gap you last chose in the Auto arrange panel.",
+    ),
+    tool(
+        "auto_arrange.panel",
+        Act::AutoArrangePanel,
+        "Auto arrange...",
+        Icon::AutoArrangePanel,
+        G::Arrange,
+        Big,
+        "Packs the selected objects onto the cutting area, Tetris style, with the gap you choose. Everything else stays where you put it, and the packed objects fit around it. Nothing selected: it packs every visible object. A preview shows where they land.",
+    ),
     in_section(
         tool(
             "group",
@@ -592,42 +661,6 @@ pub const TOOLS: [Tool; 41] = [
             "Take the selected group apart: its members stay where they are and act on their own again. A group inside it stays a group. With members picked inside a group (double-click), only those leave it.",
         ),
         Section::Group,
-    ),
-    tool(
-        "pattern.rectangular",
-        Act::RectangularPattern,
-        "Rectangular pattern...",
-        Icon::RectangularPattern,
-        G::Arrange,
-        Big,
-        "Copies of one object in columns and rows, with the gap you choose. Sticker sheet, engage!",
-    ),
-    tool(
-        "pattern.circular",
-        Act::CircularPattern,
-        "Circular pattern...",
-        Icon::CircularPattern,
-        G::Arrange,
-        Big,
-        "Copies around a centre point, like the numbers on a clock.",
-    ),
-    tool(
-        "auto_arrange.panel",
-        Act::AutoArrangePanel,
-        "Auto arrange...",
-        Icon::AutoArrangePanel,
-        G::Arrange,
-        Big,
-        "Packs the selected objects onto the cutting area, Tetris style, with the gap you choose. Everything else stays where you put it, and the packed objects fit around it. Nothing selected: it packs every visible object. A preview shows where they land.",
-    ),
-    tool(
-        "auto_arrange",
-        Act::AutoArrange,
-        "Auto arrange",
-        Icon::Arrange,
-        G::Arrange,
-        Big,
-        "Packs the selected objects onto the cutting area, Tetris style, in one click. Everything else stays where you put it, and the packed objects fit around it. Nothing selected: it packs every visible object. It uses the gap you last chose in the Auto arrange panel.",
     ),
     tool(
         "zoom.fit",
@@ -709,7 +742,7 @@ pub const TOOLS: [Tool; 41] = [
 /// the one accent part that tells what happens, in the accent colour.
 /// Every other child is ink. Every icon of an action, a group or a
 /// switch has an entry; the framed Align icons use their base icon's.
-pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 47] = [
+pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 48] = [
     (Icon::Import, &[2], &[0, 1]),
     (Icon::Trace, &[], &[2]),
     (Icon::TestPatterns, &[0], &[1]),
@@ -754,6 +787,8 @@ pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 47] = [
     (Icon::Group, &[4, 5], &[0, 1, 2, 3]),
     (Icon::Ungroup, &[1], &[0]),
     (Icon::AutoArrangePanel, &[0, 2], &[1, 3]),
+    // The four handles of the frame.
+    (Icon::Transform, &[], &[4, 5, 6, 7]),
     // Home's New cards.
     (Icon::NewFile, &[0, 1], &[2, 3]),
     (Icon::FolderOpen, &[], &[0]),
@@ -1623,6 +1658,19 @@ mod tests {
                 "{}",
                 g.title
             );
+        }
+        // Every group has an icon of its own: no other group and no
+        // action uses it (Arrange shares its icon with the one-click Auto
+        // arrange, its namesake).
+        for g in GROUPS {
+            let others = GROUPS.iter().filter(|o| o.icon == g.icon).count();
+            assert_eq!(others, 1, "{}", g.title);
+            let actions: Vec<&str> = TOOLS
+                .iter()
+                .filter(|t| t.icon == g.icon && t.act != Act::AutoArrange)
+                .map(|t| t.id)
+                .collect();
+            assert!(actions.is_empty(), "{}: {actions:?}", g.title);
         }
         for t in TOOLS {
             plain(t.description, t.id);

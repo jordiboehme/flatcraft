@@ -8,9 +8,11 @@
 //! A group with the keep rule (the ribbon's Position and size) goes to
 //! Icons but never to a tile.
 //!
-//! The order of the steps is the table [`steps`] (rightmost movable group
-//! first). After every step the bar checks the fit and stops at the first
-//! state that fits:
+//! The order of the steps is a table. A bar whose groups each give their
+//! places ([`Fold`], the ribbon's from `tools::GroupDef::fold`) folds in
+//! that order ([`ordered_steps`]); any other bar uses [`steps`] (rightmost
+//! movable group first). After every step the bar checks the fit and stops
+//! at the first state that fits. [`steps`]:
 //!
 //! | step | group (from the right) | goes to |
 //! |------|------------------------|---------|
@@ -19,11 +21,22 @@
 //! | 3..  | every other group, right to left (keep groups too) | Icons |
 //! | then | every other movable group, right to left | Tile |
 //!
-//! For Add, Edit, Position and size (keep), Arrange and Linked files:
-//! Linked files Icons, Linked files Tile, Arrange Icons, Position and size
-//! Icons, Edit Icons, Add Icons, Arrange Tile, Edit Tile, Add Tile. So the
-//! group that is the least used folds first, and a group at the left keeps
-//! its labels longest.
+//! The Layout tab (Add, Edit, Position and size (keep), Transform, Arrange
+//! and Linked files) has its own order:
+//!
+//! | step | group | goes to |
+//! |------|-------|---------|
+//! | 1, 2 | Linked files | Icons, Tile |
+//! | 3, 4 | Arrange | Icons, Tile |
+//! | 5    | Transform | Icons |
+//! | 6    | Position and size | Icons |
+//! | 7, 8 | Edit, Add | Icons |
+//! | 9..11 | Transform, Edit, Add | Tile |
+//!
+//! So the group that is the least used folds first (Arrange's one-click
+//! helpers are also on the context menu and the keys), Transform with its
+//! Each object switch stays on the bar longest, and a group at the left
+//! keeps its labels longest. The View tab folds like [`steps`].
 //!
 //! The widths are measured from what was drawn, never guessed, and a
 //! tile's width comes from the function that sizes the tile: a level that
@@ -67,6 +80,19 @@ pub struct Group<C> {
     /// `None`: it moves into the "»" list instead.
     pub tile: Option<f32>,
     pub draw: fn(&mut Ui, Mode, &mut C),
+    /// Its places in the bar's own fold order ([`Fold`]). When every group
+    /// of a bar has one, the bar folds in that order instead of [`steps`].
+    pub fold: Option<Fold>,
+}
+
+/// A group's places in its bar's fold order: the step (counted from 1)
+/// at which it goes icon-only, and the one at which it becomes its tile
+/// (`None`: never, a keep group). Every step number of a bar is used
+/// once, so the order is a table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fold {
+    pub icons: u8,
+    pub tile: Option<u8>,
 }
 
 /// How far a bar is folded.
@@ -119,6 +145,33 @@ pub struct Measures<'a> {
     pub keep: &'a [bool],
     /// Width of each group's tile, if it has one.
     pub tiles: &'a [Option<f32>],
+    /// The bar's own fold order ([`ordered_steps`]); `None`: [`steps`].
+    pub order: Option<&'a [(usize, Mode)]>,
+}
+
+impl Measures<'_> {
+    /// The fold table of the bar.
+    fn table(&self) -> Vec<(usize, Mode)> {
+        match self.order {
+            Some(order) => order.to_vec(),
+            None => steps(self.keep),
+        }
+    }
+}
+
+/// The fold table of groups that each give their places ([`Fold`]), in
+/// step order. `None` when a group gives none: the bar uses [`steps`].
+pub fn ordered_steps(folds: &[Option<Fold>]) -> Option<Vec<(usize, Mode)>> {
+    let mut ranked: Vec<(u8, usize, Mode)> = Vec::new();
+    for (i, f) in folds.iter().enumerate() {
+        let f = (*f)?;
+        ranked.push((f.icons, i, Mode::Icons));
+        if let Some(t) = f.tile {
+            ranked.push((t, i, Mode::Collapsed));
+        }
+    }
+    ranked.sort_by_key(|(rank, _, _)| *rank);
+    Some(ranked.into_iter().map(|(_, i, m)| (i, m)).collect())
 }
 
 /// The steps of the fold table for groups with these keep rules, in order:
@@ -141,19 +194,20 @@ pub fn steps(keep: &[bool]) -> Vec<(usize, Mode)> {
     out
 }
 
-/// How many steps the table has.
-fn last_step(keep: &[bool]) -> usize {
-    steps(keep).len()
+/// The mode of every group at `level`, folding in the order of [`steps`].
+pub fn modes(keep: &[bool], level: Level) -> Vec<Mode> {
+    modes_in(&steps(keep), keep.len(), level)
 }
 
-/// The mode of every group at `level`.
-pub fn modes(keep: &[bool], level: Level) -> Vec<Mode> {
+/// The mode of each of `n` groups at `level`, folding in the order of
+/// `table`.
+pub fn modes_in(table: &[(usize, Mode)], n: usize, level: Level) -> Vec<Mode> {
     match level {
-        Level::Full => vec![Mode::Full; keep.len()],
-        Level::Measure => vec![Mode::Icons; keep.len()],
-        Level::Folded(n) => {
-            let mut out = vec![Mode::Full; keep.len()];
-            for (i, mode) in steps(keep).into_iter().take(n) {
+        Level::Full => vec![Mode::Full; n],
+        Level::Measure => vec![Mode::Icons; n],
+        Level::Folded(k) => {
+            let mut out = vec![Mode::Full; n];
+            for &(i, mode) in table.iter().take(k) {
                 out[i] = mode;
             }
             out
@@ -206,12 +260,14 @@ pub fn choose_level(m: &Measures, room: f32) -> Level {
     if m.full.is_some_and(|w| w <= room) {
         return Level::Full;
     }
-    let n = last_step(m.keep);
+    let n = m.table().len();
     if m.icons.is_none() || m.fulls.is_none() {
         return Level::Measure;
     }
+    let table = m.table();
     for k in 1..=n {
-        if row_width(m, &modes(m.keep, Level::Folded(k))).is_some_and(|w| w <= room) {
+        let modes = modes_in(&table, m.keep.len(), Level::Folded(k));
+        if row_width(m, &modes).is_some_and(|w| w <= room) {
             return Level::Folded(k);
         }
     }
@@ -221,7 +277,7 @@ pub fn choose_level(m: &Measures, room: f32) -> Level {
 /// The level of the next pass, from the one just drawn and its measured
 /// width `drawn`.
 pub fn next_level(level: Level, drawn: f32, m: &Measures) -> Level {
-    let n = last_step(m.keep);
+    let n = m.table().len();
     if drawn > m.budget + 0.5 {
         // Step down. A stale measure may claim the level just drawn fits:
         // then go one step further.
@@ -250,7 +306,7 @@ pub fn next_level(level: Level, drawn: f32, m: &Measures) -> Level {
 /// The level a bar takes when it must change in a pass that cannot be
 /// discarded: everything is folded as far as it goes.
 pub fn last_pass_level(m: &Measures) -> Level {
-    Level::Folded(last_step(m.keep))
+    Level::Folded(m.table().len())
 }
 
 /// The level of the next pass, or of the next frame when this is the last
@@ -280,10 +336,13 @@ pub fn show<C>(ui: &mut Ui, id: Id, sig: u64, height: f32, groups: &[Group<C>], 
     }
     let keep: Vec<bool> = groups.iter().map(|g| g.keep).collect();
     let tiles: Vec<Option<f32>> = groups.iter().map(|g| g.tile).collect();
+    let folds: Vec<Option<Fold>> = groups.iter().map(|g| g.fold).collect();
+    let order = ordered_steps(&folds);
+    let table = order.clone().unwrap_or_else(|| steps(&keep));
     let mut rect = ui.available_rect_before_wrap();
     rect.set_height(height);
     let budget = rect.width();
-    let group_modes = modes(&keep, st.level);
+    let group_modes = modes_in(&table, groups.len(), st.level);
     let hide: Vec<bool> = group_modes.iter().map(|m| *m == Mode::Collapsed).collect();
     let more_w = more_width(ui);
 
@@ -384,6 +443,7 @@ pub fn show<C>(ui: &mut Ui, id: Id, sig: u64, height: f32, groups: &[Group<C>], 
         more: more_w,
         keep: &keep,
         tiles: &tiles,
+        order: order.as_deref(),
     };
     let ctx = ui.ctx();
     let last_pass = ctx.current_pass_index() + 1 >= ctx.options(|o| o.max_passes.get());
@@ -432,6 +492,7 @@ mod tests {
             more: 20.0,
             keep: &KEEP,
             tiles: &TILES,
+            order: None,
         }
     }
 
@@ -600,6 +661,51 @@ mod tests {
     }
 
     #[test]
+    fn a_bar_with_fold_places_folds_in_their_order() {
+        let f = |icons, tile| Some(Fold { icons, tile });
+        // The keep group (index 2) never tiles.
+        let folds = [f(5, Some(7)), f(4, Some(6)), f(3, None), f(1, Some(2))];
+        let order = ordered_steps(&folds).unwrap();
+        assert_eq!(
+            order,
+            [
+                (3, Mode::Icons),
+                (3, Mode::Collapsed),
+                (2, Mode::Icons),
+                (1, Mode::Icons),
+                (0, Mode::Icons),
+                (1, Mode::Collapsed),
+                (0, Mode::Collapsed),
+            ]
+        );
+        assert_eq!(
+            modes_in(&order, 4, Level::Folded(3)),
+            [Mode::Full, Mode::Full, Mode::Icons, Mode::Collapsed]
+        );
+        // One group without places: the bar uses the default table.
+        assert_eq!(ordered_steps(&[f(1, Some(2)), None]), None);
+        // The ladder walks the given order.
+        let keep = [false, false, true, false];
+        let fulls = [100.0, 100.0, 100.0, 100.0];
+        let icons = [50.0, 50.0, 60.0, 50.0];
+        let tiles = [Some(30.0), Some(30.0), None, Some(30.0)];
+        let mm = Measures {
+            budget: 0.0,
+            full: Some(400.0),
+            fulls: Some(&fulls),
+            icons: Some(&icons),
+            gap: 0.0,
+            more: 20.0,
+            keep: &keep,
+            tiles: &tiles,
+            order: Some(&order),
+        };
+        // 100 + 100 + 100 + 30: the first two steps.
+        assert_eq!(choose_level(&mm, 330.0), Level::Folded(2));
+        assert_eq!(last_pass_level(&mm), Level::Folded(order.len()));
+    }
+
+    #[test]
     fn groups_without_a_tile_are_listed_behind_one_more_button() {
         let keep = [false, false];
         let fulls = [100.0, 100.0];
@@ -614,6 +720,7 @@ mod tests {
             more: 20.0,
             keep: &keep,
             tiles: &tiles,
+            order: None,
         };
         // Both listed: only the » button.
         assert_eq!(

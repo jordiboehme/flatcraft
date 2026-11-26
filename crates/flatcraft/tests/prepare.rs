@@ -1493,12 +1493,19 @@ fn open_arrange(h: &mut AppHarness) {
     h.run();
 }
 
-/// Opens the panel of `label` ("Rotate...") from the Arrange drop-down.
+/// Opens the panel of `label` ("Rotate...") from the list of its group
+/// (Transform, Edit or Arrange).
 fn open_panel(h: &mut AppHarness, label: &str) {
     h.get_by_role_and_label(Role::Tab, "Layout").click();
     h.run();
-    open_arrange(h);
-    h.get_by_label(&format!("{label} (Arrange)")).click();
+    let tool = flatcraft::ui::tools::TOOLS
+        .iter()
+        .find(|t| t.title == label)
+        .unwrap_or_else(|| panic!("no action {label}"));
+    h.get_by_role_and_label(Role::Button, tool.group.def().title)
+        .click();
+    h.run();
+    h.get_by_label(&tool.row_name()).click();
     h.run();
 }
 
@@ -2031,7 +2038,11 @@ fn pins_round_trip_through_the_preferences() {
         h.get_by_role_and_label(Role::Button, label);
     }
     assert!(h.query_by_label("Circular pattern").is_none());
-    open_arrange(&mut h);
+    let open = |h: &mut AppHarness, group: &str| {
+        h.get_by_role_and_label(Role::Button, group).click();
+        h.run();
+    };
+    open(&mut h, "Edit");
     h.get_by_label(flatcraft::ui::groups::FOOTER);
     let hover = |h: &mut AppHarness, row: &str| {
         let at = h.get_by_label(row).rect().center();
@@ -2039,7 +2050,7 @@ fn pins_round_trip_through_the_preferences() {
         h.run();
         h.run();
     };
-    hover(&mut h, "Circular pattern... (Arrange)");
+    hover(&mut h, "Circular pattern... (Edit)");
     h.get_by_label("Pin Circular pattern").click();
     h.run();
     let stored =
@@ -2052,15 +2063,27 @@ fn pins_round_trip_through_the_preferences() {
     // The list is still open and the ribbon shows the new pin at once.
     h.get_by_label(flatcraft::ui::groups::FOOTER);
     h.get_by_role_and_label(Role::Button, "Circular pattern");
-    // Unpin one Mirror direction from its row, pin an Align direction;
-    // the list stays open meanwhile.
-    for (row, toggle) in [
-        ("Mirror vertically (Arrange)", "Unpin Mirror vertically"),
-        ("Align top (Arrange)", "Pin Align top · selection"),
+    // Unpin one Mirror direction from its row in Transform, pin an Align
+    // direction in Arrange; each list stays open meanwhile.
+    for (group, row, toggle) in [
+        (
+            "Transform",
+            "Mirror vertically (Transform)",
+            "Unpin Mirror vertically",
+        ),
+        (
+            "Arrange",
+            "Align top (Arrange)",
+            "Pin Align top · selection",
+        ),
     ] {
+        h.key_press(egui::Key::Escape);
+        h.run();
+        open(&mut h, group);
         hover(&mut h, row);
         h.get_by_label(toggle).click();
         h.run();
+        h.get_by_label(flatcraft::ui::groups::FOOTER);
     }
     let mut want = flatcraft_engine::prefs::default_ribbon_pins();
     want.retain(|p| p != "mirror.vertical");

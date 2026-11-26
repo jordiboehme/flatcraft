@@ -37,7 +37,7 @@ fn the_ribbon_has_a_layout_tab_and_a_view_tab() {
 }
 
 #[test]
-fn the_groups_of_layout_run_add_edit_size_arrange_linked_files() {
+fn the_groups_of_layout_run_add_edit_size_transform_arrange_linked_files() {
     let layout: Vec<GroupId> = tools::groups_of(RibbonTab::Layout).map(|g| g.id).collect();
     assert_eq!(
         layout,
@@ -45,10 +45,12 @@ fn the_groups_of_layout_run_add_edit_size_arrange_linked_files() {
             GroupId::Add,
             GroupId::Edit,
             GroupId::Size,
+            GroupId::Transform,
             GroupId::Arrange,
             GroupId::Files
         ]
     );
+    assert_eq!(GroupId::Transform.def().title, "Transform");
     let view: Vec<GroupId> = tools::groups_of(RibbonTab::View).map(|g| g.id).collect();
     assert_eq!(view, [GroupId::Zoom, GroupId::Show, GroupId::Panels]);
     assert_eq!(GroupId::Files.def().title, "Linked files");
@@ -80,7 +82,95 @@ fn pins_stay_with_their_groups() {
         .iter()
         .find(|t| t.id == "move_copy")
         .expect("Move / Copy");
-    assert_eq!(move_copy.group, GroupId::Arrange);
+    assert_eq!(move_copy.group, GroupId::Transform);
+}
+
+#[test]
+fn each_action_is_in_its_group_in_order() {
+    let ids = |g: GroupId| -> Vec<&str> { g.tools().map(|t| t.id).collect() };
+    assert_eq!(ids(GroupId::Add), ["import", "trace", "test_patterns"]);
+    assert_eq!(
+        ids(GroupId::Edit),
+        [
+            "duplicate",
+            "copies",
+            "pattern.rectangular",
+            "pattern.circular",
+            "delete"
+        ]
+    );
+    assert_eq!(
+        ids(GroupId::Transform),
+        [
+            "move_copy",
+            "rotate",
+            "rotate.left",
+            "rotate.right",
+            "mirror.horizontal",
+            "mirror.vertical"
+        ]
+    );
+    let mut arrange: Vec<String> = Vec::new();
+    for to in ["selection", "area"] {
+        for m in ["left", "centre", "right", "top", "middle", "bottom"] {
+            arrange.push(format!("align.{m}.{to}"));
+        }
+    }
+    for id in [
+        "distribute.horizontal",
+        "distribute.vertical",
+        "auto_arrange",
+        "auto_arrange.panel",
+        "group",
+        "ungroup",
+    ] {
+        arrange.push(id.to_string());
+    }
+    assert_eq!(ids(GroupId::Arrange), arrange);
+    assert_eq!(ids(GroupId::Files), ["reload"]);
+    assert!(GroupId::Size.tools().next().is_none());
+    // Every action of the table is in exactly one of the groups above or
+    // on the View tab.
+    let layout: usize = tools::groups_of(RibbonTab::Layout)
+        .map(|g| g.id.tools().count())
+        .sum();
+    let view: usize = tools::groups_of(RibbonTab::View)
+        .map(|g| g.id.tools().count())
+        .sum();
+    assert_eq!(layout + view, tools::TOOLS.len());
+}
+
+#[test]
+fn the_layout_fold_order_is_the_table() {
+    // Linked files goes first, then Arrange (one-click helpers, also on
+    // the context menu and the keys), so Transform, the fields and the
+    // labels of Edit and Add stay longest.
+    let names: Vec<&str> = tools::groups_of(RibbonTab::Layout)
+        .map(|g| g.title)
+        .collect();
+    let order: Vec<String> = tools::fold_table(RibbonTab::Layout)
+        .into_iter()
+        .map(|(i, m)| format!("{} {m:?}", names[i]))
+        .collect();
+    assert_eq!(
+        order,
+        [
+            "Linked files Icons",
+            "Linked files Collapsed",
+            "Arrange Icons",
+            "Arrange Collapsed",
+            "Transform Icons",
+            "Position and size Icons",
+            "Edit Icons",
+            "Add Icons",
+            "Transform Collapsed",
+            "Edit Collapsed",
+            "Add Collapsed",
+        ]
+    );
+    // The View tab folds from the right, as every bar did before.
+    let keep = vec![false; 3];
+    assert_eq!(tools::fold_table(RibbonTab::View), collapse::steps(&keep));
 }
 
 #[test]
@@ -104,20 +194,35 @@ fn linked_files_folds_first() {
         to_prepare(&mut h);
         h.run();
         let level = collapse::level(&h.ctx, ribbon::bar_id());
-        // The modes of Add, Edit, Size (keep), Arrange and Linked files.
-        let keep: Vec<bool> = tools::groups_of(RibbonTab::Layout)
-            .map(|g| g.id == GroupId::Size)
-            .collect();
+        // The modes of Add, Edit, Size (keep), Transform, Arrange and
+        // Linked files.
+        let table = tools::fold_table(RibbonTab::Layout);
         let level = level.expect("the ribbon was drawn");
-        let modes = collapse::modes(&keep, level);
-        assert_eq!(modes[4], Mode::Collapsed, "{width}: Linked files is a tile");
-        assert_ne!(modes[2], Mode::Collapsed, "{width}: Size is never a tile");
+        let modes = collapse::modes_in(&table, 6, level);
+        let mode = |g: GroupId| {
+            let i = tools::groups_of(RibbonTab::Layout)
+                .position(|d| d.id == g)
+                .unwrap();
+            modes[i]
+        };
+        assert_eq!(
+            mode(GroupId::Files),
+            Mode::Collapsed,
+            "{width}: Linked files is a tile"
+        );
+        assert_ne!(
+            mode(GroupId::Size),
+            Mode::Collapsed,
+            "{width}: Size is never a tile"
+        );
         if width == 1100.0 {
-            // Add and Edit keep their labels.
-            assert_eq!(modes[0], Mode::Full, "{width}: Add");
-            assert_eq!(modes[1], Mode::Full, "{width}: Edit");
-            // Arrange is one of the most used groups: it stays on the bar.
-            assert_ne!(modes[3], Mode::Collapsed, "{width}: {level:?}");
+            // Add keeps its labels; Edit keeps its buttons.
+            assert_eq!(mode(GroupId::Add), Mode::Full, "{width}: Add");
+            assert_ne!(mode(GroupId::Edit), Mode::Collapsed, "{width}: Edit");
+            // Transform is one of the most used groups: it stays on the
+            // bar. Arrange folds to its tile before it.
+            assert_ne!(mode(GroupId::Transform), Mode::Collapsed, "{width}");
+            assert_eq!(mode(GroupId::Arrange), Mode::Collapsed, "{width}");
             assert!(matches!(level, Level::Folded(_)), "{level:?}");
         }
         // Linked files is a tile, so its Reload button is not on the ribbon.

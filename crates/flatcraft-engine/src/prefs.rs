@@ -76,6 +76,11 @@ pub struct Preferences {
     /// A file without the key gets [`default_ribbon_pins`], or the migrated
     /// `arrange_pins` of an earlier version (see [`Preferences::read`]).
     pub ribbon_pins: Vec<String>,
+    /// The version of the default pins `ribbon_pins` was last brought up
+    /// to ([`PIN_DEFAULTS_VERSION`]). A file without the key is version 0:
+    /// on reading, the default pins retired since then are dropped once.
+    /// Only the window writes it.
+    pub pin_defaults_version: u32,
     /// The gap the one-click Auto arrange leaves between objects, in mm.
     /// The Auto arrange panel stores it on OK. Only the window writes it.
     pub auto_arrange_spacing_mm: f64,
@@ -145,6 +150,8 @@ pub const RIBBON_PIN_IDS: [&str; 41] = [
     "test_patterns",
     "duplicate",
     "copies",
+    "pattern.rectangular",
+    "pattern.circular",
     "delete",
     "reload",
     "move_copy",
@@ -167,12 +174,10 @@ pub const RIBBON_PIN_IDS: [&str; 41] = [
     "align.bottom.area",
     "distribute.horizontal",
     "distribute.vertical",
+    "auto_arrange",
+    "auto_arrange.panel",
     "group",
     "ungroup",
-    "pattern.rectangular",
-    "pattern.circular",
-    "auto_arrange.panel",
-    "auto_arrange",
     "zoom.fit",
     "zoom.100",
     "view.grid",
@@ -183,9 +188,41 @@ pub const RIBBON_PIN_IDS: [&str; 41] = [
     "panel.debug",
 ];
 
-/// The pins of a new install outside the Arrange group (Add, Edit, Linked
-/// files and View): every button they showed before pins existed.
-const NON_ARRANGE_DEFAULTS: [&str; 15] = [
+/// The pins of a new install, in table order: the buttons the ribbon
+/// showed before pins were there for every group (nothing a person used
+/// disappears), plus Auto arrange and Group for the Arrange group. Test
+/// patterns is not pinned: it lives in the Add list, search, Help and the
+/// menus.
+const DEFAULT_PINS: [&str; 22] = [
+    "import",
+    "trace",
+    "duplicate",
+    "copies",
+    "pattern.rectangular",
+    "delete",
+    "reload",
+    "move_copy",
+    "rotate.left",
+    "rotate.right",
+    "mirror.horizontal",
+    "mirror.vertical",
+    "auto_arrange",
+    "group",
+    "zoom.fit",
+    "zoom.100",
+    "view.grid",
+    "view.rulers",
+    "view.kept",
+    "panel.objects",
+    "panel.settings",
+    "panel.debug",
+];
+
+/// The pins of the groups that had no pins before `ribbon_pins` existed
+/// (Add, Edit, Linked files and View), as those builds showed them. A file
+/// of that time gets them back; [`RETIRED_DEFAULT_PINS`] then drops what
+/// is no longer a default.
+const OLD_NON_ARRANGE_PINS: [&str; 15] = [
     "import",
     "trace",
     "test_patterns",
@@ -203,9 +240,10 @@ const NON_ARRANGE_DEFAULTS: [&str; 15] = [
     "panel.debug",
 ];
 
-/// The Arrange pins of a new install: Move / Copy, Rectangular pattern,
-/// Rotate -90 and +90, and both Mirror directions.
-const ARRANGE_DEFAULTS: [&str; 6] = [
+/// What the old Arrange tab showed (Move / Copy, Rectangular pattern,
+/// Rotate -90 and +90, both Mirror directions): the pins an old
+/// `arrange_pins` list of only unknown ids gets.
+const OLD_ARRANGE_PINS: [&str; 6] = [
     "move_copy",
     "pattern.rectangular",
     "rotate.left",
@@ -214,14 +252,33 @@ const ARRANGE_DEFAULTS: [&str; 6] = [
     "mirror.vertical",
 ];
 
+/// The version of the default pins. It goes up by one whenever a default
+/// pin stops being a default; [`RETIRED_DEFAULT_PINS`] says which.
+pub const PIN_DEFAULTS_VERSION: u32 = 1;
+
+/// The default pins each version dropped. A file with an older
+/// `pin_defaults_version` (a file without the key is version 0) loses
+/// them once; after that the file carries the current version, so a pin
+/// the person adds again stays.
+const RETIRED_DEFAULT_PINS: [(u32, &[&str]); 1] = [
+    // Test patterns left the ribbon (Jordi, 2026-11-27).
+    (1, &["test_patterns"]),
+];
+
 /// The pins of a new install: the buttons the ribbon showed before pins
-/// were there for every group, so nothing disappears.
+/// were there for every group, so nothing disappears, plus Auto arrange
+/// and Group.
 pub fn default_ribbon_pins() -> Vec<String> {
-    NON_ARRANGE_DEFAULTS
-        .iter()
-        .chain(&ARRANGE_DEFAULTS)
-        .map(|s| s.to_string())
-        .collect()
+    DEFAULT_PINS.map(String::from).to_vec()
+}
+
+/// Drops the default pins retired after version `from` from `pins`.
+pub fn retire_default_pins(pins: &mut Vec<String>, from: u32) {
+    for (version, ids) in RETIRED_DEFAULT_PINS {
+        if version > from {
+            pins.retain(|p| !ids.contains(&p.as_str()));
+        }
+    }
 }
 
 /// The ids an `arrange_pins` id of an earlier version (Task 33 and its
@@ -266,7 +323,7 @@ fn old_arrange_id(old: &str, align_to_area: bool) -> Vec<String> {
 
 /// The `arrange_pins` of an earlier version as ribbon pins of the Arrange
 /// tab. Unknown ids and repeats are dropped and the order is kept. A list
-/// that only held unknown ids gets the Arrange defaults, so an old file
+/// that only held unknown ids gets what the old Arrange tab showed, so an old file
 /// never empties the tab by accident; an empty list stays empty (the
 /// person unpinned everything). `align_to_area` is the Align choice the
 /// old pins ran with.
@@ -278,7 +335,7 @@ pub fn migrate_arrange_pins(old: &[String], align_to_area: bool) -> Vec<String> 
         }
     }
     if out.is_empty() && !old.is_empty() {
-        return ARRANGE_DEFAULTS.map(String::from).to_vec();
+        return OLD_ARRANGE_PINS.map(String::from).to_vec();
     }
     out
 }
@@ -305,7 +362,7 @@ pub fn clean_ribbon_pins(pins: &[String]) -> Vec<String> {
 /// every session started with "To the selection", so that is the choice
 /// the old Align pins keep.
 pub fn ribbon_pins_from_arrange(old: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = NON_ARRANGE_DEFAULTS.map(String::from).to_vec();
+    let mut out: Vec<String> = OLD_NON_ARRANGE_PINS.map(String::from).to_vec();
     out.extend(migrate_arrange_pins(old, false));
     out
 }
@@ -331,6 +388,7 @@ impl Default for Preferences {
             auto_reload: false,
             rotate_each: false,
             ribbon_pins: default_ribbon_pins(),
+            pin_defaults_version: PIN_DEFAULTS_VERSION,
             auto_arrange_spacing_mm: DEFAULT_AUTO_SPACING_MM,
             panel_objects: PanelUser::None,
             panel_settings: PanelUser::None,
@@ -387,6 +445,16 @@ impl Preferences {
             (None, Some(old)) => ribbon_pins_from_arrange(&old),
             (None, None) => default_ribbon_pins(),
         };
+        // Default pins that are no longer defaults leave once.
+        let version = table
+            .get("pin_defaults_version")
+            .and_then(toml::Value::as_integer)
+            .and_then(|v| u32::try_from(v).ok())
+            .unwrap_or(0);
+        if version < PIN_DEFAULTS_VERSION {
+            retire_default_pins(&mut prefs.ribbon_pins, version);
+        }
+        prefs.pin_defaults_version = version.max(PIN_DEFAULTS_VERSION);
         if !(prefs.auto_arrange_spacing_mm.is_finite() && prefs.auto_arrange_spacing_mm >= 0.0) {
             prefs.auto_arrange_spacing_mm = DEFAULT_AUTO_SPACING_MM;
         }

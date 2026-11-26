@@ -313,7 +313,7 @@ pub const ROWS: [Row; 24] = [
     pref(
         "rotate_each",
         Page::Cutting,
-        "Arrange",
+        "Transform",
         "Each object",
         Card::Setting(Setting::EachObject),
         "rotate mirror scale own centre center",
@@ -1626,14 +1626,16 @@ fn cutting(ui: &mut Ui, cx: &mut Cx<'_>, d: &mut Preferences, view: &profiles_wi
             .wrap(),
         );
     });
-    section(ui, cx, "Arrange", |ui, cx| {
-        let t = *cx.t;
+    section(ui, cx, "Transform", |ui, cx| {
         row_ui(ui, cx, "rotate_each", |ui| {
             Some(ui.checkbox(
                 &mut d.rotate_each,
                 "Turn and scale each object about its own centre",
             ))
         });
+    });
+    section(ui, cx, "Arrange", |ui, cx| {
+        let t = *cx.t;
         row_ui(ui, cx, "auto_arrange_spacing_mm", |ui| {
             let r = ui
                 .horizontal(|ui| {
@@ -1894,8 +1896,10 @@ mod tests {
         let rows: Vec<&str> = fields().collect();
         for key in pref_keys() {
             // The recent projects list and its details are history, not
-            // settings.
-            if key == "recent_projects" || key == "recent_details" {
+            // settings; the version of the default pins is bookkeeping
+            // that goes with the pins.
+            if key == "recent_projects" || key == "recent_details" || key == "pin_defaults_version"
+            {
                 continue;
             }
             assert!(rows.contains(&key.as_str()), "no settings row for {key}");
@@ -1918,6 +1922,7 @@ mod tests {
             auto_reload: true,
             rotate_each: true,
             ribbon_pins: Vec::new(),
+            pin_defaults_version: 0,
             auto_arrange_spacing_mm: 9.0,
             panel_objects: PanelUser::Open,
             panel_settings: PanelUser::Collapsed,

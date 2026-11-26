@@ -118,11 +118,7 @@ fn pinning_two_actions_in_a_row_keeps_the_list_open() {
     h.get_by_role_and_label(Role::Button, "Arrange").click();
     h.run();
     for (row, toggle, button) in [
-        (
-            "Circular pattern... (Arrange)",
-            "Pin Circular pattern",
-            "Circular pattern",
-        ),
+        ("Ungroup (Arrange)", "Pin Ungroup", "Ungroup"),
         (
             "Distribute vertically (Arrange)",
             "Pin Distribute vertically",
@@ -140,7 +136,7 @@ fn pinning_two_actions_in_a_row_keeps_the_list_open() {
         h.get_by_role_and_label(Role::Button, button);
     }
     let pins = stored(&h);
-    assert!(pins.contains(&"pattern.circular".to_string()), "{pins:?}");
+    assert!(pins.contains(&"ungroup".to_string()), "{pins:?}");
     assert!(
         pins.contains(&"distribute.vertical".to_string()),
         "{pins:?}"
@@ -148,7 +144,7 @@ fn pinning_two_actions_in_a_row_keeps_the_list_open() {
     // A pinned row keeps its (un)pin toggle visible without hovering.
     h.hover_at(egui::pos2(1.0, 1.0));
     h.run();
-    h.get_by_label("Unpin Circular pattern");
+    h.get_by_label("Unpin Ungroup");
 }
 
 #[test]
@@ -162,11 +158,13 @@ fn cards_show_the_description_of_actions_and_groups() {
     let rotate = tools::by_act(Act::RotateLeft);
     hover(&mut h, "Rotate -90");
     h.get_by_label(rotate.description);
-    let group = tools::GroupId::Arrange.def();
-    hover_button(&mut h, "Arrange");
-    h.get_by_label(group.description);
+    for g in [tools::GroupId::Arrange, tools::GroupId::Transform] {
+        let group = g.def();
+        hover_button(&mut h, group.title);
+        h.get_by_label(group.description);
+    }
     // A list row's card too.
-    h.get_by_role_and_label(Role::Button, "Arrange").click();
+    h.get_by_role_and_label(Role::Button, "Transform").click();
     h.run();
     let mirror = tools::by_act(Act::MirrorVertical);
     hover(&mut h, &mirror.row_name());
@@ -518,13 +516,13 @@ fn the_pin_toggle_is_reachable_by_keyboard() {
     select(&s, &[a]);
     let mut h = rig(&dir, s);
     show_tab(&mut h, "Layout");
-    h.get_by_role_and_label(Role::Button, "Arrange").click();
+    h.get_by_role_and_label(Role::Button, "Edit").click();
     h.run();
     // Nothing hovered: an unpinned row shows no toggle.
     h.hover_at(egui::pos2(1.0, 1.0));
     h.run();
     assert!(h.query_by_label("Pin Circular pattern").is_none());
-    h.get_by_label("Circular pattern... (Arrange)").focus();
+    h.get_by_label("Circular pattern... (Edit)").focus();
     h.run();
     h.run();
     h.key_press(egui::Key::Tab);

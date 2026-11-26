@@ -438,6 +438,7 @@ pub fn stage_bar(
                 keep: false,
                 tile: None,
                 draw: stages,
+                fold: None,
             }];
             collapse::show(ui, bar_id(), sig, BAR_HEIGHT, &groups, &mut bar);
         },

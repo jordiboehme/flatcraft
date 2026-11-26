@@ -168,7 +168,7 @@ fn check_tab(h: &mut AppHarness, tab: &str, width: f32) -> usize {
         }
         // "Each object" is on the tab, or in the list while the group is a
         // tile.
-        if g == GroupId::Arrange {
+        if g == GroupId::Transform {
             let each = find(h, Role::CheckBox, "Each object");
             assert_eq!(each.len(), 1, "{width} {tab}: Each object");
             assert!(window(h).contains_rect(each[0].rect()));
@@ -226,17 +226,18 @@ fn the_default_pins_are_the_buttons_the_ribbon_had() {
             &[
                 "Import",
                 "Trace",
-                "Test patterns",
                 "Duplicate",
                 "Copies",
+                "Rectangular pattern",
                 "Delete",
                 "Reload",
                 "Move / Copy",
-                "Rectangular pattern",
                 "Rotate -90",
                 "Rotate +90",
                 "Mirror horizontally",
                 "Mirror vertically",
+                "Auto arrange",
+                "Group",
             ][..],
         ),
         (
@@ -288,17 +289,17 @@ fn a_listed_action_works_and_closes_the_list() {
     assert!(
         h.query_by_role_and_label(Role::Button, "Mirror vertically")
             .is_none(),
-        "the Arrange group is a tile"
+        "the Transform group is a tile"
     );
-    h.get_by_role_and_label(Role::Button, "Arrange").click();
+    h.get_by_role_and_label(Role::Button, "Transform").click();
     h.run();
     let undo = undo_len(&s);
-    h.get_by_label("Mirror vertically (Arrange)").click();
+    h.get_by_label("Mirror vertically (Transform)").click();
     h.run();
     wait_for_workers(&mut h);
     assert_eq!(undo_len(&s), undo + 1, "mirrored from the list");
     assert!(
-        h.query_by_label("Mirror vertically (Arrange)").is_none(),
+        h.query_by_label("Mirror vertically (Transform)").is_none(),
         "the list closed"
     );
 }
@@ -332,11 +333,14 @@ fn search_opens_a_list_on_a_collapsed_ribbon() {
             .accesskit_node()
             .is_disabled()
     );
+    // One object lines up with the cutting area.
+    h.get_by_label("To the cutting area").click();
+    h.run();
     let undo = undo_len(&s);
-    h.get_by_label("Mirror horizontally (Arrange)").click();
+    h.get_by_label("Align right (Arrange)").click();
     h.run();
     wait_for_workers(&mut h);
-    assert_eq!(undo_len(&s), undo + 1, "mirrored from the list");
+    assert_eq!(undo_len(&s), undo + 1, "aligned from the list");
 }
 
 #[test]

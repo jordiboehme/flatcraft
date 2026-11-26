@@ -138,6 +138,9 @@ fn the_menus_and_their_items_come_in_order() {
         [
             "Duplicate",
             "Copies...",
+            "Rectangular pattern...",
+            "Circular pattern...",
+            "Transform >",
             "Arrange >",
             "-",
             "Group",
@@ -159,15 +162,18 @@ fn the_menus_and_their_items_come_in_order() {
             "Delete"
         ]
     );
-    let Some(Entry::Sub(arrange)) = menu(&m, "object")
-        .entries
-        .iter()
-        .find(|e| matches!(e, Entry::Sub(s) if s.id == "arrange"))
-    else {
-        panic!("no Arrange submenu")
+    let submenu = |id: &str| {
+        let Some(Entry::Sub(sub)) = menu(&m, "object")
+            .entries
+            .iter()
+            .find(|e| matches!(e, Entry::Sub(s) if s.id == id))
+        else {
+            panic!("no {id} submenu")
+        };
+        titles(&sub.entries)
     };
     assert_eq!(
-        titles(&arrange.entries),
+        submenu("transform"),
         [
             "Move / Copy...",
             "Rotate...",
@@ -176,15 +182,11 @@ fn the_menus_and_their_items_come_in_order() {
             "-",
             "Mirror horizontally",
             "Mirror vertically",
-            "-",
-            "Align >",
-            "Distribute >",
-            "-",
-            "Rectangular pattern...",
-            "Circular pattern...",
-            "-",
-            "Auto arrange..."
         ]
+    );
+    assert_eq!(
+        submenu("arrange"),
+        ["Align >", "Distribute >", "-", "Auto arrange..."]
     );
     assert_eq!(
         titles(&menu(&m, "view").entries),

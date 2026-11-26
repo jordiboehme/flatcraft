@@ -83,6 +83,7 @@ except the two files below.
 | Group | group |
 | Ungroup | ungroup |
 | Auto arrange... (panel) | layout-dashboard |
+| Transform (group) | vector-square |
 | Warning (dialog badge) | triangle-exclamation-point |
 | Info (dialog badge) | info |
 | Error (dialog badge) | circle-x |

@@ -28,7 +28,7 @@ use egui::Key;
 use super::context_menu::{self, Item as Obj};
 use super::help::{self, HelpItem, SHORTCUTS};
 use super::prepare::{PrepareState, Snapshot};
-use super::tools::{self, Act, AlignTo, Section, Tool};
+use super::tools::{self, Act, AlignTo, GroupId, Section, Tool};
 use super::{Action, MENU_RECENT, Workspace, cut, project_name};
 
 /// The title of File > Export... (menu bar and app bar).
@@ -699,86 +699,90 @@ fn object_menu(inp: &MenuInput) -> Sub {
     let distribute = Entry::Sub(sub(
         "distribute",
         Section::Distribute.title(),
-        vec![
-            tool_item("distribute.horizontal", inp),
-            tool_item("distribute.vertical", inp),
-        ],
+        GroupId::Arrange
+            .tools()
+            .filter(|t| t.section == Some(Section::Distribute))
+            .map(|t| tool_item(t.id, inp))
+            .collect(),
     ));
-    let arrange = Entry::Sub(sub(
-        "arrange",
-        tools::GroupId::Arrange.def().title,
-        vec![
-            tool_item("move_copy", inp),
-            tool_item("rotate", inp),
-            tool_item("rotate.left", inp),
-            tool_item("rotate.right", inp),
-            Entry::Separator,
-            tool_item("mirror.horizontal", inp),
-            tool_item("mirror.vertical", inp),
-            Entry::Separator,
-            align_menu,
-            distribute,
-            Entry::Separator,
-            tool_item("pattern.rectangular", inp),
-            tool_item("pattern.circular", inp),
-            Entry::Separator,
-            tool_item("auto_arrange.panel", inp),
-        ],
-    ));
+    // The Transform group, in table order, a line before each section.
+    let mut moves = Vec::new();
+    let mut last = None;
+    for t in GroupId::Transform.tools() {
+        if t.section != last && !moves.is_empty() {
+            moves.push(Entry::Separator);
+        }
+        last = t.section;
+        moves.push(tool_item(t.id, inp));
+    }
+    let transform = Entry::Sub(sub("transform", GroupId::Transform.def().title, moves));
+    // The Arrange group: Align and Distribute as submenus, then the
+    // panel of Auto arrange (the one-click one stays on the ribbon). Group
+    // and Ungroup sit in the Object menu itself.
+    let mut arrange = vec![align_menu, distribute, Entry::Separator];
+    arrange.extend(
+        GroupId::Arrange
+            .tools()
+            .filter(|t| t.section.is_none() && t.act != Act::AutoArrange)
+            .map(|t| tool_item(t.id, inp)),
+    );
+    let arrange = Entry::Sub(sub("arrange", GroupId::Arrange.def().title, arrange));
+    // The Edit group's copy makers (Delete closes the menu).
+    let mut entries: Vec<Entry> = GroupId::Edit
+        .tools()
+        .filter(|t| t.act != Act::Delete)
+        .map(|t| tool_item(t.id, inp))
+        .collect();
+    entries.extend([
+        transform,
+        arrange,
+        Entry::Separator,
+        tool_item("group", inp),
+        tool_item("ungroup", inp),
+        Entry::Separator,
+        item(
+            Cmd::LinkCopies,
+            Obj::LinkCopies.label(),
+            on(Cmd::LinkCopies),
+            None,
+        ),
+        item(
+            Cmd::Unlink,
+            Obj::UnlinkCopies.label(),
+            on(Cmd::Unlink),
+            None,
+        ),
+        Entry::Separator,
+        item(Cmd::ToggleCut, skip.label(), on(Cmd::ToggleCut), None),
+        item(Cmd::ToggleHide, hide.label(), on(Cmd::ToggleHide), None),
+        item(Cmd::Rename, Obj::Rename.label(), on(Cmd::Rename), None),
+        Entry::Separator,
+        tool_item("trace", inp),
+        tool_item("reload", inp),
+        item(
+            Cmd::Reconnect,
+            Obj::Reconnect.label(),
+            on(Cmd::Reconnect),
+            None,
+        ),
+        item(
+            Cmd::RevealSource,
+            Obj::RevealSource.label(),
+            on(Cmd::RevealSource),
+            None,
+        ),
+        item(
+            Cmd::CopySourcePath,
+            Obj::CopySourcePath.label(),
+            on(Cmd::CopySourcePath),
+            None,
+        ),
+        Entry::Separator,
+        tool_item("delete", inp),
+    ]);
     Sub {
         enabled: true,
-        ..sub(
-            "object",
-            "Object",
-            vec![
-                tool_item("duplicate", inp),
-                tool_item("copies", inp),
-                arrange,
-                Entry::Separator,
-                tool_item("group", inp),
-                tool_item("ungroup", inp),
-                Entry::Separator,
-                item(
-                    Cmd::LinkCopies,
-                    Obj::LinkCopies.label(),
-                    on(Cmd::LinkCopies),
-                    None,
-                ),
-                item(
-                    Cmd::Unlink,
-                    Obj::UnlinkCopies.label(),
-                    on(Cmd::Unlink),
-                    None,
-                ),
-                Entry::Separator,
-                item(Cmd::ToggleCut, skip.label(), on(Cmd::ToggleCut), None),
-                item(Cmd::ToggleHide, hide.label(), on(Cmd::ToggleHide), None),
-                item(Cmd::Rename, Obj::Rename.label(), on(Cmd::Rename), None),
-                Entry::Separator,
-                tool_item("trace", inp),
-                tool_item("reload", inp),
-                item(
-                    Cmd::Reconnect,
-                    Obj::Reconnect.label(),
-                    on(Cmd::Reconnect),
-                    None,
-                ),
-                item(
-                    Cmd::RevealSource,
-                    Obj::RevealSource.label(),
-                    on(Cmd::RevealSource),
-                    None,
-                ),
-                item(
-                    Cmd::CopySourcePath,
-                    Obj::CopySourcePath.label(),
-                    on(Cmd::CopySourcePath),
-                    None,
-                ),
-                Entry::Separator,
-                tool_item("delete", inp),
-            ],
-        )
+        ..sub("object", "Object", entries)
     }
 }
 

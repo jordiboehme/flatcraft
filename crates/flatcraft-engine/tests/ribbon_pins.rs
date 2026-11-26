@@ -3,8 +3,8 @@
 //! migration of the Arrange pins of earlier versions.
 
 use flatcraft_engine::prefs::{
-    DEFAULT_AUTO_SPACING_MM, Preferences, RIBBON_PIN_IDS, clean_ribbon_pins, default_ribbon_pins,
-    migrate_arrange_pins,
+    DEFAULT_AUTO_SPACING_MM, PIN_DEFAULTS_VERSION, Preferences, RIBBON_PIN_IDS, clean_ribbon_pins,
+    default_ribbon_pins, migrate_arrange_pins,
 };
 
 fn strings(ids: &[&str]) -> Vec<String> {
@@ -15,9 +15,10 @@ fn write(dir: &tempfile::TempDir, text: &str) {
     std::fs::write(dir.path().join("preferences.toml"), text).unwrap();
 }
 
-/// What the groups outside Arrange pin on a new install: every button they
-/// had, plus Show kept and waste (Task 29).
-const HOME_VIEW: [&str; 15] = [
+/// What the groups outside the old Arrange tab pinned before Task 58: every
+/// button they had, plus Show kept and waste (Task 29). A file of an
+/// earlier version gets them, less Test patterns (no longer a default).
+const OLD_HOME_VIEW: [&str; 15] = [
     "import",
     "trace",
     "test_patterns",
@@ -35,6 +36,7 @@ const HOME_VIEW: [&str; 15] = [
     "panel.debug",
 ];
 
+/// What the old Arrange tab showed.
 const ARRANGE: [&str; 6] = [
     "move_copy",
     "pattern.rectangular",
@@ -44,8 +46,41 @@ const ARRANGE: [&str; 6] = [
     "mirror.vertical",
 ];
 
+/// The pins of a new install since Task 58, in table order: the buttons
+/// the ribbon showed (Rectangular pattern now in Edit; Move / Copy, the
+/// quarter turns and both mirrors in Transform), Auto arrange and Group
+/// for Arrange, and no Test patterns.
+const NEW_INSTALL: [&str; 22] = [
+    "import",
+    "trace",
+    "duplicate",
+    "copies",
+    "pattern.rectangular",
+    "delete",
+    "reload",
+    "move_copy",
+    "rotate.left",
+    "rotate.right",
+    "mirror.horizontal",
+    "mirror.vertical",
+    "auto_arrange",
+    "group",
+    "zoom.fit",
+    "zoom.100",
+    "view.grid",
+    "view.rulers",
+    "view.kept",
+    "panel.objects",
+    "panel.settings",
+    "panel.debug",
+];
+
+/// The old Home and View pins, less Test patterns, then `arrange`.
 fn with_home_view(arrange: &[&str]) -> Vec<String> {
-    let mut v = strings(&HOME_VIEW);
+    let mut v: Vec<String> = strings(&OLD_HOME_VIEW)
+        .into_iter()
+        .filter(|p| p != "test_patterns")
+        .collect();
     v.extend(strings(arrange));
     v
 }
@@ -54,7 +89,9 @@ fn with_home_view(arrange: &[&str]) -> Vec<String> {
 fn a_new_install_pins_what_the_ribbon_showed() {
     let dir = tempfile::tempdir().unwrap();
     let p = Preferences::load(dir.path());
-    assert_eq!(p.ribbon_pins, with_home_view(&ARRANGE));
+    assert_eq!(p.ribbon_pins, strings(&NEW_INSTALL));
+    assert!(!p.ribbon_pins.contains(&"test_patterns".to_string()));
+    assert_eq!(p.pin_defaults_version, PIN_DEFAULTS_VERSION);
     assert_eq!(Preferences::default().ribbon_pins, default_ribbon_pins());
     assert!(
         p.ribbon_pins
@@ -156,7 +193,7 @@ fn an_old_empty_arrange_list_empties_only_the_arrange_tab() {
     write(&dir, "arrange_pins = []\n");
     assert_eq!(
         Preferences::load(dir.path()).ribbon_pins,
-        strings(&HOME_VIEW)
+        with_home_view(&[])
     );
 }
 
@@ -207,4 +244,90 @@ fn the_auto_arrange_spacing_round_trips() {
         Preferences::load(dir.path()).auto_arrange_spacing_mm,
         DEFAULT_AUTO_SPACING_MM
     );
+}
+
+#[test]
+fn pins_of_moved_actions_stay_pinned() {
+    // Task 58 moved the patterns to Edit and Move / Copy, Rotate and
+    // Mirror to Transform. Pins are action ids, so they stay as they are.
+    let dir = tempfile::tempdir().unwrap();
+    let moved = [
+        "pattern.circular",
+        "pattern.rectangular",
+        "rotate",
+        "mirror.vertical",
+        "ungroup",
+        "auto_arrange.panel",
+    ];
+    let text = format!(
+        "pin_defaults_version = {PIN_DEFAULTS_VERSION}\nribbon_pins = {:?}\n",
+        moved
+    );
+    write(&dir, &text);
+    assert_eq!(Preferences::load(dir.path()).ribbon_pins, strings(&moved));
+}
+
+#[test]
+fn test_patterns_leaves_the_old_default_pins_once() {
+    // A file of a build before the pins version: its pins were the old
+    // defaults, with Test patterns.
+    let dir = tempfile::tempdir().unwrap();
+    let mut old = strings(&OLD_HOME_VIEW);
+    old.extend(strings(&ARRANGE));
+    write(&dir, &format!("ribbon_pins = {old:?}\n"));
+    let p = Preferences::load(dir.path());
+    assert!(!p.ribbon_pins.contains(&"test_patterns".to_string()));
+    assert_eq!(p.ribbon_pins, with_home_view(&ARRANGE), "the rest stays");
+    assert_eq!(p.pin_defaults_version, PIN_DEFAULTS_VERSION);
+
+    // The person pins it again: it stays, now and on every later load.
+    let current = Preferences {
+        output_dir: Some(dir.path().join("output")),
+        ..p
+    };
+    let (p, written) = Preferences::update(dir.path(), &current, |p| {
+        p.ribbon_pins.push("test_patterns".into());
+    });
+    written.unwrap();
+    assert!(p.ribbon_pins.contains(&"test_patterns".to_string()));
+    let text = std::fs::read_to_string(dir.path().join("preferences.toml")).unwrap();
+    assert!(
+        text.contains(&format!("pin_defaults_version = {PIN_DEFAULTS_VERSION}")),
+        "{text}"
+    );
+    for _ in 0..2 {
+        let loaded = Preferences::load(dir.path());
+        assert!(loaded.ribbon_pins.contains(&"test_patterns".to_string()));
+        assert_eq!(loaded.ribbon_pins, p.ribbon_pins);
+    }
+}
+
+#[test]
+fn a_file_of_the_current_version_keeps_its_test_patterns_pin() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        &dir,
+        &format!(
+            "pin_defaults_version = {PIN_DEFAULTS_VERSION}\nribbon_pins = [\"test_patterns\", \"import\"]\n"
+        ),
+    );
+    assert_eq!(
+        Preferences::load(dir.path()).ribbon_pins,
+        ["test_patterns", "import"]
+    );
+}
+
+#[test]
+fn every_default_pin_is_an_id_in_table_order() {
+    let defaults = default_ribbon_pins();
+    let places: Vec<usize> = defaults
+        .iter()
+        .map(|d| {
+            RIBBON_PIN_IDS
+                .iter()
+                .position(|id| id == d)
+                .unwrap_or_else(|| panic!("{d}"))
+        })
+        .collect();
+    assert!(places.windows(2).all(|w| w[0] < w[1]), "{defaults:?}");
 }

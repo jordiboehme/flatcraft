@@ -382,8 +382,9 @@ pub fn search_target(id: &str, doc_id: u64) -> Option<SearchTarget> {
         // With one object selected, picking these opens the Trace dialog or
         // the Rectangular pattern panel (see `pick`).
         "object.retrace" | "object.copies" => Tab(RibbonTab::Layout),
-        // The Arrange group has these; with a selection, Circular pattern
-        // opens its panel (see `pick`).
+        // The Position and size, Transform, Arrange and Edit groups have
+        // these; with a selection, Circular pattern opens its panel (see
+        // `pick`).
         "object.scale"
         | "object.rotate"
         | "object.mirror"
@@ -838,6 +839,7 @@ fn bar_groups<'a>(ui: &Ui, tab: RibbonTab) -> Vec<Group<Cx<'a>>> {
             keep,
             tile: (!keep).then(|| groups::tile_width(ui, title)),
             draw,
+            fold: Some(id.def().fold),
         }
     };
     tools::groups_of(tab)
@@ -846,13 +848,14 @@ fn bar_groups<'a>(ui: &Ui, tab: RibbonTab) -> Vec<Group<Cx<'a>>> {
             GroupId::Edit => g(def.id, |ui, m, cx| plain(ui, m, GroupId::Edit, cx)),
             GroupId::Files => g(def.id, |ui, m, cx| plain(ui, m, GroupId::Files, cx)),
             GroupId::Size => g(def.id, size_group),
-            GroupId::Arrange => g(def.id, |ui, m, cx| {
+            GroupId::Transform => g(def.id, |ui, m, cx| {
                 let extras = Extras {
                     inline: Some(each_switch),
                     in_list: Some(|ui, cx| each_switch(ui, Mode::List, cx)),
                 };
-                groups::show(ui, m, GroupId::Arrange, extras, cx)
+                groups::show(ui, m, GroupId::Transform, extras, cx)
             }),
+            GroupId::Arrange => g(def.id, |ui, m, cx| plain(ui, m, GroupId::Arrange, cx)),
             GroupId::Zoom => g(def.id, |ui, m, cx| plain(ui, m, GroupId::Zoom, cx)),
             GroupId::Show => g(def.id, |ui, m, cx| plain(ui, m, GroupId::Show, cx)),
             GroupId::Panels => g(def.id, |ui, m, cx| plain(ui, m, GroupId::Panels, cx)),
