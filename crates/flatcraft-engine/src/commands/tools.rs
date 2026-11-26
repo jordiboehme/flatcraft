@@ -157,7 +157,7 @@ fn default_max_px() -> u32 {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PreviewParams {
-    /// "canvas": media, cutting area and objects in their colours. "path": toolpaths in cut order, dashed travel moves, start dots and the 0,0 the first travel starts from, labelled H.
+    /// "canvas": media, cutting area and objects in their colours. "path": toolpaths in cut order (weed paths in long dashes), dashed travel moves, start dots and the 0,0 the first travel starts from, labelled H.
     pub kind: PreviewKind,
     /// Size in px of the larger image side, 64 to 4096 (default 1024).
     #[serde(default = "default_max_px")]
@@ -193,5 +193,5 @@ command!(
     mutates: false,
     params: PreviewParams,
     run: run_preview,
-    description: "Draws the active document as a PNG. kind 'canvas' shows the media, the cutting area and the visible objects in their colours; kind 'path' shows the planned toolpaths numbered in cut order, travel moves dashed, a red dot at every start point and an H at the 0,0 where the first travel move starts (it needs something to cut and plans like job.preview). max_px is the larger image side, 64 to 4096, default 1024. Returns {png_base64, width, height}.",
+    description: "Draws the active document as a PNG. kind 'canvas' shows the media, the cutting area and the visible objects in their colours; kind 'path' shows the planned toolpaths numbered in cut order (the weed box and weed lines in thick long dashes), travel moves in thin dashes, a red dot at every start point and an H at the 0,0 where the first travel move starts (it needs something to cut and plans like job.preview). max_px is the larger image side, 64 to 4096, default 1024. Returns {png_base64, width, height}.",
 );

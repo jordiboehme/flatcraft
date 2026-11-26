@@ -306,6 +306,10 @@ fn draw(
                 dash: StrokeDash::new(vec![px(5.0) as f32, px(4.0) as f32], 0.0),
                 ..Stroke::default()
             };
+            let weed_stroke = Stroke {
+                dash: StrokeDash::new(vec![px(8.0) as f32, px(4.0) as f32], 0.0),
+                ..cut_stroke.clone()
+            };
             let cell = (max_px as f32 / 512.0).round().max(1.0);
             // The plan's travel starts at the device home (the media corner).
             let home = result.plan.home;
@@ -328,7 +332,14 @@ fn draw(
                     pm.stroke_path(&p, &travel, &travel_stroke, mat, None);
                 }
                 if let Some(p) = polyline(&t.points, t.closed) {
-                    pm.stroke_path(&p, &cut, &cut_stroke, mat, None);
+                    // Weed paths are dashed: they read apart from the
+                    // design (solid) and the travel (short dashes, thin).
+                    let stroke = if t.kind == flatcraft_path::ToolpathKind::Weed {
+                        &weed_stroke
+                    } else {
+                        &cut_stroke
+                    };
+                    pm.stroke_path(&p, &cut, stroke, mat, None);
                 }
                 at = *t.points.last().unwrap_or(first);
                 let (sx, sy) = ((first.x as f32 + ox) * sc, (first.y as f32 + oy) * sc);

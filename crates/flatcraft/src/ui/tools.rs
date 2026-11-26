@@ -1104,10 +1104,15 @@ pub enum Setting {
     BladeDepthHint,
     AddOverride,
     PresetNotes,
+    WeedBox,
+    WeedMargin,
+    WeedPerObject,
+    WeedLines,
+    WeedSpacing,
 }
 
 impl Setting {
-    pub const ALL: [Setting; 73] = [
+    pub const ALL: [Setting; 78] = [
         Setting::PositionX,
         Setting::PositionY,
         Setting::Width,
@@ -1181,6 +1186,11 @@ impl Setting {
         Setting::BladeDepthHint,
         Setting::AddOverride,
         Setting::PresetNotes,
+        Setting::WeedBox,
+        Setting::WeedMargin,
+        Setting::WeedPerObject,
+        Setting::WeedLines,
+        Setting::WeedSpacing,
     ];
 
     /// The kind of number a field of this setting holds, for the
@@ -1191,7 +1201,9 @@ impl Setting {
         Some(match self {
             PositionX | PositionY | Width | Height | BladeOffset | Overcut | MinFeature
             | AutoArrangeSpacing | FlattenTolerance | HostOffset | MatWidth | MatHeight
-            | GridOriginX | GridOriginY | GridWidth | GridHeight => Kind::Length,
+            | GridOriginX | GridOriginY | GridWidth | GridHeight | WeedMargin | WeedSpacing => {
+                Kind::Length
+            }
             Angle | CornerThreshold | PivotThreshold => Kind::Angle,
             ScalePercent => Kind::Percent,
             Speed | Force | Passes | Threshold | Despeckle | Smoothing | UnitsPerMm | ScaleX
@@ -1403,6 +1415,21 @@ impl Setting {
             }
             Setting::BladeDepthHint => {
                 "A note on how far to set a manual blade for this material, for example 3. The job settings show it as a reminder; FlatCraft does not send it to the plotter."
+            }
+            Setting::WeedBox => {
+                "Weeding means peeling away the vinyl you do not need, so only your design stays on the backing. The weed box is a rectangle cut around the whole design: the waste outside it stays on the sheet for the next job, and the waste inside comes off in one go. Turn it on for stickers, decals and iron-on vinyl."
+            }
+            Setting::WeedMargin => {
+                "How far the weed box stays from the design, in millimetres. A few millimetres give you an edge to grab when you start peeling. It is at least 1 mm, so the box never touches the design."
+            }
+            Setting::WeedPerObject => {
+                "One weed box around each object instead of one around everything. Handy when the objects lie far apart: each one is weeded on its own and less waste is lifted. Boxes that would overlap or touch another object become one box."
+            }
+            Setting::WeedLines => {
+                "Weed lines are straight cuts through the waste, so a big area of waste comes off in strips instead of one sheet that tears and sticks to itself. They stop more than 1 mm before every cut of the design and never cut inside a shape or the hole of a letter. Horizontal lines run across the mat, vertical lines along it, and Both makes a grid."
+            }
+            Setting::WeedSpacing => {
+                "The distance between weed lines, in millimetres. Smaller gives smaller strips that are easier to peel, but more cutting. 20 mm suits most vinyl."
             }
             Setting::PresetNotes => {
                 "Your own notes on this preset: what worked, what to watch out for. The job settings show them whenever this preset is picked. On a system preset they are kept in your own settings folder, so the preset itself stays as it ships. Agents can read them but never change them."

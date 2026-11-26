@@ -2,7 +2,7 @@
 //! mat, material and the speed, force and passes of the job.
 
 use egui::{Response, RichText, Ui};
-use flatcraft_core::document::{CutMode, StrokeMode};
+use flatcraft_core::document::{CutMode, StrokeMode, WeedLines};
 use flatcraft_core::numexpr::{Field, Kind};
 use serde_json::{Value, json};
 
@@ -443,6 +443,7 @@ pub fn job(
     if eleven_shown(st, snap) {
         ui.label(RichText::new(ELEVEN).color(t.accent_cut));
     }
+    weeding(ui, snap, t, actions);
     if let Some(hint) = &material.blade_depth_hint {
         ui.add_space(t.spacing / 2.0);
         ui.label(RichText::new(format!("Blade depth: {hint}")).color(t.text_dim));
@@ -463,6 +464,154 @@ pub fn job(
     );
     last_time(ui, snap, t, actions);
 }
+
+/// The name of a weed lines choice.
+pub fn weed_lines_name(l: WeedLines) -> &'static str {
+    match l {
+        WeedLines::Off => "Off",
+        WeedLines::Horizontal => "Horizontal",
+        WeedLines::Vertical => "Vertical",
+        WeedLines::Both => "Both",
+    }
+}
+
+/// The `job.set_weeding` value of a weed lines choice.
+fn weed_lines_key(l: WeedLines) -> &'static str {
+    match l {
+        WeedLines::Off => "off",
+        WeedLines::Horizontal => "horizontal",
+        WeedLines::Vertical => "vertical",
+        WeedLines::Both => "both",
+    }
+}
+
+/// Why the box margin and per object are dimmed.
+pub const WEED_BOX_OFF: &str = "Turn on Weed box first.";
+/// Why the weed line spacing is dimmed.
+pub const WEED_LINES_OFF: &str = "Pick a direction for Weed lines first.";
+
+/// A checkbox row of the weeding grid with its card. Returns the new value
+/// when it was clicked.
+fn weed_check(
+    ui: &mut Ui,
+    label: &str,
+    on: bool,
+    setting: Setting,
+    enabled: bool,
+    why: &str,
+) -> Option<bool> {
+    painted_label(ui, label);
+    let mut v = on;
+    let r = ui.add_enabled(enabled, egui::Checkbox::without_text(&mut v));
+    set_name(ui, &r, label);
+    super::groups::card(&r, label, setting.card(), (!enabled).then_some(why), false);
+    ui.end_row();
+    r.clicked().then_some(v)
+}
+
+/// A millimetre field of the weeding grid with its card. Returns the typed
+/// value when it changed.
+#[allow(clippy::too_many_arguments)]
+fn weed_mm(
+    ui: &mut Ui,
+    label: &str,
+    value: f64,
+    (lo, hi): (f64, f64),
+    setting: Setting,
+    enabled: bool,
+    why: &str,
+) -> Option<f64> {
+    painted_label(ui, label);
+    let mut v = value;
+    let spec = Number::new(Field::new(Kind::Length).range(lo, hi))
+        .decimals(0, 2)
+        .unit("mm");
+    let (r, typed) = calc::number(ui, ("flatcraft-weed", label), enabled, &mut v, &spec);
+    set_name(ui, &r, label);
+    let text = format!(
+        "{} From {lo} to {hi} mm. {}",
+        setting.card(),
+        calc::hint(Kind::Length)
+    );
+    super::groups::card(&r, label, &text, (!enabled).then_some(why), false);
+    ui.end_row();
+    (typed && v != value).then_some(v)
+}
+
+/// The weed box and weed lines of the job (`job.set_weeding`).
+fn weeding(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec<Action>) {
+    use flatcraft_core::limits::{
+        MAX_WEED_MARGIN_MM, MAX_WEED_SPACING_MM, MIN_WEED_MARGIN_MM, MIN_WEED_SPACING_MM,
+    };
+    let doc_id = snap.doc_id;
+    let mut set = |params: Value| actions.push(Action::run(doc_id, "job.set_weeding", params));
+    let w = snap.job.weed;
+    ui.add_space(t.spacing / 2.0);
+    let r = ui.label(RichText::new("Weeding").font(fonts::semibold(13.0)));
+    super::groups::card(&r, "Weeding", WEEDING_HINT, None, false);
+    egui::Grid::new("flatcraft-weeding")
+        .num_columns(2)
+        .spacing([t.spacing, t.spacing * 0.75])
+        .show(ui, |ui| {
+            if let Some(v) = weed_check(ui, "Weed box", w.weed_box, Setting::WeedBox, true, "") {
+                set(json!({ "box": v }));
+            }
+            if let Some(v) = weed_mm(
+                ui,
+                "Box margin",
+                w.margin_mm,
+                (MIN_WEED_MARGIN_MM, MAX_WEED_MARGIN_MM),
+                Setting::WeedMargin,
+                w.weed_box,
+                WEED_BOX_OFF,
+            ) {
+                set(json!({ "margin_mm": v }));
+            }
+            if let Some(v) = weed_check(
+                ui,
+                "One box per object",
+                w.per_object,
+                Setting::WeedPerObject,
+                w.weed_box,
+                WEED_BOX_OFF,
+            ) {
+                set(json!({ "per_object": v }));
+            }
+            let choices = [
+                WeedLines::Off,
+                WeedLines::Horizontal,
+                WeedLines::Vertical,
+                WeedLines::Both,
+            ]
+            .map(|l| (l, weed_lines_name(l).to_string()));
+            if let Some(l) = combo(
+                ui,
+                "Weed lines",
+                Some(Setting::WeedLines),
+                weed_lines_name(w.lines),
+                &choices,
+                Some(&w.lines),
+                Some(&w.lines),
+                true,
+            ) {
+                set(json!({ "lines": weed_lines_key(l) }));
+            }
+            if let Some(v) = weed_mm(
+                ui,
+                "Line spacing",
+                w.spacing_mm,
+                (MIN_WEED_SPACING_MM, MAX_WEED_SPACING_MM),
+                Setting::WeedSpacing,
+                w.lines != WeedLines::Off,
+                WEED_LINES_OFF,
+            ) {
+                set(json!({ "spacing_mm": v }));
+            }
+        });
+}
+
+/// The card of the Weeding heading.
+pub const WEEDING_HINT: &str = "Weeding means peeling away the vinyl you do not need after the cut, so only your design stays on the backing. A weed box and weed lines are extra cuts through that waste only: it comes off in neat pieces instead of tearing. They are cut after the design and show dashed in the Path view.";
 
 /// The Job card's "Last time with this material" line from the cut log
 /// (the newest rated cut with this material, else the newest), and a

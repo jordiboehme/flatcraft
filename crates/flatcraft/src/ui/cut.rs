@@ -36,6 +36,9 @@ const LABEL_H: f32 = 11.0;
 pub const MAX_LABELS: usize = 300;
 /// The hint shown instead of the order numbers.
 pub const ZOOM_HINT: &str = "Zoom in to see the order numbers";
+/// Dash and gap of a weed path on the canvas, in points.
+pub const WEED_DASH: f32 = 6.0;
+pub const WEED_GAP: f32 = 4.0;
 /// Text of the disabled Simulate stage.
 pub const SIMULATE_HINT: &str = "The knife simulator arrives in milestone 2.";
 
@@ -372,6 +375,19 @@ fn stats(ui: &mut Ui, job: &JobResult, t: &Tokens) {
             ui.label("Paths");
             ui.label(job.plan.toolpaths.len().to_string());
             ui.end_row();
+            let weeds = weed_count(job);
+            if weeds > 0 {
+                let r = ui.label("Weed paths");
+                super::groups::card(
+                    &r,
+                    "Weed paths",
+                    "The weed box and weed lines in the cut, counted in Paths too. They are dashed on the mat and cut after the design. Change them in Device & Material, under Weeding.",
+                    None,
+                    false,
+                );
+                ui.label(weeds.to_string());
+                ui.end_row();
+            }
             ui.label("Cut length");
             ui.label(mm_text(job.plan.cut_mm));
             ui.end_row();
@@ -379,6 +395,15 @@ fn stats(ui: &mut Ui, job: &JobResult, t: &Tokens) {
             ui.label(mm_text(job.plan.travel_mm));
             ui.end_row();
         });
+}
+
+/// How many toolpaths of the plan are weed paths.
+pub fn weed_count(job: &JobResult) -> usize {
+    job.plan
+        .toolpaths
+        .iter()
+        .filter(|t| t.kind == flatcraft_path::ToolpathKind::Weed)
+        .count()
 }
 
 /// A length for the stats, like "200.5 mm".
@@ -439,7 +464,7 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
                 ui.add_space(t.spacing);
                 ui.label(
                     RichText::new(
-                        "Numbers show the cut order, dots the starts, arrows the direction and the dotted lines where the knife travels up.",
+                        "Numbers show the cut order, dots the starts, arrows the direction and the dotted lines where the knife travels up. Dashed lines are the weed box and weed lines.",
                     )
                     .color(t.text_dim),
                 );
@@ -645,7 +670,18 @@ fn draw_toolpaths(
         if let Some(next) = pts.iter().find(|p| p.distance(start) > 0.5) {
             arrows.push((start, (*next - start).normalized()));
         }
-        painter.add(egui::Shape::line(pts, Stroke::new(width, cut)));
+        if tp.kind == flatcraft_path::ToolpathKind::Weed {
+            // Weed paths are dashed, so they read apart from the design
+            // (solid) and the travel (dotted).
+            painter.extend(egui::Shape::dashed_line(
+                &pts,
+                Stroke::new(width, cut),
+                WEED_DASH,
+                WEED_GAP,
+            ));
+        } else {
+            painter.add(egui::Shape::line(pts, Stroke::new(width, cut)));
+        }
         painter.circle_filled(start, 3.0, cut);
         if rect.contains(start) {
             starts.push((i + 1, start));

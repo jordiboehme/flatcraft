@@ -564,3 +564,62 @@ fn cut_moves_are_orange_and_travel_is_faint() {
         .count();
     assert!(cut_lines >= 1, "no cut line in the cut orange");
 }
+
+#[test]
+fn weeding_controls_set_the_job_and_dim_what_does_not_apply() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_cut(&mut h);
+    let disabled =
+        |h: &AppHarness, label: &str| h.get_by_label(label).accesskit_node().is_disabled();
+    // Off by default: the box margin, per object and the spacing are dimmed.
+    assert!(disabled(&h, "Box margin"));
+    assert!(disabled(&h, "One box per object"));
+    assert!(disabled(&h, "Line spacing"));
+    assert!(!disabled(&h, "Weed box"));
+    let before = common::undo_len(&s);
+    h.get_by_label("Weed box").click();
+    h.run();
+    let state = run(&s, "document.state", json!({}));
+    assert_eq!(state["job"]["weed"]["box"], true);
+    assert_eq!(common::undo_len(&s), before + 1, "one undo step");
+    assert!(!disabled(&h, "Box margin"));
+    assert!(!disabled(&h, "One box per object"));
+    // The lines combo picks a direction; then the spacing applies.
+    h.get_by_label("Weed lines").click();
+    h.run();
+    h.get_by_label("Both").click();
+    h.run();
+    let state = run(&s, "document.state", json!({}));
+    assert_eq!(state["job"]["weed"]["lines"], "both");
+    assert!(!disabled(&h, "Line spacing"));
+}
+
+#[test]
+fn path_stage_counts_and_dashes_weed_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_cut(&mut h);
+    stage(&mut h, "Path");
+    let dashes = |h: &AppHarness| {
+        common::painted(h)
+            .iter()
+            .filter(|s| matches!(s, egui::Shape::LineSegment { .. }))
+            .count()
+    };
+    assert!(h.query_by_label("Weed paths").is_none());
+    let plain = dashes(&h);
+    run(
+        &s,
+        "job.set_weeding",
+        json!({ "box": true, "margin_mm": 10, "lines": "both", "spacing_mm": 20 }),
+    );
+    h.run();
+    h.get_by_label("Weed paths");
+    // The weed box is drawn in dashes: many more line segments.
+    assert!(dashes(&h) > plain + 20, "{} vs {plain}", dashes(&h));
+}
