@@ -117,6 +117,31 @@ impl Code {
         }
     }
 
+    /// A short name for people, for the title of a hover card.
+    pub fn title(self) -> &'static str {
+        match self {
+            Code::OpenPaths => "Open shapes",
+            Code::Hairline => "Thin double cuts",
+            Code::BelowMinFeature => "Tiny shapes",
+            Code::FillIgnored => "Fills that are not cut",
+            Code::OutsideArea => "Off the mat",
+            Code::LargerThanArea => "Bigger than the mat",
+            Code::MissingFont => "Missing font",
+            Code::ClipIgnored => "Clip or mask ignored",
+            Code::ImagesSkipped => "Pictures skipped",
+            Code::DashesIgnored => "Dashes cut solid",
+            Code::NoPaths => "No paths",
+            Code::NothingTraced => "Nothing traced",
+            Code::TraceDownscaled => "Traced at a lower resolution",
+            Code::DpiIgnored => "Odd dpi ignored",
+            Code::ShapesDropped => "Specks dropped",
+            Code::EmptyDocument => "Empty document",
+            Code::Hidden => "Hidden objects",
+            Code::Skipped => "Skipped objects",
+            Code::TooSmall => "Too tiny to cut",
+        }
+    }
+
     /// True if the import commands find it in the file itself, so
     /// `document.check` cannot see it again later.
     pub fn import_only(self) -> bool {

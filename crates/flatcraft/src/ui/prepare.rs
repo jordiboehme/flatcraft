@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use egui::{Pos2, Rect, RichText, Ui};
+use egui::{Pos2, Rect, Ui};
 use flatcraft_core::document::{CutOptions, JobSettings, Object, Source};
 use flatcraft_core::geometry::CutPath;
 use flatcraft_core::transform::Transform;
@@ -272,8 +272,10 @@ pub struct PrepareState {
     /// field says "These go to eleven." while that clamped value is still
     /// the document's speed override (see [`Eleven`]).
     pub speed_eleven: Option<Eleven>,
-    /// Warnings of the last import, until dismissed.
-    pub notices: Vec<String>,
+    /// The report of the last import, until dismissed or all fixed.
+    pub report: Option<super::report::ImportCard>,
+    /// Move the view to these objects on the next frame ("Show me").
+    pub center_on: Option<Vec<u64>>,
     pub sources: SourceStatus,
     /// The link status of the other open documents, so switching back
     /// shows it at once and a quick switch does not check again.
@@ -366,7 +368,8 @@ impl Default for PrepareState {
             drag: None,
             nudge: None,
             speed_eleven: None,
-            notices: Vec::new(),
+            report: None,
+            center_on: None,
             sources: SourceStatus::default(),
             source_memory: HashMap::new(),
             cache: ShapeCache::default(),
@@ -1276,6 +1279,12 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
             let rect = ui.max_rect();
             canvas::show(ui, rect, snap, &mut app.ui.prepare, &t, actions);
             pills(ui, rect, snap, &mut app.ui.prepare, &t, actions);
+            let p = &mut app.ui.prepare;
+            if let Some(card) = p.report.as_ref().filter(|c| c.doc_id == snap.doc_id)
+                && !super::report::import_card(ui, rect, card, &t, actions)
+            {
+                p.report = None;
+            }
         });
     let p = &mut app.ui.prepare;
     rename_window(ui.ctx(), &mut p.rename, snap, &t, actions);
@@ -1405,21 +1414,6 @@ fn pills(
                     ui.label(text.as_str())
                         .on_hover_text("Even the Millennium Falcon needs a hangar. Move it onto the mat.");
                 });
-            }
-            if !st.notices.is_empty() {
-                let first = st.notices[0].clone();
-                let more = st.notices.len() - 1;
-                let mut dismiss = false;
-                pill(ui, t.accent_cut, &mut |ui| {
-                    ui.label(first.as_str());
-                    if more > 0 {
-                        ui.label(RichText::new(format!("and {more} more")).color(t.text_dim));
-                    }
-                    dismiss = ui.button("Dismiss").clicked();
-                });
-                if dismiss {
-                    st.notices.clear();
-                }
             }
             if !src.changed.is_empty() {
                 let text = plural(

@@ -27,6 +27,7 @@ pub mod outcome;
 pub mod prepare;
 pub mod profiles_window;
 pub mod rails;
+pub mod report;
 pub mod ribbon;
 pub mod rng;
 pub mod settings;
@@ -221,6 +222,12 @@ pub enum Action {
     SetPin {
         id: &'static str,
         pinned: bool,
+    },
+    /// Select these objects and move the Prepare view to them (an
+    /// issue's "Show me").
+    ShowMe {
+        doc_id: u64,
+        ids: Vec<u64>,
     },
     /// Ask for a file and import it into this document.
     Import {
@@ -826,6 +833,7 @@ impl FlatCraftApp {
 
     /// Updates what Prepare shows after a command ran.
     fn after_command(&mut self, command: &str, result: &Value) {
+        let doc_id = lock(&self.session).doc().id();
         let ids = |v: &Value| -> Vec<u64> {
             v.as_array()
                 .into_iter()
@@ -842,9 +850,15 @@ impl FlatCraftApp {
         let p = &mut self.ui.prepare;
         match command {
             "object.import" if result.get("imported").is_some() => {
-                // Several files: their warnings, and one toast that names
+                // Several files: their report, and one toast that names
                 // the files that could not be imported.
-                p.notices = warnings;
+                let n = result["imported"].as_array().map_or(0, Vec::len);
+                let title = if n == 1 {
+                    "Imported 1 file".to_string()
+                } else {
+                    format!("Imported {n} files")
+                };
+                p.report = report::ImportCard::from_result(doc_id, title, result);
                 let failed: Vec<String> = result["failed"]
                     .as_array()
                     .into_iter()
@@ -865,7 +879,21 @@ impl FlatCraftApp {
                     )));
                 }
             }
-            "object.import" => p.notices = warnings,
+            "object.import" => {
+                // The report card says what the warnings say, and more.
+                let name = result["id"]
+                    .as_u64()
+                    .and_then(|id| {
+                        lock(&self.session)
+                            .doc()
+                            .document
+                            .get(flatcraft_core::document::ObjectId(id))
+                            .map(|o| o.name.clone())
+                    })
+                    .unwrap_or_default();
+                p.report =
+                    report::ImportCard::from_result(doc_id, format!("Imported '{name}'"), result);
+            }
             "object.reload" => {
                 let done: Vec<u64> = [&result["reloaded"], &result["unchanged"]]
                     .into_iter()
@@ -940,6 +968,15 @@ impl FlatCraftApp {
                 }
             }
             Action::TraceDialog { doc_id, id } => self.open_trace(ctx, doc_id, id),
+            Action::ShowMe { doc_id, ids } => {
+                if self
+                    .run_on(doc_id, "object.select", json!({ "ids": ids }))
+                    .is_some()
+                {
+                    self.ui.workspace = Workspace::Prepare;
+                    self.ui.prepare.center_on = Some(ids);
+                }
+            }
             Action::Dropped(paths) => {
                 // Files next to each other in the drop are imported as one
                 // command (one undo step); a project in between opens and
@@ -1982,10 +2019,22 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
         && app.ui.prepare.panels.collapsed(rails::SidePanel::Settings)
         && app.ui.prepare.drag.is_none()
         && app.ui.prepare.nudge.is_none();
-    let wants_job = workspace == Workspace::Cut || app.ui.show_debug || rail_dot;
+    // The import report checks again when the document changed, after a
+    // drag or a nudge burst ended.
+    let report_check = workspace == Workspace::Prepare
+        && app.ui.prepare.report.is_some()
+        && app.ui.prepare.drag.is_none()
+        && app.ui.prepare.nudge.is_none();
+    let wants_job = workspace == Workspace::Cut || app.ui.show_debug || rail_dot || report_check;
     let snap = (workspace != Workspace::Home).then(|| prepare::snapshot_with(app, &ctx, wants_job));
     if let Some(snap) = &snap {
         app.ui.cut.update(snap);
+        if report_check && let Some(card) = &mut app.ui.prepare.report {
+            card.refresh(snap);
+            if card.is_empty() {
+                app.ui.prepare.report = None;
+            }
+        }
     }
     // The speed joke ends once its clamped value is no longer the speed
     // (reset, undo, an agent, another plotter, material or document). This

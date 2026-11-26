@@ -94,6 +94,9 @@ pub struct CutState {
     pub plan: Option<Plan>,
     /// The plan failed because no visible object has cut paths.
     pub nothing_to_cut: bool,
+    /// Why the plan failed, with fixes (`BuildFailure::issues`); empty
+    /// when it worked or failed for another reason.
+    pub issues: Vec<flatcraft_engine::report::Issue>,
     /// The active plotter's transport.
     pub transport: Option<TransportSpec>,
     pub labels: LabelCache,
@@ -113,6 +116,7 @@ impl Default for CutState {
             plan_key: None,
             plan: None,
             nothing_to_cut: false,
+            issues: Vec::new(),
             transport: None,
             labels: LabelCache::default(),
             notes_open: true,
@@ -135,6 +139,11 @@ impl CutState {
                 if !same {
                     let built = build_classified(input);
                     self.nothing_to_cut = built.as_ref().err().is_some_and(|f| f.nothing_to_cut);
+                    self.issues = built
+                        .as_ref()
+                        .err()
+                        .map(|f| f.issues.clone())
+                        .unwrap_or_default();
                     let plan = built.map_err(|f| f.error).map(Arc::new);
                     let total = plan.as_ref().map_or(0, |r| r.plan.toolpaths.len());
                     self.timeline.reset(total);
@@ -147,6 +156,7 @@ impl CutState {
                     self.timeline.reset(0);
                 }
                 self.nothing_to_cut = false;
+                self.issues.clear();
                 self.plan = Some(Err(e.clone()));
                 self.plan_key = None;
             }
@@ -336,6 +346,23 @@ fn error_box(ui: &mut Ui, e: &CommandError, t: &Tokens) {
         });
 }
 
+/// Why the plan failed: every reason with its fixes when the engine
+/// classified it, else the refusal in a red box.
+fn problem(
+    ui: &mut Ui,
+    st: &CutState,
+    e: &CommandError,
+    doc_id: u64,
+    t: &Tokens,
+    actions: &mut Vec<Action>,
+) {
+    if st.issues.is_empty() {
+        error_box(ui, e, t);
+    } else {
+        super::report::reasons_box(ui, &st.issues, st.nothing_to_cut, doc_id, t, actions);
+    }
+}
+
 /// Paths, cut length and travel length of a plan.
 fn stats(ui: &mut Ui, job: &JobResult, t: &Tokens) {
     egui::Grid::new("flatcraft-cut-stats")
@@ -376,6 +403,19 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
     ui.add_space(t.spacing / 2.0);
     match stage {
         Stage::Device => {
+            // Why nothing cuts, before the settings: the first thing seen
+            // on entering Cut.
+            if matches!(st.plan, Some(Err(_))) && !st.issues.is_empty() {
+                super::report::reasons_box(
+                    ui,
+                    &st.issues,
+                    st.nothing_to_cut,
+                    snap.doc_id,
+                    &t,
+                    actions,
+                );
+                ui.add_space(t.spacing);
+            }
             settings::job(ui, &mut app.ui.prepare, snap, &t, actions);
             if let Some(tr) = &app.ui.cut.transport {
                 ui.separator();
@@ -395,7 +435,7 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
                     .color(t.text_dim),
                 );
             }
-            Some(Err(e)) => error_box(ui, e, &t),
+            Some(Err(e)) => problem(ui, st, e, snap.doc_id, &t, actions),
             None => {}
         },
         Stage::Simulate => {
@@ -419,7 +459,7 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
                     ));
                     warnings(ui, job, &t);
                 }
-                Some(Err(e)) => error_box(ui, e, &t),
+                Some(Err(e)) => problem(ui, st, e, snap.doc_id, &t, actions),
                 None => {}
             }
             ui.add_space(t.spacing);

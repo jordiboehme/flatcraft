@@ -159,7 +159,7 @@ fn out_of_area_disables_send() {
     to_cut(&mut h);
     stage(&mut h, "Path");
     assert!(
-        h.query_by_label_contains("These objects are outside the cutting area: square.")
+        h.query_by_label("'square' is outside the cutting area.")
             .is_some()
     );
     assert!(h.query_by_label_contains("Refused").is_none());

@@ -86,6 +86,25 @@ impl CanvasView {
     }
 
     /// The view that shows `mm` as large as fits into `screen`, centred.
+    /// This view moved so `mm` sits in the middle of `screen`, at the same
+    /// zoom when it fits there, else zoomed to fit it.
+    pub fn showing(self, mm: kurbo::Rect, screen: Rect) -> Self {
+        let w = mm.width() as f32 * self.px_per_mm;
+        let h = mm.height() as f32 * self.px_per_mm;
+        if w > screen.width() || h > screen.height() {
+            return Self::fit(mm, screen);
+        }
+        let centre = mm.center();
+        Self {
+            offset: screen.center().to_vec2()
+                - vec2(
+                    centre.x as f32 * self.px_per_mm,
+                    centre.y as f32 * self.px_per_mm,
+                ),
+            px_per_mm: self.px_per_mm,
+        }
+    }
+
     pub fn fit(mm: kurbo::Rect, screen: Rect) -> Self {
         let w = mm.width().max(1.0) as f32;
         let h = mm.height().max(1.0) as f32;
@@ -684,6 +703,16 @@ pub fn show(
         }
         st.fit_pending = false;
     }
+    if let Some(ids) = st.center_on.take()
+        && let Some(b) = snap
+            .objects
+            .iter()
+            .filter(|o| ids.contains(&o.id))
+            .filter_map(ObjView::bounds)
+            .reduce(|a, b| a.union(b))
+    {
+        st.view = st.view.showing(b, fit_rect(rect));
+    }
 
     let resp = ui.interact(
         rect,
@@ -910,7 +939,7 @@ pub(crate) fn draw_area(
 }
 
 /// The rect the view fits the mat into: the canvas minus rulers and a margin.
-pub(crate) fn fit_rect(rect: Rect) -> Rect {
+pub fn fit_rect(rect: Rect) -> Rect {
     Rect::from_min_max(rect.min + vec2(RULER, RULER), rect.max).shrink(24.0)
 }
 

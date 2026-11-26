@@ -1,0 +1,281 @@
+//! The import report card in Prepare and the "why nothing cuts" card in
+//! Cut. Both show the engine's issues (`flatcraft_engine::report`): the
+//! message, and a button per fix that runs exactly the fix's registry
+//! command with its arguments, the same that agents get over MCP.
+
+use egui::{RichText, Ui};
+use flatcraft_engine::job::JobInput;
+use flatcraft_engine::report::{self, Issue, Report, Severity};
+use serde_json::Value;
+
+use super::groups::card;
+use super::prepare::Snapshot;
+use super::theme::Tokens;
+use super::{Action, fonts};
+
+/// The card of the "Show me" button.
+pub const SHOW_ME_HINT: &str =
+    "Selects the object and moves the view to it, so you can see what this is about.";
+/// The card of the import report's Dismiss button.
+pub const DISMISS_HINT: &str = "Hides this report. Nothing in the document changes.";
+/// The width of the import report card, in points.
+pub const CARD_WIDTH: f32 = 360.0;
+
+/// The import report of the last import, until it is dismissed or every
+/// issue is gone.
+#[derive(Debug, Clone)]
+pub struct ImportCard {
+    pub doc_id: u64,
+    /// "Imported 'logo'" or "Imported 3 files".
+    pub title: String,
+    /// The imported objects.
+    pub ids: Vec<u64>,
+    pub shapes: usize,
+    /// What the import found in the files; `document.check` cannot see
+    /// it again, so it stays while its objects exist.
+    pub found: Vec<Issue>,
+    /// The geometry checks, run again whenever the document changed.
+    pub issues: Vec<Issue>,
+    /// The job input the checks ran on.
+    key: Option<JobInput>,
+}
+
+impl ImportCard {
+    /// The card of an `object.import` result, or `None` when there is
+    /// nothing to report.
+    pub fn from_result(doc_id: u64, title: String, result: &Value) -> Option<Self> {
+        let report: Report = serde_json::from_value(result["report"].clone()).ok()?;
+        let ids: Vec<u64> = match result.get("imported") {
+            Some(list) => list
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_u64)
+                .collect(),
+            None => result["id"].as_u64().into_iter().collect(),
+        };
+        let (found, issues) = report
+            .issues
+            .into_iter()
+            .partition(|i: &Issue| i.code.import_only());
+        let card = Self {
+            doc_id,
+            title,
+            ids,
+            shapes: report.shapes,
+            found,
+            issues,
+            key: None,
+        };
+        (!card.is_empty()).then_some(card)
+    }
+
+    /// Every issue, the file's first.
+    pub fn all(&self) -> impl Iterator<Item = &Issue> {
+        self.found.iter().chain(&self.issues)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.found.is_empty() && self.issues.is_empty()
+    }
+
+    /// Runs the geometry checks again when the snapshot's job input
+    /// changed (a fix ran, an object moved, undo), so a line that is fixed
+    /// goes away. Objects that are gone leave the report.
+    pub fn refresh(&mut self, snap: &Snapshot) {
+        if snap.doc_id != self.doc_id {
+            return;
+        }
+        let Some(Ok(input)) = &snap.job_input else {
+            return;
+        };
+        if self.key.as_ref() == Some(input) {
+            return;
+        }
+        let alive = |id: &u64| snap.objects.iter().any(|o| o.id == *id);
+        self.ids.retain(alive);
+        self.found.retain(|i| i.object_ids.iter().any(alive));
+        let ids: Vec<flatcraft_core::document::ObjectId> = self
+            .ids
+            .iter()
+            .map(|i| flatcraft_core::document::ObjectId(*i))
+            .collect();
+        let report = report::check(input, Some(&ids));
+        self.shapes = report.shapes;
+        self.issues = report.issues;
+        self.key = Some(input.clone());
+    }
+}
+
+/// The colour of a severity.
+pub fn severity_colour(s: Severity, t: &Tokens) -> egui::Color32 {
+    match s {
+        Severity::Error => t.danger,
+        Severity::Warning => t.warn,
+        Severity::Info => t.text_dim,
+    }
+}
+
+/// The issues one under the other: a dot in the severity's colour, the
+/// message (its card says what to do), then a button per fix and "Show
+/// me". An issue without a fix shows its hint instead. Returns true when
+/// a button was clicked.
+pub fn issue_list(
+    ui: &mut Ui,
+    issues: &[&Issue],
+    doc_id: u64,
+    t: &Tokens,
+    show_me: bool,
+    actions: &mut Vec<Action>,
+) -> bool {
+    let mut clicked = false;
+    for (n, issue) in issues.iter().enumerate() {
+        if n > 0 {
+            ui.add_space(t.spacing * 0.75);
+        }
+        ui.horizontal_top(|ui| {
+            let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 14.0), egui::Sense::hover());
+            ui.painter()
+                .circle_filled(dot.center(), 3.5, severity_colour(issue.severity, t));
+            ui.vertical(|ui| {
+                let r = ui.add(egui::Label::new(issue.message.as_str()).wrap());
+                card(&r, issue.code.title(), &issue.hint, None, false);
+                if issue.fixes.is_empty() {
+                    ui.add(
+                        egui::Label::new(RichText::new(issue.hint.as_str()).color(t.text_dim))
+                            .wrap(),
+                    );
+                }
+                let wants_show = show_me && !issue.object_ids.is_empty();
+                if issue.fixes.is_empty() && !wants_show {
+                    return;
+                }
+                ui.horizontal_wrapped(|ui| {
+                    for fix in &issue.fixes {
+                        // The registry's own id: a fix names a real command.
+                        let Some(command) = flatcraft_engine::registry::get(&fix.command) else {
+                            continue;
+                        };
+                        let r = ui.button(fix.label.as_str());
+                        card(&r, &fix.label, &fix.description, None, false);
+                        if r.clicked() {
+                            actions.push(Action::run(doc_id, command.id(), fix.args.clone()));
+                            clicked = true;
+                        }
+                    }
+                    if wants_show {
+                        let r = ui.button("Show me");
+                        card(&r, "Show me", SHOW_ME_HINT, None, false);
+                        if r.clicked() {
+                            actions.push(Action::ShowMe {
+                                doc_id,
+                                ids: issue.object_ids.clone(),
+                            });
+                            clicked = true;
+                        }
+                    }
+                });
+            });
+        });
+    }
+    clicked
+}
+
+/// The import report card at the top right of the Prepare canvas. Returns
+/// false when it was dismissed.
+pub fn import_card(
+    ui: &mut Ui,
+    canvas: egui::Rect,
+    c: &ImportCard,
+    t: &Tokens,
+    actions: &mut Vec<Action>,
+) -> bool {
+    let mut keep = true;
+    let worst = c.all().map(|i| i.severity).max().unwrap_or(Severity::Info);
+    let width = CARD_WIDTH.min(canvas.width() - 2.0 * t.spacing).max(120.0);
+    let max = egui::Rect::from_min_size(
+        egui::pos2(
+            canvas.right() - width - t.spacing,
+            canvas.top() + super::canvas::RULER + t.spacing,
+        ),
+        egui::vec2(width, canvas.height() * 0.7),
+    );
+    ui.scope_builder(egui::UiBuilder::new().max_rect(max), |ui| {
+        egui::Frame::new()
+            .fill(t.surface)
+            .stroke(egui::Stroke::new(1.0, severity_colour(worst, t)))
+            .corner_radius(t.radius)
+            .inner_margin(t.spacing)
+            .show(ui, |ui| {
+                ui.set_width(width - 2.0 * t.spacing);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Import report").font(fonts::semibold(14.0)));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let r = ui.button("Dismiss");
+                        card(&r, "Dismiss", DISMISS_HINT, None, false);
+                        if r.clicked() {
+                            keep = false;
+                        }
+                    });
+                });
+                let shapes = if c.shapes == 1 {
+                    "1 shape".to_string()
+                } else {
+                    format!("{} shapes", c.shapes)
+                };
+                let lead = if worst == Severity::Error {
+                    "Houston, we have a problem."
+                } else {
+                    "A few things to know before you cut."
+                };
+                ui.label(RichText::new(format!("{}: {shapes}. {lead}", c.title)).color(t.text_dim));
+                ui.add_space(t.spacing / 2.0);
+                egui::ScrollArea::vertical()
+                    .max_height(canvas.height() * 0.55)
+                    .show(ui, |ui| {
+                        let issues: Vec<&Issue> = c.all().collect();
+                        issue_list(ui, &issues, c.doc_id, t, true, actions);
+                    });
+            });
+    });
+    keep
+}
+
+/// The title of the Cut workspace's card for these issues.
+pub fn nothing_title(nothing_to_cut: bool) -> &'static str {
+    if nothing_to_cut {
+        "Nothing to cut"
+    } else {
+        "Houston, we have a problem"
+    }
+}
+
+/// Why the job cannot be cut, in the Cut workspace's stage panel: every
+/// reason with its fixes.
+pub fn reasons_box(
+    ui: &mut Ui,
+    issues: &[Issue],
+    nothing_to_cut: bool,
+    doc_id: u64,
+    t: &Tokens,
+    actions: &mut Vec<Action>,
+) {
+    egui::Frame::new()
+        .fill(t.danger.gamma_multiply(0.12))
+        .stroke(egui::Stroke::new(1.0, t.danger))
+        .corner_radius(t.radius)
+        .inner_margin(t.spacing)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(nothing_title(nothing_to_cut)).font(fonts::semibold(13.0)));
+            let lead = if nothing_to_cut {
+                "The knife is ready, but nothing is in its way. Here is why:"
+            } else {
+                "This is what stops the cut:"
+            };
+            ui.label(RichText::new(lead).color(t.text_dim));
+            ui.add_space(t.spacing / 2.0);
+            let list: Vec<&Issue> = issues.iter().collect();
+            issue_list(ui, &list, doc_id, t, true, actions);
+        });
+}
