@@ -321,3 +321,151 @@ fn many_notices_on_a_short_window_stay_inside_the_canvas() {
         assert!(canvas.contains_rect(newest), "{ws:?}: {newest:?}");
     }
 }
+
+/// A notice with a long title and path, to show its width.
+fn long_notice() -> Toast {
+    Toast::error("Cannot write the job to the output folder you picked").with_detail(
+        "/Users/me/Documents/FlatCraft Output/a rather long project name/untitled-1.gpgl",
+    )
+}
+
+#[test]
+fn on_the_smallest_window_notices_keep_the_side_panels_free() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let mut h = harness_sized(&dir, s.clone(), [900.0, 700.0], 8, |a| a);
+    // Prepare with both side panels open.
+    to_prepare(&mut h);
+    for p in [
+        flatcraft::ui::rails::SidePanel::Objects,
+        flatcraft::ui::rails::SidePanel::Settings,
+    ] {
+        app_mut(&mut h).ui.prepare.panels.set_collapsed(p, false);
+    }
+    settle(&mut h);
+    assert!(
+        !app(&h)
+            .ui
+            .prepare
+            .panels
+            .collapsed(flatcraft::ui::rails::SidePanel::Objects)
+    );
+    assert!(
+        !app(&h)
+            .ui
+            .prepare
+            .panels
+            .collapsed(flatcraft::ui::rails::SidePanel::Settings)
+    );
+    app_mut(&mut h).toast(long_notice());
+    settle(&mut h);
+    let canvas = app(&h).ui.prepare.canvas_rect;
+    let stack = stack_rect(&h);
+    assert!(
+        stack.right() <= canvas.right() + 0.5,
+        "{stack:?} past {canvas:?}"
+    );
+    assert!(stack.left() >= canvas.left(), "{stack:?}");
+    // The canvas is narrower than a full card here: the card shrank.
+    assert!(
+        stack.width() < flatcraft::ui::toasts::WIDTH,
+        "{stack:?} in {canvas:?}"
+    );
+    // Cut, Send stage: the stack stays off the stage panel and Send
+    // takes a click while the notice shows.
+    app_mut(&mut h).ui.workspace = flatcraft::ui::Workspace::Cut;
+    app_mut(&mut h)
+        .ui
+        .prepare
+        .panels
+        .set_collapsed(flatcraft::ui::rails::SidePanel::Stage, false);
+    settle(&mut h);
+    h.get_by_role_and_label(Role::Tab, "Send").click();
+    settle(&mut h);
+    let canvas = app(&h).ui.cut.canvas_rect;
+    let stack = stack_rect(&h);
+    assert!(
+        stack.right() <= canvas.right() + 0.5,
+        "{stack:?} past {canvas:?}"
+    );
+    assert!(!app(&h).ui.toasts.is_empty());
+    h.get_by_role_and_label(Role::Button, "Send to File Output")
+        .click();
+    settle(&mut h);
+    assert_eq!(
+        flatcraft_engine::cutlog::read(dir.path()).entries.len(),
+        1,
+        "Send took the click"
+    );
+}
+
+#[test]
+fn on_a_canvas_too_short_for_a_card_the_notices_fold_into_one_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    // So short that the pills leave less than one card's room.
+    let mut h = harness_sized(&dir, s, [1000.0, 250.0], 8, |a| a);
+    app_mut(&mut h).ui.workspace = flatcraft::ui::Workspace::Prepare;
+    settle(&mut h);
+    app_mut(&mut h).toast(Toast::error("first"));
+    app_mut(&mut h).toast(Toast::error("second"));
+    settle(&mut h);
+    let label = flatcraft::ui::toasts::folded_label(2);
+    assert_eq!(label, "2 notices");
+    assert!(h.query_by_label("second").is_none(), "folded");
+    let pills = app(&h).ui.prepare.pills_rect.unwrap();
+    assert!(!stack_rect(&h).intersects(pills));
+    // A click opens them; Hide folds them again.
+    h.get_by_role_and_label(Role::Button, &label).click();
+    settle(&mut h);
+    h.get_by_label("second");
+    h.get_by_role_and_label(Role::Button, flatcraft::ui::toasts::FOLD_LABEL)
+        .click();
+    settle(&mut h);
+    assert!(h.query_by_label("second").is_none());
+}
+
+#[test]
+fn the_zoom_hint_moves_above_the_notices() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    // More starts than the order numbers can show: the hint appears.
+    let mut body = String::new();
+    for i in 0..320 {
+        let (x, y) = (10 + (i % 20) * 14, 10 + (i / 20) * 14);
+        body.push_str(&format!(r#"<rect x="{x}" y="{y}" width="6" height="6"/>"#));
+    }
+    let svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="300mm" height="300mm" viewBox="0 0 300 300">{body}</svg>"#
+    );
+    s.lock()
+        .unwrap()
+        .execute(
+            "object.import_svg",
+            serde_json::json!({ "svg": svg, "name": "dots" }),
+            flatcraft_engine::session::Origin::User,
+        )
+        .unwrap();
+    let mut h = harness_sized(&dir, s.clone(), [1400.0, 900.0], 8, |a| a);
+    app_mut(&mut h).ui.workspace = flatcraft::ui::Workspace::Cut;
+    settle(&mut h);
+    h.get_by_role_and_label(Role::Tab, "Path").click();
+    wait_for_workers(&mut h);
+    settle(&mut h);
+    let hint = |h: &AppHarness| {
+        painted(h).into_iter().find_map(|s| match s {
+            egui::Shape::Text(t) if t.galley.text() == flatcraft::ui::cut::ZOOM_HINT => {
+                Some(t.galley.rect.translate(t.pos.to_vec2()))
+            }
+            _ => None,
+        })
+    };
+    assert!(hint(&h).is_some(), "the hint shows");
+    app_mut(&mut h).toast(Toast::error("over the hint"));
+    settle(&mut h);
+    h.run();
+    let stack = stack_rect(&h);
+    let at = hint(&h).unwrap();
+    assert!(!at.intersects(stack), "{at:?} under {stack:?}");
+}

@@ -1020,8 +1020,19 @@ fn cut_canvas(
             &mut st.labels,
         );
         if crowded {
+            // Above the notices while they show there, so both stay
+            // readable.
+            let at = rect.left_bottom() + Vec2::new(canvas::RULER + t.spacing, -t.spacing);
+            let at = match super::toasts::stack_rect(ui.ctx()) {
+                Some(n)
+                    if n.left() < at.x + 240.0 && n.right() > at.x && n.bottom() >= at.y - 20.0 =>
+                {
+                    egui::pos2(at.x, n.top() - t.spacing)
+                }
+                _ => at,
+            };
             painter.text(
-                rect.left_bottom() + Vec2::new(canvas::RULER + t.spacing, -t.spacing),
+                at,
                 Align2::LEFT_BOTTOM,
                 ZOOM_HINT,
                 fonts::medium(12.0),

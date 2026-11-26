@@ -190,8 +190,40 @@ pub struct Place {
     pub bar: Option<egui::Rect>,
 }
 
-/// The smallest height the stack keeps, so one notice is always readable.
+/// The smallest height the stack needs for one notice. With less room
+/// over the canvas the notices fold into one line ([`folded_label`]).
 pub const MIN_STACK_HEIGHT: f32 = 48.0;
+/// The narrowest a card gets on a narrow canvas.
+pub const MIN_WIDTH: f32 = 160.0;
+
+/// The one-line button the notices fold into on a canvas too short for a
+/// card: "1 notice", "3 notices". A click opens them.
+pub fn folded_label(n: usize) -> String {
+    if n == 1 {
+        "1 notice".to_string()
+    } else {
+        format!("{n} notices")
+    }
+}
+
+/// The card of the folded line.
+pub const FOLDED_HINT: &str = "The canvas is too short to show the notices here. Click to open them over the canvas; click Hide to fold them again.";
+/// The button that folds opened notices again.
+pub const FOLD_LABEL: &str = "Hide notices";
+
+fn rect_id() -> egui::Id {
+    egui::Id::unique("flatcraft-toasts-rect")
+}
+
+fn open_id() -> egui::Id {
+    egui::Id::unique("flatcraft-toasts-open")
+}
+
+/// Where the notice stack stood last frame over the canvas, if it shows
+/// there: the Cut canvas moves its zoom hint above it.
+pub fn stack_rect(ctx: &egui::Context) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp(rect_id()))
+}
 
 /// Draws the toasts, oldest at the top, and tracks which one the pointer
 /// rests on: at the bottom left of the canvas of `place` (above the
@@ -211,15 +243,27 @@ pub fn show(
 ) -> Vec<Event> {
     let mut events = Vec::new();
     if toasts.is_empty() {
+        ctx.data_mut(|d| {
+            d.remove::<egui::Rect>(rect_id());
+            d.remove::<bool>(open_id());
+        });
         return events;
     }
     let gap = t.spacing * 2.0;
+    let mut width = WIDTH;
+    // Folded into one line: the canvas is too short for a card.
+    let mut folded = false;
+    // Less room than one card needs between what sits on the canvas.
+    let mut cramped = false;
+    let opened: bool = ctx.data(|d| d.get_temp(open_id())).unwrap_or(false);
     let area = egui::Area::new(egui::Id::unique("flatcraft-toasts"));
     let (area, max_height) = match place.filter(|p| p.canvas.is_positive()) {
         Some(p) => {
             let r = p.canvas;
             let left = r.left() + super::canvas::RULER + gap;
-            let right = left + WIDTH;
+            // Never wider than the canvas: the side panels stay free.
+            width = WIDTH.min(r.right() - gap - left).max(MIN_WIDTH);
+            let right = left + width;
             let across = |o: &egui::Rect| o.right() > left && o.left() < right;
             let mut bottom = r.bottom() - gap;
             for o in [p.pills.filter(|o| o.height() >= 1.0), p.bar]
@@ -235,10 +279,18 @@ pub fn show(
                 .map_or(r.top() + super::canvas::RULER + gap, |o| {
                     o.bottom() + t.spacing
                 });
+            let room = bottom - top;
+            let full = r.bottom() - gap - (r.top() + super::canvas::RULER + gap);
+            cramped = room < MIN_STACK_HEIGHT;
+            folded = cramped && !opened;
             (
                 area.pivot(egui::Align2::LEFT_BOTTOM)
                     .fixed_pos(egui::pos2(left, bottom)),
-                (bottom - top).max(MIN_STACK_HEIGHT),
+                if room < MIN_STACK_HEIGHT {
+                    full.max(MIN_STACK_HEIGHT)
+                } else {
+                    room
+                },
             )
         }
         None => (
@@ -247,17 +299,40 @@ pub fn show(
         ),
     };
     let area = area.order(egui::Order::Foreground).show(ctx, |ui| {
+        if folded {
+            let label = folded_label(toasts.len());
+            let b = ui.button(&label);
+            super::groups::card(&b, &label, FOLDED_HINT, None, false);
+            if b.clicked() {
+                ui.ctx().data_mut(|d| d.insert_temp(open_id(), true));
+            }
+            return;
+        }
+        if opened && cramped {
+            let b = ui.button(FOLD_LABEL);
+            super::groups::card(&b, FOLD_LABEL, FOLDED_HINT, None, false);
+            if b.clicked() {
+                ui.ctx().data_mut(|d| d.insert_temp(open_id(), false));
+            }
+        }
         egui::ScrollArea::vertical()
             .max_height(max_height)
             .stick_to_bottom(true)
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = t.spacing;
                 for toast in toasts.iter_mut() {
-                    let (event, hovered) = card(ui, toast, t, now, reduce_motion);
+                    let (event, hovered) = card(ui, toast, t, now, reduce_motion, width);
                     toast.set_hovered(hovered, now);
                     events.extend(event);
                 }
             });
+    });
+    ctx.data_mut(|d| {
+        if place.is_some_and(|p| p.canvas.is_positive()) {
+            d.insert_temp(rect_id(), area.response.rect);
+        } else {
+            d.remove::<egui::Rect>(rect_id());
+        }
     });
     // egui places an area by last frame's size, and the stack is pinned at
     // its bottom (left over the canvas, right in the window corner): when
@@ -281,6 +356,7 @@ fn card(
     t: &Tokens,
     now: Instant,
     reduce_motion: bool,
+    width: f32,
 ) -> (Option<Event>, bool) {
     const X: f32 = 20.0;
     let pad = 10.0;
@@ -299,13 +375,13 @@ fn card(
     // laid out first, so the × on top of it wins its own clicks.
     let bg = ui.painter().add(egui::Shape::Noop);
     let inner = frame.show(ui, |ui| {
-        ui.set_width(WIDTH - 2.0 * pad);
+        ui.set_width(width - 2.0 * pad);
         ui.horizontal_top(|ui| {
             let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 18.0), egui::Sense::hover());
             ui.painter()
                 .circle_filled(dot.center(), 4.0, toast.kind.color(t));
             ui.vertical(|ui| {
-                ui.set_max_width(WIDTH - 2.0 * pad - 10.0 - X - 2.0 * ui.spacing().item_spacing.x);
+                ui.set_max_width(width - 2.0 * pad - 10.0 - X - 2.0 * ui.spacing().item_spacing.x);
                 ui.add(
                     egui::Label::new(
                         RichText::new(&toast.text)
