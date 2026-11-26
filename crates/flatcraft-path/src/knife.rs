@@ -203,12 +203,20 @@ pub const TIGHT_CORNER_DEG: f64 = 30.0;
 /// 0.42 mm (the maker-quotes sample, minimum radius 0.25) is a corner.
 pub const CORNER_SEGMENT_FACTOR: f64 = 1.5;
 
+/// Vertices bending with a local radius below this many minimum radii
+/// that lie between two tight curve vertices are part of the same curve
+/// ([`min_radius_spots`]): an arc right on the limit can measure a hair
+/// above it in its middle (0.2504 mm on a 0.25 mm arc), and the warning
+/// counts curves, not pieces of them.
+pub const CURVE_BRIDGE_FACTOR: f64 = 2.0;
+
 /// Places on `points` (a polyline) where the path bends tighter than
 /// `min_radius_mm`. The local radius at a vertex is
 /// `((|seg_in| + |seg_out|) / 2) / turn`, with the turn in radians. A run of
 /// neighbouring vertices below the limit (a flattened arc) is one spot, at
-/// half its length. A single vertex that turns [`TIGHT_CORNER_DEG`] or more
-/// between segments of at least [`CORNER_SEGMENT_FACTOR`] minimum radii is
+/// half its length; vertices that still bend clearly between two tight
+/// ones ([`CURVE_BRIDGE_FACTOR`]) do not split it. A single vertex that
+/// turns [`TIGHT_CORNER_DEG`] or more between segments of at least [`CORNER_SEGMENT_FACTOR`] minimum radii is
 /// a corner, not a curve: the blade swivels there, so it is not a spot. A
 /// path that ends where it starts is a ring: its start vertex is checked
 /// too, and a run across the start is one spot. Used for warnings in every
@@ -224,22 +232,64 @@ pub fn min_radius_spots(points: &[Point], min_radius_mm: f64) -> Vec<Point> {
     let m = if ring { n - 1 } else { n - 2 };
     let vertex = |k: usize| if ring { k } else { k + 1 };
     let at = |k: usize| points[vertex(k)];
-    // When vertex k bends tighter than the limit: whether it would be a
-    // corner on its own (a turn of at least TIGHT_CORNER_DEG between long
-    // segments).
+    // A corner on its own: a turn of at least TIGHT_CORNER_DEG between long
+    // segments.
     let corner_turn = TIGHT_CORNER_DEG.to_radians();
     let corner_len = CORNER_SEGMENT_FACTOR * min_radius_mm;
-    let tight = |k: usize| {
+    // The local radius at vertex k, and whether it would be a corner.
+    let bend = |k: usize| {
         let v = vertex(k);
         let prev = if v == 0 { points[n - 2] } else { points[v - 1] };
         let next = points[v + 1];
         let (a, b) = (points[v] - prev, next - points[v]);
         let turn = a.cross(b).atan2(a.dot(b)).abs();
-        (turn > 0.0 && (a.hypot() + b.hypot()) / 2.0 / turn < min_radius_mm)
-            .then(|| turn >= corner_turn && a.hypot() >= corner_len && b.hypot() >= corner_len)
+        let radius = if turn > 0.0 {
+            (a.hypot() + b.hypot()) / 2.0 / turn
+        } else {
+            f64::INFINITY
+        };
+        let corner = turn >= corner_turn && a.hypot() >= corner_len && b.hypot() >= corner_len;
+        (radius, corner)
     };
-    let turns: Vec<Option<bool>> = (0..m).map(tight).collect();
-    let flags: Vec<bool> = turns.iter().map(Option::is_some).collect();
+    let bends: Vec<(f64, bool)> = (0..m).map(bend).collect();
+    // When vertex k bends tighter than the limit: whether it would be a
+    // corner on its own.
+    let turns: Vec<Option<bool>> = bends
+        .iter()
+        .map(|&(r, corner)| (r < min_radius_mm).then_some(corner))
+        .collect();
+    // Vertices that still bend clearly (below CURVE_BRIDGE_FACTOR minimum
+    // radii) between two tight curve vertices join them: an arc right on
+    // the limit can measure a hair above it in its middle, and it is still
+    // one curve.
+    let bendy = |k: usize| turns[k].is_none() && bends[k].0 < CURVE_BRIDGE_FACTOR * min_radius_mm;
+    let step = |k: usize, back: bool| -> Option<usize> {
+        match (back, ring) {
+            (true, _) if k > 0 => Some(k - 1),
+            (true, true) => Some(m - 1),
+            (false, _) if k + 1 < m => Some(k + 1),
+            (false, true) => Some(0),
+            _ => None,
+        }
+    };
+    // From a bendy vertex, the first vertex that is not bendy in a
+    // direction is a tight curve vertex.
+    let ends_in_curve = |k: usize, back: bool| {
+        let mut at = k;
+        for _ in 0..m {
+            match step(at, back) {
+                Some(next) if bendy(next) => at = next,
+                Some(next) => return turns[next] == Some(false),
+                None => return false,
+            }
+        }
+        false
+    };
+    let flags: Vec<bool> = (0..m)
+        .map(|k| {
+            turns[k].is_some() || (bendy(k) && ends_in_curve(k, true) && ends_in_curve(k, false))
+        })
+        .collect();
     if ring && flags.iter().all(|&f| f) {
         return vec![halfway(points)];
     }
@@ -1247,11 +1297,11 @@ mod tests {
         assert_eq!(min_radius_spots(&pts, 0.25), Vec::<Point>::new());
     }
 
-    /// Every rounded corner of radius 0.25 mm warns at the minimum radius
-    /// 0.25 mm, however coarsely it is flattened.
+    /// Every rounded corner of radius 0.25 mm warns once at the minimum
+    /// radius 0.25 mm, however coarsely it is flattened.
     #[test]
     fn a_rounded_corner_warns_at_any_flatten_tolerance() {
-        for tol in [0.005, 0.01, 0.02, 0.05] {
+        for tol in [0.005, 0.01, 0.02, 0.03, 0.05] {
             let r = 0.25;
             // A rectangle 10 x 6 mm with corners of radius r, closed.
             let rect = kurbo::RoundedRect::new(10.0, 10.0, 20.0, 16.0, r);
@@ -1266,8 +1316,10 @@ mod tests {
             }
             pts.dedup();
             let spots = min_radius_spots(&pts, 0.25);
-            // The radius sits right on the limit, so a corner's arc may
-            // split into two runs; every corner must warn.
+            // One spot per corner: the radius sits right on the limit, and
+            // a corner's arc that measures a hair above it in its middle is
+            // still one curve.
+            assert_eq!(spots.len(), 4, "tolerance {tol}: {spots:?}");
             for c in [p(10.0, 10.0), p(20.0, 10.0), p(20.0, 16.0), p(10.0, 16.0)] {
                 assert!(
                     spots.iter().any(|q| q.distance(c) < 0.25),

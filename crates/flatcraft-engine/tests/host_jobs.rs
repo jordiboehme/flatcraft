@@ -603,25 +603,28 @@ fn send_built_refuses_a_job_built_for_another_plotter() {
     assert_eq!(r["files"].as_array().unwrap().len(), 3, "{r}");
 }
 
-/// A corner rounded with the blade's own radius warns, also when the
-/// plotter flattens curves coarsely.
+/// A tile with four corners rounded with the blade's own radius warns
+/// about exactly 4 curves, however coarsely the plotter flattens curves.
 #[test]
 fn rounded_corners_warn_at_any_flatten_tolerance() {
     let d = dirs();
     let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><rect x="20" y="20" width="10" height="6" rx="0.25"/></svg>"#;
-    let mut s = session(&d);
-    import(&mut s, svg, "tile");
-    let coarse = "flatten_tolerance_mm = 0.02\n";
-    user_plotter(d.config.path(), "coarse", coarse);
-    let mut c = session(&d);
-    run(&mut c, "job.set_plotter", json!({ "id": "coarse" }));
-    import(&mut c, svg, "tile");
-    for s in [&mut s, &mut c] {
-        let w = warnings(&run(s, "job.preview", json!({})));
+    for (k, tol) in [0.005, 0.01, 0.02, 0.03, 0.05].into_iter().enumerate() {
+        let id = format!("tol-{k}");
+        user_plotter(
+            d.config.path(),
+            &id,
+            &format!("flatten_tolerance_mm = {tol:?}\n"),
+        );
+        let mut s = session(&d);
+        run(&mut s, "job.set_plotter", json!({ "id": id }));
+        import(&mut s, svg, "tile");
+        let w = warnings(&run(&mut s, "job.preview", json!({})));
         assert!(
             w.iter()
-                .any(|w| w.contains("curves are tighter than 0.25 mm")),
-            "{w:?}"
+                .any(|w| w
+                    == "4 curves are tighter than 0.25 mm. They may come out rounded or torn."),
+            "tolerance {tol}: {w:?}"
         );
     }
 }
