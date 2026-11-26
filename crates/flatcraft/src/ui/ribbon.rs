@@ -4,10 +4,12 @@
 
 use egui::accesskit::Role;
 use egui::{Ui, WidgetInfo};
+use flatcraft_core::numexpr::{Field, Kind};
 use flatcraft_engine::registry;
 use serde_json::json;
 
 use super::Action;
+use super::calc;
 use super::canvas;
 use super::collapse::{self, Group, Mode};
 use super::groups::{self, Cx, Extras};
@@ -60,6 +62,13 @@ pub(crate) fn select_whole_value(ui: &Ui, resp: &egui::Response, text: &str) {
     }
 }
 
+/// The largest position or size a field takes, mm: 10 m, more than any
+/// plotter cuts.
+const MAX_MM: f64 = 10_000.0;
+
+/// The largest scale the % field takes.
+const MAX_PERCENT: f64 = 100_000.0;
+
 /// The inner margin of the ribbon's number fields.
 const FIELD_MARGIN: egui::Vec2 = egui::vec2(4.0, 2.0);
 
@@ -90,6 +99,8 @@ struct NumberField<'a> {
     setting: Setting,
     /// What it shows while it is not being edited.
     current: String,
+    /// Its value, unrounded, for a relative edit; `None` while Mixed.
+    value: Option<f64>,
     enabled: bool,
 }
 
@@ -108,6 +119,16 @@ impl SizeField {
     /// Its widget id, the same wherever the group is drawn.
     fn id(self) -> egui::Id {
         egui::Id::unique(("flatcraft-size-field", self.id_salt()))
+    }
+
+    /// What the field takes: its unit, its range.
+    fn spec(self) -> Field {
+        match self {
+            SizeField::X | SizeField::Y => Field::length().range(-MAX_MM, MAX_MM),
+            SizeField::Width | SizeField::Height => Field::length().positive().range(0.0, MAX_MM),
+            SizeField::Percent => Field::new(Kind::Percent).positive().range(0.0, MAX_PERCENT),
+            SizeField::Angle => Field::turn(),
+        }
     }
 
     fn buf(self, f: &mut Fields) -> &mut String {
@@ -145,6 +166,7 @@ fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) -> egui::Rect {
             *nf.field.buf(fields) = nf.current.clone();
             if let Some(e) = fields.editing.as_mut() {
                 e.shown = nf.current.clone();
+                e.value = nf.value;
                 e.doc_id = cx.snap.doc_id;
                 e.ids = cx.snap.selection.iter().copied().collect();
                 e.free = canvas::free_aspect(cx.snap, &e.ids);
@@ -169,7 +191,8 @@ fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) -> egui::Rect {
         }
         None => ui.label(nf.label),
     };
-    groups::card(&l, nf.name, nf.setting.card(), why, false);
+    let card = calc::with_hint(nf.setting.card(), nf.field.spec().kind);
+    groups::card(&l, nf.name, &card, why, false);
     let buf = nf.field.buf(fields);
     let width = field_width(ui, buf).max(field_width(ui, nf.widest));
     let resp = ui.add_enabled(
@@ -186,22 +209,29 @@ fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) -> egui::Rect {
     );
     set_name(ui, &resp, nf.name);
     select_whole_value(ui, &resp, nf.field.buf(&mut cx.st.fields));
-    groups::card(&resp, nf.name, nf.setting.card(), why, false);
+    groups::card(&resp, nf.name, &card, why, false);
+    if let Some((_, msg)) = cx.st.fields.error.as_ref().filter(|(f, _)| *f == nf.field) {
+        calc::show_message(ui, id, resp.rect, msg);
+    }
     if resp.has_focus() {
         if !editing {
             // Another field still editing lost the focus in this pass.
-            finish_edit(ui.ctx(), cx.st, cx.actions);
-            let ids: Vec<u64> = cx.snap.selection.iter().copied().collect();
-            cx.st.fields.editing = Some(FieldEdit {
-                field: nf.field,
-                shown: nf.current,
-                doc_id: cx.snap.doc_id,
-                free: canvas::free_aspect(cx.snap, &ids),
-                ids,
-            });
+            finish_edit(ui.ctx(), cx.st, cx.actions, true);
+            // Unless it could not read its text: then it keeps the focus.
+            if cx.st.fields.editing.is_none() {
+                let ids: Vec<u64> = cx.snap.selection.iter().copied().collect();
+                cx.st.fields.editing = Some(FieldEdit {
+                    field: nf.field,
+                    shown: nf.current,
+                    doc_id: cx.snap.doc_id,
+                    free: canvas::free_aspect(cx.snap, &ids),
+                    ids,
+                    value: nf.value,
+                });
+            }
         }
     } else if editing {
-        finish_edit(ui.ctx(), cx.st, cx.actions);
+        finish_edit(ui.ctx(), cx.st, cx.actions, nf.enabled);
     }
     resp.rect
 }
@@ -219,48 +249,59 @@ pub fn finish_pending(
     actions: &mut Vec<Action>,
 ) {
     let Some(e) = &st.fields.editing else { return };
-    if !on_screen || e.doc_id != snap.doc_id || !ctx.memory(|m| m.has_focus(e.field.id())) {
-        finish_edit(ctx, st, actions);
+    let here = on_screen && e.doc_id == snap.doc_id;
+    if !here || !ctx.memory(|m| m.has_focus(e.field.id())) {
+        // A text it cannot read keeps the field (and its focus) while the
+        // field is there to fix it: drawn last frame (not in a closed
+        // list of a collapsed group), with something selected.
+        let drawn = ctx.read_response(e.field.id()).is_some();
+        let keep = here && drawn && !snap.selection.is_empty();
+        finish_edit(ctx, st, actions, keep);
     }
 }
 
 /// Ends the editing of a field now, whether it still has the focus or
 /// not: a save, close or quit counts what was typed first.
 pub fn finish_now(ctx: &egui::Context, st: &mut PrepareState, actions: &mut Vec<Action>) {
-    finish_edit(ctx, st, actions);
+    finish_edit(ctx, st, actions, false);
 }
 
 /// Ends the editing of the field that lost the focus: Escape puts its
-/// shown text back, a changed number is applied as one command.
-fn finish_edit(ctx: &egui::Context, st: &mut PrepareState, actions: &mut Vec<Action>) {
+/// shown text back, a changed value (a number or a calculation, see
+/// [`flatcraft_core::numexpr`]) is applied as one command. A text it
+/// cannot read applies nothing: with `keep` the field keeps the text and
+/// the focus and says why under it; without (the field is gone: another
+/// tab, document or a save) the old value comes back and a toast says
+/// why.
+fn finish_edit(ctx: &egui::Context, st: &mut PrepareState, actions: &mut Vec<Action>, keep: bool) {
     let Some(edit) = st.fields.editing.take() else {
         return;
     };
     let buf = edit.field.buf(&mut st.fields);
-    let typed = buf.trim().replace(',', ".");
+    let typed = buf.trim().to_string();
     let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-    if escape || typed == edit.shown.trim() {
+    if escape || typed == edit.shown.trim() || edit.ids.is_empty() {
         *buf = edit.shown.clone();
+        st.fields.error = None;
         return;
     }
-    let Ok(v) = typed.parse::<f64>() else {
-        *buf = edit.shown.clone();
-        return;
-    };
-    if edit.ids.is_empty() || !v.is_finite() {
-        return;
-    }
-    // An angle too large to be exact: say so and put the old value back.
-    if edit.field == SizeField::Angle && flatcraft_engine::commands::object::check_angle(v).is_err()
-    {
-        *edit.field.buf(&mut st.fields) = edit.shown.clone();
-        actions.push(Action::Error(format!(
-            "The angle {typed} is too large. Type at most 1000000000 degrees either way; full turns of 360 count as 0, so 370 is 10."
-        )));
-        return;
-    }
-    if let Some(a) = size_action(&st.fields, &edit, v) {
-        actions.push(a);
+    match edit.field.spec().eval(&typed, edit.value) {
+        Ok(v) => {
+            st.fields.error = None;
+            if let Some(a) = size_action(&st.fields, &edit, v) {
+                actions.push(a);
+            }
+        }
+        Err(e) if keep => {
+            ctx.memory_mut(|m| m.request_focus(edit.field.id()));
+            st.fields.error = Some((edit.field, e.message));
+            st.fields.editing = Some(edit);
+        }
+        Err(e) => {
+            *buf = edit.shown.clone();
+            st.fields.error = None;
+            actions.push(Action::Error(format!("{} Nothing changed.", e.message)));
+        }
     }
 }
 
@@ -998,6 +1039,7 @@ fn size_xy(ui: &mut Ui, cx: &mut Cx) {
             name,
             setting,
             current: value.map(mm).unwrap_or_default(),
+            value,
             enabled: any,
         };
         number_field(ui, nf, cx);
@@ -1036,6 +1078,7 @@ fn size_wh(ui: &mut Ui, cx: &mut Cx) -> [egui::Rect; 2] {
             name,
             setting,
             current: value.map(mm).unwrap_or_default(),
+            value,
             enabled: any,
         };
         let i = usize::from(field == SizeField::Height);
@@ -1063,6 +1106,7 @@ fn size_angle(ui: &mut Ui, cx: &mut Cx) {
         name: "Angle (degrees)",
         setting: Setting::Angle,
         current,
+        value: angle,
         enabled: any,
     };
     number_field(ui, nf, cx);
@@ -1078,11 +1122,8 @@ const SIZE_GRID_GAP: egui::Vec2 = egui::vec2(4.0, 4.0);
 /// The third column: % above the Angle.
 fn size_scale(ui: &mut Ui, cx: &mut Cx) {
     let any = !cx.snap.selection.is_empty();
-    let current = if any {
-        mm(canvas::live_percent(cx.st).unwrap_or(100.0))
-    } else {
-        String::new()
-    };
+    let percent = any.then(|| canvas::live_percent(cx.st).unwrap_or(100.0));
+    let current = percent.map(mm).unwrap_or_default();
     let nf = NumberField {
         field: SizeField::Percent,
         label: "%",
@@ -1093,6 +1134,7 @@ fn size_scale(ui: &mut Ui, cx: &mut Cx) {
         name: "Scale (%)",
         setting: Setting::ScalePercent,
         current,
+        value: percent,
         enabled: any,
     };
     number_field(ui, nf, cx);

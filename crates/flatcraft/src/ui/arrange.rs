@@ -9,11 +9,13 @@
 //! undo step); Cancel, the close button and Escape change nothing.
 
 use egui::{RichText, Ui};
+use flatcraft_core::numexpr::{Field, Kind};
 use flatcraft_engine::commands::object::MAX_COPIES;
 use flatcraft_engine::placement;
 use kurbo::{Affine, Point, Rect, Vec2};
 use serde_json::json;
 
+use super::calc;
 use super::help::{self, PrepareKey};
 use super::icons::{self, Icon};
 use super::prepare::{ObjView, PrepareState, Snapshot};
@@ -373,7 +375,9 @@ pub fn ghosts(snap: &Snapshot, p: &ArrangePanel) -> Vec<(u64, Affine)> {
     out
 }
 
-/// A number field in the panel's grid, with its accessible name.
+/// A number field in the panel's grid, with its accessible name and a
+/// hover card. It takes a calculation (see [`calc`]); the unit follows
+/// `suffix`.
 fn number(
     ui: &mut Ui,
     name: &str,
@@ -383,20 +387,28 @@ fn number(
     enabled: bool,
 ) {
     painted_label(ui, name);
-    let r = ui.add_enabled(
-        enabled,
-        egui::DragValue::new(value)
-            .range(range)
+    let kind = match suffix.trim() {
+        "mm" => Kind::Length,
+        "deg" => Kind::Angle,
+        _ => Kind::Plain,
+    };
+    let (lo, hi) = (*range.start(), *range.end());
+    let r = calc::drag(ui, enabled, value, Field::new(kind).range(lo, hi), |d| {
+        d.range(range)
             .speed(0.1)
             .min_decimals(2)
             .max_decimals(3)
-            .suffix(suffix),
-    );
+            .suffix(suffix)
+    });
     set_name(ui, &r, name);
+    let text = format!("From {lo}{suffix} to {hi}{suffix}. {}", calc::hint(kind));
+    // Only the centre fields are ever dimmed.
+    let why = (!enabled).then_some("Choose Centre at X and Y first.");
+    super::groups::card(&r, name, &text, why, false);
     ui.end_row();
 }
 
-/// A whole-number field in the panel's grid.
+/// A whole-number field in the panel's grid, with its hover card.
 fn count(
     ui: &mut Ui,
     name: &str,
@@ -405,8 +417,21 @@ fn count(
     enabled: bool,
 ) {
     painted_label(ui, name);
-    let r = ui.add_enabled(enabled, egui::DragValue::new(value).range(range).speed(0.1));
+    let (lo, hi) = (*range.start(), *range.end());
+    let r = calc::drag(
+        ui,
+        enabled,
+        value,
+        Field::plain().range(f64::from(lo), f64::from(hi)),
+        |d| d.range(range).speed(0.1),
+    );
     set_name(ui, &r, name);
+    let text = format!(
+        "A whole number from {lo} to {hi}. {}",
+        calc::hint(Kind::Plain)
+    );
+    let why = (!enabled).then_some("Turn on Copy first.");
+    super::groups::card(&r, name, &text, why, false);
     ui.end_row();
 }
 

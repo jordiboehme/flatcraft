@@ -513,10 +513,18 @@ fn a_typed_angle_too_large_to_be_exact_is_refused() {
     h.run();
     assert_eq!(undo_len(&s), before);
     assert!(near(transform(&s, id).rotation_deg, 0.0));
+    // The field keeps the text and says why under it.
+    assert_eq!(fields(&h).angle, "1e10");
+    let (_, msg) = fields(&h).error.unwrap();
+    assert!(msg.contains("Type at most"), "{msg}");
+    assert!(!msg.contains('\u{2014}'));
+    h.get_by_label(&msg);
+    // Esc puts the old value back.
+    h.key_press(Key::Escape);
+    h.run();
+    h.run();
     assert_eq!(fields(&h).angle, "0.00");
-    let toast = app(&h).ui.toasts.last().cloned().unwrap();
-    assert!(toast.text.contains("Type at most"), "{}", toast.text);
-    assert!(!toast.text.contains('\u{2014}'));
+    assert_eq!(undo_len(&s), before);
 }
 
 /// Square a selected, square b (not selected) just past a's bottom-right

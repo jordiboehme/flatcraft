@@ -15,11 +15,13 @@ use std::sync::{Arc, mpsc};
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Ui, vec2};
 use flatcraft_core::document::TraceSettings;
 use flatcraft_core::geometry::CutPath;
+use flatcraft_core::numexpr::{Field, Kind};
 use flatcraft_engine::commands::sources::{FileKind, IMPORT_TYPES, is_importable};
 use flatcraft_import::ImportError;
 use flatcraft_import::trace::TraceResult;
 use serde_json::json;
 
+use super::calc;
 use super::files::{FileRequest, filter};
 use super::prepare::Snapshot;
 use super::settings::set_name;
@@ -610,11 +612,16 @@ fn controls(ui: &mut Ui, d: &mut TraceDialog) -> bool {
 
     ui.horizontal(|ui| {
         let mut auto = s.threshold.is_none();
-        let r = ui.add_enabled(
+        let r = calc::slider(
+            ui,
             !auto,
-            egui::Slider::new(&mut d.manual_threshold, 0..=255).text("Threshold"),
+            &mut d.manual_threshold,
+            0..=255,
+            Field::plain(),
+            |s| s.text("Threshold"),
         );
-        super::groups::card(&r, "Threshold", Setting::Threshold.card(), None, false);
+        let card = calc::with_hint(Setting::Threshold.card(), Kind::Plain);
+        super::groups::card(&r, "Threshold", &card, None, false);
         set_name(ui, &r, "Threshold");
         if r.changed() {
             s.threshold = Some(d.manual_threshold);
@@ -632,56 +639,65 @@ fn controls(ui: &mut Ui, d: &mut TraceDialog) -> bool {
     super::groups::card(&r, "Invert", Setting::Invert.card(), None, false);
     changed |= r.changed();
     ui.horizontal(|ui| {
-        let r = ui.add(
-            egui::DragValue::new(&mut s.despeckle_mm2)
-                .range(0.0..=100.0)
-                .speed(0.05)
-                .max_decimals(2)
-                .suffix(" mm²"),
+        let r = calc::drag(
+            ui,
+            true,
+            &mut s.despeckle_mm2,
+            Field::plain().range(0.0, 100.0),
+            |d| {
+                d.range(0.0..=100.0)
+                    .speed(0.05)
+                    .max_decimals(2)
+                    .suffix(" mm²")
+            },
         );
         set_name(ui, &r, "Despeckle (mm²)");
-        super::groups::card(&r, "Despeckle", Setting::Despeckle.card(), None, false);
+        let card = calc::with_hint(Setting::Despeckle.card(), Kind::Plain);
+        super::groups::card(&r, "Despeckle", &card, None, false);
         changed |= r.changed();
         let l = ui.label("Despeckle");
         super::groups::card(&l, "Despeckle", Setting::Despeckle.card(), None, false);
     });
-    let r = ui
-        .add(egui::Slider::new(&mut s.corner_threshold_deg, 0.0..=180.0).text("Corner threshold"));
-    super::groups::card(
-        &r,
-        "Corner threshold",
-        Setting::CornerThreshold.card(),
-        None,
-        false,
+    let r = calc::slider(
+        ui,
+        true,
+        &mut s.corner_threshold_deg,
+        0.0..=180.0,
+        Field::new(Kind::Angle),
+        |s| s.text("Corner threshold"),
     );
+    let card = calc::with_hint(Setting::CornerThreshold.card(), Kind::Angle);
+    super::groups::card(&r, "Corner threshold", &card, None, false);
     set_name(ui, &r, "Corner threshold (deg)");
     changed |= r.changed();
-    let r = ui.add(egui::Slider::new(&mut s.smoothing, 0..=10).text("Smoothing"));
-    super::groups::card(&r, "Smoothing", Setting::Smoothing.card(), None, false);
+    let r = calc::slider(ui, true, &mut s.smoothing, 0..=10, Field::plain(), |s| {
+        s.text("Smoothing")
+    });
+    let card = calc::with_hint(Setting::Smoothing.card(), Kind::Plain);
+    super::groups::card(&r, "Smoothing", &card, None, false);
     set_name(ui, &r, "Smoothing");
     changed |= r.changed();
     ui.horizontal(|ui| {
         let mut auto = s.min_feature_mm.is_none();
-        let r = ui.add_enabled(
+        let r = calc::drag(
+            ui,
             !auto,
-            egui::DragValue::new(&mut d.manual_min_feature)
-                .range(0.0..=50.0)
-                .speed(0.05)
-                .max_decimals(2)
-                .suffix(" mm"),
+            &mut d.manual_min_feature,
+            Field::length().range(0.0, 50.0),
+            |d| {
+                d.range(0.0..=50.0)
+                    .speed(0.05)
+                    .max_decimals(2)
+                    .suffix(" mm")
+            },
         );
         set_name(ui, &r, "Minimum feature (mm)");
         if r.changed() {
             s.min_feature_mm = Some(d.manual_min_feature);
             changed = true;
         }
-        super::groups::card(
-            &r,
-            "Minimum feature",
-            Setting::MinFeature.card(),
-            None,
-            false,
-        );
+        let card = calc::with_hint(Setting::MinFeature.card(), Kind::Length);
+        super::groups::card(&r, "Minimum feature", &card, None, false);
         let l = ui.label("Minimum feature");
         super::groups::card(
             &l,

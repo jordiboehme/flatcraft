@@ -594,6 +594,23 @@ pub fn run_shortcuts(ctx: &egui::Context, active: u64, actions: &mut Vec<Action>
     });
 }
 
+/// The title of the shortcuts sheet's section on calculations.
+pub const CALC_TITLE: &str = "Calculations in number fields";
+
+/// What the section says first.
+pub const CALC_INTRO: &str = "Every number field takes a calculation. It counts when you leave the field; Esc keeps the old value.";
+
+/// What you can type in a number field, and what it gives.
+pub const CALC_EXAMPLES: [(&str, &str); 7] = [
+    ("100/3", "33.33, a third of 100"),
+    ("2*(10+5)", "30: brackets first, then * and /, then + and -"),
+    ("2in", "50.8 mm. Lengths take mm, cm and in (or \")"),
+    ("3/4in + 1cm", "29.05 mm: units mix"),
+    ("+=10", "10 more than now (also -=, *= and /=)"),
+    ("12,5", "12.5: a comma works when there is no dot"),
+    ("360/8", "45 degrees. Angles take deg (or \u{00b0})"),
+];
+
 /// The shortcuts sheet. Returns false once it should close.
 pub fn show_shortcuts(ctx: &egui::Context, t: &Tokens) -> bool {
     let modal = egui::Modal::new(egui::Id::unique("flatcraft-shortcuts")).show(ctx, |ui| {
@@ -607,6 +624,19 @@ pub fn show_shortcuts(ctx: &egui::Context, t: &Tokens) -> bool {
                 for s in SHORTCUTS.iter().filter(|s| s.here()) {
                     ui.label(RichText::new(s.keys()).monospace());
                     ui.label(s.what);
+                    ui.end_row();
+                }
+            });
+        ui.add_space(t.spacing);
+        ui.label(RichText::new(CALC_TITLE).font(fonts::semibold(14.0)));
+        ui.label(CALC_INTRO);
+        egui::Grid::new("flatcraft-calc-grid")
+            .num_columns(2)
+            .spacing([24.0, 4.0])
+            .show(ui, |ui| {
+                for (typed, what) in CALC_EXAMPLES {
+                    ui.label(RichText::new(typed).monospace());
+                    ui.label(what);
                     ui.end_row();
                 }
             });

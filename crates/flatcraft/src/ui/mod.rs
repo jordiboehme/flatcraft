@@ -4,6 +4,7 @@
 pub mod about;
 pub mod app_bar;
 pub mod arrange;
+pub mod calc;
 pub mod canvas;
 pub mod collapse;
 pub mod context_menu;

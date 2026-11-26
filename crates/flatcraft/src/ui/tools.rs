@@ -1183,6 +1183,23 @@ impl Setting {
 
     /// The text of its hover card: what it does, when to change it, and
     /// any term explained.
+    /// The kind of number a field of this setting holds, for the
+    /// calculation hint on its card; `None` when it is no number field.
+    pub fn number_kind(self) -> Option<flatcraft_core::numexpr::Kind> {
+        use Setting::*;
+        use flatcraft_core::numexpr::Kind;
+        Some(match self {
+            PositionX | PositionY | Width | Height | BladeOffset | Overcut | MinFeature
+            | AutoArrangeSpacing | FlattenTolerance | HostOffset | MatWidth | MatHeight
+            | GridOriginX | GridOriginY | GridWidth | GridHeight => Kind::Length,
+            Angle | CornerThreshold | PivotThreshold => Kind::Angle,
+            ScalePercent => Kind::Percent,
+            Speed | Force | Passes | Threshold | Despeckle | Smoothing | UnitsPerMm | ScaleX
+            | ScaleY | SpeedRange | ForceRange | PassesRange | FcValue => Kind::Plain,
+            _ => return None,
+        })
+    }
+
     pub fn card(self) -> &'static str {
         match self {
             Setting::PositionX => {
@@ -1265,7 +1282,7 @@ impl Setting {
                 "Use 6 times the blade offset of the plotter as the smallest shape."
             }
             Setting::AutoArrangeSpacing => {
-                "The gap left between objects, in millimetres. A pinned Auto arrange uses it too."
+                "The gap left between objects, in millimetres. A pinned Auto arrange uses it too. You can type a calculation, like 100/3 or 2in."
             }
             Setting::KnifeCompensation => {
                 "Who steers the blade around corners. Firmware lets the plotter do it, Host lets FlatCraft do it, None cuts the plain lines."

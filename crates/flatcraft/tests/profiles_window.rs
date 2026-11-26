@@ -1160,3 +1160,24 @@ fn reload_presets_has_a_hover_card() {
     hover_role(&mut h, Role::Button, "Reload presets");
     h.get_by_label("Fixed the file? This reads the preset folder again.");
 }
+
+#[test]
+fn a_mat_field_takes_a_calculation_with_units() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    save_as_my_cameo(&mut h);
+    page(&mut h, "Mats");
+    click(&mut h, "Mat 12x12");
+    let x = store(&s).plotter("my-cameo").unwrap().media[0]
+        .grid
+        .origin_x_mm;
+    type_into(&mut h, "Grid origin y (mm)", "1/2in");
+    // One it cannot read: nothing changes, and it says why.
+    type_into(&mut h, "Grid origin x (mm)", "5+");
+    h.get_by_label("Can't read '5+': something is missing after +.");
+    click(&mut h, "Save preset");
+    let p = store(&s).plotter("my-cameo").unwrap();
+    assert!((p.media[0].grid.origin_y_mm - 12.7).abs() < 1e-9);
+    assert_eq!(p.media[0].grid.origin_x_mm, x);
+}

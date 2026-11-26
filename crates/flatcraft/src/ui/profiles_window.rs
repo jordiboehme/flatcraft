@@ -11,12 +11,14 @@
 
 use super::tools::Setting;
 use egui::{Color32, Response, RichText, Sense, Ui, vec2};
+use flatcraft_core::numexpr::{Field, Kind as NumKind};
 use flatcraft_device::profile::MAX_SIZE_MM;
 use flatcraft_device::{
     DEFAULT_MAT_COLOR, GpglDialect, Grid, KnifeCompensation, MaterialOverride, MaterialProfile,
     Media, MediaField, MediaKind, PlotterProfile, PresetInfo, Protocol, TransportSpec,
 };
 
+use super::calc;
 use super::settings::set_name;
 use super::theme::Tokens;
 use super::{Action, FlatCraftApp, Toast, canvas, files, fonts, lock};
@@ -619,7 +621,11 @@ impl Form<'_> {
         } else {
             reason
         };
-        super::groups::card(r, label, setting.card(), reason, false);
+        let text = match setting.number_kind() {
+            Some(kind) => calc::with_hint(setting.card(), kind),
+            None => setting.card().to_string(),
+        };
+        super::groups::card(r, label, &text, reason, false);
     }
 
     /// Outlines the row a search jumped to and scrolls it into view once.
@@ -652,11 +658,18 @@ fn action_card(r: &Response, title: &str, text: &str, reason: Option<&str>) {
     super::groups::card(r, title, text, reason, false);
 }
 
-fn num(v: &mut f64, decimals: usize) -> egui::DragValue<'_> {
-    egui::DragValue::new(v)
-        .speed(0.01)
-        .max_decimals(decimals)
-        .update_while_editing(false)
+/// A decimal field that takes a calculation in `kind`'s units (see
+/// [`calc`]). The profile checks the ranges when it is saved.
+fn num(ui: &mut Ui, on: bool, v: &mut f64, decimals: usize, kind: NumKind, speed: f64) -> Response {
+    calc::drag(ui, on, v, Field::new(kind), |d| {
+        d.speed(speed).max_decimals(decimals)
+    })
+}
+
+/// A whole-number field that takes a calculation; it keeps to its type's
+/// limits.
+fn int<T: egui::emath::Numeric>(ui: &mut Ui, on: bool, v: &mut T) -> Response {
+    calc::drag(ui, on, v, Field::plain(), |d| d)
 }
 
 /// A combo box of `choices`; sets `value` to the picked one.
@@ -1109,7 +1122,7 @@ fn plotter_form(ui: &mut Ui, d: &mut Draft<PlotterProfile>, highlight: &Highligh
                     "Units per mm",
                     "units_per_mm",
                     Setting::UnitsPerMm,
-                    |ui| ui.add(num(&mut p.units_per_mm, 3)),
+                    |ui| num(ui, true, &mut p.units_per_mm, 3, NumKind::Plain, 0.01),
                 );
                 f.check(
                     ui,
@@ -1126,10 +1139,10 @@ fn plotter_form(ui: &mut Ui, d: &mut Draft<PlotterProfile>, highlight: &Highligh
                     &mut p.axis.mirror_y,
                 );
                 f.row(ui, "Scale x", "scale_x", Setting::ScaleX, |ui| {
-                    ui.add(num(&mut p.scale_x, 5).speed(0.0005))
+                    num(ui, true, &mut p.scale_x, 5, NumKind::Plain, 0.0005)
                 });
                 f.row(ui, "Scale y", "scale_y", Setting::ScaleY, |ui| {
-                    ui.add(num(&mut p.scale_y, 5).speed(0.0005))
+                    num(ui, true, &mut p.scale_y, 5, NumKind::Plain, 0.0005)
                 });
                 knife(ui, &f, p);
                 f.row(
@@ -1137,43 +1150,33 @@ fn plotter_form(ui: &mut Ui, d: &mut Draft<PlotterProfile>, highlight: &Highligh
                     "Blade offset (mm)",
                     "blade_offset_mm",
                     Setting::BladeOffset,
-                    |ui| ui.add(num(&mut p.blade_offset_mm, 3)),
+                    |ui| num(ui, true, &mut p.blade_offset_mm, 3, NumKind::Length, 0.01),
                 );
                 f.row(ui, "Speed min", "speed_range", Setting::SpeedRange, |ui| {
-                    ui.add(egui::DragValue::new(&mut p.speed_range[0]).update_while_editing(false))
+                    int(ui, true, &mut p.speed_range[0])
                 });
                 f.row(ui, "Speed max", "speed_range", Setting::SpeedRange, |ui| {
-                    ui.add(egui::DragValue::new(&mut p.speed_range[1]).update_while_editing(false))
+                    int(ui, true, &mut p.speed_range[1])
                 });
                 f.row(ui, "Force min", "force_range", Setting::ForceRange, |ui| {
-                    ui.add(egui::DragValue::new(&mut p.force_range[0]).update_while_editing(false))
+                    int(ui, true, &mut p.force_range[0])
                 });
                 f.row(ui, "Force max", "force_range", Setting::ForceRange, |ui| {
-                    ui.add(egui::DragValue::new(&mut p.force_range[1]).update_while_editing(false))
+                    int(ui, true, &mut p.force_range[1])
                 });
                 f.row(
                     ui,
                     "Passes min",
                     "passes_range",
                     Setting::PassesRange,
-                    |ui| {
-                        ui.add(
-                            egui::DragValue::new(&mut p.passes_range[0])
-                                .update_while_editing(false),
-                        )
-                    },
+                    |ui| int(ui, true, &mut p.passes_range[0]),
                 );
                 f.row(
                     ui,
                     "Passes max",
                     "passes_range",
                     Setting::PassesRange,
-                    |ui| {
-                        ui.add(
-                            egui::DragValue::new(&mut p.passes_range[1])
-                                .update_while_editing(false),
-                        )
-                    },
+                    |ui| int(ui, true, &mut p.passes_range[1]),
                 );
                 let c = &mut p.capabilities;
                 f.check(
@@ -1202,7 +1205,16 @@ fn plotter_form(ui: &mut Ui, d: &mut Draft<PlotterProfile>, highlight: &Highligh
                     "Flatten tolerance (mm)",
                     "flatten_tolerance_mm",
                     Setting::FlattenTolerance,
-                    |ui| ui.add(num(&mut p.flatten_tolerance_mm, 4).speed(0.001)),
+                    |ui| {
+                        num(
+                            ui,
+                            true,
+                            &mut p.flatten_tolerance_mm,
+                            4,
+                            NumKind::Length,
+                            0.001,
+                        )
+                    },
                 );
             });
     });
@@ -1256,7 +1268,7 @@ fn knife(ui: &mut Ui, f: &Form<'_>, p: &mut PlotterProfile) {
                 "FC value",
                 "knife_compensation",
                 Setting::FcValue,
-                |ui| ui.add(egui::DragValue::new(fc).update_while_editing(false)),
+                |ui| int(ui, true, fc),
             );
         }
         KnifeCompensation::Host {
@@ -1268,14 +1280,14 @@ fn knife(ui: &mut Ui, f: &Form<'_>, p: &mut PlotterProfile) {
                 "Host offset (mm)",
                 "knife_compensation",
                 Setting::HostOffset,
-                |ui| ui.add(num(offset_mm, 3)),
+                |ui| num(ui, true, offset_mm, 3, NumKind::Length, 0.01),
             );
             f.row(
                 ui,
                 "Pivot threshold (deg)",
                 "knife_compensation",
                 Setting::PivotThreshold,
-                |ui| ui.add(num(pivot_threshold_deg, 1).speed(0.5)),
+                |ui| num(ui, true, pivot_threshold_deg, 1, NumKind::Angle, 0.5),
             );
         }
         KnifeCompensation::None => {}
@@ -1547,7 +1559,7 @@ fn mats(
                         "Physical width (mm)",
                         "width",
                         Setting::MatWidth,
-                        |ui| ui.add(num(&mut m.width_mm, 2)),
+                        |ui| num(ui, true, &mut m.width_mm, 2, NumKind::Length, 0.01),
                     );
                     show_problem(ui, MediaField::Width);
                     f.row(
@@ -1555,7 +1567,7 @@ fn mats(
                         "Physical height (mm)",
                         "height",
                         Setting::MatHeight,
-                        |ui| ui.add(num(&mut m.height_mm, 2)),
+                        |ui| num(ui, true, &mut m.height_mm, 2, NumKind::Length, 0.01),
                     );
                     show_problem(ui, MediaField::Height);
                     f.row(
@@ -1563,7 +1575,7 @@ fn mats(
                         "Grid origin x (mm)",
                         "origin_x",
                         Setting::GridOriginX,
-                        |ui| ui.add(num(&mut m.grid.origin_x_mm, 2)),
+                        |ui| num(ui, true, &mut m.grid.origin_x_mm, 2, NumKind::Length, 0.01),
                     );
                     show_problem(ui, MediaField::OriginX);
                     f.row(
@@ -1571,7 +1583,7 @@ fn mats(
                         "Grid origin y (mm)",
                         "origin_y",
                         Setting::GridOriginY,
-                        |ui| ui.add(num(&mut m.grid.origin_y_mm, 2)),
+                        |ui| num(ui, true, &mut m.grid.origin_y_mm, 2, NumKind::Length, 0.01),
                     );
                     show_problem(ui, MediaField::OriginY);
                     f.row(
@@ -1579,7 +1591,7 @@ fn mats(
                         "Grid width (mm)",
                         "grid_width",
                         Setting::GridWidth,
-                        |ui| ui.add(num(&mut m.grid.width_mm, 2)),
+                        |ui| num(ui, true, &mut m.grid.width_mm, 2, NumKind::Length, 0.01),
                     );
                     show_problem(ui, MediaField::GridWidth);
                     f.row(
@@ -1587,7 +1599,7 @@ fn mats(
                         "Grid height (mm)",
                         "grid_height",
                         Setting::GridHeight,
-                        |ui| ui.add(num(&mut m.grid.height_mm, 2)),
+                        |ui| num(ui, true, &mut m.grid.height_mm, 2, NumKind::Length, 0.01),
                     );
                     show_problem(ui, MediaField::GridHeight);
                     f.check(
@@ -1789,13 +1801,13 @@ fn material_form(
                     ui.text_edit_singleline(&mut m.name)
                 });
                 f.row(ui, "Speed", "speed", Setting::Speed, |ui| {
-                    ui.add(egui::DragValue::new(&mut m.speed).update_while_editing(false))
+                    int(ui, true, &mut m.speed)
                 });
                 f.row(ui, "Force", "force", Setting::Force, |ui| {
-                    ui.add(egui::DragValue::new(&mut m.force).update_while_editing(false))
+                    int(ui, true, &mut m.force)
                 });
                 f.row(ui, "Passes", "passes", Setting::Passes, |ui| {
-                    ui.add(egui::DragValue::new(&mut m.passes).update_while_editing(false))
+                    int(ui, true, &mut m.passes)
                 });
                 f.check(
                     ui,
@@ -1805,7 +1817,7 @@ fn material_form(
                     &mut m.reverse_alternate_passes,
                 );
                 f.row(ui, "Overcut (mm)", "overcut_mm", Setting::Overcut, |ui| {
-                    ui.add(num(&mut m.overcut_mm, 2))
+                    num(ui, true, &mut m.overcut_mm, 2, NumKind::Length, 0.01)
                 });
                 f.check(
                     ui,
@@ -1902,7 +1914,7 @@ fn overrides(ui: &mut Ui, f: &Form<'_>, m: &mut MaterialProfile, view: &View, t:
                         o.overcut_mm = on.then_some(base.3);
                     }
                     let mut v = o.overcut_mm.unwrap_or(base.3);
-                    let r = ui.add_enabled(on, num(&mut v, 2));
+                    let r = num(ui, on, &mut v, 2, NumKind::Length, 0.01);
                     set_name(ui, &r, &f.name(&label, &format!("{key}.overcut_mm")));
                     f.card(&r, &label, Setting::Overcut, (!on).then_some(OVERRIDE_OFF));
                     if on {
@@ -1969,7 +1981,7 @@ fn cell<T: egui::emath::Numeric>(
             *v = on.then_some(base);
         }
         let mut x = v.unwrap_or(base);
-        let r = ui.add_enabled(on, egui::DragValue::new(&mut x).update_while_editing(false));
+        let r = int(ui, on, &mut x);
         set_name(ui, &r, &f.name(label, key));
         f.card(&r, label, setting, (!on).then_some(OVERRIDE_OFF));
         if on {

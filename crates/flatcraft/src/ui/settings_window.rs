@@ -26,8 +26,10 @@ use egui::{
     Align, Color32, Key, Layout, Modifiers, Rect, Response, RichText, Sense, Ui, pos2, vec2,
 };
 use flatcraft_core::document::CutStrategy;
+use flatcraft_core::numexpr::{Field, Kind};
 use flatcraft_engine::prefs::{PanelUser, Preferences, Theme, default_ribbon_pins};
 
+use super::calc;
 use super::icons::{self, Icon};
 use super::profiles_window::{self, Leave, Request};
 use super::settings::set_name;
@@ -1356,17 +1358,20 @@ fn stepper(
             *v = ((*v - step) / step).round() * step;
             *v = v.clamp(lo, hi);
         }
-        let r = ui.add(
-            // A stored value outside the range stays as it is: opening
-            // Settings never changes a preference.
-            egui::DragValue::new(v)
-                .range(range.clone())
+        let kind = if unit.trim() == "mm" {
+            Kind::Length
+        } else {
+            Kind::Plain
+        };
+        // A stored value outside the range stays as it is: opening
+        // Settings never changes a preference. A typed one is refused.
+        let r = calc::drag(ui, true, v, Field::new(kind).range(lo, hi), |d| {
+            d.range(range.clone())
                 .clamp_existing_to_range(false)
                 .speed(0.1)
                 .max_decimals(1)
                 .suffix(unit)
-                .update_while_editing(false),
-        );
+        });
         set_name(ui, &r, name);
         let more = ui.add_enabled(*v < hi, egui::Button::new("+").min_size(vec2(24.0, 22.0)));
         set_name(ui, &more, &format!("More {name}"));

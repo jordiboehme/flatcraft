@@ -3,8 +3,10 @@
 
 use egui::{Response, RichText, Ui};
 use flatcraft_core::document::{CutMode, StrokeMode};
+use flatcraft_core::numexpr::{Field, Kind};
 use serde_json::{Value, json};
 
+use super::calc;
 use super::icons::Icon;
 use super::prepare::{Eleven, Override, PrepareState, Snapshot};
 use super::rails::{Side, SidePanel};
@@ -29,17 +31,6 @@ pub const ELEVEN: &str = "These go to eleven.";
 /// override command has not run yet, so it shows from the next frame on.
 fn eleven_shown(st: &PrepareState, snap: &Snapshot) -> bool {
     st.speed_eleven.as_ref().is_some_and(|e| e.current(snap))
-}
-
-/// egui's own number parsing (whitespace ignored, U+2212 as minus), so a
-/// custom parser can look at the typed value before the range clamps it.
-fn parse_number(text: &str) -> Option<f64> {
-    let text: String = text
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .map(|c| if c == '\u{2212}' { '-' } else { c })
-        .collect();
-    text.parse().ok()
 }
 
 /// Sets the accessible name of a widget, replacing the one it gave itself.
@@ -371,25 +362,27 @@ pub fn job(
                     Some((w, x)) if w == which => x,
                     _ => f64::from(value),
                 };
-                // A typed speed above the maximum is clamped like any
-                // other value; the parser notes the attempt.
+                // A typed value (a number or a calculation) above the
+                // maximum is clamped, like a drag; for the speed the
+                // reader notes the attempt.
                 let typed_over = std::cell::Cell::new(None::<bool>);
                 let max = f64::from(range[1]);
-                let mut drag = egui::DragValue::new(&mut v)
-                    .range(f64::from(range[0])..=max)
-                    .speed(0.1)
-                    .max_decimals(0)
-                    .update_while_editing(false);
-                if which == Override::Speed {
-                    drag = drag.custom_parser(|text| {
-                        let n = parse_number(text);
-                        if let Some(n) = n {
-                            typed_over.set(Some(n.round() > max));
+                let resp = calc::drag_seen(
+                    ui,
+                    true,
+                    &mut v,
+                    Field::plain().integer(),
+                    |d| {
+                        d.range(f64::from(range[0])..=max)
+                            .speed(0.1)
+                            .max_decimals(0)
+                    },
+                    |n| {
+                        if which == Override::Speed {
+                            typed_over.set(Some(n > max));
                         }
-                        n
-                    });
-                }
-                let resp = ui.add(drag);
+                    },
+                );
                 if let Some(over) = typed_over.get() {
                     st.speed_eleven = over.then(|| Eleven {
                         doc_id: snap.doc_id,
@@ -414,10 +407,11 @@ pub fn job(
                     Override::Passes => Setting::Passes,
                 };
                 let what = format!(
-                    "{} From {} to {}. The material says {base}.",
+                    "{} From {} to {}. The material says {base}. {}",
                     setting.card(),
                     range[0],
-                    range[1]
+                    range[1],
+                    calc::hint(Kind::Plain)
                 );
                 if eleven {
                     super::groups::card(&resp, label, &what, Some(ELEVEN), false);

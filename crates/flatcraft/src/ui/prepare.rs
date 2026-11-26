@@ -189,6 +189,9 @@ pub struct FieldEdit {
     /// Width and height of those objects may change apart (see
     /// `canvas::free_aspect`).
     pub free: bool,
+    /// The value it showed, unrounded, for a relative edit (`+=10`);
+    /// `None` when there was no single value (Mixed).
+    pub value: Option<f64>,
 }
 
 /// Edit buffers of the ribbon's number fields.
@@ -212,6 +215,9 @@ pub struct Fields {
     pub search: String,
     /// The field being edited, if any.
     pub editing: Option<FieldEdit>,
+    /// A field whose text could not be read, and why: it keeps the text
+    /// and the focus, with a red outline and this message under it.
+    pub error: Option<(SizeField, String)>,
 }
 
 impl Default for Fields {
@@ -228,6 +234,7 @@ impl Default for Fields {
             align_to_area: false,
             search: String::new(),
             editing: None,
+            error: None,
         }
     }
 }

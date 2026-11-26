@@ -465,3 +465,34 @@ fn the_cards_name_the_keys_of_each_system() {
         );
     }
 }
+
+#[test]
+fn the_sheet_shows_calculations_and_its_examples_are_right() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(&dir, session(&dir), false);
+    pick(&mut h, HelpItem::Shortcuts);
+    h.run();
+    h.get_by_label(help::CALC_TITLE);
+    h.get_by_label("3/4in + 1cm");
+    use flatcraft_core::numexpr::{Kind, eval};
+    for (typed, what) in help::CALC_EXAMPLES {
+        assert!(!what.contains('\u{2014}') && !typed.contains('\u{2014}'));
+        let kind = if what.contains("degrees") {
+            Kind::Angle
+        } else {
+            Kind::Length
+        };
+        let v = eval(typed, kind, Some(5.0)).unwrap();
+        // The first number of the text is the result (+= adds to 5 here).
+        let first: String = what
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        let want: f64 = if typed.starts_with("+=") {
+            15.0
+        } else {
+            first.parse().unwrap()
+        };
+        assert!((v - want).abs() < 0.01, "{typed}: {v} vs {what}");
+    }
+}
