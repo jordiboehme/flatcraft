@@ -104,8 +104,15 @@ pub enum EmitError {
         /// The media size on this axis in device units.
         max: i64,
     },
-    #[error("host knife compensation is not supported yet, use firmware compensation (FC) or none")]
-    HostCompensationNotYet,
+    /// The paths do not fit the plotter's knife compensation: sending them would compensate
+    /// the blade offset twice, or not at all.
+    #[error(
+        "the plotter preset uses {profile} knife compensation, but the paths are {geometry}, so the blade offset would be handled twice or not at all"
+    )]
+    CompensationMismatch {
+        profile: &'static str,
+        geometry: &'static str,
+    },
     #[error(
         "this GPGL dialect is not supported yet, FlatCraft only speaks the Cameo 1 and 2 dialect"
     )]

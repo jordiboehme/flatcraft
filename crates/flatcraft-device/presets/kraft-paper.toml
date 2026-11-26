@@ -9,6 +9,7 @@ passes = 1
 reverse_alternate_passes = false
 overcut_mm = 0.5
 track_enhancing = false
+corner_mode = "Arc"
 # No backing sheet: small loose parts fall out.
 backing = false
 mat_tack = "light"

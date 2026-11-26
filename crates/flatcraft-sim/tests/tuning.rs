@@ -1553,6 +1553,107 @@ fn rounded_points_go_through_the_emitter_unchanged() {
     }
 }
 
+/// Host mode sends exactly the rounding-aware knife output: the test sheet,
+/// planned with host compensation on the device grid of a calibrated,
+/// mirrored plotter with a grid origin, emitted as host axis paths (one path
+/// per run). The `M` and `D` coordinates are the planned device-grid points
+/// (in order, a point equal to the one before it merged), so the emitter adds
+/// no second rounding that could bring back a blade push; the device
+/// simulation of those runs pushes nothing.
+#[test]
+fn emitted_host_job_is_the_planned_device_grid() {
+    use flatcraft_device::KnifeCompensation;
+    use flatcraft_device::gpgl::{CutSettings, EmitPath, GeometryKind, decode, emit_job};
+    let dir = tempfile::tempdir().unwrap();
+    let store = flatcraft_device::ProfileStore::load(dir.path()).unwrap();
+    for mirror in [false, true] {
+        for d in OFFSETS {
+            let mut plotter = store.plotter("file-output-gpgl-cameo2").unwrap();
+            plotter.scale_x = 1.002;
+            plotter.scale_y = 0.998;
+            plotter.axis.mirror_x = mirror;
+            plotter.media[0].grid.origin_x_mm = 0.37;
+            plotter.media[0].grid.origin_y_mm = 0.013;
+            plotter.knife_compensation = KnifeCompensation::Host {
+                offset_mm: d,
+                pivot_threshold_deg: 0.0,
+            };
+            let media = plotter.media[0].clone();
+            let g = flatcraft_device::gpgl::quantize::device_grid(&plotter, &media);
+            let knob = Knob {
+                grid: Some(g),
+                ..Knob::pinned()
+            };
+            let out = planned(&whole_sheet(), &settings(d, knob));
+            let runs: Vec<Vec<Point>> = out
+                .toolpaths
+                .iter()
+                .flat_map(|t| t.runs())
+                .map(|r| r.points)
+                .collect();
+            let paths: Vec<EmitPath> = runs
+                .iter()
+                .map(|points| EmitPath {
+                    points: points.clone(),
+                    note: "run".into(),
+                })
+                .collect();
+            let job = emit_job(
+                &paths,
+                GeometryKind::HostAxis { offset_mm: d },
+                &plotter,
+                &media.id,
+                &CutSettings {
+                    speed: 3,
+                    force: 10,
+                    track_enhancing: false,
+                },
+            )
+            .unwrap();
+            let mut want: Vec<Vec<(i64, i64)>> = Vec::new();
+            for points in &runs {
+                let mut units: Vec<(i64, i64)> = points
+                    .iter()
+                    .map(|&q| {
+                        let u = g.to_units(q);
+                        let r = g.rounded_units(q);
+                        assert!(
+                            (u.x - r.x).abs() < 1e-6 && (u.y - r.y).abs() < 1e-6,
+                            "mirror {mirror} d {d}: {q:?} is not on the device grid"
+                        );
+                        (r.y as i64, r.x as i64)
+                    })
+                    .collect();
+                units.dedup();
+                if units.len() >= 2 {
+                    want.push(units);
+                }
+            }
+            let sent: Vec<Vec<(i64, i64)>> = {
+                let mut paths: Vec<Vec<(i64, i64)>> = Vec::new();
+                for c in decode::decode(&job.bytes) {
+                    let (head, rest) = c.raw.split_at(1);
+                    if head != "M" && head != "D" {
+                        continue;
+                    }
+                    let n: Vec<i64> = rest.split(',').map(|t| t.parse().unwrap()).collect();
+                    let pts = n.chunks(2).map(|p| (p[0], p[1]));
+                    if head == "M" {
+                        paths.push(pts.collect());
+                    } else {
+                        paths.last_mut().unwrap().extend(pts);
+                    }
+                }
+                paths
+            };
+            assert_eq!(sent.len(), want.len(), "mirror {mirror} d {d}");
+            assert_eq!(sent, want, "mirror {mirror} d {d}");
+            let (_, m) = measured(&out, &SimSettings::device(d, g));
+            assert_eq!(m.pushed, 0, "mirror {mirror} d {d}");
+        }
+    }
+}
+
 /// The distance of `q` from the source geometry of `c` (before flattening).
 fn source_distance(c: &Case, q: Point) -> f64 {
     use kurbo::ParamCurveNearest as _;

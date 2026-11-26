@@ -132,6 +132,7 @@ fn every_preset_parses_and_keeps_its_id() {
             "passes",
             "backing",
             "mat_tack",
+            "corner_mode",
             "blade_depth_hint",
             "tips",
         ] {
@@ -194,6 +195,27 @@ fn iron_on_presets_say_mirror_and_carrier_side_down() {
             assert!(!tips.to_lowercase().contains("mirror"), "{id}: {tips}");
         }
     }
+}
+
+/// The thick or dense presets without a backing sheet: they lift and
+/// overshoot at sharp corners (research R5).
+const LIFT_OVERSHOOT: &[&str] = &["cardstock", "cardstock-heavy", "magnet-sheet"];
+
+#[test]
+fn cardstock_uses_lift_overshoot() {
+    let (_d, s) = store();
+    for id in ids() {
+        let m = s.material(id).unwrap();
+        let want = if LIFT_OVERSHOOT.contains(&id) {
+            CornerModeSpec::LiftOvershoot { overshoot_mm: 0.1 }
+        } else {
+            CornerModeSpec::Arc
+        };
+        assert_eq!(m.corner_mode, want, "{id}");
+        assert_eq!(m.min_radius_mm, None, "{id}");
+    }
+    // Lift and overshoot only where nothing holds small parts down.
+    assert!(LIFT_OVERSHOOT.iter().all(|id| NO_BACKING.contains(id)));
 }
 
 #[test]
@@ -262,6 +284,59 @@ fn an_older_material_file_gets_the_defaults() {
     assert_eq!(m.mat_tack, MatTack::Standard);
     assert!(m.backing);
     assert_eq!(m.tips, None);
+}
+
+#[test]
+fn old_material_toml_defaults_to_arc() {
+    let d = tempdir().unwrap();
+    let dir = d.path().join("materials");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("felt.toml"),
+        "id = \"felt\"\nname = \"Felt\"\nspeed = 3\nforce = 20\npasses = 1\n\
+         reverse_alternate_passes = false\novercut_mm = 0.5\ntrack_enhancing = false\n\
+         [overrides.silhouette-cameo-2]\nforce = 22\n",
+    )
+    .unwrap();
+    let s = ProfileStore::load(d.path()).unwrap();
+    let m = s.material("felt").unwrap();
+    assert_eq!(m.corner_mode, CornerModeSpec::Arc);
+    assert_eq!(m.min_radius_mm, None);
+    let o = m.overrides["silhouette-cameo-2"];
+    assert_eq!((o.corner_mode, o.min_radius_mm), (None, None));
+}
+
+#[test]
+fn a_child_of_cardstock_sets_the_arc_back_and_saves_only_that() {
+    let (d, mut s) = store();
+    let mut m = s.material("cardstock").unwrap();
+    m.id = "my-card".into();
+    m.name = "My card".into();
+    m.corner_mode = CornerModeSpec::Arc;
+    s.save_user_material(&m, "cardstock").unwrap();
+    assert_eq!(s.modified_material_fields("my-card"), vec!["corner_mode"]);
+    let text = fs::read_to_string(d.path().join("materials/my-card.toml")).unwrap();
+    let table: toml::Table = text.parse().unwrap();
+    let own: Vec<&str> = table
+        .keys()
+        .map(String::as_str)
+        .filter(|k| !["id", "name", "inherits"].contains(k))
+        .collect();
+    assert_eq!(own, vec!["corner_mode"], "{text}");
+    let back = ProfileStore::load(d.path())
+        .unwrap()
+        .material("my-card")
+        .unwrap();
+    assert_eq!(back.corner_mode, CornerModeSpec::Arc);
+    // And a grandchild goes back to lift and overshoot with its own length.
+    let mut g = back.clone();
+    g.id = "my-card-2".into();
+    g.corner_mode = CornerModeSpec::LiftOvershoot { overshoot_mm: 0.2 };
+    s.save_user_material(&g, "my-card").unwrap();
+    assert_eq!(
+        s.material("my-card-2").unwrap().corner_mode,
+        CornerModeSpec::LiftOvershoot { overshoot_mm: 0.2 }
+    );
 }
 
 #[test]

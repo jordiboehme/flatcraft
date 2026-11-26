@@ -1092,3 +1092,178 @@ fn a_user_plotter_that_inherits_follows_the_built_in_mat_colour() {
     assert_eq!(colours(&child), colours(&parent));
     assert!(colours(&child).iter().all(|c| *c == PAPER_COLOR));
 }
+
+#[test]
+fn old_plotter_toml_defaults_to_ccw() {
+    let d = tempdir().unwrap();
+    // A full plotter file of an older version, without ring_direction.
+    let cameo = presets::PLOTTERS
+        .iter()
+        .find(|(id, _)| *id == "silhouette-cameo-2")
+        .unwrap()
+        .1
+        .lines()
+        .filter(|l| !l.starts_with("ring_direction") && !l.contains("counter-clockwise"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace("silhouette-cameo-2", "old-plotter");
+    assert!(!cameo.contains("ring_direction"));
+    write(d.path(), "plotters", "old-plotter", &cameo);
+    let s = ProfileStore::load(d.path()).unwrap();
+    assert_eq!(
+        s.plotter("old-plotter").unwrap().ring_direction,
+        RingDirection::Ccw
+    );
+    assert_eq!(
+        s.plotter("silhouette-cameo-2").unwrap().ring_direction,
+        RingDirection::Ccw
+    );
+    // A user preset can turn it round.
+    write(
+        d.path(),
+        "plotters",
+        "clockwise",
+        "id = \"clockwise\"\nname = \"C\"\ninherits = \"silhouette-cameo-2\"\nring_direction = \"cw\"\n",
+    );
+    let s = ProfileStore::load(d.path()).unwrap();
+    assert_eq!(
+        s.plotter("clockwise").unwrap().ring_direction,
+        RingDirection::Cw
+    );
+    assert_eq!(
+        s.modified_plotter_fields("clockwise"),
+        vec!["ring_direction"]
+    );
+}
+
+#[test]
+fn corner_mode_reads_the_documented_toml_form() {
+    #[derive(serde::Deserialize)]
+    struct T {
+        corner_mode: CornerModeSpec,
+    }
+    let t: T = toml::from_str("corner_mode = { LiftOvershoot = { overshoot_mm = 0.1 } }").unwrap();
+    assert_eq!(
+        t.corner_mode,
+        CornerModeSpec::LiftOvershoot { overshoot_mm: 0.1 }
+    );
+    let t: T = toml::from_str("corner_mode = \"Arc\"").unwrap();
+    assert_eq!(t.corner_mode, CornerModeSpec::Arc);
+}
+
+#[test]
+fn material_override_sets_corner_mode_and_min_radius() {
+    let (_d, s) = store();
+    let mut m = s.material("vinyl").unwrap();
+    m.overrides.insert(
+        "silhouette-cameo-2".into(),
+        MaterialOverride {
+            corner_mode: Some(CornerModeSpec::LiftOvershoot { overshoot_mm: 0.3 }),
+            min_radius_mm: Some(0.8),
+            ..Default::default()
+        },
+    );
+    let c = m.for_plotter("silhouette-cameo-2");
+    assert_eq!(
+        c.corner_mode,
+        CornerModeSpec::LiftOvershoot { overshoot_mm: 0.3 }
+    );
+    assert_eq!(c.min_radius_mm, Some(0.8));
+    let f = m.for_plotter("file-output-gpgl-cameo2");
+    assert_eq!(f.corner_mode, CornerModeSpec::Arc);
+    assert_eq!(f.min_radius_mm, None);
+}
+
+#[test]
+fn corner_overshoot_and_min_radius_are_checked() {
+    let (_d, mut s) = store();
+    let base = s.material("vinyl").unwrap();
+    let bad_corner = [0.0, -0.1, 2.5, f64::NAN];
+    for v in bad_corner {
+        let mut m = base.clone();
+        m.id = "bad".into();
+        m.corner_mode = CornerModeSpec::LiftOvershoot { overshoot_mm: v };
+        let e = s.save_user_material(&m, "vinyl").unwrap_err();
+        assert!(e.to_string().contains("corner overshoot"), "{v}: {e}");
+        let mut m = base.clone();
+        m.id = "bad".into();
+        m.overrides.insert(
+            "silhouette-cameo-2".into(),
+            MaterialOverride {
+                corner_mode: Some(CornerModeSpec::LiftOvershoot { overshoot_mm: v }),
+                ..Default::default()
+            },
+        );
+        let e = s.save_user_material(&m, "vinyl").unwrap_err();
+        assert!(e.to_string().contains("corner overshoot"), "{v}: {e}");
+    }
+    for v in [0.0, -1.0, 51.0, f64::INFINITY, f64::NAN] {
+        let mut m = base.clone();
+        m.id = "bad".into();
+        m.min_radius_mm = Some(v);
+        let e = s.save_user_material(&m, "vinyl").unwrap_err();
+        assert!(e.to_string().contains("minimum radius"), "{v}: {e}");
+    }
+    let mut m = base.clone();
+    m.id = "fine".into();
+    m.corner_mode = CornerModeSpec::LiftOvershoot { overshoot_mm: 2.0 };
+    m.min_radius_mm = Some(0.5);
+    s.save_user_material(&m, "vinyl").unwrap();
+    assert_eq!(s.material("fine").unwrap().min_radius_mm, Some(0.5));
+}
+
+#[test]
+fn host_values_are_checked_on_save() {
+    let (_d, mut s) = store();
+    let mut p = s.plotter("silhouette-cameo-2").unwrap();
+    p.id = "host".into();
+    for (offset, pivot, word) in [
+        (0.0, 0.0, "offset"),
+        (2.5, 0.0, "offset"),
+        (f64::NAN, 0.0, "offset"),
+        (0.25, 91.0, "pivot threshold"),
+    ] {
+        p.knife_compensation = KnifeCompensation::Host {
+            offset_mm: offset,
+            pivot_threshold_deg: pivot,
+        };
+        let e = s.save_user_plotter(&p, "silhouette-cameo-2").unwrap_err();
+        assert!(e.to_string().contains(word), "{offset} {pivot}: {e}");
+    }
+    p.knife_compensation = KnifeCompensation::Host {
+        offset_mm: 0.3,
+        pivot_threshold_deg: 0.0,
+    };
+    s.save_user_plotter(&p, "silhouette-cameo-2").unwrap();
+}
+
+#[test]
+fn store_revision_bumps_on_save() {
+    let (_d, mut s) = store();
+    let r0 = s.revision();
+    let mut p = s.plotter("silhouette-cameo-2").unwrap();
+    p.id = "mine".into();
+    s.save_user_plotter(&p, "silhouette-cameo-2").unwrap();
+    let r1 = s.revision();
+    assert!(r1 > r0);
+    let mut m = s.material("vinyl").unwrap();
+    m.id = "my-vinyl".into();
+    s.save_user_material(&m, "vinyl").unwrap();
+    let r2 = s.revision();
+    assert!(r2 > r1);
+    s.set_material_notes("vinyl", "sharp blade").unwrap();
+    let r3 = s.revision();
+    assert!(r3 > r2, "notes are a save too");
+    s.delete_user_material("my-vinyl").unwrap();
+    let r4 = s.revision();
+    assert!(r4 > r3);
+    s.delete_user_plotter("mine").unwrap();
+    assert!(s.revision() > r4);
+    // A failed save changes nothing.
+    let r5 = s.revision();
+    let mut bad = s.material("vinyl").unwrap();
+    bad.id = "bad".into();
+    bad.overcut_mm = 99.0;
+    assert!(s.save_user_material(&bad, "vinyl").is_err());
+    assert_eq!(s.revision(), r5);
+}

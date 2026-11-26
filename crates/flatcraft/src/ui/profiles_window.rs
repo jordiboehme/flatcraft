@@ -14,9 +14,9 @@ use egui::{Color32, Response, RichText, Sense, Ui, vec2};
 use flatcraft_core::numexpr::{Field, Kind as NumKind};
 use flatcraft_device::profile::MAX_SIZE_MM;
 use flatcraft_device::{
-    DEFAULT_MAT_COLOR, GpglDialect, Grid, KnifeCompensation, MatTack, MaterialGroup,
-    MaterialOverride, MaterialProfile, Media, MediaField, MediaKind, PlotterProfile, PresetInfo,
-    Protocol, TransportSpec,
+    CornerModeSpec, DEFAULT_MAT_COLOR, GpglDialect, Grid, KnifeCompensation, MatTack,
+    MaterialGroup, MaterialOverride, MaterialProfile, Media, MediaField, MediaKind, PlotterProfile,
+    PresetInfo, Protocol, RingDirection, TransportSpec,
 };
 
 use super::calc::{self, Number};
@@ -1194,6 +1194,23 @@ fn plotter_form(ui: &mut Ui, d: &mut Draft<PlotterProfile>, highlight: &Highligh
                 knife(ui, &f, p);
                 f.row(
                     ui,
+                    "Ring direction",
+                    "ring_direction",
+                    Setting::RingDirection,
+                    |ui| {
+                        combo(
+                            ui,
+                            "ring-direction",
+                            &mut p.ring_direction,
+                            &[
+                                (RingDirection::Ccw, "Counter-clockwise"),
+                                (RingDirection::Cw, "Clockwise"),
+                            ],
+                        )
+                    },
+                );
+                f.row(
+                    ui,
                     "Blade offset (mm)",
                     "blade_offset_mm",
                     Setting::BladeOffset,
@@ -1292,9 +1309,10 @@ fn knife(ui: &mut Ui, f: &Form<'_>, p: &mut PlotterProfile) {
     if k != before {
         p.knife_compensation = match k {
             K::Firmware => KnifeCompensation::Firmware { fc: 18 },
+            // The pivot threshold defaults to 0: an arc at every corner (R2).
             K::Host => KnifeCompensation::Host {
                 offset_mm: p.blade_offset_mm,
-                pivot_threshold_deg: 10.0,
+                pivot_threshold_deg: 0.0,
             },
             K::None => KnifeCompensation::None,
         };
@@ -1962,6 +1980,7 @@ fn material_form(
                     Setting::TrackEnhancing,
                     &mut m.track_enhancing,
                 );
+                corner_rows(ui, &f, m);
                 f.check(
                     ui,
                     "Backing sheet",
@@ -2006,6 +2025,89 @@ fn material_form(
         overrides(ui, &f, m, view, t);
     });
 }
+
+/// The corner mode, its overshoot and the minimum radius of a material.
+fn corner_rows(ui: &mut Ui, f: &Form<'_>, m: &mut MaterialProfile) {
+    #[derive(Clone, Copy, PartialEq)]
+    enum C {
+        Arc,
+        Lift,
+    }
+    let mut c = match m.corner_mode {
+        CornerModeSpec::Arc => C::Arc,
+        CornerModeSpec::LiftOvershoot { .. } => C::Lift,
+    };
+    let before = c;
+    f.row(
+        ui,
+        "Corner mode",
+        "corner_mode",
+        Setting::CornerMode,
+        |ui| {
+            combo(
+                ui,
+                "corner-mode",
+                &mut c,
+                &[(C::Arc, "Swivel (arc)"), (C::Lift, "Lift and overshoot")],
+            )
+        },
+    );
+    if c != before {
+        m.corner_mode = match c {
+            C::Arc => CornerModeSpec::Arc,
+            C::Lift => CornerModeSpec::LiftOvershoot {
+                overshoot_mm: DEFAULT_CORNER_OVERSHOOT_MM,
+            },
+        };
+    }
+    if let CornerModeSpec::LiftOvershoot { overshoot_mm } = &mut m.corner_mode {
+        f.row(
+            ui,
+            "Corner overshoot (mm)",
+            "corner_mode",
+            Setting::CornerOvershoot,
+            |ui| num(ui, true, overshoot_mm, 2, NumKind::Length),
+        );
+    }
+    let label = "Minimum radius (mm)";
+    let key = "min_radius_mm";
+    let dot = f.is_modified(key).then_some(f.t.accent_prepare);
+    let at = paint_text(ui, label, ui.visuals().text_color(), dot);
+    let r = ui
+        .horizontal(|ui| {
+            let mut on = m.min_radius_mm.is_some();
+            let r = ui.checkbox(&mut on, "Own value");
+            set_name(ui, &r, &format!("{label} own value"));
+            f.card(&r, label, Setting::MinRadiusOwn, None);
+            if r.changed() {
+                m.min_radius_mm = on.then_some(DEFAULT_MIN_RADIUS_MM);
+            }
+            let mut v = m.min_radius_mm.unwrap_or(DEFAULT_MIN_RADIUS_MM);
+            let r = num(ui, on, &mut v, 2, NumKind::Length);
+            set_name(ui, &r, &f.name(label, key));
+            f.card(
+                &r,
+                label,
+                Setting::MinRadius,
+                (!on).then_some(MIN_RADIUS_OFF),
+            );
+            if on {
+                m.min_radius_mm = Some(v);
+            }
+            r
+        })
+        .inner;
+    f.mark(ui, label, at.union(r.rect));
+    ui.end_row();
+}
+
+/// The overshoot a material gets when it switches to lift and overshoot:
+/// the usual 0.1 mm of vendor software.
+const DEFAULT_CORNER_OVERSHOOT_MM: f64 = 0.1;
+/// The minimum radius a material gets when it switches to its own value.
+const DEFAULT_MIN_RADIUS_MM: f64 = 0.25;
+/// Why the minimum radius field is dimmed.
+const MIN_RADIUS_OFF: &str = "Own value is off, so the plotter's blade offset is the minimum radius. Tick Own value to set one for this material.";
 
 fn overrides(ui: &mut Ui, f: &Form<'_>, m: &mut MaterialProfile, view: &View, t: &Tokens) {
     let name_of = |id: &str| {

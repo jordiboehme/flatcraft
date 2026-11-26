@@ -11,6 +11,7 @@ This page lists every built-in material, the values we picked, the range the pub
 - Blade: the number on the manual ratchet blade, 1 to 10. Each step shows about 0.1 mm more blade. FlatCraft never sends it: you turn the blade by hand, and the job settings show the number as a reminder (`blade_depth_hint`).
 - Passes: how often the blade runs over each line.
 - Mat tack: how sticky the cutting mat should be (light, standard or strong). A recommendation only; it shows in the material card and in the Profiles window.
+- Corner mode: what the blade does at a sharp corner when FlatCraft steers it (host knife compensation): swivel on the spot (the arc), or lift and overshoot. See "Corner mode" below.
 - Backing sheet: the material sits on a liner, like vinyl. Small loose parts stay on it until transfer tape lifts them. Paper and card have none, so the middle of an O falls out.
 
 Many sources are written for newer machines with an automatic blade. Their force and blade numbers use the same scale, and we use them as a second opinion next to the sources written for manual blades.
@@ -137,6 +138,23 @@ The source numbers (S1 and so on) point to the list at the end.
 - Light: copy paper, vellum, light card, sticker paper, kraft paper, window cling. Thin paper tears when a strong mat holds it (S16).
 - Standard: vinyl, iron-on and stencil film. One source puts vinyl on a light mat, another on a standard one (S16); standard holds a slippery liner better.
 - Strong: heavy card and magnet sheets, which would shift on a weaker mat (S16).
+
+## Corner mode
+
+A drag blade turns by being dragged: its tip trails behind the holder, so at a corner it has to swivel. In thin material that works fine with the blade down (the arc). In thick or dense material the buried blade is held so tight that it turns badly, and the corner gets a twist mark. Plotter makers know this too: their software offers a mode that cuts a little past the corner, lifts, and starts the next line fresh ("line segment overcut", 0.10 mm by default), and cutters for thick sheets do the same in their firmware.
+
+FlatCraft's `LiftOvershoot` corner mode does this. It only overshoots where the extra cut lands in the waste, so a kept piece never gets a notch, and curves are never lifted. The corner mode is used with host knife compensation only (FlatCraft steers the blade); with firmware compensation the plotter handles corners itself.
+
+The rule we follow is the one from our research: thick or dense material, about 0.3 mm or more, with no backing sheet, gets lift and overshoot with 0.1 mm; everything else swivels.
+
+| Corner mode | Presets | Why |
+|---|---|---|
+| Lift and overshoot, 0.1 mm | `cardstock`, `cardstock-heavy`, `magnet-sheet` | Card is the material the vendor mode is made for, and users report cleaner corners on it. Heavy card (about 0.3-0.4 mm) is squarely in the thick class. Light card (about 0.2-0.25 mm) is a little under the line, but it is dense, and the reports of cleaner corners are about card in general. The thin magnet sheet is about 0.3 mm of dense rubber. None of them has a backing sheet, so a lift cannot pull a loose piece up. |
+| Swivel (arc) | all others | Vinyl, iron-on, sticker paper, stencil film and window cling sit on a backing sheet: users report that their corners can lift and stick to the blade with this mode. Copy paper, vellum and kraft paper are thin, and the arc is fine there. Kraft paper's long fibres also fray at an extra lift and restart. |
+
+Every preset sets its corner mode in the file, so you can see it. A preset you make from one of them can switch it in the Profiles window (Corner mode, and Corner overshoot for the length). None of this was checked on a real cut yet; the test sheet of milestone 3 decides.
+
+The minimum radius (`min_radius_mm`) is not set in any preset: it then equals the plotter's blade offset. Curves tighter than it get a warning before the cut.
 
 ## Sources
 

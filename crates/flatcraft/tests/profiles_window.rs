@@ -33,6 +33,10 @@ fn page(h: &mut AppHarness, name: &str) {
 }
 
 fn click(h: &mut AppHarness, label: &str) {
+    // The material page is taller than the window: scroll the control into
+    // view first, so the click lands on it.
+    h.get_by_label(label).scroll_to_me();
+    h.run();
     h.get_by_label(label).click();
     h.run();
 }
@@ -374,8 +378,7 @@ fn material_override_saves_only_the_override() {
     h.get_by_label("Preset name").type_text("My Paper");
     h.run();
     click(&mut h, "Create");
-    h.get_by_label("Add override for").click();
-    h.run();
+    click(&mut h, "Add override for");
     click(&mut h, "Silhouette Cameo 2");
     click(&mut h, "Silhouette Cameo 2 speed set");
     type_into(&mut h, "Silhouette Cameo 2 speed", "3");
@@ -1001,8 +1004,7 @@ fn every_control_in_the_preset_pages_has_a_hover_card() {
     click(&mut h, "Copy paper");
     click(&mut h, "Save as user preset...");
     type_into(&mut h, "Preset name", "My Paper");
-    h.get_by_label("Add override for").click();
-    h.run();
+    click(&mut h, "Add override for");
     click(&mut h, "Silhouette Cameo 2");
     check(&mut h, close, "Materials, with an override");
     // The Delete question.
@@ -1072,8 +1074,7 @@ fn dimmed_fields_say_why_on_their_card() {
     click(&mut h, "Copy paper");
     click(&mut h, "Save as user preset...");
     type_into(&mut h, "Preset name", "My Paper");
-    h.get_by_label("Add override for").click();
-    h.run();
+    click(&mut h, "Add override for");
     click(&mut h, "Silhouette Cameo 2");
     assert!(disabled(&h, "Silhouette Cameo 2 force"));
     hover(&mut h, "Silhouette Cameo 2 force");
@@ -1250,4 +1251,87 @@ fn save_as_never_takes_a_built_in_id() {
     assert!(built_in.inherits.is_none());
     assert!(st.materials().iter().any(|p| p.id == "vellum" && p.system));
     assert!(st.diagnostics().is_empty());
+}
+
+#[test]
+fn corner_mode_saves_to_user_material() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    open(&mut h, "Materials");
+    click(&mut h, "Copy paper");
+    // Copy paper swivels: no overshoot row.
+    assert!(h.query_by_label("Corner overshoot (mm)").is_none());
+    click(&mut h, "Save as user preset...");
+    type_into(&mut h, "Preset name", "My Paper");
+    click(&mut h, "Corner mode");
+    click(&mut h, "Lift and overshoot");
+    type_into(&mut h, "Corner overshoot (mm)", "0.2");
+    click(&mut h, "Save preset");
+
+    let st = store(&s);
+    assert_eq!(
+        st.modified_material_fields("user-my-paper"),
+        ["corner_mode"]
+    );
+    let m = st.material("user-my-paper").unwrap();
+    assert_eq!(
+        m.corner_mode,
+        flatcraft_device::CornerModeSpec::LiftOvershoot { overshoot_mm: 0.2 }
+    );
+    let text =
+        std::fs::read_to_string(dir.path().join("profiles/materials/user-my-paper.toml")).unwrap();
+    let t: toml::Table = text.parse().unwrap();
+    assert_eq!(
+        keys(&t),
+        ["corner_mode", "id", "inherits", "name"],
+        "{text}"
+    );
+}
+
+#[test]
+fn min_radius_uses_the_blade_offset_until_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    open(&mut h, "Materials");
+    click(&mut h, "Copy paper");
+    click(&mut h, "Save as user preset...");
+    type_into(&mut h, "Preset name", "My Paper");
+    assert!(disabled(&h, "Minimum radius (mm)"));
+    click(&mut h, "Minimum radius (mm) own value");
+    assert!(!disabled(&h, "Minimum radius (mm)"));
+    type_into(&mut h, "Minimum radius (mm)", "0.6");
+    click(&mut h, "Save preset");
+    let st = store(&s);
+    assert_eq!(
+        st.modified_material_fields("user-my-paper"),
+        ["min_radius_mm"]
+    );
+    assert_eq!(
+        st.material("user-my-paper").unwrap().min_radius_mm,
+        Some(0.6)
+    );
+}
+
+#[test]
+fn ring_direction_saves_to_user_plotter() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    save_as_my_cameo(&mut h);
+    click(&mut h, "Ring direction");
+    click(&mut h, "Clockwise");
+    click(&mut h, "Save preset");
+    let st = store(&s);
+    assert_eq!(
+        st.modified_plotter_fields("user-my-cameo"),
+        ["ring_direction"]
+    );
+    assert_eq!(
+        st.plotter("user-my-cameo").unwrap().ring_direction,
+        flatcraft_device::RingDirection::Cw
+    );
+    let t = plotter_toml(&dir, "user-my-cameo");
+    assert_eq!(t["ring_direction"].as_str(), Some("cw"));
 }

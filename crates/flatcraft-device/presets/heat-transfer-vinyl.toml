@@ -9,6 +9,7 @@ passes = 1
 reverse_alternate_passes = false
 overcut_mm = 0.5
 track_enhancing = false
+corner_mode = "Arc"
 backing = true
 mat_tack = "standard"
 blade_depth_hint = "blade 2"

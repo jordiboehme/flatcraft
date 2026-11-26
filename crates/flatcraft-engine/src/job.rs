@@ -6,7 +6,9 @@ use std::sync::Arc;
 use flatcraft_core::document::{CutOptions, Document, GroupId, JobSettings, KeepMode, ObjectId};
 use flatcraft_core::geometry::CutPath;
 use flatcraft_core::transform::Transform;
-use flatcraft_device::gpgl::{CheckedJob, CutSettings, EmitError, EmitPath, EmittedJob, emit_job};
+use flatcraft_device::gpgl::{
+    CheckedJob, CutSettings, EmitError, EmitPath, EmittedJob, GeometryKind, emit_job,
+};
 use flatcraft_device::{
     FileTransport, MaterialProfile, MediaKind, PlotterProfile, SendReport, Transport,
     TransportError, TransportSpec,
@@ -161,7 +163,7 @@ fn emit_error(e: EmitError) -> CommandError {
         | EmitError::CoordinateOutOfRange { .. }
         | EmitError::UnknownMedia { .. }
         | EmitError::EmptyJob => CommandError::Refused(text),
-        EmitError::HostCompensationNotYet
+        EmitError::CompensationMismatch { .. }
         | EmitError::DialectNotSupported
         | EmitError::EmptyDraw
         | EmitError::InvalidProfile { .. } => CommandError::Failed(text),
@@ -561,7 +563,8 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         force: job.force.unwrap_or(material.force),
         track_enhancing: material.track_enhancing && plotter.capabilities.track_enhancing,
     };
-    let emitted = emit_job(&paths, plotter, &media_id, &settings).map_err(emit_error)?;
+    let emitted =
+        emit_job(&paths, GeometryKind::Tip, plotter, &media_id, &settings).map_err(emit_error)?;
     Ok(JobResult {
         plan: cut_plan,
         job: emitted,
@@ -1116,7 +1119,10 @@ mod tests {
             assert!(matches!(emit_error(e), CommandError::Refused(_)));
         }
         let failed = [
-            EmitError::HostCompensationNotYet,
+            EmitError::CompensationMismatch {
+                profile: "host",
+                geometry: "plain tip paths",
+            },
             EmitError::DialectNotSupported,
             EmitError::EmptyDraw,
             EmitError::InvalidProfile { reason: "r".into() },

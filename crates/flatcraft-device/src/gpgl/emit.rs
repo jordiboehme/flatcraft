@@ -1,4 +1,4 @@
-//! Builds a complete M1 job (gpgl.md section 9).
+//! Builds a complete job (gpgl.md section 9).
 //!
 //! Every check runs before any byte is built, so an error never leaves partial output.
 
@@ -17,6 +17,63 @@ pub struct EmitPath {
     /// Shown in the listing, for example "object 3 'star', path 2, pass 1".
     pub note: String,
 }
+
+/// What the points of the paths are, so the emitter can refuse to compensate
+/// the blade offset twice (gpgl.md section 9).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GeometryKind {
+    /// The blade tip's own path. Needs a firmware or "none" profile: the
+    /// firmware (or nobody) handles the offset.
+    Tip,
+    /// The knife holder's axis path, already compensated by FlatCraft for a
+    /// blade that trails by `offset_mm`. Needs a host profile with that offset.
+    HostAxis { offset_mm: f64 },
+    /// A host calibration pattern (an offset test series): compensated with
+    /// several offsets on purpose. Needs a host profile.
+    HostCalibration,
+}
+
+impl GeometryKind {
+    /// The words for an error message.
+    fn describe(self) -> &'static str {
+        match self {
+            GeometryKind::Tip => "plain tip paths",
+            GeometryKind::HostAxis { .. } => "host-compensated paths",
+            GeometryKind::HostCalibration => "a host calibration pattern",
+        }
+    }
+}
+
+/// Checks that `geometry` fits the knife compensation of the profile, and the
+/// host values. Returns the FC value to send.
+fn check_compensation(k: KnifeCompensation, geometry: GeometryKind) -> Result<u16, EmitError> {
+    k.validate()
+        .map_err(|reason| EmitError::InvalidProfile { reason })?;
+    let profile = match k {
+        KnifeCompensation::Firmware { .. } => "firmware",
+        KnifeCompensation::Host { .. } => "host",
+        KnifeCompensation::None => "no",
+    };
+    let fits = match (k, geometry) {
+        (KnifeCompensation::Firmware { .. } | KnifeCompensation::None, GeometryKind::Tip) => true,
+        (KnifeCompensation::Host { offset_mm, .. }, GeometryKind::HostAxis { offset_mm: g }) => {
+            // NaN never matches.
+            (offset_mm - g).abs() <= OFFSET_MATCH_MM
+        }
+        (KnifeCompensation::Host { .. }, GeometryKind::HostCalibration) => true,
+        _ => false,
+    };
+    if !fits {
+        return Err(EmitError::CompensationMismatch {
+            profile,
+            geometry: geometry.describe(),
+        });
+    }
+    Ok(k.fc_value())
+}
+
+/// How close the offset of host axis paths must be to the profile's offset.
+const OFFSET_MATCH_MM: f64 = 1e-9;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CutSettings {
@@ -130,8 +187,13 @@ fn quantize_path(
 }
 
 /// Emits the whole job for `paths` on the media `media_id` of `plotter`.
+///
+/// `geometry` says what the points are; it must fit the plotter's knife
+/// compensation ([`GeometryKind`]). Within a path, a point that rounds to the
+/// same device point as the one before it is left out.
 pub fn emit_job(
     paths: &[EmitPath],
+    geometry: GeometryKind,
     plotter: &PlotterProfile,
     media_id: &str,
     settings: &CutSettings,
@@ -140,10 +202,7 @@ pub fn emit_job(
     if dialect != GpglDialect::Cameo12 {
         return Err(EmitError::DialectNotSupported);
     }
-    let fc = match plotter.knife_compensation {
-        KnifeCompensation::Host { .. } => return Err(EmitError::HostCompensationNotYet),
-        k @ (KnifeCompensation::Firmware { .. } | KnifeCompensation::None) => k.fc_value(),
-    };
+    let fc = check_compensation(plotter.knife_compensation, geometry)?;
     if !(FC_RANGE[0]..=FC_RANGE[1]).contains(&fc) {
         return Err(EmitError::OutOfRange {
             field: "fc",
@@ -164,13 +223,15 @@ pub fn emit_job(
     let height = media_units(media.height_mm, plotter.units_per_mm, "height")?;
     let width = media_units(media.width_mm, plotter.units_per_mm, "width")?;
 
-    // Paths with fewer than 2 points are skipped (gpgl.md section 9).
+    // Paths with fewer than 2 points, also after merging points that round
+    // to the same device point, are skipped (gpgl.md section 9).
     let mut cut: Vec<(Vec<DevPoint>, &str)> = Vec::new();
     for path in paths.iter().filter(|p| p.points.len() >= 2) {
-        cut.push((
-            quantize_path(path, plotter, media, height, width)?,
-            &path.note,
-        ));
+        let mut points = quantize_path(path, plotter, media, height, width)?;
+        points.dedup();
+        if points.len() >= 2 {
+            cut.push((points, &path.note));
+        }
     }
     if cut.is_empty() {
         return Err(EmitError::EmptyJob);

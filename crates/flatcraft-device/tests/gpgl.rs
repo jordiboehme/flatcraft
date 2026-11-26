@@ -62,6 +62,7 @@ fn square_job_golden() {
             points: pts.map(Point::from).to_vec(),
             note: "t".into(),
         }],
+        GeometryKind::Tip,
         &file_output(),
         "mat-12x12",
         &CutSettings {
@@ -103,6 +104,7 @@ fn golden_job_equals_gpgl_md_byte_string() {
             (10., 10.),
             (10.5, 10.),
         ])],
+        GeometryKind::Tip,
         &file_output(),
         "mat-12x12",
         &settings(),
@@ -115,6 +117,7 @@ fn golden_job_equals_gpgl_md_byte_string() {
 fn listing_has_one_line_per_command() {
     let job = emit_job(
         &[path(&[(10., 10.), (20., 10.)])],
+        GeometryKind::Tip,
         &file_output(),
         "mat-12x12",
         &settings(),
@@ -139,7 +142,14 @@ fn listing_has_one_line_per_command() {
 #[test]
 fn draw_is_chunked_at_16_points() {
     let pts: Vec<(f64, f64)> = (0..40).map(|i| (10.0 + i as f64, 10.0)).collect();
-    let job = emit_job(&[path(&pts)], &file_output(), "mat-12x12", &settings()).unwrap();
+    let job = emit_job(
+        &[path(&pts)],
+        GeometryKind::Tip,
+        &file_output(),
+        "mat-12x12",
+        &settings(),
+    )
+    .unwrap();
     let cmds: Vec<&ListingLine> = job.listing.iter().skip(12).collect();
     assert!(cmds[0].command.starts_with('M'));
     let counts: Vec<usize> = cmds[1..cmds.len() - 1]
@@ -182,6 +192,7 @@ fn grid_origin_is_part_of_the_range_check() {
     // x = 295 + 10 = 305 > 304.8 physical
     let err = emit_job(
         &[path(&[(10., 10.), (295., 10.)])],
+        GeometryKind::Tip,
         &p,
         "mat-12x12",
         &settings(),
@@ -208,6 +219,7 @@ fn range_error_rounds_millimetres() {
     p.media[0].grid.origin_x_mm = 0.1;
     let err = emit_job(
         &[path(&[(10., 10.), (304.8, 10.)])],
+        GeometryKind::Tip,
         &p,
         "mat-12x12",
         &settings(),
@@ -225,6 +237,7 @@ fn work_area_uses_the_physical_size() {
     let p = real_file_output();
     let job = emit_job(
         &[path(&[(10., 10.), (20., 10.)])],
+        GeometryKind::Tip,
         &p,
         "mat-12x12",
         &settings(),
@@ -285,7 +298,14 @@ fn quantize_applies_mirror_and_scale() {
 fn tall_mat_keeps_y_and_x_apart() {
     let p = file_output();
     let s = settings();
-    let job = emit_job(&[path(&[(10., 400.), (20., 400.)])], &p, "mat-12x24", &s).unwrap();
+    let job = emit_job(
+        &[path(&[(10., 400.), (20., 400.)])],
+        GeometryKind::Tip,
+        &p,
+        "mat-12x24",
+        &s,
+    )
+    .unwrap();
     assert!(
         job.bytes
             .windows(b"Z12192,6096\x03".len())
@@ -296,7 +316,14 @@ fn tall_mat_keeps_y_and_x_apart() {
             .windows(b"M8000,200\x03".len())
             .any(|w| w == b"M8000,200\x03")
     );
-    let err = emit_job(&[path(&[(400., 10.), (20., 10.)])], &p, "mat-12x24", &s).unwrap_err();
+    let err = emit_job(
+        &[path(&[(400., 10.), (20., 10.)])],
+        GeometryKind::Tip,
+        &p,
+        "mat-12x24",
+        &s,
+    )
+    .unwrap_err();
     assert!(
         matches!(err, EmitError::CoordinateOutOfRange { axis: "x", .. }),
         "{err:?}"
@@ -318,7 +345,14 @@ fn out_of_range_coordinates_are_refused() {
         (f64::NAN, 10.),
         (10., f64::INFINITY),
     ] {
-        let err = emit_job(&[path(&[(10., 10.), bad])], &p, "mat-12x12", &settings()).unwrap_err();
+        let err = emit_job(
+            &[path(&[(10., 10.), bad])],
+            GeometryKind::Tip,
+            &p,
+            "mat-12x12",
+            &settings(),
+        )
+        .unwrap_err();
         assert!(
             matches!(err, EmitError::CoordinateOutOfRange { .. }),
             "{bad:?}: {err:?}"
@@ -327,6 +361,7 @@ fn out_of_range_coordinates_are_refused() {
     // Both ends are included.
     emit_job(
         &[path(&[(0., 0.), (304.8, 304.8)])],
+        GeometryKind::Tip,
         &p,
         "mat-12x12",
         &settings(),
@@ -338,6 +373,7 @@ fn out_of_range_coordinates_are_refused() {
 fn out_of_range_force_is_refused() {
     let err = emit_job(
         &[path(&[(10., 10.), (20., 10.)])],
+        GeometryKind::Tip,
         &file_output(),
         "mat-12x12",
         &CutSettings {
@@ -358,6 +394,7 @@ fn out_of_range_speed_is_refused() {
     for speed in [0, 11] {
         let err = emit_job(
             &[path(&[(10., 10.), (20., 10.)])],
+            GeometryKind::Tip,
             &file_output(),
             "mat-12x12",
             &CutSettings {
@@ -382,6 +419,7 @@ fn wide_profile_ranges_do_not_widen_protocol_limits() {
     for (speed, force, field) in [(5, 34, "force"), (5, 0, "force"), (11, 10, "speed")] {
         let err = emit_job(
             &[path(&[(10., 10.), (20., 10.)])],
+            GeometryKind::Tip,
             &p,
             "mat-12x12",
             &CutSettings {
@@ -404,6 +442,7 @@ fn out_of_range_fc_is_refused() {
     p.knife_compensation = KnifeCompensation::Firmware { fc: 101 };
     let err = emit_job(
         &[path(&[(10., 10.), (20., 10.)])],
+        GeometryKind::Tip,
         &p,
         "mat-12x12",
         &settings(),
@@ -422,21 +461,294 @@ fn out_of_range_fc_is_refused() {
     );
 }
 
-#[test]
-fn host_mode_is_refused_in_m1() {
+fn host_output(offset_mm: f64, pivot_threshold_deg: f64) -> PlotterProfile {
     let mut p = file_output();
     p.knife_compensation = KnifeCompensation::Host {
-        offset_mm: 0.25,
-        pivot_threshold_deg: 10.0,
+        offset_mm,
+        pivot_threshold_deg,
     };
+    p
+}
+
+fn line() -> [EmitPath; 1] {
+    [path(&[(10., 10.), (20., 10.)])]
+}
+
+fn mismatch(err: EmitError) -> (&'static str, &'static str) {
+    match err {
+        EmitError::CompensationMismatch { profile, geometry } => (profile, geometry),
+        other => panic!("not a compensation mismatch: {other:?}"),
+    }
+}
+
+#[test]
+fn host_mode_emits_fc0() {
+    let p = host_output(0.25, 0.0);
+    for geometry in [
+        GeometryKind::HostAxis { offset_mm: 0.25 },
+        GeometryKind::HostCalibration,
+    ] {
+        let job = emit_job(&line(), geometry, &p, "mat-12x12", &settings()).unwrap();
+        assert!(
+            job.bytes.windows(4).any(|w| w == b"FC0\x03"),
+            "{geometry:?}"
+        );
+        assert!(!job.bytes.windows(4).any(|w| w == b"FC18"));
+        assert_eq!(check_safe(&job.bytes), Ok(()));
+        assert!(job.bytes.ends_with(b"H\x03"));
+    }
+}
+
+#[test]
+fn firmware_profile_refuses_host_geometry() {
+    for k in [
+        KnifeCompensation::Firmware { fc: 18 },
+        KnifeCompensation::None,
+    ] {
+        let mut p = file_output();
+        p.knife_compensation = k;
+        for geometry in [
+            GeometryKind::HostAxis { offset_mm: 0.25 },
+            GeometryKind::HostCalibration,
+        ] {
+            let err = emit_job(&line(), geometry, &p, "mat-12x12", &settings()).unwrap_err();
+            let (profile, _) = mismatch(err);
+            assert_ne!(profile, "host", "{k:?} {geometry:?}");
+        }
+    }
+}
+
+#[test]
+fn host_profile_refuses_tip_geometry() {
     let err = emit_job(
-        &[path(&[(10., 10.), (20., 10.)])],
-        &p,
+        &line(),
+        GeometryKind::Tip,
+        &host_output(0.25, 0.0),
         "mat-12x12",
         &settings(),
     )
     .unwrap_err();
-    assert_eq!(err, EmitError::HostCompensationNotYet);
+    assert_eq!(mismatch(err), ("host", "plain tip paths"));
+}
+
+#[test]
+fn host_offset_must_match_profile() {
+    let p = host_output(0.25, 0.0);
+    for other in [0.3, 0.25 + 1e-6, f64::NAN, f64::INFINITY] {
+        let err = emit_job(
+            &line(),
+            GeometryKind::HostAxis { offset_mm: other },
+            &p,
+            "mat-12x12",
+            &settings(),
+        )
+        .unwrap_err();
+        assert_eq!(mismatch(err), ("host", "host-compensated paths"), "{other}");
+    }
+    // Within 1e-9 mm counts as the same offset.
+    emit_job(
+        &line(),
+        GeometryKind::HostAxis {
+            offset_mm: 0.25 + 1e-10,
+        },
+        &p,
+        "mat-12x12",
+        &settings(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn host_offset_out_of_range_is_invalid_profile() {
+    let bad = [
+        (0.0, 0.0),
+        (-0.25, 0.0),
+        (2.0001, 0.0),
+        (f64::NAN, 0.0),
+        (f64::INFINITY, 0.0),
+        (0.25, -1.0),
+        (0.25, 90.5),
+        (0.25, f64::NAN),
+    ];
+    for (offset, pivot) in bad {
+        let p = host_output(offset, pivot);
+        for geometry in [
+            GeometryKind::Tip,
+            GeometryKind::HostAxis { offset_mm: offset },
+            GeometryKind::HostCalibration,
+        ] {
+            let err = emit_job(&line(), geometry, &p, "mat-12x12", &settings()).unwrap_err();
+            assert!(
+                matches!(err, EmitError::InvalidProfile { .. }),
+                "{offset} {pivot} {geometry:?}: {err:?}"
+            );
+        }
+    }
+    // The edges are fine.
+    for (offset, pivot) in [(2.0, 0.0), (0.001, 90.0)] {
+        emit_job(
+            &line(),
+            GeometryKind::HostAxis { offset_mm: offset },
+            &host_output(offset, pivot),
+            "mat-12x12",
+            &settings(),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn calibration_geometry_needs_host_profile() {
+    let err = emit_job(
+        &line(),
+        GeometryKind::HostCalibration,
+        &file_output(),
+        "mat-12x12",
+        &settings(),
+    )
+    .unwrap_err();
+    assert_eq!(mismatch(err), ("firmware", "a host calibration pattern"));
+    emit_job(
+        &line(),
+        GeometryKind::HostCalibration,
+        &host_output(0.3, 0.0),
+        "mat-12x12",
+        &settings(),
+    )
+    .unwrap();
+}
+
+/// The `y,x` pairs of every `M` and `D` command, in order.
+fn moves_and_draws(bytes: &[u8]) -> Vec<Vec<(i64, i64)>> {
+    decode::decode(bytes)
+        .iter()
+        .filter_map(|c| {
+            let rest = c
+                .raw
+                .strip_prefix('M')
+                .or_else(|| c.raw.strip_prefix('D'))?;
+            let n: Vec<i64> = rest.split(',').map(|t| t.parse().unwrap()).collect();
+            Some(n.chunks(2).map(|p| (p[0], p[1])).collect())
+        })
+        .collect()
+}
+
+#[test]
+fn duplicate_device_points_are_merged() {
+    // 10.01 and 10.02 mm both round to 200 units; 20.0 and 20.01 to 400.
+    let pts = [
+        (10., 10.),
+        (10.01, 10.02),
+        (20., 10.),
+        (20.01, 10.),
+        (20., 10.),
+        (20., 20.),
+    ];
+    let job = emit_job(
+        &[path(&pts)],
+        GeometryKind::Tip,
+        &file_output(),
+        "mat-12x12",
+        &settings(),
+    )
+    .unwrap();
+    assert_eq!(
+        moves_and_draws(&job.bytes),
+        vec![vec![(200, 200)], vec![(200, 400), (400, 400)]]
+    );
+    // A point that comes back after another one is kept (only neighbours merge).
+    let job = emit_job(
+        &[path(&[(10., 10.), (20., 10.), (10., 10.)])],
+        GeometryKind::Tip,
+        &file_output(),
+        "mat-12x12",
+        &settings(),
+    )
+    .unwrap();
+    assert_eq!(
+        moves_and_draws(&job.bytes),
+        vec![vec![(200, 200)], vec![(200, 400), (200, 200)]]
+    );
+    // A path that collapses to one device point is skipped, like a short path.
+    let s = settings();
+    let p = file_output();
+    let dot = path(&[(10., 10.), (10.01, 10.01)]);
+    assert_eq!(
+        emit_job(
+            std::slice::from_ref(&dot),
+            GeometryKind::Tip,
+            &p,
+            "mat-12x12",
+            &s
+        ),
+        Err(EmitError::EmptyJob)
+    );
+    let job = emit_job(
+        &[dot, path(&[(10., 10.), (20., 10.)])],
+        GeometryKind::Tip,
+        &p,
+        "mat-12x12",
+        &s,
+    )
+    .unwrap();
+    assert_eq!(job.listing.len(), 15);
+}
+
+#[test]
+fn duplicates_across_a_draw_boundary_are_merged() {
+    // 17 distinct points plus a repeat of the 17th: the repeat would start
+    // the second D command.
+    let mut pts: Vec<(f64, f64)> = (0..17).map(|i| (10. + f64::from(i), 10.)).collect();
+    pts.push((26.01, 10.));
+    let job = emit_job(
+        &[path(&pts)],
+        GeometryKind::Tip,
+        &file_output(),
+        "mat-12x12",
+        &settings(),
+    )
+    .unwrap();
+    let cmds = moves_and_draws(&job.bytes);
+    assert_eq!(cmds.len(), 2, "{cmds:?}");
+    assert_eq!(cmds[1].len(), 16);
+}
+
+#[test]
+fn snapped_points_are_sent_unchanged() {
+    // Points already on device units (the knife stage's rounding) go out as
+    // exactly those units, also on a mirrored, scaled plotter with a grid
+    // origin: the emitter adds no second rounding.
+    let mut p = host_output(0.25, 0.0);
+    p.scale_x = 1.002;
+    p.scale_y = 0.998;
+    p.axis.mirror_x = true;
+    p.media[0].grid.origin_x_mm = 0.37;
+    p.media[0].grid.origin_y_mm = 0.013;
+    let media = p.media[0].clone();
+    let g = quantize::device_grid(&p, &media);
+    let raw = [(10.013, 10.27), (20.4, 10.0), (20.1, 20.77), (13.3, 19.9)];
+    let snapped: Vec<Point> = raw.iter().map(|&q| g.snap(Point::from(q))).collect();
+    let job = emit_job(
+        &[EmitPath {
+            points: snapped.clone(),
+            note: "t".into(),
+        }],
+        GeometryKind::HostAxis { offset_mm: 0.25 },
+        &p,
+        &media.id,
+        &settings(),
+    )
+    .unwrap();
+    let sent: Vec<(i64, i64)> = moves_and_draws(&job.bytes).concat();
+    // The planned device-grid points: the units the raw points round to.
+    let want: Vec<(i64, i64)> = raw
+        .iter()
+        .map(|&q| {
+            let u = g.rounded_units(Point::from(q));
+            (u.y as i64, u.x as i64)
+        })
+        .collect();
+    assert_eq!(sent, want);
 }
 
 #[test]
@@ -445,6 +757,7 @@ fn none_compensation_emits_fc0() {
     p.knife_compensation = KnifeCompensation::None;
     let job = emit_job(
         &[path(&[(10., 10.), (20., 10.)])],
+        GeometryKind::Tip,
         &p,
         "mat-12x12",
         &settings(),
@@ -457,6 +770,7 @@ fn none_compensation_emits_fc0() {
 fn track_enhancing_on_sends_fy0() {
     let job = emit_job(
         &[path(&[(10., 10.), (20., 10.)])],
+        GeometryKind::Tip,
         &file_output(),
         "mat-12x12",
         &CutSettings {
@@ -474,6 +788,7 @@ fn track_enhancing_on_sends_fy0() {
 fn unknown_media_is_refused() {
     let err = emit_job(
         &[path(&[(10., 10.), (20., 10.)])],
+        GeometryKind::Tip,
         &file_output(),
         "no-such-mat",
         &settings(),
@@ -490,6 +805,7 @@ fn cameo3_dialect_is_refused() {
     };
     let err = emit_job(
         &[path(&[(10., 10.), (20., 10.)])],
+        GeometryKind::Tip,
         &p,
         "mat-12x12",
         &settings(),
@@ -506,13 +822,23 @@ fn cameo3_dialect_is_refused() {
 fn short_paths_are_skipped_and_empty_jobs_refused() {
     let p = file_output();
     let s = settings();
-    assert_eq!(emit_job(&[], &p, "mat-12x12", &s), Err(EmitError::EmptyJob));
     assert_eq!(
-        emit_job(&[path(&[]), path(&[(10., 10.)])], &p, "mat-12x12", &s),
+        emit_job(&[], GeometryKind::Tip, &p, "mat-12x12", &s),
+        Err(EmitError::EmptyJob)
+    );
+    assert_eq!(
+        emit_job(
+            &[path(&[]), path(&[(10., 10.)])],
+            GeometryKind::Tip,
+            &p,
+            "mat-12x12",
+            &s
+        ),
         Err(EmitError::EmptyJob)
     );
     let job = emit_job(
         &[path(&[(1., 1.)]), path(&[(10., 10.), (20., 10.)])],
+        GeometryKind::Tip,
         &p,
         "mat-12x12",
         &s,
@@ -525,7 +851,11 @@ fn short_paths_are_skipped_and_empty_jobs_refused() {
 fn error_messages_are_readable() {
     let msgs = [
         EmitError::EmptyJob.to_string(),
-        EmitError::HostCompensationNotYet.to_string(),
+        EmitError::CompensationMismatch {
+            profile: "host",
+            geometry: "plain tip paths",
+        }
+        .to_string(),
         EmitError::DialectNotSupported.to_string(),
         EmitError::OutOfRange {
             field: "force",
@@ -623,6 +953,7 @@ fn decode_explains_square_job() {
             (10., 10.),
             (10.5, 10.),
         ])],
+        GeometryKind::Tip,
         &file_output(),
         "mat-12x12",
         &settings(),
@@ -671,7 +1002,7 @@ proptest! {
     ) {
         let eps: Vec<EmitPath> = paths.iter().map(|p| path(p)).collect();
         let job = emit_job(
-            &eps,
+            &eps, GeometryKind::Tip,
             &file_output(),
             "mat-12x12",
             &CutSettings { speed, force, track_enhancing: track },

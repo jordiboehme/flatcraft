@@ -22,7 +22,9 @@ const PLOTTER_REPLACE_KEYS: &[&str] = &[
 ];
 /// Keys of older versions that no longer exist; dropped when a user preset is loaded.
 const LEGACY_PLOTTER_KEYS: &[&str] = &["margins"];
-const MATERIAL_REPLACE_KEYS: &[&str] = &[];
+/// `corner_mode` is an enum: a child replaces it whole, so two variants never
+/// merge into one table.
+const MATERIAL_REPLACE_KEYS: &[&str] = &["corner_mode"];
 /// Keys a preset sets for itself, never inherited or compared with its
 /// parent. Notes belong to one preset: a child starts without them.
 const META_KEYS: &[&str] = &["id", "name", "inherits", NOTES_KEY];

@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use flatcraft_core::geometry::RingDirection;
 use kurbo::{Point, Rect};
 use serde::{Deserialize, Serialize};
 
@@ -51,6 +52,34 @@ impl KnifeCompensation {
             KnifeCompensation::Firmware { fc } => *fc,
             KnifeCompensation::Host { .. } | KnifeCompensation::None => 0,
         }
+    }
+
+    /// Checks the values of host compensation: the offset is a number
+    /// above 0 and at most [`MAX_HOST_OFFSET_MM`], the pivot threshold 0
+    /// to [`MAX_PIVOT_THRESHOLD_DEG`]. Firmware and none always pass. The
+    /// text says what to fix.
+    ///
+    /// [`MAX_HOST_OFFSET_MM`]: flatcraft_core::limits::MAX_HOST_OFFSET_MM
+    /// [`MAX_PIVOT_THRESHOLD_DEG`]: flatcraft_core::limits::MAX_PIVOT_THRESHOLD_DEG
+    pub fn validate(&self) -> Result<(), String> {
+        use flatcraft_core::limits::{MAX_HOST_OFFSET_MM, MAX_PIVOT_THRESHOLD_DEG};
+        if let KnifeCompensation::Host {
+            offset_mm,
+            pivot_threshold_deg,
+        } = *self
+        {
+            if !(offset_mm.is_finite() && offset_mm > 0.0 && offset_mm <= MAX_HOST_OFFSET_MM) {
+                return Err(format!(
+                    "the host blade offset must be above 0 and at most {MAX_HOST_OFFSET_MM} mm (got {offset_mm})"
+                ));
+            }
+            if !(0.0..=MAX_PIVOT_THRESHOLD_DEG).contains(&pivot_threshold_deg) {
+                return Err(format!(
+                    "the pivot threshold must be 0 to {MAX_PIVOT_THRESHOLD_DEG} deg (got {pivot_threshold_deg})"
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -295,6 +324,10 @@ pub struct PlotterProfile {
     pub scale_x: f64,
     pub scale_y: f64,
     pub knife_compensation: KnifeCompensation,
+    /// The direction closed shapes are cut in. Files without the key get
+    /// counter-clockwise.
+    #[serde(default)]
+    pub ring_direction: RingDirection,
     pub blade_offset_mm: f64,
     pub speed_range: [u8; 2],
     pub force_range: [u8; 2],
@@ -347,23 +380,7 @@ impl PlotterProfile {
                 self.flatten_tolerance_mm
             ));
         }
-        if let KnifeCompensation::Host {
-            offset_mm,
-            pivot_threshold_deg,
-        } = self.knife_compensation
-        {
-            if !(offset_mm.is_finite() && offset_mm >= 0.0) {
-                return Err(format!(
-                    "the host blade offset must not be negative (got {offset_mm})"
-                ));
-            }
-            if !(0.0..=MAX_PIVOT_THRESHOLD_DEG).contains(&pivot_threshold_deg) {
-                return Err(format!(
-                    "the pivot threshold must be 0 to {MAX_PIVOT_THRESHOLD_DEG} deg (got {pivot_threshold_deg})"
-                ));
-            }
-        }
-        Ok(())
+        self.knife_compensation.validate()
     }
 
     /// The mat `media_id`, or the plotter's first mat when it no longer
@@ -423,6 +440,24 @@ pub struct MaterialOverride {
     pub passes: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overcut_mm: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corner_mode: Option<CornerModeSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_radius_mm: Option<f64>,
+}
+
+/// What host knife compensation does at a sharp corner of this material.
+/// In files: `corner_mode = "Arc"` or
+/// `corner_mode = { LiftOvershoot = { overshoot_mm = 0.1 } }`.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub enum CornerModeSpec {
+    /// The blade swivels around the corner point while it stays down.
+    #[default]
+    Arc,
+    /// The blade cuts `overshoot_mm` past the corner, lifts, and starts the
+    /// next line fresh. Only where the overshoot lands in waste; every other
+    /// corner gets the arc.
+    LiftOvershoot { overshoot_mm: f64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -437,6 +472,15 @@ pub struct MaterialProfile {
     pub reverse_alternate_passes: bool,
     pub overcut_mm: f64,
     pub track_enhancing: bool,
+    /// What host compensation does at sharp corners. Files without the key
+    /// get [`CornerModeSpec::Arc`]. It is always written, so a child of a
+    /// lift-and-overshoot preset can set it back to the arc.
+    #[serde(default)]
+    pub corner_mode: CornerModeSpec,
+    /// Curves tighter than this radius get a warning: the blade may round
+    /// or tear them. `None` uses the plotter's `blade_offset_mm`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_radius_mm: Option<f64>,
     /// The material sits on a backing sheet, like vinyl: small loose
     /// parts (the middle of a stencil's O) stay on it until transfer tape
     /// lifts them. Paper and cardstock have none, so such parts fall out.
@@ -534,16 +578,38 @@ impl MatTack {
 }
 
 impl MaterialProfile {
-    /// Checks the overcut, also of the per-plotter overrides, against
-    /// [`flatcraft_core::limits::MAX_OVERCUT_MM`].
+    /// Checks the overcut, the corner overshoot and the minimum radius,
+    /// also of the per-plotter overrides, against
+    /// [`flatcraft_core::limits`].
     pub fn validate_values(&self) -> Result<(), String> {
-        use flatcraft_core::limits::MAX_OVERCUT_MM;
-        let overcuts = std::iter::once(self.overcut_mm)
-            .chain(self.overrides.values().filter_map(|o| o.overcut_mm));
+        use flatcraft_core::limits::{MAX_CORNER_OVERSHOOT_MM, MAX_MIN_RADIUS_MM, MAX_OVERCUT_MM};
+        let o = || self.overrides.values();
+        let overcuts = std::iter::once(self.overcut_mm).chain(o().filter_map(|o| o.overcut_mm));
         for v in overcuts {
             if !(0.0..=MAX_OVERCUT_MM).contains(&v) {
                 return Err(format!(
                     "the overcut must be 0 to {MAX_OVERCUT_MM} mm (got {v})"
+                ));
+            }
+        }
+        let corners = std::iter::once(self.corner_mode).chain(o().filter_map(|o| o.corner_mode));
+        for c in corners {
+            if let CornerModeSpec::LiftOvershoot { overshoot_mm: v } = c
+                && !(v > 0.0 && v <= MAX_CORNER_OVERSHOOT_MM)
+            {
+                return Err(format!(
+                    "the corner overshoot must be above 0 and at most {MAX_CORNER_OVERSHOOT_MM} mm (got {v})"
+                ));
+            }
+        }
+        let radii = self
+            .min_radius_mm
+            .into_iter()
+            .chain(o().filter_map(|o| o.min_radius_mm));
+        for v in radii {
+            if !(v > 0.0 && v <= MAX_MIN_RADIUS_MM) {
+                return Err(format!(
+                    "the minimum radius must be above 0 and at most {MAX_MIN_RADIUS_MM} mm (got {v})"
                 ));
             }
         }
@@ -565,6 +631,12 @@ impl MaterialProfile {
             }
             if let Some(v) = o.overcut_mm {
                 out.overcut_mm = v;
+            }
+            if let Some(v) = o.corner_mode {
+                out.corner_mode = v;
+            }
+            if let Some(v) = o.min_radius_mm {
+                out.min_radius_mm = Some(v);
             }
         }
         out

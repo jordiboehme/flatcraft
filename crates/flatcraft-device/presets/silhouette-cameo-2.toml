@@ -8,6 +8,8 @@ units_per_mm = 20.0
 scale_x = 1.0
 scale_y = 1.0
 knife_compensation = { Firmware = { fc = 18 } }
+# Closed shapes are cut counter-clockwise, as seen on the canvas.
+ring_direction = "ccw"
 blade_offset_mm = 0.25
 speed_range = [1, 10]
 force_range = [1, 33]
