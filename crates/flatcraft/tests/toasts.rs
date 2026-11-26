@@ -247,3 +247,27 @@ fn closing_a_toast_never_hits_its_neighbour() {
     r.h.run();
     assert_eq!(*r.revealed.0.lock().unwrap(), vec![b]);
 }
+
+#[test]
+fn in_prepare_and_cut_notices_sit_over_the_canvas() {
+    for ws in [
+        flatcraft::ui::Workspace::Prepare,
+        flatcraft::ui::Workspace::Cut,
+    ] {
+        let mut r = rig(false);
+        app_mut(&mut r.h).ui.workspace = ws;
+        settle(&mut r.h);
+        r.show(Toast::info("over the canvas"));
+        r.h.run();
+        let toast = r.h.get_by_label("over the canvas").rect();
+        let canvas = match ws {
+            flatcraft::ui::Workspace::Cut => app(&r.h).ui.cut.canvas_rect,
+            _ => app(&r.h).ui.prepare.canvas_rect,
+        };
+        // Inside the canvas, so never over a side panel's buttons.
+        assert!(
+            canvas.contains_rect(toast),
+            "{ws:?}: {toast:?} in {canvas:?}"
+        );
+    }
+}

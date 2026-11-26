@@ -1,5 +1,7 @@
-//! Short messages in the bottom-right corner, stacked with the newest at
-//! the bottom. Each card has a coloured status dot, a title and an
+//! Short messages at the top right of the canvas in Prepare and Cut (the
+//! bottom-right corner of the window elsewhere), stacked with the newest
+//! at the bottom. Over the canvas they never cover a control of the side
+//! panels, like Send or the rating of a cut. Each card has a coloured status dot, a title and an
 //! optional detail line (a full path, wrapped, never cut), and a × at the
 //! top right with a thin ring that shrinks over the toast's lifetime.
 //!
@@ -176,34 +178,40 @@ pub enum Event {
     Close(u64),
 }
 
-/// Draws the toasts in the bottom-right corner, oldest at the top, and
-/// tracks which one the pointer rests on. `reduce_motion` leaves out the
-/// rings. Returns what was clicked.
+/// Draws the toasts, oldest at the top, and tracks which one the pointer
+/// rests on: at the top right of `canvas` (below its ruler) when there is
+/// one, else in the window's bottom-right corner. `reduce_motion` leaves
+/// out the rings. Returns what was clicked.
 pub fn show(
     ctx: &egui::Context,
     toasts: &mut [Toast],
     t: &Tokens,
     now: Instant,
     reduce_motion: bool,
+    canvas: Option<egui::Rect>,
 ) -> Vec<Event> {
     let mut events = Vec::new();
     if toasts.is_empty() {
         return events;
     }
-    let area = egui::Area::new(egui::Id::unique("flatcraft-toasts"))
-        .anchor(
+    let area = egui::Area::new(egui::Id::unique("flatcraft-toasts"));
+    let area = match canvas.filter(|r| r.is_positive()) {
+        Some(r) => area.pivot(egui::Align2::RIGHT_TOP).fixed_pos(
+            r.right_top() + egui::vec2(-t.spacing * 2.0, super::canvas::RULER + t.spacing * 2.0),
+        ),
+        None => area.anchor(
             egui::Align2::RIGHT_BOTTOM,
             egui::vec2(-t.spacing * 2.0, -t.spacing * 2.0),
-        )
-        .order(egui::Order::Foreground)
-        .show(ctx, |ui| {
-            ui.spacing_mut().item_spacing.y = t.spacing;
-            for toast in toasts.iter_mut() {
-                let (event, hovered) = card(ui, toast, t, now, reduce_motion);
-                toast.set_hovered(hovered, now);
-                events.extend(event);
-            }
-        });
+        ),
+    };
+    let area = area.order(egui::Order::Foreground).show(ctx, |ui| {
+        ui.spacing_mut().item_spacing.y = t.spacing;
+        for toast in toasts.iter_mut() {
+            let (event, hovered) = card(ui, toast, t, now, reduce_motion);
+            toast.set_hovered(hovered, now);
+            events.extend(event);
+        }
+    });
     // The stack is anchored at its bottom right, but egui places it by
     // last frame's size: when the size changed (a toast came or went), the
     // cards stood in the wrong place this pass. Draw again at once, so no

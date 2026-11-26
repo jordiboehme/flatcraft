@@ -12,7 +12,7 @@ use flatcraft_engine::cutlog::{self, Target, Verdict};
 use flatcraft_engine::session::Origin;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// A square on vinyl, sent once to File Output from the Cut workspace.
 fn sent_once() -> (tempfile::TempDir, flatcraft_mcp::SharedSession, AppHarness) {
@@ -20,8 +20,8 @@ fn sent_once() -> (tempfile::TempDir, flatcraft_mcp::SharedSession, AppHarness) 
     (dir, s, h)
 }
 
-/// [`sent_once`] with the window's clock in the test's hand, so toasts
-/// can be let run out.
+/// [`sent_once`] with the window's clock in the test's hand, so the
+/// notices of the sends stay up while the test clicks.
 fn sent_once_with_clock() -> (
     tempfile::TempDir,
     flatcraft_mcp::SharedSession,
@@ -51,13 +51,9 @@ fn sent_once_with_clock() -> (
     (dir, s, h, now)
 }
 
-/// Lets every toast run out: they sit in the bottom right corner, over
-/// the end of the stage panel, and would take a click meant for a button
-/// there.
-fn let_toasts_run_out(h: &mut AppHarness, now: &Arc<Mutex<Instant>>) {
-    *now.lock().unwrap() += flatcraft::ui::toasts::WARNING_LIFETIME + Duration::from_secs(1);
-    settle(h);
-    assert!(app(h).ui.toasts.is_empty());
+/// True while a notice ("Sent ...") shows.
+fn notice_shows(h: &AppHarness) -> bool {
+    !app(h).ui.toasts.is_empty()
 }
 
 /// The node of `label` inside the open question.
@@ -171,8 +167,10 @@ fn only_a_cut_on_a_plotter_asks_right_after_the_send() {
 
 #[test]
 fn rate_asks_about_the_newest_unrated_cut_while_the_line_shows_the_rated_one() {
-    let (dir, s, mut h, now) = sent_once_with_clock();
-    // A second send, then rate the first one.
+    let (dir, s, mut h, _now) = sent_once_with_clock();
+    // A second send while the first one's notice shows: it must not cover
+    // the button. Then rate the first one.
+    assert!(notice_shows(&h));
     h.get_by_role_and_label(Role::Button, "Send to File Output")
         .click();
     settle(&mut h);
@@ -195,8 +193,9 @@ fn rate_asks_about_the_newest_unrated_cut_while_the_line_shows_the_rated_one() {
     // The button asks about the newer, unrated cut, and says which.
     let label = outcome::rate_label(&newer);
     assert!(label.starts_with("Rate the cut of 20"), "{label}");
-    // In the 900 pt window the button sits low, under the "Sent" toasts.
-    let_toasts_run_out(&mut h, &now);
+    // In the 900 pt window the button sits low in the stage panel; the
+    // notices of the sends show over the canvas, not over it.
+    assert!(notice_shows(&h));
     h.get_by_role_and_label(Role::Button, &label).click();
     settle(&mut h);
     assert_eq!(app(&h).ui.outcome.as_ref().unwrap().entry, newer.id);
