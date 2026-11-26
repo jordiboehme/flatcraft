@@ -164,6 +164,20 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
         let doc = s.doc();
         (tabs, doc.id(), doc.undo.can_undo(), doc.undo.can_redo())
     };
+    // Export works on the document shown, so not on Home.
+    let export_why = if app.ui.workspace == Workspace::Home {
+        Some(super::export_dialog::NO_DOCUMENT)
+    } else {
+        let s = lock(&app.session);
+        let objects: Vec<(bool, bool)> = s
+            .doc()
+            .document
+            .objects
+            .iter()
+            .map(|o| (o.visible, o.cut_enabled))
+            .collect();
+        super::export_dialog::why_nothing(&objects, true)
+    };
     let agent = app.agent_status(Instant::now());
     let inset = left_inset(app.title_bar, ui.ctx());
     // The two sides are separate closures; the right one collects here.
@@ -214,6 +228,23 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                         }
                         if ui.button("Save As").clicked() {
                             actions.push(Action::SaveAs { doc_id: active });
+                        }
+                        let export = ui.add_enabled(
+                            export_why.is_none(),
+                            egui::Button::new(super::menu_model::EXPORT_TITLE),
+                        );
+                        card(
+                            &export,
+                            "Export",
+                            super::export_dialog::MENU_HINT,
+                            export_why,
+                            true,
+                        );
+                        if export.clicked() {
+                            actions.push(Action::ExportDialog {
+                                doc_id: active,
+                                selected: false,
+                            });
                         }
                     });
                     card(&file.0, "File", FILE_HINT, None, false);

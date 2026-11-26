@@ -10,6 +10,7 @@ pub mod context_menu;
 pub mod cut;
 pub mod debug;
 pub mod dialog;
+pub mod export_dialog;
 pub mod files;
 pub mod fonts;
 pub mod groups;
@@ -125,6 +126,8 @@ pub struct UiState {
     pub debug: debug::DebugState,
     /// The open unsaved-changes dialog.
     pub unsaved: Option<Unsaved>,
+    /// The open Export dialog.
+    pub export: Option<export_dialog::ExportDialog>,
     /// The person chose to quit (nothing unsaved, saved or discarded): the
     /// window closes and is not asked again.
     pub closing: bool,
@@ -252,6 +255,15 @@ pub enum Action {
         doc_id: u64,
         path: PathBuf,
     },
+    /// Open the Export dialog for this document; `selected` starts it on
+    /// the selection ("Export selected...").
+    ExportDialog {
+        doc_id: u64,
+        selected: bool,
+    },
+    /// Ask where to save, then export as the dialog says
+    /// (`document.export`, as the person).
+    Export(export_dialog::ExportDialog),
     /// Ask for a project file and open it.
     OpenDialog,
     /// Open this project file.
@@ -330,6 +342,7 @@ impl Action {
             self,
             Action::Save { .. }
                 | Action::SaveAs { .. }
+                | Action::ExportDialog { .. }
                 | Action::SaveTo { .. }
                 | Action::Close(_)
                 | Action::CloseOthers(_)
@@ -712,6 +725,7 @@ impl FlatCraftApp {
             | Cmd::NoRecent
             | Cmd::Save
             | Cmd::SaveAs
+            | Cmd::Export
             | Cmd::Close
             | Cmd::SendToFile
             | Cmd::Workspace(_)
@@ -1008,6 +1022,25 @@ impl FlatCraftApp {
                     self.saved(&v);
                 }
             }
+            Action::ExportDialog { doc_id, selected } => {
+                let has_selection = {
+                    let s = lock(&self.session);
+                    s.doc_index(doc_id)
+                        .ok()
+                        .map(|i| !s.docs[i].selection.is_empty())
+                };
+                match has_selection {
+                    Some(_) if self.ui.workspace == Workspace::Home => {
+                        self.toast(Toast::info(export_dialog::NO_DOCUMENT));
+                    }
+                    Some(has) => {
+                        self.ui.export =
+                            Some(export_dialog::ExportDialog::new(doc_id, has, selected));
+                    }
+                    None => {}
+                }
+            }
+            Action::Export(d) => self.export(d),
             Action::OpenDialog => {
                 let req = files::FileRequest {
                     title: "Open".into(),
@@ -1546,6 +1579,52 @@ impl FlatCraftApp {
         }
     }
 
+    /// Asks where to save the export of `d` (the document's name with the
+    /// format's extension, next to the project file), then runs
+    /// `document.export` as the person. A failed write is an error toast
+    /// with the reason.
+    fn export(&mut self, d: export_dialog::ExportDialog) {
+        let ext = d.format.extension();
+        let (name, dir) = self.save_as_suggestion(d.doc_id);
+        let name = Path::new(&name)
+            .with_extension(ext)
+            .to_string_lossy()
+            .into_owned();
+        let req = files::FileRequest {
+            title: "Export".into(),
+            filters: vec![files::filter(d.format.label(), &[ext])],
+            file_name: Some(name),
+            directory: dir,
+        };
+        let Some(path) = self.files.save_file(&req) else {
+            return;
+        };
+        let scope = match d.scope {
+            flatcraft_engine::export::ExportScope::Selected => "selected",
+            flatcraft_engine::export::ExportScope::All => "all",
+        };
+        let params = json!({
+            "path": path,
+            "format": ext,
+            "scope": scope,
+            "include_skipped": d.include_skipped,
+        });
+        let Some(v) = self.run_on(d.doc_id, "document.export", params) else {
+            return;
+        };
+        let shapes = v["shapes"].as_u64().unwrap_or(0);
+        let what = if shapes == 1 {
+            "1 shape".to_string()
+        } else {
+            format!("{shapes} shapes")
+        };
+        self.toast(
+            Toast::success("Exported. Your shapes are ready for the next adventure!")
+                .with_detail(format!("Wrote {what} to {}", display_name(&path)))
+                .with_reveal(path),
+        );
+    }
+
     /// The toast of a finished send: the written files and a link that
     /// shows them in the file manager.
     fn sent(&mut self, result: &Value) {
@@ -1939,6 +2018,13 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     if app.ui.show_shortcuts {
         app.ui.show_shortcuts = help::show_shortcuts(&ctx, &t);
     }
+    match &snap {
+        Some(snap) => {
+            let t = app.tokens;
+            export_dialog::show(&ctx, &mut app.ui.export, snap, &t, &mut actions);
+        }
+        None => app.ui.export = None,
+    }
     pending_modal(&ctx, app, &mut actions);
     app.skip_settled_quit_question(&ctx);
     unsaved_modal(&ctx, app, &mut actions);
@@ -2014,7 +2100,7 @@ impl FlatCraftApp {
     }
 }
 
-/// A dialog that owns the keyboard is open: About, Shortcuts, Trace, Rename, unsaved changes
+/// A dialog that owns the keyboard is open: About, Shortcuts, Trace, Rename, Export, unsaved changes
 /// or the agent's pending send. The docked Arrange panels are not dialogs:
 /// the document stays usable behind them.
 pub fn modal_open(app: &FlatCraftApp) -> bool {
@@ -2024,6 +2110,7 @@ pub fn modal_open(app: &FlatCraftApp) -> bool {
         || app.ui.trace.is_some()
         || app.ui.prepare.rename.is_some()
         || app.ui.unsaved.is_some()
+        || app.ui.export.is_some()
         || lock(&app.session).pending_send().is_some()
 }
 

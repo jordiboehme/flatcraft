@@ -161,7 +161,7 @@ fn name(item: Item) -> String {
     }
 }
 
-const ALL: [Item; 25] = [
+const ALL: [Item; 26] = [
     Item::Duplicate,
     Item::Copies,
     Item::LinkCopies,
@@ -182,6 +182,7 @@ const ALL: [Item; 25] = [
     Item::Reconnect,
     Item::RevealSource,
     Item::CopySourcePath,
+    Item::ExportSelected,
     Item::Delete,
     Item::Import,
     Item::SelectAll,
@@ -370,6 +371,7 @@ fn the_menu_of_one_object() {
             Hide,
             SkipCutting,
             Rename,
+            ExportSelected,
             Delete
         ]
     );
@@ -435,6 +437,7 @@ fn the_menu_of_two_objects() {
             Hide,
             SkipCutting,
             Rename,
+            ExportSelected,
             Delete
         ]
     );
@@ -1055,4 +1058,40 @@ fn link_copies_is_offered_after_a_reopen_and_for_two_imports_of_one_file() {
         let items = shown(&h);
         assert!(items.contains(&LinkCopies), "{pair:?}: {items:?}");
     }
+}
+
+#[test]
+fn export_selected_opens_the_export_dialog_on_the_selection() {
+    let mut r = rig(2);
+    r.right_click_object(1);
+    assert!(r.items().contains(&ExportSelected));
+    assert!(!dimmed(&r.h, ExportSelected));
+    click_item(&mut r.h, ExportSelected);
+    r.h.run();
+    let d = app(&r.h)
+        .ui
+        .export
+        .clone()
+        .expect("the Export dialog is open");
+    assert_eq!(d.scope, flatcraft_engine::export::ExportScope::Selected);
+    assert_eq!(selection(&r.s), vec![r.ids[1]]);
+}
+
+#[test]
+fn export_selected_is_dimmed_for_hidden_objects_and_says_why() {
+    let mut r = rig(1);
+    exec(
+        &r.s,
+        "object.set_visible",
+        json!({ "ids": [r.ids[0]], "visible": false }),
+    );
+    r.h.run();
+    let ctx = r.h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut r.h), &ctx);
+    let st = &app(&r.h).ui.prepare;
+    assert_eq!(
+        ExportSelected.why(&snap, st, &[r.ids[0]]),
+        Some(flatcraft::ui::export_dialog::ALL_HIDDEN)
+    );
+    assert!(!ExportSelected.description().is_empty());
 }

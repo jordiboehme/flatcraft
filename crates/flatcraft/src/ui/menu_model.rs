@@ -31,6 +31,9 @@ use super::prepare::{PrepareState, Snapshot};
 use super::tools::{self, Act, AlignTo, Section, Tool};
 use super::{Action, MENU_RECENT, Workspace, cut, project_name};
 
+/// The title of File > Export... (menu bar and app bar).
+pub const EXPORT_TITLE: &str = "Export...";
+
 /// A key with Cmd held, plus Shift or Alt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Accel {
@@ -78,6 +81,8 @@ pub enum Cmd {
     NoRecent,
     Save,
     SaveAs,
+    /// File > Export...: the Export dialog.
+    Export,
     Close,
     SendToFile,
     Undo,
@@ -114,6 +119,7 @@ impl Cmd {
             Cmd::NoRecent => "no-recent",
             Cmd::Save => "save",
             Cmd::SaveAs => "save-as",
+            Cmd::Export => "export",
             Cmd::Close => "close",
             Cmd::SendToFile => "send",
             Cmd::Undo => "undo",
@@ -168,6 +174,7 @@ impl Cmd {
             Cmd::NoRecent,
             Cmd::Save,
             Cmd::SaveAs,
+            Cmd::Export,
             Cmd::Close,
             Cmd::SendToFile,
             Cmd::Undo,
@@ -211,6 +218,10 @@ impl Cmd {
             Cmd::NoRecent => return None,
             Cmd::Save => Action::Save { doc_id: active },
             Cmd::SaveAs => Action::SaveAs { doc_id: active },
+            Cmd::Export => Action::ExportDialog {
+                doc_id: active,
+                selected: false,
+            },
             Cmd::Close => Action::Close(active),
             Cmd::SendToFile => Action::Send { doc_id: active },
             Cmd::Workspace(w) => Action::SetWorkspace(*w),
@@ -587,6 +598,12 @@ fn file_menu(inp: &MenuInput) -> Sub {
                 Entry::Separator,
                 item(Cmd::Save, "Save", true, Accel::of("Save")),
                 item(Cmd::SaveAs, "Save As...", true, Accel::of("Save As")),
+                item(
+                    Cmd::Export,
+                    EXPORT_TITLE,
+                    super::export_dialog::menu_why(inp.snap).is_none(),
+                    None,
+                ),
                 item(
                     Cmd::Close,
                     "Close",

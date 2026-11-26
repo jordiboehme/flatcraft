@@ -52,6 +52,8 @@ pub enum Item {
     RevealSource,
     /// Copy the linked file's path.
     CopySourcePath,
+    /// Export the objects' cut shapes (the Export dialog on the selection).
+    ExportSelected,
     Delete,
     // The empty mat.
     Import,
@@ -100,6 +102,7 @@ impl Item {
             Item::RevealSource => super::files::reveal_source_label(),
             Item::CopySourcePath => "Copy source path",
             Item::SelectAll => "Select all",
+            Item::ExportSelected => "Export selected...",
             _ => unreachable!("the other items are ribbon actions"),
         }
     }
@@ -140,6 +143,7 @@ impl Item {
                 "Copies the full path of the design file this object was imported from."
             }
             Item::SelectAll => "Select every visible object on the mat.",
+            Item::ExportSelected => super::export_dialog::SELECTED_HINT,
             _ => unreachable!("the other items are ribbon actions"),
         }
     }
@@ -169,6 +173,7 @@ impl Item {
                 .is_empty()
                 .then_some("Import something first. There is nothing to select yet."),
             Item::RevealSource | Item::CopySourcePath => source_file(snap, st, ids)?.err(),
+            Item::ExportSelected => super::export_dialog::selected_why(snap, ids),
             _ => self.tool()?.blocked_for(snap, n),
         }
     }
@@ -311,6 +316,7 @@ pub fn items(snap: &Snapshot, st: &PrepareState, ids: &[u64]) -> Vec<Vec<Item>> 
     }
     groups.push(g);
 
+    groups.push(vec![Item::ExportSelected]);
     groups.push(vec![Item::Delete]);
     groups.retain(|g| !g.is_empty());
     groups
@@ -477,6 +483,10 @@ pub fn run_item(
                 Action::CopyPath(path)
             });
         }
+        Item::ExportSelected => actions.push(Action::ExportDialog {
+            doc_id,
+            selected: true,
+        }),
         Item::Delete => actions.push(ribbon::delete_action(doc_id, ids)),
         Item::Import => actions.push(Action::Import { doc_id }),
         Item::SelectAll => actions.push(select_all_action(snap)),
