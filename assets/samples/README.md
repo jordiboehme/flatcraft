@@ -11,7 +11,7 @@ rest of the code.
 | --- | --- |
 | pantry-labels.flatcraft | Linked copies in a rectangular pattern: 12 pantry labels with a rim, a groove and a blank panel, on vinyl, cut with the Outlines last strategy. |
 | iron-on-shirt.flatcraft | A striped sunset over "BORN TO MAKE" on heat transfer vinyl, stored mirrored because iron-on is cut from the back. |
-| stencil.flatcraft | The letters C, U and T cut out of a sheet. The letters have no closed counters, so only the letters fall out. |
+| stencil.flatcraft | The letters C, U and T cut out of the sheet on the mat, with keep mode Stencil: the sheet is kept and the letters fall out. The letters have no closed counters, so only the letters fall out. |
 | gift-tags.flatcraft | A circular pattern of 6 linked tags, each with a hole. |
 | window-star.flatcraft | Paper cut work: an eight-point star with 25 inner shapes, cut from the inside out. |
 | maker-quotes.flatcraft | Seven vinyl stickers: the six short maker quotes of the About dialog and "Eat. Sleep. Make. Repeat.", in solid capitals inside a 3 mm frame band, each author's name a separate object. |

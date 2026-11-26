@@ -739,13 +739,17 @@ fn maker_quotes(s: &Session) {
     run(s, "job.set_material", json!({ "id": "vinyl" }));
 }
 
-/// "CUT" in a sheet with rounded corners: the letters fall out.
+/// "CUT" cut out of the sheet on the mat, keep mode Stencil: the sheet is
+/// the stencil and the letters fall out. No frame: with Stencil the whole
+/// sheet is kept, and a frame ring would turn the stencil itself into a
+/// shape that falls out.
 fn stencil(s: &Session) {
-    let mut body = r#"<rect x="30" y="100" width="240" height="104" rx="8"/>"#.to_string();
+    let mut body = String::new();
     for (i, c) in ['C', 'U', 'T'].into_iter().enumerate() {
         body.push_str(&letter(c, 55.0 + i as f64 * 70.0, 120.0));
     }
-    import(s, "Stencil", &body);
+    let id = import(s, "Stencil", &body);
+    run(s, "object.set_keep", json!({ "ids": [id], "keep": "stencil" }));
 }
 
 /// A tag with clipped top corners and a hole, then 5 linked copies
@@ -1385,4 +1389,43 @@ fn the_ink_trap_fill_closes_the_slits_and_keeps_the_counters() {
         assert_eq!(filled, contours, "every counter stays: {text}");
     }
     assert!(slits > 0, "Plex has slits under 1 mm the fill closes");
+}
+
+#[test]
+fn the_stencil_keeps_the_sheet_and_its_letters_fall_out() {
+    let (_dir, s) = open("stencil");
+    let st = s.lock().unwrap();
+    let doc = &st.doc().document;
+    assert_eq!(doc.objects.len(), 1);
+    assert_eq!(
+        doc.objects[0].keep,
+        flatcraft_core::document::KeepMode::Stencil
+    );
+    let job = flatcraft_engine::job::build(&st).unwrap();
+    let kept = &job.plan.kept;
+    // Inside a letter is waste: a point on the middle line of each letter
+    // that the letter covers. Between and around the letters is the sheet.
+    let rings: Vec<Vec<kurbo::Point>> = job
+        .plan
+        .toolpaths
+        .iter()
+        .filter(|t| t.closed && t.kind == flatcraft_path::ToolpathKind::Cut)
+        .map(|t| t.lap().to_vec())
+        .collect();
+    let inside: Vec<kurbo::Point> = (0..3)
+        .filter_map(|i| {
+            let x0 = 55.0 + i as f64 * 70.0;
+            (0..60 * 80)
+                .map(|k| kurbo::Point::new(x0 + (k % 60) as f64, 120.0 + (k / 60) as f64))
+                .find(|&p| inside(&rings, p))
+        })
+        .collect();
+    assert_eq!(inside.len(), 3, "a point in each letter");
+    for p in inside {
+        assert!(!kept.is_kept(p), "{p:?} is in a letter: waste");
+    }
+    for p in [(40.0, 150.0), (150.0, 110.0), (150.0, 200.0), (280.0, 150.0)] {
+        let p = kurbo::Point::new(p.0, p.1);
+        assert!(kept.is_kept(p), "{p:?} is the sheet: kept");
+    }
 }
