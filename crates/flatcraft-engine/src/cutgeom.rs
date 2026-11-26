@@ -631,30 +631,34 @@ fn spurs(centre: &[Contour], fill: &[Vec<Contour>], tolerance: f64) -> Vec<BezPa
         })
         .collect();
     let edges: Vec<&[[f64; 2]]> = edges.iter().map(Vec::as_slice).collect();
-    let on_edge = |p: &Contour| {
-        let samples = p.iter().copied().chain(
-            p.windows(2)
-                .map(|w| [(w[0][0] + w[1][0]) / 2.0, (w[0][1] + w[1][1]) / 2.0]),
-        );
-        all_near_lines(samples, &edges, tolerance)
+    // Built once: every part asks it.
+    let index = NearIndex::new(&edges, tolerance);
+    // A segment whose ends and middle all lie on the edge is the edge.
+    // Looked at segment by segment: i_overlay hands back a tail and the
+    // stretch of edge it runs into as one string.
+    let on_edge = |a: [f64; 2], b: [f64; 2]| {
+        index.near(a) && index.near(b) && index.near([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0])
     };
     let clip = |invert: bool| {
+        // The edge is never part of the result. With `invert`, i_overlay
+        // turns `boundary_included` around (true leaves the edge out of
+        // the outside part; pinned by a test).
         let rule = ClipRule {
             invert,
-            boundary_included: false,
+            boundary_included: invert,
         };
-        let parts: Vec<Contour> = centre
+        let segments: Vec<Contour> = centre
             .clip_by_as::<i64>(&shapes, OverlayFill::NonZero, rule)
-            .into_iter()
-            .filter(|p| p.len() >= 2 && !on_edge(p))
+            .iter()
+            .flat_map(|p| p.windows(2))
+            .filter(|w| !on_edge(w[0], w[1]))
+            .map(|w| w.to_vec())
             .collect();
-        chain_once(&parts)
+        chain_once(&segments)
     };
     let free_end = |p: &Contour| {
         let (first, last) = (p[0], p[p.len() - 1]);
-        first != last
-            && (!all_near_lines([first], &edges, tolerance)
-                || !all_near_lines([last], &edges, tolerance))
+        first != last && (!index.near(first) || !index.near(last))
     };
     let inside = clip(false).into_iter().filter(free_end);
     clip(true)
@@ -998,48 +1002,79 @@ fn all_near_lines(
     lines: &[&[[f64; 2]]],
     reach: f64,
 ) -> bool {
-    let cell = 2.0 * reach;
-    let key = |x: f64, y: f64| ((x / cell).floor() as i64, (y / cell).floor() as i64);
-    let mut grid: std::collections::HashMap<(i64, i64), Vec<(usize, usize)>> =
-        std::collections::HashMap::new();
-    for (l, line) in lines.iter().enumerate() {
-        for (k, w) in line.windows(2).enumerate() {
-            let (dx, dy) = (w[1][0] - w[0][0], w[1][1] - w[0][1]);
-            // A mark every half cell: the nearest mark to any point of the
-            // segment is a quarter cell away, so a point within `reach` of
-            // the segment finds it in its own cell or a neighbour.
-            let marks = (dx.hypot(dy) / (cell / 2.0)).ceil().max(1.0) as usize;
-            for m in 0..=marks {
-                let t = m as f64 / marks as f64;
-                let cells = grid
-                    .entry(key(w[0][0] + dx * t, w[0][1] + dy * t))
-                    .or_default();
-                if cells.last() != Some(&(l, k)) {
-                    cells.push((l, k));
+    let index = NearIndex::new(lines, reach);
+    points.into_iter().all(|p| index.near(p))
+}
+
+/// The segments of some polylines sorted into a grid of cells two `reach`
+/// wide, built once, for asking of many points whether they lie within
+/// `reach` of a line.
+struct NearIndex<'a> {
+    lines: &'a [&'a [[f64; 2]]],
+    reach: f64,
+    cell: f64,
+    grid: std::collections::HashMap<(i64, i64), Vec<(usize, usize)>>,
+}
+
+impl<'a> NearIndex<'a> {
+    fn new(lines: &'a [&'a [[f64; 2]]], reach: f64) -> Self {
+        let cell = 2.0 * reach;
+        let mut index = Self {
+            lines,
+            reach,
+            cell,
+            grid: std::collections::HashMap::new(),
+        };
+        for (l, line) in lines.iter().enumerate() {
+            for (k, w) in line.windows(2).enumerate() {
+                let (dx, dy) = (w[1][0] - w[0][0], w[1][1] - w[0][1]);
+                // A mark every half cell: the nearest mark to any point of
+                // the segment is a quarter cell away, so a point within
+                // `reach` of the segment finds it in its own cell or a
+                // neighbour.
+                let marks = (dx.hypot(dy) / (cell / 2.0)).ceil().max(1.0) as usize;
+                for m in 0..=marks {
+                    let t = m as f64 / marks as f64;
+                    let key = index.key(w[0][0] + dx * t, w[0][1] + dy * t);
+                    let cells = index.grid.entry(key).or_default();
+                    if cells.last() != Some(&(l, k)) {
+                        cells.push((l, k));
+                    }
                 }
             }
         }
+        index
     }
-    let distance = |p: &[f64; 2], (l, k): (usize, usize)| {
-        let (a, b) = (lines[l][k], lines[l][k + 1]);
-        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-        let len2 = dx * dx + dy * dy;
-        let t = if len2 > 0.0 {
-            (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0)
-        } else {
-            0.0
+
+    fn key(&self, x: f64, y: f64) -> (i64, i64) {
+        (
+            (x / self.cell).floor() as i64,
+            (y / self.cell).floor() as i64,
+        )
+    }
+
+    /// True if `p` lies within `reach` of one of the lines.
+    fn near(&self, p: [f64; 2]) -> bool {
+        let distance = |(l, k): (usize, usize)| {
+            let (a, b) = (self.lines[l][k], self.lines[l][k + 1]);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let len2 = dx * dx + dy * dy;
+            let t = if len2 > 0.0 {
+                (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            (p[0] - a[0] - dx * t).hypot(p[1] - a[1] - dy * t)
         };
-        (p[0] - a[0] - dx * t).hypot(p[1] - a[1] - dy * t)
-    };
-    points.into_iter().all(|p| {
-        let (cx, cy) = key(p[0], p[1]);
+        let (cx, cy) = self.key(p[0], p[1]);
         (-1..=1).any(|ox| {
             (-1..=1).any(|oy| {
-                grid.get(&(cx + ox, cy + oy))
-                    .is_some_and(|near| near.iter().any(|&k| distance(&p, k) <= reach))
+                self.grid
+                    .get(&(cx + ox, cy + oy))
+                    .is_some_and(|near| near.iter().any(|&k| distance(k) <= self.reach))
             })
         })
-    })
+    }
 }
 
 /// Indices of the two ends of a closed hairline: the two vertices where
@@ -1502,6 +1537,12 @@ pub(crate) mod tests {
         let square = vec![vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]];
         let on_edge = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]];
         assert!(spurs(&[on_edge], std::slice::from_ref(&square), 0.01).is_empty());
+        // Along the edge, then away from it: only the part away is cut.
+        let edge_then_tail = vec![[0.0, 10.0], [0.0, 0.0], [-5.0, -5.0]];
+        let parts = spurs(&[edge_then_tail], std::slice::from_ref(&square), 0.01);
+        assert_eq!(parts.len(), 1, "{parts:?}");
+        let length: f64 = parts[0].segments().map(|s| s.arclen(1e-9)).sum();
+        assert!((length - 50f64.sqrt()).abs() < 1e-6, "{parts:?}");
         // Across: the two parts outside are cut; the chord inside runs
         // from edge to edge, so it is hidden under the fill.
         let across = vec![[-5.0, 5.0], [15.0, 5.0]];

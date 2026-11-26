@@ -449,3 +449,27 @@ fn spur_on_the_fill_edge_is_not_cut_twice() {
         assert!(open.is_empty(), "{d}: {open:?}");
     }
 }
+
+/// A long outline of curves with a tail at its start: the clip hands back
+/// the tail joined to the closing edge, a hair off the fill's own edge.
+/// Only the tail is cut.
+#[test]
+fn a_tail_on_a_curvy_outline_is_cut_alone() {
+    let mut d = String::from("M10 10 L5 5 L10 10");
+    for k in 0..100 {
+        let x = 10.0 + f64::from(k) * 2.8;
+        let y = if k % 2 == 0 { 6.0 } else { 14.0 };
+        d.push_str(&format!(" Q{} {y} {} 10", x + 1.4, x + 2.8));
+    }
+    d.push_str(" V200");
+    for k in 0..100 {
+        let x = 290.0 - f64::from(k) * 2.8;
+        let y = if k % 2 == 0 { 196.0 } else { 204.0 };
+        d.push_str(&format!(" Q{} {y} {} 200", x - 1.4, x - 2.8));
+    }
+    d.push_str(" Z");
+    let (rings, open) = spur_cut(&d);
+    assert_eq!(rings.len(), 1);
+    assert_eq!(open.len(), 1, "{open:?}");
+    assert!((length(&open) - 50f64.sqrt()).abs() < 0.05, "{open:?}");
+}
