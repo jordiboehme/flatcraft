@@ -33,6 +33,7 @@
 //! box pieces overlap by [`BOX_OVERLAP_MM`] at their joins.
 
 use flatcraft_core::document::{ObjectId, WeedSettings};
+use flatcraft_core::geometry::RingDirection;
 use kurbo::{Point, Rect};
 
 use crate::containment::{self, KeepMode, KeptMaterial};
@@ -51,6 +52,16 @@ const SLACK_MM: f64 = 0.01;
 /// two shapes keeps 1 mm from each, so a shorter one splits next to
 /// nothing and still costs a blade drop and a lift.
 pub const MIN_PIECE_MM: f64 = 5.0;
+
+/// Per-object weed boxes closer than this (in both directions) merge into
+/// one box: two cuts that close would leave a thin sliver of waste
+/// between them that tears instead of lifting.
+pub const MERGE_GAP_MM: f64 = 5.0;
+
+/// A band piece of a weed line shorter than this (no mat) is not cut on
+/// its own: it joins the neighbouring piece of the same line, so there is
+/// no bridge and no extra blade drop for a hair of line.
+pub const MIN_BAND_PIECE_MM: f64 = 1.0;
 
 /// How far each band piece of a weed box runs on past its join into the
 /// next piece (no mat), so the joins and corners separate cleanly: the
@@ -213,16 +224,16 @@ fn bbox<'a>(points: impl Iterator<Item = &'a Point>) -> Option<Rect> {
 }
 
 /// True when the rectangles `a` and `b` share a point or lie closer than
-/// [`MIN_PIECE_MM`] apart in both directions: two boxes that close would
+/// [`MERGE_GAP_MM`] apart in both directions: two boxes that close would
 /// leave a thin sliver of waste between two parallel cuts, so they count
 /// as touching.
 fn touch(a: Rect, b: Rect) -> bool {
-    let g = MIN_PIECE_MM;
+    let g = MERGE_GAP_MM;
     a.x0 < b.x1 + g && b.x0 < a.x1 + g && a.y0 < b.y1 + g && b.y0 < a.y1 + g
 }
 
 /// Groups of objects whose boxes (`margin` around their bounds) touch
-/// ([`touch`], closer than [`MIN_PIECE_MM`] counts), merged until no two
+/// ([`touch`], closer than [`MERGE_GAP_MM`] counts), merged until no two
 /// boxes touch: the bounds of each group. A merged box
 /// is bigger and may touch more, so it repeats; each round is a sweep over
 /// x with a union-find, not a scan of every pair.
@@ -243,7 +254,7 @@ pub(crate) fn merge_groups(mut groups: Vec<Rect>, margin: f64) -> Vec<Rect> {
         let mut merged = false;
         let mut active: Vec<usize> = Vec::new();
         for &i in &order {
-            active.retain(|&j| boxes[j].x1 + MIN_PIECE_MM > boxes[i].x0);
+            active.retain(|&j| boxes[j].x1 + MERGE_GAP_MM > boxes[i].x0);
             for &j in &active {
                 if touch(boxes[i], boxes[j]) {
                     let (ri, rj) = (root(&mut parent, i), root(&mut parent, j));
@@ -408,10 +419,13 @@ fn piece_band(points: &[Point]) -> usize {
     }
 }
 
-/// `line` cut exactly at the feed band edges it crosses, so every piece
-/// lies in one band. Pieces shorter than `min_mm` (a hair at a band edge)
-/// are left out.
-fn split_at_bands(line: [Point; 2], min_mm: f64) -> Vec<[Point; 2]> {
+/// `line` cut at the feed band edges it crosses, each piece with its
+/// band. A piece at an end of the line shorter than [`MIN_BAND_PIECE_MM`]
+/// is joined to its neighbour, so it runs that bit into the next band (within the
+/// feed's backtrack bound) instead of being a blade drop of its own; the
+/// joined piece keeps its neighbour's band. Every other piece lies in one
+/// band. Pieces shorter than `min_mm` are left out.
+fn split_at_bands(line: [Point; 2], min_mm: f64) -> Vec<([Point; 2], usize)> {
     let [a, b] = line;
     let (top, bottom) = if a.y <= b.y { (a, b) } else { (b, a) };
     let mut cuts = vec![top];
@@ -422,15 +436,55 @@ fn split_at_bands(line: [Point; 2], min_mm: f64) -> Vec<[Point; 2]> {
         k += 1.0;
     }
     cuts.push(bottom);
+    // A short first or last piece: drop the cut that makes it.
+    if cuts.len() > 2 && cuts[0].distance(cuts[1]) < MIN_BAND_PIECE_MM {
+        cuts.remove(1);
+    }
+    let n = cuts.len();
+    if n > 2 && cuts[n - 2].distance(cuts[n - 1]) < MIN_BAND_PIECE_MM {
+        cuts.remove(n - 2);
+    }
     cuts.windows(2)
         .map(|w| [w[0], w[1]])
         .filter(|p| p[0].distance(p[1]) >= min_mm.max(1e-9))
+        .map(|p| {
+            // The band the piece lies in, without a joined bit: its middle
+            // (a joined bit is shorter than the rest of the piece).
+            let mid = p[0].midpoint(p[1]);
+            (p, piece_band(&[mid]))
+        })
         .collect()
+}
+
+/// `ring` (corners, not closed) started at its corner nearest `head` and
+/// closed: how a weed box is cut as one ring, on a mat or inside one feed
+/// band.
+fn ring_from_nearest(ring: &[Point], head: Point) -> Vec<Point> {
+    let start = (0..ring.len())
+        .min_by(|&a, &b| head.distance(ring[a]).total_cmp(&head.distance(ring[b])))
+        .unwrap_or(0);
+    let mut points = rings::rotate_start(ring, start);
+    if let Some(&first) = points.first() {
+        points.push(first);
+    }
+    points
+}
+
+/// The corners of box `r`, in `direction`.
+fn box_corners(r: Rect, direction: RingDirection) -> Vec<Point> {
+    let corners = [
+        Point::new(r.x0, r.y0),
+        Point::new(r.x1, r.y0),
+        Point::new(r.x1, r.y1),
+        Point::new(r.x0, r.y1),
+    ];
+    rings::orient(&corners, direction)
 }
 
 /// A weed piece to order: its object ([`WEED_OBJECT`] for a line,
 /// [`WEED_BOX_OBJECT`] for a box), its index, its points and whether it
-/// is a closed ring.
+/// is a closed ring (then its corners, not closed; [`greedy`] starts it at
+/// the corner nearest the head).
 struct Piece {
     object: ObjectId,
     index: usize,
@@ -439,8 +493,8 @@ struct Piece {
 }
 
 /// Orders `pieces` greedily from `head`: always the nearest end next, cut
-/// from that end (a closed ring from its start). Returns the toolpaths and
-/// the head after them.
+/// from that end (a closed ring from its corner nearest the head). Returns
+/// the toolpaths and the head after them.
 fn greedy(mut pieces: Vec<Piece>, mut head: Point) -> (Vec<Toolpath>, Point) {
     let mut out = Vec::with_capacity(pieces.len());
     while !pieces.is_empty() {
@@ -453,7 +507,14 @@ fn greedy(mut pieces: Vec<Piece>, mut head: Point) -> (Vec<Toolpath>, Point) {
                 if rev && p.closed {
                     continue;
                 }
-                let d = head.distance(*q);
+                let d = if p.closed {
+                    p.points
+                        .iter()
+                        .map(|c| head.distance(*c))
+                        .fold(f64::INFINITY, f64::min)
+                } else {
+                    head.distance(*q)
+                };
                 if d < best.0 {
                     best = (d, i, rev);
                 }
@@ -462,6 +523,9 @@ fn greedy(mut pieces: Vec<Piece>, mut head: Point) -> (Vec<Toolpath>, Point) {
         let mut p = pieces.swap_remove(best.1);
         if best.2 {
             p.points.reverse();
+        }
+        if p.closed {
+            p.points = ring_from_nearest(&p.points, head);
         }
         head = p.points.last().copied().unwrap_or(head);
         let mut t = weed_toolpath(p.points, p.closed, p.index);
@@ -476,9 +540,10 @@ fn greedy(mut pieces: Vec<Piece>, mut head: Point) -> (Vec<Toolpath>, Point) {
 /// the next (the top edge in the first band, the bottom edge in the last,
 /// the sides band by band). Each piece goes on `overlap` mm along the
 /// outline into the next piece, so the joins separate cleanly. A box
-/// inside one band is one closed ring. Each piece comes with its band
-/// (by the piece without its overlap).
-fn box_pieces(r: Rect, overlap: f64) -> Vec<(Vec<Point>, bool, usize)> {
+/// inside one band is one closed ring in `direction` (its corners; the
+/// start is picked when it is cut). Each piece comes with its band (by the
+/// piece without its overlap).
+fn box_pieces(r: Rect, overlap: f64, direction: RingDirection) -> Vec<(Vec<Point>, bool, usize)> {
     let edges: Vec<f64> = {
         let mut v = Vec::new();
         let mut k = (r.y0 / BAND_MM).floor() + 1.0;
@@ -492,7 +557,7 @@ fn box_pieces(r: Rect, overlap: f64) -> Vec<(Vec<Point>, bool, usize)> {
     let (br, bl) = (Point::new(r.x1, r.y1), Point::new(r.x0, r.y1));
     if edges.is_empty() {
         let band = piece_band(&[tl, bl]);
-        return vec![(vec![tl, tr, br, bl, tl], true, band)];
+        return vec![(box_corners(r, direction), true, band)];
     }
     // The outline clockwise on screen from the first cut on the right
     // side, with the cut points marked.
@@ -591,12 +656,12 @@ fn sequence_in_bands(
         // (band, 0 for a line or 1 for a box piece, piece)
         let mut pieces: Vec<(usize, u8, Piece)> = Vec::new();
         for (i, l) in weeds.lines.iter().enumerate() {
-            for p in split_at_bands(*l, s.min_cut_mm) {
-                pieces.push((piece_band(&p), 0, line(i, p)));
+            for (p, band) in split_at_bands(*l, s.min_cut_mm) {
+                pieces.push((band, 0, line(i, p)));
             }
         }
         for (i, r) in weeds.boxes.iter().enumerate() {
-            for (points, closed, band) in box_pieces(*r, BOX_OVERLAP_MM) {
+            for (points, closed, band) in box_pieces(*r, BOX_OVERLAP_MM, s.direction) {
                 pieces.push((
                     band,
                     1,
@@ -650,18 +715,7 @@ fn sequence_in_bands(
         out.extend(greedy(lines.collect(), head).0);
         for (i, r) in weeds.boxes.iter().enumerate() {
             let head = out.last().and_then(end_of).unwrap_or(s.home);
-            let corners = [
-                Point::new(r.x0, r.y0),
-                Point::new(r.x1, r.y0),
-                Point::new(r.x1, r.y1),
-                Point::new(r.x0, r.y1),
-            ];
-            let ring = rings::orient(&corners, s.direction);
-            let start = (0..ring.len())
-                .min_by(|&a, &b| head.distance(ring[a]).total_cmp(&head.distance(ring[b])))
-                .unwrap_or(0);
-            let mut points = rings::rotate_start(&ring, start);
-            points.push(points[0]);
+            let points = ring_from_nearest(&box_corners(*r, s.direction), head);
             let mut t = weed_toolpath(points, true, i);
             t.source.object = WEED_BOX_OBJECT;
             out.push(t);
@@ -720,14 +774,23 @@ mod tests {
     }
 
     #[test]
-    fn band_split_cuts_exactly_at_band_edges() {
-        let pieces = split_at_bands([Point::new(5.0, 49.0), Point::new(5.0, 101.0)], 0.025);
-        let ys: Vec<(f64, f64)> = pieces.iter().map(|p| (p[0].y, p[1].y)).collect();
-        // Every piece in one band, even the short ones at the ends.
-        assert_eq!(ys, vec![(49.0, 50.0), (50.0, 100.0), (100.0, 101.0)]);
-        // A hair below the shortest cut is left out.
-        let pieces = split_at_bands([Point::new(5.0, 10.0), Point::new(5.0, 50.01)], 0.025);
-        assert_eq!(pieces.len(), 1);
+    fn band_split_cuts_at_band_edges_and_joins_short_ends() {
+        let ys = |a: f64, b: f64| -> Vec<(f64, f64, usize)> {
+            split_at_bands([Point::new(5.0, a), Point::new(5.0, b)], 0.025)
+                .iter()
+                .map(|(p, band)| (p[0].y, p[1].y, *band))
+                .collect()
+        };
+        // End pieces of 1 mm or more are cut on their own, in their band.
+        assert_eq!(
+            ys(49.0, 101.0),
+            vec![(49.0, 50.0, 0), (50.0, 100.0, 1), (100.0, 101.0, 2)]
+        );
+        // Shorter end pieces join their neighbour and take its band: the
+        // line runs 0.5 mm back and 0.6 mm on past the band edges.
+        assert_eq!(ys(49.5, 100.6), vec![(49.5, 100.6, 1)]);
+        assert_eq!(ys(49.5, 120.0), vec![(49.5, 100.0, 1), (100.0, 120.0, 2)]);
+        assert_eq!(ys(10.0, 50.01), vec![(10.0, 50.01, 0)]);
     }
 
     /// The old merge: scan every pair, merge, start again. The sweep must
@@ -780,7 +843,7 @@ mod tests {
     #[test]
     fn a_box_across_bands_is_band_pieces_that_overlap() {
         let r = Rect::new(10.0, 30.0, 60.0, 130.0);
-        let pieces = box_pieces(r, 0.5);
+        let pieces = box_pieces(r, 0.5, RingDirection::Ccw);
         // Cuts at 50 and 100 on both sides: four pieces, the top one round
         // the top corners, the bottom one round the bottom corners.
         assert_eq!(pieces.len(), 4);
@@ -792,7 +855,7 @@ mod tests {
         let perimeter = 2.0 * (r.width() + r.height());
         assert!((total - perimeter - 4.0 * 0.5).abs() < 1e-9, "{total}");
         // One band: one closed ring.
-        let one = box_pieces(Rect::new(10.0, 5.0, 60.0, 45.0), 0.5);
+        let one = box_pieces(Rect::new(10.0, 5.0, 60.0, 45.0), 0.5, RingDirection::Ccw);
         assert_eq!(one.len(), 1);
         assert!(one[0].1);
     }
@@ -840,6 +903,49 @@ mod tests {
         // first: the test tells the two apart.
         let out = sequence_in_bands(design, &[1, 1], &weeds, &s);
         assert_eq!(kinds(&out), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn a_box_in_one_band_is_cut_as_on_a_mat() {
+        // Without a mat a box inside one band is one ring: it follows the
+        // ring direction and starts at the corner nearest the head, the
+        // same as the box on a mat.
+        let design = vec![Toolpath::new(
+            vec![Point::new(20.0, 20.0), Point::new(57.0, 43.0)],
+            false,
+            PathRef {
+                object: ObjectId(1),
+                path_index: 0,
+            },
+        )];
+        let weeds = Weeds {
+            boxes: vec![Rect::new(10.0, 5.0, 60.0, 45.0)],
+            ..Weeds::default()
+        };
+        let mut rings = Vec::new();
+        for direction in [RingDirection::Ccw, RingDirection::Cw] {
+            let box_of = |monotonic_feed: bool| {
+                let mut s = PipelineSettings::with_defaults(
+                    Rect::new(0.0, 0.0, 300.0, 300.0),
+                    Point::new(0.0, 0.0),
+                );
+                s.direction = direction;
+                s.monotonic_feed = monotonic_feed;
+                let out = sequence(design.clone(), &weeds, &s);
+                let t = out.last().unwrap().clone();
+                assert!(t.closed && t.kind == ToolpathKind::Weed);
+                t.points
+            };
+            let (no_mat, mat) = (box_of(true), box_of(false));
+            assert_eq!(no_mat, mat, "{direction:?}");
+            // The head is at (57, 43): the box starts at (60, 45).
+            assert_eq!(no_mat[0], Point::new(60.0, 45.0));
+            assert_eq!(no_mat.len(), 5);
+            rings.push(no_mat);
+        }
+        // The two directions go round opposite ways.
+        assert_eq!(rings[0][1], rings[1][3]);
+        assert_ne!(rings[0][1], rings[1][1]);
     }
 
     #[test]

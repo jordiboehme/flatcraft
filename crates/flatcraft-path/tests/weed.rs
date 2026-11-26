@@ -437,6 +437,60 @@ fn without_a_mat_the_box_is_cut_band_by_band() {
 }
 
 #[test]
+fn without_a_mat_no_weed_piece_is_shorter_than_1_mm() {
+    // The weed region runs from y 49.5 to 100.6 (design 52.5..97.6 plus
+    // the 3 mm margin): cut at the band edges the vertical lines would
+    // leave 0.5 mm and 0.6 mm end pieces. They join their neighbour, and
+    // each line in the gap is still one unbroken cut from end to end.
+    let input = [
+        placed(1, rect_path(20.0, 52.5, 20.0, 45.1)),
+        placed(2, rect_path(120.0, 52.5, 20.0, 45.1)),
+    ];
+    let s = PipelineSettings {
+        monotonic_feed: true,
+        ..settings(lines_only(WeedLines::Vertical, 15.0))
+    };
+    let out = plan(&input, &s).unwrap();
+    let w = weeds(&out);
+    assert!(!w.is_empty());
+    for t in &w {
+        let length: f64 = t.points.windows(2).map(|p| p[0].distance(p[1])).sum();
+        assert!(length >= 1.0, "a weed piece of {length} mm: {:?}", t.points);
+    }
+    // The lines in the gap between the two shapes.
+    let mut xs: Vec<f64> = w
+        .iter()
+        .map(|t| t.points[0].x)
+        .filter(|x| (45.0..115.0).contains(x))
+        .collect();
+    xs.sort_by(f64::total_cmp);
+    xs.dedup();
+    assert!(!xs.is_empty());
+    for x in xs {
+        let mut spans: Vec<(f64, f64)> = w
+            .iter()
+            .filter(|t| t.points[0].x == x)
+            .map(|t| {
+                let (a, b) = (t.points[0].y, t.points.last().unwrap().y);
+                (a.min(b), a.max(b))
+            })
+            .collect();
+        spans.sort_by(|p, q| p.0.total_cmp(&q.0));
+        assert!((spans[0].0 - 49.5).abs() < 1e-9, "x {x}: {spans:?}");
+        assert!(
+            (spans.last().unwrap().1 - 100.6).abs() < 1e-9,
+            "x {x}: {spans:?}"
+        );
+        for pair in spans.windows(2) {
+            assert!(
+                pair[1].0 <= pair[0].1 + 1e-9,
+                "x {x}: a bridge in {spans:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn per_object_lines_stay_inside_the_boxes() {
     // Two stickers 200 mm apart: the vinyl between the boxes stays whole.
     let input = [
