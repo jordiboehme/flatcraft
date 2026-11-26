@@ -178,7 +178,14 @@ fn words(x: f64, y: f64, size: f64, lead: f64, spacing: f64, lines: &[&str]) -> 
             first + i as f64 * lead
         );
     }
+    LETTERING.with(|l| l.borrow_mut().push(out.clone()));
     out
+}
+
+thread_local! {
+    /// Every line block [`words`] made on this thread, so a test can check
+    /// all the lettering of the samples.
+    static LETTERING: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// `body` with every `<text>` turned into the outlines of its letters, as
@@ -986,12 +993,50 @@ fn cut_lines(doc: &flatcraft_core::document::Document) -> CutLines {
 }
 
 /// The places where cut lines come closer than 1 mm: two different lines,
-/// or one line that comes back to itself after more than 5 mm along it.
-/// That is a stroke or a gap under 1 mm wide and more than about 2 mm long.
-/// A pointed tip or notch is fine unless it is sharper than about 23
-/// degrees (its sides 1 mm apart 2.5 mm from its point). Returns, per object name, the
-/// narrowest place in mm and where it is.
+/// or one line that comes back to itself after more than 2 mm along it
+/// (a stroke or a gap under 1 mm wide, from about 0.6 mm long). A pointed
+/// tip or notch is fine: there the line between the two places and the
+/// way round enclose about a triangle, half the box of the gap times the
+/// depth, where a stroke or a neck fills all of it or more. Returns, per
+/// object name, the narrowest place in mm and where it is.
 fn narrow_places(lines: &CutLines) -> std::collections::BTreeMap<String, (f64, kurbo::Point)> {
+    // Where each contour's points start in `lines.points`.
+    let mut starts = vec![0; lines.contours.len() + 1];
+    for (i, (c, _, _)) in lines.points.iter().enumerate().rev() {
+        starts[*c] = i;
+    }
+    starts[lines.contours.len()] = lines.points.len();
+    // True when the shorter way round from point i to point j of one
+    // contour is a pointed tip or notch.
+    let tip = |i: usize, j: usize, c: usize| {
+        let (lo, hi) = (i.min(j), i.max(j));
+        let (start, end) = (starts[c], starts[c + 1]);
+        let way: Vec<kurbo::Point> = if hi - lo <= (end - start) / 2 {
+            (lo..=hi).map(|k| lines.points[k].2).collect()
+        } else {
+            (hi..end)
+                .chain(start..=lo)
+                .map(|k| lines.points[k].2)
+                .collect()
+        };
+        let (p, q) = (way[0], way[way.len() - 1]);
+        let pq = q - p;
+        let depth = way
+            .iter()
+            .map(|r| {
+                let t = ((*r - p).dot(pq) / pq.hypot2()).clamp(0.0, 1.0);
+                r.distance(p + pq * t)
+            })
+            .fold(0.0, f64::max);
+        let area = way
+            .iter()
+            .zip(way.iter().cycle().skip(1))
+            .map(|(a, b)| a.x * b.y - b.x * a.y)
+            .sum::<f64>()
+            .abs()
+            / 2.0;
+        area < 0.85 * p.distance(q) * depth
+    };
     let cell = |p: kurbo::Point| (p.x.floor() as i64, p.y.floor() as i64);
     let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> = Default::default();
     for (i, (_, _, p)) in lines.points.iter().enumerate() {
@@ -1010,13 +1055,8 @@ fn narrow_places(lines: &CutLines) -> std::collections::BTreeMap<String, (f64, k
                     }
                     let length = lines.contours[c].0;
                     let apart = (at - bt).abs().min(length - (at - bt).abs());
-                    if d != c || apart > 5.0 {
+                    if d != c || (apart > 2.0 && !tip(i, j, c)) {
                         let name = &lines.contours[c].1;
-                        if name.starts_with("Words") && gap < 0.4 {
-                            eprintln!(
-                                "DBG {c} {d} {at:.2} {bt:.2} {apart:.2} {length:.2} {p:?} {q:?}"
-                            );
-                        }
                         let e = narrow.entry(name.clone()).or_insert((gap, p));
                         if gap < e.0 {
                             *e = (gap, p);
@@ -1058,6 +1098,49 @@ fn the_narrow_place_check_finds_a_thin_stroke_and_a_tight_gap() {
     assert!((gap - 0.9).abs() < 0.05, "{gap}");
     let stroke = narrowest(&format!("{wide_bar}{thin_bar}")).unwrap();
     assert!((stroke - 0.8).abs() < 0.05, "{stroke}");
+    // Inside one line: a short 0.8 x 1.5 mm spur on a square, and two
+    // squares joined by a 0.8 x 3 mm neck.
+    let spur = poly(&[
+        (20.0, 30.0),
+        (20.0, 20.0),
+        (24.6, 20.0),
+        (24.6, 18.5),
+        (25.4, 18.5),
+        (25.4, 20.0),
+        (30.0, 20.0),
+        (30.0, 30.0),
+    ]);
+    let spur = narrowest(&spur).unwrap();
+    assert!((spur - 0.8).abs() < 0.05, "{spur}");
+    let neck = poly(&[
+        (40.0, 20.0),
+        (50.0, 20.0),
+        (50.0, 24.6),
+        (53.0, 24.6),
+        (53.0, 20.0),
+        (63.0, 20.0),
+        (63.0, 30.0),
+        (53.0, 30.0),
+        (53.0, 25.4),
+        (50.0, 25.4),
+        (50.0, 30.0),
+        (40.0, 30.0),
+    ]);
+    let neck = narrowest(&neck).unwrap();
+    assert!((neck - 0.8).abs() < 0.05, "{neck}");
+    // A sharp point of 30 degrees and a notch of 30 degrees are fine.
+    let point = poly(&[(80.0, 40.0), (74.64, 20.0), (85.36, 20.0)]);
+    assert_eq!(narrowest(&point), None);
+    let notch = poly(&[
+        (100.0, 20.0),
+        (104.64, 20.0),
+        (110.0, 40.0),
+        (115.36, 20.0),
+        (120.0, 20.0),
+        (120.0, 50.0),
+        (100.0, 50.0),
+    ]);
+    assert_eq!(narrowest(&notch), None);
 }
 
 #[test]
@@ -1259,20 +1342,36 @@ fn the_gift_tags_cut_each_hole_before_its_tag() {
     }
 }
 
+/// Every line of lettering in the samples: after the ink-trap fill no
+/// place under 1 mm is left and every counter is still there.
 #[test]
 fn the_ink_trap_fill_closes_the_slits_and_keeps_the_counters() {
-    let line = words(150.0, 50.0, 12.5, 0.0, 0.6, &["GETS RESPECT."]);
-    let narrow = |body: &str| {
+    LETTERING.with(|l| l.borrow_mut().clear());
+    for sample in &SAMPLES {
+        drop(build(sample.id));
+    }
+    let lettering = LETTERING.with(|l| l.borrow().clone());
+    // 2 blocks on the shirt; 5 quotes, 5 names and the motto.
+    assert_eq!(lettering.len(), 2 + 11);
+    // (narrow places, number of cut lines) of `body`.
+    let check = |body: &str| {
         let dir = tempfile::tempdir().unwrap();
         let s = session(&dir);
-        import(&s, "Line", body);
+        import(&s, "Letters", body);
         let doc = s.lock().unwrap().doc().document.clone();
-        let lines = cut_lines(&doc).contours.len();
-        (narrow_places(&cut_lines(&doc)).contains_key("Line"), lines)
+        let lines = cut_lines(&doc);
+        (
+            narrow_places(&lines).get("Letters").copied(),
+            lines.contours.len(),
+        )
     };
-    let (before, contours) = narrow(&outlined_with(&line, false));
-    let (after, filled) = narrow(&outlined(&line));
-    assert!(before, "the G of Plex has a slit under 1 mm");
-    assert!(!after);
-    assert_eq!(filled, contours, "every counter stays");
+    let mut slits = 0;
+    for text in &lettering {
+        let (before, contours) = check(&outlined_with(text, false));
+        let (after, filled) = check(&outlined(text));
+        slits += usize::from(before.is_some());
+        assert_eq!(after, None, "{text}");
+        assert_eq!(filled, contours, "every counter stays: {text}");
+    }
+    assert!(slits > 0, "Plex has slits under 1 mm the fill closes");
 }
