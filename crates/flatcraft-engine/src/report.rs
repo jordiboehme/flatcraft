@@ -37,6 +37,9 @@ pub enum Code {
     /// Filled paths without area (or thinner than the cut tolerance) that
     /// the cut mode "object outlines" cuts nothing of.
     FillIgnored,
+    /// Filled shapes thinner than the knife's narrowest feature (half the
+    /// blade offset): the cut drops them.
+    ThinSlivers,
     /// The object fits the cutting area but does not lie inside it.
     OutsideArea,
     /// The object is larger than the cutting area.
@@ -75,11 +78,12 @@ pub enum Code {
 
 impl Code {
     /// Every code, in the order the tool description lists them.
-    pub const ALL: [Code; 20] = [
+    pub const ALL: [Code; 21] = [
         Code::OpenPaths,
         Code::Hairline,
         Code::BelowMinFeature,
         Code::FillIgnored,
+        Code::ThinSlivers,
         Code::OutsideArea,
         Code::LargerThanArea,
         Code::MissingFont,
@@ -105,6 +109,7 @@ impl Code {
             Code::Hairline => "hairline",
             Code::BelowMinFeature => "below_min_feature",
             Code::FillIgnored => "fill_ignored",
+            Code::ThinSlivers => "thin_slivers",
             Code::OutsideArea => "outside_area",
             Code::LargerThanArea => "larger_than_area",
             Code::MissingFont => "missing_font",
@@ -131,6 +136,7 @@ impl Code {
             Code::Hairline => "Thin double cuts",
             Code::BelowMinFeature => "Tiny shapes",
             Code::FillIgnored => "Fills that are not cut",
+            Code::ThinSlivers => "Slivers too thin to cut",
             Code::OutsideArea => "Off the mat",
             Code::LargerThanArea => "Bigger than the mat",
             Code::MissingFont => "Missing font",
@@ -452,6 +458,8 @@ struct Shapes {
     hairline_widths: (f64, f64),
     /// Filled paths that give nothing to cut.
     no_area: usize,
+    /// Filled shapes dropped as slivers.
+    slivers: usize,
 }
 
 /// One subpath of a cut path: whether it is closed, the distance of its
@@ -555,6 +563,7 @@ fn measure(input: &JobInput, o: &JobObject, options: &CutOptions, min_feature: f
     let mut m = Shapes {
         hairline_widths: (f64::INFINITY, 0.0),
         no_area: facts.no_area,
+        slivers: facts.slivers,
         ..Shapes::default()
     };
     let gap_limit = gap_limit_mm(min_feature);
@@ -634,6 +643,8 @@ pub struct Limits {
     pub area: Option<Rect>,
     pub tolerance_mm: f64,
     pub min_feature_mm: f64,
+    /// The narrowest filled shape the knife cuts ([`min_width_mm`]).
+    pub min_width_mm: f64,
 }
 
 impl Limits {
@@ -645,6 +656,7 @@ impl Limits {
             area,
             tolerance_mm: input.plotter.flatten_tolerance_mm,
             min_feature_mm: min_feature_mm(input.plotter.blade_offset_mm),
+            min_width_mm: input.min_width_mm(),
         }
     }
 }
@@ -823,6 +835,9 @@ fn check_object(input: &JobInput, o: &JobObject, limits: &Limits) -> Report {
             fixes: fix.into_iter().collect(),
         });
     }
+    if m.slivers > 0 {
+        issues.push(thin_slivers(o, m.slivers, limits, Severity::Warning));
+    }
     if m.no_area > 0 {
         issues.push(fill_ignored(
             input,
@@ -946,6 +961,36 @@ fn round_factor(f: f64) -> String {
     } else {
         format!("{f:.1}")
     }
+}
+
+/// The hint of [`Code::ThinSlivers`].
+pub const THIN_SLIVERS_HINT: &str = "Both edges of such a thin strip lie inside the swing of the blade tip, so the knife cannot follow them. Make the shapes wider in your drawing app, or give them a stroke: a stroked thin shape is cut once, along its middle.";
+
+/// The `thin_slivers` issue: `n` filled slivers of `o` are dropped.
+fn thin_slivers(o: &JobObject, n: usize, limits: &Limits, severity: Severity) -> Issue {
+    let (what, verb) = if n == 1 {
+        ("1 filled sliver is".to_string(), "is")
+    } else {
+        (format!("{n} filled slivers are"), "are")
+    };
+    Issue {
+        code: Code::ThinSlivers,
+        severity,
+        object_ids: vec![o.id.0],
+        paths: n,
+        message: format!(
+            "{}: {what} thinner than {}, half the blade offset, so {verb} not cut.",
+            quoted(&o.name),
+            mm(limits.min_width_mm)
+        ),
+        hint: THIN_SLIVERS_HINT.into(),
+        fixes: Vec::new(),
+    }
+}
+
+/// The `thin_slivers` issue of an object the job does cut.
+pub(crate) fn thin_slivers_issue(input: &JobInput, o: &JobObject, n: usize) -> Option<Issue> {
+    (n > 0).then(|| thin_slivers(o, n, &Limits::of(input), Severity::Warning))
 }
 
 /// The `fill_ignored` issue of an object the job does cut.
@@ -1240,7 +1285,13 @@ pub fn nothing_to_cut(input: &JobInput, facts: &BuildFacts, too_short: bool) -> 
         let Some(o) = input.objects.iter().find(|o| o.id == *id) else {
             continue;
         };
-        if *no_area > 0 {
+        let slivers = input.cut_geometry().facts(*id).slivers;
+        if slivers > 0 {
+            out.push(thin_slivers(o, slivers, &limits, Severity::Error));
+        }
+        if slivers > 0 && *no_area == 0 {
+            // The slivers are the reason; there is no other path.
+        } else if *no_area > 0 {
             out.push(fill_ignored(
                 input,
                 o,

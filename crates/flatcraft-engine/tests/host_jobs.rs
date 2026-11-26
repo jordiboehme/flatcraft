@@ -307,9 +307,10 @@ fn circle_svg(r: f64) -> String {
 #[test]
 fn tight_curves_warn_in_every_mode() {
     let d = dirs();
-    // Firmware, blade 0.25: a 0.1 mm circle is tighter, a 5 mm one is not.
+    // Firmware, blade 0.25: a 0.2 mm circle is tighter (a 0.1 mm one is a sliver now,
+    // thinner than half the blade offset, and not cut), a 5 mm one is not.
     let mut s = session(&d);
-    import(&mut s, &circle_svg(0.1), "dot");
+    import(&mut s, &circle_svg(0.2), "dot");
     let w = warnings(&run(&mut s, "job.preview", json!({})));
     assert!(
         w.iter()
@@ -323,7 +324,7 @@ fn tight_curves_warn_in_every_mode() {
 
     // Host, blade 0.3: the same warning, with the blade offset.
     let mut s = host_session(&d, "host", 0.3, 0.3, "");
-    import(&mut s, &circle_svg(0.1), "dot");
+    import(&mut s, &circle_svg(0.2), "dot");
     let w = warnings(&run(&mut s, "job.preview", json!({})));
     assert!(
         w.iter()
@@ -333,7 +334,7 @@ fn tight_curves_warn_in_every_mode() {
 
     // Two passes cut the same curve twice, but it is one curve.
     let mut s = session(&d);
-    import(&mut s, &circle_svg(0.1), "dot");
+    import(&mut s, &circle_svg(0.2), "dot");
     run(&mut s, "job.set_overrides", json!({ "passes": 2 }));
     let w = warnings(&run(&mut s, "job.preview", json!({})));
     assert!(

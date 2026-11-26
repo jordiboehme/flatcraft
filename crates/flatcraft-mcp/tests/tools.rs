@@ -384,15 +384,15 @@ async fn exec(f: &Fixture, command: &str, params: Value) -> Value {
 #[tokio::test]
 async fn an_agent_runs_the_fix_of_an_import_report() {
     let f = connect().await;
-    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><rect x="20" y="20" width="30" height="30" fill="none" stroke="black" stroke-width="1"/></svg>"#;
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><rect x="20" y="20" width="1" height="1"/></svg>"#;
     let r = exec(
         &f,
         "object.import_svg",
-        json!({ "svg": svg, "name": "frame" }),
+        json!({ "svg": svg, "name": "dot" }),
     )
     .await;
     let issue = &r["report"]["issues"][0];
-    assert_eq!(issue["code"], "hairline");
+    assert_eq!(issue["code"], "below_min_feature");
     assert_eq!(issue["severity"], "warning");
     assert_eq!(issue["object_ids"], json!([r["id"]]));
     let fix = &issue["fixes"][0];

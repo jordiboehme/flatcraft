@@ -651,10 +651,17 @@ fn cut_only_the_test_shape_skips_the_rest_once() {
 fn tiny_details_bring_the_report_fixes() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = session(&dir);
-    run(
+    let id = run(
         &mut s,
         "object.import_svg",
         json!({ "name": "frame", "svg": svg(100.0, r#"<rect x="10" y="10" width="60" height="60" fill="none" stroke="black" stroke-width="1"/>"#) }),
+    )["id"]
+        .clone();
+    // A 1 mm stroke is cut once by default; cut around it, it is a hairline.
+    run(
+        &mut s,
+        "object.set_cut_options",
+        json!({ "ids": [id], "strokes": "outline" }),
     );
     let c = list(&mut s, Symptom::TornOrDragged);
     let it = item(&c, Check::TinyDetails);

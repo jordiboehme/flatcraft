@@ -212,7 +212,10 @@ fn old_project_without_cut_options_loads_defaults() {
     assert_eq!(cut, flatcraft_core::document::CutOptions::default());
     assert_eq!(cut.mode, flatcraft_core::document::CutMode::ObjectOutlines);
     assert_eq!(cut.strokes, flatcraft_core::document::StrokeMode::Auto);
-    assert_eq!(cut.auto_threshold_mm, 0.5);
+    assert_eq!(
+        cut.auto_threshold_mm,
+        flatcraft_core::document::DEFAULT_AUTO_THRESHOLD_MM
+    );
 }
 
 #[test]

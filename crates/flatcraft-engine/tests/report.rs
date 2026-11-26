@@ -193,6 +193,13 @@ fn a_stroke_cut_on_both_edges_below_the_minimum_feature_is_a_hairline() {
         "frame",
         r#"<rect x="20" y="20" width="30" height="30" fill="none" stroke="black" stroke-width="1"/>"#,
     );
+    // By default a stroke under the minimum feature size is cut once.
+    assert!(
+        !codes(&r["report"]).contains(&"hairline".to_string()),
+        "{r}"
+    );
+    outline_strokes(&mut t.s, id);
+    let r = json!({ "report": check(&mut t.s) });
     well_formed(&r["report"]);
     let i = issue(&r["report"], "hairline");
     assert_eq!(i["severity"], "warning");
@@ -769,6 +776,16 @@ fn offered_fixes_always_come_to_an_end() {
 const FRAME: &str =
     r#"<rect x="60" y="60" width="30" height="30" fill="none" stroke="black" stroke-width="1"/>"#;
 
+/// Cuts every stroke of object `id` around its outline: the person's own
+/// choice, so a thin stroke becomes a hairline the report names.
+fn outline_strokes(s: &mut Session, id: u64) {
+    run(
+        s,
+        "object.set_cut_options",
+        json!({ "ids": [id], "strokes": "outline" }),
+    );
+}
+
 #[test]
 fn object_outlines_is_offered_for_filled_shapes_even_with_gaps() {
     let mut t = t();
@@ -809,6 +826,7 @@ fn reload_relink_and_retrace_return_the_report() {
     let id = run(&mut t.s, "object.import", json!({ "path": file }))["id"]
         .as_u64()
         .unwrap();
+    outline_strokes(&mut t.s, id);
     // The file changes: now it has a dashed line and a hairline frame.
     let dashed = format!(
         r#"<path d="M10 10 H90" fill="none" stroke="black" stroke-width="0.2" stroke-dasharray="2 1"/>{FRAME}"#
@@ -846,6 +864,7 @@ fn reload_relink_and_retrace_return_the_report() {
 fn a_fix_of_linked_copies_names_every_member() {
     let mut t = t();
     let (id, _) = import(&mut t.s, "frame", FRAME);
+    outline_strokes(&mut t.s, id);
     let r = run(
         &mut t.s,
         "object.copies",
@@ -907,7 +926,8 @@ fn each_fix_is_one_undo_step() {
         (
             "hairline",
             Box::new(|s| {
-                import(s, "frame", FRAME);
+                let (id, _) = import(s, "frame", FRAME);
+                outline_strokes(s, id);
             }),
         ),
         (

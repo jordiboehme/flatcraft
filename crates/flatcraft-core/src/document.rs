@@ -157,12 +157,18 @@ impl CutOptions {
     }
 }
 
+/// The default `auto_threshold_mm`, mm: the minimum feature size of the
+/// default blade (6 blade offsets of 0.25 mm, `report::min_feature_mm` in
+/// the engine, which checks that both agree). A stroke outlined by default
+/// is never thinner than the strip the report calls a hairline.
+pub const DEFAULT_AUTO_THRESHOLD_MM: f64 = 1.5;
+
 impl Default for CutOptions {
     fn default() -> Self {
         Self {
             mode: CutMode::ObjectOutlines,
             strokes: StrokeMode::Auto,
-            auto_threshold_mm: 0.5,
+            auto_threshold_mm: DEFAULT_AUTO_THRESHOLD_MM,
         }
     }
 }

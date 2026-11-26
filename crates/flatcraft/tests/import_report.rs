@@ -9,7 +9,7 @@ use common::{
 use egui::accesskit::Role;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use flatcraft::ui::{Action, Workspace};
-use flatcraft_core::document::{ObjectId, StrokeMode};
+use flatcraft_core::document::ObjectId;
 use flatcraft_engine::session::Origin;
 use flatcraft_mcp::SharedSession;
 use serde_json::{Value, json};
@@ -37,9 +37,9 @@ fn page(body: &str) -> String {
     )
 }
 
-const FRAME: &str =
-    r#"<rect x="20" y="20" width="30" height="30" fill="none" stroke="black" stroke-width="1"/>"#;
-const HAIRLINE_TEXT: &str = "'frame': 1 line is cut along both edges but only 1 mm wide. A strip thinner than 1.5 mm tears.";
+/// A 1 mm square: below the minimum feature size, with a Scale up fix.
+const TINY: &str = r#"<rect x="20" y="20" width="1" height="1"/>"#;
+const TINY_TEXT: &str = "'frame': 1 shape is smaller than 1.5 mm, the smallest shape this blade cuts cleanly. They may tear or not come off.";
 
 fn start(dir: &tempfile::TempDir) -> (SharedSession, AppHarness) {
     let s = session(dir);
@@ -66,17 +66,16 @@ fn a_clean_import_shows_no_report() {
 fn the_report_card_names_the_issue_and_its_fix_resolves_it() {
     let dir = tempfile::tempdir().unwrap();
     let (s, mut h) = start(&dir);
-    drop_svg(&mut h, &dir, "frame", &page(FRAME));
+    drop_svg(&mut h, &dir, "frame", &page(TINY));
     assert!(h.query_by_label("Import report").is_some());
-    assert!(h.query_by_label(HAIRLINE_TEXT).is_some());
-    h.get_by_role_and_label(Role::Button, "Cut as single lines")
-        .click();
+    assert!(h.query_by_label(TINY_TEXT).is_some());
+    h.get_by_role_and_label(Role::Button, "Scale up").click();
     wait_for_workers(&mut h);
-    // The button ran the fix's command: the stroke is now one cut.
-    let strokes = s.lock().unwrap().doc().document.objects[0].cut.strokes;
-    assert_eq!(strokes, StrokeMode::CentreLine);
+    // The button ran the fix's command: the square is now big enough.
+    let c = run(&s, "document.check", json!({}));
+    assert_eq!(c["issues"], json!([]), "{c}");
     // Fixed: the line is gone, and with it the card.
-    assert!(h.query_by_label(HAIRLINE_TEXT).is_none());
+    assert!(h.query_by_label(TINY_TEXT).is_none());
     assert!(app(&h).ui.prepare.report.is_none());
     assert!(h.query_by_label("Import report").is_none());
 }
@@ -85,12 +84,12 @@ fn the_report_card_names_the_issue_and_its_fix_resolves_it() {
 fn the_report_buttons_run_exactly_the_engine_fixes() {
     let dir = tempfile::tempdir().unwrap();
     let (s, mut h) = start(&dir);
-    drop_svg(&mut h, &dir, "frame", &page(FRAME));
+    drop_svg(&mut h, &dir, "frame", &page(TINY));
     // The same import as an agent: the same fix.
     let agent = run(
         &s,
         "object.import_svg",
-        json!({ "svg": page(FRAME), "name": "frame" }),
+        json!({ "svg": page(TINY), "name": "frame" }),
     );
     let fix = &agent["report"]["issues"][0]["fixes"][0];
     let card = app(&h).ui.prepare.report.clone().unwrap();
@@ -129,7 +128,7 @@ fn a_file_bigger_than_the_mat_scales_to_fit_from_the_card() {
 fn show_me_selects_the_object_and_moves_the_view_to_it() {
     let dir = tempfile::tempdir().unwrap();
     let (s, mut h) = start(&dir);
-    drop_svg(&mut h, &dir, "frame", &page(FRAME));
+    drop_svg(&mut h, &dir, "frame", &page(TINY));
     run(&s, "object.select", json!({ "ids": [] }));
     h.run();
     h.get_by_role_and_label(Role::Button, "Show me").click();
@@ -157,11 +156,11 @@ fn show_me_selects_the_object_and_moves_the_view_to_it() {
 fn dismiss_hides_the_card() {
     let dir = tempfile::tempdir().unwrap();
     let (_, mut h) = start(&dir);
-    drop_svg(&mut h, &dir, "frame", &page(FRAME));
+    drop_svg(&mut h, &dir, "frame", &page(TINY));
     h.get_by_role_and_label(Role::Button, "Dismiss").click();
     h.run();
     assert!(app(&h).ui.prepare.report.is_none());
-    assert!(h.query_by_label(HAIRLINE_TEXT).is_none());
+    assert!(h.query_by_label(TINY_TEXT).is_none());
 }
 
 #[test]
@@ -282,26 +281,26 @@ const DASH_TEXT: &str = "1 stroke is dashed; its dashes are cut as a solid line.
 fn the_most_severe_line_comes_first() {
     let dir = tempfile::tempdir().unwrap();
     let (_, mut h) = start(&dir);
-    // A dashed line (info, found in the file) and a hairline (warning).
-    drop_svg(&mut h, &dir, "frame", &page(&format!("{DASHED}{FRAME}")));
+    // A dashed line (info, found in the file) and a tiny shape (warning).
+    drop_svg(&mut h, &dir, "frame", &page(&format!("{DASHED}{TINY}")));
     let card = app(&h).ui.prepare.report.clone().unwrap();
     let order: Vec<&str> = card.all().iter().map(|i| i.code.as_str()).collect();
-    assert_eq!(order, ["hairline", "dashes_ignored"]);
+    assert_eq!(order, ["below_min_feature", "dashes_ignored"]);
     let top = |label: &str| h.get_by_label(label).rect().min.y;
-    assert!(top(HAIRLINE_TEXT) < top(DASH_TEXT));
+    assert!(top(TINY_TEXT) < top(DASH_TEXT));
 }
 
 #[test]
 fn a_reload_forgets_what_the_old_file_had() {
     let dir = tempfile::tempdir().unwrap();
     let (s, mut h) = start(&dir);
-    drop_svg(&mut h, &dir, "frame", &page(&format!("{DASHED}{FRAME}")));
+    drop_svg(&mut h, &dir, "frame", &page(&format!("{DASHED}{TINY}")));
     assert!(h.query_by_label(DASH_TEXT).is_some());
     // The person fixes the file in their drawing app and reloads it.
     std::fs::write(
         dir.path().join("frame.svg"),
         page(&format!(
-            r#"<path d="M10 80 H90" fill="none" stroke="black" stroke-width="0.2"/>{FRAME}"#
+            r#"<path d="M10 80 H90" fill="none" stroke="black" stroke-width="0.2"/>{TINY}"#
         )),
     )
     .unwrap();
@@ -310,19 +309,19 @@ fn a_reload_forgets_what_the_old_file_had() {
     app_mut(&mut h).apply(&ctx, vec![Action::run(doc_id, "object.reload", json!({}))]);
     wait_for_workers(&mut h);
     assert!(h.query_by_label(DASH_TEXT).is_none());
-    // The hairline is still there: the reload did not fix it.
-    assert!(h.query_by_label(HAIRLINE_TEXT).is_some());
+    // The tiny shape is still there: the reload did not fix it.
+    assert!(h.query_by_label(TINY_TEXT).is_some());
 }
 
 #[test]
 fn a_reload_adds_what_the_new_file_has() {
     let dir = tempfile::tempdir().unwrap();
     let (s, mut h) = start(&dir);
-    drop_svg(&mut h, &dir, "frame", &page(FRAME));
+    drop_svg(&mut h, &dir, "frame", &page(TINY));
     assert!(h.query_by_label(DASH_TEXT).is_none());
     std::fs::write(
         dir.path().join("frame.svg"),
-        page(&format!("{DASHED}{FRAME}")),
+        page(&format!("{DASHED}{TINY}")),
     )
     .unwrap();
     let doc_id = s.lock().unwrap().doc().id();
@@ -330,7 +329,7 @@ fn a_reload_adds_what_the_new_file_has() {
     app_mut(&mut h).apply(&ctx, vec![Action::run(doc_id, "object.reload", json!({}))]);
     wait_for_workers(&mut h);
     assert!(h.query_by_label(DASH_TEXT).is_some());
-    assert!(h.query_by_label(HAIRLINE_TEXT).is_some());
+    assert!(h.query_by_label(TINY_TEXT).is_some());
 }
 
 #[test]
@@ -394,7 +393,7 @@ fn hidden_lines_are_counted_and_one_click_scrolls_to_them() {
     let mut h = common::harness_sized(&dir, s, [1400.0, 450.0], 8, |a| a);
     to_prepare(&mut h);
     let many = page(&format!(
-        r#"{FRAME}<path d="M60 10 H90 V40 H60 V10.4" fill="none" stroke="black" stroke-width="0.2"/><circle cx="70" cy="70" r="0.4"/><path d="M10 80 L50 80"/>{DASHED}"#
+        r#"<rect x="10" y="90" width="50" height="0.1"/><path d="M60 10 H90 V40 H60 V10.4" fill="none" stroke="black" stroke-width="0.2"/><circle cx="70" cy="70" r="0.4"/><path d="M10 80 L50 80"/>{DASHED}"#
     ));
     drop_svg(&mut h, &dir, "many", &many);
     let more = |h: &AppHarness| {

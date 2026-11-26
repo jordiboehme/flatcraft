@@ -6,7 +6,9 @@ mod common;
 
 use std::path::PathBuf;
 
-use common::{AppHarness, app, app_mut, harness, import_square, session, to_prepare, undo_len};
+use common::{
+    AppHarness, app, app_mut, harness, import_square, session, settle, to_prepare, undo_len,
+};
 use flatcraft::ui::help::{self, SHORTCUTS};
 use flatcraft::ui::menu_model::{Cmd, Entry, Leaf, MenuInput, MenuModel, Sub};
 use flatcraft::ui::tools::{self, Act, TOOLS};
@@ -1111,7 +1113,9 @@ fn every_enabled_menu_item_does_something_when_clicked() {
             .unwrap_or_else(|| panic!("{cmd:?}"));
         let ctx = f.h.ctx.clone();
         app_mut(&mut f.h).apply(&ctx, vec![action]);
-        f.h.run();
+        // Some items start a worker (the hole finder of Pick on the mat)
+        // that asks for a repaint when it is done: settle by the clock.
+        settle(&mut f.h);
         assert_ne!(effects(&f), before, "{cmd:?} did nothing");
     }
 }

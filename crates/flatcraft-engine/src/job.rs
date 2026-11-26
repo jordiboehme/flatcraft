@@ -744,6 +744,11 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         let PieceFacts { no_area, slivers } = cut.facts(o.id);
         if slivers > 0 {
             warnings.push(cutgeom::sliver_warning(&o.name, slivers, cut.min_width_mm));
+            if placed.len() > before {
+                // The issue says the same as the warning just pushed.
+                covered_warnings.push(warnings.len() - 1);
+                issues.extend(report::thin_slivers_issue(input, o, slivers));
+            }
         }
         if no_area > 0 {
             let what = if no_area == 1 {

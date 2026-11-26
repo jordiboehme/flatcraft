@@ -49,10 +49,10 @@ const MIN_TOLERANCE_MM: f64 = 1e-4;
 /// tolerance), mm.
 pub const CLOSE_TOLERANCE_MM: f64 = 0.01;
 
-/// A closed line whose fill is on average narrower than this is cut once,
-/// along its spine, mm. Two plotter steps of 0.05 mm: two cuts that close
-/// together tear the material. Wider ones are real slots and keep both
-/// sides.
+/// The reach of the spine helpers of a closed hairline ([`spine`],
+/// [`hairline_ends`], [`ring_samples`]), mm: two plotter steps of 0.05 mm.
+/// Which closed lines are hairlines is decided by [`hairline_mm`], from the
+/// minimum feature size.
 pub const HAIRLINE_MM: f64 = 0.1;
 
 /// Stroker tolerance for bounds of the cut geometry, mm (the default
@@ -492,21 +492,21 @@ fn object_outlines(
 /// of the fill (`mean_width`) with the stroke width, at least the
 /// tolerance. An open subpath has no stroke along its implicit
 /// closing chord, so there the bound is half the stroke width; it is
-/// cut as drawn. A closed line is a thin slot: with a mean width of
-/// `HAIRLINE_MM` or more it is cut as drawn, a ring with both sides.
-/// Below that it is a hairline that runs back along itself, and it is
-/// cut once, along its `spine`. Without a stroke a fill thinner than
-/// the tolerance is not visible and no knife can cut it, so it is
-/// dropped.
+/// cut as drawn. A stroked subpath narrower than `min_width` (half the
+/// blade offset) is a line as well, whatever its stroke. A closed line
+/// is a thin slot: with a mean width of [`hairline_mm`] or more it is cut
+/// as drawn, a ring with both sides. Below that it is a hairline that
+/// runs back along itself, and it is cut once, along its `spine`.
+/// Without a stroke a fill thinner than the tolerance is not visible and
+/// no knife can cut it, so it is dropped; one thinner than `min_width`
+/// is a sliver the blade cannot follow, so it is dropped and counted
+/// (the second value).
 ///
-/// Known gaps until the milestone 2 booleans: a stroked spur inside
-/// a subpath that does enclose area (a closed shape with a tail
-/// drawn in the same subpath) is lost; only the fill edge is cut.
-/// A stroked subpath without area that lies inside a filled area of
-/// the same path is cut into the piece. Fill-only hairline slivers
-/// wider than the tolerance but below the knife's smallest feature
-/// are still cut as tiny loops; milestone 2 ties a smallest feature
-/// size to the blade offset. The ends of a closed hairline are looked
+/// Known gaps: a stroked spur inside a subpath that does enclose area (a
+/// closed shape with a tail drawn in the same subpath) is lost; only the
+/// fill edge is cut. A stroked subpath without area that lies inside a filled
+/// area of the same path is cut into the piece. The ends of a closed
+/// hairline are looked
 /// for over a reach of 0.2 mm, which can pick the apex of a narrow "V"
 /// instead of an end; such a ring is then cut as drawn, with both sides.
 /// Milestone 2 improves the end detection together with the medial axis.
@@ -517,9 +517,9 @@ fn fill_edges(
     tolerance: f64,
     min_width: f64,
 ) -> (Vec<BezPath>, usize) {
-    let _ = min_width;
     let mut fill: Vec<Contour> = Vec::new();
     let mut lines: Vec<BezPath> = Vec::new();
+
     // The fill of the last subpath that is not a line: the result if it
     // is the only one.
     let mut last = Vec::new();
@@ -529,15 +529,17 @@ fn fill_edges(
             Some(c) => boolean(std::slice::from_ref(c), &[], rule, tolerance),
             None => Vec::new(),
         };
+        // A stroked fill below the knife's narrowest feature is a line
+        // too: cut once, never dropped, since its stroke shows.
         let hidden_below = match stroke_width {
-            Some(w) if sub.ends_meet() => w,
-            Some(w) => w / 2.0,
+            Some(w) if sub.ends_meet() => w.max(min_width),
+            Some(w) => (w / 2.0).max(min_width),
             None => 0.0,
         };
         let width = mean_width(&own);
         if width < hidden_below.max(tolerance) {
             if stroke_width.is_some() && !sub.segments.is_empty() {
-                let hairline = sub.ends_meet() && width < HAIRLINE_MM.max(tolerance);
+                let hairline = sub.ends_meet() && width < hairline_mm(tolerance, min_width);
                 lines.push(
                     match hairline.then(|| spine(&sub.points(tolerance / 2.0))) {
                         Some(Some(spine)) => spine,
@@ -555,15 +557,41 @@ fn fill_edges(
     } else {
         boolean(&fill, &[], rule, tolerance)
     };
-    let mut out: Vec<BezPath> = edges
+    // Thinner than the tolerance: not visible, dropped without a word.
+    // Thinner than the knife's narrowest feature: a sliver, dropped and
+    // counted, since both its edges lie inside the blade's swing.
+    let mut slivers = 0;
+    let kept: Vec<Vec<Contour>> = edges
+        .into_iter()
+        .filter(|shape| {
+            let w = mean_width(std::slice::from_ref(shape));
+            if w < tolerance {
+                return false;
+            }
+            if w < min_width {
+                slivers += 1;
+                return false;
+            }
+            true
+        })
+        .collect();
+    let mut out: Vec<BezPath> = kept
         .iter()
-        .filter(|shape| mean_width(std::slice::from_ref(shape)) >= tolerance)
         .flatten()
         .filter(|c| c.len() >= 3)
         .map(|c| ring(c))
         .collect();
     out.extend(lines);
-    (out, 0)
+    (out, slivers)
+}
+
+/// A closed line whose fill is on average narrower than this is a
+/// hairline and cut once, along its spine, mm: the knife's narrowest
+/// feature (`min_width`, half the blade offset, see
+/// [`crate::report::min_width_mm`]), at least the tolerance. Ruling M2-P3:
+/// the hairline limit follows the minimum feature size.
+pub fn hairline_mm(tolerance: f64, min_width: f64) -> f64 {
+    min_width.max(tolerance)
 }
 
 /// One rectangle per flattened segment of `path`, `half` to each side, all
@@ -800,28 +828,40 @@ fn ring_samples(ring: &[[f64; 2]]) -> impl Iterator<Item = [f64; 2]> + '_ {
 /// `line`. The line's segments are sorted into a grid of cells two
 /// `reach` wide, so each point is compared only with the segments near it.
 fn all_near(points: impl IntoIterator<Item = [f64; 2]>, line: &[[f64; 2]], reach: f64) -> bool {
+    all_near_lines(points, &[line], reach)
+}
+
+/// [`all_near`] for several polylines: every point lies within `reach` of
+/// one of `lines`.
+fn all_near_lines(
+    points: impl IntoIterator<Item = [f64; 2]>,
+    lines: &[&[[f64; 2]]],
+    reach: f64,
+) -> bool {
     let cell = 2.0 * reach;
     let key = |x: f64, y: f64| ((x / cell).floor() as i64, (y / cell).floor() as i64);
-    let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> =
+    let mut grid: std::collections::HashMap<(i64, i64), Vec<(usize, usize)>> =
         std::collections::HashMap::new();
-    for (k, w) in line.windows(2).enumerate() {
-        let (dx, dy) = (w[1][0] - w[0][0], w[1][1] - w[0][1]);
-        // A mark every half cell: the nearest mark to any point of the
-        // segment is a quarter cell away, so a point within `reach` of
-        // the segment finds it in its own cell or a neighbour.
-        let marks = (dx.hypot(dy) / (cell / 2.0)).ceil().max(1.0) as usize;
-        for m in 0..=marks {
-            let t = m as f64 / marks as f64;
-            let cells = grid
-                .entry(key(w[0][0] + dx * t, w[0][1] + dy * t))
-                .or_default();
-            if cells.last() != Some(&k) {
-                cells.push(k);
+    for (l, line) in lines.iter().enumerate() {
+        for (k, w) in line.windows(2).enumerate() {
+            let (dx, dy) = (w[1][0] - w[0][0], w[1][1] - w[0][1]);
+            // A mark every half cell: the nearest mark to any point of the
+            // segment is a quarter cell away, so a point within `reach` of
+            // the segment finds it in its own cell or a neighbour.
+            let marks = (dx.hypot(dy) / (cell / 2.0)).ceil().max(1.0) as usize;
+            for m in 0..=marks {
+                let t = m as f64 / marks as f64;
+                let cells = grid
+                    .entry(key(w[0][0] + dx * t, w[0][1] + dy * t))
+                    .or_default();
+                if cells.last() != Some(&(l, k)) {
+                    cells.push((l, k));
+                }
             }
         }
     }
-    let distance = |p: &[f64; 2], k: usize| {
-        let (a, b) = (line[k], line[k + 1]);
+    let distance = |p: &[f64; 2], (l, k): (usize, usize)| {
+        let (a, b) = (lines[l][k], lines[l][k + 1]);
         let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
         let len2 = dx * dx + dy * dy;
         let t = if len2 > 0.0 {

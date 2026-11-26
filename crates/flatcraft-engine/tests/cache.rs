@@ -216,3 +216,171 @@ fn labels_follow_pieces() {
     assert!(notes.iter().any(|n| n.contains("path 0,")), "{notes:?}");
     assert!(!notes.iter().any(|n| n.contains("path 3")), "{notes:?}");
 }
+
+// ---------------------------------------------------------------- minimum feature size
+
+fn warnings(v: &Value) -> Vec<String> {
+    v["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w.as_str().unwrap().to_string())
+        .collect()
+}
+
+fn codes(v: &Value) -> Vec<String> {
+    v["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["code"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn fill_only_hairline_sliver_is_dropped_with_warning() {
+    let d = dirs();
+    let mut s = session(&d);
+    // Blade 0.25 mm: the narrowest cut feature is 0.125 mm.
+    let thin = import(
+        &mut s,
+        &svg(
+            r#"<rect x="20" y="20" width="50" height="0.1"/><rect x="20" y="40" width="10" height="10"/>"#,
+        ),
+        "thin",
+    );
+    let g = s.cut_geometry().unwrap();
+    let id = flatcraft_core::document::ObjectId(thin);
+    assert_eq!(g.pieces(id).len(), 1, "only the square is cut");
+    assert_eq!(g.facts(id).slivers, 1);
+    assert_eq!(g.facts(id).no_area, 0);
+    let r = run(&mut s, "job.preview", json!({}));
+    assert!(
+        warnings(&r).contains(
+            &"'thin': 1 filled sliver is thinner than 0.125 mm and is not cut.".to_string()
+        ),
+        "{r}"
+    );
+    assert_eq!(codes(&r), ["thin_slivers"], "{r}");
+    let c = run(&mut s, "document.check", json!({}));
+    assert_eq!(codes(&c), ["thin_slivers"], "{c}");
+    assert_eq!(
+        c["issues"][0]["severity"], "warning",
+        "a sliver never blocks"
+    );
+
+    let mut s = session(&d);
+    let wide = import(
+        &mut s,
+        &svg(r#"<rect x="20" y="20" width="50" height="0.2"/>"#),
+        "wide",
+    );
+    let g = s.cut_geometry().unwrap();
+    let id = flatcraft_core::document::ObjectId(wide);
+    assert_eq!(g.pieces(id).len(), 1, "a 0.2 mm strip is kept");
+    assert_eq!(g.facts(id).slivers, 0);
+}
+
+/// An object of slivers only: nothing to cut, and the reason is named.
+#[test]
+fn an_object_of_slivers_says_why_nothing_cuts() {
+    let d = dirs();
+    let mut s = session(&d);
+    import(
+        &mut s,
+        &svg(r#"<rect x="20" y="20" width="50" height="0.1"/>"#),
+        "thin",
+    );
+    let r = run(&mut s, "job.preview", json!({}));
+    assert_eq!(r["ready"], false, "{r}");
+    assert_eq!(codes(&r), ["thin_slivers"], "{r}");
+    assert_eq!(r["issues"][0]["severity"], "error");
+}
+
+/// A hand-drawn line exported as a fill: out along a line and back with a
+/// little jitter. Its fill is a chain of tiny lobes, which used to be cut
+/// as micro loops; now they are slivers.
+#[test]
+fn jittered_fill_line_no_longer_micro_loops() {
+    let d = dirs();
+    let mut s = session(&d);
+    let mut path = String::from("M10 50 L60 50");
+    for k in 0..=50 {
+        let x = 60.0 - f64::from(k);
+        let y = if k % 2 == 0 { 50.04 } else { 49.96 };
+        path.push_str(&format!(" L{x} {y}"));
+    }
+    path.push_str(" Z");
+    let id = import(&mut s, &svg(&format!(r#"<path d="{path}"/>"#)), "jitter");
+    let g = s.cut_geometry().unwrap();
+    let id = flatcraft_core::document::ObjectId(id);
+    assert!(g.pieces(id).is_empty(), "{:?}", g.pieces(id).len());
+    assert!(g.facts(id).slivers > 0);
+}
+
+/// Ruling M2-P3: the hairline limit follows the minimum feature width.
+/// A closed stroked strip 0.11 mm wide (above the old 0.1 mm limit, below
+/// half the blade offset) is one spine cut, not a ring.
+#[test]
+fn a_closed_strip_below_the_minimum_width_is_one_spine_cut() {
+    let d = dirs();
+    let mut s = session(&d);
+    let id = import(
+        &mut s,
+        &svg(
+            r#"<path d="M10 50 H60 V50.11 H10 Z" fill="black" stroke="black" stroke-width="0.05"/>"#,
+        ),
+        "strip",
+    );
+    let g = s.cut_geometry().unwrap();
+    let pieces = g.pieces(flatcraft_core::document::ObjectId(id));
+    assert_eq!(pieces.len(), 1);
+    let els = pieces[0].path.elements();
+    assert!(
+        !els.contains(&kurbo::PathEl::ClosePath),
+        "a spine, not a ring: {els:?}"
+    );
+    assert!(
+        (flatcraft_engine::cutgeom::hairline_mm(0.01, 0.125) - 0.125).abs() < 1e-12,
+        "structural: max(t, min_width)"
+    );
+}
+
+/// The decision rule of the Task 13 addition: at the default cut options
+/// and the default blade, no stroke width is both cut around its outline
+/// and reported as a hairline. With strokes forced to outline, the ones
+/// under the minimum feature size are reported.
+#[test]
+fn no_default_stroke_is_outlined_and_a_hairline() {
+    let min_feature = flatcraft_engine::report::min_feature_mm(0.25);
+    for w in [0.1, 0.5, 1.0, 1.2, 1.49, 1.5, 2.0, 3.0] {
+        let d = dirs();
+        let mut s = session(&d);
+        let id = import(
+            &mut s,
+            &svg(&format!(
+                r#"<rect x="20" y="20" width="30" height="30" fill="none" stroke="black" stroke-width="{w}"/>"#
+            )),
+            "frame",
+        );
+        let c = run(&mut s, "document.check", json!({}));
+        let g = s.cut_geometry().unwrap();
+        let outlined = g.pieces(flatcraft_core::document::ObjectId(id)).len() > 1;
+        let hairline = codes(&c).contains(&"hairline".to_string());
+        assert!(!(outlined && hairline), "{w} mm: {c}");
+        run(
+            &mut s,
+            "object.set_cut_options",
+            json!({ "ids": [id], "strokes": "outline" }),
+        );
+        let c = run(&mut s, "document.check", json!({}));
+        let hairline = codes(&c).contains(&"hairline".to_string());
+        assert_eq!(hairline, w < min_feature, "{w} mm outlined: {c}");
+    }
+    // Structural: the default threshold is the default blade's minimum
+    // feature size.
+    assert_eq!(
+        flatcraft_core::document::DEFAULT_AUTO_THRESHOLD_MM,
+        min_feature
+    );
+}
