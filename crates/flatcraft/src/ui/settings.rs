@@ -485,8 +485,10 @@ fn weed_lines_key(l: WeedLines) -> &'static str {
     }
 }
 
-/// Why the box margin and per object are dimmed.
+/// Why per object is dimmed.
 pub const WEED_BOX_OFF: &str = "Turn on Weed box first.";
+/// Why the box margin is dimmed.
+pub const WEEDING_OFF: &str = "Turn on Weed box or Weed lines first.";
 /// Why the weed line spacing is dimmed.
 pub const WEED_LINES_OFF: &str = "Pick a direction for Weed lines first.";
 
@@ -562,8 +564,8 @@ fn weeding(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec<Action>) 
                 w.margin_mm,
                 (MIN_WEED_MARGIN_MM, MAX_WEED_MARGIN_MM),
                 Setting::WeedMargin,
-                w.weed_box,
-                WEED_BOX_OFF,
+                w.any(),
+                WEEDING_OFF,
             ) {
                 set(json!({ "margin_mm": v }));
             }

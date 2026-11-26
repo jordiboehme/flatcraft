@@ -595,6 +595,15 @@ fn weeding_controls_set_the_job_and_dim_what_does_not_apply() {
     let state = run(&s, "document.state", json!({}));
     assert_eq!(state["job"]["weed"]["lines"], "both");
     assert!(!disabled(&h, "Line spacing"));
+    // The margin also sets where the lines stop: with the box off and the
+    // lines on it stays enabled; with both off it is dimmed.
+    run(&s, "job.set_weeding", json!({ "box": false }));
+    h.run();
+    assert!(!disabled(&h, "Box margin"));
+    assert!(disabled(&h, "One box per object"));
+    run(&s, "job.set_weeding", json!({ "lines": "off" }));
+    h.run();
+    assert!(disabled(&h, "Box margin"));
 }
 
 #[test]
@@ -611,13 +620,12 @@ fn path_stage_counts_and_dashes_weed_paths() {
             .filter(|s| matches!(s, egui::Shape::LineSegment { .. }))
             .count()
     };
-    assert!(h.query_by_label("Weed paths").is_none());
-    // The legend names travel always, the weed paths only with weeding on.
+    // Weeding off: the stat and the legend row stay visible, dimmed.
+    let off = |h: &AppHarness, label: &str| h.get_by_label(label).accesskit_node().is_disabled();
     h.get_by_label(flatcraft::ui::cut::LEGEND_TRAVEL.0);
-    assert!(
-        h.query_by_label(flatcraft::ui::cut::LEGEND_WEED.0)
-            .is_none()
-    );
+    assert!(off(&h, "Weed paths"));
+    assert!(off(&h, flatcraft::ui::cut::LEGEND_WEED.0));
+    assert!(!off(&h, flatcraft::ui::cut::LEGEND_TRAVEL.0));
     let plain = dashes(&h);
     run(
         &s,
@@ -625,8 +633,8 @@ fn path_stage_counts_and_dashes_weed_paths() {
         json!({ "box": true, "margin_mm": 10, "lines": "both", "spacing_mm": 20 }),
     );
     h.run();
-    h.get_by_label("Weed paths");
-    h.get_by_label(flatcraft::ui::cut::LEGEND_WEED.0);
+    assert!(!off(&h, "Weed paths"));
+    assert!(!off(&h, flatcraft::ui::cut::LEGEND_WEED.0));
     // The weed box is drawn in dashes: many more line segments, in the
     // weed blue of the theme on this mat.
     assert!(dashes(&h) > plain + 20, "{} vs {plain}", dashes(&h));

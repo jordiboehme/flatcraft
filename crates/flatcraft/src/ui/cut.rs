@@ -367,7 +367,10 @@ fn problem(
 }
 
 /// Paths, cut length and travel length of a plan.
-fn stats(ui: &mut Ui, job: &JobResult, t: &Tokens) {
+///
+/// "Weed paths" always shows; dimmed, with the reason, while weeding is
+/// off.
+fn stats(ui: &mut Ui, job: &JobResult, weeding: bool, t: &Tokens) {
     egui::Grid::new("flatcraft-cut-stats")
         .num_columns(2)
         .spacing([t.spacing * 2.0, t.spacing * 0.5])
@@ -375,19 +378,17 @@ fn stats(ui: &mut Ui, job: &JobResult, t: &Tokens) {
             ui.label("Paths");
             ui.label(job.plan.toolpaths.len().to_string());
             ui.end_row();
-            let weeds = weed_count(job);
-            if weeds > 0 {
-                let r = ui.label("Weed paths");
-                super::groups::card(
-                    &r,
-                    "Weed paths",
-                    "The weed box and weed lines in the cut, counted in Paths too. They are dashed on the mat and cut after the design. Change them in Device & Material, under Weeding.",
-                    None,
-                    false,
-                );
-                ui.label(weeds.to_string());
-                ui.end_row();
-            }
+            let why = (!weeding).then_some(WEEDING_OFF);
+            let r = ui.add_enabled(weeding, egui::Label::new("Weed paths"));
+            super::groups::card(
+                &r,
+                "Weed paths",
+                "The weed box and weed lines in the cut, counted in Paths too. They are dashed blue on the mat and cut after the design. Change them in Device & Material, under Weeding.",
+                why,
+                false,
+            );
+            ui.add_enabled(weeding, egui::Label::new(weed_count(job).to_string()));
+            ui.end_row();
             ui.label("Cut length");
             ui.label(mm_text(job.plan.cut_mm));
             ui.end_row();
@@ -459,7 +460,7 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
         }
         Stage::Path => match &st.plan {
             Some(Ok(job)) => {
-                stats(ui, job, &t);
+                stats(ui, job, snap.job.weed.any(), &t);
                 warnings(ui, job, snap.doc_id, &t, actions);
                 ui.add_space(t.spacing);
                 legend(ui, snap, &t);
@@ -485,7 +486,7 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
             }
             match &st.plan {
                 Some(Ok(job)) => {
-                    stats(ui, job, &t);
+                    stats(ui, job, snap.job.weed.any(), &t);
                     ui.label(format!(
                         "Speed {}, force {}, {}",
                         job.settings.speed,
@@ -552,6 +553,9 @@ pub const LEGEND_TRAVEL: (&str, &str) = (
     "Dotted lines are where the knife moves up, from the end of one cut to the start of the next. Nothing is cut there.",
 );
 
+/// Why the weed row of the legend and the weed path count are dimmed.
+pub const WEEDING_OFF: &str = "Weeding is off. Turn it on in Device & Material, under Weeding.";
+
 /// How a legend sample is drawn.
 #[derive(Clone, Copy)]
 enum Sample {
@@ -562,24 +566,40 @@ enum Sample {
 
 /// A small legend of the Path view: a short line of each kind, drawn on
 /// the mat colour with the canvas's own strokes and colours. The weed row
-/// shows only while weeding is on.
+/// is dimmed, with the reason, while weeding is off.
 fn legend(ui: &mut Ui, snap: &Snapshot, t: &Tokens) {
     let mat = canvas::mat_rgb(snap);
     let contrast = canvas::rgb(canvas::contrast_colour(mat));
-    let mut rows = vec![(
-        LEGEND_CUT,
-        Sample::Solid,
-        canvas::rgb(canvas::cut_colour(mat)),
-    )];
-    if snap.job.weed.any() {
-        rows.push((LEGEND_WEED, Sample::Dashed, canvas::weed_rgb(mat, t)));
-    }
-    rows.push((LEGEND_TRAVEL, Sample::Dotted, contrast.gamma_multiply(0.45)));
-    for ((name, hint), sample, colour) in rows {
+    let weeding = snap.job.weed.any();
+    let rows = [
+        (
+            LEGEND_CUT,
+            Sample::Solid,
+            canvas::rgb(canvas::cut_colour(mat)),
+            true,
+        ),
+        (
+            LEGEND_WEED,
+            Sample::Dashed,
+            canvas::weed_rgb(mat, t),
+            weeding,
+        ),
+        (
+            LEGEND_TRAVEL,
+            Sample::Dotted,
+            contrast.gamma_multiply(0.45),
+            true,
+        ),
+    ];
+    for ((name, hint), sample, colour, on) in rows {
+        let why = (!on).then_some(WEEDING_OFF);
+        // A dimmed row fades its sample like egui fades a disabled label.
+        let fade = if on { 1.0 } else { 0.4 };
+        let colour = colour.gamma_multiply(fade);
         ui.horizontal(|ui| {
             let (rect, r) = ui.allocate_exact_size(Vec2::new(44.0, 14.0), Sense::hover());
             let p = ui.painter();
-            p.rect_filled(rect, 3.0, canvas::rgb(mat));
+            p.rect_filled(rect, 3.0, canvas::rgb(mat).gamma_multiply(fade));
             let line = [
                 rect.left_center() + Vec2::new(5.0, 0.0),
                 rect.right_center() - Vec2::new(5.0, 0.0),
@@ -600,9 +620,9 @@ fn legend(ui: &mut Ui, snap: &Snapshot, t: &Tokens) {
                     p.extend(egui::Shape::dotted_line(&line, colour, 5.0, 0.9));
                 }
             }
-            super::groups::card(&r, name, hint, None, false);
-            let l = ui.label(name);
-            super::groups::card(&l, name, hint, None, false);
+            super::groups::card(&r, name, hint, why, false);
+            let l = ui.add_enabled(on, egui::Label::new(name));
+            super::groups::card(&l, name, hint, why, false);
         });
     }
 }
