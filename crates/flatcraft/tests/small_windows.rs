@@ -627,22 +627,37 @@ fn the_cut_bar_folds_to_numbers_then_to_a_list() {
             h.get_by_label(collapse::MORE).click();
             h.run();
         }
-        // A folded step says its status in its card, in plain words.
+        // A folded step says its status in its card, in plain words; a
+        // dimmed one says it once, in its reason.
         if want == Level::Folded(1) {
             h.ctx
                 .global_style_mut(|st| st.interaction.tooltip_delay = 0.0);
+            let wait = |h: &mut AppHarness, said: &str| {
+                let start = std::time::Instant::now();
+                while h.query_by_label_contains(said).is_none() {
+                    assert!(
+                        start.elapsed() < std::time::Duration::from_secs(10),
+                        "{said:?} did not show"
+                    );
+                    h.step();
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            };
+            let at = h.get_by_role_and_label(Role::Tab, "Send").rect().center();
+            h.hover_at(at);
+            wait(&mut h, "Ready to write the job to a file.");
             let at = h
                 .get_by_role_and_label(Role::Tab, "Simulate")
                 .rect()
                 .center();
             h.hover_at(at);
-            let start = std::time::Instant::now();
-            let said = "Simulate is not ready yet in this build.";
-            while h.query_by_label_contains(said).is_none() {
-                assert!(start.elapsed() < std::time::Duration::from_secs(10));
-                h.step();
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
+            wait(&mut h, ui::cut::SIMULATE_HINT);
+            h.get_by_label(ui::cut::Stage::Simulate.hint());
+            assert!(
+                h.query_by_label_contains("Simulate is not ready yet")
+                    .is_none(),
+                "the reason is said twice"
+            );
         }
         // Every stage is reachable and works.
         h.get_by_role_and_label(Role::Tab, "Send").click();

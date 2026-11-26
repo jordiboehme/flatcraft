@@ -516,8 +516,8 @@ fn stages(ui: &mut Ui, mode: Mode, bar: &mut Bar) {
             }
         };
         // The status line is in the card too, where the bar has no room
-        // for it.
-        let what = if mode == Mode::Full {
+        // for it; a dimmed stage's reason already says it.
+        let what = if mode == Mode::Full || stage.blocked().is_some() {
             stage.hint().to_string()
         } else {
             format!("{} {}", stage.hint(), bar.sentences[i])
