@@ -220,11 +220,8 @@ proptest! {
 #[test]
 fn sample_step_has_a_floor() {
     assert_eq!(SimSettings::float(0.0).sample_step_mm, 0.01);
-    assert_eq!(SimSettings::float(0.02).sample_step_mm, 0.005);
-    assert_eq!(
-        SimSettings::float(0.3).sample_step_mm,
-        0.3 / flatcraft_sim::SAMPLE_STEP_FACTOR
-    );
+    assert_eq!(SimSettings::float(0.05).sample_step_mm, 0.005);
+    assert_eq!(SimSettings::float(0.3).sample_step_mm, 0.3 / 20.0);
     assert_eq!(SimSettings::float(0.3).uncut_eps_mm, 0.02);
     let grid = DeviceGrid {
         units_per_mm: 20.0,

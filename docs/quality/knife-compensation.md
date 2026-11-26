@@ -43,7 +43,13 @@ to print the tables again.
 | `END_TO_END_LIMIT_MM` | 0.05 mm | the spec target |
 
 `DEVICE_LIMIT_MM` was 0.03 mm. It is now 0.05 mm, one device unit, because
-0.03 mm cannot be met. Rounding a point to whole 0.05 mm units moves it up to
+0.03 mm cannot be met. That is the same value as the end-to-end target, so
+at 20 units per mm the device rounding uses up the whole end-to-end budget:
+the float error of the knife stage (at most 0.0024 mm on the sheet) plus
+the rounding (worst 0.0417 mm with the float error included) stays within
+`END_TO_END_LIMIT_MM`, but leaves about 0.008 mm for the flattening and the
+booleans upstream (flatten tolerance 0.01 mm). Half units would bring the
+device worst case to 0.020 mm and give that room back. Rounding a point to whole 0.05 mm units moves it up to
 `0.025 * (|sin a| + |cos a|)` off a line at angle `a`: 0.0354 mm at 45 deg.
 No planner can beat that floor. The plain straight lines of the `turns` probe
 already measure about 0.03 mm in device mode. Whether the Cameo 2 takes
@@ -89,7 +95,8 @@ step back toward the tip. The 50 mm square at d = 0.25 got 2 pushes, the
 whole sheet 26. Now, when a plan is made for a known plotter, the knife
 stage rounds the runs itself and drops each rounded point whose move would
 push the blade, following the tip with the same model
-(`flatcraft_path::quantize::round_runs`). The emitter must send these
+(`flatcraft_path::quantize::round_runs`). The end of a run always stays:
+when the step onto it would push, the points before it go instead. The emitter must send these
 points. The float plan does not change at all.
 
 | case | d | device dev, plain rounding | pushed, plain | device dev, rounding-aware | pushed, aware |
@@ -100,8 +107,9 @@ points. The float plan does not change at all.
 | star-30 | 0.3 | 0.0425 | 2 | 0.0392 | 0 |
 | star-60 | 0.25 | 0.0449 | 1 | 0.0398 | 0 |
 | circle-r100 | 0.3 | 0.0417 | 2 | 0.0417 | 0 |
+| circle-r100 | 0.25 | 0.0352 | 3 | 0.0352 | 0 |
 | whole sheet | 0.25 | 0.0449 | 26 | 0.0406 | 0 |
-| whole sheet | 0.3 | 0.0425 | 12 | 0.0392 | 0 |
+| whole sheet | 0.3 | 0.0425 | 11 | 0.0392 | 0 |
 
 Every sheet shape and probe stays within the device limit (worst 0.0417 mm)
 with no pushed blade, and within 0.0024 mm in float mode.
@@ -119,14 +127,14 @@ Cells: corner deviation / pivot drift (axis segments).
 
 | case | d | 30 | 20 | 15 | 10 | 5 |
 |---|---|---|---|---|---|---|
-| star-15 | 0.3 | 0.0178 / 0.0178 (20) | 0.0080 / 0.0080 (25) | 0.0053 / 0.0053 (31) | 0.0023 / 0.0023 (43) | 0.0023 / 0.0005 (80) |
-| star-150 | 0.3 | 0.0178 / 0.0178 (18) | 0.0080 / 0.0080 (24) | 0.0053 / 0.0053 (29) | 0.0023 / 0.0023 (42) | 0.0005 / 0.0005 (77) |
-| star-170 | 0.3 | 0.0211 / 0.0211 (17) | 0.0094 / 0.0094 (23) | 0.0053 / 0.0053 (29) | 0.0024 / 0.0024 (41) | 0.0005 / 0.0005 (78) |
+| star-15 | 0.3 | 0.0178 / 0.0178 (20) | 0.0080 / 0.0080 (25) | 0.0054 / 0.0054 (31) | 0.0024 / 0.0023 (43) | 0.0024 / 0.0006 (80) |
+| star-150 | 0.3 | 0.0178 / 0.0178 (18) | 0.0080 / 0.0080 (24) | 0.0054 / 0.0054 (29) | 0.0023 / 0.0023 (42) | 0.0006 / 0.0006 (77) |
+| star-170 | 0.3 | 0.0211 / 0.0211 (17) | 0.0095 / 0.0095 (23) | 0.0053 / 0.0053 (29) | 0.0024 / 0.0024 (41) | 0.0006 / 0.0006 (78) |
 | needle-2 | 0.3 | 0.0222 / 0.0222 (18) | 0.0099 / 0.0099 (23) | 0.0056 / 0.0056 (30) | 0.0025 / 0.0025 (42) | 0.0006 / 0.0006 (78) |
-| hairpin-180 | 0.25 | 0.0191 / 0.0191 (8) | 0.0085 / 0.0085 (11) | 0.0048 / 0.0048 (14) | 0.0022 / 0.0022 (20) | 0.0005 / 0.0005 (38) |
-| hairpin-180 | 0.3 | 0.0229 / 0.0229 (8) | 0.0102 / 0.0102 (11) | 0.0058 / 0.0058 (14) | 0.0026 / 0.0026 (20) | 0.0006 / 0.0006 (38) |
-| square-50 | 0.3 | 0.0096 / 0.0136 (20) | 0.0035 / 0.0051 (30) | 0.0024 / 0.0034 (35) | 0.0011 / 0.0016 (50) | 0.0003 / 0.0003 (95) |
-| worst of all | | 0.0229 | 0.0102 | 0.0058 | 0.0026 | 0.0023 |
+| hairpin-180 | 0.25 | 0.0191 / 0.0191 (8) | 0.0086 / 0.0086 (11) | 0.0048 / 0.0048 (14) | 0.0022 / 0.0022 (20) | 0.0005 / 0.0005 (38) |
+| hairpin-180 | 0.3 | 0.0229 / 0.0229 (8) | 0.0103 / 0.0103 (11) | 0.0058 / 0.0058 (14) | 0.0026 / 0.0026 (20) | 0.0007 / 0.0007 (38) |
+| square-50 | 0.3 | 0.0101 / 0.0137 (20) | 0.0037 / 0.0051 (30) | 0.0026 / 0.0036 (35) | 0.0011 / 0.0016 (50) | 0.0003 / 0.0004 (95) |
+| worst of all | | 0.0229 | 0.0103 | 0.0058 | 0.0026 | 0.0024 |
 
 15 deg misses on the sharpest turns, 10 deg holds with room to spare.
 
@@ -172,28 +180,32 @@ holes and wastes the least. A hole too small even for it gets a swivel on
 the spot instead (a larger radius used to halve down to 0.5 mm; with 0.5 as
 the radius that fallback had nothing left to do, so it is gone).
 
-### `SAMPLE_STEP_FACTOR` = 10
+### `SAMPLE_STEP_FACTOR` = 20
 
 The simulator samples every `d / factor` mm of axis travel. The model is
 exact per step, so the step only decides how finely the trace is read.
 Rule: the smallest of 10, 20, 40 and 80 whose float metrics (Hausdorff,
 correspondence, corner, start and closure gap) stay within 0.0005 mm of the
-values at 80, for the jobs as planned.
+values at 80 on the jobs as planned, and within 0.005 mm when the first
+start is entered with the blade 90 deg off the assumed heading. The quality
+report shows such misaligned first starts too, and the tip swings fastest
+there, so they are the values most sensitive to the step. Their errors are
+0.1 to 0.3 mm, so 0.005 mm is below 5 %.
 
-| factor | real step at d 0.25 / 0.3 | largest change, as planned | largest change, first start 90 deg off (report) |
+| factor | real step at d 0.25 / 0.3 | largest change, as planned | largest change, first start 90 deg off |
 |---|---|---|---|
 | 10 | 0.025 / 0.03 | 0.0002 | 0.0123 |
 | 20 | 0.0125 / 0.015 | 0.0001 | 0.0050 |
 | 40 | 0.0063 / 0.0075 | 0.00002 | 0.0012 |
 | 80 | 0.005 / 0.005 | reference | reference |
 
+10 is plenty for planned jobs but reads a misaligned first start up to
+0.012 mm low (the 50 mm square). 20 just makes it, at twice the cost of 10.
 Device mode is left out of the rule: it has its own rounding floor, and its
 rounded moves make the trace jump between steps. The smallest step is
 clamped to 0.005 mm (`MIN_SAMPLE_STEP_MM`), so "80" is really 0.005 mm at
 both offsets; the clamp only touches factors above 50 to 60, never the
-chosen one. A first start with the blade 90 deg off the assumed heading
-swings fast, and there the coarser step reads errors of 0.1 to 0.3 mm up to
-0.012 mm (about 8 %) low. That is good enough for a value that big.
+chosen one.
 
 ## Starts and the blade heading (R1)
 
@@ -219,7 +231,7 @@ stays provisional until the M3 test cuts.
 |---|---|---|---|---|---|
 | 45 | 0.3 | 6 | 18 | 24.30 | 134.7 |
 | 60 | 0.3 | 8 | 16 | 22.58 | 149.7 |
-| 90 | 0.3 | 12 | 12 | 17.50 | 179.6 |
+| 90 | 0.3 | 12 | 12 | 17.49 | 179.6 |
 | 120 | 0.3 | 16 | 8 | 12.13 | 209.5 |
 
 ## The first path and the unknown start heading
@@ -231,8 +243,8 @@ headings. Only the first path suffers; every later path stays within
 
 | real heading | 22.5 | 67.5 | 112.5 | 157.5 | 202.5 | 247.5 | 292.5 | 337.5 |
 |---|---|---|---|---|---|---|---|---|
-| first path, d 0.25 | 0.067 | 0.135 | 0.173 | 0.202 | 0.230 | 0.250 | 0.250 | 0.124 |
-| first path, d 0.3 | 0.080 | 0.162 | 0.208 | 0.243 | 0.276 | 0.300 | 0.300 | 0.148 |
+| first path, d 0.25 | 0.070 | 0.141 | 0.180 | 0.208 | 0.234 | 0.250 | 0.250 | 0.129 |
+| first path, d 0.3 | 0.084 | 0.169 | 0.216 | 0.250 | 0.281 | 0.300 | 0.300 | 0.155 |
 
 With an alignment stroke (a short cut in waste before the job) every cut
 stays within 0.0024 mm. The stroke itself is pushed once at 157.5 and
@@ -245,11 +257,11 @@ Planned for `d`, cut by a blade of 0.9 `d` or 1.1 `d`:
 | case | planned d | real d | max dev | corner dev | into kept |
 |---|---|---|---|---|---|
 | square-50 | 0.3 | 0.27 | 0.0549 | 0.0549 | 0.0335 |
-| square-50 | 0.3 | 0.33 | 0.0453 | 0.0453 | 0 |
+| square-50 | 0.3 | 0.33 | 0.0486 | 0.0486 | 0 |
 | star-15 | 0.3 | 0.27 | 0.0794 | 0.0794 | 0 |
 | star-15 | 0.3 | 0.33 | 0.0992 | 0.0992 | 0 |
 | s-curve | 0.3 | 0.27 | 0.0486 | 0 | 0 |
-| s-curve | 0.3 | 0.33 | 0.0365 | 0 | 0 |
+| s-curve | 0.3 | 0.33 | 0.0396 | 0 | 0 |
 
 A 10 % wrong offset costs ten times the algorithm limit, and a blade with a
 smaller real offset cuts into the kept piece at corners. That is why the
@@ -263,11 +275,11 @@ is, and the simulator cannot model what the firmware's own compensation
 
 | case | d | overcut | closure gap | gap with the blade aligned at the start | tractrix `d * sin(2 * atan(exp(-o / d)))` |
 |---|---|---|---|---|---|
-| square-50 | 0.3 | 0 | 0.4632 | 0.3000 | 0.3000 |
+| square-50 | 0.3 | 0 | 0.4630 | 0.3000 | 0.3000 |
 | square-50 | 0.3 | 0.5 | 0.2069 | 0.1094 | 0.1094 |
-| square-50 | 0.3 | 1 | 0.0427 | 0.0214 | 0.0214 |
-| star-90 | 0.3 | 0.5 | 0.3147 | 0.1094 | 0.1094 |
-| square-50 | 0.25 | 0.5 | 0.1288 | 0.0665 | 0.0665 |
+| square-50 | 0.3 | 1 | 0.0426 | 0.0214 | 0.0214 |
+| star-90 | 0.3 | 0.5 | 0.3146 | 0.1094 | 0.1094 |
+| square-50 | 0.25 | 0.5 | 0.1287 | 0.0665 | 0.0665 |
 
 The measured gap is about twice the tractrix value, and the whole extra
 comes from the start: the blade starts at the wrong heading and the first

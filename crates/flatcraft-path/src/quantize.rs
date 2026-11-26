@@ -48,8 +48,11 @@ impl DeviceGrid {
 ///   dropped.
 /// - A point whose rounded move would push the blade (push angle above
 ///   [`PUSHED_DEG`] against the tip the model predicts) is dropped, and the
-///   next point is tried from the same place. The first and last point of
-///   a run always stay.
+///   next point is tried from the same place.
+/// - The first point (the drop) and the last point (the end of the run)
+///   always stay. When the step onto the last point would push, the points
+///   before it are dropped, newest first, until it does not. Only a run
+///   whose single step from the drop point pushes is left as it is.
 ///
 /// The tip is followed across runs as the simulator does: blade-up travel
 /// keeps the tip's offset from the axis. Toolpaths without axis runs are
@@ -71,26 +74,41 @@ pub fn round_runs(paths: &mut [Toolpath], grid: &DeviceGrid, d: f64, start_headi
                 continue;
             };
             let first = grid.snap(first);
-            let mut axis = first;
-            let mut tip = first - offset;
             let mut out = AxisRun {
                 points: vec![first],
                 seg: vec![run.seg[0]],
             };
+            // The tip after each point of `out`.
+            let mut tips = vec![first - offset];
             let last = run.points.len() - 1;
             for (k, (&p, &seg)) in run.points.iter().zip(&run.seg).enumerate().skip(1) {
                 let b = grid.snap(p);
-                if b == axis {
-                    continue;
+                let pushes = |out: &AxisRun, tips: &[Point]| {
+                    let (a, tip) = (out.points[out.points.len() - 1], tips[tips.len() - 1]);
+                    push_angle_deg(a, b, tip) > PUSHED_DEG
+                };
+                if k < last {
+                    if b == out.points[out.points.len() - 1] || pushes(&out, &tips) {
+                        continue;
+                    }
+                } else {
+                    // The end of the run stays: drop the points before it
+                    // until the step onto it no longer pushes.
+                    while out.points.len() > 1 && pushes(&out, &tips) {
+                        out.points.pop();
+                        out.seg.pop();
+                        tips.pop();
+                    }
+                    if b == out.points[out.points.len() - 1] {
+                        continue;
+                    }
                 }
-                if k < last && push_angle_deg(axis, b, tip) > PUSHED_DEG {
-                    continue;
-                }
-                tip = drag(axis, b, tip, d);
-                axis = b;
+                let (a, tip) = (out.points[out.points.len() - 1], tips[tips.len() - 1]);
+                tips.push(drag(a, b, tip, d));
                 out.points.push(b);
                 out.seg.push(seg);
             }
+            let (axis, tip) = (out.points[out.points.len() - 1], tips[tips.len() - 1]);
             offset = axis - tip;
             *run = out;
         }
@@ -166,5 +184,30 @@ mod tests {
             run.points
         );
         assert_eq!(run.points.len(), 3);
+    }
+
+    /// The end of a run that steps back at the tip stays, and the point
+    /// before it goes, so the last step does not push.
+    #[test]
+    fn a_last_move_back_at_the_tip_drops_the_point_before() {
+        let pts = vec![
+            Point::new(10.0, 10.0),
+            Point::new(12.0, 10.0),
+            Point::new(11.95, 10.0),
+        ];
+        let mut paths = vec![toolpath(pts)];
+        round_runs(&mut paths, &grid(), 0.25, Vec2::new(1.0, 0.0));
+        let run = &paths[0].axis.as_ref().unwrap()[0];
+        assert_eq!(
+            run.points,
+            vec![Point::new(10.0, 10.0), Point::new(11.95, 10.0)]
+        );
+        assert_eq!(run.seg, vec![WASTE_SEG, 1]);
+        // Every step trails the tip the model follows.
+        let mut tip = run.points[0] - Vec2::new(0.25, 0.0);
+        for w in run.points.windows(2) {
+            assert!(push_angle_deg(w[0], w[1], tip) <= PUSHED_DEG);
+            tip = drag(w[0], w[1], tip, 0.25);
+        }
     }
 }

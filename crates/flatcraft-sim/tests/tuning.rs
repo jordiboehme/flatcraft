@@ -419,6 +419,10 @@ fn mm(v: f64) -> String {
 
 const FACTORS: [f64; 4] = [10.0, 20.0, 40.0, 80.0];
 
+/// How far a misaligned first start may move from its value at 80. Its
+/// errors are 0.1 to 0.3 mm, so a 0.005 mm reading error is below 5 %.
+const MISALIGNED_TOLERANCE_MM: f64 = 0.005;
+
 /// The values the sample step must not change, in float mode.
 fn step_values(out: &CutPlan, d: f64, factor: f64, start: f64) -> [f64; 5] {
     let s = SimSettings {
@@ -436,12 +440,13 @@ fn step_values(out: &CutPlan, d: f64, factor: f64, start: f64) -> [f64; 5] {
 }
 
 /// The rule: the smallest factor whose float values are all within
-/// 0.0005 mm of the values at 80. Float mode only: device mode has its own
-/// rounding floor, and its rounded moves make the trace jump between
-/// steps. The rule takes the runs as planned (the real start heading is
-/// the assumed one), as `ALGORITHM_LIMIT_MM` does. A first start entered
-/// at 90 deg to the assumed heading is reported beside it: the tip swings
-/// fastest there, so it is the value most sensitive to the step.
+/// 0.0005 mm of the values at 80 on the runs as planned (the real start
+/// heading is the assumed one), and within `MISALIGNED_TOLERANCE_MM` with
+/// the first start entered at 90 deg to the assumed heading. The quality
+/// report shows misaligned first starts too, and the tip swings fastest
+/// there, so it is the value most sensitive to the step. Float mode only:
+/// device mode has its own rounding floor, and its rounded moves make the
+/// trace jump between steps.
 /// Prints the table, with the real steps (`MIN_SAMPLE_STEP_MM`
 /// raises any step below it).
 fn sample_step_rule(cases: &[Case]) -> f64 {
@@ -498,11 +503,11 @@ fn sample_step_rule(cases: &[Case]) -> f64 {
     }
     println!();
     println!("largest change from factor 80, as planned (the rule): {diff:?}");
-    println!("largest change from factor 80, misaligned first start (report): {misaligned:?}");
+    println!("largest change from factor 80, misaligned first start: {misaligned:?}");
     FACTORS
         .iter()
-        .zip(diff)
-        .find(|&(_, dk)| dk <= 0.0005)
+        .zip(diff.iter().zip(misaligned))
+        .find(|&(_, (&dk, mk))| dk <= 0.0005 && mk <= MISALIGNED_TOLERANCE_MM)
         .map(|(&f, _)| f)
         .expect("factor 80 is within 0 of itself")
 }
@@ -516,14 +521,17 @@ fn sample_step_converges() {
 }
 
 /// The fast twin: the cases where the sample step matters most (the
-/// tightest circle, the sharpest star tip, the round hole's lead-in).
+/// tightest circle, the sharpest star tip, the round hole's lead-in, and
+/// the square, whose misaligned first start decides between 10 and 20).
 #[test]
 fn sample_step_factor_is_the_rule() {
     let cases: Vec<Case> = sheet()
         .into_iter()
-        .filter(|c| ["circle-r0.5", "star-15", "round-hole-10"].contains(&c.name.as_str()))
+        .filter(|c| {
+            ["circle-r0.5", "star-15", "round-hole-10", "square-50"].contains(&c.name.as_str())
+        })
         .collect();
-    assert_eq!(cases.len(), 3);
+    assert_eq!(cases.len(), 4);
     assert_eq!(sample_step_rule(&cases), SAMPLE_STEP_FACTOR);
 }
 

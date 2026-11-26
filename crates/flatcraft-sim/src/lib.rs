@@ -44,14 +44,13 @@ pub const END_TO_END_LIMIT_MM: f64 = 0.05;
 pub const UNCUT_LIMIT_MM: f64 = 2.0 * END_TO_END_LIMIT_MM;
 /// The sample step is the blade offset divided by this. Pinned by Task
 /// 10's `sample_step_converges`: the smallest of 10, 20, 40 and 80 whose
-/// float metrics, as planned, stay within 0.0005 mm of those at 80 (10
-/// differs by 0.0002 mm at most; the model's step is exact, so a coarser
-/// step only thins the samples). A first start entered at 90 deg to the
-/// assumed heading resolves less well: its errors of 0.1 to 0.3 mm read up
-/// to 0.012 mm (about 8 %) low. At d 0.25 and 0.3 the step is 0.025 and
-/// 0.03 mm, far above [`MIN_SAMPLE_STEP_MM`], which only clamps factors
-/// above 50 to 60.
-pub const SAMPLE_STEP_FACTOR: f64 = 10.0;
+/// float metrics stay within 0.0005 mm of those at 80 on the runs as
+/// planned, and within 0.005 mm with the first start entered at 90 deg to
+/// the assumed heading. 10 is enough as planned (0.0002 mm), but reads a
+/// misaligned first start up to 0.012 mm low; 20 reads it at most
+/// 0.005 mm low. At d 0.25 and 0.3 the step is 0.0125 and 0.015 mm, above
+/// [`MIN_SAMPLE_STEP_MM`], which only clamps factors above 50 to 60.
+pub const SAMPLE_STEP_FACTOR: f64 = 20.0;
 
 /// The smallest sample step. A step below it (or one that is not a
 /// positive number) is raised to it, so a bad setting can not hang the loop.
