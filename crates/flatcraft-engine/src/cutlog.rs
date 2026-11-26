@@ -127,8 +127,12 @@ enum Line {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CutLog {
     pub entries: Vec<CutEntry>,
-    /// One text per skipped line, like "cut-log.jsonl line 3: ...".
+    /// One text per skipped line, like "cut-log.jsonl line 3: ...", with
+    /// the reason in detail, for the window.
     pub diagnostics: Vec<String>,
+    /// The same problems without the details, for agents: a reason can
+    /// repeat a text of the line, such as a path.
+    pub plain_diagnostics: Vec<String>,
 }
 
 impl CutLog {
@@ -228,6 +232,7 @@ pub fn read(config_dir: &Path) -> CutLog {
         Ok(None) => return log,
         Err(e) => {
             log.diagnostics.push(format!("{FILE} cannot be read: {e}"));
+            log.plain_diagnostics.push(format!("{FILE} cannot be read"));
             return log;
         }
     };
@@ -240,20 +245,30 @@ pub fn read(config_dir: &Path) -> CutLog {
         match serde_json::from_str::<Line>(line) {
             Ok(Line::Cut(e)) => log.entries.push(*e),
             Ok(Line::Outcome { entry, outcome }) => outcomes.push((n, entry, outcome)),
-            Err(e) => log
-                .diagnostics
-                .push(format!("{FILE} line {n} was skipped: {e}")),
+            Err(e) => {
+                log.diagnostics
+                    .push(format!("{FILE} line {n} was skipped: {e}"));
+                log.plain_diagnostics.push(damaged(n));
+            }
         }
     }
     for (n, entry, outcome) in outcomes {
         match log.entries.iter_mut().find(|e| e.id == entry) {
             Some(e) => e.outcome = Some(outcome),
-            None => log.diagnostics.push(format!(
-                "{FILE} line {n} was skipped: it is about cut {entry}, which is not in the log"
-            )),
+            None => {
+                log.diagnostics.push(format!(
+                    "{FILE} line {n} was skipped: it is about cut {entry}, which is not in the log"
+                ));
+                log.plain_diagnostics.push(damaged(n));
+            }
         }
     }
     log
+}
+
+/// A skipped line, said without its content.
+fn damaged(n: usize) -> String {
+    format!("{FILE} line {n} was skipped (damaged)")
 }
 
 /// The file's text, or its newest [`MAX_READ_BYTES`] from the first whole

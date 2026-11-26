@@ -126,7 +126,7 @@ fn run_history(s: &mut Session, p: HistoryParams, _: Origin) -> Result<Value, Co
     Ok(json!({
         "total": matching.len(),
         "entries": entries,
-        "diagnostics": log.diagnostics,
+        "diagnostics": log.plain_diagnostics,
     }))
 }
 
@@ -137,5 +137,5 @@ command!(
     mutates: false,
     params: HistoryParams,
     run: run_history,
-    description: "Reads the local cut log: one entry per completed send, newest first, with how it went when the person said so. Use it to find settings that worked for a material. Read-only: only the person records outcomes, in the window. Paths are file names only (the project file, the output files), never absolute paths. Returns {total (matching entries), entries: [{id, date (RFC 3339 UTC), document, path (project file name), plotter_id, plotter, material_id, material, mat_id, mat, speed, force, passes, strategy, keep_mode, size: {bytes, toolpaths, cut_mm, travel_mm}, target: {kind: file (with files: output file names) or usb}, outcome: {verdict: good|bad, note, date} or null}], diagnostics: [text] (log lines that could not be read and were skipped)}.",
+    description: "Reads the local cut log: one entry per completed send, newest first, with how it went when the person said so. Use it to find settings that worked for a material. Read-only: only the person records outcomes, in the window. Paths are file names only (the project file, the output files), never absolute paths. Returns {total (matching entries), entries: [{id, date (RFC 3339 UTC), document, path (project file name), plotter_id, plotter, material_id, material, mat_id, mat, speed, force, passes, strategy, keep_mode, size: {bytes, toolpaths, cut_mm, travel_mm}, target: {kind: file (with files: output file names) or usb}, outcome: {verdict: good|bad, note, date} or null}], diagnostics: [text] (log lines that could not be read and were skipped, like \"cut-log.jsonl line 3 was skipped (damaged)\")}.",
 );

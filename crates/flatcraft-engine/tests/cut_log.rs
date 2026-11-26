@@ -268,3 +268,26 @@ fn the_cached_log_sees_a_send_from_another_window() {
     run(&mut a, "job.send", json!({}));
     assert_eq!(b.cut_log().entries.len(), 2);
 }
+
+#[test]
+fn agents_see_damaged_lines_without_their_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = ready(&dir);
+    run(&mut s, "job.send", json!({}));
+    let mut text = log_text(&dir);
+    text.push_str("{\"kind\":\"cut\",\"id\":\"x\",\"date\":7,\"document\":\"/Users/someone/secret/plan.flatcraft\"}\n");
+    text.push_str("{\"kind\":\"nope\",\"path\":\"/Users/someone/secret\"}\n");
+    std::fs::write(dir.path().join(cutlog::FILE), text).unwrap();
+    let h = s.execute("job.history", json!({}), Origin::Agent).unwrap();
+    let out = h.to_string();
+    assert!(!out.contains("/Users/someone"), "{out}");
+    assert_eq!(
+        h["diagnostics"],
+        json!([
+            "cut-log.jsonl line 2 was skipped (damaged)",
+            "cut-log.jsonl line 3 was skipped (damaged)"
+        ])
+    );
+    // The window keeps the detailed reasons.
+    assert_eq!(cutlog::read(dir.path()).diagnostics.len(), 2);
+}
