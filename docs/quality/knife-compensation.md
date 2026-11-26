@@ -44,8 +44,11 @@ to print the tables again.
 
 The end-to-end limit is the guarantee that counts: it is what you see on
 the mat. It measures the simulated cut against your original shape, after
-flattening, the knife stage and the rounding to device units, and it must
-hold wherever the mat's grid lies under the plotter's units.
+flattening, the knife stage and the rounding to device units, both ways:
+no cut may stray from the shape (an over-cut), and no part of the shape may
+be missed by the cut (an under-cut, such as a corner the tip never
+reaches). It must hold wherever the mat's grid lies under the plotter's
+units.
 
 Why these values:
 
@@ -113,9 +116,12 @@ following the tip with the same model:
 
 - Each point goes to its nearest device unit. Where that move would push
   the blade, it goes to the best of the other three unit points round it
-  instead, or it is dropped.
-- A dropped point never lies more than one unit (0.05 mm) from the rounded
-  run that replaces it. Where a push cannot be avoided within that bound,
+  instead (up to 1.4 units, 0.071 mm, from where it was planned; the device
+  deviation of the result is measured, and stays within 0.075 mm), or it is
+  dropped.
+- A dropped point never lies more than 0.05 mm (one unit on the Cameo 2; a
+  bound in millimetres, not in units) from the rounded run that replaces
+  it. Where a push cannot be avoided within that bound,
   the point stays and the push is counted; the simulator reports it.
 - The end of a run always stays: when the step onto it would push, the
   points before it go instead.
@@ -149,48 +155,50 @@ on a plain plotter and on a calibrated one (scale 1.002 across and 0.998
 along, mirrored across the carriage). Each position is planned for its own
 grid, the sheet and the probes at d = 0.25 and 0.3 mm. "Device" is the
 rounded cut against the planned path, "end to end" against your original
-shapes.
+shapes, both ways (the larger of the cut's distance from the shape and the
+shape's distance from the cut, the shape sampled every 0.01 mm).
 
-| scale | mirror x | grid origin | device max dev | worst case | end to end max | worst case | pushed |
-|---|---|---|---|---|---|---|---|
-| 1, 1 | false | 0, 0 | 0.0417 | circle-r100 0.3 | 0.0396 | circle-r100 0.3 | 0 |
-| 1, 1 | false | 0, 0.0125 | 0.0437 | circle-r100 0.25 | 0.0410 | s-curve 0.25 | 0 |
-| 1, 1 | false | 0, 0.025 | 0.0494 | star-30 0.3 | 0.0494 | star-30 0.3 | 0 |
-| 1, 1 | false | 0, 0.0375 | 0.0428 | circle-r100 0.3 | 0.0493 | s-curve 0.25 | 0 |
-| 1, 1 | false | 0.0125, 0 | 0.0490 | star-90 0.25 | 0.0464 | star-90 0.25 | 0 |
-| 1, 1 | false | 0.0125, 0.0125 | 0.0460 | star-45 0.25 | 0.0482 | circle-r100 0.3 | 0 |
-| 1, 1 | false | 0.0125, 0.025 | 0.0399 | star-60 0.25 | 0.0448 | circle-r25 0.3 | 0 |
-| 1, 1 | false | 0.0125, 0.0375 | 0.0428 | circle-r100 0.25 | 0.0453 | circle-r100 0.25 | 0 |
-| 1, 1 | false | 0.025, 0 | 0.0482 | star-60 0.3 | 0.0485 | circle-r100 0.3 | 0 |
-| 1, 1 | false | 0.025, 0.0125 | 0.0432 | circle-r100 0.25 | 0.0461 | circle-r100 0.25 | 0 |
-| 1, 1 | false | 0.025, 0.025 | 0.0500 | turns 0.3 | 0.0500 | turns 0.3 | 0 |
-| 1, 1 | false | 0.025, 0.0375 | 0.0508 | star-45 0.25 | 0.0469 | circle-r25 0.25 | 0 |
-| 1, 1 | false | 0.0375, 0 | 0.0438 | star-120 0.25 | 0.0475 | circle-r100 0.3 | 0 |
-| 1, 1 | false | 0.0375, 0.0125 | 0.0431 | star-45 0.3 | 0.0453 | circle-r100 0.25 | 0 |
-| 1, 1 | false | 0.0375, 0.025 | 0.0424 | circle-r100 0.3 | 0.0499 | circle-r100 0.3 | 0 |
-| 1, 1 | false | 0.0375, 0.0375 | 0.0453 | turns 0.25 | 0.0471 | circle-r100 0.25 | 0 |
-| 1.002, 0.998 | true | 0, 0 | 0.0434 | star-170 0.25 | 0.0434 | star-170 0.25 | 0 |
-| 1.002, 0.998 | true | 0, 0.0125 | 0.0445 | star-45 0.25 | 0.0472 | circle-r100 0.25 | 0 |
-| 1.002, 0.998 | true | 0, 0.025 | 0.0516 | star-45 0.25 | 0.0484 | circle-r100 0.3 | 0 |
-| 1.002, 0.998 | true | 0, 0.0375 | 0.0426 | circle-r100 0.25 | 0.0490 | circle-r100 0.25 | 0 |
-| 1.002, 0.998 | true | 0.0125, 0 | 0.0429 | circle-r100 0.25 | 0.0465 | circle-r100 0.25 | 0 |
-| 1.002, 0.998 | true | 0.0125, 0.0125 | 0.0521 | star-170 0.3 | 0.0521 | star-170 0.3 | 0 |
-| 1.002, 0.998 | true | 0.0125, 0.025 | 0.0480 | star-120 0.3 | 0.0480 | star-120 0.3 | 0 |
-| 1.002, 0.998 | true | 0.0125, 0.0375 | 0.0441 | circle-r100 0.3 | 0.0459 | circle-r100 0.25 | 0 |
-| 1.002, 0.998 | true | 0.025, 0 | 0.0416 | star-15 0.3 | 0.0470 | circle-r100 0.3 | 0 |
-| 1.002, 0.998 | true | 0.025, 0.0125 | 0.0441 | star-15 0.25 | 0.0478 | circle-r100 0.3 | 0 |
-| 1.002, 0.998 | true | 0.025, 0.025 | 0.0493 | star-120 0.3 | 0.0480 | star-120 0.3 | 0 |
-| 1.002, 0.998 | true | 0.025, 0.0375 | 0.0452 | star-150 0.3 | 0.0504 | circle-r100 0.25 | 0 |
-| 1.002, 0.998 | true | 0.0375, 0 | 0.0412 | circle-r100 0.25 | 0.0454 | circle-r100 0.25 | 0 |
-| 1.002, 0.998 | true | 0.0375, 0.0125 | 0.0431 | circle-r100 0.3 | 0.0380 | star-150 0.3 | 0 |
-| 1.002, 0.998 | true | 0.0375, 0.025 | 0.0497 | star-150 0.25 | 0.0497 | star-150 0.25 | 0 |
-| 1.002, 0.998 | true | 0.0375, 0.0375 | 0.0468 | star-150 0.25 | 0.0468 | star-150 0.25 | 0 |
+| scale | mirror x | grid origin | device max dev | worst case | end to end max | worst case | pushed | into kept |
+|---|---|---|---|---|---|---|---|---|
+| 1, 1 | false | 0, 0 | 0.0417 | circle-r100 0.3 | 0.0396 | circle-r100 0.3 | 0 | 0.0000 |
+| 1, 1 | false | 0, 0.0125 | 0.0437 | circle-r100 0.25 | 0.0410 | s-curve 0.25 | 0 | 0.0000 |
+| 1, 1 | false | 0, 0.025 | 0.0494 | star-30 0.3 | 0.0494 | star-30 0.3 | 0 | 0.0000 |
+| 1, 1 | false | 0, 0.0375 | 0.0428 | circle-r100 0.3 | 0.0493 | s-curve 0.25 | 0 | 0.0000 |
+| 1, 1 | false | 0.0125, 0 | 0.0490 | star-90 0.25 | 0.0464 | star-90 0.25 | 0 | 0.0000 |
+| 1, 1 | false | 0.0125, 0.0125 | 0.0460 | star-45 0.25 | 0.0482 | circle-r100 0.3 | 0 | 0.0000 |
+| 1, 1 | false | 0.0125, 0.025 | 0.0399 | star-60 0.25 | 0.0448 | circle-r25 0.3 | 0 | 0.0000 |
+| 1, 1 | false | 0.0125, 0.0375 | 0.0428 | circle-r100 0.25 | 0.0453 | circle-r100 0.25 | 0 | 0.0000 |
+| 1, 1 | false | 0.025, 0 | 0.0482 | star-60 0.3 | 0.0485 | circle-r100 0.3 | 0 | 0.0000 |
+| 1, 1 | false | 0.025, 0.0125 | 0.0432 | circle-r100 0.25 | 0.0461 | circle-r100 0.25 | 0 | 0.0000 |
+| 1, 1 | false | 0.025, 0.025 | 0.0500 | turns 0.3 | 0.0500 | turns 0.3 | 0 | 0.0000 |
+| 1, 1 | false | 0.025, 0.0375 | 0.0508 | star-45 0.25 | 0.0469 | circle-r25 0.25 | 0 | 0.0000 |
+| 1, 1 | false | 0.0375, 0 | 0.0438 | star-120 0.25 | 0.0475 | circle-r100 0.3 | 0 | 0.0000 |
+| 1, 1 | false | 0.0375, 0.0125 | 0.0431 | star-45 0.3 | 0.0453 | circle-r100 0.25 | 0 | 0.0000 |
+| 1, 1 | false | 0.0375, 0.025 | 0.0424 | circle-r100 0.3 | 0.0499 | circle-r100 0.3 | 0 | 0.0000 |
+| 1, 1 | false | 0.0375, 0.0375 | 0.0453 | turns 0.25 | 0.0471 | circle-r100 0.25 | 0 | 0.0000 |
+| 1.002, 0.998 | true | 0, 0 | 0.0434 | star-170 0.25 | 0.0434 | star-170 0.25 | 0 | 0.0000 |
+| 1.002, 0.998 | true | 0, 0.0125 | 0.0445 | star-45 0.25 | 0.0472 | circle-r100 0.25 | 0 | 0.0000 |
+| 1.002, 0.998 | true | 0, 0.025 | 0.0516 | star-45 0.25 | 0.0484 | circle-r100 0.3 | 0 | 0.0000 |
+| 1.002, 0.998 | true | 0, 0.0375 | 0.0426 | circle-r100 0.25 | 0.0490 | circle-r100 0.25 | 0 | 0.0000 |
+| 1.002, 0.998 | true | 0.0125, 0 | 0.0429 | circle-r100 0.25 | 0.0465 | circle-r100 0.25 | 0 | 0.0000 |
+| 1.002, 0.998 | true | 0.0125, 0.0125 | 0.0521 | star-170 0.3 | 0.0521 | star-170 0.3 | 0 | 0.0000 |
+| 1.002, 0.998 | true | 0.0125, 0.025 | 0.0480 | star-120 0.3 | 0.0480 | star-120 0.3 | 0 | 0.0000 |
+| 1.002, 0.998 | true | 0.0125, 0.0375 | 0.0441 | circle-r100 0.3 | 0.0459 | circle-r100 0.25 | 0 | 0.0000 |
+| 1.002, 0.998 | true | 0.025, 0 | 0.0416 | star-15 0.3 | 0.0470 | circle-r100 0.3 | 0 | 0.0000 |
+| 1.002, 0.998 | true | 0.025, 0.0125 | 0.0441 | star-15 0.25 | 0.0478 | circle-r100 0.3 | 0 | 0.0000 |
+| 1.002, 0.998 | true | 0.025, 0.025 | 0.0493 | star-120 0.3 | 0.0480 | star-120 0.3 | 0 | 0.0000 |
+| 1.002, 0.998 | true | 0.025, 0.0375 | 0.0452 | star-150 0.3 | 0.0504 | circle-r100 0.25 | 0 | 0.0000 |
+| 1.002, 0.998 | true | 0.0375, 0 | 0.0412 | circle-r100 0.25 | 0.0454 | circle-r100 0.25 | 0 | 0.0000 |
+| 1.002, 0.998 | true | 0.0375, 0.0125 | 0.0431 | circle-r100 0.3 | 0.0380 | star-150 0.3 | 0 | 0.0000 |
+| 1.002, 0.998 | true | 0.0375, 0.025 | 0.0497 | star-150 0.25 | 0.0497 | star-150 0.25 | 0 | 0.0000 |
+| 1.002, 0.998 | true | 0.0375, 0.0375 | 0.0468 | star-150 0.25 | 0.0468 | star-150 0.25 | 0 | 0.0000 |
 
 Nothing is pushed at any position, every position stays within the
-end-to-end limit of 0.06 mm (worst 0.0521 mm), and the device output stays
-within its 0.075 mm bound. An odd calibrated grid at origin (0.37, 0.013)
-is the worst seen so far: 0.0569 mm on star-170 at d = 0.3, device and end
-to end, still within 0.06 mm. The CI test checks it on every run, with
+end-to-end limit of 0.06 mm (worst 0.0521 mm; the shape-to-cut direction
+alone is at most 0.0504 mm), and the device output stays within its
+0.075 mm bound. An odd calibrated grid at origin (0.37, 0.013) is the worst
+seen so far: 0.0569 mm on star-170 at d = 0.3, device and end to end, still
+within 0.06 mm. The CI test checks it on every run, with
 origin 0 and the two worst positions of the table. A plain grid at origin 0 happens to be one of the
 kinder positions (0.0417 mm), which is why a single position is not enough
 to judge.

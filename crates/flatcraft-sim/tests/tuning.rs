@@ -558,7 +558,7 @@ fn sample_step_factor_is_the_rule() {
 const THRESHOLDS: [f64; 6] = [0.0, 0.5, 1.0, 2.0, 5.0, 10.0];
 
 /// The share of segments a Quality threshold above 0 must save to become
-/// the default (ruling 2026-11-26: 0.5 deg saves 4 of 4720, not worth a
+/// the default (ruling 2026-11-26: 0.5 deg saves 4 of 4804, not worth a
 /// change of the default).
 const MIN_SEGMENT_SAVING: f64 = 0.01;
 
@@ -1585,23 +1585,107 @@ fn grid_positions() -> Vec<DeviceGrid> {
     out
 }
 
-/// The largest distance of a cut sample of `trace` from the source
-/// geometry of `c`: flattening, the knife stage and the device rounding
-/// together.
-fn end_to_end(c: &Case, out: &CutPlan, trace: &SimTrace) -> f64 {
+/// The cut moves of `trace`: each move into a blade-down sample that cuts
+/// a `Cut` toolpath (not waste), as tip segments.
+fn cut_moves(out: &CutPlan, trace: &SimTrace) -> Vec<(Point, Point)> {
     trace
         .samples
-        .iter()
-        .filter(|x| {
-            x.down && x.seg != WASTE_SEG && out.toolpaths[x.toolpath].kind == ToolpathKind::Cut
+        .windows(2)
+        .filter(|w| {
+            let x = &w[1];
+            x.down
+                && w[0].down
+                && x.seg != WASTE_SEG
+                && out.toolpaths[x.toolpath].kind == ToolpathKind::Cut
         })
-        .map(|x| source_distance(c, x.tip))
-        .fold(0.0, f64::max)
+        .map(|w| (w[0].tip, w[1].tip))
+        .collect()
+}
+
+fn segment_distance(p: Point, a: Point, b: Point) -> f64 {
+    let ab = b - a;
+    let len2 = ab.hypot2();
+    if len2 == 0.0 {
+        return p.distance(a);
+    }
+    let t = ((p - a).dot(ab) / len2).clamp(0.0, 1.0);
+    p.distance(a + t * ab)
+}
+
+/// The cell size of [`CutIndex`]: a query looks one cell round its own, so
+/// any cut within this distance is found.
+const CELL_MM: f64 = 0.1;
+
+/// The cut moves in square cells of [`CELL_MM`], to find the cut near a
+/// point.
+struct CutIndex {
+    cells: std::collections::HashMap<(i64, i64), Vec<usize>>,
+    moves: Vec<(Point, Point)>,
+}
+
+impl CutIndex {
+    fn new(moves: Vec<(Point, Point)>) -> Self {
+        let cell = |v: f64| (v / CELL_MM).floor() as i64;
+        let mut cells: std::collections::HashMap<(i64, i64), Vec<usize>> = Default::default();
+        for (k, &(a, b)) in moves.iter().enumerate() {
+            for x in cell(a.x.min(b.x))..=cell(a.x.max(b.x)) {
+                for y in cell(a.y.min(b.y))..=cell(a.y.max(b.y)) {
+                    cells.entry((x, y)).or_default().push(k);
+                }
+            }
+        }
+        Self { cells, moves }
+    }
+
+    /// The distance from `p` to the nearest cut move, or infinity when no
+    /// cut lies within [`CELL_MM`].
+    fn distance(&self, p: Point) -> f64 {
+        let (cx, cy) = (
+            (p.x / CELL_MM).floor() as i64,
+            (p.y / CELL_MM).floor() as i64,
+        );
+        let mut best = f64::INFINITY;
+        for x in cx - 1..=cx + 1 {
+            for y in cy - 1..=cy + 1 {
+                for &k in self.cells.get(&(x, y)).into_iter().flatten() {
+                    let (a, b) = self.moves[k];
+                    best = best.min(segment_distance(p, a, b));
+                }
+            }
+        }
+        if best <= CELL_MM { best } else { f64::INFINITY }
+    }
+}
+
+/// The end-to-end deviation of a simulated job from the source geometry of
+/// `c`, both ways (Hausdorff): the largest distance of a cut tip from the
+/// source shapes (an over-cut), and the largest distance of a point of the
+/// source shapes, sampled every 0.01 mm, from the cut (an under-cut, such
+/// as a corner the tip never reaches). Returns (cut to source, source to
+/// cut).
+fn end_to_end(c: &Case, out: &CutPlan, trace: &SimTrace) -> (f64, f64) {
+    use kurbo::ParamCurveArclen as _;
+    let moves = cut_moves(out, trace);
+    let cut_to_source = moves
+        .iter()
+        .map(|&(_, b)| source_distance(c, b))
+        .fold(0.0, f64::max);
+    let index = CutIndex::new(moves);
+    let mut source_to_cut = 0.0f64;
+    for seg in c.input.iter().flat_map(|pp| pp.path.segments()) {
+        let n = (seg.arclen(1e-6) / 0.01).ceil().max(1.0) as usize;
+        for k in 0..=n {
+            let q = kurbo::ParamCurve::eval(&seg, k as f64 / n as f64);
+            source_to_cut = source_to_cut.max(index.distance(q));
+        }
+    }
+    (cut_to_source, source_to_cut)
 }
 
 /// The device output on `grids`, for the sheet and the probes at d 0.25
 /// and 0.3, planned for each grid. Per grid: the device deviation against
 /// the planned path, the end-to-end deviation against the source shapes
+/// (both ways, see [`end_to_end`])
 /// and the pushed blades. Asserts, collected over all grids: end to end
 /// within `END_TO_END_LIMIT_MM` (the guarantee that counts), the device
 /// deviation within `DEVICE_LIMIT_MM`, and nothing pushed.
@@ -1621,6 +1705,7 @@ fn grid_position_rule(grids: &[DeviceGrid]) {
     cases.extend(threshold_probes());
     let mut fails = Vec::new();
     let (mut worst_dev, mut worst_e2e) = (0.0f64, 0.0f64);
+    let (mut worst_over, mut worst_under) = (0.0f64, 0.0f64);
     for g in grids {
         let (mut dev, mut e2e, mut pushed) = ((0.0f64, String::new()), (0.0f64, String::new()), 0);
         let mut into = 0.0f64;
@@ -1637,10 +1722,13 @@ fn grid_position_rule(grids: &[DeviceGrid]) {
                 if deviation(&m) > dev.0 {
                     dev = (deviation(&m), format!("{} {d}", c.name));
                 }
-                let e = end_to_end(c, &out, &trace);
+                let (over, under) = end_to_end(c, &out, &trace);
+                let e = over.max(under);
                 if e > e2e.0 {
                     e2e = (e, format!("{} {d}", c.name));
                 }
+                worst_over = worst_over.max(over);
+                worst_under = worst_under.max(under);
             }
         }
         let at = format!(
@@ -1674,7 +1762,10 @@ fn grid_position_rule(grids: &[DeviceGrid]) {
         ]);
     }
     println!();
-    println!("worst device deviation {worst_dev:.5}, worst end to end {worst_e2e:.5}");
+    println!(
+        "worst device deviation {worst_dev:.5}, worst end to end {worst_e2e:.5} \
+         (cut to source {worst_over:.5}, source to cut {worst_under:.5})"
+    );
     assert!(fails.is_empty(), "{fails:#?}");
 }
 

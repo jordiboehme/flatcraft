@@ -19,7 +19,7 @@ pub const ROUNDS: u32 = 3;
 /// rounded output stays within `DEVICE_LIMIT_MM` and whose float output
 /// stays within `ALGORITHM_LIMIT_MM` (1 deg measures 0.0052 mm). Quality
 /// and Outlines last keep 0, an arc at every corner: 0.5 deg saved 4 of
-/// 4720 segments, too little to leave the simpler default.
+/// 4804 segments, too little to leave the simpler default.
 pub const FAST_PIVOT_THRESHOLD_DEG: f64 = 0.5;
 
 /// The order settings of a [`CutStrategy`].

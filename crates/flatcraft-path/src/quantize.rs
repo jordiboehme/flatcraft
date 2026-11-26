@@ -17,8 +17,10 @@ use crate::plan::{ASSUMED_START_HEADING, AxisRun, Toolpath};
 pub use flatcraft_core::device_grid::DeviceGrid;
 
 /// The farthest a dropped axis point may lie from the rounded run that
-/// replaces it: one device unit of the Cameo 2, within
-/// `flatcraft_sim::DEVICE_LIMIT_MM` (which this crate cannot see).
+/// replaces it, in millimetres (not in units): one device unit on the
+/// Cameo 2, and within `flatcraft_sim::DEVICE_LIMIT_MM` (which this crate
+/// cannot see) for any plotter. On a plotter with coarser units the bound
+/// stays 0.05 mm, so fewer points can be dropped there.
 pub const MAX_DROP_MM: f64 = 0.05;
 
 /// Rounding slack on [`MAX_DROP_MM`]: a point one unit off its chord lies
@@ -47,6 +49,8 @@ struct Kept {
     seg: u32,
     /// The tip once the axis is here.
     tip: Point,
+    /// The move here pushes the blade (counted in `pushes_kept`).
+    pushed: bool,
 }
 
 /// A run being rounded.
@@ -71,7 +75,8 @@ impl Rounding<'_> {
     /// Keep `b` after the last point, counting a push it cannot avoid.
     fn keep(&mut self, planned: Point, b: Point, seg: u32) {
         let a = self.last();
-        if push_angle_deg(a.at, b, a.tip) > PUSHED_DEG {
+        let pushed = push_angle_deg(a.at, b, a.tip) > PUSHED_DEG;
+        if pushed {
             self.report.pushes_kept += 1;
         }
         self.out.push(Kept {
@@ -79,6 +84,7 @@ impl Rounding<'_> {
             at: b,
             seg,
             tip: drag(a.at, b, a.tip, self.d),
+            pushed,
         });
     }
 
@@ -199,6 +205,7 @@ pub fn round_runs(
                     at,
                     seg: run.seg[0],
                     tip: at - offset,
+                    pushed: false,
                 }],
                 pending: Vec::new(),
                 report: &mut report,
@@ -235,6 +242,10 @@ pub fn round_runs(
                         break;
                     }
                     r.report.dropped += 1;
+                    if k.pushed {
+                        // That push is gone with its point.
+                        r.report.pushes_kept -= 1;
+                    }
                 }
                 if b == r.last().at {
                     // The end rounds onto the point before it: that point
@@ -386,5 +397,31 @@ mod tests {
         let report = round_runs(&mut paths, &grid(), 0.25, Vec2::new(1.0, 0.0));
         assert_eq!((report.dropped, report.pushes_kept), (1, 0));
         assert!(report.max_drop_mm > 0.04 && report.max_drop_mm <= MAX_DROP_MM);
+    }
+
+    /// A counted push whose point the end-of-run pop loop removes again is
+    /// no longer counted.
+    #[test]
+    fn a_popped_push_is_no_longer_counted() {
+        let pts = vec![
+            Point::new(10.0, 10.0),
+            Point::new(20.0, 10.0),
+            Point::new(19.0, 10.0),
+            Point::new(19.05, 12.0),
+            Point::new(19.0, 12.0),
+        ];
+        let mut paths = vec![toolpath(pts)];
+        let report = round_runs(&mut paths, &grid(), 0.25, Vec2::new(1.0, 0.0));
+        let run = &paths[0].axis.as_ref().unwrap()[0];
+        // Replay the run with the model: the count matches the pushes left.
+        let mut tip = run.points[0] - Vec2::new(0.25, 0.0);
+        let mut pushes = 0;
+        for w in run.points.windows(2) {
+            if push_angle_deg(w[0], w[1], tip) > PUSHED_DEG {
+                pushes += 1;
+            }
+            tip = drag(w[0], w[1], tip, 0.25);
+        }
+        assert_eq!(report.pushes_kept, pushes, "{:?}", run.points);
     }
 }
