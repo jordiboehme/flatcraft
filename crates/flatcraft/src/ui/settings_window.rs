@@ -492,8 +492,23 @@ pub fn copy_field(field: &str, from: &Preferences, to: &mut Preferences) {
     }
 }
 
+/// Whether two pin lists pin the same actions. Their order does not
+/// count: the ribbon shows pins in table order.
+pub fn same_pins(a: &[String], b: &[String]) -> bool {
+    let sorted = |v: &[String]| {
+        let mut v = v.to_vec();
+        v.sort();
+        v.dedup();
+        v
+    };
+    sorted(a) == sorted(b)
+}
+
 /// Whether `a` and `b` differ in preference `field`.
 fn differs(field: &str, a: &Preferences, b: &Preferences) -> bool {
+    if field == "ribbon_pins" {
+        return !same_pins(&a.ribbon_pins, &b.ribbon_pins);
+    }
     let mut x = b.clone();
     copy_field(field, a, &mut x);
     x != *b
@@ -1519,7 +1534,7 @@ fn layout(ui: &mut Ui, cx: &mut Cx<'_>, d: &mut Preferences) {
             let all = flatcraft_engine::prefs::RIBBON_PIN_IDS.len();
             ui.label(format!("{n} of {all} actions are pinned to the ribbon."));
             let defaults = default_ribbon_pins();
-            let differs = d.ribbon_pins != defaults;
+            let differs = !same_pins(&d.ribbon_pins, &defaults);
             let r = ui.add_enabled(differs, egui::Button::new("Reset pins"));
             super::groups::card(
                 &r,
@@ -1907,6 +1922,17 @@ mod tests {
         for f in &rows {
             assert!(pref_keys().iter().any(|k| k == f), "{f} is no preference");
         }
+    }
+
+    #[test]
+    fn pins_in_another_order_are_the_same_pins() {
+        let mut d = Preferences::default();
+        d.ribbon_pins.reverse();
+        assert!(!differs("ribbon_pins", &d, &Preferences::default()));
+        // Reset on the Layout page stays dimmed.
+        assert!(!page_differs(Page::Layout, &d));
+        d.ribbon_pins.pop();
+        assert!(differs("ribbon_pins", &d, &Preferences::default()));
     }
 
     #[test]

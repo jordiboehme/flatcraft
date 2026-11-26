@@ -169,6 +169,22 @@ fn the_layout_fold_order_is_the_table() {
             "Add Collapsed",
         ]
     );
+    // Every group goes icon-only before it becomes a tile, and the steps
+    // are 1, 2, 3 and so on, each used once: the ladder never skips or
+    // repeats a state.
+    for tab in RibbonTab::ALL {
+        let mut ranks: Vec<u8> = Vec::new();
+        for g in tools::groups_of(tab) {
+            ranks.push(g.fold.icons);
+            if let Some(tile) = g.fold.tile {
+                assert!(g.fold.icons < tile, "{}", g.title);
+                ranks.push(tile);
+            }
+        }
+        ranks.sort();
+        let want: Vec<u8> = (1..=ranks.len() as u8).collect();
+        assert_eq!(ranks, want, "{tab:?}");
+    }
     // The View tab folds from the right, as every bar did before.
     let keep = vec![false; 3];
     assert_eq!(tools::fold_table(RibbonTab::View), collapse::steps(&keep));
