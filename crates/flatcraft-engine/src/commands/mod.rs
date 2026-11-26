@@ -135,10 +135,14 @@ pub(crate) fn placed_bounds_or_center(o: &Object) -> Rect {
         .unwrap_or_else(|| Rect::from_points(o.transform.center_mm, o.transform.center_mm))
 }
 
+/// How far a box may reach over each edge of the cutting area and still
+/// count as inside, mm (float noise). The planner uses the same.
+pub const AREA_SLACK_MM: f64 = 1e-6;
+
 /// True if `r` lies inside `area`, with a little slack for float noise.
 /// The window's out-of-area count uses it too, so both always agree.
 pub fn inside(r: Rect, area: Rect) -> bool {
-    const SLACK: f64 = 1e-6;
+    const SLACK: f64 = AREA_SLACK_MM;
     r.x0 >= area.x0 - SLACK
         && r.y0 >= area.y0 - SLACK
         && r.x1 <= area.x1 + SLACK

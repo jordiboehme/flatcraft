@@ -151,8 +151,15 @@ pub(crate) fn add_svg(
 /// The report of a new object: what the import found in the file, then
 /// the geometry checks of `document.check`.
 fn import_report(s: &Session, id: ObjectId, found: Vec<Issue>) -> Report {
+    report_of(s, &[id], found)
+}
+
+/// The report of objects whose source was read again (import, reload,
+/// relink, retrace): `found` (what the files had), then the geometry
+/// checks of `ids`.
+pub(crate) fn report_of(s: &Session, ids: &[ObjectId], found: Vec<Issue>) -> Report {
     let mut report = crate::job::JobInput::of(s)
-        .map(|input| report::check(&input, Some(&[id])))
+        .map(|input| report::check(&input, Some(ids)))
         .unwrap_or_default();
     let mut issues = found;
     issues.append(&mut report.issues);
@@ -160,9 +167,36 @@ fn import_report(s: &Session, id: ObjectId, found: Vec<Issue>) -> Report {
     report
 }
 
+/// What reading a source found, typed, for the report.
+#[derive(Debug, Clone)]
+pub(crate) enum Found {
+    Svg(Vec<ImportWarning>),
+    Trace(Vec<(Code, usize, String)>),
+}
+
+impl Found {
+    /// The issues of object `id`, naming `members` (it and its linked
+    /// copies, which share the source).
+    pub(crate) fn issues(&self, id: ObjectId, members: &[ObjectId]) -> Vec<Issue> {
+        let mut out = match self {
+            Found::Svg(w) => report::svg_issues(id, w),
+            Found::Trace(f) => f
+                .iter()
+                .map(|(code, n, text)| report::trace_issue(id, *code, *n, text))
+                .collect(),
+        };
+        if members.len() > 1 {
+            for i in &mut out {
+                i.object_ids = members.iter().map(|m| m.0).collect();
+            }
+        }
+        out
+    }
+}
+
 /// What a trace found that is worth a warning: the code, how many shapes
 /// it is about and the warning text.
-fn trace_findings(t: &TraceResult, invert: bool) -> Vec<(Code, usize, String)> {
+pub(crate) fn trace_findings(t: &TraceResult, invert: bool) -> Vec<(Code, usize, String)> {
     let mut out = Vec::new();
     if t.paths.is_empty() {
         let shape = if invert { "light" } else { "dark" };
@@ -525,6 +559,7 @@ fn run_retrace(s: &mut Session, p: RetraceParams, _: Origin) -> Result<Value, Co
     let size_before = placed_bounds(o).map(|b| b.size());
     let invert = settings.invert;
     let (mut warnings, numbers) = trace_report(&t, invert);
+    let found = Found::Trace(trace_findings(&t, invert));
     let o = object_mut(&mut s.doc_mut().document, id)?;
     if let Source::Raster { trace, .. } = &mut o.source {
         *trace = settings;
@@ -546,7 +581,14 @@ fn run_retrace(s: &mut Session, p: RetraceParams, _: Origin) -> Result<Value, Co
     if grew {
         warnings.extend(larger_than_area(s, id));
     }
-    let mut out = json!({ "id": id.0, "bounds_mm": bounds_json(s, id), "warnings": warnings });
+    let members = s.doc().document.members(id);
+    let report = report_of(s, &members, found.issues(id, &members));
+    let mut out = json!({
+        "id": id.0,
+        "bounds_mm": bounds_json(s, id),
+        "warnings": warnings,
+        "report": report.to_json(),
+    });
     merge(&mut out, numbers);
     Ok(out)
 }
@@ -558,7 +600,7 @@ command!(
     mutates: true,
     params: RetraceParams,
     run: run_retrace,
-    description: "Traces a raster object again with new settings and keeps its position, scale, rotation and mirror. Settings (all optional, omitted ones use the defaults): threshold (0-255, null = automatic), invert (cut the light pixels), despeckle_mm2 (default 0.5), corner_threshold_deg (default 60), smoothing (0-10, default 5), min_feature_mm (null = 6 times the blade offset of the plotter), dpi_override (null = dpi of the file, else 300). Only raster objects can be retraced. Linked copies (see object.copies) share the trace settings, so all members of the group are retraced in the same undo step, each keeping its own position, rotation and mirror. Returns {id, bounds_mm, warnings, dropped_small (shapes below the minimum feature size), despeckled (specks below the despeckle area), threshold_used, size_mm}.",
+    description: "Traces a raster object again with new settings and keeps its position, scale, rotation and mirror. Settings (all optional, omitted ones use the defaults): threshold (0-255, null = automatic), invert (cut the light pixels), despeckle_mm2 (default 0.5), corner_threshold_deg (default 60), smoothing (0-10, default 5), min_feature_mm (null = 6 times the blade offset of the plotter), dpi_override (null = dpi of the file, else 300). Only raster objects can be retraced. Linked copies (see object.copies) share the trace settings, so all members of the group are retraced in the same undo step, each keeping its own position, rotation and mirror. Returns {id, bounds_mm, warnings, report: {shapes, issues} (the import report of the object and its linked copies, see document.check), dropped_small (shapes below the minimum feature size), despeckled (specks below the despeckle area), threshold_used, size_mm}.",
 );
 
 // ---------------------------------------------------------------- select / visible / delete

@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use flatcraft_core::document::{CutOptions, Document, JobSettings, ObjectId};
+use flatcraft_core::document::{CutOptions, Document, GroupId, JobSettings, ObjectId};
 use flatcraft_core::geometry::CutPath;
 use flatcraft_core::transform::Transform;
 use flatcraft_device::gpgl::{CheckedJob, CutSettings, EmitError, EmitPath, EmittedJob, emit_job};
@@ -57,6 +57,9 @@ pub struct JobResult {
     /// Problems of a job that does cut (filled shapes the cut mode cuts
     /// nothing of), with their fixes. See `report`.
     pub issues: Vec<Issue>,
+    /// The indexes of `warnings` that `issues` say again, with a fix: a
+    /// window that shows the issues leaves these warnings out.
+    pub covered_warnings: Vec<usize>,
     pub sent: Option<SendReport>,
 }
 
@@ -130,6 +133,9 @@ pub struct JobObject {
     pub local_bounds: kurbo::Rect,
     pub cut: CutOptions,
     pub geometry: Arc<Vec<CutPath>>,
+    /// The group of linked copies it belongs to: a fix of shared settings
+    /// changes every member.
+    pub link_group: Option<GroupId>,
 }
 
 /// Two inputs are equal when the same geometry `Arc` is placed the same
@@ -145,6 +151,7 @@ impl PartialEq for JobObject {
             && self.local_bounds == other.local_bounds
             && self.cut == other.cut
             && Arc::ptr_eq(&self.geometry, &other.geometry)
+            && self.link_group == other.link_group
     }
 }
 
@@ -173,6 +180,7 @@ impl JobInput {
                 local_bounds: o.local_bounds,
                 cut: o.cut,
                 geometry: o.geometry.clone(),
+                link_group: o.link_group,
             })
             .collect()
     }
@@ -234,6 +242,9 @@ pub struct BuildFailure {
     /// fix, with the fixes: the reasons there is nothing to cut, or the
     /// objects outside the cutting area. Empty for other refusals.
     pub issues: Vec<Issue>,
+    /// The warnings of the build so far (hidden and skipped objects, a
+    /// mat that is not there); empty for other refusals.
+    pub warnings: Vec<String>,
 }
 
 impl From<CommandError> for BuildFailure {
@@ -242,6 +253,7 @@ impl From<CommandError> for BuildFailure {
             error,
             nothing_to_cut: false,
             issues: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 }
@@ -275,6 +287,7 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         ..BuildFacts::default()
     };
     let mut issues = Vec::new();
+    let mut covered_warnings = Vec::new();
     let mut placed = Vec::new();
     let mut labels = std::collections::BTreeMap::new();
     for o in objects {
@@ -316,7 +329,10 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         } else {
             facts.placed.push(o.id);
             if no_area > 0 {
+                // The no-area warning just pushed says the same.
+                covered_warnings.push(warnings.len() - 1);
                 issues.extend(report::fill_ignored_issue(
+                    input,
                     o,
                     no_area,
                     plotter.flatten_tolerance_mm,
@@ -370,6 +386,7 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
                 error: CommandError::Refused(text),
                 nothing_to_cut,
                 issues: report::nothing_to_cut(input, &facts, false),
+                warnings: warnings.clone(),
             }
         }
         PlanError::TooShort {
@@ -388,6 +405,7 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
                 error: CommandError::Refused(text),
                 nothing_to_cut: true,
                 issues: report::nothing_to_cut(input, &facts, true),
+                warnings: warnings.clone(),
             }
         }
         PlanError::OutOfArea { objects } => {
@@ -406,6 +424,7 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
                 )),
                 nothing_to_cut: false,
                 issues: report::out_of_area(input, &objects),
+                warnings: warnings.clone(),
             }
         }
         other @ PlanError::InvalidSettings { .. } => {
@@ -452,6 +471,7 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         warnings,
         choice_warnings,
         issues,
+        covered_warnings,
         sent: None,
     })
 }

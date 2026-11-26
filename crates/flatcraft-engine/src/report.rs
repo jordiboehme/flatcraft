@@ -586,38 +586,99 @@ impl Limits {
 /// open paths, hairlines, shapes below the minimum feature size, fills the
 /// cut mode ignores, and objects outside or larger than the cutting area.
 /// Hidden and skipped objects are checked too: they may be cut later.
+/// Linked copies share their cut options and scale, so an issue of those
+/// names every member once.
 pub fn check(input: &JobInput, ids: Option<&[ObjectId]>) -> Report {
     let limits = Limits::of(input);
     let mut report = Report::default();
+    let mut seen: Vec<(Code, Vec<u64>)> = Vec::new();
     for o in &input.objects {
         if ids.is_some_and(|ids| !ids.contains(&o.id)) {
             continue;
         }
-        report.extend(check_object(o, &limits));
+        let r = check_object(input, o, &limits);
+        report.shapes += r.shapes;
+        for i in r.issues {
+            if i.object_ids.len() > 1 {
+                let key = (i.code, i.object_ids.clone());
+                if seen.contains(&key) {
+                    continue;
+                }
+                seen.push(key);
+            }
+            report.issues.push(i);
+        }
     }
     report
 }
 
-fn check_object(o: &JobObject, limits: &Limits) -> Report {
+/// The ids of `o` and its linked copies (only `o` when it is not linked),
+/// in document order: a fix of shared settings changes all of them.
+fn members(input: &JobInput, o: &JobObject) -> Vec<u64> {
+    match o.link_group {
+        None => vec![o.id.0],
+        Some(g) => input
+            .objects
+            .iter()
+            .filter(|x| x.link_group == Some(g))
+            .map(|x| x.id.0)
+            .collect(),
+    }
+}
+
+/// The end of a fix description when the fix changes linked copies too.
+fn shared_note(members: &[u64]) -> &'static str {
+    if members.len() > 1 {
+        " This object and its linked copies change together."
+    } else {
+        ""
+    }
+}
+
+fn with_mode(o: &JobObject, mode: CutMode) -> CutOptions {
+    CutOptions { mode, ..o.cut }
+}
+
+fn check_object(input: &JobInput, o: &JobObject, limits: &Limits) -> Report {
     let affine = o.transform.affine(o.local_bounds);
-    let m = measure(
-        o,
-        &o.cut,
-        affine,
-        limits.tolerance_mm,
-        limits.min_feature_mm,
-    );
+    let measure_as = |options: &CutOptions| {
+        measure(
+            o,
+            options,
+            affine,
+            limits.tolerance_mm,
+            limits.min_feature_mm,
+        )
+    };
+    let m = measure_as(&o.cut);
+    let shared = members(input, o);
     let mut issues = Vec::new();
     let name = quoted(&o.name);
     let id = o.id.0;
     if m.open > 0 {
         // In all lines a filled path is cut as drawn; object outlines cut
         // the edge of its fill, which is closed. They do not close a gap.
-        let fixed_by_outlines = o.cut.mode == CutMode::AllLines && m.gaps == 0;
-        let fixes = if fixed_by_outlines {
+        // The fix is withheld when object outlines would then cut nothing
+        // of a filled line of the object (its fix would switch back).
+        let filled = m.open - m.gaps;
+        let outlines_ok = o.cut.mode == CutMode::AllLines
+            && filled > 0
+            && measure_as(&with_mode(o, CutMode::ObjectOutlines)).no_area == 0;
+        let fixes = if outlines_ok {
+            let rest = if m.gaps > 0 {
+                format!(
+                    " {} with a gap stay open; close them in your drawing app.",
+                    count(m.gaps, "shape", "shapes")
+                )
+            } else {
+                String::new()
+            };
             vec![Fix {
                 label: "Use object outlines".into(),
-                description: "Cuts around the edge of every filled shape instead of along the lines as drawn, so each shape is closed and comes out.".into(),
+                description: format!(
+                    "Cuts around the edge of every filled shape instead of along the lines as drawn, so each filled shape is closed and comes out.{rest}{}",
+                    shared_note(&shared)
+                ),
                 command: "object.set_cut_options".into(),
                 args: json!({ "ids": [id], "mode": "object_outlines" }),
             }]
@@ -625,19 +686,22 @@ fn check_object(o: &JobObject, limits: &Limits) -> Report {
             Vec::new()
         };
         let what = count(m.open, "shape is", "shapes are");
+        let hint = if outlines_ok && m.gaps == 0 {
+            "Object outlines cut around the filled shapes, which closes them.".to_string()
+        } else if o.cut.mode == CutMode::AllLines && filled > 0 && !outlines_ok {
+            "Object outlines would close the filled shapes, but then cut nothing of the filled lines in this object. Close the shapes in your drawing app, or move the lines to their own object.".to_string()
+        } else {
+            "Close the gaps in your drawing app (in Inkscape: select both end nodes and join them), then reload the file.".to_string()
+        };
         issues.push(Issue {
             code: Code::OpenPaths,
             severity: Severity::Warning,
-            object_ids: vec![id],
+            object_ids: if outlines_ok { shared.clone() } else { vec![id] },
             paths: m.open,
             message: format!(
                 "{name}: {what} not closed, so the knife cuts a line there and the piece stays on the sheet."
             ),
-            hint: if fixed_by_outlines {
-                "Object outlines cut around the filled shapes, which closes them.".into()
-            } else {
-                "Close the gaps in your drawing app (in Inkscape: select both end nodes and join them), then reload the file.".into()
-            },
+            hint,
             fixes,
         });
     }
@@ -652,7 +716,7 @@ fn check_object(o: &JobObject, limits: &Limits) -> Report {
         issues.push(Issue {
             code: Code::Hairline,
             severity: Severity::Warning,
-            object_ids: vec![id],
+            object_ids: shared.clone(),
             paths: m.hairline,
             message: format!(
                 "{name}: {what} cut along both edges but only {widths} wide. A strip thinner than {} tears.",
@@ -661,7 +725,10 @@ fn check_object(o: &JobObject, limits: &Limits) -> Report {
             hint: "Cut thin lines once, along their middle.".into(),
             fixes: vec![Fix {
                 label: "Cut as single lines".into(),
-                description: "Cuts every stroke of this object once, along its middle, instead of around both edges.".into(),
+                description: format!(
+                    "Cuts every stroke of this object once, along its middle, instead of around both edges.{}",
+                    shared_note(&shared)
+                ),
                 command: "object.set_cut_options".into(),
                 args: json!({ "ids": [id], "strokes": "centre_line" }),
             }],
@@ -671,16 +738,20 @@ fn check_object(o: &JobObject, limits: &Limits) -> Report {
     if m.small > 0 {
         let all_small = m.small == m.closed;
         let fix = match (all_small, m.smallest, bounds) {
-            (true, Some(smallest), Some(b)) if smallest > 0.0 => {
-                scale_up_fix(id, b, limits.min_feature_mm / smallest)
-            }
+            (true, Some(smallest), Some(b)) if smallest > 0.0 => scale_up_fix(
+                id,
+                b,
+                limits.min_feature_mm / smallest,
+                limits.area,
+                &shared,
+            ),
             _ => None,
         };
         let what = count(m.small, "shape is", "shapes are");
         issues.push(Issue {
             code: Code::BelowMinFeature,
             severity: Severity::Warning,
-            object_ids: vec![id],
+            object_ids: if fix.is_some() { shared.clone() } else { vec![id] },
             paths: m.small,
             message: format!(
                 "{name}: {what} smaller than {}, the smallest shape this blade cuts cleanly. They may tear or not come off.",
@@ -696,6 +767,7 @@ fn check_object(o: &JobObject, limits: &Limits) -> Report {
     }
     if m.no_area > 0 {
         issues.push(fill_ignored(
+            input,
             o,
             m.no_area,
             limits.tolerance_mm,
@@ -703,7 +775,7 @@ fn check_object(o: &JobObject, limits: &Limits) -> Report {
         ));
     }
     if let (Some(area), Some(b)) = (limits.area, bounds) {
-        issues.extend(area_issue(o, b, area));
+        issues.extend(area_issue(o, b, area, &shared));
     }
     Report {
         shapes: m.total,
@@ -712,10 +784,17 @@ fn check_object(o: &JobObject, limits: &Limits) -> Report {
 }
 
 /// `object.scale` to a size `factor` times the object's, by its larger
-/// side, as an absolute size (so running it twice does no more).
-fn scale_up_fix(id: u64, b: Rect, factor: f64) -> Option<Fix> {
+/// side, as an absolute size (so running it twice does no more). `None`
+/// when it would not grow it, or when the result would not fit the
+/// cutting area (then "Scale to fit" would shrink it back).
+fn scale_up_fix(id: u64, b: Rect, factor: f64, area: Option<Rect>, shared: &[u64]) -> Option<Fix> {
     let factor = factor * SCALE_UP_SLACK;
     if !factor.is_finite() || factor <= 1.0 {
+        return None;
+    }
+    if let Some(area) = area
+        && (b.width() * factor > area.width() || b.height() * factor > area.height())
+    {
         return None;
     }
     let args = if b.width() >= b.height() {
@@ -726,8 +805,9 @@ fn scale_up_fix(id: u64, b: Rect, factor: f64) -> Option<Fix> {
     Some(Fix {
         label: "Scale up".into(),
         description: format!(
-            "Scales the object {} times, keeping its proportions and its centre, so its smallest shape reaches the minimum feature size.",
-            round_factor(factor)
+            "Scales the object {} times, keeping its proportions and its centre, so its smallest shape reaches the minimum feature size.{}",
+            round_factor(factor),
+            shared_note(shared)
         ),
         command: "object.scale".into(),
         args,
@@ -743,41 +823,83 @@ fn round_factor(f: f64) -> String {
 }
 
 /// The `fill_ignored` issue of an object the job does cut.
-pub(crate) fn fill_ignored_issue(o: &JobObject, n: usize, tolerance: f64) -> Option<Issue> {
-    (n > 0).then(|| fill_ignored(o, n, tolerance, Severity::Warning))
+pub(crate) fn fill_ignored_issue(
+    input: &JobInput,
+    o: &JobObject,
+    n: usize,
+    tolerance: f64,
+) -> Option<Issue> {
+    (n > 0).then(|| fill_ignored(input, o, n, tolerance, Severity::Warning))
 }
 
-fn fill_ignored(o: &JobObject, n: usize, tolerance: f64, severity: Severity) -> Issue {
+/// The `fill_ignored` issue. Its fix (all lines) is withheld when all
+/// lines would cut filled shapes of the object as open lines (the
+/// `open_paths` fix would switch back).
+fn fill_ignored(
+    input: &JobInput,
+    o: &JobObject,
+    n: usize,
+    tolerance: f64,
+    severity: Severity,
+) -> Issue {
     let what = count(
         n,
         "filled shape has no area or is",
         "filled shapes have no area or are",
     );
     let them = if n == 1 { "it" } else { "them" };
+    let limits = Limits::of(input);
+    let affine = o.transform.affine(o.local_bounds);
+    let as_lines = measure(
+        o,
+        &with_mode(o, CutMode::AllLines),
+        affine,
+        tolerance,
+        limits.min_feature_mm,
+    );
+    let lines_ok = as_lines.open == as_lines.gaps;
+    let shared = members(input, o);
     Issue {
         code: Code::FillIgnored,
         severity,
-        object_ids: vec![o.id.0],
+        object_ids: if lines_ok {
+            shared.clone()
+        } else {
+            vec![o.id.0]
+        },
         paths: n,
         message: format!(
             "{}: {what} thinner than {}, so the cut mode Object outlines cuts nothing of {them}.",
             quoted(&o.name),
             mm(tolerance)
         ),
-        hint: "The cut mode All lines cuts every path as drawn, these too.".into(),
-        fixes: vec![Fix {
-            label: "Cut all lines".into(),
-            description: "Switches this object to the cut mode All lines: every path is cut as drawn, filled or not.".into(),
-            command: "object.set_cut_options".into(),
-            args: json!({ "ids": [o.id.0], "mode": "all_lines" }),
-        }],
+        hint: if lines_ok {
+            "The cut mode All lines cuts every path as drawn, these too.".into()
+        } else {
+            "All lines would cut these, but cut the filled shapes of this object as open lines. Draw these lines as strokes, or move them to their own object.".into()
+        },
+        fixes: if lines_ok {
+            vec![Fix {
+                label: "Cut all lines".into(),
+                description: format!(
+                    "Switches this object to the cut mode All lines: every path is cut as drawn, filled or not.{}",
+                    shared_note(&shared)
+                ),
+                command: "object.set_cut_options".into(),
+                args: json!({ "ids": [o.id.0], "mode": "all_lines" }),
+            }]
+        } else {
+            Vec::new()
+        },
     }
 }
 
 /// The issue of an object with bounds `b` that is larger than `area` or
 /// does not lie inside it.
-fn area_issue(o: &JobObject, b: Rect, area: Rect) -> Option<Issue> {
-    const EPS: f64 = 1e-6;
+fn area_issue(o: &JobObject, b: Rect, area: Rect, shared: &[u64]) -> Option<Issue> {
+    // The same slack as `inside` on both edges: what it calls inside never
+    // counts as too large, and what fits can always be clamped in.
+    const EPS: f64 = 2.0 * crate::commands::AREA_SLACK_MM;
     let name = quoted(&o.name);
     let id = o.id.0;
     if b.width() > area.width() + EPS || b.height() > area.height() + EPS {
@@ -799,7 +921,7 @@ fn area_issue(o: &JobObject, b: Rect, area: Rect) -> Option<Issue> {
         return Some(Issue {
             code: Code::LargerThanArea,
             severity: Severity::Error,
-            object_ids: vec![id],
+            object_ids: shared.to_vec(),
             paths: 0,
             message: format!(
                 "{name} is {} x {}, larger than the cutting area ({} x {}).",
@@ -813,7 +935,10 @@ fn area_issue(o: &JobObject, b: Rect, area: Rect) -> Option<Issue> {
             ),
             fixes: vec![Fix {
                 label: "Scale to fit the mat".into(),
-                description: "Scales the object down, keeping its proportions, until it fits the cutting area.".into(),
+                description: format!(
+                    "Scales the object down, keeping its proportions, until it fits the cutting area.{}",
+                    shared_note(shared)
+                ),
                 command: "object.scale".into(),
                 args,
             }],
@@ -822,8 +947,10 @@ fn area_issue(o: &JobObject, b: Rect, area: Rect) -> Option<Issue> {
     if crate::commands::inside(b, area) {
         return None;
     }
-    let x = b.x0.clamp(area.x0, area.x1 - b.width());
-    let y = b.y0.clamp(area.y0, area.y1 - b.height());
+    // A box up to EPS wider than the area goes to its left (top) edge;
+    // the upper bound never falls below the lower one.
+    let x = b.x0.clamp(area.x0, (area.x1 - b.width()).max(area.x0));
+    let y = b.y0.clamp(area.y0, (area.y1 - b.height()).max(area.y0));
     let overlaps = b.intersect(area).area() > 0.0;
     let message = if overlaps {
         format!("{name} sticks out of the cutting area.")
@@ -978,6 +1105,7 @@ pub fn nothing_to_cut(input: &JobInput, facts: &BuildFacts, too_short: bool) -> 
         };
         if *no_area > 0 {
             out.push(fill_ignored(
+                input,
                 o,
                 *no_area,
                 limits.tolerance_mm,
@@ -1010,7 +1138,15 @@ pub fn nothing_to_cut(input: &JobInput, facts: &BuildFacts, too_short: bool) -> 
             let fix = object_bounds(o).and_then(|b| {
                 let side = b.width().max(b.height());
                 (side > 0.0)
-                    .then(|| scale_up_fix(id.0, b, limits.min_feature_mm / side))
+                    .then(|| {
+                        scale_up_fix(
+                            id.0,
+                            b,
+                            limits.min_feature_mm / side,
+                            limits.area,
+                            &members(input, o),
+                        )
+                    })
                     .flatten()
             });
             let n = measure(
@@ -1024,7 +1160,11 @@ pub fn nothing_to_cut(input: &JobInput, facts: &BuildFacts, too_short: bool) -> 
             out.push(Issue {
                 code: Code::TooSmall,
                 severity: Severity::Error,
-                object_ids: vec![id.0],
+                object_ids: if fix.is_some() {
+                    members(input, o)
+                } else {
+                    vec![id.0]
+                },
                 paths: n,
                 message: format!(
                     "{} is so tiny that the plotter would not move: every cut is shorter than half a plotter step.",
@@ -1048,7 +1188,7 @@ pub fn out_of_area(input: &JobInput, ids: &[ObjectId]) -> Vec<Issue> {
         .objects
         .iter()
         .filter(|o| ids.contains(&o.id))
-        .filter_map(|o| area_issue(o, object_bounds(o)?, area))
+        .filter_map(|o| area_issue(o, object_bounds(o)?, area, &members(input, o)))
         .collect()
 }
 

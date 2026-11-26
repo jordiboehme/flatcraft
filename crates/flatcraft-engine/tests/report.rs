@@ -565,3 +565,334 @@ fn the_codes_are_documented_for_agents() {
         assert!(desc(id).contains("document.check"), "{id}");
     }
 }
+
+// ---------------------------------------------------------------- fix round 1
+
+fn area(s: &mut Session) -> [f64; 4] {
+    let a = &run(s, "document.state", json!({}))["cutting_area_mm"];
+    [
+        a["x0"].as_f64().unwrap(),
+        a["y0"].as_f64().unwrap(),
+        a["x1"].as_f64().unwrap(),
+        a["y1"].as_f64().unwrap(),
+    ]
+}
+
+/// An object a hair (5e-7 mm) wider or taller than the cutting area, off
+/// the mat: it counts as fitting, and the move fix clamps it in without a
+/// panic.
+#[test]
+fn an_object_a_hair_wider_than_the_area_moves_without_a_panic() {
+    for wide in [true, false] {
+        let mut t = t();
+        let (id, _) = import(&mut t.s, "sq", RECT);
+        let [x0, y0, x1, y1] = area(&mut t.s);
+        let size = if wide {
+            json!({ "ids": [id], "width_mm": x1 - x0 + 5e-7, "keep_aspect": false })
+        } else {
+            json!({ "ids": [id], "height_mm": y1 - y0 + 5e-7, "keep_aspect": false })
+        };
+        run(&mut t.s, "object.scale", size);
+        let off = if wide {
+            json!({ "ids": [id], "dy_mm": 1000.0 })
+        } else {
+            json!({ "ids": [id], "dx_mm": 1000.0 })
+        };
+        run(&mut t.s, "object.move", off);
+        let c = check(&mut t.s);
+        assert_eq!(codes(&c), ["outside_area"], "{c}");
+        let p = preview(&mut t.s);
+        assert_eq!(p["ready"], false);
+        assert_eq!(codes(&p), ["outside_area"]);
+        let e =
+            t.s.execute("job.send", json!({}), Origin::User)
+                .unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "Refused: These objects are outside the cutting area: sq. Move or scale them, or pick a bigger mat."
+        );
+        apply(&mut t.s, &issue(&c, "outside_area")["fixes"][0]);
+        assert_eq!(codes(&check(&mut t.s)), Vec::<String>::new());
+        assert_eq!(preview(&mut t.s)["ready"], true);
+    }
+}
+
+/// Applies the first offered fix until none is offered; returns the steps.
+fn fix_until_done(s: &mut Session, limit: usize) -> usize {
+    for step in 0..=limit {
+        let c = check(s);
+        let p = run(s, "job.preview", json!({}));
+        let fix = issues(&c)
+            .into_iter()
+            .chain(issues(&p))
+            .flat_map(|i| i["fixes"].as_array().cloned().unwrap_or_default())
+            .next();
+        match fix {
+            Some(f) => apply(s, &f),
+            None => return step,
+        }
+    }
+    panic!("fixes did not end within {limit} steps: {}", check(s));
+}
+
+const TRIANGLE: &str = r#"<path d="M10 10 L40 10 L25 40"/>"#;
+const FLAT: &str = r#"<path d="M10 80 L90 80"/>"#;
+
+#[test]
+fn open_paths_and_fill_ignored_never_undo_each_other() {
+    for mode in ["all_lines", "object_outlines"] {
+        let mut t = t();
+        let (id, _) = import(&mut t.s, "mix", &format!("{TRIANGLE}{FLAT}"));
+        run(
+            &mut t.s,
+            "object.set_cut_options",
+            json!({ "ids": [id], "mode": mode }),
+        );
+        let c = check(&mut t.s);
+        // The fix that would raise the other issue is withheld, with a hint.
+        let code = if mode == "all_lines" {
+            "open_paths"
+        } else {
+            "fill_ignored"
+        };
+        let i = issue(&c, code);
+        assert_eq!(i["fixes"], json!([]), "{i}");
+        assert!(i["hint"].as_str().unwrap().contains("own object"), "{i}");
+        assert!(fix_until_done(&mut t.s, 8) <= 8);
+    }
+}
+
+#[test]
+fn offered_fixes_always_come_to_an_end() {
+    let bodies = [
+        format!("{TRIANGLE}{FLAT}"),
+        format!("{TRIANGLE}{FLAT}{FRAME}"),
+        format!(
+            r#"{TRIANGLE}<path d="M60 10 H90 V40 H60 V10.4" fill="none" stroke="black" stroke-width="0.2"/>"#
+        ),
+        r#"<circle cx="10" cy="10" r="0.3"/><circle cx="95" cy="95" r="0.3"/>"#.to_string(),
+        format!("{FRAME}{FLAT}"),
+    ];
+    for body in &bodies {
+        for mode in ["all_lines", "object_outlines"] {
+            let mut t = t();
+            let (id, _) = import(&mut t.s, "mix", body);
+            run(
+                &mut t.s,
+                "object.set_cut_options",
+                json!({ "ids": [id], "mode": mode }),
+            );
+            run(
+                &mut t.s,
+                "object.move",
+                json!({ "ids": [id], "dx_mm": -150.0 }),
+            );
+            assert!(fix_until_done(&mut t.s, 10) <= 10, "{body} {mode}");
+        }
+    }
+}
+
+const FRAME: &str =
+    r#"<rect x="60" y="60" width="30" height="30" fill="none" stroke="black" stroke-width="1"/>"#;
+
+#[test]
+fn object_outlines_is_offered_for_filled_shapes_even_with_gaps() {
+    let mut t = t();
+    let (id, _) = import(
+        &mut t.s,
+        "both",
+        &format!(
+            r#"{TRIANGLE}<path d="M60 10 H90 V40 H60 V10.4" fill="none" stroke="black" stroke-width="0.2"/>"#
+        ),
+    );
+    run(
+        &mut t.s,
+        "object.set_cut_options",
+        json!({ "ids": [id], "mode": "all_lines" }),
+    );
+    let i = issue(&check(&mut t.s), "open_paths");
+    assert_eq!(i["paths"], 2);
+    let fix = &i["fixes"][0];
+    assert_eq!(fix["label"], "Use object outlines");
+    assert!(
+        fix["description"]
+            .as_str()
+            .unwrap()
+            .contains("1 shape with a gap stay")
+    );
+    apply(&mut t.s, fix);
+    let i = issue(&check(&mut t.s), "open_paths");
+    assert_eq!(i["paths"], 1);
+    assert_eq!(i["fixes"], json!([]));
+}
+
+#[test]
+fn reload_relink_and_retrace_return_the_report() {
+    let mut t = t();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("frame.svg");
+    std::fs::write(&file, svg(RECT)).unwrap();
+    let id = run(&mut t.s, "object.import", json!({ "path": file }))["id"]
+        .as_u64()
+        .unwrap();
+    // The file changes: now it has a dashed line and a hairline frame.
+    let dashed = format!(
+        r#"<path d="M10 10 H90" fill="none" stroke="black" stroke-width="0.2" stroke-dasharray="2 1"/>{FRAME}"#
+    );
+    std::fs::write(&file, svg(&dashed)).unwrap();
+    let r = run(&mut t.s, "object.reload", json!({ "ids": [id] }));
+    well_formed(&r["report"]);
+    assert_eq!(codes(&r["report"]), ["dashes_ignored", "hairline"], "{r}");
+    // Relink to another copy of the file.
+    let other = dir.path().join("moved.svg");
+    std::fs::write(&other, svg(RECT)).unwrap();
+    let r = run(
+        &mut t.s,
+        "object.relink",
+        json!({ "id": id, "path": other }),
+    );
+    assert_eq!(r["report"]["issues"], json!([]), "{r}");
+    assert_eq!(r["report"]["shapes"], 1);
+    // Retrace a blank image.
+    let img = image::RgbImage::from_pixel(40, 40, image::Rgb([255, 255, 255]));
+    let png = dir.path().join("blank.png");
+    img.save(&png).unwrap();
+    let rid = run(&mut t.s, "object.import", json!({ "path": png }))["id"]
+        .as_u64()
+        .unwrap();
+    let r = run(
+        &mut t.s,
+        "object.retrace",
+        json!({ "id": rid, "settings": { "threshold": 100 } }),
+    );
+    assert_eq!(codes(&r["report"]), ["nothing_traced"], "{r}");
+}
+
+#[test]
+fn a_fix_of_linked_copies_names_every_member() {
+    let mut t = t();
+    let (id, _) = import(&mut t.s, "frame", FRAME);
+    let r = run(
+        &mut t.s,
+        "object.copies",
+        json!({ "id": id, "count": 2, "linked": true }),
+    );
+    let _ = r;
+    let ids: Vec<u64> = run(&mut t.s, "document.state", json!({}))["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["id"].as_u64().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 3);
+    let c = check(&mut t.s);
+    // One issue for the group, not one per copy.
+    let hair: Vec<Value> = issues(&c)
+        .into_iter()
+        .filter(|i| i["code"] == "hairline")
+        .collect();
+    assert_eq!(hair.len(), 1, "{c}");
+    assert_eq!(hair[0]["object_ids"], json!(ids));
+    let fix = &hair[0]["fixes"][0];
+    assert!(
+        fix["description"]
+            .as_str()
+            .unwrap()
+            .ends_with("This object and its linked copies change together.")
+    );
+    apply(&mut t.s, fix);
+    for o in run(&mut t.s, "document.state", json!({}))["objects"]
+        .as_array()
+        .unwrap()
+    {
+        assert_eq!(o["cut"]["strokes"], "centre_line");
+    }
+    assert!(!codes(&check(&mut t.s)).contains(&"hairline".to_string()));
+}
+
+#[test]
+fn a_job_that_cannot_be_cut_still_carries_its_warnings() {
+    let mut t = t();
+    let (a, _) = import(&mut t.s, "a", RECT);
+    run(
+        &mut t.s,
+        "object.set_visible",
+        json!({ "ids": [a], "visible": false }),
+    );
+    let p = preview(&mut t.s);
+    assert_eq!(p["ready"], false);
+    assert_eq!(p["warnings"], json!(["'a' is hidden and will not be cut."]));
+}
+
+/// Each fix is exactly one undo step, and undoing it brings the issue back.
+#[test]
+fn each_fix_is_one_undo_step() {
+    let undo = |s: &Session| s.doc().undo.undo_len();
+    type Setup = Box<dyn Fn(&mut Session)>;
+    let cases: Vec<(&str, Setup)> = vec![
+        (
+            "hairline",
+            Box::new(|s| {
+                import(s, "frame", FRAME);
+            }),
+        ),
+        (
+            "fill_ignored",
+            Box::new(|s| {
+                import(s, "lines", &format!("{RECT}{FLAT}"));
+            }),
+        ),
+        (
+            "below_min_feature",
+            Box::new(|s| {
+                import(s, "dot", r#"<circle cx="20" cy="20" r="0.4"/>"#);
+            }),
+        ),
+        (
+            "outside_area",
+            Box::new(|s| {
+                let (id, _) = import(s, "sq", RECT);
+                run(s, "object.move", json!({ "ids": [id], "dx_mm": -100.0 }));
+            }),
+        ),
+        (
+            "larger_than_area",
+            Box::new(|s| {
+                run(
+                    s,
+                    "object.import_svg",
+                    json!({ "name": "big", "svg": r#"<svg xmlns="http://www.w3.org/2000/svg" width="500mm" height="100mm" viewBox="0 0 500 100"><rect width="500" height="100"/></svg>"# }),
+                );
+            }),
+        ),
+    ];
+    for (code, setup) in cases {
+        let mut t = t();
+        setup(&mut t.s);
+        let fix = issue(&check(&mut t.s), code)["fixes"][0].clone();
+        let before = undo(&t.s);
+        apply(&mut t.s, &fix);
+        assert_eq!(undo(&t.s), before + 1, "{code}");
+        assert!(
+            !codes(&check(&mut t.s)).contains(&code.to_string()),
+            "{code}"
+        );
+        run(&mut t.s, "edit.undo", json!({}));
+        assert!(
+            codes(&check(&mut t.s)).contains(&code.to_string()),
+            "{code}"
+        );
+    }
+    // Nothing-to-cut fixes too.
+    let mut t = t();
+    let (a, _) = import(&mut t.s, "a", RECT);
+    run(
+        &mut t.s,
+        "object.set_cut",
+        json!({ "ids": [a], "cut": false }),
+    );
+    let fix = issue(&preview(&mut t.s), "skipped")["fixes"][0].clone();
+    let before = undo(&t.s);
+    apply(&mut t.s, &fix);
+    assert_eq!(undo(&t.s), before + 1);
+}
