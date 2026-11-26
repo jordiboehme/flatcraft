@@ -945,3 +945,31 @@ fn path_stage_counts_and_dashes_weed_paths() {
         .count();
     assert!(blue_dashes > 20, "{blue_dashes} blue dashes");
 }
+
+/// One source: the window builds the cut geometry outside the session
+/// lock and stores it in the document's cache; the engine then reads that
+/// same build, and a move makes both build again.
+#[test]
+fn the_window_and_the_engine_share_the_cut_geometry() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let id = import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_cut(&mut h);
+    let cached = s.lock().unwrap().doc().cached_cut_geometry().unwrap();
+    let engine = s.lock().unwrap().cut_geometry().unwrap();
+    assert!(Arc::ptr_eq(&cached, &engine));
+    run(&s, "object.move", json!({ "ids": [id], "dx_mm": 3.0 }));
+    let before = s.lock().unwrap().doc().cached_cut_geometry().unwrap();
+    assert!(
+        Arc::ptr_eq(&cached, &before),
+        "the move itself built nothing"
+    );
+    h.run();
+    let moved = s.lock().unwrap().doc().cached_cut_geometry().unwrap();
+    assert!(!Arc::ptr_eq(&cached, &moved), "the window built it again");
+    assert!(Arc::ptr_eq(
+        &moved,
+        &s.lock().unwrap().cut_geometry().unwrap()
+    ));
+}

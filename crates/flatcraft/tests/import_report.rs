@@ -431,7 +431,7 @@ fn a_near_touching_pair_is_a_hint_that_can_be_ignored() {
         "right",
         &page(r#"<rect x="50.3" y="20" width="30" height="30"/>"#),
     );
-    let text = "'left' and 'right' are only 0.3 mm apart. The strip between them is too thin to cut cleanly or to weed, and the blade may tear it.";
+    let text = "'left' and 'right' are only 0.3 mm apart. The strip between them is too thin to cut cleanly or to weed (peel the waste away), and the blade may tear it.";
     assert!(h.query_by_label(text).is_some());
     let card = app(&h).ui.prepare.report.clone().unwrap();
     assert!(

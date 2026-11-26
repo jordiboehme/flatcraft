@@ -2137,7 +2137,10 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
         }
         // The cut geometry built above (outside the lock) goes back into
         // the document's cache, so the engine and the window share it.
-        if let Some(Ok(input)) = &snap.job_input {
+        // Only on a frame that built it: no extra lock otherwise.
+        if let Some(Ok(input)) = &snap.job_input
+            && input.built_cut_geometry().is_some()
+        {
             lock(&app.session).offer_cut_geometry(snap.doc_id, snap.doc_rev, input);
         }
     }

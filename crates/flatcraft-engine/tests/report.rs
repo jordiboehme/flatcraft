@@ -1029,7 +1029,7 @@ fn objects_closer_than_the_minimum_feature_are_a_hint() {
     assert_eq!(i["object_ids"], json!([a, b]));
     assert_eq!(
         i["message"],
-        "'left' and 'right' are only 0.3 mm apart. The strip between them is too thin to cut cleanly or to weed, and the blade may tear it."
+        "'left' and 'right' are only 0.3 mm apart. The strip between them is too thin to cut cleanly or to weed (peel the waste away), and the blade may tear it."
     );
     let labels: Vec<&str> = i["fixes"]
         .as_array()
@@ -1038,6 +1038,10 @@ fn objects_closer_than_the_minimum_feature_are_a_hint() {
         .map(|f| f["label"].as_str().unwrap())
         .collect();
     assert_eq!(labels, ["Move apart", "Ignore for this object pair"]);
+    assert_eq!(
+        i["hint"],
+        "Close shaves can be part of the design. If they are not, move the objects at least 1.5 mm apart, the narrowest strip this blade cuts cleanly. If they are, ignore this hint for the pair."
+    );
     // The import report of the second object names the pair too.
     let mut t = self::t();
     let (_, _) = import(&mut t.s, "left", RECT);
@@ -1214,6 +1218,13 @@ fn a_pair_in_one_group_is_a_pair_and_moves_alone() {
     let fix = issue(&c, "objects_close")["fixes"][0].clone();
     assert!(g.is_u64(), "{g}");
     assert_eq!(fix["args"]["ids"], json!([g]));
+    assert!(
+        fix["description"]
+            .as_str()
+            .unwrap()
+            .starts_with("Moves 'right' and the rest of its group"),
+        "{fix}"
+    );
     apply(&mut t.s, &fix);
     assert_eq!(pair_codes(&check(&mut t.s)), Vec::<String>::new());
     let _ = a;

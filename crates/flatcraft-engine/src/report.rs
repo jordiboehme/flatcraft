@@ -1196,8 +1196,13 @@ fn fit_anchor(b: Rect, f: f64, area: Rect) -> (&'static str, bool) {
 
 // ---------------------------------------------------------------- pairs
 
-/// The hint about objects that nearly touch.
-pub const OBJECTS_CLOSE_HINT: &str = "Close shaves can be part of the design. If they are not, move the objects apart until the gap is at least the minimum feature size. If they are, ignore this hint for the pair.";
+/// The hint about objects that nearly touch, with the minimum gap.
+fn objects_close_hint(limit: f64) -> String {
+    format!(
+        "Close shaves can be part of the design. If they are not, move the objects at least {} apart, the narrowest strip this blade cuts cleanly. If they are, ignore this hint for the pair.",
+        mm(limit)
+    )
+}
 
 /// The hint about objects that overlap.
 pub const OBJECTS_OVERLAP_HINT: &str = "Overlapping objects can be part of the design, like a sticker on a sticker. If they are not, move one of them away. If they are, ignore this hint for the pair.";
@@ -1454,12 +1459,12 @@ fn pair_issues(input: &JobInput, ids: Option<&[ObjectId]>, limits: &Limits) -> V
                         object_ids: vec![a.id.0, b.id.0],
                         paths: 0,
                         message: format!(
-                            "{} and {} are only {} apart. The strip between them is too thin to cut cleanly or to weed, and the blade may tear it.",
+                            "{} and {} are only {} apart. The strip between them is too thin to cut cleanly or to weed (peel the waste away), and the blade may tear it.",
                             quoted(&a.name),
                             quoted(&b.name),
                             mm(gap)
                         ),
-                        hint: OBJECTS_CLOSE_HINT.into(),
+                        hint: objects_close_hint(limit),
                         fixes,
                     });
                 }
@@ -1538,11 +1543,15 @@ fn move_apart_fix(
             {
                 return None;
             }
+            let what = if unit == b.id {
+                quoted(&b.name)
+            } else {
+                format!("{} and the rest of its group", quoted(&b.name))
+            };
             return Some(Fix {
                 label: "Move apart".into(),
                 description: format!(
-                    "Moves {} {} away from {}, so the gap is at least {}. One undo step.",
-                    quoted(&b.name),
+                    "Moves {what} {} away from {}, so the gap is at least {}. One undo step.",
                     mm(shift),
                     quoted(&a.name),
                     mm(limit)
