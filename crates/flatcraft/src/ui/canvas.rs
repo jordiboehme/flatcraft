@@ -745,6 +745,7 @@ pub fn show(
     draw_objects(&painter, snap, &view, mat_rgb, 1.0, false, |id| {
         drag_preview(st.drag.as_ref(), snap, id)
     });
+    let mut did_not_fit = Vec::new();
     if let Some(p) = st.panel.clone() {
         // Packed once per change, for the ghosts, the fixed objects and
         // the ones that do not fit alike.
@@ -758,7 +759,7 @@ pub fn show(
                 &plan.fixed,
                 p.values.spacing_mm,
             );
-            draw_did_not_fit(&painter, snap, &view, t.danger, &plan.did_not_fit);
+            did_not_fit.clone_from(&plan.did_not_fit);
         }
         draw_ghosts(
             &painter,
@@ -772,6 +773,8 @@ pub fn show(
     if let Some(r) = draw_selection(&painter, snap, st, rgb(selection_colour(mat_rgb))) {
         link_badge(ui, r, snap, contrast);
     }
+    // Over the selection box, which would hide the outline otherwise.
+    draw_did_not_fit(&painter, snap, &view, t.danger, &did_not_fit);
     if let Some(Drag::Frame { start, current, .. }) = &st.drag {
         let r = view.rect_to_screen(kurbo::Rect::from_points(*start, *current));
         let pick = rgb(selection_colour(mat_rgb));
@@ -925,7 +928,8 @@ pub(crate) fn draw_fixed(
 }
 
 /// Marks the chosen objects an open Auto arrange panel cannot place (see
-/// [`super::arrange::did_not_fit_note`]): a red outline of their box.
+/// [`super::arrange::did_not_fit_note`]): a faint red fill and a red
+/// outline of their box.
 pub(crate) fn draw_did_not_fit(
     painter: &egui::Painter,
     snap: &Snapshot,
@@ -935,12 +939,9 @@ pub(crate) fn draw_did_not_fit(
 ) {
     for id in ids {
         if let Some(b) = snap.object(*id).and_then(|o| o.arrange_bounds()) {
-            painter.rect_stroke(
-                view.rect_to_screen(b),
-                0.0,
-                Stroke::new(2.0, danger),
-                egui::StrokeKind::Outside,
-            );
+            let r = view.rect_to_screen(b);
+            painter.rect_filled(r, 0.0, danger.gamma_multiply(0.12));
+            painter.rect_stroke(r, 0.0, Stroke::new(2.0, danger), egui::StrokeKind::Outside);
         }
     }
 }
