@@ -473,3 +473,42 @@ fn a_tail_on_a_curvy_outline_is_cut_alone() {
     assert_eq!(open.len(), 1, "{open:?}");
     assert!((length(&open) - 50f64.sqrt()).abs() < 0.05, "{open:?}");
 }
+
+/// A sliver is not cut, so it never counts for the box of what is cut: no
+/// off-the-mat error, no space in the layout, the job plans.
+#[test]
+fn an_uncut_sliver_takes_no_space() {
+    let d = dirs();
+    let mut s = session(&d);
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="500mm" height="500mm" viewBox="0 0 500 500"><rect x="20" y="20" width="20" height="20"/><rect x="20" y="50" width="400" height="0.1"/></svg>"#;
+    let id = run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": svg, "name": "square and sliver" }),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    let state = run(&mut s, "document.state", json!({}));
+    let b = &state["objects"][0]["bounds_mm"];
+    let width = b["x1"].as_f64().unwrap() - b["x0"].as_f64().unwrap();
+    let height = b["y1"].as_f64().unwrap() - b["y0"].as_f64().unwrap();
+    assert!((width - 20.0).abs() < 0.01, "{b}");
+    assert!((height - 20.0).abs() < 0.01, "{b}");
+    let c = run(&mut s, "document.check", json!({}));
+    assert_eq!(codes(&c), ["thin_slivers"], "{c}");
+    let p = run(&mut s, "job.preview", json!({}));
+    assert_eq!(p["ready"], true, "{p}");
+    // Auto arrange packs the square, not the sliver.
+    run(&mut s, "arrange.auto", json!({ "ids": [id] }));
+    let c = run(&mut s, "document.check", json!({}));
+    assert_eq!(codes(&c), ["thin_slivers"], "{c}");
+    // The export has the square only.
+    let out = d.out.path().join("x.svg");
+    run(
+        &mut s,
+        "document.export",
+        json!({ "path": out, "format": "svg" }),
+    );
+    let text = std::fs::read_to_string(&out).unwrap();
+    assert_eq!(text.matches("<path").count(), 1, "{text}");
+}

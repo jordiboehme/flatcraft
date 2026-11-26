@@ -284,24 +284,46 @@ pub fn cut_paths(
         .collect()
 }
 
-/// Bounding box of the object's cut paths in mat mm; `None` if the object
-/// has no paths. Cheap: the box of a union is the union of the boxes of
-/// its parts, so no booleans run. A fill-only path with no area (cut as
-/// nothing) still counts with its centre line.
-pub fn cut_bounds(object: &Object) -> Option<Rect> {
+/// Bounding box of the object's cut paths in mat mm, for a knife whose
+/// narrowest feature is `min_width_mm` (see `report::min_width_mm`);
+/// `None` if the object has no paths. Cheap: the box of a union is the
+/// union of the boxes of its parts, so no booleans run, except for a fill
+/// with a part thin enough to be a sliver ([`may_have_slivers`]): its fill
+/// edges are cut, so a sliver that is not cut never counts. A fill-only
+/// path with no area (cut as nothing) still counts with its centre line.
+pub fn cut_bounds(object: &Object, min_width_mm: f64) -> Option<Rect> {
     #[cfg(test)]
     tests::CUT_BOUNDS_CALLS.with(|n| n.set(n.get() + 1));
     let affine = object.transform.affine(object.local_bounds);
-    cut_bounds_of(&object.geometry, &object.cut, affine)
+    cut_bounds_of(&object.geometry, &object.cut, affine, min_width_mm)
 }
 
 /// [`cut_bounds`] of geometry placed with `affine` and cut with `options`,
 /// for callers that hold the parts of an object (a job input).
-pub fn cut_bounds_of(geometry: &[CutPath], options: &CutOptions, affine: Affine) -> Option<Rect> {
+pub fn cut_bounds_of(
+    geometry: &[CutPath],
+    options: &CutOptions,
+    affine: Affine,
+    min_width_mm: f64,
+) -> Option<Rect> {
     geometry
         .iter()
-        .filter_map(|p| path_bounds(p, options, affine))
+        .filter_map(|p| path_bounds(p, options, affine, min_width_mm))
         .reduce(|a, b| a.union(b))
+}
+
+/// True if a subpath of `placed` is on its own thinner on average than
+/// twice `min_width` (twice its area over its length, as [`mean_width`]):
+/// only then can the fill boolean leave a sliver of it. A thin part made
+/// by two wide subpaths together (a crescent of two near circles) lies in
+/// their boxes, which count anyway.
+fn may_have_slivers(placed: &BezPath, min_width: f64) -> bool {
+    subpaths(placed.iter()).iter().any(|sub| {
+        let Some(c) = sub.contour(BOUNDS_TOLERANCE_MM * 5.0) else {
+            return false;
+        };
+        mean_width(&[vec![c]]) < 2.0 * min_width
+    })
 }
 
 /// The placed width of the stroke of `paint` when it is cut around its
@@ -313,7 +335,12 @@ pub fn outline_width(paint: Paint, options: &CutOptions, affine: Affine) -> Opti
     }
 }
 
-fn path_bounds(path: &CutPath, options: &CutOptions, affine: Affine) -> Option<Rect> {
+fn path_bounds(
+    path: &CutPath,
+    options: &CutOptions,
+    affine: Affine,
+    min_width: f64,
+) -> Option<Rect> {
     let placed = affine * &path.path;
     if !flatcraft_core::geometry::has_segments(&placed) {
         return None;
@@ -324,6 +351,28 @@ fn path_bounds(path: &CutPath, options: &CutOptions, affine: Affine) -> Option<R
         CutMode::ObjectOutlines => outline_style(path.paint, options, affine),
     };
     let Some(style) = style.filter(|_| is_finite(&placed)) else {
+        if options.mode == CutMode::ObjectOutlines
+            && path.paint.fill.is_some()
+            && min_width > 0.0
+            && is_finite(&placed)
+            && may_have_slivers(&placed, min_width)
+        {
+            let (cut, slivers) = object_outlines(
+                placed.clone(),
+                path.paint,
+                options,
+                affine,
+                BOUNDS_TOLERANCE_MM,
+                min_width,
+            );
+            if slivers > 0 {
+                // What is cut, without the slivers.
+                return cut
+                    .iter()
+                    .map(Shape::bounding_box)
+                    .reduce(|a, b| a.union(b));
+            }
+        }
         return Some(centre);
     };
     let closed = close_meeting_ends(&placed);
@@ -1361,7 +1410,7 @@ pub(crate) mod tests {
                     ..CutOptions::default()
                 };
                 assert_eq!(
-                    path_bounds(&path, &options, Affine::IDENTITY),
+                    path_bounds(&path, &options, Affine::IDENTITY, 0.125),
                     None,
                     "{stray}"
                 );

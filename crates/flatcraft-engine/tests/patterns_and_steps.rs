@@ -96,7 +96,7 @@ fn four_around_a_full_turn_in_one_undo_step() {
     let sel: Vec<u64> = s.doc().selection.iter().map(|i| i.0).collect();
     assert_eq!(sel, new, "the copies become the selection");
     // A copy at 90 degrees has the original's box, turned.
-    let size = |id: u64| placed_bounds(s.doc().document.get(ObjectId(id)).unwrap()).unwrap();
+    let size = |id: u64| placed_bounds(s.doc().document.get(ObjectId(id)).unwrap(), 0.125).unwrap();
     let (o, c) = (size(id), size(new[0]));
     assert!((o.width() - c.height()).abs() < 1e-6 && (o.height() - c.width()).abs() < 1e-6);
     run(&mut s, "edit.undo", json!({}));
@@ -305,7 +305,7 @@ fn copies_take_a_gap_per_axis() {
     );
     let new = ids(&r["ids"]);
     // Laid out by the cut bounds of the original.
-    let b = placed_bounds(s.doc().document.get(ObjectId(a)).unwrap()).unwrap();
+    let b = placed_bounds(s.doc().document.get(ObjectId(a)).unwrap(), 0.125).unwrap();
     let (x, y) = (50.0 + b.width() + 1.0, 50.0 + b.height() + 3.0);
     assert!(close(centre(&s, new[0]), Point::new(x, 50.0)));
     assert!(close(centre(&s, new[1]), Point::new(50.0, y)));

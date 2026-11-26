@@ -644,9 +644,9 @@ fn measure(input: &JobInput, o: &JobObject, options: &CutOptions, min_feature: f
 }
 
 /// The cut bounds of an object in mat mm, as `placed_bounds` measures them.
-pub fn object_bounds(o: &JobObject) -> Option<Rect> {
+pub fn object_bounds(input: &JobInput, o: &JobObject) -> Option<Rect> {
     let affine = o.transform.affine(o.local_bounds);
-    cutgeom::cut_bounds_of(&o.geometry, &o.cut, affine)
+    cutgeom::cut_bounds_of(&o.geometry, &o.cut, affine, input.min_width_mm())
 }
 
 /// What the report checks with: the cutting area, the flatten tolerance
@@ -818,7 +818,7 @@ fn check_object(input: &JobInput, o: &JobObject, limits: &Limits) -> Report {
             }],
         });
     }
-    let bounds = object_bounds(o);
+    let bounds = object_bounds(input, o);
     if m.small > 0 {
         let all_small = m.small == m.closed;
         let fix = match (all_small, m.smallest, bounds) {
@@ -1528,7 +1528,7 @@ fn move_apart_fix(
         .iter()
         .filter(|o| o.visible || !any_shown)
         .map(|o| {
-            object_bounds(o)
+            object_bounds(input, o)
                 .unwrap_or_else(|| Rect::from_points(o.transform.center_mm, o.transform.center_mm))
         })
         .reduce(|x, y| x.union(y))?;
@@ -1707,7 +1707,7 @@ pub fn nothing_to_cut(input: &JobInput, facts: &BuildFacts, too_short: bool) -> 
             let Some(o) = input.objects.iter().find(|o| o.id == *id) else {
                 continue;
             };
-            let fix = object_bounds(o).and_then(|b| {
+            let fix = object_bounds(input, o).and_then(|b| {
                 let side = b.width().max(b.height());
                 (side > 0.0)
                     .then(|| {
@@ -1751,7 +1751,8 @@ pub fn out_of_area(input: &JobInput, ids: &[ObjectId]) -> Vec<Issue> {
     };
     let mut out: Vec<Issue> = Vec::new();
     for o in input.objects.iter().filter(|o| ids.contains(&o.id)) {
-        let Some(i) = object_bounds(o).and_then(|b| area_issue(o, b, area, &members(input, o)))
+        let Some(i) =
+            object_bounds(input, o).and_then(|b| area_issue(o, b, area, &members(input, o)))
         else {
             continue;
         };

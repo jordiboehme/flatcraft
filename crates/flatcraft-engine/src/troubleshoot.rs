@@ -377,7 +377,7 @@ pub fn test_shape_spot(input: &JobInput) -> Option<kurbo::Point> {
         .objects
         .iter()
         .filter(|o| !is_test_shape(&o.name, &o.geometry))
-        .filter_map(report::object_bounds)
+        .filter_map(|o| report::object_bounds(input, o))
         .collect();
     crate::placement::free_spot(
         area,
@@ -949,7 +949,8 @@ fn mirror(input: &JobInput) -> Item {
                 .iter()
                 .chain(&shapes)
                 .filter(|o| {
-                    report::object_bounds(o).is_some_and(|b| !crate::commands::inside(b, area))
+                    report::object_bounds(input, o)
+                        .is_some_and(|b| !crate::commands::inside(b, area))
                 })
                 .map(|o| o.id.0)
                 .collect()

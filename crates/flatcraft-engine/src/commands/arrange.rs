@@ -6,8 +6,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{
-    arrange_bounds, command, common_box, cutting_area, ids_json, inside, object_mut, resolve_ids,
-    translate, unit_leaves, units_of,
+    arrange_bounds, command, common_box, cutting_area, ids_json, inside, min_width_of, object_mut,
+    resolve_ids, translate, unit_leaves, units_of,
 };
 use crate::placement;
 use crate::session::{CommandError, Origin, Session};
@@ -48,16 +48,17 @@ pub struct AlignParams {
 
 fn run_align(s: &mut Session, p: AlignParams, _: Origin) -> Result<Value, CommandError> {
     let ids = resolve_ids(s, &p.ids)?;
+    let mw = min_width_of(s);
     let target = match p.relative_to {
         AlignTarget::CuttingArea => cutting_area(s)?,
-        AlignTarget::Selection => common_box(&s.doc().document, &ids).unwrap_or(Rect::ZERO),
+        AlignTarget::Selection => common_box(&s.doc().document, &ids, mw).unwrap_or(Rect::ZERO),
     };
     // A whole group lines up as one box; its members keep their places.
     let units = units_of(&s.doc().document, &ids);
     let doc = &mut s.doc_mut().document;
     for unit in &units {
         let leaves = unit_leaves(doc, *unit);
-        let b = common_box(doc, &leaves).unwrap_or(Rect::ZERO);
+        let b = common_box(doc, &leaves, mw).unwrap_or(Rect::ZERO);
         let d = match p.mode {
             AlignMode::Left => Vec2::new(target.x0 - b.x0, 0.0),
             AlignMode::Hcenter => Vec2::new(target.center().x - b.center().x, 0.0),
@@ -125,10 +126,11 @@ fn run_distribute(s: &mut Session, p: DistributeParams, _: Origin) -> Result<Val
             "Distribute needs at least 3 objects, {have}."
         )));
     }
+    let mw = min_width_of(s);
     let doc = &s.doc().document;
     let mut items: Vec<(ObjectId, f64, f64)> = Vec::with_capacity(ids.len());
     for id in &ids {
-        let b = common_box(doc, &unit_leaves(doc, *id))
+        let b = common_box(doc, &unit_leaves(doc, *id), mw)
             .ok_or_else(|| CommandError::NotFound(format!("no object with id {}", id.0)))?;
         let (lo, hi) = span(b, p.axis);
         items.push((*id, lo, hi));
@@ -173,10 +175,10 @@ command!(
 
 /// Moves `o` by `d` if it then lies inside `area`. Otherwise it stays
 /// exactly where it was and the result is false.
-fn place(o: &mut Object, d: Vec2, area: Rect) -> bool {
+fn place(o: &mut Object, d: Vec2, area: Rect, mw: f64) -> bool {
     let centre = o.transform.center_mm;
     translate(o, d);
-    if arrange_bounds(o).is_some_and(|nb| inside(nb, area)) {
+    if arrange_bounds(o, mw).is_some_and(|nb| inside(nb, area)) {
         return true;
     }
     // Put the saved centre back: moving back by -d can leave float noise.
@@ -192,9 +194,10 @@ fn place_unit(
     unit: ObjectId,
     d: Vec2,
     area: Rect,
+    mw: f64,
 ) -> Result<bool, CommandError> {
     if doc.group_node(unit).is_none() {
-        return Ok(place(object_mut(doc, unit)?, d, area));
+        return Ok(place(object_mut(doc, unit)?, d, area, mw));
     }
     let leaves = unit_leaves(doc, unit);
     let saved: Vec<kurbo::Point> = leaves
@@ -206,7 +209,7 @@ fn place_unit(
     for id in &leaves {
         let o = object_mut(doc, *id)?;
         translate(o, d);
-        if o.visible && arrange_bounds(o).is_some_and(|nb| !inside(nb, area)) {
+        if o.visible && arrange_bounds(o, mw).is_some_and(|nb| !inside(nb, area)) {
             fits = false;
         }
     }
@@ -247,6 +250,7 @@ fn run_auto(s: &mut Session, p: AutoParams, _: Origin) -> Result<Value, CommandE
     } else {
         resolve_ids(s, &p.ids)?
     };
+    let mw = min_width_of(s);
     let doc = &mut s.doc_mut().document;
     // A whole group packs as one item, a member picked inside a group
     // alone (see `placement::auto_keys` and `placement::auto_units`).
@@ -262,7 +266,7 @@ fn run_auto(s: &mut Session, p: AutoParams, _: Origin) -> Result<Value, CommandE
                 visible: o.visible,
                 // An untraced picture by its image; nothing at all (an
                 // empty object without a frame) cannot be placed.
-                bounds: arrange_bounds(o),
+                bounds: arrange_bounds(o, mw),
             };
             (key, item)
         })
@@ -273,7 +277,7 @@ fn run_auto(s: &mut Session, p: AutoParams, _: Origin) -> Result<Value, CommandE
     let mut placed = Vec::new();
     for (id, d) in plan.moves {
         // Never report an object as placed unless it really is inside.
-        if place_unit(doc, id, d, area)? {
+        if place_unit(doc, id, d, area, mw)? {
             placed.push(id);
         } else {
             did_not_fit.push(id);
@@ -339,7 +343,8 @@ mod tests {
         assert!(!place(
             o,
             Vec2::new(0.7, 0.7),
-            Rect::new(50.0, 50.0, 60.0, 60.0)
+            Rect::new(50.0, 50.0, 60.0, 60.0),
+            0.125
         ));
         assert_eq!(o.transform.center_mm, Point::new(0.1, 0.1));
     }

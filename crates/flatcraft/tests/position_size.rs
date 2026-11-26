@@ -622,7 +622,7 @@ fn a_typed_value_applies_to_its_document_when_the_document_changes() {
         .document
         .get(flatcraft_core::document::ObjectId(id))
         .unwrap();
-    let b = flatcraft_engine::commands::placed_bounds(o).unwrap();
+    let b = flatcraft_engine::commands::placed_bounds(o, 0.125).unwrap();
     drop(g);
     assert!(near(b.width(), 80.0), "{b:?}");
     assert!(fields(&h).editing.is_none());
@@ -635,7 +635,7 @@ fn saved_width(path: &std::path::Path) -> f64 {
         path,
     )
     .unwrap();
-    flatcraft_engine::commands::placed_bounds(&doc.objects[0])
+    flatcraft_engine::commands::placed_bounds(&doc.objects[0], 0.125)
         .unwrap()
         .width()
 }

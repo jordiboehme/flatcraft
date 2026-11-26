@@ -464,6 +464,9 @@ struct ShapeKey {
     local_bounds: kurbo::Rect,
     frame: kurbo::Rect,
     cut: CutOptions,
+    /// The knife's narrowest feature, as bits: slivers do not count for
+    /// the bounds.
+    min_width: u64,
 }
 
 /// A cached shape, its key and the geometry the key points to.
@@ -485,16 +488,21 @@ pub struct ShapeInput {
     /// The source's page frame in local mm (`Object::frame`).
     pub frame: kurbo::Rect,
     pub cut: CutOptions,
+    /// The narrowest filled shape the knife cuts
+    /// (`commands::min_width_of`): slivers thinner are not cut and do not
+    /// count for the bounds.
+    pub min_width: f64,
 }
 
 impl ShapeInput {
-    fn of(o: &Object) -> Self {
+    fn of(o: &Object, min_width: f64) -> Self {
         Self {
             geometry: o.geometry.clone(),
             transform: o.transform,
             local_bounds: o.local_bounds,
             frame: o.frame,
             cut: o.cut,
+            min_width,
         }
     }
 
@@ -509,6 +517,7 @@ impl ShapeInput {
             local_bounds: self.local_bounds,
             frame: self.frame,
             cut: self.cut,
+            min_width: self.min_width.to_bits(),
         }
     }
 
@@ -814,8 +823,8 @@ pub fn build_shape(input: &ShapeInput) -> Shape {
     }
     Shape {
         lines,
-        bounds: placed_bounds(&o),
-        arrange: flatcraft_engine::commands::centred_arrange_bounds(&o),
+        bounds: placed_bounds(&o, input.min_width),
+        arrange: flatcraft_engine::commands::centred_arrange_bounds(&o, input.min_width),
     }
 }
 
@@ -1143,8 +1152,9 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
                 }
         });
         let mut objects = Vec::with_capacity(st.document.objects.len());
+        let min_width = flatcraft_engine::commands::min_width_of(&s);
         for (i, o) in st.document.objects.iter().enumerate() {
-            let input = ShapeInput::of(o);
+            let input = ShapeInput::of(o, min_width);
             let shape = match cache.current(doc_id, o.id.0, &input.key()) {
                 Some(shape) => shape,
                 None => {
@@ -1749,6 +1759,7 @@ mod tests {
             transform: Transform::default(),
             frame: kurbo::Rect::ZERO,
             cut: CutOptions::default(),
+            min_width: 0.125,
         };
         let shape = build_shape(&input);
         assert_eq!(shape.lines.len(), 1);

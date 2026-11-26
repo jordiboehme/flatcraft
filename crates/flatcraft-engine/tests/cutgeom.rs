@@ -876,7 +876,7 @@ fn cheap_bounds_match_the_cut_paths() {
             .map(Shape::bounding_box)
             .reduce(|a, b| a.union(b))
             .unwrap();
-        let cheap = cut_bounds(o).unwrap();
+        let cheap = cut_bounds(o, flatcraft_engine::report::min_width_mm(0.25)).unwrap();
         for (a, b) in [
             (exact.x0, cheap.x0),
             (exact.y0, cheap.y0),

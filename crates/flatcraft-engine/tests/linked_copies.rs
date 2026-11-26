@@ -164,7 +164,7 @@ fn centre(s: &Session, id: u64) -> Point {
 }
 
 fn bounds_centre(s: &Session, id: u64) -> Point {
-    placed_bounds(obj(s, id)).unwrap().center()
+    placed_bounds(obj(s, id), 0.125).unwrap().center()
 }
 
 fn near(a: Point, b: Point) -> bool {
@@ -292,7 +292,7 @@ fn scale_one_scales_all_and_each_keeps_its_centre() {
         "object.scale",
         json!({ "ids": [all[1]], "width_mm": 80.0 }),
     );
-    let b = placed_bounds(obj(&s, all[1])).unwrap();
+    let b = placed_bounds(obj(&s, all[1]), 0.125).unwrap();
     assert!((b.width() - 80.0).abs() < 1e-4, "{b:?}");
     assert_shared(&s, &all);
 }
@@ -988,7 +988,7 @@ fn open_unlinks_a_member_whose_own_source_differs() {
     assert_eq!(obj(&s, all[1]).link_group, None);
     // Each keeps its own design: the circle is 30 mm, the squares 50 mm.
     assert_eq!(&**bytes_of(obj(&s, all[1])), circle.as_bytes());
-    let w = |id| placed_bounds(obj(&s, id)).unwrap().width();
+    let w = |id| placed_bounds(obj(&s, id), 0.125).unwrap().width();
     assert!((w(all[1]) - 30.0).abs() < 1e-3, "{}", w(all[1]));
     for k in [0, 2] {
         assert!((w(all[k]) - 50.0).abs() < 1e-3, "{}", w(all[k]));
