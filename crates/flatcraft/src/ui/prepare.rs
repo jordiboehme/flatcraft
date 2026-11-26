@@ -254,6 +254,11 @@ pub struct PrepareState {
     pub view: CanvasView,
     /// Room for the test shape, per document revision (Job card hint).
     pub test_cut_cache: super::materials::TestCutCache,
+    /// Where the import report card stood this frame, if it shows: the
+    /// notices go below it.
+    pub report_rect: Option<Rect>,
+    /// Where the status pills stood this frame: the notices go above.
+    pub pills_rect: Option<Rect>,
     /// The material picker's entries (see `materials::CardsCache`).
     pub cards_cache: super::materials::CardsCache,
     /// Fit the mat into the canvas on the next frame.
@@ -383,6 +388,8 @@ impl Default for PrepareState {
             view: CanvasView::default(),
             test_cut_cache: Default::default(),
             cards_cache: Default::default(),
+            report_rect: None,
+            pills_rect: None,
             fit_pending: true,
             view_doc: None,
             canvas_rect: Rect::NOTHING,
@@ -888,7 +895,7 @@ pub struct Snapshot {
     pub test_cut: Option<super::materials::TestCut>,
     /// Why the person's own preset file with the document's material id
     /// was skipped at load, when it was.
-    pub material_skipped: Option<String>,
+    pub material_skipped: Option<super::materials::Skipped>,
     pub mat: Option<Media>,
     /// The cutting area, in mm.
     pub area: Option<kurbo::Rect>,
@@ -1182,15 +1189,16 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
                 .diagnostics()
                 .iter()
                 .find(|d| {
-                    d.path
-                        .parent()
-                        .and_then(|p| p.file_name())
-                        .is_some_and(|n| n == "materials")
+                    d.id.as_deref() == Some(st.document.job.material_id.as_str())
                         && d.path
-                            .file_stem()
-                            .is_some_and(|f| *f == *st.document.job.material_id)
+                            .parent()
+                            .and_then(|p| p.file_name())
+                            .is_some_and(|n| n == "materials")
                 })
-                .map(|d| d.reason.clone()),
+                .map(|d| super::materials::Skipped {
+                    reason: d.reason.clone(),
+                    shadows_system: d.shadows_system,
+                }),
             test_cut: (!cut_log.has_cut(&st.document.job.material_id))
                 .then(|| {
                     test_cut_cache.room(st.id(), st.revision(), &plotter, &material, || {
@@ -1490,10 +1498,13 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
                 }
             }
             let p = &mut app.ui.prepare;
-            if let Some(card) = p.report.as_ref().filter(|c| c.doc_id == snap.doc_id)
-                && !super::report::import_card(ui, rect, card, &t, actions)
-            {
-                p.report = None;
+            p.report_rect = None;
+            if let Some(card) = p.report.as_ref().filter(|c| c.doc_id == snap.doc_id) {
+                let (keep, at) = super::report::import_card(ui, rect, card, &t, actions);
+                p.report_rect = keep.then_some(at);
+                if !keep {
+                    p.report = None;
+                }
             }
         });
     let p = &mut app.ui.prepare;
@@ -1582,7 +1593,7 @@ fn pills(
     );
     let doc_id = snap.doc_id;
     let src = &mut st.sources;
-    ui.scope_builder(
+    let shown = ui.scope_builder(
         egui::UiBuilder::new()
             .max_rect(area)
             .layout(egui::Layout::bottom_up(egui::Align::Min)),
@@ -1702,6 +1713,8 @@ fn pills(
             }
         },
     );
+    // An empty bottom-up scope still reports a point: no pills then.
+    st.pills_rect = Some(shown.response.rect).filter(|r| r.height() >= 1.0);
 }
 
 #[cfg(test)]

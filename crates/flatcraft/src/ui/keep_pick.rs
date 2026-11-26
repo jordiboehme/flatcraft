@@ -472,6 +472,11 @@ impl KeepPick {
         outcome
     }
 
+    /// The floating bar's rect of the last frame (notices stay above it).
+    pub fn bar_rect(&self) -> Option<egui::Rect> {
+        self.bar_rect
+    }
+
     /// True when `at` (screen) is on the floating bar of the last frame:
     /// the canvas below it neither highlights nor marks there.
     pub fn on_bar(&self, at: egui::Pos2) -> bool {

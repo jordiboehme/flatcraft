@@ -1,7 +1,7 @@
-//! Short messages at the top right of the canvas in Prepare and Cut (the
-//! bottom-right corner of the window elsewhere), stacked with the newest
-//! at the bottom. Over the canvas they never cover a control of the side
-//! panels, like Send or the rating of a cut. Each card has a coloured status dot, a title and an
+//! Short messages at the bottom left of the canvas in Prepare and Cut
+//! (the bottom-right corner of the window elsewhere), stacked with the
+//! newest at the bottom. Over the canvas they never cover a control of
+//! the side panels, like Send or the rating of a cut. Each card has a coloured status dot, a title and an
 //! optional detail line (a full path, wrapped, never cut), and a × at the
 //! top right with a thin ring that shrinks over the toast's lifetime.
 //!
@@ -178,44 +178,92 @@ pub enum Event {
     Close(u64),
 }
 
+/// Where the notices go: the canvas, and what already sits on it that
+/// they must leave free: the import report card (`report`, top right),
+/// the status pills (`pills`, bottom left) and the keep pick bar (`bar`,
+/// bottom right).
+#[derive(Debug, Clone, Copy)]
+pub struct Place {
+    pub canvas: egui::Rect,
+    pub report: Option<egui::Rect>,
+    pub pills: Option<egui::Rect>,
+    pub bar: Option<egui::Rect>,
+}
+
+/// The smallest height the stack keeps, so one notice is always readable.
+pub const MIN_STACK_HEIGHT: f32 = 48.0;
+
 /// Draws the toasts, oldest at the top, and tracks which one the pointer
-/// rests on: at the top right of `canvas` (below its ruler) when there is
-/// one, else in the window's bottom-right corner. `reduce_motion` leaves
-/// out the rings. Returns what was clicked.
+/// rests on: at the bottom left of the canvas of `place` (above the
+/// status pills) when there is one, else in the window's bottom-right
+/// corner. Designs mostly sit at the top left of the mat, so the bottom
+/// left covers the least. Over a canvas the stack never reaches past it,
+/// onto the keep pick bar or onto the import report card: a taller stack
+/// scrolls, with the newest notice in view. `reduce_motion` leaves out
+/// the rings. Returns what was clicked.
 pub fn show(
     ctx: &egui::Context,
     toasts: &mut [Toast],
     t: &Tokens,
     now: Instant,
     reduce_motion: bool,
-    canvas: Option<egui::Rect>,
+    place: Option<Place>,
 ) -> Vec<Event> {
     let mut events = Vec::new();
     if toasts.is_empty() {
         return events;
     }
+    let gap = t.spacing * 2.0;
     let area = egui::Area::new(egui::Id::unique("flatcraft-toasts"));
-    let area = match canvas.filter(|r| r.is_positive()) {
-        Some(r) => area.pivot(egui::Align2::RIGHT_TOP).fixed_pos(
-            r.right_top() + egui::vec2(-t.spacing * 2.0, super::canvas::RULER + t.spacing * 2.0),
-        ),
-        None => area.anchor(
-            egui::Align2::RIGHT_BOTTOM,
-            egui::vec2(-t.spacing * 2.0, -t.spacing * 2.0),
+    let (area, max_height) = match place.filter(|p| p.canvas.is_positive()) {
+        Some(p) => {
+            let r = p.canvas;
+            let left = r.left() + super::canvas::RULER + gap;
+            let right = left + WIDTH;
+            let across = |o: &egui::Rect| o.right() > left && o.left() < right;
+            let mut bottom = r.bottom() - gap;
+            for o in [p.pills.filter(|o| o.height() >= 1.0), p.bar]
+                .into_iter()
+                .flatten()
+                .filter(across)
+            {
+                bottom = bottom.min(o.top() - t.spacing);
+            }
+            let top = p
+                .report
+                .filter(across)
+                .map_or(r.top() + super::canvas::RULER + gap, |o| {
+                    o.bottom() + t.spacing
+                });
+            (
+                area.pivot(egui::Align2::LEFT_BOTTOM)
+                    .fixed_pos(egui::pos2(left, bottom)),
+                (bottom - top).max(MIN_STACK_HEIGHT),
+            )
+        }
+        None => (
+            area.anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-gap, -gap)),
+            f32::INFINITY,
         ),
     };
     let area = area.order(egui::Order::Foreground).show(ctx, |ui| {
-        ui.spacing_mut().item_spacing.y = t.spacing;
-        for toast in toasts.iter_mut() {
-            let (event, hovered) = card(ui, toast, t, now, reduce_motion);
-            toast.set_hovered(hovered, now);
-            events.extend(event);
-        }
+        egui::ScrollArea::vertical()
+            .max_height(max_height)
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = t.spacing;
+                for toast in toasts.iter_mut() {
+                    let (event, hovered) = card(ui, toast, t, now, reduce_motion);
+                    toast.set_hovered(hovered, now);
+                    events.extend(event);
+                }
+            });
     });
-    // The stack is anchored at its bottom right, but egui places it by
-    // last frame's size: when the size changed (a toast came or went), the
-    // cards stood in the wrong place this pass. Draw again at once, so no
-    // click lands on a card that only looked like it was there.
+    // egui places an area by last frame's size, and the stack is pinned at
+    // its bottom (left over the canvas, right in the window corner): when
+    // the size changed (a toast came or went), the cards stood in the
+    // wrong place this pass. Draw again at once, so no click lands on a
+    // card that only looked like it was there.
     let size_id = egui::Id::unique("flatcraft-toasts-size");
     let size = area.response.rect.size();
     let last: Option<egui::Vec2> = ctx.data(|d| d.get_temp(size_id));

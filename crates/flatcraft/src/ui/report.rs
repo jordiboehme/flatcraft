@@ -247,14 +247,14 @@ fn issue_rows(
 }
 
 /// The import report card at the top right of the Prepare canvas. Returns
-/// false when it was dismissed.
+/// false when it was dismissed, and the rect it took (notices go below).
 pub fn import_card(
     ui: &mut Ui,
     canvas: egui::Rect,
     c: &ImportCard,
     t: &Tokens,
     actions: &mut Vec<Action>,
-) -> bool {
+) -> (bool, egui::Rect) {
     let mut keep = true;
     let worst = c
         .all()
@@ -270,7 +270,7 @@ pub fn import_card(
         ),
         egui::vec2(width, canvas.height() * 0.7),
     );
-    ui.scope_builder(egui::UiBuilder::new().max_rect(max), |ui| {
+    let shown = ui.scope_builder(egui::UiBuilder::new().max_rect(max), |ui| {
         egui::Frame::new()
             .fill(t.surface)
             .stroke(egui::Stroke::new(1.0, severity_colour(worst, t)))
@@ -338,7 +338,7 @@ pub fn import_card(
                 }
             });
     });
-    keep
+    (keep, shown.response.rect)
 }
 
 /// The title of the Cut workspace's card for these issues.

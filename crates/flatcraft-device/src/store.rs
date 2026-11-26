@@ -65,6 +65,12 @@ pub enum ProfileError {
 pub struct PresetDiagnostic {
     pub path: PathBuf,
     pub reason: String,
+    /// The preset id the file is for: its own `id` when that could be
+    /// read, else its file name (a preset file is named after its id).
+    /// `None` for files that are not presets (the notes file).
+    pub id: Option<String>,
+    /// The file was skipped because a built-in preset has its id.
+    pub shadows_system: bool,
 }
 
 /// Longest reason a diagnostic keeps, in chars.
@@ -454,6 +460,8 @@ impl ProfileStore {
                 store.diagnostics.push(PresetDiagnostic {
                     path: notes_path,
                     reason,
+                    id: None,
+                    shadows_system: false,
                 });
             }
         }
@@ -561,7 +569,22 @@ impl ProfileStore {
                         reason.truncate(cut);
                         reason.push_str("...");
                     }
-                    self.diagnostics.push(PresetDiagnostic { path, reason });
+                    let shadows_system = matches!(e, ProfileError::ShadowsSystem { .. });
+                    let id = match &e {
+                        ProfileError::ShadowsSystem { id }
+                        | ProfileError::Invalid { id, .. }
+                        | ProfileError::Inheritance { id, .. } => Some(id.clone()),
+                        _ => path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .map(str::to_string),
+                    };
+                    self.diagnostics.push(PresetDiagnostic {
+                        path,
+                        reason,
+                        id,
+                        shadows_system,
+                    });
                 }
             }
         }

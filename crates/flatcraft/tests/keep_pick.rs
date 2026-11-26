@@ -809,3 +809,32 @@ fn an_open_line_stencil_does_not_stop_weeding_as_the_plan_says() {
     assert!(!app(&h).ui.prepare.sheet_kept, "the window used the plan");
     assert!(!drawn(&h, flatcraft::ui::settings::SHEET_KEPT_NO_WEEDING));
 }
+
+#[test]
+fn notices_leave_the_pick_bar_free() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let o = letter_o(&s, 20.0);
+    let mut h = picking(&dir, &s, &[o]);
+    for i in 0..12 {
+        app_mut(&mut h).toast(flatcraft::ui::Toast::error(format!("error {i}")));
+    }
+    common::settle(&mut h);
+    let stack = h
+        .ctx
+        .memory(|m| m.area_rect(egui::Id::unique("flatcraft-toasts")))
+        .unwrap();
+    let bar = app(&h)
+        .ui
+        .prepare
+        .keep_pick
+        .as_ref()
+        .unwrap()
+        .bar_rect()
+        .unwrap();
+    assert!(!stack.intersects(bar), "{stack:?} over {bar:?}");
+    // The bar's buttons still take a click.
+    h.get_by_label_contains("Cancel").click();
+    common::settle(&mut h);
+    assert!(app(&h).ui.prepare.keep_pick.is_none());
+}

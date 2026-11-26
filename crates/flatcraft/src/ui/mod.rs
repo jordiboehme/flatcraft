@@ -2254,12 +2254,22 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     let reduce = !app.ui.toasts.is_empty() && (app.reduce_motion)();
     let t = app.tokens;
     // Over the canvas, so no notice covers Send or a cut's rating.
-    let canvas = match app.ui.workspace {
-        Workspace::Prepare => Some(app.ui.prepare.canvas_rect),
-        Workspace::Cut => Some(app.ui.cut.canvas_rect),
+    let place = match app.ui.workspace {
+        Workspace::Prepare => Some(toasts::Place {
+            canvas: app.ui.prepare.canvas_rect,
+            report: app.ui.prepare.report_rect,
+            pills: app.ui.prepare.pills_rect,
+            bar: app.ui.prepare.keep_pick.as_ref().and_then(|k| k.bar_rect()),
+        }),
+        Workspace::Cut => Some(toasts::Place {
+            canvas: app.ui.cut.canvas_rect,
+            report: None,
+            pills: None,
+            bar: None,
+        }),
         Workspace::Home => None,
     };
-    let events = toasts::show(&ctx, &mut app.ui.toasts, &t, now, reduce, canvas);
+    let events = toasts::show(&ctx, &mut app.ui.toasts, &t, now, reduce, place);
     // Repaint often only while a countdown ring moves; otherwise when the
     // next toast expires.
     if !reduce && app.ui.toasts.iter().any(Toast::running) {

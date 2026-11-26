@@ -271,3 +271,53 @@ fn in_prepare_and_cut_notices_sit_over_the_canvas() {
         );
     }
 }
+
+/// The notice stack's rect this frame.
+fn stack_rect(h: &AppHarness) -> egui::Rect {
+    h.ctx
+        .memory(|m| m.area_rect(egui::Id::unique("flatcraft-toasts")))
+        .unwrap()
+}
+
+#[test]
+fn many_notices_on_a_short_window_stay_inside_the_canvas() {
+    for ws in [
+        flatcraft::ui::Workspace::Prepare,
+        flatcraft::ui::Workspace::Cut,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let s = session(&dir);
+        let mut h = harness_sized(&dir, s, [1000.0, 520.0], 8, |a| a);
+        app_mut(&mut h).ui.workspace = ws;
+        settle(&mut h);
+        // Errors stay until closed: ten of them, one with a long path.
+        for i in 0..10 {
+            app_mut(&mut h).toast(Toast::error(format!("error {i}")));
+        }
+        app_mut(&mut h).toast(Toast::error("long").with_detail("/a/very/long/path/".repeat(12)));
+        settle(&mut h);
+        let canvas = match ws {
+            flatcraft::ui::Workspace::Cut => app(&h).ui.cut.canvas_rect,
+            _ => app(&h).ui.prepare.canvas_rect,
+        };
+        let stack = stack_rect(&h);
+        // Never past the canvas: not onto the Cut timeline below it.
+        assert!(
+            stack.bottom() <= canvas.bottom() + 0.5,
+            "{ws:?}: {stack:?} in {canvas:?}"
+        );
+        assert!(stack.top() >= canvas.top(), "{ws:?}");
+        // Above the status pills ("This mat is not calibrated yet").
+        if let Some(pills) = app(&h)
+            .ui
+            .prepare
+            .pills_rect
+            .filter(|_| ws == flatcraft::ui::Workspace::Prepare)
+        {
+            assert!(stack.bottom() <= pills.top(), "{stack:?} over {pills:?}");
+        }
+        // The newest is in view and can be closed.
+        let newest = h.get_by_label("long").rect();
+        assert!(canvas.contains_rect(newest), "{ws:?}: {newest:?}");
+    }
+}

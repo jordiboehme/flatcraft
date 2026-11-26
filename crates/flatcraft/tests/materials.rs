@@ -437,3 +437,32 @@ fn the_new_texts_name_no_brand() {
         }
     }
 }
+
+#[test]
+fn a_skipped_file_is_worded_after_why_it_was_skipped() {
+    // Unreadable, with the id as its name: "could not be read".
+    let dir = tempfile::tempdir().unwrap();
+    let m = dir.path().join("profiles/materials");
+    std::fs::create_dir_all(&m).unwrap();
+    std::fs::write(m.join("vellum.toml"), "id = [").unwrap();
+    let s = session(&dir);
+    set_material(&s, "vellum");
+    let mut h = tall(&dir, &s);
+    cut_stage(&mut h, "Device & Material");
+    h.get_by_label(materials::skipped_text(false));
+    assert!(h.query_by_label(materials::skipped_text(true)).is_none());
+    // The id inside a file of another name is found too.
+    let dir = tempfile::tempdir().unwrap();
+    let m = dir.path().join("profiles/materials");
+    std::fs::create_dir_all(&m).unwrap();
+    std::fs::write(
+        m.join("old-vellum.toml"),
+        "id = \"vellum\"\nname = \"Old\"\ninherits = \"copy-paper\"\n",
+    )
+    .unwrap();
+    let s = session(&dir);
+    set_material(&s, "vellum");
+    let mut h = tall(&dir, &s);
+    cut_stage(&mut h, "Device & Material");
+    h.get_by_label(materials::skipped_text(false));
+}

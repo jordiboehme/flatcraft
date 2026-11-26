@@ -225,24 +225,34 @@ pub fn picker_row(ui: &mut Ui, snap: &Snapshot, t: &Tokens) -> Option<String> {
     picked
 }
 
-/// The Job card line when the person's own preset file with the
-/// document's material id was not loaded (see `ProfileStore::diagnostics`).
-pub fn skipped_text(built_in: bool) -> &'static str {
-    if built_in {
-        "Your own preset file with this id is not loaded, so the built-in values are used."
+/// A preset file for the document's material that was skipped at load.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Skipped {
+    pub reason: String,
+    /// Skipped because a built-in preset has its id.
+    pub shadows_system: bool,
+}
+
+/// The Job card line when the person's own preset file for the
+/// document's material id was not loaded (see `ProfileStore::diagnostics`):
+/// worded after why.
+pub fn skipped_text(shadows_system: bool) -> &'static str {
+    if shadows_system {
+        "Your own preset file with this id is not loaded, because a built-in preset has the id now. The built-in values are used."
     } else {
-        "Your preset file for this material is not loaded."
+        "Your own preset file for this material could not be read, so it is not used."
     }
 }
 
 /// Shows [`skipped_text`] with the reason on its card.
 pub fn skipped_note(ui: &mut Ui, snap: &Snapshot, t: &Tokens) {
-    let Some(reason) = &snap.material_skipped else {
+    let Some(skipped) = &snap.material_skipped else {
         return;
     };
-    let built_in = presets::is_system(&snap.job.material_id);
+    let reason = &skipped.reason;
     ui.add_space(t.spacing / 2.0);
-    let r = ui.add(egui::Label::new(RichText::new(skipped_text(built_in)).color(t.danger)).wrap());
+    let text = skipped_text(skipped.shadows_system);
+    let r = ui.add(egui::Label::new(RichText::new(text).color(t.danger)).wrap());
     super::groups::card(
         &r,
         "Preset file not loaded",
