@@ -1,6 +1,7 @@
 //! Linked copies: copies that share the source, the geometry, the trace
-//! settings, the cut options, the scale and the file link. Each copy keeps
-//! its own position, rotation and mirror (and its name and visibility).
+//! settings, the cut options, the keep mode, the scale and the file link.
+//! Each copy keeps its own position, rotation and mirror (and its name and
+//! visibility).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -149,6 +150,7 @@ fn assert_shared(s: &Session, members: &[u64]) {
         assert!(Arc::ptr_eq(bytes_of(o), bytes_of(first)), "source of {m}");
         assert_eq!(o.source, first.source, "source of {m}");
         assert_eq!(o.cut, first.cut, "cut of {m}");
+        assert_eq!(o.keep, first.keep, "keep of {m}");
         assert_eq!(o.link, first.link, "link of {m}");
         assert_eq!(o.local_bounds, first.local_bounds, "bounds of {m}");
         assert_eq!(o.frame, first.frame, "frame of {m}");
@@ -388,6 +390,38 @@ fn set_cut_options_on_one_applies_to_all() {
         flatcraft_core::document::CutMode::ObjectOutlines
     );
     assert_shared(&s, &all);
+}
+
+#[test]
+fn set_keep_on_one_applies_to_all_and_survives_a_relink() {
+    use flatcraft_core::document::KeepMode;
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(dir.path());
+    let id = import_text(&mut s);
+    let all = linked(&mut s, id, 2);
+    let other = import_text(&mut s);
+    let before = undo_len(&s);
+    let r = run(
+        &mut s,
+        "object.set_keep",
+        json!({ "ids": [all[2]], "keep": "stencil" }),
+    );
+    assert_eq!(undo_len(&s), before + 1, "one undo step");
+    assert_eq!(ids(&r["ids"]), all, "{r}");
+    assert_eq!(r["keep"], "stencil");
+    for &m in &all {
+        assert_eq!(obj(&s, m).keep, KeepMode::Stencil);
+    }
+    assert_eq!(obj(&s, other).keep, KeepMode::Pieces);
+    assert_shared(&s, &all);
+    // A new copy of a member joins with its keep mode.
+    let more = linked(&mut s, all[1], 1);
+    assert_eq!(obj(&s, more[1]).keep, KeepMode::Stencil);
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    for &m in &all {
+        assert_eq!(obj(&s, m).keep, KeepMode::Pieces, "undo takes it back");
+    }
 }
 
 // ---------------------------------------------------------------- undo

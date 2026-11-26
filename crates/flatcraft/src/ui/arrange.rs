@@ -684,7 +684,7 @@ fn fields(ui: &mut Ui, p: &mut ArrangePanel, snap: &Snapshot, each_now: bool) {
                 .weak(),
             );
             ui.checkbox(&mut r.linked, "Linked copies").on_hover_text(
-                "One design, many bodies, like the Clone Army: the copies share the source, the cut options and the scale. Each keeps its own place, rotation and mirror.",
+                "One design, many bodies, like the Clone Army: the copies share the source, the cut options, the keep mode and the scale. Each keeps its own place, rotation and mirror.",
             );
         }
         PanelKind::CircularPattern => {
@@ -737,7 +737,7 @@ fn fields(ui: &mut Ui, p: &mut ArrangePanel, snap: &Snapshot, each_now: bool) {
             ui.checkbox(&mut c.rotate_copies, "Rotate copies")
                 .on_hover_text("Each copy turns with the circle, like spokes. Off: they all keep the original's angle.");
             ui.checkbox(&mut c.linked, "Linked copies").on_hover_text(
-                "The copies share the source, the cut options and the scale with their original. Each keeps its own place, rotation and mirror.",
+                "The copies share the source, the cut options, the keep mode and the scale with their original. Each keeps its own place, rotation and mirror.",
             );
         }
         PanelKind::AutoArrange => {

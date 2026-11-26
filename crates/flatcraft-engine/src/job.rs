@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use flatcraft_core::document::{CutOptions, Document, GroupId, JobSettings, ObjectId};
+use flatcraft_core::document::{CutOptions, Document, GroupId, JobSettings, KeepMode, ObjectId};
 use flatcraft_core::geometry::CutPath;
 use flatcraft_core::transform::Transform;
 use flatcraft_device::gpgl::{CheckedJob, CutSettings, EmitError, EmitPath, EmittedJob, emit_job};
@@ -180,6 +180,9 @@ pub struct JobObject {
     pub transform: Transform,
     pub local_bounds: kurbo::Rect,
     pub cut: CutOptions,
+    /// What is kept after cutting: the planner keeps lead-ins and
+    /// overshoots in the waste.
+    pub keep: KeepMode,
     pub geometry: Arc<Vec<CutPath>>,
     /// The group of linked copies it belongs to: a fix of shared settings
     /// changes every member.
@@ -201,6 +204,7 @@ impl PartialEq for JobObject {
             && self.transform == other.transform
             && self.local_bounds == other.local_bounds
             && self.cut == other.cut
+            && self.keep == other.keep
             && Arc::ptr_eq(&self.geometry, &other.geometry)
             && self.link_group == other.link_group
             && self.unit == other.unit
@@ -232,6 +236,7 @@ impl JobInput {
                 transform: o.transform,
                 local_bounds: o.local_bounds,
                 cut: o.cut,
+                keep: o.keep,
                 geometry: o.geometry.clone(),
                 link_group: o.link_group,
                 unit: tops.get(&o.id).copied().unwrap_or(o.id),
@@ -246,6 +251,16 @@ impl JobInput {
             .iter()
             .filter(|o| o.unit != o.id)
             .map(|o| (o.id, o.unit))
+            .collect()
+    }
+
+    /// The keep mode of every object that is not [`KeepMode::Pieces`]
+    /// (the default of objects not listed).
+    pub fn keep_modes(&self) -> std::collections::BTreeMap<ObjectId, KeepMode> {
+        self.objects
+            .iter()
+            .filter(|o| o.keep != KeepMode::Pieces)
+            .map(|o| (o.id, o.keep))
             .collect()
     }
 
@@ -438,6 +453,7 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         min_cut_mm: 0.5 / plotter.units_per_mm,
         weed: job.weed,
         weed_units: input.weed_units(),
+        keep_modes: input.keep_modes(),
         ..PipelineSettings::with_defaults(area, plotter.home_mm(media))
     };
     let cut_plan = plan(&placed, &pipeline).map_err(|e| match e {
@@ -806,7 +822,7 @@ fn log_entry(
         force: summary.force,
         passes: summary.passes,
         strategy: job.strategy,
-        keep_mode: None,
+        keep_mode: keep_mode_of(&st.document),
         size: cutlog::JobSize {
             bytes,
             toolpaths: summary.toolpaths,
@@ -816,6 +832,23 @@ fn log_entry(
         target: cutlog::Target::Usb,
         outcome: None,
     }
+}
+
+/// The keep mode of the objects a job cuts (visible, not skipped), for
+/// the cut log: its name when they all share it, "mixed" when they do
+/// not, `None` when nothing is cut.
+fn keep_mode_of(doc: &Document) -> Option<String> {
+    let mut modes = doc
+        .objects
+        .iter()
+        .filter(|o| o.visible && o.cut_enabled)
+        .map(|o| o.keep);
+    let first = modes.next()?;
+    Some(if modes.all(|m| m == first) {
+        first.key().to_string()
+    } else {
+        "mixed".to_string()
+    })
 }
 
 /// Appends a completed send to the cut log and says so in the reply

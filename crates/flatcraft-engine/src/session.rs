@@ -350,6 +350,7 @@ fn same_except_links(a: &Document, b: &Document) -> bool {
                 && x.cut_enabled == y.cut_enabled
                 && x.transform == y.transform
                 && x.cut == y.cut
+                && x.keep == y.keep
                 && x.frame == y.frame
                 && x.local_bounds == y.local_bounds
                 && x.link_group == y.link_group

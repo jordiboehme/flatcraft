@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use flatcraft_core::document::{
-    CutMode, CutOptions, Document, Object, ObjectId, Source, StrokeMode, TraceSettings,
+    CutMode, CutOptions, Document, KeepMode, Object, ObjectId, Source, StrokeMode, TraceSettings,
 };
 use flatcraft_core::geometry::CutPath;
 use flatcraft_core::nodes::GroupNode;
@@ -939,7 +939,7 @@ pub struct CopiesParams {
     pub gap_x_mm: Option<f64>,
     /// Gap between rows in mm, 0 or more; default gap_mm.
     pub gap_y_mm: Option<f64>,
-    /// true makes linked copies: they share the source, the geometry, the trace settings, the cut options, the scale and the file link with the original; each keeps its own position, rotation and mirror.
+    /// true makes linked copies: they share the source, the geometry, the trace settings, the cut options, the keep mode, the scale and the file link with the original; each keeps its own position, rotation and mirror.
     #[serde(default)]
     pub linked: bool,
 }
@@ -1067,7 +1067,7 @@ command!(
     mutates: true,
     params: CopiesParams,
     run: run_copies,
-    description: "Adds count copies (1 to 500) of one object or group in one undo step (a group is copied whole, with its nested groups, and laid out by its common box), laid out next to it by its bounding box plus gap_mm (default 5); gap_x_mm and gap_y_mm set the gap between columns and between rows on their own (each defaults to gap_mm). layout \"row\" (default) puts them in a row to the right of the original. layout {\"grid\": {\"columns\": n}} fills rows of n cells left to right, then goes down; the original is the first cell, so copy k sits in column k mod n and row k div n. Units mm, origin the 0,0 of the grid printed on the mat, x right, y down. Copies that land outside the cutting area are still added; they are listed in outside_area and get a warning. If a copy would land more than 1 km away, it refuses the whole call and adds nothing. Copies keep the original's file link, so a reload of that file updates all of them. linked: true (default false) makes linked copies: they and the original share the source, the geometry, the trace settings, the cut options, the scale and the file link, stored once in the project, so a change of one of these on any of them (object.scale, object.set_cut_options, object.retrace, object.reload, object.relink, object.unlink) changes all of them in the same undo step; each keeps its own position, rotation, mirror, name and visibility. Copies of a linked copy join its group. object.unlink_copies makes copies independent again. The copies become the selection. Returns {ids: [new id], outside_area: [id], warnings}.",
+    description: "Adds count copies (1 to 500) of one object or group in one undo step (a group is copied whole, with its nested groups, and laid out by its common box), laid out next to it by its bounding box plus gap_mm (default 5); gap_x_mm and gap_y_mm set the gap between columns and between rows on their own (each defaults to gap_mm). layout \"row\" (default) puts them in a row to the right of the original. layout {\"grid\": {\"columns\": n}} fills rows of n cells left to right, then goes down; the original is the first cell, so copy k sits in column k mod n and row k div n. Units mm, origin the 0,0 of the grid printed on the mat, x right, y down. Copies that land outside the cutting area are still added; they are listed in outside_area and get a warning. If a copy would land more than 1 km away, it refuses the whole call and adds nothing. Copies keep the original's file link, so a reload of that file updates all of them. linked: true (default false) makes linked copies: they and the original share the source, the geometry, the trace settings, the cut options, the keep mode, the scale and the file link, stored once in the project, so a change of one of these on any of them (object.scale, object.set_cut_options, object.set_keep, object.retrace, object.reload, object.relink, object.unlink) changes all of them in the same undo step; each keeps its own position, rotation, mirror, name and visibility. Copies of a linked copy join its group. object.unlink_copies makes copies independent again. The copies become the selection. Returns {ids: [new id], outside_area: [id], warnings}.",
 );
 
 // ---------------------------------------------------------------- circular copies
@@ -1092,7 +1092,7 @@ pub struct CircularCopiesParams {
     /// true (default): each copy also turns by its angle, like spokes. false: copies keep the original's rotation.
     #[serde(default = "default_true")]
     pub rotate_copies: bool,
-    /// true makes linked copies, as in object.copies: they share the source, the geometry, the trace settings, the cut options, the scale and the file link with their original.
+    /// true makes linked copies, as in object.copies: they share the source, the geometry, the trace settings, the cut options, the keep mode, the scale and the file link with their original.
     #[serde(default)]
     pub linked: bool,
 }
@@ -1241,7 +1241,7 @@ command!(
     mutates: true,
     params: CircularCopiesParams,
     run: run_circular_copies,
-    description: "Copies objects around a circle in one undo step, like the numbers on a clock. count is the number of instances with the original (2 or more; 500 copies in all at most). total_deg (default 360, not 0, at most 360 either way) is the angle they spread over, clockwise on screen with y down: a full turn divides by count, so 4 over 360 puts copies at 90, 180 and 270; a smaller arc divides by count - 1, so the last copy sits at its end (3 over 180 puts copies at 90 and 180). center_mm [x, y] is the centre of the circle; the default is the centre of the objects' common bounding box. Units mm, origin the 0,0 of the grid printed on the mat, x right, y down. Each object's centre turns about the centre of the circle; a whole group is copied as a new group and turns as one piece about the centre of its box. rotate_copies (default true) also turns each copy by its angle; false keeps the original's rotation. linked (default false) makes linked copies with the same rules as object.copies: a copy shares the source, the geometry, the trace settings, the cut options, the scale and the file link with its original, and keeps its own position, rotation, mirror, name and visibility; copies of a linked copy join its group. Without linked the copies are independent. Copies outside the cutting area are still added; they are listed in outside_area and get a warning. If a copy would land more than 1 km away, it refuses the whole call and adds nothing. An empty ids list means the current selection. The copies become the selection. Returns {ids: [new id], center_mm: [x, y], outside_area: [id], warnings}.",
+    description: "Copies objects around a circle in one undo step, like the numbers on a clock. count is the number of instances with the original (2 or more; 500 copies in all at most). total_deg (default 360, not 0, at most 360 either way) is the angle they spread over, clockwise on screen with y down: a full turn divides by count, so 4 over 360 puts copies at 90, 180 and 270; a smaller arc divides by count - 1, so the last copy sits at its end (3 over 180 puts copies at 90 and 180). center_mm [x, y] is the centre of the circle; the default is the centre of the objects' common bounding box. Units mm, origin the 0,0 of the grid printed on the mat, x right, y down. Each object's centre turns about the centre of the circle; a whole group is copied as a new group and turns as one piece about the centre of its box. rotate_copies (default true) also turns each copy by its angle; false keeps the original's rotation. linked (default false) makes linked copies with the same rules as object.copies: a copy shares the source, the geometry, the trace settings, the cut options, the keep mode, the scale and the file link with its original, and keeps its own position, rotation, mirror, name and visibility; copies of a linked copy join its group. Without linked the copies are independent. Copies outside the cutting area are still added; they are listed in outside_area and get a warning. If a copy would land more than 1 km away, it refuses the whole call and adds nothing. An empty ids list means the current selection. The copies become the selection. Returns {ids: [new id], center_mm: [x, y], outside_area: [id], warnings}.",
 );
 
 // ---------------------------------------------------------------- link copies
@@ -1302,7 +1302,7 @@ command!(
     mutates: true,
     params: IdsParams,
     run: run_link,
-    description: "Makes objects linked copies of the first one in ids, in one undo step. They must have the same source (the same SVG or image content, for example copies or two imports of one file); otherwise it refuses and changes nothing. Every object takes the first one's shared fields: the source with its trace settings, the geometry, the cut options, the scale and the file link. Each keeps its own position, rotation, mirror, name and visibility; new geometry stays anchored to the object's page frame and a new scale keeps the object's own centre (mm, origin the 0,0 of the grid printed on the mat, y down). Objects that are linked copies already bring their whole group along. From then on a change of a shared field on one member (object.scale, object.set_cut_options, object.retrace, object.reload, object.relink, object.unlink) changes all of them. Needs 2 or more objects. An empty ids list means the current selection. Returns {group, ids: [every member]}.",
+    description: "Makes objects linked copies of the first one in ids, in one undo step. They must have the same source (the same SVG or image content, for example copies or two imports of one file); otherwise it refuses and changes nothing. Every object takes the first one's shared fields: the source with its trace settings, the geometry, the cut options, the keep mode, the scale and the file link. Each keeps its own position, rotation, mirror, name and visibility; new geometry stays anchored to the object's page frame and a new scale keeps the object's own centre (mm, origin the 0,0 of the grid printed on the mat, y down). Objects that are linked copies already bring their whole group along. From then on a change of a shared field on one member (object.scale, object.set_cut_options, object.set_keep, object.retrace, object.reload, object.relink, object.unlink) changes all of them. Needs 2 or more objects. An empty ids list means the current selection. Returns {group, ids: [every member]}.",
 );
 
 fn run_unlink_copies(s: &mut Session, p: IdsParams, _: Origin) -> Result<Value, CommandError> {
@@ -2164,6 +2164,66 @@ command!(
     params: SetCutOptionsParams,
     run: run_set_cut_options,
     description: "Sets what is cut of each object (one undo step). mode: all_lines cuts every path as drawn (its centre line), whatever its fill or stroke; object_outlines (default) cuts the outline of every visible shape: fills, plus strokes as set by strokes. strokes: auto (default) cuts strokes at least auto_threshold_mm wide (default 0.5, range 0.05 to 10; measured after scaling) around their outline and thinner ones as centre line; centre_line cuts the path itself; outline cuts around the visible stroke shape with its corner and end style (sharp miter corners stay sharp). A path with a fill and an outline stroke is cut along the edge of fill and stroke together; holes stay holes. Different paths that overlap are each cut completely. Fields you omit keep their value; give at least one. Traced images are fills; the cut mode only normalises their outlines (direction and start point), what is cut stays the same. A filled path with a centre-line stroke is cut along the edge of its fill. Linked copies (see object.copies) share their cut options, so setting them on one sets them on all members of its group, in the same undo step. An empty ids list means the current selection. Returns {objects: [{id, cut: {mode, strokes, auto_threshold_mm}}]}, with every changed object, linked copies included.",
+);
+
+// ---------------------------------------------------------------- keep
+
+#[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum KeepParam {
+    /// Keep the cut shapes (a sticker): the outside and the holes are waste.
+    Pieces,
+    /// Keep the sheet (a stencil): the cut shapes fall out and are waste.
+    Stencil,
+    /// Keep both sides: no lead-in or overshoot near the object's cuts.
+    Both,
+}
+
+impl From<KeepParam> for KeepMode {
+    fn from(k: KeepParam) -> Self {
+        match k {
+            KeepParam::Pieces => KeepMode::Pieces,
+            KeepParam::Stencil => KeepMode::Stencil,
+            KeepParam::Both => KeepMode::Both,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetKeepParams {
+    /// Object or group ids; empty means the current selection.
+    #[serde(default)]
+    pub ids: Vec<u64>,
+    /// What is kept after cutting: pieces, stencil or both.
+    pub keep: KeepParam,
+}
+
+fn run_set_keep(s: &mut Session, p: SetKeepParams, _: Origin) -> Result<Value, CommandError> {
+    let ids = resolve_ids(s, &p.ids)?;
+    let keep: KeepMode = p.keep.into();
+    let doc = &mut s.doc_mut().document;
+    let mut out = Vec::new();
+    for id in &ids {
+        if out.contains(&id.0) {
+            continue;
+        }
+        object_mut(doc, *id)?.keep = keep;
+        // Linked copies share the keep mode.
+        doc.spread_shared(*id);
+        out.extend(doc.members(*id).into_iter().map(|m| m.0));
+    }
+    Ok(json!({ "ids": out, "keep": keep.key() }))
+}
+
+command!(
+    ObjectSetKeep,
+    id: "object.set_keep",
+    title: "Keep",
+    mutates: true,
+    params: SetKeepParams,
+    run: run_set_keep,
+    description: "Sets what is kept after cutting each object, in one undo step. The plan keeps the blade's lead-ins and corner overshoots in the waste and never in what is kept, and weed lines and the weed box cut only waste. keep: pieces (default) keeps the cut shapes, like a sticker: the outside and the holes are waste. stencil keeps the sheet, like a stencil: the cut shapes fall out and are waste, the rest of the cutting area is kept, so weeding cuts nothing outside them. both keeps both sides: no lead-in or overshoot lands near the object's cuts, the blade only turns in place there. Across objects kept wins: a place is waste only when no object keeps it. A group id sets every object in the group. Linked copies (see object.copies) share their keep mode, so setting it on one sets it on all members of its group. An empty ids list means the current selection. Returns {ids: [every changed object, linked copies included], keep}.",
 );
 
 #[cfg(test)]

@@ -192,7 +192,7 @@ pub fn show(
         });
     if let Some(n) = snap.linked_reach() {
         ui.label(RichText::new(format!("Applies to {n} linked copies")).color(t.text_dim))
-            .on_hover_text("Linked copies share the cut options and the scale. Unlink a copy in the Objects panel to change it alone.");
+            .on_hover_text("Linked copies share the cut options, the keep mode and the scale. Unlink a copy in the Objects panel to change it alone.");
     }
 
     ui.separator();

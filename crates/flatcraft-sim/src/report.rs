@@ -1,9 +1,9 @@
 //! The time estimate and the full simulation result.
 
-use flatcraft_path::Toolpath;
+use flatcraft_path::{CutPlan, Toolpath};
 use kurbo::Point;
 
-use crate::metrics::{JobMetrics, measure};
+use crate::metrics::{JobMetrics, measure, measure_kept};
 use crate::{SimError, SimSettings, SimTrace, simulate};
 
 /// How fast the plotter moves. A provisional model until the M3 timing
@@ -69,6 +69,24 @@ pub fn run(
     let (metrics, deviation_mm) = measure(toolpaths, &trace, s);
     Ok(SimResult {
         seconds: estimate_seconds(toolpaths, home, speed, time),
+        trace,
+        deviation_mm,
+        metrics,
+    })
+}
+
+/// Simulate a planned job from its home, measure it with the plan's own
+/// kept material ([`measure_kept`]) and estimate the time.
+pub fn run_plan(
+    plan: &CutPlan,
+    s: &SimSettings,
+    speed: u8,
+    time: &TimeModel,
+) -> Result<SimResult, SimError> {
+    let trace = simulate(&plan.toolpaths, plan.home, s)?;
+    let (metrics, deviation_mm) = measure_kept(&plan.toolpaths, &trace, s, &plan.kept);
+    Ok(SimResult {
+        seconds: estimate_seconds(&plan.toolpaths, plan.home, speed, time),
         trace,
         deviation_mm,
         metrics,

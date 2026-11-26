@@ -76,6 +76,9 @@ pub struct PipelineSettings {
     /// top-level group of a grouped object, so a group gets one box.
     /// Objects not listed count on their own.
     pub weed_units: std::collections::BTreeMap<ObjectId, ObjectId>,
+    /// The keep mode of each object ([`KeepMode`]). Objects not listed
+    /// are [`KeepMode::Pieces`].
+    pub keep_modes: std::collections::BTreeMap<ObjectId, KeepMode>,
 }
 
 /// The default flatten and join tolerance, in millimetres.
@@ -88,6 +91,11 @@ pub const DEFAULT_OVERCUT_MM: f64 = 0.5;
 pub const DEFAULT_MIN_CUT_MM: f64 = 0.025;
 
 impl PipelineSettings {
+    /// The keep mode of object `o` ([`PipelineSettings::keep_modes`]).
+    pub fn keep_mode(&self, o: ObjectId) -> KeepMode {
+        self.keep_modes.get(&o).copied().unwrap_or_default()
+    }
+
     /// The spec defaults for `cutting_area` with travel from `home`: 0.01 mm
     /// tolerances, 0.5 mm overcut, one pass, chained closed passes,
     /// counter-clockwise rings, no feed bands, the Quality strategy, a
@@ -113,6 +121,7 @@ impl PipelineSettings {
             alignment_stroke: None,
             weed: WeedSettings::default(),
             weed_units: Default::default(),
+            keep_modes: Default::default(),
         }
     }
 }
@@ -280,6 +289,9 @@ pub struct CutPlan {
     pub dropped_weed_boxes: usize,
     /// Weed boxes left out because their outline would cut kept material.
     pub blocked_weed_boxes: usize,
+    /// The job's kept material, as the knife stage judged every waste move
+    /// against it: one source of truth for the simulator and the canvas.
+    pub kept: std::sync::Arc<KeptMaterial>,
 }
 
 /// The pipeline setting an [`PlanError::InvalidSettings`] is about.
@@ -561,10 +573,9 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
     }
 
     // Ruling M2-P13: every toolpath's keep side comes from the containment
-    // tree. Every object is Pieces until Task 29 supplies the real modes.
-    // One closure for the keep sides and the kept material, so Task 29
-    // changes one place.
-    let mode_of = |_: ObjectId| KeepMode::Pieces;
+    // tree. One closure gives the keep mode of each object to the keep
+    // sides, the weeds and the kept material.
+    let mode_of = |o: ObjectId| s.keep_mode(o);
     let tree = containment::build(&toolpaths);
     for (i, t) in toolpaths.iter_mut().enumerate() {
         t.keep = containment::keep_side(&tree, i, t.closed, mode_of(t.source.object));
@@ -620,6 +631,7 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
         dropped_short,
         dropped_weed_boxes: weeds.dropped_boxes,
         blocked_weed_boxes: weeds.blocked_boxes,
+        kept: std::sync::Arc::new(kept),
     })
 }
 

@@ -73,7 +73,7 @@ fn a_completed_send_appends_an_entry() {
         e.size.toolpaths,
         sent["toolpaths"].as_u64().unwrap() as usize
     );
-    assert_eq!(e.keep_mode, None);
+    assert_eq!(e.keep_mode.as_deref(), Some("pieces"));
     match &e.target {
         Target::File { files } => assert_eq!(files.len(), 3, "{files:?}"),
         other => panic!("{other:?}"),
@@ -290,4 +290,33 @@ fn agents_see_damaged_lines_without_their_content() {
     );
     // The window keeps the detailed reasons.
     assert_eq!(cutlog::read(dir.path()).diagnostics.len(), 2);
+}
+
+#[test]
+fn the_entry_records_the_keep_mode_of_the_cut_objects() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = ready(&dir);
+    run(
+        &mut s,
+        "object.set_keep",
+        json!({ "ids": [1], "keep": "stencil" }),
+    );
+    run(&mut s, "job.send", json!({}));
+    let r = run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": SQUARE.replace("x=\"20\"", "x=\"120\""), "name": "other" }),
+    );
+    let other = r["id"].as_u64().unwrap();
+    run(&mut s, "job.send", json!({}));
+    // A skipped object does not count.
+    run(
+        &mut s,
+        "object.set_cut",
+        json!({ "ids": [other], "cut": false }),
+    );
+    run(&mut s, "job.send", json!({}));
+    let log = cutlog::read(dir.path());
+    let modes: Vec<Option<&str>> = log.entries.iter().map(|e| e.keep_mode.as_deref()).collect();
+    assert_eq!(modes, [Some("stencil"), Some("mixed"), Some("stencil")]);
 }

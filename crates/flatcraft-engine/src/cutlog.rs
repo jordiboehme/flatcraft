@@ -98,8 +98,9 @@ pub struct CutEntry {
     pub force: u8,
     pub passes: u32,
     pub strategy: CutStrategy,
-    /// The keep mode of the job. Empty until objects have keep modes
-    /// (Task 29).
+    /// The keep mode of the objects the job cut: "pieces", "stencil" or
+    /// "both" when they all share it, "mixed" when they do not. Entries
+    /// written before keep modes have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_mode: Option<String>,
     pub size: JobSize,

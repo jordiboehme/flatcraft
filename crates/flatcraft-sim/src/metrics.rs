@@ -339,12 +339,39 @@ struct PathState {
 /// up, the distance to the nearest `Cut` path for waste samples, and the
 /// distance to the toolpath's own intended path for path samples.
 ///
-/// Kept material is classified with every object as
-/// [`KeepMode::Pieces`] until per-object keep modes exist (Task 29).
+/// Kept material is classified with every object as [`KeepMode::Pieces`]
+/// on a sheet as big as the job: for toolpaths without a plan. A planned
+/// job is measured with [`measure_kept`] and the plan's own kept material.
 pub fn measure(
     toolpaths: &[Toolpath],
     trace: &SimTrace,
     s: &SimSettings,
+) -> (JobMetrics, Vec<f32>) {
+    // The sheet only matters for Stencil and Both, so any finite area
+    // will do.
+    let area = toolpaths
+        .iter()
+        .flat_map(|t| t.points.iter().copied())
+        .chain(trace.samples.iter().map(|x| x.tip))
+        .filter(|p| p.is_finite())
+        .fold(None, |r: Option<Rect>, p| {
+            Some(r.map_or(Rect::from_points(p, p), |r| r.union_pt(p)))
+        })
+        .unwrap_or(Rect::ZERO)
+        .inflate(1.0, 1.0);
+    let kept = KeptMaterial::from_toolpaths(toolpaths, |_| KeepMode::Pieces, area, 0.0);
+    measure_kept(toolpaths, trace, s, &kept)
+}
+
+/// [`measure`] with the job's kept material: a plan's
+/// [`flatcraft_path::CutPlan::kept`], so the simulator classifies kept
+/// material exactly as the planner did (each object's keep mode, the
+/// cutting area as a stencil's sheet).
+pub fn measure_kept(
+    toolpaths: &[Toolpath],
+    trace: &SimTrace,
+    s: &SimSettings,
+    kept: &KeptMaterial,
 ) -> (JobMetrics, Vec<f32>) {
     let samples = &trace.samples;
     let d = s.blade_offset_mm;
@@ -410,20 +437,6 @@ pub fn measure(
     let corner_grid = CornerGrid::new(corner_list);
     let mut corner_dev = vec![0.0f64; corner_grid.corners.len()];
     let mut twist = vec![0.0f64; corner_grid.corners.len()];
-
-    // Pieces for every object until Task 29. The sheet and the clearance
-    // only matter for Stencil and Both, so any finite area will do.
-    let area = toolpaths
-        .iter()
-        .flat_map(|t| t.points.iter().copied())
-        .chain(samples.iter().map(|x| x.tip))
-        .filter(|p| p.is_finite())
-        .fold(None, |r: Option<Rect>, p| {
-            Some(r.map_or(Rect::from_points(p, p), |r| r.union_pt(p)))
-        })
-        .unwrap_or(Rect::ZERO)
-        .inflate(1.0, 1.0);
-    let kept = KeptMaterial::from_toolpaths(toolpaths, |_| KeepMode::Pieces, area, 0.0);
 
     let mut dev = vec![f32::NAN; samples.len()];
     let mut moves = SegmentGrid::default();

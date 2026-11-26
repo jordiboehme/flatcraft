@@ -119,7 +119,7 @@ impl Item {
         }
         match self {
             Item::LinkCopies => {
-                "Make these copies of one design linked: they share the source, the cut options and the scale. Each keeps its own place."
+                "Make these copies of one design linked: they share the source, the cut options, the keep mode and the scale. Each keeps its own place."
             }
             Item::UnlinkCopies => {
                 "Make these objects independent again, so you can change one without the others."

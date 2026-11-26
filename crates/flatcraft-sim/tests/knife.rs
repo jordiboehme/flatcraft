@@ -814,3 +814,166 @@ fn waste_check_holds_with_passes_2() {
     assert_eq!(m.max_into_kept_mm, 0.0);
     assert_eq!(m.pushed, 0);
 }
+
+// ---------------------------------------------------------------- keep modes
+
+/// Host settings with the keep mode of each object.
+fn host_keeping(
+    corner_mode: CornerMode,
+    modes: &[(u64, KeepMode)],
+    start: f64,
+) -> PipelineSettings {
+    PipelineSettings {
+        start_heading: heading(start),
+        keep_modes: modes.iter().map(|&(o, m)| (ObjectId(o), m)).collect(),
+        ..host(corner_mode)
+    }
+}
+
+/// The plan of `input` measured with the plan's own kept material, as the
+/// planner judged it.
+fn planned_kept(input: &[PlacedPath], s: &PipelineSettings) -> (CutPlan, SimTrace, JobMetrics) {
+    let out = plan(input, s).unwrap();
+    let sim = sim_settings(s.start_heading);
+    let trace = simulate(&out.toolpaths, out.home, &sim).unwrap();
+    let (m, _) = flatcraft_sim::measure_kept(&out.toolpaths, &trace, &sim, &out.kept);
+    (out, trace, m)
+}
+
+/// A Stencil rectangle keeps the sheet: every lead-in starts inside the
+/// shape (the waste that falls out), never in the sheet around it.
+#[test]
+fn a_stencil_rectangle_leads_in_from_inside_the_shape() {
+    let r = Rect::new(40.0, 40.0, 60.0, 55.0);
+    let mut branches = Vec::new();
+    let mut pieces_outside = false;
+    for corner in [CornerMode::Arc, LIFT] {
+        for start in [0.0, 90.0, 180.0, 270.0, 33.0] {
+            let input = [placed(1, rect_path(r.x0, r.y0, r.width(), r.height()))];
+            let s = host_keeping(corner, &[(1, KeepMode::Stencil)], start);
+            let (out, trace, m) = planned_kept(&input, &s);
+            assert_eq!(out.toolpaths[0].keep, KeepSide::Outside);
+            for t in &out.toolpaths {
+                for k in 0..runs(t).len() {
+                    branches.push(branch(t, k));
+                }
+            }
+            // Every blade-down tip lies in the shape or on its cut line.
+            for x in trace.samples.iter().filter(|x| x.down) {
+                assert!(
+                    r.inflate(ALGORITHM_LIMIT_MM, ALGORITHM_LIMIT_MM)
+                        .contains(x.tip),
+                    "{corner:?} {start}: the tip at {:?} is in the sheet",
+                    x.tip
+                );
+            }
+            assert_eq!(m.max_into_kept_mm, 0.0, "{corner:?} {start}");
+            // The same shape kept as a piece may lead in from outside.
+            let pieces = host_keeping(corner, &[], start);
+            let (_, trace, _) = planned_kept(&input, &pieces);
+            pieces_outside |= trace
+                .samples
+                .iter()
+                .any(|x| x.down && !r.inflate(0.01, 0.01).contains(x.tip));
+        }
+    }
+    assert!(
+        pieces_outside,
+        "the check is not vacuous: pieces lead in from outside"
+    );
+    // A rectangle swivels at a corner on its waste side. A round stencil
+    // hole has no corner, so it needs a real lead-in: inside, too.
+    let c = p(50.0, 47.0);
+    let input = [placed(1, Circle::new(c, 6.0).to_path(0.01))];
+    for start in [0.0, 90.0, 180.0, 270.0] {
+        let s = host_keeping(CornerMode::Arc, &[(1, KeepMode::Stencil)], start);
+        let (out, trace, m) = planned_kept(&input, &s);
+        for t in &out.toolpaths {
+            for k in 0..runs(t).len() {
+                branches.push(branch(t, k));
+            }
+        }
+        for x in trace.samples.iter().filter(|x| x.down) {
+            assert!(
+                x.tip.distance(c) <= 6.0 + ALGORITHM_LIMIT_MM,
+                "{start}: the tip at {:?} is in the sheet",
+                x.tip
+            );
+        }
+        assert_eq!(m.max_into_kept_mm, 0.0, "{start}");
+    }
+    assert!(
+        branches.iter().any(|b| *b != Branch::Swivel),
+        "a lead-in, not only swivels: {branches:?}"
+    );
+}
+
+/// Both keeps both sides of the cut: no lead-in and no corner overshoot,
+/// the blade only swivels in place, so the tip never leaves the cut line.
+#[test]
+fn both_gets_no_lead_in_and_no_overshoot() {
+    let r = Rect::new(40.0, 40.0, 60.0, 55.0);
+    for corner in [CornerMode::Arc, LIFT] {
+        for start in [0.0, 90.0, 180.0, 270.0, 33.0] {
+            let input = [placed(1, rect_path(r.x0, r.y0, r.width(), r.height()))];
+            let s = host_keeping(corner, &[(1, KeepMode::Both)], start);
+            let (out, trace, m) = planned_kept(&input, &s);
+            let t = &out.toolpaths[0];
+            assert_eq!(t.keep, KeepSide::Both);
+            for k in 0..runs(t).len() {
+                assert_eq!(branch(t, k), Branch::Swivel, "{corner:?} {start}");
+            }
+            assert_eq!(runs(t).len(), 1, "{corner:?} {start}: no lift at a corner");
+            // Every blade-down tip lies on the outline (within the start
+            // error of a swivel).
+            let outline = r.to_path(0.01);
+            for x in trace.samples.iter().filter(|x| x.down) {
+                let on = outline
+                    .segments()
+                    .map(|seg| {
+                        use kurbo::ParamCurveNearest as _;
+                        seg.nearest(x.tip, 1e-9).distance_sq.sqrt()
+                    })
+                    .fold(f64::INFINITY, f64::min);
+                assert!(
+                    on <= ALGORITHM_LIMIT_MM,
+                    "{corner:?} {start}: {on} off the cut"
+                );
+            }
+            assert_eq!(m.max_into_kept_mm, 0.0);
+        }
+    }
+}
+
+/// Across objects kept wins: a piece lying on a stencil's sheet has the
+/// sheet kept around it, so its lead-ins stay inside it like a hole's.
+#[test]
+fn kept_wins_a_piece_on_a_stencil_sheet_leads_in_from_inside() {
+    let piece = Rect::new(20.0, 20.0, 40.0, 35.0);
+    let stencil = Rect::new(80.0, 20.0, 100.0, 35.0);
+    for start in [0.0, 90.0, 180.0, 270.0] {
+        let input = [
+            placed(
+                1,
+                rect_path(piece.x0, piece.y0, piece.width(), piece.height()),
+            ),
+            placed(
+                2,
+                rect_path(stencil.x0, stencil.y0, stencil.width(), stencil.height()),
+            ),
+        ];
+        let s = host_keeping(CornerMode::Arc, &[(2, KeepMode::Stencil)], start);
+        let (out, trace, m) = planned_kept(&input, &s);
+        let (inside, outside) = (Point::new(30.0, 27.0), Point::new(60.0, 27.0));
+        assert!(out.kept.is_kept(inside) && out.kept.is_kept(outside));
+        assert!(!out.kept.is_kept(Point::new(90.0, 27.0)));
+        for x in trace.samples.iter().filter(|x| x.down) {
+            let near = |r: Rect| {
+                r.inflate(ALGORITHM_LIMIT_MM, ALGORITHM_LIMIT_MM)
+                    .contains(x.tip)
+            };
+            assert!(near(piece) || near(stencil), "{start}: tip at {:?}", x.tip);
+        }
+        assert_eq!(m.max_into_kept_mm, 0.0, "{start}");
+    }
+}

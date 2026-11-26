@@ -801,6 +801,7 @@ fn id_call(cmd: &str, id: u64) -> Option<Value> {
             json!({ "ids": [id], "axis": "horizontal", "mirrored": true, "follow": [id] })
         }
         "object.set_cut_options" => json!({ "ids": [id], "mode": "all_lines" }),
+        "object.set_keep" => json!({ "ids": [id], "keep": "stencil" }),
         "arrange.align" => json!({ "ids": [id], "mode": "left" }),
         "arrange.distribute" => json!({ "ids": [id], "axis": "horizontal" }),
         "document.export" => return None,

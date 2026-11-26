@@ -1178,7 +1178,7 @@ fn link_badge(ui: &mut Ui, r: Rect, snap: &Snapshot, contrast: Color32) {
             .alt_text("Linked copies selected"),
     )
     .on_hover_text(format!(
-        "{n} linked copies share the source, the cut options and the scale"
+        "{n} linked copies share the source, the cut options, the keep mode and the scale"
     ));
 }
 

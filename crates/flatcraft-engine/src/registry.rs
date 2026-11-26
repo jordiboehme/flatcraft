@@ -65,6 +65,7 @@ static ALL: &[&dyn Command] = &[
     &object::ObjectRotate,
     &object::ObjectMirror,
     &object::ObjectSetCutOptions,
+    &object::ObjectSetKeep,
     &group::ObjectGroup,
     &group::ObjectUngroup,
     &group::ObjectMoveToGroup,

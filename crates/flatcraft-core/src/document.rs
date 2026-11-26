@@ -167,6 +167,41 @@ impl Default for CutOptions {
     }
 }
 
+/// Which side of an object's cuts is kept material and which is waste.
+/// The planner keeps lead-ins and overshoots in the waste, and weeding
+/// cuts only waste.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeepMode {
+    /// The cut shapes are kept (a sticker): inside an odd number of the
+    /// object's rings. The outside and the holes are waste.
+    #[default]
+    Pieces,
+    /// The sheet is kept and the cut shapes fall out (a stencil): inside
+    /// an odd number of the object's rings is waste, the rest of the
+    /// cutting area is kept.
+    Stencil,
+    /// Both sides are kept: the pieces, and everything within the
+    /// clearance of the object's rings, so no lead-in or overshoot lands
+    /// next to its cuts; the blade only swivels in place there.
+    Both,
+}
+
+impl KeepMode {
+    /// The name in project files, commands and the cut log.
+    pub fn key(self) -> &'static str {
+        match self {
+            KeepMode::Pieces => "pieces",
+            KeepMode::Stencil => "stencil",
+            KeepMode::Both => "both",
+        }
+    }
+
+    fn is_pieces(&self) -> bool {
+        *self == KeepMode::Pieces
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Object {
     pub id: ObjectId,
@@ -182,6 +217,11 @@ pub struct Object {
     /// Projects from before cut options load with the defaults.
     #[serde(default)]
     pub cut: CutOptions,
+    /// What is kept after cutting. Shared by linked copies. Pieces (the
+    /// default) is not written, so older projects load and save as they
+    /// were.
+    #[serde(default, skip_serializing_if = "KeepMode::is_pieces")]
+    pub keep: KeepMode,
     /// The file this object was imported from. Projects from before links,
     /// imports from text and unlinked objects have none.
     #[serde(
@@ -209,8 +249,8 @@ pub struct Object {
     pub frame: Rect,
     /// The group of linked copies this object belongs to. Members share
     /// the source (with the trace settings), the geometry, the cut options,
-    /// the scale and the file link; each keeps its own position, rotation,
-    /// mirror, name, visibility and whether it is cut.
+    /// the keep mode, the scale and the file link; each keeps its own
+    /// position, rotation, mirror, name, visibility and whether it is cut.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_group: Option<GroupId>,
     /// The group ([`crate::nodes::GroupNode`]) this object is in, `None` at
@@ -241,6 +281,7 @@ impl Object {
             visible: true,
             cut_enabled: true,
             cut,
+            keep: KeepMode::Pieces,
             link: None,
             geometry,
             local_bounds,
@@ -296,8 +337,8 @@ impl Object {
 
     /// True if `self` and `other` agree on every field linked copies share:
     /// the same geometry and source bytes (one `Arc` each), the same source
-    /// with its trace settings, cut options, file link, local bounds, frame
-    /// and scale.
+    /// with its trace settings, cut options, keep mode, file link, local
+    /// bounds, frame and scale.
     pub fn shares_with(&self, other: &Object) -> bool {
         let bytes = |o: &Object| match &o.source {
             Source::Svg { bytes, .. } | Source::Raster { bytes, .. } => bytes.clone(),
@@ -306,6 +347,7 @@ impl Object {
             && Arc::ptr_eq(&bytes(self), &bytes(other))
             && self.source == other.source
             && self.cut == other.cut
+            && self.keep == other.keep
             && self.link == other.link
             && self.local_bounds == other.local_bounds
             && self.frame == other.frame
@@ -319,6 +361,7 @@ impl Object {
     pub fn shared_values_eq(&self, other: &Object) -> bool {
         self.source == other.source
             && self.cut == other.cut
+            && self.keep == other.keep
             && self.link == other.link
             && self.local_bounds == other.local_bounds
             && self.frame == other.frame
@@ -339,6 +382,7 @@ impl Object {
         }
         self.source = from.source.clone();
         self.cut = from.cut;
+        self.keep = from.keep;
         self.link = from.link.clone();
         self.transform.scale_x = from.transform.scale_x;
         self.transform.scale_y = from.transform.scale_y;
@@ -527,6 +571,7 @@ impl Document {
             visible: true,
             cut_enabled: true,
             cut: CutOptions::default(),
+            keep: KeepMode::Pieces,
             link: None,
             geometry: Arc::default(),
             local_bounds: Rect::ZERO,

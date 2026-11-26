@@ -128,11 +128,12 @@ fn weed_shapes(
     input: &JobInput,
     area: kurbo::Rect,
 ) -> Vec<ExportShape> {
-    // Every object is Pieces until Task 29, as in the plan.
+    // The keep mode of each object, as in the plan.
     let units = input.weed_units();
+    let keep = input.keep_modes();
     let weeds = flatcraft_path::weed::generate(
         design,
-        |_| flatcraft_path::KeepMode::Pieces,
+        |o| keep.get(&o).copied().unwrap_or_default(),
         |o| units.get(&o).copied().unwrap_or(o),
         area,
         &input.job.weed,

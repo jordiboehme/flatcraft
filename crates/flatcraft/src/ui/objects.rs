@@ -806,7 +806,7 @@ fn details(
         let n = snap.group_size(g);
         ui.label(
             RichText::new(format!(
-                "Linked copy, one of {n}. It shares the source, the cut options and the scale."
+                "Linked copy, one of {n}. It shares the source, the cut options, the keep mode and the scale."
             ))
             .color(t.text_dim),
         );

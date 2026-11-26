@@ -15,8 +15,8 @@ pub mod trace;
 use flatcraft_path::ASSUMED_START_HEADING;
 use kurbo::{Point, Vec2};
 
-pub use metrics::{Grade, JobMetrics, PathMetrics, Spot, SpotKind, measure};
-pub use report::{SimResult, TimeModel, estimate_seconds, run};
+pub use metrics::{Grade, JobMetrics, PathMetrics, Spot, SpotKind, measure, measure_kept};
+pub use report::{SimResult, TimeModel, estimate_seconds, run, run_plan};
 pub use trace::{Sample, SimTrace, simulate};
 
 /// The quality limit of the float simulation against the intended path (R7).

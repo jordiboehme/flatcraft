@@ -582,9 +582,8 @@ fn no_weed_line_between_shapes_1_5_mm_apart() {
 
 #[test]
 fn a_kept_sheet_drops_the_box_and_the_lines() {
-    // A stub keep rule for Task 29: the sheet is kept (Stencil). The box
-    // asks the same question as the lines, so both are left out and the
-    // box is counted.
+    // A Stencil keeps the sheet. The box asks the same question as the
+    // lines, so both are left out and the box is counted.
     let ring = Toolpath::new(
         vec![
             Point::new(50.0, 50.0),

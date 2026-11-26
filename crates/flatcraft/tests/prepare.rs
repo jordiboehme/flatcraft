@@ -2193,7 +2193,7 @@ fn objects_panel_marks_linked_copies_and_unlinks_one() {
     // Three marks for four rows: the lone square has none.
     assert_eq!(h.get_all_by_label("Linked copy").count(), 3);
     assert_eq!(link_group(&s, lone), None);
-    h.get_by_label("Linked copy, one of 3. It shares the source, the cut options and the scale.");
+    h.get_by_label("Linked copy, one of 3. It shares the source, the cut options, the keep mode and the scale.");
     let before = undo_len(&s);
     h.get_by_role_and_label(Role::Button, "Unlink copy").click();
     h.run();
