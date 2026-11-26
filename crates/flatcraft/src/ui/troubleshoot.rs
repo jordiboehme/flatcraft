@@ -11,7 +11,6 @@
 
 use egui::{RichText, Ui};
 use flatcraft_engine::cutlog::CutEntry;
-use flatcraft_engine::job::JobInput;
 use flatcraft_engine::troubleshoot::{self, Check, Checklist, Item, Symptom};
 
 use super::dialog::{Dialog, Kind};
@@ -43,16 +42,34 @@ pub struct TroubleshootState {
     pub symptom: Option<Symptom>,
     /// The list shown, and what it was made from.
     cache: Option<(Key, Checklist)>,
+    builds: usize,
 }
 
 /// What a checklist was made from: it is made again only when one of
-/// these changed.
+/// these changed. The document's revision stands for its objects and job
+/// settings, so nothing big is cloned or compared each frame; the presets
+/// are compared because their notes and values change outside the
+/// document.
 #[derive(Debug, Clone, PartialEq)]
 struct Key {
     doc_id: u64,
-    input: JobInput,
+    doc_rev: u64,
     symptom: Symptom,
+    plotter: Option<flatcraft_device::PlotterProfile>,
+    material: Option<flatcraft_device::MaterialProfile>,
     last_good: Option<CutEntry>,
+}
+
+impl Key {
+    /// True when the snapshot still gives this key (no clone).
+    fn matches(&self, snap: &Snapshot, symptom: Symptom) -> bool {
+        self.doc_id == snap.doc_id
+            && self.doc_rev == snap.doc_rev
+            && self.symptom == symptom
+            && self.plotter == snap.plotter
+            && self.material == snap.material
+            && self.last_good == snap.last_good
+    }
 }
 
 impl TroubleshootState {
@@ -62,23 +79,36 @@ impl TroubleshootState {
         self.symptom = None;
     }
 
+    /// How often the checklist was made (tests).
+    pub fn builds(&self) -> usize {
+        self.builds
+    }
+
     /// The checklist for the picked symptom on this snapshot's job, made
-    /// again only when the job input, the symptom or the last good cut
-    /// changed. `None` before a symptom is picked or without a job input.
+    /// again only when the document, the presets, the symptom or the last
+    /// good cut changed. `None` before a symptom is picked or without a
+    /// job input.
     pub fn checklist(&mut self, snap: &Snapshot) -> Option<&Checklist> {
         let symptom = self.symptom?;
         let Some(Ok(input)) = &snap.job_input else {
             self.cache = None;
             return None;
         };
-        let key = Key {
-            doc_id: snap.doc_id,
-            input: input.clone(),
-            symptom,
-            last_good: snap.last_good.clone(),
-        };
-        if self.cache.as_ref().map(|(k, _)| k) != Some(&key) {
+        if !self
+            .cache
+            .as_ref()
+            .is_some_and(|(k, _)| k.matches(snap, symptom))
+        {
             let list = troubleshoot::checklist(input, symptom, snap.last_good.as_ref());
+            let key = Key {
+                doc_id: snap.doc_id,
+                doc_rev: snap.doc_rev,
+                symptom,
+                plotter: snap.plotter.clone(),
+                material: snap.material.clone(),
+                last_good: snap.last_good.clone(),
+            };
+            self.builds += 1;
             self.cache = Some((key, list));
         }
         self.cache.as_ref().map(|(_, c)| c)

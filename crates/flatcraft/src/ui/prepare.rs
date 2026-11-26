@@ -808,6 +808,9 @@ impl ObjView {
 #[derive(Debug, Clone)]
 pub struct Snapshot {
     pub doc_id: u64,
+    /// The document's revision (`DocState::revision`): it changes with
+    /// every change of the document, undo and redo included.
+    pub doc_rev: u64,
     pub objects: Vec<ObjView>,
     pub selection: BTreeSet<u64>,
     pub job: JobSettings,
@@ -1026,6 +1029,7 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
         }
         Snapshot {
             doc_id: st.id(),
+            doc_rev: st.revision(),
             objects,
             selection: st.selection.iter().map(|i| i.0).collect(),
             job,

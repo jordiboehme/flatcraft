@@ -371,3 +371,124 @@ fn cut_only_the_test_shape_from_the_helper() {
             .all(|o| o.cut_enabled)
     );
 }
+
+#[test]
+fn the_list_is_made_again_only_when_something_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let mut h = harness_sized(&dir, s.clone(), [1400.0, 1200.0], 8, |a| a);
+    open_from_send(&mut h);
+    pick(&mut h, Symptom::NotThrough);
+    let first = app(&h).ui.troubleshoot.builds();
+    assert!(first >= 1);
+    for _ in 0..5 {
+        h.step();
+    }
+    assert_eq!(
+        app(&h).ui.troubleshoot.builds(),
+        first,
+        "no change, no rebuild"
+    );
+    h.get_by_role_and_label(Role::Button, "Force +2").click();
+    h.run();
+    assert_eq!(app(&h).ui.troubleshoot.builds(), first + 1);
+    // A preset note changes the list without a document change.
+    s.lock()
+        .unwrap()
+        .profiles
+        .set_material_notes("copy-paper", "Use the blue mat.")
+        .unwrap();
+    h.run();
+    h.get_by_label("1. Your notes");
+}
+
+#[test]
+fn mirror_for_iron_on_keeps_an_uneven_design_in_place_in_the_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let (big, small) = {
+        let mut g = s.lock().unwrap();
+        let panel = r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="200mm" viewBox="0 0 200 200"><rect width="200" height="100"/></svg>"#;
+        let dot = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20mm" height="20mm" viewBox="0 0 20 20"><rect width="20" height="20"/></svg>"#;
+        let big = g
+            .execute(
+                "object.import_svg",
+                json!({ "name": "panel", "svg": panel }),
+                Origin::User,
+            )
+            .unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        g.execute(
+            "object.move",
+            json!({ "ids": [big], "x_mm": 10.0, "y_mm": 20.0 }),
+            Origin::User,
+        )
+        .unwrap();
+        let small = g
+            .execute(
+                "object.import_svg",
+                json!({ "name": "dot", "svg": dot }),
+                Origin::User,
+            )
+            .unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        g.execute(
+            "object.move",
+            json!({ "ids": [small], "x_mm": 230.0, "y_mm": 60.0 }),
+            Origin::User,
+        )
+        .unwrap();
+        g.execute(
+            "job.set_material",
+            json!({ "id": "heat-transfer-vinyl" }),
+            Origin::User,
+        )
+        .unwrap();
+        (big, small)
+    };
+    let union = |s: &flatcraft_mcp::SharedSession| {
+        let v = s
+            .lock()
+            .unwrap()
+            .execute("document.state", json!({}), Origin::User)
+            .unwrap();
+        v["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| {
+                let b = &o["bounds_mm"];
+                kurbo::Rect::new(
+                    b["x0"].as_f64().unwrap(),
+                    b["y0"].as_f64().unwrap(),
+                    b["x1"].as_f64().unwrap(),
+                    b["y1"].as_f64().unwrap(),
+                )
+            })
+            .reduce(|a, b| a.union(b))
+            .unwrap()
+    };
+    let before = union(&s);
+    let mut h = harness_sized(&dir, s.clone(), [1400.0, 1200.0], 8, |a| a);
+    open_from_send(&mut h);
+    pick(&mut h, Symptom::WrongPlaceOrSize);
+    h.get_by_role_and_label(Role::Button, "Mirror for iron-on")
+        .click();
+    h.run();
+    let after = union(&s);
+    assert!(
+        (after.x0 - before.x0).abs() < 1e-6 && (after.x1 - before.x1).abs() < 1e-6,
+        "{before:?} vs {after:?}"
+    );
+    assert!((after.y0 - before.y0).abs() < 1e-6 && (after.y1 - before.y1).abs() < 1e-6);
+    let p = s
+        .lock()
+        .unwrap()
+        .execute("job.preview", json!({}), Origin::User)
+        .unwrap();
+    assert_eq!(p["ready"], true, "{p}");
+    let _ = (big, small);
+}
