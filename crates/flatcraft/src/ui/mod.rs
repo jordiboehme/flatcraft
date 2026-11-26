@@ -19,6 +19,7 @@ pub mod help;
 pub mod home;
 pub mod icons;
 pub mod import_dialog;
+pub mod keep_pick;
 pub mod kept;
 #[cfg(target_os = "macos")]
 pub mod menu;
@@ -2113,7 +2114,7 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     // The kept and waste overlay in Prepare reads the plan; not while a
     // drag or a nudge burst changes the document every frame.
     let kept_overlay = workspace == Workspace::Prepare
-        && app.ui.prepare.show_kept_waste
+        && (app.ui.prepare.show_kept_waste || app.ui.prepare.keep_pick.is_some())
         && app.ui.prepare.drag.is_none()
         && app.ui.prepare.nudge.is_none();
     let wants_job = workspace == Workspace::Cut
@@ -2167,8 +2168,9 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     }
     switcher::ribbon(ui, app, snap.as_ref(), &mut actions);
     if workspace != Workspace::Prepare {
-        // The Trace dialog lives in Prepare.
+        // The Trace dialog and the keep picker live in Prepare.
         app.ui.trace = None;
+        app.ui.prepare.keep_pick = None;
     }
     match (&snap, workspace) {
         (Some(snap), Workspace::Cut) => cut::show(ui, app, snap, &mut actions),
@@ -2511,6 +2513,14 @@ fn prepare_keys(
     // Escape on an open list (a ribbon group's list) only closes it: egui
     // closed it before this runs, so the last frame says it was open.
     if st.popup_was_open && help::pressed(ctx, help::PrepareKey::ClearSelection) {
+        return;
+    }
+    // While the keep picker is on, Escape cancels it and the other keys
+    // wait: the selection it works on must not change under it.
+    if st.keep_pick.is_some() {
+        if help::pressed(ctx, help::PrepareKey::ClearSelection) {
+            st.keep_pick = None;
+        }
         return;
     }
     // Escape closes an open Arrange panel first, and changes nothing. One

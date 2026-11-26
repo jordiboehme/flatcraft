@@ -117,11 +117,13 @@ fn combo<T: Clone + PartialEq>(
         selected,
         current,
         enabled,
+        None,
     )
 }
 
 /// [`combo`] with a short hint on each entry (`hints`, in the order of
-/// `choices`; an entry without one has none).
+/// `choices`; an entry without one has none), and `beside` drawn right of
+/// the combo (an icon button, see [`icon_button_carded`]).
 #[allow(clippy::too_many_arguments)]
 fn combo_hinted<T: Clone + PartialEq>(
     ui: &mut Ui,
@@ -133,13 +135,70 @@ fn combo_hinted<T: Clone + PartialEq>(
     selected: Option<&T>,
     current: Option<&T>,
     enabled: bool,
+    beside: Option<&mut dyn FnMut(&mut Ui)>,
 ) -> Option<T> {
     let mut picked = None;
     painted_label(ui, label);
+    let width = ui.available_width();
+    match beside {
+        None => combo_box(
+            ui,
+            label,
+            setting,
+            text,
+            choices,
+            hints,
+            selected,
+            current,
+            enabled,
+            width,
+            &mut picked,
+        ),
+        Some(beside) => {
+            // The icon button: the icon and the button's padding.
+            let button = super::ICON_SIZE + 2.0 * ui.spacing().button_padding.x;
+            let width = width - button - ui.spacing().item_spacing.x;
+            ui.horizontal(|ui| {
+                combo_box(
+                    ui,
+                    label,
+                    setting,
+                    text,
+                    choices,
+                    hints,
+                    selected,
+                    current,
+                    enabled,
+                    width,
+                    &mut picked,
+                );
+                beside(ui);
+            });
+        }
+    }
+    ui.end_row();
+    picked
+}
+
+/// The combo box of [`combo_hinted`], `width` wide.
+#[allow(clippy::too_many_arguments)]
+fn combo_box<T: Clone + PartialEq>(
+    ui: &mut Ui,
+    label: &str,
+    setting: Option<Setting>,
+    text: &str,
+    choices: &[(T, String)],
+    hints: &[&str],
+    selected: Option<&T>,
+    current: Option<&T>,
+    enabled: bool,
+    width: f32,
+    picked: &mut Option<T>,
+) {
     ui.add_enabled_ui(enabled, |ui| {
         let r = egui::ComboBox::from_id_salt(label)
             .selected_text(text)
-            .width(ui.available_width())
+            .width(width)
             .show_ui(ui, |ui| {
                 for (i, (value, text)) in choices.iter().enumerate() {
                     let mut r = ui.selectable_label(selected == Some(value), text.as_str());
@@ -147,7 +206,7 @@ fn combo_hinted<T: Clone + PartialEq>(
                         r = r.on_hover_text(*hint);
                     }
                     if r.clicked() && current != Some(value) {
-                        picked = Some(value.clone());
+                        *picked = Some(value.clone());
                     }
                 }
             });
@@ -157,8 +216,22 @@ fn combo_hinted<T: Clone + PartialEq>(
             super::groups::card(&r.response, label, setting.card(), why, false);
         }
     });
-    ui.end_row();
-    picked
+}
+
+/// An icon-only button named `name` with the picker's hover card, dimmed
+/// with `why` when it cannot run.
+fn icon_button_carded(ui: &mut Ui, icon: Icon, name: &str, why: Option<&str>) -> Response {
+    let size = super::ICON_SIZE;
+    let tex = super::icons::texture(ui.ctx(), icon, size);
+    let image = egui::Image::from_texture(egui::load::SizedTexture::new(
+        tex.id(),
+        egui::Vec2::splat(size),
+    ))
+    .alt_text(name);
+    let r = ui.add_enabled(why.is_none(), egui::Button::image(image));
+    set_name(ui, &r, name);
+    super::groups::card(&r, name, super::keep_pick::HINT, why, false);
+    r
 }
 
 pub fn show(
@@ -217,6 +290,14 @@ pub fn show(
                 (true, Some(k)) => keep_name(k),
                 (true, None) => "Mixed",
             };
+            let ids: Vec<u64> = snap.selection.iter().copied().collect();
+            let mut pick_button = |ui: &mut Ui| {
+                let why = super::keep_pick::why_not(snap, &ids);
+                let r = icon_button_carded(ui, Icon::Pipette, super::keep_pick::BUTTON, why);
+                if r.clicked() {
+                    st.keep_pick = super::keep_pick::KeepPick::start(snap, &ids);
+                }
+            };
             if let Some(k) = combo_hinted(
                 ui,
                 "Keep",
@@ -227,6 +308,7 @@ pub fn show(
                 keep.as_ref(),
                 keep.as_ref(),
                 any,
+                Some(&mut pick_button),
             ) {
                 run(actions, "object.set_keep", json!({ "keep": k.key() }));
             }

@@ -97,6 +97,7 @@ except the two files below.
 | Thumbs down (How did it go?) | thumbs-down |
 | Device & Material (Cut stage), Plotters (Settings) | plotter (FlatCraft's own, MPL-2.0) |
 | Path (Cut stage) | route-travel (derived from route) |
+| Pick on the mat (Keep) | pipette |
 | Simulate (Cut stage) | play |
 | Send (Cut stage) | send |
 

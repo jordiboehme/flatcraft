@@ -270,6 +270,8 @@ pub struct PrepareState {
     /// The kept and waste overlay on the Prepare canvas (View, Show). Off
     /// until switched on; the Cut workspace always shows it.
     pub show_kept_waste: bool,
+    /// The keep picker on the canvas ("Pick what stays"), while it is on.
+    pub keep_pick: Option<super::keep_pick::KeepPick>,
     pub fields: Fields,
     /// The search hits stay open (see `ribbon::search_box`).
     pub search_open: bool,
@@ -380,6 +382,7 @@ impl Default for PrepareState {
             show_grid: true,
             show_rulers: true,
             show_kept_waste: false,
+            keep_pick: None,
             stencil_told: Default::default(),
             fields: Fields::default(),
             search_open: false,
@@ -1346,6 +1349,16 @@ impl FlatCraftApp {
 pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut Vec<Action>) {
     let t = app.tokens;
     arrange::keep_or_close(&mut app.ui.prepare, snap);
+    // Another document or another selection cancels the keep picker.
+    if app
+        .ui
+        .prepare
+        .keep_pick
+        .as_ref()
+        .is_some_and(|k| !k.still_on(snap))
+    {
+        app.ui.prepare.keep_pick = None;
+    }
     app.ui.prepare.panels.arrange_open = app.ui.prepare.panel.is_some();
     if app.ui.prepare.panels.collapsed(SidePanel::Objects) {
         let summary = rails::objects_summary(snap);
@@ -1410,6 +1423,18 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
                 actions,
             );
             pills(ui, rect, snap, &mut app.ui.prepare, &t, actions);
+            let planned = app.ui.cut.job().is_some();
+            let p = &mut app.ui.prepare;
+            if let Some(pick) = &mut p.keep_pick {
+                match pick.bar(ui, rect, snap, planned, &t) {
+                    Some(super::keep_pick::Outcome::Done) => {
+                        actions.extend(pick.done_action(snap));
+                        p.keep_pick = None;
+                    }
+                    Some(super::keep_pick::Outcome::Cancel) => p.keep_pick = None,
+                    None => {}
+                }
+            }
             let p = &mut app.ui.prepare;
             if let Some(card) = p.report.as_ref().filter(|c| c.doc_id == snap.doc_id)
                 && !super::report::import_card(ui, rect, card, &t, actions)

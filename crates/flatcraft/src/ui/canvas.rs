@@ -777,9 +777,26 @@ pub fn show(
         ui.scope_id().with("flatcraft-canvas"),
         Sense::click_and_drag(),
     );
-    pointer(ui, &resp, snap, st, actions);
-    handle_card(ui, &resp, snap, st);
-    if resp.secondary_clicked()
+    let picking = st.keep_pick.is_some();
+    if picking {
+        // The keep picker owns the pointer: a click marks a region, any
+        // drag pans, and nothing is selected, moved or offered a menu.
+        navigate(ui, &resp, &mut st.view);
+        let hover = resp.hover_pos();
+        let clicked = resp.clicked_by(egui::PointerButton::Primary);
+        let job = cut.job();
+        if let Some(pick) = &mut st.keep_pick {
+            pick.pointer(job.as_ref(), &st.view, hover, clicked);
+            if pick.hover.is_some() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+        }
+    } else {
+        pointer(ui, &resp, snap, st, actions);
+        handle_card(ui, &resp, snap, st);
+    }
+    if !picking
+        && resp.secondary_clicked()
         && let Some(p) = resp.interact_pointer_pos()
     {
         // The same hit test as the left click.
@@ -795,21 +812,38 @@ pub fn show(
             Hit::Nothing => context_menu::target(snap, None, actions),
         });
     }
-    resp.context_menu(|ui| context_menu::show(ui, snap, st, actions));
+    if !picking {
+        resp.context_menu(|ui| context_menu::show(ui, snap, st, actions));
+    }
 
     let painter = ui.painter_at(rect);
     let view = st.view;
     let (mat_rgb, contrast) = draw_mat(&painter, rect, snap, &view, st.show_grid, t);
-    // The plan is rebuilt only without a drag or a nudge burst, so the
-    // overlay waits for them to end.
-    if st.show_kept_waste
+    // The keep picker shows what Done would keep, whatever the View
+    // toggle says.
+    if let (Some(pick), Some(job), Some(area)) = (&mut st.keep_pick, cut.job(), snap.area) {
+        pick.draw(
+            ui.ctx(),
+            &painter,
+            &view,
+            &job,
+            area,
+            &mut cut.kept,
+            mat_rgb,
+            t,
+        );
+    } else if !picking
+        // The plan is rebuilt only without a drag or a nudge burst, so the
+        // overlay waits for them to end. Without a plan the picker's bar
+        // says why.
+        && st.show_kept_waste
         && st.drag.is_none()
         && st.nudge.is_none()
         && let (Some(job), Some(area)) = (cut.job(), snap.area)
     {
         cut.kept
             .draw(ui.ctx(), &painter, &view, &job, area, mat_rgb, t);
-    } else if st.show_kept_waste && matches!(cut.plan, Some(Err(_))) {
+    } else if !picking && st.show_kept_waste && matches!(cut.plan, Some(Err(_))) {
         painter.text(
             rect.left_top() + Vec2::splat(RULER + t.spacing),
             egui::Align2::LEFT_TOP,
@@ -846,7 +880,9 @@ pub fn show(
         );
     }
     draw_area(&painter, snap, &view, t, contrast);
-    if let Some(r) = draw_selection(&painter, snap, st, rgb(selection_colour(mat_rgb))) {
+    // The handles of the selection would look draggable while picking.
+    if !picking && let Some(r) = draw_selection(&painter, snap, st, rgb(selection_colour(mat_rgb)))
+    {
         link_badge(ui, r, snap, contrast);
     }
     // Over the selection box, which would hide the outline otherwise.

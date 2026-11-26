@@ -46,6 +46,8 @@ pub enum Item {
     Show,
     SkipCutting,
     CutAgain,
+    /// "Pick what stays...": the keep picker on the canvas.
+    PickKeep,
     Rename,
     TraceAgain,
     Reload,
@@ -99,6 +101,7 @@ impl Item {
             Item::Show => "Show",
             Item::SkipCutting => "Skip cutting",
             Item::CutAgain => "Cut again",
+            Item::PickKeep => super::keep_pick::MENU_ITEM,
             Item::Rename => "Rename",
             Item::TraceAgain => "Trace again...",
             Item::Reload => "Reload source",
@@ -136,6 +139,7 @@ impl Item {
                 "Keep the objects on the mat but leave them out of the cut, for example a print you only trace around."
             }
             Item::CutAgain => "Cut these objects again with the rest.",
+            Item::PickKeep => super::keep_pick::HINT,
             Item::Rename => "Give the object a name you will recognise in the Objects panel.",
             Item::TraceAgain => "Trace the picture again with other settings.",
             Item::Reload => "Read the linked file again after you changed it in another app.",
@@ -197,6 +201,7 @@ impl Item {
                 .then_some("Import something first. There is nothing to select yet."),
             Item::RevealSource | Item::CopySourcePath => source_file(snap, st, ids)?.err(),
             Item::ExportSelected => super::export_dialog::selected_why(snap, ids),
+            Item::PickKeep => super::keep_pick::why_not(snap, ids),
             _ => self.tool()?.blocked_for(snap, ids),
         }
     }
@@ -323,6 +328,7 @@ pub fn items(snap: &Snapshot, st: &PrepareState, ids: &[u64]) -> Vec<Vec<Item>> 
     } else {
         Item::CutAgain
     });
+    g.push(Item::PickKeep);
     g.push(Item::Rename);
     // Only pictures can be traced; with several objects it is dimmed.
     if objs.iter().any(|o| o.raster) {
@@ -469,6 +475,10 @@ pub fn run_item(
             if let Some(o) = first {
                 actions.push(objects::toggle_cut(snap, o));
             }
+        }
+        Item::PickKeep => {
+            // The selection is `ids` by now (see `target`).
+            st.keep_pick = super::keep_pick::KeepPick::start(snap, ids);
         }
         Item::Rename => {
             // A whole group is renamed as one, else the one object.

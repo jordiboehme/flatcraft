@@ -161,7 +161,7 @@ fn name(item: Item) -> String {
     }
 }
 
-const ALL: [Item; 28] = [
+const ALL: [Item; 29] = [
     Item::Duplicate,
     Item::Copies,
     Item::LinkCopies,
@@ -178,6 +178,7 @@ const ALL: [Item; 28] = [
     Item::Show,
     Item::SkipCutting,
     Item::CutAgain,
+    Item::PickKeep,
     Item::Rename,
     Item::TraceAgain,
     Item::Reload,
@@ -374,6 +375,7 @@ fn the_menu_of_one_object() {
             Ungroup,
             Hide,
             SkipCutting,
+            PickKeep,
             Rename,
             ExportSelected,
             Delete
@@ -445,6 +447,7 @@ fn the_menu_of_two_objects() {
             Ungroup,
             Hide,
             SkipCutting,
+            PickKeep,
             Rename,
             ExportSelected,
             Delete

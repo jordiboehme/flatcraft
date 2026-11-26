@@ -4,9 +4,11 @@
 //! exactly what the planner keeps. Always on in Cut; a View toggle in
 //! Prepare.
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use egui::{Color32, ColorImage, Pos2, Rect, Stroke, TextureHandle, TextureOptions, pos2};
+use flatcraft_core::document::{KeepMode, ObjectId};
 use flatcraft_engine::job::JobResult;
 use flatcraft_path::KeptMaterial;
 
@@ -100,6 +102,15 @@ impl Mask {
         )
     }
 
+    /// The same mask the other way round: waste becomes kept.
+    pub fn inverted(&self) -> Self {
+        Self {
+            area: self.area,
+            size: self.size,
+            coverage: self.coverage.iter().map(|c| 255 - c).collect(),
+        }
+    }
+
     /// White, with the coverage as alpha (premultiplied), to be tinted.
     fn image(&self) -> ColorImage {
         let rgba: Vec<u8> = self.coverage.iter().flat_map(|&c| [c, c, c, c]).collect();
@@ -111,19 +122,50 @@ impl Mask {
 /// of the thread that built it.
 type Built = (Option<Arc<Mask>>, Option<String>);
 
+/// Which kept material a [`KeptCache`] shows of a plan.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum Variant {
+    /// The plan's own: what the planner keeps.
+    #[default]
+    Plan,
+    /// The plan's rings with the objects in the set in another keep mode
+    /// (the keep picker's preview): what Done would keep.
+    Modes(Arc<BTreeSet<ObjectId>>, KeepMode),
+    /// The shape of the objects in the set alone (the keep picker's
+    /// highlight): kept is their shape, waste the sheet around it.
+    Shapes(Arc<BTreeSet<ObjectId>>),
+}
+
+impl Variant {
+    /// The kept material of this variant of `plan`. Run on the worker:
+    /// a new variant copies the plan's index.
+    fn of(&self, plan: &Arc<KeptMaterial>) -> Arc<KeptMaterial> {
+        match self {
+            Variant::Plan => plan.clone(),
+            Variant::Modes(ids, mode) => {
+                Arc::new(plan.with_modes_of(|o, old| if ids.contains(&o) { *mode } else { old }))
+            }
+            Variant::Shapes(ids) => Arc::new(plan.shapes_of(|o| ids.contains(&o))),
+        }
+    }
+}
+
 /// The overlay of the newest plan. The mask is built on a worker thread,
 /// once per plan, so a new plan never costs a frame; until it is there
 /// the last mask stays on screen. The texture is made once per mask.
 #[derive(Default)]
 pub struct KeptCache {
-    /// The plan and area the newest request is for.
-    key: Option<(Arc<JobResult>, kurbo::Rect)>,
+    /// The plan, area and variant the newest request is for.
+    key: Option<(Arc<JobResult>, kurbo::Rect, Variant)>,
     /// Where the worker of the newest request puts its mask.
     slot: Arc<Mutex<Option<Built>>>,
     /// True from a request until its mask arrived.
     pending: bool,
     mask: Option<Arc<Mask>>,
     texture: Option<TextureHandle>,
+    /// The texture of the waste of the newest mask (coverage inverted),
+    /// made when it is first drawn.
+    inverted: Option<TextureHandle>,
     /// How many masks were asked for, for tests.
     pub made: usize,
     /// The thread that built the newest mask, for tests.
@@ -159,20 +201,33 @@ impl KeptCache {
         job: &Arc<JobResult>,
         area: kurbo::Rect,
     ) -> Option<Arc<Mask>> {
+        self.mask_of(ctx, job, area, &Variant::Plan)
+    }
+
+    /// [`Self::mask`] of a variant of the plan's kept material.
+    pub fn mask_of(
+        &mut self,
+        ctx: &egui::Context,
+        job: &Arc<JobResult>,
+        area: kurbo::Rect,
+        variant: &Variant,
+    ) -> Option<Arc<Mask>> {
         let same = self
             .key
             .as_ref()
-            .is_some_and(|(p, a)| Arc::ptr_eq(p, job) && *a == area);
+            .is_some_and(|(p, a, v)| Arc::ptr_eq(p, job) && *a == area && v == variant);
         if !same {
-            self.key = Some((job.clone(), area));
+            self.key = Some((job.clone(), area, variant.clone()));
             self.made += 1;
             self.pending = true;
             // A fresh slot: a worker of an older plan writes into its own.
             let slot: Arc<Mutex<Option<Built>>> = Arc::default();
             self.slot = slot.clone();
-            let kept = job.plan.kept.clone();
+            let plan = job.plan.kept.clone();
+            let variant = variant.clone();
             let repaint = ctx.clone();
             let build = move || {
+                let kept = variant.of(&plan);
                 let mask = Mask::of(&kept, area, MAX_TEXELS).map(Arc::new);
                 let name = std::thread::current().name().map(str::to_string);
                 if let Ok(mut s) = slot.lock() {
@@ -192,8 +247,20 @@ impl KeptCache {
             self.mask = mask;
             self.built_on = name;
             self.texture = None;
+            self.inverted = None;
         }
         self.mask.clone()
+    }
+
+    /// True when the newest mask is the one of `job`, `area` and
+    /// `variant` (asked for and built).
+    pub fn ready(&self, job: &Arc<JobResult>, area: kurbo::Rect, variant: &Variant) -> bool {
+        !self.pending
+            && self.mask.is_some()
+            && self
+                .key
+                .as_ref()
+                .is_some_and(|(p, a, v)| Arc::ptr_eq(p, job) && *a == area && v == variant)
     }
 
     /// True while a worker builds the mask of the newest plan.
@@ -220,7 +287,23 @@ impl KeptCache {
         mat: [u8; 3],
         t: &Tokens,
     ) {
-        let Some(mask) = self.mask(ctx, job, area) else {
+        self.draw_of(ctx, painter, view, job, area, &Variant::Plan, mat, t);
+    }
+
+    /// [`Self::draw`] of a variant of the plan's kept material.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_of(
+        &mut self,
+        ctx: &egui::Context,
+        painter: &egui::Painter,
+        view: &CanvasView,
+        job: &Arc<JobResult>,
+        area: kurbo::Rect,
+        variant: &Variant,
+        mat: [u8; 3],
+        t: &Tokens,
+    ) {
+        let Some(mask) = self.mask_of(ctx, job, area, variant) else {
             return;
         };
         let texture = self.texture.get_or_insert_with(|| {
@@ -233,6 +316,47 @@ impl KeptCache {
             r,
             Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
             t.kept_paper,
+        );
+    }
+}
+
+impl KeptCache {
+    /// Tints the kept part of the newest mask of `variant` (or its waste,
+    /// with `waste`) in `tint`: the keep picker's highlight. Draws nothing
+    /// until the mask is there.
+    #[allow(clippy::too_many_arguments)]
+    pub fn tint(
+        &mut self,
+        ctx: &egui::Context,
+        painter: &egui::Painter,
+        view: &CanvasView,
+        job: &Arc<JobResult>,
+        area: kurbo::Rect,
+        variant: &Variant,
+        waste: bool,
+        tint: Color32,
+    ) {
+        let Some(mask) = self.mask_of(ctx, job, area, variant) else {
+            return;
+        };
+        let slot = if waste {
+            &mut self.inverted
+        } else {
+            &mut self.texture
+        };
+        let texture = slot.get_or_insert_with(|| {
+            let image = if waste {
+                mask.inverted().image()
+            } else {
+                mask.image()
+            };
+            ctx.load_texture("flatcraft-kept", image, TextureOptions::LINEAR)
+        });
+        painter.image(
+            texture.id(),
+            view.rect_to_screen(mask.area),
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+            tint,
         );
     }
 }
