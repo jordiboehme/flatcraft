@@ -96,8 +96,25 @@ pub fn harness_sized(
         });
     }
     *h.state_mut() = Some(setup(app));
-    h.run();
+    settle(&mut h);
     h
+}
+
+/// Lets the window settle like `Harness::run`, but a worker that started
+/// in the first frames (Home's picture worker, a source check) may keep
+/// asking for repaints for a while: then it steps one frame at a time
+/// until the window settles. Fails after [`WORKER_TIMEOUT`], never after a
+/// count of frames, so a busy machine only makes it slower.
+pub fn settle(h: &mut AppHarness) {
+    let start = std::time::Instant::now();
+    while h.run_ok().is_none() {
+        assert!(
+            start.elapsed() < WORKER_TIMEOUT,
+            "the window did not settle within {WORKER_TIMEOUT:?}"
+        );
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 }
 
 /// Shows Prepare and waits for the source check it starts.

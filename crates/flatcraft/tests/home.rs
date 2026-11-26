@@ -484,10 +484,13 @@ fn a_picture_of_an_old_version_never_replaces_the_newer_one() {
     wait_for_pictures(&mut h);
     // The first picture showed an old version and was dropped; the next
     // frame read the new one.
-    for _ in 0..20 {
-        if calls.load(Ordering::SeqCst) >= 2 && !app(&h).ui.home.busy() {
-            break;
-        }
+    let start = std::time::Instant::now();
+    while calls.load(Ordering::SeqCst) < 2 || app(&h).ui.home.busy() {
+        assert!(
+            start.elapsed() < common::WORKER_TIMEOUT,
+            "the newer picture was not read within {:?}",
+            common::WORKER_TIMEOUT
+        );
         h.step();
         wait_for_pictures(&mut h);
     }
