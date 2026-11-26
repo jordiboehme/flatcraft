@@ -770,7 +770,7 @@ fn cut_order(input: &JobInput) -> Item {
         strategy_name(strategy)
     );
     if strategy != CutStrategy::KeepSheet {
-        message.push_str(" Keep sheet cuts every outline after every hole and inner piece, so the whole sheet holds together until the end.");
+        message.push_str(" Keep sheet cuts every outline after every hole and inner piece on a mat, so the whole sheet holds together until the end; without a mat it does this per 50 mm feed band.");
     }
     let mut it = item(
         Check::CutOrder,
@@ -788,7 +788,7 @@ fn cut_order(input: &JobInput) -> Item {
         it.fixes.push(Fix {
             label: label.into(),
             description: format!(
-                "Sets the strategy of this document to Keep sheet: every outline comes after every hole and inner piece. It was {}. New documents still start with the strategy in Settings, Cutting. Undo takes it back.",
+                "Sets the strategy of this document to Keep sheet: on a mat every outline comes after every hole and inner piece; without a mat, per 50 mm feed band. It was {}. New documents still start with the strategy in Settings, Cutting. Undo takes it back.",
                 strategy_name(strategy)
             ),
             command: "job.set_strategy".into(),
@@ -799,10 +799,11 @@ fn cut_order(input: &JobInput) -> Item {
 }
 
 fn mirror(input: &JobInput) -> Item {
+    // The test shape is the same either way round: it never counts.
     let cut: Vec<_> = input
         .objects
         .iter()
-        .filter(|o| o.visible && o.cut_enabled)
+        .filter(|o| o.visible && o.cut_enabled && !is_test_shape(&o.name, &o.geometry))
         .collect();
     let n = cut.len();
     let mirrored: Vec<u64> = cut
@@ -888,7 +889,22 @@ fn mirror(input: &JobInput) -> Item {
     );
     it.likely = likely;
     let label = "Mirror for iron-on";
-    if likely && hot {
+    // The group mirrors in place (its box stays), so the result is inside
+    // the cutting area exactly when the objects are now.
+    let off_area = likely
+        && cutting_area(input).is_some_and(|area| {
+            cut.iter()
+                .filter(|o| ids.contains(&o.id.0))
+                .filter_map(|o| report::object_bounds(o))
+                .reduce(|a, b| a.union(b))
+                .is_some_and(|b| !crate::commands::inside(b, area))
+        });
+    if off_area {
+        it.blocked.push(blocked(
+            if hot { label } else { "Mirror back" },
+            "Part of the design is outside the cutting area. Move it onto the mat first (the Cut workspace shows a Move onto the mat button).".into(),
+        ));
+    } else if likely && hot {
         it.fixes.push(Fix {
             label: label.into(),
             description: format!(

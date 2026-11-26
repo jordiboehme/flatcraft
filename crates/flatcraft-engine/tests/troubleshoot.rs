@@ -755,3 +755,120 @@ fn no_text_has_an_em_dash_and_every_fix_is_a_real_command() {
             .contains('\u{2014}')
     );
 }
+
+/// A 200 x 100 mm panel (on a 200 mm page, so its centre is not the
+/// middle of what is cut) and a 20 mm square, at `x`, `y`.
+fn uneven_pair(s: &mut Session, x: f64, y: f64) -> (u64, u64) {
+    let r = run(
+        s,
+        "object.import_svg",
+        json!({ "name": "panel", "svg": svg(200.0, r#"<rect width="200" height="100"/>"#) }),
+    );
+    let big = r["id"].as_u64().unwrap();
+    run(
+        s,
+        "object.move",
+        json!({ "ids": [big], "x_mm": x, "y_mm": y }),
+    );
+    let small = square_at(s, "dot", 20.0, x + 220.0, y + 40.0);
+    (big, small)
+}
+
+fn union(s: &mut Session, ids: &[u64]) -> Rect {
+    ids.iter()
+        .map(|i| bounds(s, *i))
+        .reduce(|a, b| a.union(b))
+        .unwrap()
+}
+
+fn same_box(a: Rect, b: Rect) -> bool {
+    (a.x0 - b.x0).abs() < 1e-6
+        && (a.x1 - b.x1).abs() < 1e-6
+        && (a.y0 - b.y0).abs() < 1e-6
+        && (a.y1 - b.y1).abs() < 1e-6
+}
+
+#[test]
+fn mirror_for_iron_on_keeps_an_uneven_design_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let (big, small) = uneven_pair(&mut s, 10.0, 20.0);
+    run(
+        &mut s,
+        "job.set_material",
+        json!({ "id": "heat-transfer-vinyl" }),
+    );
+    let before = union(&mut s, &[big, small]);
+    let c = list(&mut s, Symptom::WrongPlaceOrSize);
+    apply(&mut s, &c, Check::Mirror, "Mirror for iron-on");
+    let after = union(&mut s, &[big, small]);
+    assert!(same_box(before, after), "{before:?} vs {after:?}");
+    // The small square swapped sides inside the box.
+    let dot = bounds(&mut s, small);
+    assert!((dot.x0 - before.x0).abs() < 1e-6, "{dot:?}");
+    let p = run(&mut s, "job.preview", json!({}));
+    assert_eq!(p["ready"], true, "{p}");
+}
+
+#[test]
+fn the_test_shape_never_counts_for_the_mirror() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let (big, small) = uneven_pair(&mut s, 10.0, 20.0);
+    let shape = run(&mut s, "tools.test_shape", json!({}))["id"]
+        .as_u64()
+        .unwrap();
+    run(
+        &mut s,
+        "job.set_material",
+        json!({ "id": "heat-transfer-vinyl" }),
+    );
+    let shape_before = s
+        .doc()
+        .document
+        .get(flatcraft_core::document::ObjectId(shape))
+        .unwrap()
+        .transform;
+    let c = list(&mut s, Symptom::WrongPlaceOrSize);
+    let it = item(&c, Check::Mirror);
+    assert!(it.message.contains("2 are not mirrored"), "{it:?}");
+    assert!(!it.object_ids.contains(&shape));
+    assert_eq!(it.fixes[0].args["ids"], json!([big, small]));
+    let before = union(&mut s, &[big, small]);
+    apply(&mut s, &c, Check::Mirror, "Mirror for iron-on");
+    assert!(same_box(before, union(&mut s, &[big, small])));
+    let shape_after = s
+        .doc()
+        .document
+        .get(flatcraft_core::document::ObjectId(shape))
+        .unwrap()
+        .transform;
+    assert_eq!(shape_before, shape_after, "the test shape is untouched");
+    // No false alarm: the design is mirrored, the test shape is not.
+    let c = list(&mut s, Symptom::WrongPlaceOrSize);
+    let it = item(&c, Check::Mirror);
+    assert!(!it.likely, "{it:?}");
+    assert!(it.message.contains("All 2 objects are mirrored"), "{it:?}");
+    assert_eq!(run(&mut s, "job.preview", json!({}))["ready"], true);
+}
+
+#[test]
+fn the_mirror_fix_waits_for_a_design_on_the_mat() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = square_at(&mut s, "a", 20.0, 10.0, 10.0);
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [a], "x_mm": -15.0, "y_mm": 10.0 }),
+    );
+    run(
+        &mut s,
+        "job.set_material",
+        json!({ "id": "heat-transfer-vinyl" }),
+    );
+    let c = list(&mut s, Symptom::WrongPlaceOrSize);
+    assert!(item(&c, Check::Mirror).likely);
+    let why = blocked_reason(&c, Check::Mirror, "Mirror for iron-on");
+    assert!(why.contains("outside the cutting area"), "{why}");
+}

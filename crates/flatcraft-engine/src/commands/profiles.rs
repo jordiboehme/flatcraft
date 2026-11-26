@@ -290,5 +290,5 @@ command!(
     mutates: true,
     params: StrategyParams,
     run: run_set_strategy,
-    description: "Sets the cut strategy of the active document, in one undo step: quality (clean corners first), fast (short travel first) or keep_sheet (as quality, but every outline after every hole and inner piece, so the sheet holds together until the end). Every strategy cuts the holes and inner pieces of a shape before its outline. New documents start with the strategy of the preferences. Returns {strategy}.",
+    description: "Sets the cut strategy of the active document, in one undo step: quality (clean corners first), fast (short travel first) or keep_sheet (as quality, but every outline after every hole and inner piece, so the sheet holds together until the end: on a mat for the whole job; without a mat, per 50 mm feed band). Every strategy cuts the holes and inner pieces of a shape before its outline. New documents start with the strategy of the preferences. Returns {strategy}.",
 );

@@ -1618,19 +1618,6 @@ pub struct RotateParams {
     pub about: Option<About>,
 }
 
-/// The centre a group rotate or mirror of `ids` turns about: the mean of
-/// the objects' centres (`center_mm`), measured before anything changes.
-/// A rotate or mirror about it leaves it where it is, so +a then -a puts
-/// every object back exactly (Ruling M2-P11). `None` when each object
-/// turns about its own centre (`about: each`, or one object, which is the
-/// same either way).
-fn group_centre(doc: &Document, ids: &[ObjectId], about: About) -> Option<Point> {
-    if about == About::Each || ids.len() < 2 {
-        return None;
-    }
-    placement::mean_centre(&centres(doc, ids))
-}
-
 /// The centres of the objects `ids` that exist, in order.
 fn centres(doc: &Document, ids: &[ObjectId]) -> Vec<Point> {
     ids.iter()
@@ -1735,7 +1722,7 @@ pub struct MirrorParams {
     pub ids: Vec<u64>,
     /// horizontal flips left and right, vertical flips top and bottom.
     pub axis: MirrorAxis,
-    /// group (default): mirror the objects as one group across a line through their common centre, the mean of their centres. each: mirror each across its own centre. One object mirrors across its own centre either way.
+    /// group (default): mirror the objects as one group across the middle of their combined box, which stays in place. each: mirror each across its own centre.
     #[serde(default)]
     pub about: About,
     /// Leave out to flip. true or false sets the result instead: only the objects whose mirror state differs flip, so running it again changes nothing.
@@ -1749,7 +1736,17 @@ fn run_mirror(s: &mut Session, p: MirrorParams, _: Origin) -> Result<Value, Comm
         ids.retain(|id| doc.get(*id).is_some_and(|o| o.transform.mirror != want));
     }
     let doc = &mut s.doc_mut().document;
-    let centre = group_centre(doc, &ids, p.about);
+    // A group mirrors across the middle of its combined box (of what is
+    // cut), and that box stays where it was: the design keeps its place
+    // on the mat.
+    let group_box = |doc: &Document| {
+        ids.iter()
+            .filter_map(|id| doc.get(*id))
+            .map(placed_bounds_or_center)
+            .reduce(|a, b| a.union(b))
+    };
+    let before = (p.about == About::Group).then(|| group_box(doc)).flatten();
+    let centre = before.filter(|_| ids.len() >= 2).map(|b| b.center());
     for id in &ids {
         let t = &mut object_mut(doc, *id)?.transform;
         if let Some(c) = centre {
@@ -1764,6 +1761,17 @@ fn run_mirror(s: &mut Session, p: MirrorParams, _: Origin) -> Result<Value, Comm
             MirrorAxis::Vertical => 180.0 - t.rotation_deg,
         });
     }
+    // An object's cut box need not be centred on its centre: move the
+    // flipped group back so its box is where it was.
+    if let (Some(b), Some(a)) = (before, group_box(doc)) {
+        let d = match p.axis {
+            MirrorAxis::Horizontal => kurbo::Vec2::new(b.center().x - a.center().x, 0.0),
+            MirrorAxis::Vertical => kurbo::Vec2::new(0.0, b.center().y - a.center().y),
+        };
+        for id in &ids {
+            translate(object_mut(doc, *id)?, d);
+        }
+    }
     Ok(json!({ "ids": ids_json(&ids) }))
 }
 
@@ -1774,7 +1782,7 @@ command!(
     mutates: true,
     params: MirrorParams,
     run: run_mirror,
-    description: "Mirrors objects along a screen axis, in one undo step. horizontal flips left and right, vertical flips top and bottom. about: group | each, default group. With group, several objects mirror as one group across a line through their common centre, the mean of the selected objects' centres: each centre is reflected across it and each object is mirrored, so the layout flips with them (the window does this for a multi-selection). With each, every object mirrors across its own centre and the centres stay. One object mirrors across its own centre either way. Positions in mm, origin the 0,0 of the grid printed on the mat, y down. Linked copies (see object.copies) keep their own mirror: only the objects in ids flip. Use horizontal for iron-on vinyl, which is cut from the back. mirrored: true or false makes it absolute: only objects whose mirror state differs flip (as one group with about group), so a second run changes nothing; leave it out to flip every object. An empty ids list means the current selection. Returns {ids} (the objects that flipped).",
+    description: "Mirrors objects along a screen axis, in one undo step. horizontal flips left and right, vertical flips top and bottom. about: group | each, default group. With group, the objects mirror as one group across the middle of their combined box (of what is cut), and that box stays where it was: the layout flips with them and the design keeps its place on the mat (the window does this for a selection). With each, every object mirrors across its own centre and the centres stay. Positions in mm, origin the 0,0 of the grid printed on the mat, y down. Linked copies (see object.copies) keep their own mirror: only the objects in ids flip. Use horizontal for iron-on vinyl, which is cut from the back. mirrored: true or false makes it absolute: only objects whose mirror state differs flip (as one group with about group), so a second run changes nothing; leave it out to flip every object. An empty ids list means the current selection. Returns {ids} (the objects that flipped).",
 );
 
 // ---------------------------------------------------------------- cut options

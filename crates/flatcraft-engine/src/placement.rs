@@ -200,6 +200,10 @@ pub fn shelf_pack<K: Copy>(
     (placed, did_not_fit)
 }
 
+/// How much closer than the gap [`free_spot`] still counts as the gap, mm
+/// (float noise in placed bounds).
+pub const GAP_EPS: f64 = 1e-6;
+
 /// The most cells [`free_spot`] looks at; a larger area gets coarser steps.
 const FREE_SPOT_CELLS: f64 = 1_000_000.0;
 
@@ -228,9 +232,10 @@ pub fn free_spot(area: Rect, taken: &[Rect], size: Vec2, gap: f64) -> Option<Poi
     // diff[(nx + 1) * j + i]
     let w = nx + 1;
     let mut diff = vec![0i32; w * (ny + 1)];
-    // Cells i with lo < x0 + i * step < hi: a box exactly `gap` away is
-    // fine.
+    // Cells i with lo < x0 + i * step < hi: a box `gap` away is fine,
+    // also when float noise makes it a hair closer ([`GAP_EPS`]).
     let span = |lo: f64, hi: f64, origin: f64, n: usize| -> Option<(usize, usize)> {
+        let (lo, hi) = (lo + GAP_EPS, hi - GAP_EPS);
         let a = ((lo - origin) / step).floor() + 1.0;
         let b = ((hi - origin) / step).ceil() - 1.0;
         let a = a.max(0.0);
@@ -410,5 +415,24 @@ mod tests {
         let spot = free_spot(area, &taken, size, 5.0).unwrap();
         assert!(clear_of(spot, size, &taken, 5.0), "{spot:?}");
         assert!(spot.y >= 2005.0 && spot.y < 2010.0, "{spot:?}");
+    }
+
+    #[test]
+    fn a_gap_a_hair_short_still_counts() {
+        let area = Rect::new(0.0, 0.0, 300.0, 300.0);
+        let size = Vec2::new(30.0, 30.0);
+        // Float noise: the box ends 1e-9 mm past 95, so x 100 is 5 mm
+        // away less a hair.
+        let taken = [Rect::new(0.0, 0.0, 95.000_000_001, 300.0)];
+        assert_eq!(
+            free_spot(area, &taken, size, 5.0),
+            Some(Point::new(100.0, 0.0))
+        );
+        // A real overlap of 0.01 mm does not.
+        let taken = [Rect::new(0.0, 0.0, 95.01, 300.0)];
+        assert_eq!(
+            free_spot(area, &taken, size, 5.0),
+            Some(Point::new(101.0, 0.0))
+        );
     }
 }

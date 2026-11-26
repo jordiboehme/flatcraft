@@ -189,14 +189,28 @@ fn one_object_turns_the_same_either_way() {
     );
     assert_eq!(transform(&s, a), group);
     assert_eq!(group.center_mm, start.center_mm);
-    // The same for a mirror.
+    // A mirror with about each flips about the object's own centre; with
+    // about group (the default) its cut box stays in place.
     run(&mut s, "edit.undo", json!({}));
+    run(
+        &mut s,
+        "object.mirror",
+        json!({ "ids": [a], "axis": "horizontal", "about": "each" }),
+    );
+    assert_eq!(transform(&s, a).center_mm, start.center_mm);
+    run(&mut s, "edit.undo", json!({}));
+    let before = bounds(&s, a);
     run(
         &mut s,
         "object.mirror",
         json!({ "ids": [a], "axis": "horizontal" }),
     );
-    assert_eq!(transform(&s, a).center_mm, start.center_mm);
+    let after = bounds(&s, a);
+    assert!(
+        (after.x0 - before.x0).abs() < 1e-9 && (after.x1 - before.x1).abs() < 1e-9,
+        "{after:?} vs {before:?}"
+    );
+    assert!((after.y0 - before.y0).abs() < 1e-9 && (after.y1 - before.y1).abs() < 1e-9);
 }
 
 #[test]
@@ -626,12 +640,24 @@ fn the_group_pivot_is_the_mean_of_the_centres() {
         let want = mean + Vec2::new(-d.y, d.x);
         assert!((transform(&s, *id).center_mm - want).hypot() < 1e-9, "{id}");
     }
+    // A mirror flips across the middle of the combined box and keeps the
+    // box in place, so the design stays where it is on the mat.
+    let boxed = common(&s, &ids);
     run(
         &mut s,
         "object.mirror",
         json!({ "ids": ids, "axis": "horizontal" }),
     );
-    let after: Vec<Point> = ids.iter().map(|i| transform(&s, *i).center_mm).collect();
-    let mx = after.iter().map(|c| c.x).sum::<f64>() / n;
-    assert!((mx - mean.x).abs() < 1e-9, "a mirror keeps the mean");
+    let after = common(&s, &ids);
+    for (a, b) in [
+        (after.x0, boxed.x0),
+        (after.x1, boxed.x1),
+        (after.y0, boxed.y0),
+        (after.y1, boxed.y1),
+    ] {
+        assert!(
+            (a - b).abs() < 1e-9,
+            "a mirror keeps the box: {after:?} vs {boxed:?}"
+        );
+    }
 }
