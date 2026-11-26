@@ -252,6 +252,8 @@ pub enum Override {
 #[derive(Debug, Clone)]
 pub struct PrepareState {
     pub view: CanvasView,
+    /// Room for the test shape, per document revision (Job card hint).
+    pub test_cut_cache: super::materials::TestCutCache,
     /// Fit the mat into the canvas on the next frame.
     pub fit_pending: bool,
     /// The document the view was fitted for.
@@ -377,6 +379,7 @@ impl Default for PrepareState {
     fn default() -> Self {
         Self {
             view: CanvasView::default(),
+            test_cut_cache: Default::default(),
             fit_pending: true,
             view_doc: None,
             canvas_rect: Rect::NOTHING,
@@ -1073,6 +1076,7 @@ pub fn snapshot(app: &mut FlatCraftApp, ctx: &egui::Context) -> Snapshot {
 /// and the window repaints when it arrives.
 pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool) -> Snapshot {
     let cache = &mut app.ui.prepare.cache;
+    let test_cut_cache = &mut app.ui.prepare.test_cut_cache;
     cache.collect();
     let trace = &mut app.ui.trace;
     let mut misses: Vec<(usize, ShapeInput)> = Vec::new();
@@ -1167,13 +1171,17 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
             materials: s.profiles.materials(),
             material_cards: super::materials::cards(&s.profiles, &cut_log),
             test_cut: (!cut_log.has_cut(&st.document.job.material_id))
-                .then(|| match (&plotter, &material) {
-                    (Some(p), Some(m)) => {
-                        let input = JobInput::from_parts(&st.document, p.clone(), m);
-                        flatcraft_engine::troubleshoot::test_shape_spot(&input).is_some()
-                    }
-                    // Without a job the button says why when it runs.
-                    _ => true,
+                .then(|| {
+                    test_cut_cache.room(st.id(), st.revision(), &plotter, &material, || {
+                        match (&plotter, &material) {
+                            (Some(p), Some(m)) => {
+                                let input = JobInput::from_parts(&st.document, p.clone(), m);
+                                flatcraft_engine::troubleshoot::test_shape_spot(&input).is_some()
+                            }
+                            // Without a job the button says why when it runs.
+                            _ => true,
+                        }
+                    })
                 })
                 .map(|room| super::materials::TestCut { room }),
             mat,

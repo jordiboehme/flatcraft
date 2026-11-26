@@ -257,3 +257,25 @@ fn the_new_texts_have_no_em_dash() {
         assert!(!materials::tack_text(t).contains('\u{2014}'));
     }
 }
+
+#[test]
+fn the_test_shape_room_is_measured_once_per_revision() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let mut h = tall(&dir, &s);
+    cut_stage(&mut h, "Device & Material");
+    let builds = |h: &AppHarness| app(h).ui.prepare.test_cut_cache.builds;
+    let first = builds(&h);
+    assert!(first >= 1);
+    // Frames without a change reuse the answer.
+    for _ in 0..5 {
+        h.run();
+    }
+    assert_eq!(builds(&h), first);
+    // Another material (a new revision) measures again, once.
+    set_material(&s, "kraft-paper");
+    h.run();
+    h.run();
+    assert_eq!(builds(&h), first + 1);
+}

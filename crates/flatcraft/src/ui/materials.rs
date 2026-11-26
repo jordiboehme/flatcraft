@@ -235,6 +235,48 @@ pub fn test_cut_hint(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec
     }
 }
 
+/// The key of [`TestCutCache`]: the document, its revision, and the
+/// plotter and material the room is measured with.
+type RoomKey = (
+    u64,
+    u64,
+    Option<flatcraft_device::PlotterProfile>,
+    Option<MaterialProfile>,
+);
+
+/// Whether the mat has room for the test shape, measured once per
+/// document revision, plotter and material: finding the spot builds a job
+/// input (a copy of the document), which is too much for every frame.
+#[derive(Debug, Clone, Default)]
+pub struct TestCutCache {
+    key: Option<RoomKey>,
+    room: bool,
+    /// How often the room was measured (for tests).
+    pub builds: u64,
+}
+
+impl TestCutCache {
+    /// The cached answer for this key, or `measure`'s new one.
+    pub fn room(
+        &mut self,
+        doc_id: u64,
+        revision: u64,
+        plotter: &Option<flatcraft_device::PlotterProfile>,
+        material: &Option<MaterialProfile>,
+        measure: impl FnOnce() -> bool,
+    ) -> bool {
+        let fresh = self.key.as_ref().is_some_and(|(d, r, p, m)| {
+            *d == doc_id && *r == revision && p == plotter && m == material
+        });
+        if !fresh {
+            self.room = measure();
+            self.builds += 1;
+            self.key = Some((doc_id, revision, plotter.clone(), material.clone()));
+        }
+        self.room
+    }
+}
+
 /// Whether the Job card offers a test cut (see [`test_cut_hint`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TestCut {
