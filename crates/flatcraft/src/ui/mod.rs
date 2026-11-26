@@ -838,6 +838,39 @@ impl FlatCraftApp {
         }
     }
 
+    /// Opens the stencil hint card (`stencil_island`) for the Stencil
+    /// objects with inner parts on a material without a backing sheet,
+    /// once per object and material: after a keep mode or a material
+    /// changed.
+    fn stencil_hint(&mut self, doc_id: u64) {
+        let (found, material) = {
+            let s = lock(&self.session);
+            let material = s.doc().document.job.material_id.clone();
+            let found = flatcraft_engine::job::JobInput::of(&s)
+                .map(|input| flatcraft_engine::report::check(&input, None))
+                .unwrap_or_default();
+            (found, material)
+        };
+        let issues: Vec<_> = found
+            .issues
+            .into_iter()
+            .filter(|i| i.code == flatcraft_engine::report::Code::StencilIsland)
+            .collect();
+        let ids: Vec<u64> = issues.iter().flat_map(|i| i.object_ids.clone()).collect();
+        let p = &mut self.ui.prepare;
+        let key = |id: u64| (doc_id, id, material.clone());
+        if ids.iter().all(|id| p.stencil_told.contains(&key(*id))) {
+            return;
+        }
+        p.stencil_told.extend(ids.iter().map(|id| key(*id)));
+        let result = serde_json::json!({
+            "ids": ids,
+            "report": flatcraft_engine::report::Report { shapes: found.shapes, issues }.to_json(),
+        });
+        p.report = report::ImportCard::from_result(doc_id, "Keep is Stencil".into(), &result)
+            .map(|c| c.with_header("Stencil on paper"));
+    }
+
     /// Updates what Prepare shows after a command ran.
     fn after_command(&mut self, command: &str, result: &Value) {
         let doc_id = lock(&self.session).doc().id();
@@ -901,27 +934,7 @@ impl FlatCraftApp {
                 p.report =
                     report::ImportCard::from_result(doc_id, format!("Imported '{name}'"), result);
             }
-            "object.set_keep" => {
-                // The stencil hint shows once per object: only for objects
-                // that were not told yet in this document.
-                let island_ids: Vec<u64> = result["report"]["issues"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .flat_map(|i| ids(&i["object_ids"]))
-                    .collect();
-                let new: Vec<u64> = island_ids
-                    .iter()
-                    .copied()
-                    .filter(|id| !p.stencil_told.contains(&(doc_id, *id)))
-                    .collect();
-                if !new.is_empty() {
-                    p.stencil_told
-                        .extend(island_ids.iter().map(|id| (doc_id, *id)));
-                    p.report =
-                        report::ImportCard::from_result(doc_id, "Stencil on paper".into(), result);
-                }
-            }
+            "object.set_keep" | "job.set_material" => self.stencil_hint(doc_id),
             "object.reload" => {
                 let done: Vec<u64> = [&result["reloaded"], &result["unchanged"]]
                     .into_iter()
@@ -941,7 +954,8 @@ impl FlatCraftApp {
                         } else {
                             format!("Reloaded {} objects", reloaded.len())
                         };
-                        p.report = report::ImportCard::from_result(doc_id, title, result);
+                        p.report = report::ImportCard::from_result(doc_id, title, result)
+                            .map(|c| c.with_header("Reload report"));
                     }
                     _ => {}
                 }
@@ -975,7 +989,8 @@ impl FlatCraftApp {
                         } else {
                             format!("Reloaded {} objects", reloaded.len())
                         };
-                        p.report = report::ImportCard::from_result(doc_id, title, result);
+                        p.report = report::ImportCard::from_result(doc_id, title, result)
+                            .map(|c| c.with_header("Reload report"));
                     }
                     _ => {}
                 }

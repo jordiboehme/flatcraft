@@ -36,6 +36,9 @@ pub const CARD_WIDTH: f32 = 360.0;
 #[derive(Debug, Clone)]
 pub struct ImportCard {
     pub doc_id: u64,
+    /// The card's heading: "Import report", "Reload report" or "Stencil
+    /// on paper", what the card is about.
+    pub header: String,
     /// "Imported 'logo'" or "Imported 3 files".
     pub title: String,
     /// The imported objects.
@@ -74,6 +77,7 @@ impl ImportCard {
             .partition(|i: &Issue| i.code.import_only());
         let card = Self {
             doc_id,
+            header: "Import report".into(),
             title,
             ids,
             shapes: report.shapes,
@@ -82,6 +86,12 @@ impl ImportCard {
             key: None,
         };
         (!card.is_empty()).then_some(card)
+    }
+
+    /// The card with another heading.
+    pub fn with_header(mut self, header: &str) -> Self {
+        self.header = header.into();
+        self
     }
 
     /// Every issue, the most severe first (stable within a severity, the
@@ -269,7 +279,7 @@ pub fn import_card(
             .show(ui, |ui| {
                 ui.set_width(width - 2.0 * t.spacing);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Import report").font(fonts::semibold(14.0)));
+                    ui.label(RichText::new(&c.header).font(fonts::semibold(14.0)));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let r = ui.button("Dismiss");
                         card(&r, "Dismiss", DISMISS_HINT, None, false);

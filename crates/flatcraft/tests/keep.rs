@@ -214,6 +214,7 @@ fn a_paper_stencil_shows_its_hint_once_per_object() {
     assert!(app(&h).ui.prepare.report.is_none());
     pick(&mut h, "Stencil");
     let card = app(&h).ui.prepare.report.as_ref().expect("the hint card");
+    assert_eq!(card.header, "Stencil on paper", "not an import report");
     assert!(
         card.all()
             .iter()
@@ -226,4 +227,48 @@ fn a_paper_stencil_shows_its_hint_once_per_object() {
     assert!(app(&h).ui.prepare.report.is_none(), "once per object");
     // Nothing is blocked: the job still plans.
     assert!(flatcraft_engine::job::build(&s.lock().unwrap()).is_ok());
+}
+
+#[test]
+fn switching_to_paper_shows_the_stencil_hint_once_per_object_and_material() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    run(&s, "job.set_material", json!({ "id": "vinyl" }));
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="200mm" viewBox="0 0 200 200"><path fill-rule="evenodd" d="M20 20 H60 V70 H20 Z M30 30 H50 V60 H30 Z"/></svg>"#;
+    let o = run(&s, "object.import_svg", json!({ "svg": svg, "name": "O" }))["id"]
+        .as_u64()
+        .unwrap();
+    run(
+        &s,
+        "object.set_keep",
+        json!({ "ids": [o], "keep": "stencil" }),
+    );
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let ctx = h.ctx.clone();
+    let doc = s.lock().unwrap().doc().id();
+    let material = |h: &mut AppHarness, id: &str| {
+        let act = flatcraft::ui::Action::run(doc, "job.set_material", json!({ "id": id }));
+        app_mut(h).apply(&ctx, vec![act]);
+        h.run();
+        wait_for_workers(h);
+    };
+    assert!(app(&h).ui.prepare.report.is_none(), "vinyl has a backing");
+    material(&mut h, "copy-paper");
+    let card = app(&h).ui.prepare.report.as_ref().expect("the hint card");
+    assert_eq!(card.header, "Stencil on paper");
+    assert!(
+        card.all()
+            .iter()
+            .any(|i| i.code == flatcraft_engine::report::Code::StencilIsland)
+    );
+    app_mut(&mut h).ui.prepare.report = None;
+    material(&mut h, "vinyl");
+    material(&mut h, "copy-paper");
+    assert!(
+        app(&h).ui.prepare.report.is_none(),
+        "told already for paper"
+    );
+    material(&mut h, "cardstock");
+    assert!(app(&h).ui.prepare.report.is_some(), "a new material");
 }
