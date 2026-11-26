@@ -421,7 +421,9 @@ fn cell(v: f64) -> i64 {
 ///
 /// Each object classifies by its [`KeepMode`], counting even-odd over its
 /// own rings (piece 1, hole 2, piece in a hole 3). Across objects kept
-/// wins: a point is waste only when no object calls it kept.
+/// wins: a point is waste only when no object calls it kept. The stencils
+/// share one sheet: it is kept where no stencil cuts it out, so a shape
+/// of one stencil is never kept as the sheet of another.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KeptMaterial {
     /// Every ring edge as (start, end, ring index).
@@ -673,7 +675,7 @@ impl KeptMaterial {
     /// The rule of [`Self::is_kept`] for a point `p` inside an odd number
     /// of the rings of some object that is not a stencil (`odd_kept`) and
     /// of `odd_stencils` stencils. Kept wins across objects: a piece, the
-    /// sheet of a stencil that `p` is not cut out of, or the clearance of
+    /// stencils' sheet where no stencil cuts `p` out, or the clearance of
     /// a [`KeepMode::Both`] object (`near_both`, asked last).
     fn kept_by(
         &self,
@@ -689,7 +691,7 @@ impl KeptMaterial {
             && p.x <= self.sheet.x1
             && p.y >= self.sheet.y0
             && p.y <= self.sheet.y1;
-        if on_sheet && odd_stencils < self.stencils {
+        if on_sheet && self.stencils > 0 && odd_stencils == 0 {
             return true;
         }
         self.modes.contains(&KeepMode::Both) && near_both()
@@ -1756,5 +1758,30 @@ mod tests {
         );
         assert!(stencil.kept_spans(f64::NAN, 0.0, 10.0).is_empty());
         assert!(stencil.kept_spans(3.0, 5.0, 5.0).is_empty());
+    }
+
+    #[test]
+    fn two_stencils_share_one_sheet() {
+        // Two letters of a stencil imported as two objects: each one's
+        // shape falls out, it is not kept as the other one's sheet.
+        let area = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let paths = vec![
+            sqo(1, 10.0, 10.0, 20.0, 20.0),
+            sqo(2, 40.0, 10.0, 50.0, 20.0),
+        ];
+        let kept = KeptMaterial::from_toolpaths(&paths, |_| KeepMode::Stencil, area, 0.0);
+        assert!(!kept.is_kept(Point::new(15.0, 15.0)));
+        assert!(!kept.is_kept(Point::new(45.0, 15.0)));
+        assert!(kept.is_kept(Point::new(30.0, 15.0)), "the sheet between");
+        assert!(!kept.is_kept(Point::new(150.0, 15.0)), "off the sheet");
+        // A piece in a stencil's hole still wins.
+        let paths = vec![
+            sqo(1, 10.0, 10.0, 40.0, 40.0),
+            sqo(2, 20.0, 20.0, 30.0, 30.0),
+        ];
+        let mode = |o: ObjectId| [KeepMode::Stencil, KeepMode::Pieces][o.0 as usize - 1];
+        let kept = KeptMaterial::from_toolpaths(&paths, mode, area, 0.0);
+        assert!(kept.is_kept(Point::new(25.0, 25.0)));
+        assert!(!kept.is_kept(Point::new(15.0, 15.0)));
     }
 }
