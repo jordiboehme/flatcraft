@@ -1103,31 +1103,61 @@ fn move_apart_clears_the_hint_in_one_undo_step() {
 }
 
 #[test]
-fn move_apart_is_not_offered_off_the_mat() {
+fn move_apart_is_not_offered_when_every_way_is_blocked() {
     let mut t = self::t();
-    let [_, _, x1, _] = area(&mut t.s);
-    let (a, _) = import(&mut t.s, "left", RECT);
-    let (b, _) = import(&mut t.s, "right", RECT);
-    // b against the right edge of the cutting area, a 0.3 mm to its left.
-    run(
-        &mut t.s,
-        "object.move",
-        json!({ "ids": [b], "x_mm": x1 - 30.0 }),
-    );
-    run(
-        &mut t.s,
-        "object.move",
-        json!({ "ids": [a], "x_mm": x1 - 60.3 }),
-    );
+    let [_, y0, x1, _] = area(&mut t.s);
+    let mut square = |name: &str, x: f64, y: f64| {
+        let (id, _) = import(&mut t.s, name, RECT);
+        run(
+            &mut t.s,
+            "object.move",
+            json!({ "ids": [id], "x_mm": x, "y_mm": y }),
+        );
+        id
+    };
+    // b in the top right corner of the cutting area, a 0.3 mm to its left,
+    // e 2 mm left of a and d 2 mm below b: right and up leave the area,
+    // left and down land on e or d.
+    square("b", x1 - 30.0, y0);
+    square("a", x1 - 60.3, y0);
+    square("e", x1 - 92.3, y0);
+    square("d", x1 - 30.0, y0 + 32.0);
     let c = check(&mut t.s);
-    let i = issue(&c, "objects_close");
-    let labels: Vec<&str> = i["fixes"]
+    let close: Vec<Value> = issues(&c)
+        .into_iter()
+        .filter(|i| i["code"] == "objects_close")
+        .collect();
+    assert_eq!(close.len(), 1, "{c}");
+    let labels: Vec<&str> = close[0]["fixes"]
         .as_array()
         .unwrap()
         .iter()
         .map(|f| f["label"].as_str().unwrap())
         .collect();
     assert_eq!(labels, ["Ignore for this object pair"], "{c}");
+}
+
+#[test]
+fn move_apart_picks_a_way_that_makes_no_new_pair() {
+    let mut t = self::t();
+    let (_, b) = two_squares(&mut t.s, 0.3);
+    // c 2 mm right of b: a move to the right would bring b close to c.
+    import(
+        &mut t.s,
+        "c",
+        r#"<rect x="82.3" y="20" width="30" height="30"/>"#,
+    );
+    let c = check(&mut t.s);
+    assert_eq!(pair_codes(&c), ["objects_close"], "{c}");
+    let fix = issue(&c, "objects_close")["fixes"][0].clone();
+    assert_eq!(fix["label"], "Move apart");
+    assert_eq!(fix["args"]["ids"], json!([b]));
+    assert!(
+        fix["description"].as_str().unwrap().contains(" down, "),
+        "{fix}"
+    );
+    apply(&mut t.s, &fix);
+    assert_eq!(pair_codes(&check(&mut t.s)), Vec::<String>::new());
 }
 
 #[test]

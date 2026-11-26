@@ -1428,7 +1428,7 @@ fn approach(a: &Lines, b: &Lines, reach: f64) -> Option<(f64, Point, Point)> {
 /// What the pair check found about two objects.
 enum Pair {
     Overlap,
-    Close { gap: f64, a: Point, b: Point },
+    Close { gap: f64 },
 }
 
 /// How two objects lie: overlapping (their cut lines cross or touch, or
@@ -1448,9 +1448,77 @@ fn pair_of(a: &Lines, b: &Lines, limit: f64, tolerance: f64) -> Option<Pair> {
     match near {
         Some((gap, _, _)) if gap <= tolerance => Some(Pair::Overlap),
         _ if inside => Some(Pair::Overlap),
-        Some((gap, pa, pb)) if gap < limit => Some(Pair::Close { gap, a: pa, b: pb }),
+        Some((gap, _, _)) if gap < limit => Some(Pair::Close { gap }),
         _ => None,
     }
+}
+
+/// The pairs of boxes in `boxes` (each already grown by half the reach on
+/// every side) that touch, as index pairs `(i, j)` with `i < j`, in order.
+/// The boxes are sorted into a grid of cells about one box wide, and only
+/// boxes that share a cell are compared, so a sheet of many small objects
+/// costs about as many comparisons as it has objects, not their square.
+fn touching_boxes(boxes: &[Rect]) -> Vec<(usize, usize)> {
+    use std::collections::{BTreeSet, HashMap};
+    if boxes.len() < 2 {
+        return Vec::new();
+    }
+    let mean = boxes.iter().map(|b| b.width().max(b.height())).sum::<f64>() / boxes.len() as f64;
+    let cell = mean.max(1e-3);
+    // A huge object would cover too many cells: limit the cells per box,
+    // so it is compared with every object near its box instead.
+    const MAX_CELLS: i64 = 4096;
+    let range = |lo: f64, hi: f64| ((lo / cell).floor() as i64, (hi / cell).floor() as i64);
+    let mut grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    let mut huge: Vec<usize> = Vec::new();
+    for (i, b) in boxes.iter().enumerate() {
+        let (x0, x1) = range(b.x0, b.x1);
+        let (y0, y1) = range(b.y0, b.y1);
+        if (x1 - x0 + 1).saturating_mul(y1 - y0 + 1) > MAX_CELLS {
+            huge.push(i);
+            continue;
+        }
+        for x in x0..=x1 {
+            for y in y0..=y1 {
+                grid.entry((x, y)).or_default().push(i);
+            }
+        }
+    }
+    let mut out: BTreeSet<(usize, usize)> = BTreeSet::new();
+    let mut seen: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
+    let mut test = |i: usize, j: usize, out: &mut BTreeSet<(usize, usize)>| {
+        let (i, j) = (i.min(j), i.max(j));
+        if i == j || !seen.insert((i, j)) {
+            return;
+        }
+        #[cfg(test)]
+        tests::PAIR_BOX_TESTS.with(|n| n.set(n.get() + 1));
+        let (a, b) = (boxes[i], boxes[j]);
+        if a.x0 <= b.x1 && b.x0 <= a.x1 && a.y0 <= b.y1 && b.y0 <= a.y1 {
+            out.insert((i, j));
+        }
+    };
+    for members in grid.values() {
+        for (k, &i) in members.iter().enumerate() {
+            for &j in &members[k + 1..] {
+                test(i, j, &mut out);
+            }
+        }
+    }
+    for &h in &huge {
+        for j in 0..boxes.len() {
+            test(h, j, &mut out);
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// The box of what is cut of pieces, from the pieces themselves.
+fn pieces_box(pieces: &[CutPiece]) -> Option<Rect> {
+    pieces
+        .iter()
+        .map(|p| p.path.bounding_box())
+        .reduce(|a, b| a.union(b))
 }
 
 /// The hints about pairs of objects that nearly touch or overlap, for
@@ -1462,11 +1530,15 @@ fn pair_issues(input: &JobInput, ids: Option<&[ObjectId]>, limits: &Limits) -> V
     let cut = input.cut_geometry();
     let tolerance = limits.tolerance_mm.max(0.01);
     let limit = gap_limit_mm(limits.min_feature_mm);
-    let objects: Vec<(&JobObject, Lines)> = input
+    let cuttable: Vec<(&JobObject, Rect)> = input
         .objects
         .iter()
         .filter(|o| o.visible && o.cut_enabled)
-        .filter_map(|o| Some((o, Lines::of(cut.pieces(o.id), tolerance)?)))
+        .filter_map(|o| Some((o, pieces_box(cut.pieces(o.id))?)))
+        .collect();
+    let grown: Vec<Rect> = cuttable
+        .iter()
+        .map(|(_, b)| b.inflate(limit / 2.0, limit / 2.0))
         .collect();
     let wanted = |o: &JobObject| ids.is_none_or(|ids| ids.contains(&o.id));
     let ignored = |code: Code, a: &JobObject, b: &JobObject| {
@@ -1478,54 +1550,85 @@ fn pair_issues(input: &JobInput, ids: Option<&[ObjectId]>, limits: &Limits) -> V
                 b.id.0,
             ))
     };
+    let lines: Vec<std::cell::OnceCell<Option<Lines>>> = cuttable
+        .iter()
+        .map(|_| std::cell::OnceCell::new())
+        .collect();
+    let lines_of = |i: usize| {
+        lines[i]
+            .get_or_init(|| Lines::of(cut.pieces(cuttable[i].0.id), tolerance))
+            .as_ref()
+    };
+    let near = touching_boxes(&grown);
+    let ctx = PairContext {
+        input,
+        limits,
+        limit,
+        tolerance,
+        cuttable: &cuttable,
+        grown: &grown,
+        near: &near,
+    };
     let mut out = Vec::new();
-    for (i, (a, la)) in objects.iter().enumerate() {
-        for (b, lb) in &objects[i + 1..] {
-            if !wanted(a) && !wanted(b) {
-                continue;
+    for &(i, j) in &near {
+        let (a, b) = (cuttable[i].0, cuttable[j].0);
+        if !wanted(a) && !wanted(b) {
+            continue;
+        }
+        let (Some(la), Some(lb)) = (lines_of(i), lines_of(j)) else {
+            continue;
+        };
+        match pair_of(la, lb, limit, tolerance) {
+            Some(Pair::Overlap) if !ignored(Code::ObjectsOverlap, a, b) => {
+                out.push(Issue {
+                    code: Code::ObjectsOverlap,
+                    severity: Severity::Info,
+                    object_ids: vec![a.id.0, b.id.0],
+                    paths: 0,
+                    message: format!(
+                        "{} and {} overlap, so the knife cuts through both.",
+                        quoted(&a.name),
+                        quoted(&b.name)
+                    ),
+                    hint: OBJECTS_OVERLAP_HINT.into(),
+                    fixes: vec![ignore_fix(Code::ObjectsOverlap, a, b)],
+                });
             }
-            match pair_of(la, lb, limit, tolerance) {
-                Some(Pair::Overlap) if !ignored(Code::ObjectsOverlap, a, b) => {
-                    out.push(Issue {
-                        code: Code::ObjectsOverlap,
-                        severity: Severity::Info,
-                        object_ids: vec![a.id.0, b.id.0],
-                        paths: 0,
-                        message: format!(
-                            "{} and {} overlap, so the knife cuts through both.",
-                            quoted(&a.name),
-                            quoted(&b.name)
-                        ),
-                        hint: OBJECTS_OVERLAP_HINT.into(),
-                        fixes: vec![ignore_fix(Code::ObjectsOverlap, a, b)],
-                    });
-                }
-                Some(Pair::Close { gap, a: pa, b: pb }) if !ignored(Code::ObjectsClose, a, b) => {
-                    let mut fixes: Vec<Fix> =
-                        move_apart_fix(input, limits, (a, la), (b, lb), (gap, pa, pb))
-                            .into_iter()
-                            .collect();
-                    fixes.push(ignore_fix(Code::ObjectsClose, a, b));
-                    out.push(Issue {
-                        code: Code::ObjectsClose,
-                        severity: Severity::Info,
-                        object_ids: vec![a.id.0, b.id.0],
-                        paths: 0,
-                        message: format!(
-                            "{} and {} are only {} apart. The strip between them is too thin to cut cleanly or to weed (peel the waste away), and the blade may tear it.",
-                            quoted(&a.name),
-                            quoted(&b.name),
-                            mm(gap)
-                        ),
-                        hint: objects_close_hint(limit),
-                        fixes,
-                    });
-                }
-                _ => {}
+            Some(Pair::Close { gap, .. }) if !ignored(Code::ObjectsClose, a, b) => {
+                let mut fixes: Vec<Fix> =
+                    move_apart_fix(&ctx, &lines_of, i, j).into_iter().collect();
+                fixes.push(ignore_fix(Code::ObjectsClose, a, b));
+                out.push(Issue {
+                    code: Code::ObjectsClose,
+                    severity: Severity::Info,
+                    object_ids: vec![a.id.0, b.id.0],
+                    paths: 0,
+                    message: format!(
+                        "{} and {} are only {} apart. The strip between them is too thin to cut cleanly or to weed (peel the waste away), and the blade may tear it.",
+                        quoted(&a.name),
+                        quoted(&b.name),
+                        mm(gap)
+                    ),
+                    hint: objects_close_hint(limit),
+                    fixes,
+                });
             }
+            _ => {}
         }
     }
     out
+}
+
+/// What a "Move apart" looks at besides the pair: every cut object, its
+/// grown box and which boxes touch.
+struct PairContext<'a> {
+    input: &'a JobInput,
+    limits: &'a Limits,
+    limit: f64,
+    tolerance: f64,
+    cuttable: &'a [(&'a JobObject, Rect)],
+    grown: &'a [Rect],
+    near: &'a [(usize, usize)],
 }
 
 /// "Ignore for this object pair": turns the hint `code` off for `a` and
@@ -1543,79 +1646,157 @@ fn ignore_fix(code: Code, a: &JobObject, b: &JobObject) -> Fix {
 /// leaves it just short.
 const MOVE_APART_SLACK: f64 = 1.02;
 
-/// "Move apart": moves the second object `b` (with its group, when the
-/// two are not in the same group) straight away from `a`, from the
-/// closest point of `a` to the closest point of `b`, until the gap reaches
-/// the minimum. As an absolute position, so running it again does no
-/// harm. `None` when no straight move gets there in a few steps, or when
-/// it would leave the cutting area.
-fn move_apart_fix(
-    input: &JobInput,
-    limits: &Limits,
-    (a, la): (&JobObject, &Lines),
-    (b, lb): (&JobObject, &Lines),
-    (gap, pa, pb): (f64, Point, Point),
+/// "Move apart": moves the second object (`cuttable[j]`, with its group
+/// when the two are not in the same group) along one of the four axis
+/// directions until its gap to the first (`cuttable[i]`) reaches the
+/// minimum. Of the directions that keep it in the cutting area and bring
+/// none of the moved objects close to (or over) an object it was not close
+/// to before, the one with the smallest move wins. As an absolute
+/// position, so running it again does no harm. `None` when no direction
+/// works.
+fn move_apart_fix<'a>(
+    ctx: &PairContext<'a>,
+    lines_of: &dyn Fn(usize) -> Option<&'a Lines>,
+    i: usize,
+    j: usize,
 ) -> Option<Fix> {
-    let limit = gap_limit_mm(limits.min_feature_mm);
-    let dir = pb - pa;
-    let len = dir.hypot();
-    if len <= 0.0 || !len.is_finite() {
-        return None;
-    }
-    let dir = dir / len;
+    let (a, b) = (ctx.cuttable[i].0, ctx.cuttable[j].0);
+    let la = lines_of(i)?;
+    let limit = ctx.limit;
     // The whole group of `b` moves, unless `a` is in it too.
     let unit = if a.unit != b.unit { b.unit } else { b.id };
-    let movers: Vec<&JobObject> = input
-        .objects
-        .iter()
-        .filter(|o| {
-            if unit == b.id {
-                o.id == b.id
-            } else {
-                o.unit == unit
-            }
-        })
-        .collect();
+    let moves = |o: &JobObject| {
+        if unit == b.id {
+            o.id == b.id
+        } else {
+            o.unit == unit
+        }
+    };
+    let movers: Vec<&JobObject> = ctx.input.objects.iter().filter(|o| moves(o)).collect();
     let any_shown = movers.iter().any(|o| o.visible);
     let start = movers
         .iter()
         .filter(|o| o.visible || !any_shown)
         .map(|o| {
-            object_bounds(input, o)
+            object_bounds(ctx.input, o)
                 .unwrap_or_else(|| Rect::from_points(o.transform.center_mm, o.transform.center_mm))
         })
         .reduce(|x, y| x.union(y))?;
-    let mut shift = (limit - gap) * MOVE_APART_SLACK + 0.01;
-    for _ in 0..8 {
-        let d = dir * shift;
-        let now = approach(la, &lb.translated(d), limit).map_or(limit, |(g, _, _)| g);
-        if now >= limit {
-            let moved = start + d;
-            if let Some(area) = limits.area
-                && !crate::commands::inside(moved, area)
-            {
-                return None;
+    // The moved objects that are cut, by their index in `cuttable`.
+    let moved: Vec<usize> = (0..ctx.cuttable.len())
+        .filter(|&k| moves(ctx.cuttable[k].0))
+        .collect();
+    let lb = lines_of(j)?;
+    let ab = ctx.cuttable[i].1;
+    let bb = ctx.cuttable[j].1;
+    let directions = [
+        (
+            "to the right",
+            kurbo::Vec2::new(1.0, 0.0),
+            ab.x1 + limit - bb.x0,
+        ),
+        (
+            "to the left",
+            kurbo::Vec2::new(-1.0, 0.0),
+            bb.x1 - (ab.x0 - limit),
+        ),
+        ("down", kurbo::Vec2::new(0.0, 1.0), ab.y1 + limit - bb.y0),
+        ("up", kurbo::Vec2::new(0.0, -1.0), bb.y1 - (ab.y0 - limit)),
+    ];
+    let gap_after = |d: kurbo::Vec2| match pair_of(la, &lb.translated(d), limit, ctx.tolerance) {
+        Some(Pair::Overlap) => 0.0,
+        Some(Pair::Close { gap, .. }) => gap,
+        None => limit,
+    };
+    let mut best: Option<(f64, &str, kurbo::Vec2)> = None;
+    for (word, dir, clear) in directions {
+        // The smallest shift that clears `a`: step up from the gap, and at
+        // most until the boxes are a minimum gap apart, which always does.
+        let clear = clear.max(0.0) * MOVE_APART_SLACK + 0.01;
+        let mut shift = 0.01_f64.max(limit * 0.1);
+        let mut found = None;
+        for _ in 0..16 {
+            if shift >= clear {
+                found = Some(clear);
+                break;
             }
-            let what = if unit == b.id {
-                quoted(&b.name)
-            } else {
-                format!("{} and the rest of its group", quoted(&b.name))
-            };
-            return Some(Fix {
-                label: "Move apart".into(),
-                description: format!(
-                    "Moves {what} {} away from {}, so the gap is at least {}. One undo step.",
-                    mm(shift),
-                    quoted(&a.name),
-                    mm(limit)
-                ),
-                command: "object.move".into(),
-                args: json!({ "ids": [unit.0], "x_mm": moved.x0, "y_mm": moved.y0 }),
-            });
+            let now = gap_after(dir * shift);
+            if now >= limit {
+                found = Some(shift);
+                break;
+            }
+            shift += (limit - now) * MOVE_APART_SLACK + 0.01;
         }
-        shift += (limit - now) * MOVE_APART_SLACK + 0.01;
+        let shift = found.unwrap_or(clear);
+        if best.is_some_and(|(s, _, _)| s <= shift) {
+            continue;
+        }
+        let d = dir * shift;
+        if let Some(area) = ctx.limits.area
+            && !crate::commands::inside(start + d, area)
+        {
+            continue;
+        }
+        if creates_a_pair(ctx, lines_of, &moved, d) {
+            continue;
+        }
+        best = Some((shift, word, d));
     }
-    None
+    let (shift, word, d) = best?;
+    let moved_box = start + d;
+    let what = if unit == b.id {
+        quoted(&b.name)
+    } else {
+        format!("{} and the rest of its group", quoted(&b.name))
+    };
+    Some(Fix {
+        label: "Move apart".into(),
+        description: format!(
+            "Moves {what} {} {word}, away from {}, so the gap is at least {}. One undo step.",
+            mm(shift),
+            quoted(&a.name),
+            mm(limit)
+        ),
+        command: "object.move".into(),
+        args: json!({ "ids": [unit.0], "x_mm": moved_box.x0, "y_mm": moved_box.y0 }),
+    })
+}
+
+/// True if moving the objects `moved` (indexes into `cuttable`) by `d`
+/// brings one of them close to, or over, an object that stays and that it
+/// was not close to before.
+fn creates_a_pair<'a>(
+    ctx: &PairContext<'a>,
+    lines_of: &dyn Fn(usize) -> Option<&'a Lines>,
+    moved: &[usize],
+    d: kurbo::Vec2,
+) -> bool {
+    let before = |m: usize, k: usize| {
+        let (x, y) = (m.min(k), m.max(k));
+        ctx.near.binary_search(&(x, y)).is_ok()
+            && match (lines_of(m), lines_of(k)) {
+                (Some(lm), Some(lk)) => pair_of(lm, lk, ctx.limit, ctx.tolerance).is_some(),
+                _ => false,
+            }
+    };
+    moved.iter().any(|&m| {
+        let Some(lm) = lines_of(m) else {
+            return false;
+        };
+        let shifted = lm.translated(d);
+        let grown = ctx.grown[m] + d;
+        (0..ctx.cuttable.len())
+            .filter(|k| !moved.contains(k))
+            .filter(|&k| {
+                let g = ctx.grown[k];
+                g.x0 <= grown.x1 && grown.x0 <= g.x1 && g.y0 <= grown.y1 && grown.y0 <= g.y1
+            })
+            .any(|k| {
+                lines_of(k)
+                    .is_some_and(|lk| pair_of(lk, &shifted, ctx.limit, ctx.tolerance).is_some())
+                    && !before(m, k)
+            })
+    })
 }
 
 // ---------------------------------------------------------------- nothing to cut
@@ -1823,8 +2004,96 @@ pub fn out_of_area(input: &JobInput, ids: &[ObjectId]) -> Vec<Issue> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    thread_local! {
+        /// How many pairs of boxes the pair check compared on this thread.
+        pub(crate) static PAIR_BOX_TESTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
     use super::*;
+
+    /// `n` objects of four shapes (squares, circles, triangles, thin
+    /// bars) on a grid at 9.2 mm, 25 to a row, so neighbouring squares are
+    /// 1.2 mm apart: the same density whatever `n`.
+    fn sheet(n: usize) -> JobInput {
+        use flatcraft_core::document::{Document, JobSettings, Source};
+        use flatcraft_core::geometry::CutPath;
+        let mut doc = Document::new(JobSettings {
+            plotter_id: "file-output-gpgl-cameo2".into(),
+            material_id: "copy-paper".into(),
+            media_id: "mat-12x12".into(),
+            speed: None,
+            force: None,
+            passes: None,
+            strategy: Default::default(),
+            weed: Default::default(),
+        });
+        for k in 0..n {
+            let (x, y) = (5.0 + (k % 25) as f64 * 9.2, 5.0 + (k / 25) as f64 * 9.2);
+            let path = match k % 4 {
+                0 => kurbo::Rect::new(x, y, x + 8.0, y + 8.0).to_path(0.01),
+                1 => kurbo::Circle::new((x + 4.0, y + 4.0), 4.0).to_path(0.01),
+                2 => {
+                    let mut p = BezPath::new();
+                    p.move_to((x, y + 8.0));
+                    p.line_to((x + 4.0, y));
+                    p.line_to((x + 8.0, y + 8.0));
+                    p.close_path();
+                    p
+                }
+                _ => kurbo::Rect::new(x, y + 3.5, x + 8.0, y + 4.5).to_path(0.01),
+            };
+            let id = doc.add(
+                format!("shape {k}"),
+                Source::Svg {
+                    name: String::new(),
+                    bytes: std::sync::Arc::from(Vec::<u8>::new()),
+                },
+                vec![CutPath {
+                    path,
+                    color: None,
+                    label: None,
+                    paint: Default::default(),
+                }],
+            );
+            let o = doc.get_mut(id).unwrap();
+            o.transform.center_mm = o.local_bounds.center();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let store = flatcraft_device::ProfileStore::load(dir.path()).unwrap();
+        let plotter = store.plotter("file-output-gpgl-cameo2").unwrap();
+        let material = store.material("copy-paper").unwrap();
+        JobInput::from_parts(&doc, plotter, &material)
+    }
+
+    /// The pair check compares boxes only within grid cells: twice the
+    /// objects at the same density is about twice the work, never four
+    /// times (a quadratic blow-up).
+    #[test]
+    fn the_pair_check_grows_with_the_objects_not_their_square() {
+        let count = |n: usize| {
+            let input = sheet(n);
+            let _ = input.cut_geometry();
+            PAIR_BOX_TESTS.with(|c| c.set(0));
+            let r = check(&input, None);
+            let close = r
+                .issues
+                .iter()
+                .filter(|i| i.code == Code::ObjectsClose)
+                .count();
+            (PAIR_BOX_TESTS.with(|c| c.get()), close)
+        };
+        let (small, close_small) = count(250);
+        let (large, close_large) = count(500);
+        assert!(close_small > 0, "the sheet has close pairs");
+        assert!(close_large > close_small);
+        assert!(
+            large <= small * 5 / 2,
+            "250 objects: {small} box tests, 500: {large}"
+        );
+        // Far below the 124750 pairs of 500 objects.
+        assert!(large < 20_000, "{large}");
+    }
 
     #[test]
     fn lengths_are_rounded_for_people() {
