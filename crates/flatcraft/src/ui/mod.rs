@@ -2150,7 +2150,7 @@ pub const QUIT_ANYWAY_HINT: &str =
 pub const STAY_WAITING_HINT: &str = "Stay in FlatCraft. The agent's request keeps waiting for you.";
 /// The cards of the agent's cut request.
 pub const ALLOW_HINT: &str = "Send this cut to the plotter now. Check the mat and the blade first.";
-pub const DENY_HINT: &str = "Say no. Nothing is sent, and the agent hears that you denied it.";
+pub const DENY_HINT: &str = "Say no. Nothing is sent and the request is dropped.";
 
 /// The unsaved-changes dialog: "Save changes to <name>?" with Don't
 /// Save, Cancel and Save, for closing a document and, one document after
