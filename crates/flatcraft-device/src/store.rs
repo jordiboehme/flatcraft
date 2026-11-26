@@ -685,7 +685,13 @@ impl ProfileStore {
                     .map(str::to_string),
             })
             .collect();
-        v.sort_by(|a, b| b.system.cmp(&a.system).then_with(|| a.id.cmp(&b.id)));
+        // System presets first, each part by name as the lists show them.
+        v.sort_by(|a, b| {
+            b.system
+                .cmp(&a.system)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                .then_with(|| a.id.cmp(&b.id))
+        });
         v
     }
 

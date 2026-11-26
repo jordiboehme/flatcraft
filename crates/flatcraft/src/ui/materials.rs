@@ -108,7 +108,7 @@ pub fn card_text(c: &MaterialCard) -> String {
     let blade = m
         .blade_depth_hint
         .as_deref()
-        .map(|h| format!(", {h}"))
+        .map(|h| format!(", {h} (the number you turn the blade to by hand)"))
         .unwrap_or_default();
     parts.push(format!(
         "Starts at speed {}, force {}, {passes}{blade}.",
@@ -211,6 +211,15 @@ pub fn test_cut_hint(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec
             .color(t.accent_cut),
     );
     super::groups::card(&r, TEST_CUT_TITLE, &text, None, false);
+    ui.add(
+        egui::Label::new(
+            RichText::new(format!(
+                "You have not cut {name} yet. Cut a small test shape first, then the design."
+            ))
+            .color(t.text_dim),
+        )
+        .wrap(),
+    );
     let why = (!tc.room).then_some(NO_ROOM);
     let b = ui.add_enabled(why.is_none(), egui::Button::new(TEST_CUT_BUTTON));
     super::settings::set_name(ui, &b, TEST_CUT_BUTTON);

@@ -105,7 +105,10 @@ fn a_material_card_explains_tips_values_mat_and_backing() {
         &h,
         "Mirror the design and cut with the shiny carrier side down"
     ));
-    assert!(shows(&h, "Starts at speed 4, force 18, 1 pass, blade 3."));
+    assert!(shows(
+        &h,
+        "Starts at speed 4, force 18, 1 pass, blade 3 (the number you turn the blade to by hand)."
+    ));
     assert!(shows(
         &h,
         "Mat: standard grip. The mat's tack is how sticky it is"
