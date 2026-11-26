@@ -63,7 +63,7 @@ pub fn result_text(mode: Option<KeepMode>) -> &'static str {
             "The sheet stays, the shapes fall out as waste: Stencil, like a paint stencil."
         }
         Some(KeepMode::Both) => {
-            "Both sides of every cut stay: Both. Nothing right next to these cuts is waste, so the blade only turns on the spot there."
+            "The shapes and the sheet around them stay: Both. Nothing is waste, so the blade only turns on the spot at these cuts."
         }
     }
 }
@@ -72,8 +72,8 @@ pub fn result_text(mode: Option<KeepMode>) -> &'static str {
 /// give (`None`: nothing marked yet) on a material with or without a
 /// backing sheet. It follows the planner's rule (`KeptMaterial::kept_by`):
 /// Pieces wastes the middle; Stencil keeps it on the sheet, where a
-/// backing holds it and paper lets it fall out; Both keeps only a band
-/// along its cut.
+/// backing holds it and paper lets it fall out; Both keeps it, like
+/// everything around its cuts.
 pub fn hole_text(mode: Option<KeepMode>, backing: bool) -> &'static str {
     match (mode, backing) {
         (Some(KeepMode::Pieces), _) => {
@@ -84,7 +84,7 @@ pub fn hole_text(mode: Option<KeepMode>, backing: bool) -> &'static str {
         }
         (Some(KeepMode::Stencil), false) => flatcraft_engine::report::STENCIL_ISLAND_HINT,
         (Some(KeepMode::Both), _) => {
-            "The middle of a letter like O is waste, apart from a 1 mm band along its cut."
+            "The middle of a letter like O stays too, like everything around these cuts."
         }
         (None, true) => {
             "A letter like O has a middle. Keep the shape and the middle is waste. Keep the sheet and the middle stays on the backing sheet with the stencil."

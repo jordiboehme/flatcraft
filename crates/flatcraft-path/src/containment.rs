@@ -77,9 +77,11 @@ fn crosses_ray(a: Point, b: Point, p: Point) -> Option<f64> {
 /// each object's ring depth there (how many of its rings enclose it).
 #[derive(Debug, Clone, Copy, Default)]
 struct Depths {
-    /// Objects that are not stencils with the point at odd depth: a piece.
+    /// Objects that are not stencils with the point at odd depth: a piece
+    /// of a Pieces or a Both object.
     piece: usize,
-    /// Objects that are not stencils with the point inside any ring.
+    /// Pieces objects with the point inside any ring: a hole of a Pieces
+    /// object is cut free of the shared sheet by its outline.
     enclosed: usize,
     /// Stencils with the point at odd depth: a shape cut out of the sheet.
     /// The counter of a stencil's O (even depth) stays on the sheet: on a
@@ -105,50 +107,17 @@ impl Depths {
             (true, false) => *count -= 1,
             _ => {}
         };
-        if mode == KeepMode::Stencil {
-            step(&mut self.cut_out, flag(old, true), flag(new, true));
-        } else {
-            step(&mut self.piece, flag(old, true), flag(new, true));
-            step(&mut self.enclosed, flag(old, false), flag(new, false));
-        }
-    }
-}
-
-/// Where the row at height `y` meets the points within `c` of segment
-/// `a`-`b` (a capsule, which is convex): `(from, to)`, `None` when it
-/// misses.
-fn capsule_span(a: Point, b: Point, y: f64, c: f64) -> Option<(f64, f64)> {
-    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-    let mut take = |x: f64| {
-        lo = lo.min(x);
-        hi = hi.max(x);
-    };
-    for e in [a, b] {
-        let dy = y - e.y;
-        if dy.abs() <= c {
-            let s = (c * c - dy * dy).sqrt();
-            take(e.x - s);
-            take(e.x + s);
-        }
-    }
-    let v = b - a;
-    let len = v.hypot();
-    if len > 0.0 {
-        let n = kurbo::Vec2::new(-v.y, v.x) * (c / len);
-        let q = [a + n, b + n, b - n, a - n];
-        for i in 0..4 {
-            let (p, r) = (q[i], q[(i + 1) % 4]);
-            if (p.y - y) * (r.y - y) <= 0.0 {
-                if p.y == r.y {
-                    take(p.x);
-                    take(r.x);
-                } else {
-                    take(p.x + (y - p.y) / (r.y - p.y) * (r.x - p.x));
-                }
+        match mode {
+            KeepMode::Stencil => step(&mut self.cut_out, flag(old, true), flag(new, true)),
+            KeepMode::Pieces => {
+                step(&mut self.piece, flag(old, true), flag(new, true));
+                step(&mut self.enclosed, flag(old, false), flag(new, false));
             }
+            // Both keeps its shapes, and the rest of it (the sheet around
+            // it, the middle of its O) is the shared sheet.
+            KeepMode::Both => step(&mut self.piece, flag(old, true), flag(new, true)),
         }
     }
-    (lo <= hi).then_some((lo, hi))
 }
 
 /// The bounding box of `points`, `None` when there are none.
@@ -475,6 +444,11 @@ pub fn keep_for(shape: bool, sheet: bool) -> Option<KeepMode> {
     }
 }
 
+/// True when an object of `mode` keeps the shared sheet around its cuts.
+fn keeps_sheet(mode: KeepMode) -> bool {
+    matches!(mode, KeepMode::Stencil | KeepMode::Both)
+}
+
 /// The closed `Cut` rings of one object, one lap each, and its keep mode.
 #[derive(Debug, Clone)]
 struct KeptObject<'a> {
@@ -482,11 +456,6 @@ struct KeptObject<'a> {
     rings: Vec<&'a [Point]>,
     mode: KeepMode,
 }
-
-/// How far around the cuts of a [`KeepMode::Both`] object everything is
-/// kept material, in millimetres: "nothing near the object is waste", so
-/// no lead-in, overshoot or weed line of a neighbour comes closer.
-pub const BOTH_KEPT_BAND_MM: f64 = 1.0;
 
 /// The edge of a grid cell of [`KeptMaterial`], in millimetres.
 const CELL_MM: f64 = 1.0;
@@ -504,12 +473,12 @@ fn cell(v: f64) -> i64 {
 /// judged safe while it cuts a neighbour or crosses a hole into its parent.
 ///
 /// Each object counts its own rings around a point (piece 1, hole 2,
-/// piece in a hole 3). Across objects kept wins: a piece of any object
-/// that is not a stencil is kept, and so is the stencils' one shared
-/// sheet outside every stencil shape and every other object (see
-/// `kept_by`), plus the band of a [`KeepMode::Both`] object. Everything
-/// else is waste: the shapes of a stencil, and the holes of every other
-/// object.
+/// piece in a hole 3). Across objects kept wins: a piece of a Pieces or
+/// a Both object is kept, and so is the one shared sheet of the Stencil
+/// and Both objects, outside every stencil shape and every ring of a
+/// Pieces object (see `kept_by`). Everything else is waste: the shapes of
+/// a stencil, the holes of a Pieces object, and with no Stencil or Both
+/// object the sheet around the pieces.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KeptMaterial {
     /// Every ring edge as (start, end, ring index).
@@ -520,12 +489,11 @@ pub struct KeptMaterial {
     modes: Vec<KeepMode>,
     /// The id of each object.
     ids: Vec<ObjectId>,
-    /// How many objects are [`KeepMode::Stencil`].
-    stencils: usize,
-    /// A stencil's sheet: the whole cutting area, boundary included.
+    /// How many objects keep the sheet: [`KeepMode::Stencil`] or
+    /// [`KeepMode::Both`].
+    sheets: usize,
+    /// The shared sheet: the whole cutting area, boundary included.
     sheet: Rect,
-    /// How far from a `Both` object's rings everything is kept.
-    clearance_mm: f64,
     /// A uniform grid of [`CELL_MM`] cells: the edges near each cell.
     cells: HashMap<(i64, i64), Vec<usize>>,
     /// The last column of each row that holds an edge.
@@ -539,10 +507,9 @@ impl KeptMaterial {
     /// source object, one lap each (Ruling F3) from pass 1 only, so passes
     /// and overcut never cancel a ring. Open paths and the alignment stroke
     /// add no rings. `mode_of` gives each object's [`KeepMode`] and
-    /// `cutting_area` is the sheet a [`KeepMode::Stencil`] keeps. Around
-    /// a [`KeepMode::Both`] object's rings everything within
-    /// [`BOTH_KEPT_BAND_MM`] is kept, for every caller alike (the planner,
-    /// the simulator, weeding and the canvas).
+    /// `cutting_area` is the sheet a [`KeepMode::Stencil`] or
+    /// [`KeepMode::Both`] object keeps, for every caller alike (the
+    /// planner, the simulator, weeding and the canvas).
     pub fn from_toolpaths(
         toolpaths: &[Toolpath],
         mode_of: impl Fn(ObjectId) -> KeepMode,
@@ -565,7 +532,7 @@ impl KeptMaterial {
             });
             objects[k].rings.push(t.lap());
         }
-        Self::with_modes(&objects, cutting_area, BOTH_KEPT_BAND_MM)
+        Self::with_modes(&objects, cutting_area)
     }
 
     /// One object of `rings` in `mode`, for tests.
@@ -578,7 +545,6 @@ impl KeptMaterial {
                 mode,
             }],
             Rect::new(-1000.0, -1000.0, 1000.0, 1000.0),
-            0.0,
         )
     }
 
@@ -590,21 +556,16 @@ impl KeptMaterial {
     }
 
     /// Index the closed `Cut` rings of each object, one lap each.
-    /// `cutting_area` is the sheet a [`KeepMode::Stencil`] keeps, and
-    /// `clearance_mm` how far from a [`KeepMode::Both`] object's rings
-    /// everything is kept.
-    fn with_modes(objects: &[KeptObject], cutting_area: Rect, clearance_mm: f64) -> Self {
+    /// `cutting_area` is the shared sheet of the [`KeepMode::Stencil`] and
+    /// [`KeepMode::Both`] objects.
+    fn with_modes(objects: &[KeptObject], cutting_area: Rect) -> Self {
         let mut kept = Self {
             segs: Vec::new(),
             ring_object: Vec::new(),
             modes: objects.iter().map(|o| o.mode).collect(),
             ids: objects.iter().map(|o| o.id).collect(),
-            stencils: objects
-                .iter()
-                .filter(|o| o.mode == KeepMode::Stencil)
-                .count(),
+            sheets: objects.iter().filter(|o| keeps_sheet(o.mode)).count(),
             sheet: cutting_area,
-            clearance_mm,
             cells: HashMap::new(),
             row_end: HashMap::new(),
             extent: None,
@@ -786,11 +747,7 @@ impl KeptMaterial {
         for (o, mode) in out.modes.iter_mut().enumerate() {
             *mode = f(self.ids[o], *mode);
         }
-        out.stencils = out
-            .modes
-            .iter()
-            .filter(|m| **m == KeepMode::Stencil)
-            .count();
+        out.sheets = out.modes.iter().filter(|m| keeps_sheet(**m)).count();
         out
     }
 
@@ -802,9 +759,8 @@ impl KeptMaterial {
             ring_object: Vec::new(),
             modes: Vec::new(),
             ids: Vec::new(),
-            stencils: 0,
+            sheets: 0,
             sheet: self.sheet,
-            clearance_mm: self.clearance_mm,
             cells: HashMap::new(),
             row_end: HashMap::new(),
             extent: None,
@@ -848,22 +804,20 @@ impl KeptMaterial {
         for (o, &n) in depth.iter().enumerate() {
             d.change(self.modes[o], 0, n);
         }
-        self.kept_by(&d, p, || {
-            self.nearest(p, |o| self.modes[o] == KeepMode::Both, self.clearance_mm)
-                <= self.clearance_mm
-        })
+        self.kept_by(&d, p)
     }
 
     /// The rule of [`Self::is_kept`] for a point `p` with the ring depths
     /// `d` of every object. Kept wins across objects:
-    /// - a piece of any object that is not a stencil (odd depth);
-    /// - the stencils' one shared sheet: in the cutting area, not in a
-    ///   shape of any stencil (odd depth; the counter of an O counts as
-    ///   sheet, it stays on the backing) and inside no ring of any other
-    ///   object (a hole of a Pieces or Both object is cut free of the
-    ///   sheet by that object's outline);
-    /// - the band of a [`KeepMode::Both`] object (`near_both`, asked last).
-    fn kept_by(&self, d: &Depths, p: Point, near_both: impl FnOnce() -> bool) -> bool {
+    /// - a piece of a Pieces or a Both object (odd depth);
+    /// - the one shared sheet, when some object is Stencil or Both: in the
+    ///   cutting area, not in a shape of any stencil (odd depth; the
+    ///   counter of an O counts as sheet, it stays on the backing) and
+    ///   inside no ring of a Pieces object (a hole of a Pieces object is
+    ///   cut free of the sheet by its outline). A Both object's sheet
+    ///   around it and the middle of its O are this sheet, so both sides
+    ///   of its cuts stay.
+    fn kept_by(&self, d: &Depths, p: Point) -> bool {
         if d.piece > 0 {
             return true;
         }
@@ -871,16 +825,13 @@ impl KeptMaterial {
             && p.x <= self.sheet.x1
             && p.y >= self.sheet.y0
             && p.y <= self.sheet.y1;
-        if on_sheet && self.stencils > 0 && d.cut_out == 0 && d.enclosed == 0 {
-            return true;
-        }
-        self.modes.contains(&KeepMode::Both) && near_both()
+        on_sheet && self.sheets > 0 && d.cut_out == 0 && d.enclosed == 0
     }
 
     /// The kept stretches of the row at height `y` between `x0` and `x1`,
     /// as `(from, to)` from left to right: where [`Self::is_kept`] says
     /// kept, exactly, up to the boundaries themselves (a ring, the sheet's
-    /// edge, the clearance of a [`KeepMode::Both`] object). It asks the
+    /// edge). It asks the
     /// rule once per stretch, not once per point, so a canvas can draw the
     /// kept material of a whole job.
     pub fn kept_spans(&self, y: f64, x0: f64, x1: f64) -> Vec<(f64, f64)> {
@@ -890,8 +841,7 @@ impl KeptMaterial {
         // Every ring edge the row crosses, with its object, by the same
         // half-open rule as `crosses_ray`.
         let mut crossings: Vec<(f64, usize)> = Vec::new();
-        let mut near: Vec<(f64, f64)> = Vec::new();
-        if let Some((c0, r0, c1, r1)) = self.extent {
+        if let Some((c0, _, c1, _)) = self.extent {
             let mut seen = std::collections::HashSet::new();
             let row = cell(y);
             for col in c0..=c1 {
@@ -903,29 +853,9 @@ impl KeptMaterial {
                     }
                 }
             }
-            // The clearance of the `Both` objects along the row. An edge
-            // within it is indexed in a row of cells within it.
-            let c = self.clearance_mm;
-            if c > 0.0 && self.modes.contains(&KeepMode::Both) {
-                seen.clear();
-                for row in cell(y - c).max(r0)..=cell(y + c).min(r1) {
-                    for col in c0..=c1 {
-                        for &id in self.cells.get(&(col, row)).into_iter().flatten() {
-                            let (a, b, ring) = self.segs[id];
-                            if seen.insert(id)
-                                && self.modes[self.ring_object[ring]] == KeepMode::Both
-                                && let Some(span) = capsule_span(a, b, y, c)
-                            {
-                                near.push(span);
-                            }
-                        }
-                    }
-                }
-            }
         }
         crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut cuts: Vec<f64> = crossings.iter().map(|c| c.0).collect();
-        cuts.extend(near.iter().flat_map(|&(a, b)| [a, b]));
         cuts.extend([self.sheet.x0, self.sheet.x1, x0, x1]);
         cuts.retain(|&x| x >= x0 && x <= x1);
         cuts.sort_by(f64::total_cmp);
@@ -950,7 +880,7 @@ impl KeptMaterial {
                 next += 1;
             }
             let p = Point::new(mid, y);
-            let kept = self.kept_by(&d, p, || near.iter().any(|&(a, b)| a <= mid && mid <= b));
+            let kept = self.kept_by(&d, p);
             if kept {
                 match out.last_mut() {
                     Some(last) if last.1 == u => last.1 = v,
@@ -1541,7 +1471,6 @@ mod tests {
                 mode: KeepMode::Stencil,
             }],
             area(),
-            1.0,
         );
         assert!(!kept.is_kept(Point::new(60.0, 60.0)), "cut shape is waste");
         assert!(kept.is_kept(Point::new(40.0, 60.0)), "sheet beside it");
@@ -1565,14 +1494,13 @@ mod tests {
                 mode: KeepMode::Stencil,
             }],
             area(),
-            1.0,
         );
         assert!(!kept.is_kept(Point::new(55.0, 70.0)));
         assert!(kept.is_kept(Point::new(70.0, 70.0)));
     }
 
     #[test]
-    fn both_leaves_no_waste_near_the_rings() {
+    fn both_keeps_its_shape_and_the_sheet_on_both_sides_of_its_cuts() {
         let outer = sq(50.0, 50.0, 90.0, 90.0);
         let hole = sq(60.0, 60.0, 80.0, 80.0);
         let kept = KeptMaterial::with_modes(
@@ -1582,26 +1510,43 @@ mod tests {
                 mode: KeepMode::Both,
             }],
             area(),
-            2.0,
         );
         assert!(kept.is_kept(Point::new(55.0, 70.0)), "the piece");
-        assert!(
-            kept.is_kept(Point::new(48.5, 70.0)),
-            "sheet within clearance"
-        );
-        assert!(
-            kept.is_kept(Point::new(61.5, 70.0)),
-            "hole within clearance"
-        );
+        assert!(kept.is_kept(Point::new(48.5, 70.0)), "the sheet next to it");
+        assert!(kept.is_kept(Point::new(10.0, 10.0)), "the sheet far away");
+        assert!(kept.is_kept(Point::new(70.0, 70.0)), "the middle of the O");
         assert!(kept.is_kept(Point::new(50.0, 70.0)), "on the cut");
         assert!(
-            !kept.is_kept(Point::new(40.0, 70.0)),
-            "sheet beyond clearance"
+            !kept.is_kept(Point::new(250.0, 70.0)),
+            "off the cutting area"
         );
-        assert!(
-            !kept.is_kept(Point::new(70.0, 70.0)),
-            "hole beyond clearance"
+    }
+
+    #[test]
+    fn a_pieces_neighbour_on_a_both_sheet_keeps_both_sides_but_wastes_its_holes() {
+        // Like a piece on a stencil sheet: its outline has kept material on
+        // both sides, its hole is cut free of the sheet.
+        let both = sq(10.0, 10.0, 30.0, 30.0);
+        let piece = sq(100.0, 100.0, 140.0, 140.0);
+        let piece_hole = sq(110.0, 110.0, 130.0, 130.0);
+        let kept = KeptMaterial::with_modes(
+            &[
+                KeptObject {
+                    id: ObjectId(1),
+                    rings: vec![both.lap()],
+                    mode: KeepMode::Both,
+                },
+                KeptObject {
+                    id: ObjectId(2),
+                    rings: vec![piece.lap(), piece_hole.lap()],
+                    mode: KeepMode::Pieces,
+                },
+            ],
+            area(),
         );
+        assert!(kept.is_kept(Point::new(105.0, 120.0)), "the piece");
+        assert!(kept.is_kept(Point::new(95.0, 120.0)), "the sheet around it");
+        assert!(!kept.is_kept(Point::new(120.0, 120.0)), "its hole");
     }
 
     #[test]
@@ -1622,7 +1567,6 @@ mod tests {
                 },
             ],
             area(),
-            1.0,
         );
         assert!(
             kept.is_kept(Point::new(15.0, 10.0)),
@@ -1659,7 +1603,6 @@ mod tests {
                 },
             ],
             area(),
-            1.0,
         );
         assert!(per_object.is_kept(Point::new(15.0, 10.0)));
         assert!(
@@ -1986,7 +1929,12 @@ mod tests {
         for tag in [KeepMode::Pieces, KeepMode::Both] {
             let mode = |o: ObjectId| if o.0 == 1 { tag } else { KeepMode::Stencil };
             let kept = KeptMaterial::from_toolpaths(&paths, mode, area);
-            assert!(!kept.is_kept(Point::new(35.0, 35.0)), "{tag:?}: the hole");
+            // A Both tag keeps both sides of its cuts: its hole stays too.
+            assert_eq!(
+                kept.is_kept(Point::new(35.0, 35.0)),
+                tag == KeepMode::Both,
+                "{tag:?}: the hole"
+            );
             assert!(kept.is_kept(Point::new(15.0, 35.0)), "{tag:?}: the tag");
             assert!(kept.is_kept(Point::new(90.0, 90.0)), "{tag:?}: the sheet");
             assert!(!kept.is_kept(Point::new(140.0, 30.0)), "{tag:?}: cut out");
@@ -2114,15 +2062,13 @@ mod tests {
     }
 
     #[test]
-    fn both_keeps_only_a_band_of_the_sheet_and_of_a_counter() {
-        // What the picker's Both text promises: the piece and 1 mm around
-        // every cut. The far sheet and the middle of a large O are waste.
+    fn both_keeps_the_sheet_and_the_middle_of_an_o() {
+        // What the picker's Both text promises: the letter, the sheet
+        // around it and its middle all stay.
         let kept = KeptMaterial::from_toolpaths(&o_and_square()[..2], |_| KeepMode::Both, mat());
-        assert!(kept.is_kept(Point::new(25.0, 40.0)), "the letter");
-        assert!(kept.is_kept(Point::new(19.5, 40.0)), "the band outside");
-        assert!(kept.is_kept(Point::new(30.5, 40.0)), "the band inside");
-        assert!(!kept.is_kept(Point::new(40.0, 45.0)), "the middle of the O");
-        assert!(!kept.is_kept(Point::new(200.0, 200.0)), "the far sheet");
+        for (x, y) in [(25.0, 40.0), (19.5, 40.0), (40.0, 45.0), (200.0, 200.0)] {
+            assert!(kept.is_kept(Point::new(x, y)), "({x}, {y})");
+        }
         // Stencil keeps the middle of the O on the sheet; Pieces does not.
         let stencil =
             KeptMaterial::from_toolpaths(&o_and_square()[..2], |_| KeepMode::Stencil, mat());

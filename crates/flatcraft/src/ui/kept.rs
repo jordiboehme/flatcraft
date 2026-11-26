@@ -466,7 +466,13 @@ mod tests {
             let mask = Mask::of(&kept, area, 400).unwrap();
             assert_eq!(mask.size, [400, 400]);
             let (k, w) = agrees(&kept, &mask);
-            assert!(k > 1000 && w > 1000, "{mode:?}: {k} kept, {w} waste");
+            // Both keeps both sides of every cut: nothing is waste.
+            let waste_ok = if mode == KeepMode::Both {
+                w == 0
+            } else {
+                w > 1000
+            };
+            assert!(k > 1000 && waste_ok, "{mode:?}: {k} kept, {w} waste");
         }
     }
 
@@ -520,20 +526,20 @@ mod tests {
     }
 
     #[test]
-    fn the_overlay_shows_the_kept_band_of_a_both_object() {
-        use flatcraft_path::BOTH_KEPT_BAND_MM;
+    fn the_overlay_shows_a_both_object_and_its_sheet_as_kept() {
         let area = kurbo::Rect::new(0.0, 0.0, 100.0, 100.0);
-        let paths = [square(1, 30.0, 30.0, 60.0, 60.0)];
+        let paths = [
+            square(1, 30.0, 30.0, 60.0, 60.0),
+            square(1, 40.0, 40.0, 50.0, 50.0),
+        ];
         let kept = KeptMaterial::from_toolpaths(&paths, |_| KeepMode::Both, area);
         let mask = Mask::of(&kept, area, 1000).unwrap();
         agrees(&kept, &mask);
         let at = |x: f64, y: f64| mask.at(Point::new(x, y)).unwrap();
-        let b = BOTH_KEPT_BAND_MM;
-        assert_eq!(at(45.05, 45.05), 255, "inside");
-        assert_eq!(at(60.0 + b / 2.0 + 0.05, 45.05), 255, "in the band right");
-        assert_eq!(at(45.05, 30.0 - b / 2.0 - 0.05), 255, "in the band above");
-        assert_eq!(at(60.0 + b + 0.55, 45.05), 0, "past the band");
-        assert_eq!(at(5.05, 5.05), 0, "far away");
+        assert_eq!(at(35.05, 45.05), 255, "the shape");
+        assert_eq!(at(45.05, 45.05), 255, "its middle");
+        assert_eq!(at(61.55, 45.05), 255, "the sheet next to it");
+        assert_eq!(at(5.05, 5.05), 255, "the sheet far away");
     }
 
     #[test]

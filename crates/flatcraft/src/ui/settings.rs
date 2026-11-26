@@ -81,7 +81,7 @@ pub fn keep_hint(k: KeepMode) -> &'static str {
         }
         KeepMode::Stencil => "Keep the sheet, like a stencil. The shapes fall out and are waste.",
         KeepMode::Both => {
-            "Keep both sides of every cut. The blade never starts or overshoots next to these cuts; it only turns on the spot."
+            "Keep both sides of every cut: the shapes and the sheet around them. The blade never starts or overshoots there; it only turns on the spot."
         }
     }
 }

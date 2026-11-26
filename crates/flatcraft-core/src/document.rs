@@ -182,11 +182,12 @@ pub enum KeepMode {
     /// cutting area is kept (the counter of an O too: on a backing sheet
     /// it stays in place). All stencils share that one sheet.
     Stencil,
-    /// Both sides of its cuts are kept: nothing near the object is waste.
-    /// Its own cuts get no lead-in and no corner overshoot, the blade only
-    /// swivels in place on them, and the pieces plus a band around its
-    /// rings (`flatcraft_path::BOTH_KEPT_BAND_MM`) are kept material, so a
-    /// neighbour's lead-ins, overshoots and weed lines stay out of it.
+    /// Both sides of its cuts are kept: its shapes, the middle of its O
+    /// and the sheet around it, which it shares with the stencils (a
+    /// piece of another object on that sheet keeps both sides too). Its
+    /// own cuts get no lead-in and no corner overshoot, the blade only
+    /// swivels in place on them, and no lead-in, overshoot or weed line of
+    /// a neighbour lands on its sheet.
     Both,
 }
 

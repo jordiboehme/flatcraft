@@ -772,8 +772,7 @@ proptest! {
 }
 
 #[test]
-fn weed_lines_stay_out_of_the_kept_band_of_a_both_object() {
-    use flatcraft_path::BOTH_KEPT_BAND_MM;
+fn weeding_never_cuts_the_sheet_of_a_both_object() {
     let ring = |object: u64, x0: f64, y0: f64, x1: f64, y1: f64| {
         Toolpath::new(
             vec![
@@ -807,15 +806,13 @@ fn weed_lines_stay_out_of_the_kept_band_of_a_both_object() {
             KeepMode::Pieces
         }
     };
+    // The Both object keeps the sheet around it, as a stencil does, and
+    // the Pieces neighbour sits on that sheet: nothing to weed.
     let w = weed::generate(&design, mode, |o| o, area, &s);
-    assert!(!w.lines.is_empty() && w.boxes.len() == 1, "{w:?}");
-    let edges: Vec<(Point, Point)> = both.points.windows(2).map(|p| (p[0], p[1])).collect();
-    for l in &w.lines {
-        for &(c, d) in &edges {
-            assert!(
-                seg_distance(l[0], l[1], c, d) >= BOTH_KEPT_BAND_MM,
-                "a weed line {l:?} in the kept band"
-            );
-        }
-    }
+    assert!(w.lines.is_empty() && w.boxes.is_empty(), "{w:?}");
+    assert_eq!(w.blocked_boxes, 1);
+    // The Pieces neighbour alone: a box and lines.
+    let w = weed::generate(&design[1..], mode, |o| o, area, &s);
+    assert_eq!(w.boxes.len(), 1);
+    assert!(!w.lines.is_empty());
 }
