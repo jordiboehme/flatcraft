@@ -1311,6 +1311,14 @@ fn min_radius_uses_the_blade_offset_until_set() {
     click(&mut h, "Save as user preset...");
     type_into(&mut h, "Preset name", "My Paper");
     assert!(disabled(&h, "Minimum radius (mm)"));
+    // While the blade offset applies, the field says so instead of a number.
+    assert_eq!(
+        h.get_by_label("Minimum radius (mm)")
+            .accesskit_node()
+            .value()
+            .as_deref(),
+        Some("blade offset")
+    );
     click(&mut h, "Minimum radius (mm) own value");
     assert!(!disabled(&h, "Minimum radius (mm)"));
     type_into(&mut h, "Minimum radius (mm)", "0.6");

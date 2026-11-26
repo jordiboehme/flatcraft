@@ -93,6 +93,9 @@ pub struct ListingLine {
 pub struct EmittedJob {
     pub bytes: Vec<u8>,
     pub listing: Vec<ListingLine>,
+    /// Paths with 2 or more points that were left out because all their
+    /// points round to one device point (gpgl.md section 9).
+    pub collapsed: usize,
 }
 
 /// Checks `value` against both the profile range and the protocol range. The profile can only
@@ -226,11 +229,14 @@ pub fn emit_job(
     // Paths with fewer than 2 points, also after merging points that round
     // to the same device point, are skipped (gpgl.md section 9).
     let mut cut: Vec<(Vec<DevPoint>, &str)> = Vec::new();
+    let mut collapsed = 0;
     for path in paths.iter().filter(|p| p.points.len() >= 2) {
         let mut points = quantize_path(path, plotter, media, height, width)?;
         points.dedup();
         if points.len() >= 2 {
             cut.push((points, &path.note));
+        } else {
+            collapsed += 1;
         }
     }
     if cut.is_empty() {
@@ -279,5 +285,9 @@ pub fn emit_job(
         });
         bytes.extend_from_slice(&b);
     }
-    Ok(EmittedJob { bytes, listing })
+    Ok(EmittedJob {
+        bytes,
+        listing,
+        collapsed,
+    })
 }

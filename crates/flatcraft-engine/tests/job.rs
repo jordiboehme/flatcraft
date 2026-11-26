@@ -293,6 +293,43 @@ fn a_line_below_half_a_step_is_dropped_with_a_warning() {
 }
 
 #[test]
+fn a_line_inside_one_plotter_step_is_left_out_with_a_warning() {
+    let d = dirs();
+    let mut s = session(&d);
+    import_square(&mut s, "square");
+    // 0.03 mm: above half a step, so the planner keeps it, but from
+    // x = 9.98 mm both ends round to device unit 200 (9.98 * 20 = 199.6,
+    // 10.01 * 20 = 200.2), so the emitter leaves it out.
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><path d="M60 60 L60.03 60" stroke="black" fill="none"/></svg>"#;
+    let id = run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": svg, "name": "speck" }),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    run(
+        &mut s,
+        "object.set_cut_options",
+        json!({ "ids": [id], "mode": "all_lines", "strokes": "centre_line", "auto_threshold_mm": 1.5 }),
+    );
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [id], "x_mm": 9.98, "y_mm": 20.0 }),
+    );
+    let r = run(&mut s, "job.preview", json!({}));
+    let w = r["warnings"].to_string();
+    assert!(
+        w.contains("1 cut path fits inside one plotter step, so it is not cut."),
+        "{w}"
+    );
+    let job = s.doc().last_job().unwrap();
+    assert_eq!(job.plan.dropped_short, 0);
+    assert_eq!(job.job.collapsed, 1);
+}
+
+#[test]
 fn a_job_of_only_too_short_lines_says_why_nothing_is_cut() {
     let d = dirs();
     let mut s = session(&d);

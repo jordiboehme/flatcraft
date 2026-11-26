@@ -1602,7 +1602,7 @@ impl Setting {
                 "The smallest curve radius this material cuts cleanly, in millimetres. The radius says how tight a curve is: a smaller radius is a tighter curve. Curves tighter than this are meant to get a warning before the cut, because the blade may round or tear them. Raise it after a test cut shows torn small curves. FlatCraft does not use it in a job yet, so this changes nothing today."
             }
             Setting::MinRadiusOwn => {
-                "Tick this to give this material its own minimum radius. While it is off, the plotter's blade offset is used, which suits most materials."
+                "Tick this to give this material its own minimum radius. It starts at 0.25 mm, the usual blade offset. While it is off, the field shows blade offset: the blade offset of the plotter you cut with is used, which suits most materials."
             }
             Setting::MatName => "The name this mat shows in the mat lists.",
             Setting::MatKind => {

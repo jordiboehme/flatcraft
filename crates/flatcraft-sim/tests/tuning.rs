@@ -1625,10 +1625,13 @@ fn emitted_host_job_is_the_planned_device_grid() {
                     })
                     .collect();
                 units.dedup();
-                if units.len() >= 2 {
-                    want.push(units);
-                }
+                // No planned host run collapses to one device point, so a
+                // run the emitter drops cannot hide behind the same filter.
+                assert!(units.len() >= 2, "mirror {mirror} d {d}: a run collapses");
+                want.push(units);
             }
+            assert_eq!(want.len(), runs.len());
+            assert_eq!(job.collapsed, 0, "mirror {mirror} d {d}");
             let sent: Vec<Vec<(i64, i64)>> = {
                 let mut paths: Vec<Vec<(i64, i64)>> = Vec::new();
                 for c in decode::decode(&job.bytes) {

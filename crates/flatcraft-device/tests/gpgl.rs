@@ -692,6 +692,7 @@ fn duplicate_device_points_are_merged() {
     )
     .unwrap();
     assert_eq!(job.listing.len(), 15);
+    assert_eq!(job.collapsed, 1, "the emitter counts what it left out");
 }
 
 #[test]

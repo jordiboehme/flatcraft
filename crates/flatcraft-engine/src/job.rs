@@ -14,7 +14,8 @@ use flatcraft_device::{
     TransportError, TransportSpec,
 };
 use flatcraft_path::{
-    CutPlan, PathRef, PipelineSettings, PlacedPath, PlanError, StrategySettings, ToolpathKind, plan,
+    AppliedCompensation, CutPlan, PathRef, PipelineSettings, PlacedPath, PlanError,
+    StrategySettings, ToolpathKind, plan,
 };
 use serde_json::{Value, json};
 
@@ -152,6 +153,25 @@ pub(crate) fn weed_box_blocked_warning(blocked: usize) -> String {
 /// starts with pass `pass`.
 fn last_pass(pass: u32, laps: u32) -> u32 {
     pass.saturating_add(laps.max(1) - 1)
+}
+
+/// What the points of a plan are, for the emitter's compensation check.
+fn geometry_kind(c: AppliedCompensation) -> GeometryKind {
+    match c {
+        AppliedCompensation::Tip => GeometryKind::Tip,
+        AppliedCompensation::Host { offset_mm } => GeometryKind::HostAxis { offset_mm },
+        AppliedCompensation::HostCalibration => GeometryKind::HostCalibration,
+    }
+}
+
+/// The warning when the emitter left out paths whose points all round to
+/// one plotter step.
+pub(crate) fn collapsed_warning(n: usize) -> String {
+    if n == 1 {
+        "1 cut path fits inside one plotter step, so it is not cut.".to_string()
+    } else {
+        format!("{n} cut paths fit inside one plotter step, so they are not cut.")
+    }
 }
 
 /// Problems the person can fix (settings, placement, media) are refusals;
@@ -539,23 +559,24 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         warnings.push(weed_box_blocked_warning(cut_plan.blocked_weed_boxes));
     }
 
+    // One emit path per blade-down run: a toolpath without host
+    // compensation is one run along its points.
     let paths: Vec<EmitPath> = cut_plan
         .toolpaths
         .iter()
-        .map(|t| {
-            if t.kind == ToolpathKind::Weed {
-                return EmitPath {
-                    points: t.points.clone(),
-                    note: weed_note(t, t.pass, t.laps),
-                };
-            }
-            let id = t.source.object;
-            let name = names.get(&id).copied().unwrap_or("");
-            let label = labels.get(&(id, t.source.path_index)).map(String::as_str);
-            EmitPath {
-                points: t.points.clone(),
-                note: note(id, name, t.source.path_index, label, t.pass, t.laps),
-            }
+        .flat_map(|t| {
+            let text = if t.kind == ToolpathKind::Weed {
+                weed_note(t, t.pass, t.laps)
+            } else {
+                let id = t.source.object;
+                let name = names.get(&id).copied().unwrap_or("");
+                let label = labels.get(&(id, t.source.path_index)).map(String::as_str);
+                note(id, name, t.source.path_index, label, t.pass, t.laps)
+            };
+            t.runs().into_iter().map(move |r| EmitPath {
+                points: r.points,
+                note: text.clone(),
+            })
         })
         .collect();
     let settings = CutSettings {
@@ -563,8 +584,19 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         force: job.force.unwrap_or(material.force),
         track_enhancing: material.track_enhancing && plotter.capabilities.track_enhancing,
     };
-    let emitted =
-        emit_job(&paths, GeometryKind::Tip, plotter, &media_id, &settings).map_err(emit_error)?;
+    // The geometry is what the plan says it applied, never a claim of this
+    // caller: the emitter refuses it when it does not fit the plotter.
+    let emitted = emit_job(
+        &paths,
+        geometry_kind(cut_plan.compensation),
+        plotter,
+        &media_id,
+        &settings,
+    )
+    .map_err(emit_error)?;
+    if emitted.collapsed > 0 {
+        warnings.push(collapsed_warning(emitted.collapsed));
+    }
     Ok(JobResult {
         plan: cut_plan,
         job: emitted,
@@ -1133,10 +1165,25 @@ mod tests {
     }
 
     #[test]
+    fn the_emitted_geometry_is_what_the_plan_applied() {
+        assert_eq!(geometry_kind(AppliedCompensation::Tip), GeometryKind::Tip);
+        assert_eq!(
+            geometry_kind(AppliedCompensation::Host { offset_mm: 0.3 }),
+            GeometryKind::HostAxis { offset_mm: 0.3 }
+        );
+        assert_eq!(
+            geometry_kind(AppliedCompensation::HostCalibration),
+            GeometryKind::HostCalibration
+        );
+        assert!(!collapsed_warning(2).contains('\u{2014}'));
+    }
+
+    #[test]
     fn unsafe_bytes_never_wait_for_confirmation() {
         let bad = EmittedJob {
             bytes: b"FB1\x03H\x03".to_vec(),
             listing: vec![],
+            collapsed: 0,
         };
         let e = checked(bad).unwrap_err();
         assert!(matches!(e, CommandError::Failed(_)), "{e}");
@@ -1144,11 +1191,13 @@ mod tests {
         let unterminated = EmittedJob {
             bytes: b"\x1b\x04".to_vec(),
             listing: vec![],
+            collapsed: 0,
         };
         assert!(checked(unterminated).is_err());
         let good = EmittedJob {
             bytes: b"\x1b\x04H\x03".to_vec(),
             listing: vec![],
+            collapsed: 0,
         };
         checked(good).unwrap();
     }

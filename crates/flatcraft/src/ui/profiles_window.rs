@@ -2124,7 +2124,7 @@ fn corner_rows(ui: &mut Ui, f: &Form<'_>, m: &mut MaterialProfile) {
                 m.min_radius_mm = on.then_some(DEFAULT_MIN_RADIUS_MM);
             }
             let mut v = m.min_radius_mm.unwrap_or(DEFAULT_MIN_RADIUS_MM);
-            let r = num(ui, on, &mut v, 2, NumKind::Length);
+            let r = radius_field(ui, on.then_some(&mut v));
             set_name(ui, &r, &f.name(label, key));
             f.card(
                 &r,
@@ -2141,6 +2141,25 @@ fn corner_rows(ui: &mut Ui, f: &Form<'_>, m: &mut MaterialProfile) {
     f.mark(ui, label, at.union(r.rect));
     ui.end_row();
 }
+
+/// A minimum radius field: the number while it has one, otherwise a dimmed
+/// "blade offset", because the plotter's blade offset applies (the material
+/// form does not know which plotter that is).
+fn radius_field(ui: &mut Ui, v: Option<&mut f64>) -> Response {
+    match v {
+        Some(v) => num(ui, true, v, 2, NumKind::Length),
+        None => {
+            let mut text = BLADE_OFFSET_TEXT.to_string();
+            ui.add_enabled(
+                false,
+                egui::TextEdit::singleline(&mut text).desired_width(96.0),
+            )
+        }
+    }
+}
+
+/// What a minimum radius field shows while the blade offset applies.
+const BLADE_OFFSET_TEXT: &str = "blade offset";
 
 /// The overshoot a material gets when it switches to lift and overshoot:
 /// the usual 0.1 mm of vendor software.
@@ -2277,7 +2296,8 @@ fn corner_overrides(
         return;
     }
     let base_corner = m.corner_mode;
-    let base_radius = m.min_radius_mm.unwrap_or(DEFAULT_MIN_RADIUS_MM);
+    // The material's own minimum radius; `None` is the blade offset.
+    let base_radius = m.min_radius_mm;
     ui.add_space(t.spacing * 0.5);
     egui::Grid::new("flatcraft-profiles-corner-overrides")
         .num_columns(4)
@@ -2356,10 +2376,21 @@ fn corner_overrides(
                     set_name(ui, &r, &format!("{label} set"));
                     f.card(&r, &label, Setting::OverrideSet, None);
                     if r.changed() {
-                        o.min_radius_mm = on.then_some(base_radius);
+                        o.min_radius_mm =
+                            on.then_some(base_radius.unwrap_or(DEFAULT_MIN_RADIUS_MM));
                     }
-                    let mut v = o.min_radius_mm.unwrap_or(base_radius);
-                    let r = num(ui, on, &mut v, 2, NumKind::Length);
+                    let r = if on {
+                        let mut v = o.min_radius_mm.unwrap_or(DEFAULT_MIN_RADIUS_MM);
+                        let r = num(ui, true, &mut v, 2, NumKind::Length);
+                        o.min_radius_mm = Some(v);
+                        r
+                    } else {
+                        // Dimmed: the material's own value, or the blade offset.
+                        match base_radius {
+                            Some(mut v) => num(ui, false, &mut v, 2, NumKind::Length),
+                            None => radius_field(ui, None),
+                        }
+                    };
                     set_name(ui, &r, &f.name(&label, &radius_key));
                     f.card(
                         &r,
@@ -2367,9 +2398,6 @@ fn corner_overrides(
                         Setting::MinRadius,
                         (!on).then_some(OVERRIDE_OFF),
                     );
-                    if on {
-                        o.min_radius_mm = Some(v);
-                    }
                 });
                 ui.end_row();
             }
