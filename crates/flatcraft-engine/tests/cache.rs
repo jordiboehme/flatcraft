@@ -512,3 +512,157 @@ fn an_uncut_sliver_takes_no_space() {
     let text = std::fs::read_to_string(&out).unwrap();
     assert_eq!(text.matches("<path").count(), 1, "{text}");
 }
+
+// ---------------------------------------------------------------- compound slivers
+
+/// An even-odd frame 0.1 mm wide: outer square 10..30, inner 10.1..29.9.
+const FRAME_D: &str = "M10 10 H30 V30 H10 Z M10.1 10.1 V29.9 H29.9 V10.1 Z";
+
+/// Imports one path; returns the pieces, the job preview and the check.
+fn compound(d: &str, stroke: Option<f64>) -> (Vec<kurbo::BezPath>, Value, Value) {
+    let dirs = dirs();
+    let mut s = session(&dirs);
+    let paint = match stroke {
+        Some(w) => format!(r#"fill="black" stroke="black" stroke-width="{w}""#),
+        None => r#"fill="black""#.to_string(),
+    };
+    let id = import(
+        &mut s,
+        &svg(&format!(r#"<path fill-rule="evenodd" d="{d}" {paint}/>"#)),
+        "frame",
+    );
+    let g = s.cut_geometry().unwrap();
+    let pieces = g
+        .pieces(flatcraft_core::document::ObjectId(id))
+        .iter()
+        .map(|p| p.path.clone())
+        .collect();
+    let p = run(&mut s, "job.preview", json!({}));
+    let c = run(&mut s, "document.check", json!({}));
+    (pieces, p, c)
+}
+
+fn closed(p: &kurbo::BezPath) -> bool {
+    p.elements().contains(&kurbo::PathEl::ClosePath)
+}
+
+/// True if `p` runs in the middle of the 0.1 mm frame: every point
+/// 0.05 mm (plus a little) inside the outer square.
+fn on_frame_middle(p: &kurbo::BezPath) -> bool {
+    p.elements().iter().filter_map(|e| e.end_point()).all(|q| {
+        let inset = [q.x - 10.0, 30.0 - q.x, q.y - 10.0, 30.0 - q.y]
+            .into_iter()
+            .fold(f64::INFINITY, f64::min);
+        (inset - 0.05).abs() < 0.01
+    })
+}
+
+/// A stroked frame thinner than the knife's narrowest feature, alone in
+/// its path: cut once, along its middle, and nothing says "not cut".
+#[test]
+fn a_stroked_compound_sliver_is_cut_once_along_its_middle() {
+    let (pieces, p, c) = compound(FRAME_D, Some(0.2));
+    assert_eq!(pieces.len(), 1, "{pieces:?}");
+    assert!(
+        closed(&pieces[0]) && on_frame_middle(&pieces[0]),
+        "{pieces:?}"
+    );
+    assert_eq!(p["ready"], true, "{p}");
+    let text = p["warnings"].to_string();
+    assert!(!text.contains("not cut"), "{text}");
+    assert!(!text.contains("no cut paths"), "{text}");
+    assert_eq!(codes(&c), Vec::<String>::new(), "{c}");
+}
+
+/// The same frame beside a square in the same path: the square's ring and
+/// the frame's middle, never the frame's two edges (the tear case).
+#[test]
+fn a_stroked_compound_sliver_beside_a_shape_is_not_cut_twice() {
+    let d = format!("{FRAME_D} M40 10 H60 V30 H40 Z");
+    let (pieces, p, c) = compound(&d, Some(0.2));
+    assert_eq!(pieces.len(), 2, "{pieces:?}");
+    assert!(pieces.iter().all(closed), "no open pieces: {pieces:?}");
+    let frame: Vec<_> = pieces
+        .iter()
+        .filter(|q| kurbo::Shape::bounding_box(*q).x1 < 35.0)
+        .collect();
+    assert_eq!(frame.len(), 1, "{pieces:?}");
+    assert!(on_frame_middle(frame[0]), "{frame:?}");
+    let text = p["warnings"].to_string();
+    assert!(!text.contains("not cut"), "{text}");
+    assert_eq!(codes(&c), Vec::<String>::new(), "{c}");
+}
+
+/// A 0.6 mm stroke under the Auto threshold: the frame is cut once along
+/// its middle, and the report says exactly that.
+#[test]
+fn a_wide_stroked_compound_sliver_is_cut_once_and_says_so() {
+    let (pieces, p, c) = compound(FRAME_D, Some(0.6));
+    assert_eq!(pieces.len(), 1, "{pieces:?}");
+    assert!(on_frame_middle(&pieces[0]), "{pieces:?}");
+    assert!(!p["warnings"].to_string().contains("not cut"), "{p}");
+    assert_eq!(codes(&c), ["strokes_cut_once"], "{c}");
+}
+
+/// Without a stroke the frame is a sliver: dropped, and said so.
+#[test]
+fn a_fill_only_compound_sliver_is_dropped_with_the_warning() {
+    let d = format!("{FRAME_D} M40 10 H60 V30 H40 Z");
+    let (pieces, p, c) = compound(&d, None);
+    assert_eq!(pieces.len(), 1, "only the square: {pieces:?}");
+    assert!(
+        p["warnings"]
+            .to_string()
+            .contains("'frame': 1 filled sliver is thinner than 0.125 mm and is not cut."),
+        "{p}"
+    );
+    assert_eq!(codes(&c), ["thin_slivers"], "{c}");
+}
+
+/// A fill-only frame of two wide subpaths, 0.05 mm wide and reaching far
+/// off the mat, beside a square in the same path: the frame is a sliver
+/// that is not cut, so no box counts it, not the report's, not align's.
+#[test]
+fn a_compound_sliver_off_the_mat_takes_no_space() {
+    let d = dirs();
+    let mut s = session(&d);
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="500mm" height="500mm" viewBox="0 0 500 500"><path fill-rule="evenodd" d="M20 20 H40 V40 H20 Z M20 60 H420 V70 H20 Z M20.05 60.05 V69.95 H419.95 V60.05 Z"/></svg>"#;
+    let id = run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": svg, "name": "square and frame" }),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    let c = run(&mut s, "document.check", json!({}));
+    assert_eq!(codes(&c), ["thin_slivers"], "{c}");
+    let box_of = |s: &mut Session| {
+        let st = run(s, "document.state", json!({}));
+        let b = st["objects"][0]["bounds_mm"].clone();
+        (
+            b["x0"].as_f64().unwrap(),
+            b["x1"].as_f64().unwrap() - b["x0"].as_f64().unwrap(),
+            b["y1"].as_f64().unwrap() - b["y0"].as_f64().unwrap(),
+        )
+    };
+    let (_, w, h) = box_of(&mut s);
+    assert!(
+        (w - 20.0).abs() < 0.01 && (h - 20.0).abs() < 0.01,
+        "{w} {h}"
+    );
+    assert_eq!(run(&mut s, "job.preview", json!({}))["ready"], true);
+    let st = run(&mut s, "document.state", json!({}));
+    let x0 = st["cutting_area_mm"]["x1"].as_f64().unwrap();
+    run(
+        &mut s,
+        "arrange.align",
+        json!({ "ids": [id], "mode": "right", "relative_to": "cutting_area" }),
+    );
+    let (left, w, _) = box_of(&mut s);
+    assert!(
+        (left + w - x0).abs() < 1e-6,
+        "the square's right edge on the area's"
+    );
+    let c = run(&mut s, "document.check", json!({}));
+    assert_eq!(codes(&c), ["thin_slivers"], "{c}");
+}

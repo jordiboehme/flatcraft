@@ -595,6 +595,16 @@ impl Document {
         }
     }
 
+    /// Forgets the ignored pairs with an object that is gone.
+    pub fn prune_ignored_pairs(&mut self) {
+        if self.ignored_pairs.is_empty() {
+            return;
+        }
+        let ids: std::collections::BTreeSet<u64> = self.objects.iter().map(|o| o.id.0).collect();
+        self.ignored_pairs
+            .retain(|p| p.ids.iter().all(|id| ids.contains(id)));
+    }
+
     /// True if the hint `code` about objects `a` and `b` is turned off.
     pub fn is_ignored(&self, code: &str, a: u64, b: u64) -> bool {
         self.ignored_pairs.contains(&IgnoredPair::new(code, a, b))

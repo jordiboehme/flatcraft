@@ -125,6 +125,10 @@ impl PieceKey {
 pub struct CutGeometry {
     pub per_object: BTreeMap<ObjectId, Arc<Vec<CutPiece>>>,
     pub facts: BTreeMap<ObjectId, PieceFacts>,
+    /// The box of what is cut of each object (see [`path_box`]): slivers
+    /// that are not cut never count. Every check that measures an object
+    /// reads it here.
+    pub bounds: BTreeMap<ObjectId, Option<Rect>>,
     pub warnings: Vec<String>,
     /// The flatten tolerance it was built with, mm.
     pub tolerance_mm: f64,
@@ -139,6 +143,11 @@ impl CutGeometry {
     /// The pieces of object `id` (empty for an unknown id).
     pub fn pieces(&self, id: ObjectId) -> &[CutPiece] {
         self.per_object.get(&id).map_or(&[], |p| p.as_slice())
+    }
+
+    /// The box of what is cut of object `id`.
+    pub fn bounds(&self, id: ObjectId) -> Option<Rect> {
+        self.bounds.get(&id).copied().flatten()
     }
 
     /// What the cut of object `id` left out.
@@ -199,16 +208,22 @@ pub fn objects_cut_geometry(
     for o in objects {
         let kept = reuse.and_then(|p| {
             let k = p.keys.get(&o.id).filter(|k| k.fits(o))?;
-            Some((k.clone(), p.per_object.get(&o.id)?.clone(), p.facts(o.id)))
+            Some((
+                k.clone(),
+                p.per_object.get(&o.id)?.clone(),
+                p.facts(o.id),
+                p.bounds(o.id),
+            ))
         });
-        let (key, pieces, facts) = match kept {
+        let (key, pieces, facts, bounds) = match kept {
             Some(k) => k,
             None => {
                 #[cfg(test)]
                 tests::OBJECT_CUTS.with(|n| n.set(n.get() + 1));
                 let affine = o.transform.affine(o.local_bounds);
-                let (pieces, facts) = object_pieces(&o.geometry, &o.cut, affine, tol, min_width_mm);
-                (PieceKey::of(o), Arc::new(pieces), facts)
+                let (pieces, facts, bounds) =
+                    object_pieces(&o.geometry, &o.cut, affine, tol, min_width_mm);
+                (PieceKey::of(o), Arc::new(pieces), facts, bounds)
             }
         };
         if facts.slivers > 0 {
@@ -219,6 +234,7 @@ pub fn objects_cut_geometry(
         out.keys.insert(o.id, key);
         out.per_object.insert(o.id, pieces);
         out.facts.insert(o.id, facts);
+        out.bounds.insert(o.id, bounds);
     }
     Arc::new(out)
 }
@@ -238,20 +254,24 @@ pub fn sliver_warning(name: &str, n: usize, width_mm: f64) -> String {
     format!("'{name}': {what} thinner than {width_mm} mm and {verb} not cut.")
 }
 
-/// The pieces of one object's source paths placed with `affine`, and what
-/// the cut left out.
+/// The pieces of one object's source paths placed with `affine`, what the
+/// cut left out, and the box of what is cut ([`path_box`] of each path).
 pub fn object_pieces(
     geometry: &[CutPath],
     options: &CutOptions,
     affine: Affine,
     tol: f64,
     min_width_mm: f64,
-) -> (Vec<CutPiece>, PieceFacts) {
+) -> (Vec<CutPiece>, PieceFacts, Option<Rect>) {
     let mut pieces = Vec::new();
     let mut facts = PieceFacts::default();
+    let mut bounds: Option<Rect> = None;
     for (i, p) in geometry.iter().enumerate() {
         let (cut, slivers) = cut_path_counted(p, options, affine, tol, min_width_mm);
         facts.slivers += slivers;
+        if let Some(b) = path_box(p, options, affine, &cut, slivers) {
+            bounds = Some(bounds.map_or(b, |a| a.union(b)));
+        }
         // A stroke-less fill that gives nothing, not even a sliver: no
         // area, or thinner than the tolerance. It is not visible.
         if cut.is_empty()
@@ -267,7 +287,7 @@ pub fn object_pieces(
             path,
         }));
     }
-    (pieces, facts)
+    (pieces, facts, bounds)
 }
 
 /// The cut paths of `object` placed with `placed_affine`, in mat mm.
@@ -284,22 +304,84 @@ pub fn cut_paths(
         .collect()
 }
 
-/// Bounding box of the object's cut paths in mat mm, for a knife whose
+/// Bounding box of what is cut of the object in mat mm, for a knife whose
 /// narrowest feature is `min_width_mm` (see `report::min_width_mm`);
-/// `None` if the object has no paths. Cheap: the box of a union is the
-/// union of the boxes of its parts, so no booleans run, except for a fill
-/// with a part thin enough to be a sliver ([`may_have_slivers`]): its fill
-/// edges are cut, so a sliver that is not cut never counts. A fill-only
-/// path with no area (cut as nothing) still counts with its centre line.
+/// `None` if the object has no paths. The same rule as the boxes of the
+/// cut geometry ([`CutGeometry::bounds`]): a fill is cut, so a sliver that
+/// is not cut never counts (see [`path_box`]). Each box is kept per
+/// shape, scale, turn and cut options (not position), so asking again is
+/// cheap. A fill-only path with no area (cut as nothing) still counts with
+/// its centre line.
 pub fn cut_bounds(object: &Object, min_width_mm: f64) -> Option<Rect> {
     #[cfg(test)]
     tests::CUT_BOUNDS_CALLS.with(|n| n.set(n.get() + 1));
-    let affine = object.transform.affine(object.local_bounds);
-    cut_bounds_of(&object.geometry, &object.cut, affine, min_width_mm)
+    let mut centred = object.transform;
+    centred.center_mm = Point::ORIGIN;
+    let t = &centred;
+    let key = BoundsMemoKey {
+        geometry: Arc::as_ptr(&object.geometry) as usize,
+        numbers: [
+            t.scale_x,
+            t.scale_y,
+            t.rotation_deg,
+            object.local_bounds.x0,
+            object.local_bounds.y0,
+            object.local_bounds.x1,
+            object.local_bounds.y1,
+            object.cut.auto_threshold_mm,
+            min_width_mm,
+        ]
+        .map(f64::to_bits),
+        mirror: t.mirror,
+        mode: object.cut.mode as u8,
+        strokes: object.cut.strokes as u8,
+    };
+    let memo = BOUNDS_MEMO.get_or_init(Default::default);
+    let found = memo
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+        .map(|(_, b)| *b);
+    let at_origin = match found {
+        Some(b) => b,
+        None => {
+            let affine = centred.affine(object.local_bounds);
+            let b = cut_bounds_of(&object.geometry, &object.cut, affine, min_width_mm);
+            let mut m = memo
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if m.len() >= BOUNDS_MEMO_SIZE {
+                m.clear();
+            }
+            m.insert(key, (object.geometry.clone(), b));
+            b
+        }
+    };
+    at_origin.map(|b| b + object.transform.center_mm.to_vec2())
 }
 
+/// What a box of [`cut_bounds`] depends on, but the position. The geometry
+/// `Arc` is held beside it, so its address cannot be reused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct BoundsMemoKey {
+    geometry: usize,
+    numbers: [u64; 9],
+    mirror: bool,
+    mode: u8,
+    strokes: u8,
+}
+
+type BoundsMemo =
+    std::sync::Mutex<std::collections::HashMap<BoundsMemoKey, (Arc<Vec<CutPath>>, Option<Rect>)>>;
+
+/// The boxes [`cut_bounds`] worked out, for every session of the process.
+static BOUNDS_MEMO: std::sync::OnceLock<BoundsMemo> = std::sync::OnceLock::new();
+
+/// At most this many boxes are kept; then they are all forgotten.
+const BOUNDS_MEMO_SIZE: usize = 4096;
+
 /// [`cut_bounds`] of geometry placed with `affine` and cut with `options`,
-/// for callers that hold the parts of an object (a job input).
+/// worked out every time.
 pub fn cut_bounds_of(
     geometry: &[CutPath],
     options: &CutOptions,
@@ -308,22 +390,44 @@ pub fn cut_bounds_of(
 ) -> Option<Rect> {
     geometry
         .iter()
-        .filter_map(|p| path_bounds(p, options, affine, min_width_mm))
+        .filter_map(|p| {
+            if cuts_its_fill(p, options, affine) {
+                let (cut, slivers) =
+                    cut_path_counted(p, options, affine, BOUNDS_TOLERANCE_MM, min_width_mm);
+                path_box(p, options, affine, &cut, slivers)
+            } else {
+                shape_bounds(p, options, affine)
+            }
+        })
         .reduce(|a, b| a.union(b))
 }
 
-/// True if a subpath of `placed` is on its own thinner on average than
-/// twice `min_width` (twice its area over its length, as [`mean_width`]):
-/// only then can the fill boolean leave a sliver of it. A thin part made
-/// by two wide subpaths together (a crescent of two near circles) lies in
-/// their boxes, which count anyway.
-fn may_have_slivers(placed: &BezPath, min_width: f64) -> bool {
-    subpaths(placed.iter()).iter().any(|sub| {
-        let Some(c) = sub.contour(BOUNDS_TOLERANCE_MM * 5.0) else {
-            return false;
-        };
-        mean_width(&[vec![c]]) < 2.0 * min_width
-    })
+/// True if the cut of `path` is the edge of its fill (object outlines,
+/// a fill, no outline stroke): only such a cut can drop slivers.
+fn cuts_its_fill(path: &CutPath, options: &CutOptions, affine: Affine) -> bool {
+    options.mode == CutMode::ObjectOutlines
+        && path.paint.fill.is_some()
+        && outline_style(path.paint, options, affine).is_none()
+}
+
+/// The box of what is cut of `path`, given its cut `cut` and how many
+/// slivers it dropped: the pieces themselves when slivers were dropped (so
+/// they never count), else the box of the drawn shape ([`shape_bounds`]),
+/// which follows curves exactly and holds every piece.
+pub(crate) fn path_box(
+    path: &CutPath,
+    options: &CutOptions,
+    affine: Affine,
+    cut: &[BezPath],
+    slivers: usize,
+) -> Option<Rect> {
+    if slivers > 0 {
+        return cut
+            .iter()
+            .map(Shape::bounding_box)
+            .reduce(|a, b| a.union(b));
+    }
+    shape_bounds(path, options, affine)
 }
 
 /// The placed width of the stroke of `paint` when the stroke mode Auto
@@ -348,12 +452,9 @@ pub fn outline_width(paint: Paint, options: &CutOptions, affine: Affine) -> Opti
     }
 }
 
-fn path_bounds(
-    path: &CutPath,
-    options: &CutOptions,
-    affine: Affine,
-    min_width: f64,
-) -> Option<Rect> {
+/// The box of the drawn shape of `path` as it is cut: the stroke outline
+/// for an outlined stroke, else the centre line (a fill's edge lies on it).
+fn shape_bounds(path: &CutPath, options: &CutOptions, affine: Affine) -> Option<Rect> {
     let placed = affine * &path.path;
     if !flatcraft_core::geometry::has_segments(&placed) {
         return None;
@@ -364,28 +465,6 @@ fn path_bounds(
         CutMode::ObjectOutlines => outline_style(path.paint, options, affine),
     };
     let Some(style) = style.filter(|_| is_finite(&placed)) else {
-        if options.mode == CutMode::ObjectOutlines
-            && path.paint.fill.is_some()
-            && min_width > 0.0
-            && is_finite(&placed)
-            && may_have_slivers(&placed, min_width)
-        {
-            let (cut, slivers) = object_outlines(
-                placed.clone(),
-                path.paint,
-                options,
-                affine,
-                BOUNDS_TOLERANCE_MM,
-                min_width,
-            );
-            if slivers > 0 {
-                // What is cut, without the slivers.
-                return cut
-                    .iter()
-                    .map(Shape::bounding_box)
-                    .reduce(|a, b| a.union(b));
-            }
-        }
         return Some(centre);
     };
     let closed = close_meeting_ends(&placed);
@@ -562,7 +641,9 @@ fn object_outlines(
 /// Without a stroke a fill thinner than the tolerance is not visible and
 /// no knife can cut it, so it is dropped; one thinner than `min_width`
 /// is a sliver the blade cannot follow, so it is dropped and counted
-/// (the second value).
+/// (the second value). A sliver the boolean makes of a stroked path (a
+/// thin even-odd frame) is cut once, along its middle ([`sliver_once`]),
+/// never along both edges.
 ///
 /// The stroked centre line of a subpath that makes the fill is cut too
 /// where it leaves the fill's edge ([`spurs`]): a closed shape with a tail
@@ -632,24 +713,33 @@ fn fill_edges(
     } else {
         boolean(&fill, &[], rule, tolerance)
     };
+    // The spurs first, against every shape of the fill: a centre line on
+    // the edge of a band that is dropped or cut once below is that band's
+    // edge, never a spur.
+    let spur_cuts = spurs(&centre, &edges, tolerance);
     // Thinner than the tolerance: not visible, dropped without a word.
-    // Thinner than the knife's narrowest feature: a sliver, dropped and
-    // counted, since both its edges lie inside the blade's swing.
+    // Thinner than the knife's narrowest feature: a sliver, whose two
+    // edges both lie inside the blade's swing, so they are never both
+    // cut. A stroked sliver shows through its stroke: it is cut once,
+    // along its middle ([`sliver_once`]). A fill-only one is dropped and
+    // counted.
     let mut slivers = 0;
-    let kept: Vec<Vec<Contour>> = edges
-        .into_iter()
-        .filter(|shape| {
-            let w = mean_width(std::slice::from_ref(shape));
-            if w < tolerance {
-                return false;
+    let mut once: Vec<BezPath> = Vec::new();
+    let mut kept: Vec<Vec<Contour>> = Vec::new();
+    for shape in edges {
+        let w = mean_width(std::slice::from_ref(&shape));
+        if w < tolerance {
+            continue;
+        }
+        if w < min_width {
+            match stroke_width {
+                Some(_) => once.extend(sliver_once(&shape, &centre, min_width)),
+                None => slivers += 1,
             }
-            if w < min_width {
-                slivers += 1;
-                return false;
-            }
-            true
-        })
-        .collect();
+            continue;
+        }
+        kept.push(shape);
+    }
     let mut out: Vec<BezPath> = kept
         .iter()
         .flatten()
@@ -657,8 +747,151 @@ fn fill_edges(
         .map(|c| ring(c))
         .collect();
     out.extend(lines);
-    out.extend(spurs(&centre, &kept, tolerance));
+    out.extend(once);
+    out.extend(spur_cuts);
     (out, slivers)
+}
+
+/// The one cut of a stroked sliver `shape` (an outer contour and its
+/// holes, from the fill boolean): never both of its edges.
+///
+/// - A band between two rings (one hole, like a thin frame): the middle
+///   ring, each point halfway between a point of the outer ring and the
+///   nearest point of the hole ([`mid_ring`]).
+/// - A strip with no hole (a crescent): its spine ([`spine`]).
+/// - When neither can be built and checked: the longest of the stroked
+///   centre lines `centre` that runs along the shape, else the shape's
+///   outer contour. One line either way.
+fn sliver_once(shape: &[Contour], centre: &[Contour], min_width: f64) -> Option<BezPath> {
+    let reach = 4.0 * min_width.max(HAIRLINE_MM);
+    let built = match shape {
+        [outer, hole] => mid_ring(outer, hole, reach),
+        [outer] => spine(outer),
+        _ => None,
+    };
+    if built.is_some() {
+        return built;
+    }
+    let edges: Vec<Contour> = shape
+        .iter()
+        .filter_map(|c| {
+            let mut c = c.clone();
+            c.push(*c.first()?);
+            Some(c)
+        })
+        .collect();
+    let edge_refs: Vec<&[[f64; 2]]> = edges.iter().map(Vec::as_slice).collect();
+    let index = NearIndex::new(&edge_refs, reach);
+    let length = |c: &Contour| -> f64 {
+        c.windows(2)
+            .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+            .sum()
+    };
+    let polyline = |c: &Contour, closed: bool| {
+        let mut path = BezPath::new();
+        path.move_to(Point::new(c[0][0], c[0][1]));
+        for q in &c[1..] {
+            path.line_to(Point::new(q[0], q[1]));
+        }
+        if closed {
+            path.close_path();
+        }
+        path
+    };
+    let line = centre
+        .iter()
+        .filter(|c| c.len() >= 2 && c.iter().all(|p| index.near(*p)))
+        .max_by(|a, b| length(a).total_cmp(&length(b)));
+    match line {
+        Some(c) => Some(polyline(c, false)),
+        None => shape
+            .first()
+            .filter(|c| c.len() >= 3)
+            .map(|c| polyline(c, true)),
+    }
+}
+
+/// The ring halfway between the ring `outer` and the ring `hole` inside
+/// it: for points along `outer` (its vertices and points at most a
+/// quarter `reach` apart), the midpoint to the nearest point of `hole`.
+/// `None` unless it is proven to run inside the band: every such pair at
+/// most `reach` apart, and the middle about as long as the two rings on
+/// average.
+fn mid_ring(outer: &[[f64; 2]], hole: &[[f64; 2]], reach: f64) -> Option<BezPath> {
+    if outer.len() < 3 || hole.len() < 3 {
+        return None;
+    }
+    let ring_len = |r: &[[f64; 2]]| -> f64 {
+        (0..r.len())
+            .map(|k| {
+                let (a, b) = (r[k], r[(k + 1) % r.len()]);
+                (b[0] - a[0]).hypot(b[1] - a[1])
+            })
+            .sum()
+    };
+    let nearest = |p: [f64; 2]| -> [f64; 2] {
+        let mut best = (f64::INFINITY, hole[0]);
+        for k in 0..hole.len() {
+            let (a, b) = (hole[k], hole[(k + 1) % hole.len()]);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let len2 = dx * dx + dy * dy;
+            let t = if len2 > 0.0 {
+                (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let q = [a[0] + dx * t, a[1] + dy * t];
+            let d = (p[0] - q[0]).hypot(p[1] - q[1]);
+            if d < best.0 {
+                best = (d, q);
+            }
+        }
+        best.1
+    };
+    let step = (reach / 4.0).max(1e-3);
+    let n = outer.len();
+    let mut mids: Vec<Point> = Vec::new();
+    for k in 0..n {
+        let (a, b) = (outer[k], outer[(k + 1) % n]);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let parts = (dx.hypot(dy) / step).ceil().max(1.0) as usize;
+        for m in 0..parts {
+            let t = m as f64 / parts as f64;
+            let p = [a[0] + dx * t, a[1] + dy * t];
+            let q = nearest(p);
+            if (p[0] - q[0]).hypot(p[1] - q[1]) > reach {
+                return None;
+            }
+            let mid = Point::new((p[0] + q[0]) / 2.0, (p[1] + q[1]) / 2.0);
+            // A point on the straight run of the two before it says
+            // nothing new.
+            if mids.len() >= 2 {
+                let (u, v) = (mids[mids.len() - 2], mids[mids.len() - 1]);
+                if (v - u).cross(mid - v).abs() < 1e-12 * (1.0 + (v - u).hypot2()) {
+                    mids.pop();
+                }
+            }
+            if mids.last() != Some(&mid) {
+                mids.push(mid);
+            }
+        }
+    }
+    if mids.len() < 3 {
+        return None;
+    }
+    let mid_len: f64 = mids.windows(2).map(|w| w[0].distance(w[1])).sum::<f64>()
+        + mids[mids.len() - 1].distance(mids[0]);
+    let average = (ring_len(outer) + ring_len(hole)) / 2.0;
+    if (mid_len - average).abs() > (0.05 * average).max(4.0 * reach) {
+        return None;
+    }
+    let mut path = BezPath::new();
+    path.move_to(mids[0]);
+    for p in &mids[1..] {
+        path.line_to(*p);
+    }
+    path.close_path();
+    Some(path)
 }
 
 /// The parts of the stroked centre lines `centre` that do not lie on the
@@ -1423,7 +1656,7 @@ pub(crate) mod tests {
                     ..CutOptions::default()
                 };
                 assert_eq!(
-                    path_bounds(&path, &options, Affine::IDENTITY, 0.125),
+                    shape_bounds(&path, &options, Affine::IDENTITY),
                     None,
                     "{stray}"
                 );

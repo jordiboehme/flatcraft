@@ -1320,3 +1320,49 @@ fn strokes_cut_once_lose_their_width_out_loud() {
         );
     }
 }
+
+/// A move that turns a close neighbour into an overlapping one makes a
+/// new problem: that direction is not offered.
+#[test]
+fn move_apart_never_pushes_into_a_close_neighbour() {
+    let mut t = self::t();
+    let (_, b) = two_squares(&mut t.s, 0.3);
+    // c 1 mm right of b: already close; moving b 1.2 mm right would
+    // put it over c.
+    import(
+        &mut t.s,
+        "c",
+        r#"<rect x="81.3" y="20" width="30" height="30"/>"#,
+    );
+    let c = check(&mut t.s);
+    let fix = issues(&c)
+        .into_iter()
+        .find(|i| i["code"] == "objects_close" && i["object_ids"][1] == b)
+        .and_then(|i| i["fixes"].as_array().unwrap().first().cloned())
+        .unwrap();
+    assert_eq!(fix["label"], "Move apart", "{c}");
+    assert!(
+        !fix["description"]
+            .as_str()
+            .unwrap()
+            .contains("to the right"),
+        "{fix}"
+    );
+}
+
+/// A deleted object takes its ignored pairs with it, in the same undo step.
+#[test]
+fn deleting_an_object_forgets_its_ignored_pairs() {
+    let mut t = self::t();
+    let (a, b) = two_squares(&mut t.s, -5.0);
+    run(
+        &mut t.s,
+        "document.ignore_issue",
+        json!({ "code": "objects_overlap", "object_ids": [a, b] }),
+    );
+    assert_eq!(t.s.doc().document.ignored_pairs.len(), 1);
+    run(&mut t.s, "object.delete", json!({ "ids": [b] }));
+    assert!(t.s.doc().document.ignored_pairs.is_empty());
+    run(&mut t.s, "edit.undo", json!({}));
+    assert_eq!(t.s.doc().document.ignored_pairs.len(), 1);
+}

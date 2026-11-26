@@ -574,7 +574,7 @@ fn pieces_as(
         }
     }
     let affine = o.transform.affine(o.local_bounds);
-    let (pieces, facts) = cutgeom::object_pieces(
+    let (pieces, facts, _) = cutgeom::object_pieces(
         &o.geometry,
         options,
         affine,
@@ -608,11 +608,15 @@ fn measure(input: &JobInput, o: &JobObject, options: &CutOptions, min_feature: f
     } else {
         Default::default()
     };
+    // The pieces of each source path, sorted once.
+    let mut by_source: Vec<Vec<&BezPath>> = vec![Vec::new(); o.geometry.len()];
+    for c in pieces.iter() {
+        if let Some(list) = c.source.and_then(|i| by_source.get_mut(i)) {
+            list.push(&c.path);
+        }
+    }
     for (i, p) in o.geometry.iter().enumerate() {
-        let cut = pieces
-            .iter()
-            .filter(|c| c.source == Some(i))
-            .map(|c| &c.path);
+        let cut = by_source[i].iter().copied();
         // A filled path cut as drawn should be closed only if its fill
         // has area: a filled straight line is a line.
         let filled = p.paint.fill.is_some() && with_area.contains(&i);
@@ -662,8 +666,14 @@ fn measure(input: &JobInput, o: &JobObject, options: &CutOptions, min_feature: f
     m
 }
 
-/// The cut bounds of an object in mat mm, as `placed_bounds` measures them.
+/// The box of what is cut of an object in mat mm, from the input's cut
+/// geometry ([`cutgeom::CutGeometry::bounds`]): the one box every check of
+/// the report measures, and the rule `placed_bounds` follows too.
 pub fn object_bounds(input: &JobInput, o: &JobObject) -> Option<Rect> {
+    let cut = input.cut_geometry();
+    if cut.per_object.contains_key(&o.id) {
+        return cut.bounds(o.id);
+    }
     let affine = o.transform.affine(o.local_bounds);
     cutgeom::cut_bounds_of(&o.geometry, &o.cut, affine, input.min_width_mm())
 }
@@ -1513,14 +1523,6 @@ fn touching_boxes(boxes: &[Rect]) -> Vec<(usize, usize)> {
     out.into_iter().collect()
 }
 
-/// The box of what is cut of pieces, from the pieces themselves.
-fn pieces_box(pieces: &[CutPiece]) -> Option<Rect> {
-    pieces
-        .iter()
-        .map(|p| p.path.bounding_box())
-        .reduce(|a, b| a.union(b))
-}
-
 /// The hints about pairs of objects that nearly touch or overlap, for
 /// the pairs with at least one object of `ids` (every pair when `None`).
 /// Only objects that are cut count: a hidden or skipped object is not on
@@ -1534,7 +1536,8 @@ fn pair_issues(input: &JobInput, ids: Option<&[ObjectId]>, limits: &Limits) -> V
         .objects
         .iter()
         .filter(|o| o.visible && o.cut_enabled)
-        .filter_map(|o| Some((o, pieces_box(cut.pieces(o.id))?)))
+        .filter(|o| !cut.pieces(o.id).is_empty())
+        .filter_map(|o| Some((o, cut.bounds(o.id)?)))
         .collect();
     let grown: Vec<Rect> = cuttable
         .iter()
@@ -1771,13 +1774,23 @@ fn creates_a_pair<'a>(
     moved: &[usize],
     d: kurbo::Vec2,
 ) -> bool {
+    // How the two lay before the move: an overlap after a close pair is
+    // new too.
     let before = |m: usize, k: usize| {
         let (x, y) = (m.min(k), m.max(k));
-        ctx.near.binary_search(&(x, y)).is_ok()
-            && match (lines_of(m), lines_of(k)) {
-                (Some(lm), Some(lk)) => pair_of(lm, lk, ctx.limit, ctx.tolerance).is_some(),
-                _ => false,
-            }
+        if ctx.near.binary_search(&(x, y)).is_err() {
+            return None;
+        }
+        match (lines_of(m), lines_of(k)) {
+            (Some(lm), Some(lk)) => pair_of(lm, lk, ctx.limit, ctx.tolerance),
+            _ => None,
+        }
+    };
+    let worse = |after: &Pair, before: Option<Pair>| {
+        matches!(
+            (after, before),
+            (_, None) | (Pair::Overlap, Some(Pair::Close { .. }))
+        )
     };
     moved.iter().any(|&m| {
         let Some(lm) = lines_of(m) else {
@@ -1793,8 +1806,8 @@ fn creates_a_pair<'a>(
             })
             .any(|k| {
                 lines_of(k)
-                    .is_some_and(|lk| pair_of(lk, &shifted, ctx.limit, ctx.tolerance).is_some())
-                    && !before(m, k)
+                    .and_then(|lk| pair_of(lk, &shifted, ctx.limit, ctx.tolerance))
+                    .is_some_and(|after| worse(&after, before(m, k)))
             })
     })
 }

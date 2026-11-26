@@ -278,19 +278,20 @@ impl DocState {
     /// keyed, never cleared by a flag, so undo, redo and profile edits
     /// cannot leave it stale). The object check also covers a command that
     /// reads the geometry half way, before its change raised the revision.
+    /// `objects` are this document's objects as a job input reads them.
     pub fn cut_geometry(
         &self,
         key: CacheKey,
+        objects: &[crate::job::JobObject],
         build: impl FnOnce(Option<&Arc<CutGeometry>>) -> Arc<CutGeometry>,
     ) -> Arc<CutGeometry> {
-        let objects = crate::job::JobInput::objects_of(&self.document);
         let mut cache = self
             .cut_cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some((k, g)) = cache.as_ref()
             && *k == key
-            && g.is_for(&objects, key.tol, key.min_width_mm)
+            && g.is_for(objects, key.tol, key.min_width_mm)
         {
             return g.clone();
         }
@@ -668,7 +669,7 @@ impl Session {
         let st = self.doc();
         let key = self.cut_key(st, input);
         let (tol, min_width) = (key.tol, key.min_width_mm);
-        st.cut_geometry(key, |prev| {
+        st.cut_geometry(key, &input.objects, |prev| {
             crate::cutgeom::objects_cut_geometry(&input.objects, tol, min_width, prev)
         })
     }
@@ -1077,6 +1078,9 @@ impl Session {
             self.docs[index].document.dissolve_lonely_groups();
             // The same for groups of objects: a group of one dissolves.
             self.docs[index].document.normalize_groups();
+            // An ignored pair whose object is gone is forgotten, in the
+            // same undo step as the delete.
+            self.docs[index].document.prune_ignored_pairs();
             debug_assert!(self.docs[index].document.groups_valid());
             if !self.links_agree() {
                 for d in &mut self.docs {
