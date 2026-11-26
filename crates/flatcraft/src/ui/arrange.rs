@@ -272,28 +272,62 @@ pub fn ok_action(snap: &Snapshot, p: &ArrangePanel) -> Option<Action> {
                 }),
             )
         }
+        // The selection the preview used (empty: every visible object).
         PanelKind::AutoArrange => Action::run(
             doc_id,
             "arrange.auto",
-            json!({ "spacing_mm": v.spacing_mm }),
+            json!({ "ids": ids, "spacing_mm": v.spacing_mm }),
         ),
     })
 }
 
-/// Where Auto arrange puts the visible objects that have a box, as
-/// `arrange.auto` does it (the same `placement::shelf_pack`), with the
-/// move of each.
-pub fn auto_arrange_moves(snap: &Snapshot, spacing_mm: f64) -> Vec<(u64, Vec2)> {
-    let Some(area) = snap.area else {
-        return Vec::new();
-    };
-    let boxes: Vec<(u64, Rect)> = snap
+/// What Auto arrange does with the selection (or, with nothing selected,
+/// with every visible object), as `arrange.auto` does it: the same
+/// `placement::auto_arrange` on the same boxes.
+pub fn auto_arrange_plan(snap: &Snapshot, spacing_mm: f64) -> Option<placement::AutoPlan<u64>> {
+    let area = snap.area?;
+    let objects: Vec<placement::AutoObject<u64>> = snap
         .objects
         .iter()
-        .filter(|o| o.visible)
-        .filter_map(|o| o.bounds().map(|b| (o.id, b)))
+        .map(|o| placement::AutoObject {
+            key: o.id,
+            visible: o.visible,
+            bounds: o.bounds(),
+        })
         .collect();
-    placement::shelf_pack(&boxes, area, spacing_mm).0
+    let chosen: Vec<u64> = snap.selection.iter().copied().collect();
+    Some(placement::auto_arrange(&objects, &chosen, area, spacing_mm))
+}
+
+/// What the Auto arrange panel packs, for its title: "3 selected
+/// objects", or "all objects" with nothing selected.
+pub fn auto_arrange_what(snap: &Snapshot) -> String {
+    match snap.selection.len() {
+        0 => "all objects".into(),
+        1 => "1 selected object".into(),
+        n => format!("{n} selected objects"),
+    }
+}
+
+/// The panel's title: its tool's name, and for Auto arrange what it packs
+/// ("Auto arrange 3 selected objects").
+pub fn panel_title(snap: &Snapshot, p: &ArrangePanel) -> String {
+    match p.kind {
+        PanelKind::AutoArrange => format!("{} {}", p.kind.title(), auto_arrange_what(snap)),
+        _ => p.kind.title().to_string(),
+    }
+}
+
+/// The hover card of the Auto arrange panel's title.
+pub const AUTO_ARRANGE_CARD: &str = "Select the objects you want packed. Everything else stays where you put it, and the packed objects fit around it.";
+
+/// The objects the open panel's preview draws as fixed: for Auto arrange,
+/// the visible objects it packs around. Empty for the other panels.
+pub fn fixed(snap: &Snapshot, p: &ArrangePanel) -> Vec<u64> {
+    if p.kind != PanelKind::AutoArrange || not_ready(snap, p).is_some() {
+        return Vec::new();
+    }
+    auto_arrange_plan(snap, p.values.spacing_mm).map_or_else(Vec::new, |plan| plan.fixed)
 }
 
 /// The would-be objects of the open panel: for each, the object it shows
@@ -365,7 +399,8 @@ pub fn ghosts(snap: &Snapshot, p: &ArrangePanel) -> Vec<(u64, Affine)> {
             }
         }
         PanelKind::AutoArrange => {
-            for (id, d) in auto_arrange_moves(snap, v.spacing_mm) {
+            let moves = auto_arrange_plan(snap, v.spacing_mm).map_or_else(Vec::new, |p| p.moves);
+            for (id, d) in moves {
                 if let Some(o) = snap.object(id) {
                     out.push((id, at(o.transform.center_mm + d)));
                 }
@@ -582,9 +617,10 @@ fn fields(ui: &mut Ui, p: &mut ArrangePanel, snap: &Snapshot, each_now: bool) {
                     );
                 });
             ui.label(RichText::new(Setting::AutoArrangeSpacing.card()).weak());
+            ui.label(RichText::new(AUTO_ARRANGE_CARD).weak());
             ui.label(
                 RichText::new(
-                    "Hidden objects stay where they are. Objects too big for the cutting area stay too.",
+                    "Hidden objects stay where they are. Objects that do not fit stay too.",
                 )
                 .weak(),
             );
@@ -612,7 +648,11 @@ pub fn panel_ui(
             tex.id(),
             egui::Vec2::splat(ICON_SIZE),
         ));
-        ui.label(RichText::new(p.kind.title()).font(super::fonts::semibold(15.0)));
+        let title = panel_title(snap, p);
+        let r = ui.label(RichText::new(&title).font(super::fonts::semibold(15.0)));
+        if p.kind == PanelKind::AutoArrange {
+            super::groups::card(&r, &title, AUTO_ARRANGE_CARD, None, false);
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if super::icon_button(ui, Icon::Close, "Close panel", true).clicked() {
                 close = true;

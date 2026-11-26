@@ -1,4 +1,4 @@
-//! Arrange commands: align, distribute and automatic shelf packing.
+//! Arrange commands: align, distribute and Auto arrange (packing).
 
 use flatcraft_core::document::{Object, ObjectId};
 use kurbo::{Rect, Vec2};
@@ -191,6 +191,10 @@ fn default_spacing() -> f64 {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AutoParams {
+    /// The objects to pack; empty means the current selection, and with
+    /// nothing selected every visible object.
+    #[serde(default)]
+    pub ids: Vec<u64>,
     /// Gap between objects in mm (default 5).
     #[serde(default = "default_spacing")]
     pub spacing_mm: f64,
@@ -203,19 +207,28 @@ fn run_auto(s: &mut Session, p: AutoParams, _: Origin) -> Result<Value, CommandE
         ));
     }
     let area = cutting_area(s)?;
+    // Empty: the selection, and with nothing selected every visible object.
+    let chosen = if p.ids.is_empty() {
+        s.doc().selection.iter().copied().collect()
+    } else {
+        resolve_ids(s, &p.ids)?
+    };
     let doc = &mut s.doc_mut().document;
-    let mut items: Vec<(ObjectId, Rect)> = Vec::new();
-    // Objects without geometry (for example untraced rasters) cannot be placed.
-    let mut did_not_fit = Vec::new();
-    for o in doc.objects.iter().filter(|o| o.visible) {
-        match placed_bounds(o) {
-            Some(b) => items.push((o.id, b)),
-            None => did_not_fit.push(o.id),
-        }
-    }
-    let (moves, too_big) = placement::shelf_pack(&items, area, p.spacing_mm);
+    let objects: Vec<placement::AutoObject<ObjectId>> = doc
+        .objects
+        .iter()
+        .map(|o| placement::AutoObject {
+            key: o.id,
+            visible: o.visible,
+            // Objects without geometry (for example untraced rasters)
+            // cannot be placed.
+            bounds: placed_bounds(o),
+        })
+        .collect();
+    let plan = placement::auto_arrange(&objects, &chosen, area, p.spacing_mm);
+    let mut did_not_fit = plan.did_not_fit;
     let mut placed = Vec::new();
-    for (id, d) in moves {
+    for (id, d) in plan.moves {
         let o = object_mut(doc, id)?;
         // Never report an object as placed unless it really is inside.
         if place(o, d, area) {
@@ -224,8 +237,11 @@ fn run_auto(s: &mut Session, p: AutoParams, _: Origin) -> Result<Value, CommandE
             did_not_fit.push(id);
         }
     }
-    did_not_fit.extend(too_big);
-    Ok(json!({ "placed": ids_json(&placed), "did_not_fit": ids_json(&did_not_fit) }))
+    Ok(json!({
+        "placed": ids_json(&placed),
+        "did_not_fit": ids_json(&did_not_fit),
+        "fixed": ids_json(&plan.fixed),
+    }))
 }
 
 command!(
@@ -235,7 +251,7 @@ command!(
     mutates: true,
     params: AutoParams,
     run: run_auto,
-    description: "Packs all visible objects into the cutting area in rows (shelf packing), keeping rotation and size. Objects are sorted by bounding box height, tallest first, and placed left to right from the top-left of the cutting area, with spacing_mm (default 5) between them. Objects that do not fit, or have no cut geometry yet, keep their position and are listed in did_not_fit; they may overlap the packed objects. Origin the 0,0 of the grid printed on the mat, y down, units mm. Returns {placed: [id], did_not_fit: [id]}.",
+    description: "Packs objects into the cutting area, keeping rotation and size, in one undo step. ids are the objects to pack; an empty list means the current selection, and with nothing selected every visible object. Hidden objects are never packed. Every other visible object stays exactly where it is and is an obstacle: the packed objects fit around it, spacing_mm (default 5) away from it, and never overlap it. Packing works on bounding boxes: tallest first, each one at the free spot nearest the top of the cutting area, then nearest its left, with spacing_mm between packed objects. The same input always gives the same result. Objects that do not fit, or have no cut geometry yet, keep their position and are listed in did_not_fit; they may overlap other objects. Origin the 0,0 of the grid printed on the mat, y down, units mm. Returns {placed: [id], did_not_fit: [id], fixed: [id] (the obstacles)}.",
 );
 
 #[cfg(test)]

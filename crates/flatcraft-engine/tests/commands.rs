@@ -776,6 +776,8 @@ fn auto_arrange_packs_without_overlap() {
         (45.0, 70.0),
     ];
     let ids: Vec<u64> = sizes.iter().map(|&(w, h)| import(&mut s, w, h)).collect();
+    // An import selects the new object; with nothing selected all are packed.
+    run(&mut s, "object.select", json!({ "ids": [] }));
     let r = run(&mut s, "arrange.auto", json!({}));
     assert_eq!(r["placed"].as_array().unwrap().len(), 6, "{r}");
     assert!(r["did_not_fit"].as_array().unwrap().is_empty(), "{r}");
@@ -800,6 +802,7 @@ fn auto_arrange_packs_without_overlap() {
     // Wider than the cutting area: does not fit and stays where it is.
     let big = import(&mut s, 300.0, 100.0);
     let before = placed_bounds(&s, big);
+    run(&mut s, "object.select", json!({ "ids": [] }));
     let r = run(&mut s, "arrange.auto", json!({ "spacing_mm": 5.0 }));
     assert_eq!(r["did_not_fit"], json!([big]), "{r}");
     assert_eq!(placed_bounds(&s, big), before);
@@ -1224,6 +1227,7 @@ fn auto_arrange_wraps_zero_height_rows() {
     for &i in &ids {
         assert!(close(placed_bounds(&s, i).height(), 0.0));
     }
+    run(&mut s, "object.select", json!({ "ids": [] }));
     let r = run(&mut s, "arrange.auto", json!({}));
     assert_eq!(r["placed"].as_array().unwrap().len(), 3, "{r}");
     let area = Rect::new(5.0, 5.0, 299.8, 299.8);

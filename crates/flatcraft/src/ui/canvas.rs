@@ -746,6 +746,14 @@ pub fn show(
         drag_preview(st.drag.as_ref(), snap, id)
     });
     if let Some(p) = &st.panel {
+        draw_fixed(
+            &painter,
+            snap,
+            &view,
+            contrast,
+            &super::arrange::fixed(snap, p),
+            p.values.spacing_mm,
+        );
         draw_ghosts(
             &painter,
             snap,
@@ -881,6 +889,33 @@ pub(crate) fn draw_objects(
 /// The colour of the ghost preview's dashes.
 pub fn ghost_colour(mat: [u8; 3]) -> Color32 {
     rgb(selection_colour(mat)).gamma_multiply(0.8)
+}
+
+/// Marks the objects an open Auto arrange panel packs around (see
+/// [`super::arrange::fixed`]): their box, and faintly the band of
+/// `spacing_mm` around it that the packed objects keep clear of.
+pub(crate) fn draw_fixed(
+    painter: &egui::Painter,
+    snap: &Snapshot,
+    view: &CanvasView,
+    contrast: Color32,
+    fixed: &[u64],
+    spacing_mm: f64,
+) {
+    let stroke = Stroke::new(1.0, contrast.gamma_multiply(0.7));
+    for id in fixed {
+        let Some(b) = snap.object(*id).and_then(|o| o.bounds()) else {
+            continue;
+        };
+        let zone = view.rect_to_screen(b.inflate(spacing_mm, spacing_mm));
+        painter.rect_filled(zone, 0.0, contrast.gamma_multiply(0.08));
+        painter.rect_stroke(
+            view.rect_to_screen(b),
+            0.0,
+            stroke,
+            egui::StrokeKind::Middle,
+        );
+    }
 }
 
 /// Draws the would-be objects of an open Arrange panel faintly: each

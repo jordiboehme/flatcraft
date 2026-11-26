@@ -1485,6 +1485,7 @@ dependencies = [
  "image",
  "kurbo",
  "pdf-writer",
+ "proptest",
  "resvg",
  "schemars",
  "serde",

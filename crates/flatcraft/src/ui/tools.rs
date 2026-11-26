@@ -588,7 +588,7 @@ pub const TOOLS: [Tool; 38] = [
         Icon::AutoArrangePanel,
         G::Arrange,
         Big,
-        "Packs every visible object onto the cutting area in rows, Tetris style, with the gap you choose. A preview shows where they land.",
+        "Packs the selected objects onto the cutting area, Tetris style, with the gap you choose. Everything else stays where you put it, and the packed objects fit around it. Nothing selected: it packs every visible object. A preview shows where they land.",
     ),
     tool(
         "auto_arrange",
@@ -597,7 +597,7 @@ pub const TOOLS: [Tool; 38] = [
         Icon::Arrange,
         G::Arrange,
         Big,
-        "Packs every visible object onto the cutting area in rows, Tetris style, in one click. It uses the gap you last chose in the Auto arrange panel.",
+        "Packs the selected objects onto the cutting area, Tetris style, in one click. Everything else stays where you put it, and the packed objects fit around it. Nothing selected: it packs every visible object. It uses the gap you last chose in the Auto arrange panel.",
     ),
     tool(
         "zoom.fit",

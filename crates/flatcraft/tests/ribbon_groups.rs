@@ -287,7 +287,7 @@ fn auto_arrange_spacing_round_trips_and_is_one_undo_step() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let a = import_square(&s);
-    let _b = import_square(&s);
+    let b = import_square(&s);
     select(&s, &[a]);
     let mut h = rig(&dir, s.clone());
     show_tab(&mut h, "Layout");
@@ -312,7 +312,10 @@ fn auto_arrange_spacing_round_trips_and_is_one_undo_step() {
     let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
     let panel = app(&h).ui.prepare.panel.clone().unwrap();
     let ghosts = flatcraft::ui::arrange::ghosts(&snap, &panel);
-    assert_eq!(ghosts.len(), 2);
+    // Only the selection is packed; the other one stays and is drawn fixed.
+    assert_eq!(ghosts.len(), 1);
+    assert_eq!(ghosts[0].0, a);
+    assert_eq!(flatcraft::ui::arrange::fixed(&snap, &panel), vec![b]);
     let before = document_bytes(&s);
     let undo = undo_len(&s);
     h.get_by_role_and_label(Role::Button, "OK").click();
@@ -534,4 +537,60 @@ fn the_pin_toggle_is_reachable_by_keyboard() {
     h.key_press(egui::Key::Enter);
     h.run();
     assert!(stored(&h).contains(&"pattern.circular".to_string()));
+}
+
+#[test]
+fn auto_arrange_panel_says_what_it_packs_and_shows_what_stays() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let ids: Vec<u64> = (0..5).map(|_| import_square(&s)).collect();
+    select(&s, &ids[..3]);
+    let mut h = rig(&dir, s.clone());
+    show_tab(&mut h, "Layout");
+    h.get_by_role_and_label(Role::Button, "Arrange").click();
+    h.run();
+    h.get_by_label("Auto arrange... (Arrange)").click();
+    h.run();
+    let card = flatcraft::ui::arrange::AUTO_ARRANGE_CARD;
+    assert_eq!(
+        card,
+        "Select the objects you want packed. Everything else stays where you put it, and the packed objects fit around it."
+    );
+    // The card is in the panel and on its title.
+    let shown = h.query_all_by_label(card).count();
+    hover(&mut h, "Auto arrange 3 selected objects");
+    assert_eq!(h.query_all_by_label(card).count(), shown + 1);
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    let panel = app(&h).ui.prepare.panel.clone().unwrap();
+    let mut moved: Vec<u64> = flatcraft::ui::arrange::ghosts(&snap, &panel)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    moved.sort_unstable();
+    assert_eq!(moved, ids[..3]);
+    assert_eq!(flatcraft::ui::arrange::fixed(&snap, &panel), ids[3..]);
+
+    // Nothing selected: all of them, nothing fixed.
+    select(&s, &[]);
+    h.run();
+    // The title, and the card still open over it.
+    assert!(
+        h.query_all_by_label("Auto arrange all objects")
+            .next()
+            .is_some()
+    );
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    assert_eq!(flatcraft::ui::arrange::ghosts(&snap, &panel).len(), 5);
+    assert!(flatcraft::ui::arrange::fixed(&snap, &panel).is_empty());
+
+    // One selected.
+    select(&s, &ids[..1]);
+    h.run();
+    // The title, and the card still open over it.
+    assert!(
+        h.query_all_by_label("Auto arrange 1 selected object")
+            .next()
+            .is_some()
+    );
 }

@@ -29,6 +29,7 @@ sha2.workspace = true
 pdf-writer.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 image = { workspace = true, features = ["png"] }
 tempfile.workspace = true
 flate2.workspace = true

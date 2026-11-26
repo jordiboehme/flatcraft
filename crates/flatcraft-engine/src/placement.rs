@@ -161,41 +161,180 @@ pub fn pattern_centre(boxes: &[Rect]) -> Option<Point> {
 /// Slack when checking that a box fits the area.
 const FIT_EPS: f64 = 1e-9;
 
-/// Where Auto arrange (`arrange.auto`) puts each box: shelf packing into
-/// `area`, tallest first (equal heights keep their order), left to right
-/// from the top-left, `spacing` mm apart. Returns the move of each box
-/// that is placed, and the keys of those that do not fit, in that order.
-/// The command and the window's preview both use it.
-pub fn shelf_pack<K: Copy>(
-    boxes: &[(K, Rect)],
+/// The smallest width and height a box takes while packing, mm: a line
+/// with no height still takes a hair, so the next one does not land on it.
+const MIN_EXTENT: f64 = 1e-3;
+
+/// One object as Auto arrange (`arrange.auto`) sees it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoObject<K> {
+    pub key: K,
+    pub visible: bool,
+    /// Its bounding box on the mat, `None` while it has no cut geometry.
+    pub bounds: Option<Rect>,
+}
+
+/// What Auto arrange does: the move of each packed object, the objects
+/// that stay because they do not fit or have no box (`did_not_fit`), and
+/// the objects that stay where they are and are packed around (`fixed`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AutoPlan<K> {
+    pub moves: Vec<(K, Vec2)>,
+    pub did_not_fit: Vec<K>,
+    pub fixed: Vec<K>,
+}
+
+/// Auto arrange: which objects are packed and where they go. The command
+/// and the window's preview both use it, so they cannot differ.
+///
+/// `chosen` are the objects to pack (the selection or the given ids);
+/// empty means every visible object. Hidden objects are neither packed
+/// nor packed around. Every other visible object with a box is fixed: the
+/// packed ones keep `spacing` mm from it and never overlap it. A chosen
+/// object without a box cannot be placed and is listed in `did_not_fit`.
+///
+/// This is the one place that decides what is packed as one item.
+pub fn auto_arrange<K: Copy + PartialEq>(
+    objects: &[AutoObject<K>],
+    chosen: &[K],
+    area: Rect,
+    spacing: f64,
+) -> AutoPlan<K> {
+    let mut items = Vec::new();
+    let mut obstacles = Vec::new();
+    let mut fixed = Vec::new();
+    let mut no_box = Vec::new();
+    for o in objects.iter().filter(|o| o.visible) {
+        let packed = chosen.is_empty() || chosen.contains(&o.key);
+        match (packed, o.bounds) {
+            (true, Some(b)) => items.push((o.key, b)),
+            (true, None) => no_box.push(o.key),
+            (false, Some(b)) => {
+                obstacles.push(b);
+                fixed.push(o.key);
+            }
+            // Nothing to cut, nothing to keep clear of.
+            (false, None) => {}
+        }
+    }
+    let (moves, mut did_not_fit) = pack_around(&items, &obstacles, area, spacing);
+    no_box.append(&mut did_not_fit);
+    AutoPlan {
+        moves,
+        did_not_fit: no_box,
+        fixed,
+    }
+}
+
+/// True when `a` and `b` share some area (touching is not overlapping).
+fn overlaps(a: Rect, b: Rect) -> bool {
+    a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
+}
+
+/// True when `outer` holds all of `inner`.
+fn holds(outer: Rect, inner: Rect) -> bool {
+    outer.x0 <= inner.x0 && outer.y0 <= inner.y0 && outer.x1 >= inner.x1 && outer.y1 >= inner.y1
+}
+
+/// The free rects of a max-rects packer once `used` is taken: every free
+/// rect `used` overlaps is replaced by the up to four largest rects
+/// beside it, and rects inside another one are dropped. The order stays
+/// fixed, so the result is deterministic.
+fn take(free: &mut Vec<Rect>, used: Rect) {
+    let mut kept = Vec::with_capacity(free.len());
+    let mut new = Vec::new();
+    for f in free.drain(..) {
+        if !overlaps(f, used) {
+            kept.push(f);
+            continue;
+        }
+        let parts = [
+            Rect::new(f.x0, f.y0, used.x0, f.y1),
+            Rect::new(used.x1, f.y0, f.x1, f.y1),
+            Rect::new(f.x0, f.y0, f.x1, used.y0),
+            Rect::new(f.x0, used.y1, f.x1, f.y1),
+        ];
+        new.extend(
+            parts
+                .into_iter()
+                .filter(|r| r.width() > 0.0 && r.height() > 0.0),
+        );
+    }
+    // The kept rects did not hold each other before, so only the new
+    // ones need checking: against the kept ones, and among themselves
+    // (of two equal ones the first stays).
+    let new_keep: Vec<bool> = (0..new.len())
+        .map(|i| {
+            !kept.iter().any(|k| holds(*k, new[i]))
+                && !new
+                    .iter()
+                    .enumerate()
+                    .any(|(j, n)| j != i && holds(*n, new[i]) && (*n != new[i] || j < i))
+        })
+        .collect();
+    let new: Vec<Rect> = new
+        .into_iter()
+        .zip(new_keep)
+        .filter_map(|(r, k)| k.then_some(r))
+        .collect();
+    kept.retain(|k| !new.iter().any(|n| holds(*n, *k)));
+    kept.extend(new);
+    *free = kept;
+}
+
+/// Packs `items` into `area` around the fixed `obstacles`: a max-rects
+/// packer on bounding boxes, tallest first (equal heights keep their
+/// order), each one at the free spot nearest the top of the area, then
+/// nearest its left. Packed boxes keep `spacing` mm from each other and
+/// from every obstacle; rotation and size never change. Returns the move
+/// of each box that is placed, and the keys of those that do not fit, in
+/// that order.
+///
+/// The spacing is added to the right and bottom of every box (packed or
+/// obstacle) and of the area, so two boxes that touch after that are
+/// exactly `spacing` apart, and a box may still touch the area's edge.
+pub fn pack_around<K: Copy>(
+    items: &[(K, Rect)],
+    obstacles: &[Rect],
     area: Rect,
     spacing: f64,
 ) -> (Vec<(K, Vec2)>, Vec<K>) {
-    let mut items: Vec<(K, Rect)> = boxes.to_vec();
+    let grow = |x0: f64, y0: f64, w: f64, h: f64| {
+        Rect::new(
+            x0,
+            y0,
+            x0 + (w + spacing).max(MIN_EXTENT),
+            y0 + (h + spacing).max(MIN_EXTENT),
+        )
+    };
+    let bin = Rect::new(area.x0, area.y0, area.x1 + spacing, area.y1 + spacing);
+    let mut free = vec![bin];
+    for o in obstacles {
+        let g = grow(o.x0, o.y0, o.width(), o.height());
+        if overlaps(g, bin) {
+            take(&mut free, g);
+        }
+    }
+    let mut items: Vec<(K, Rect)> = items.to_vec();
     // Stable: equal heights keep their order.
     items.sort_by(|a, b| b.1.height().total_cmp(&a.1.height()));
     let mut placed = Vec::new();
     let mut did_not_fit = Vec::new();
-    let (mut x, mut y, mut row_h) = (area.x0, area.y0, 0.0_f64);
     for (key, b) in items {
-        let (w, h) = (b.width(), b.height());
-        if w > area.width() + FIT_EPS || h > area.height() + FIT_EPS {
-            did_not_fit.push(key);
-            continue;
+        let size = grow(0.0, 0.0, b.width(), b.height());
+        let (w, h) = (size.width(), size.height());
+        let spot = free
+            .iter()
+            .filter(|f| f.width() + FIT_EPS >= w && f.height() + FIT_EPS >= h)
+            .map(|f| Point::new(f.x0, f.y0))
+            .min_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)));
+        match spot {
+            Some(p) => {
+                take(&mut free, Rect::new(p.x, p.y, p.x + w, p.y + h));
+                placed.push((key, p - Point::new(b.x0, b.y0)));
+            }
+            None => did_not_fit.push(key),
         }
-        // Wrap when the row already holds something, even zero-height lines.
-        if x + w > area.x1 + FIT_EPS && x > area.x0 {
-            y += row_h + spacing;
-            x = area.x0;
-            row_h = 0.0;
-        }
-        if y + h > area.y1 + FIT_EPS {
-            did_not_fit.push(key);
-            continue;
-        }
-        placed.push((key, Point::new(x, y) - Point::new(b.x0, b.y0)));
-        x += w + spacing;
-        row_h = row_h.max(h);
     }
     (placed, did_not_fit)
 }
