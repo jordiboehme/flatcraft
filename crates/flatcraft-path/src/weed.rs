@@ -108,7 +108,9 @@ pub fn is_weedable(kept: &KeptMaterial, p: Point) -> bool {
 
 /// The weed geometry for `design`: the job's `Cut` toolpaths as one lap
 /// each (pass 1, before passes and overcut), in any order. `mode_of`
-/// gives each object's keep mode, `area` is the cutting area. Nothing
+/// gives each object's keep mode, `unit_of` what each object counts as
+/// for a box per object (its group of objects, or itself), `area` is the
+/// cutting area. Nothing
 /// when weeding is off or there is no design.
 ///
 /// The lines run across the design's box plus the margin. With a box per
@@ -117,6 +119,7 @@ pub fn is_weedable(kept: &KeptMaterial, p: Point) -> bool {
 pub fn generate(
     design: &[Toolpath],
     mode_of: impl Fn(ObjectId) -> KeepMode,
+    unit_of: impl Fn(ObjectId) -> ObjectId,
     area: Rect,
     s: &WeedSettings,
 ) -> Weeds {
@@ -137,7 +140,8 @@ pub fn generate(
     // (design bounds, region) per group: the region is the box (clamped
     // to the cutting area) whether or not the box is cut.
     let groups: Vec<(Rect, Rect)> = if s.per_object {
-        let mut ids: Vec<ObjectId> = design.iter().map(|t| t.source.object).collect();
+        // A group of objects counts as one (`unit_of`).
+        let mut ids: Vec<ObjectId> = design.iter().map(|t| unit_of(t.source.object)).collect();
         ids.sort();
         ids.dedup();
         let objects: Vec<Rect> = ids
@@ -146,7 +150,7 @@ pub fn generate(
                 bbox(
                     design
                         .iter()
-                        .filter(|t| t.source.object == *id)
+                        .filter(|t| unit_of(t.source.object) == *id)
                         .flat_map(|t| t.points.iter()),
                 )
             })
@@ -973,6 +977,7 @@ mod tests {
         let w = generate(
             &[t],
             |_| KeepMode::Pieces,
+            |o| o,
             Rect::new(0.0, 0.0, 100.0, 100.0),
             &s,
         );

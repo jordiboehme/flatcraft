@@ -129,9 +129,11 @@ fn weed_shapes(
     area: kurbo::Rect,
 ) -> Vec<ExportShape> {
     // Every object is Pieces until Task 29, as in the plan.
+    let units = input.weed_units();
     let weeds = flatcraft_path::weed::generate(
         design,
         |_| flatcraft_path::KeepMode::Pieces,
+        |o| units.get(&o).copied().unwrap_or(o),
         area,
         &input.job.weed,
     );

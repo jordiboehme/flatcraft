@@ -341,8 +341,10 @@ fn same_except_links(a: &Document, b: &Document) -> bool {
         && a.next_id == b.next_id
         && a.format_version == b.format_version
         && a.objects.len() == b.objects.len()
+        && a.groups == b.groups
         && pairs().all(|(x, y)| {
             x.id == y.id
+                && x.parent == y.parent
                 && x.name == y.name
                 && x.visible == y.visible
                 && x.cut_enabled == y.cut_enabled
@@ -916,6 +918,8 @@ impl Session {
             // the one place every document change passes. Every open
             // document is checked, not only the active one.
             self.docs[index].document.dissolve_lonely_groups();
+            // The same for groups of objects: a group of one dissolves.
+            self.docs[index].document.normalize_groups();
             if !self.links_agree() {
                 for d in &mut self.docs {
                     if d.id() == doc_id {

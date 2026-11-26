@@ -184,6 +184,9 @@ pub struct JobObject {
     /// The group of linked copies it belongs to: a fix of shared settings
     /// changes every member.
     pub link_group: Option<GroupId>,
+    /// What it counts as for the weed box per object: its top-level group
+    /// (see [`flatcraft_core::nodes`]), or itself.
+    pub unit: ObjectId,
 }
 
 /// Two inputs are equal when the same geometry `Arc` is placed the same
@@ -200,6 +203,7 @@ impl PartialEq for JobObject {
             && self.cut == other.cut
             && Arc::ptr_eq(&self.geometry, &other.geometry)
             && self.link_group == other.link_group
+            && self.unit == other.unit
     }
 }
 
@@ -217,6 +221,7 @@ pub struct JobInput {
 impl JobInput {
     /// The objects of `doc` as the build reads them.
     fn objects_of(doc: &Document) -> Vec<JobObject> {
+        let tops = doc.tree().top_of_each();
         doc.objects
             .iter()
             .map(|o| JobObject {
@@ -229,7 +234,18 @@ impl JobInput {
                 cut: o.cut,
                 geometry: o.geometry.clone(),
                 link_group: o.link_group,
+                unit: tops.get(&o.id).copied().unwrap_or(o.id),
             })
+            .collect()
+    }
+
+    /// The top-level group of every grouped object, for the weed box per
+    /// object: one box per group. Objects not listed are their own.
+    pub fn weed_units(&self) -> std::collections::BTreeMap<ObjectId, ObjectId> {
+        self.objects
+            .iter()
+            .filter(|o| o.unit != o.id)
+            .map(|o| (o.id, o.unit))
             .collect()
     }
 
@@ -421,6 +437,7 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         // Half a device step: anything shorter moves no motor at all.
         min_cut_mm: 0.5 / plotter.units_per_mm,
         weed: job.weed,
+        weed_units: input.weed_units(),
         ..PipelineSettings::with_defaults(area, plotter.home_mm(media))
     };
     let cut_plan = plan(&placed, &pipeline).map_err(|e| match e {

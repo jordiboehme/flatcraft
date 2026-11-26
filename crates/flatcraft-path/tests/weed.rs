@@ -607,11 +607,17 @@ fn a_kept_sheet_drops_the_box_and_the_lines() {
         ..WeedSettings::default()
     };
     let area = Rect::new(0.0, 0.0, 300.0, 300.0);
-    let w = weed::generate(std::slice::from_ref(&ring), |_| KeepMode::Stencil, area, &s);
+    let w = weed::generate(
+        std::slice::from_ref(&ring),
+        |_| KeepMode::Stencil,
+        |o| o,
+        area,
+        &s,
+    );
     assert!(w.lines.is_empty() && w.boxes.is_empty(), "{w:?}");
     assert_eq!(w.blocked_boxes, 1);
     // The same with the pieces kept: a box and lines.
-    let w = weed::generate(&[ring], |_| KeepMode::Pieces, area, &s);
+    let w = weed::generate(&[ring], |_| KeepMode::Pieces, |o| o, area, &s);
     assert_eq!(w.boxes.len(), 1);
     assert!(!w.lines.is_empty());
     assert_eq!(w.blocked_boxes, 0);

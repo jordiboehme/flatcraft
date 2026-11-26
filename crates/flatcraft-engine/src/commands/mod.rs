@@ -4,6 +4,7 @@ pub mod arrange;
 pub mod check;
 pub mod edit;
 pub mod export;
+pub mod group;
 pub mod job;
 pub mod notes;
 pub mod object;
@@ -84,30 +85,92 @@ pub(crate) fn parse<P: DeserializeOwned>(params: serde_json::Value) -> Result<P,
 }
 
 /// The objects a command works on: `ids` if given, else the selection.
-/// Every id must exist.
+/// A group id stands for every object in the group (see
+/// [`flatcraft_core::nodes`]). Every id must exist. Objects come in the
+/// order given (a group's in document order), each once.
 pub(crate) fn resolve_ids(s: &Session, ids: &[u64]) -> Result<Vec<ObjectId>, CommandError> {
     let doc = s.doc();
-    let ids: Vec<ObjectId> = if ids.is_empty() {
+    let given: Vec<ObjectId> = if ids.is_empty() {
         doc.selection.iter().copied().collect()
     } else {
-        let mut out = Vec::new();
-        for &raw in ids {
-            let id = ObjectId(raw);
-            if !out.contains(&id) {
-                out.push(id);
-            }
-        }
-        out
+        ids.iter().map(|raw| ObjectId(*raw)).collect()
     };
-    if ids.is_empty() {
+    if given.is_empty() {
         return Err(CommandError::InvalidParams(
             "no object ids given and nothing is selected".into(),
         ));
     }
-    for id in &ids {
-        check_exists(&doc.document, *id)?;
+    let tree = (!doc.document.groups.is_empty()).then(|| doc.document.tree());
+    let mut out = Vec::new();
+    for id in given {
+        check_node(&doc.document, id)?;
+        let leaves = match &tree {
+            Some(t) if t.is_group(id) => t.leaves_of(id),
+            _ => vec![id],
+        };
+        for leaf in leaves {
+            if !out.contains(&leaf) {
+                out.push(leaf);
+            }
+        }
     }
-    Ok(ids)
+    if out.is_empty() {
+        return Err(CommandError::InvalidParams(
+            "the given groups hold no objects".into(),
+        ));
+    }
+    Ok(out)
+}
+
+/// What moves as one for the objects `leaves` (see
+/// [`flatcraft_core::nodes::Tree::units`]): whole groups, and objects
+/// picked inside a group or outside any. In document order.
+pub(crate) fn units_of(doc: &Document, leaves: &[ObjectId]) -> Vec<ObjectId> {
+    if doc.groups.is_empty() {
+        return leaves.to_vec();
+    }
+    doc.tree().units(leaves)
+}
+
+/// [`resolve_ids`], then the units of those objects ([`units_of`]):
+/// `(objects, units)`.
+pub(crate) fn resolve_units(
+    s: &Session,
+    ids: &[u64],
+) -> Result<(Vec<ObjectId>, Vec<ObjectId>), CommandError> {
+    let leaves = resolve_ids(s, ids)?;
+    let units = units_of(&s.doc().document, &leaves);
+    Ok((leaves, units))
+}
+
+/// The objects of a unit: the object itself, or every object of the group.
+pub(crate) fn unit_leaves(doc: &Document, unit: ObjectId) -> Vec<ObjectId> {
+    if doc.group_node(unit).is_some() {
+        doc.tree().leaves_of(unit)
+    } else {
+        vec![unit]
+    }
+}
+
+/// The box of what is cut of the objects `ids` together (see
+/// [`placed_bounds_or_center`]), `None` for no objects.
+pub(crate) fn common_box(doc: &Document, ids: &[ObjectId]) -> Option<Rect> {
+    ids.iter()
+        .filter_map(|id| doc.get(*id))
+        .map(placed_bounds_or_center)
+        .reduce(|a, b| a.union(b))
+}
+
+/// Fails unless `id` names an object or a group.
+pub(crate) fn check_node(doc: &Document, id: ObjectId) -> Result<(), CommandError> {
+    if doc.has_node(id) {
+        Ok(())
+    } else {
+        Err(CommandError::NotFound(format!(
+            "no object or group with id {}",
+            id.0
+        )))
+    }
 }
 
 pub(crate) fn check_exists(doc: &Document, id: ObjectId) -> Result<(), CommandError> {

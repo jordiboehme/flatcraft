@@ -750,6 +750,8 @@ pub fn load_archive(archive: Archive) -> Result<(Document, Vec<ObjectId>), Proje
     let unlinked = doc.share_link_groups();
     let min_next = doc.objects.iter().map(|o| o.id.0 + 1).max().unwrap_or(1);
     doc.next_id = doc.next_id.max(min_next);
+    // A hand-edited file may hold a broken group tree: mend it.
+    doc.normalize_groups();
     doc.format_version = FORMAT_VERSION;
     Ok((doc, unlinked))
 }

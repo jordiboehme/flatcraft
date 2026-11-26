@@ -6,8 +6,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{
-    arrange_bounds, command, cutting_area, ids_json, inside, object_mut, placed_bounds_or_center,
-    resolve_ids, translate,
+    arrange_bounds, command, common_box, cutting_area, ids_json, inside, object_mut,
+    placed_bounds_or_center, resolve_ids, translate, unit_leaves, units_of,
 };
 use crate::placement;
 use crate::session::{CommandError, Origin, Session};
@@ -59,10 +59,12 @@ fn run_align(s: &mut Session, p: AlignParams, _: Origin) -> Result<Value, Comman
                 .unwrap_or(Rect::ZERO)
         }
     };
+    // A whole group lines up as one box; its members keep their places.
+    let units = units_of(&s.doc().document, &ids);
     let doc = &mut s.doc_mut().document;
-    for id in &ids {
-        let o = object_mut(doc, *id)?;
-        let b = placed_bounds_or_center(o);
+    for unit in &units {
+        let leaves = unit_leaves(doc, *unit);
+        let b = common_box(doc, &leaves).unwrap_or(Rect::ZERO);
         let d = match p.mode {
             AlignMode::Left => Vec2::new(target.x0 - b.x0, 0.0),
             AlignMode::Hcenter => Vec2::new(target.center().x - b.center().x, 0.0),
@@ -71,7 +73,9 @@ fn run_align(s: &mut Session, p: AlignParams, _: Origin) -> Result<Value, Comman
             AlignMode::Vcenter => Vec2::new(0.0, target.center().y - b.center().y),
             AlignMode::Bottom => Vec2::new(0.0, target.y1 - b.y1),
         };
-        translate(o, d);
+        for id in &leaves {
+            translate(object_mut(doc, *id)?, d);
+        }
     }
     Ok(json!({ "ids": ids_json(&ids) }))
 }
@@ -83,7 +87,7 @@ command!(
     mutates: true,
     params: AlignParams,
     run: run_align,
-    description: "Aligns the bounding boxes of objects. mode: left, hcenter, right, top, vcenter or bottom. relative_to: selection (the common bounding box of the objects, default) or cutting_area (the mat's grid, minus a 5 mm safety margin while the mat is not calibrated; left puts objects at the left edge of that area). Origin the 0,0 of the grid printed on the mat, y down, units mm. An empty ids list means the current selection. Returns {ids}.",
+    description: "Aligns the bounding boxes of objects; a whole group lines up as one box and its members keep their places in it. mode: left, hcenter, right, top, vcenter or bottom. relative_to: selection (the common bounding box of the objects, default) or cutting_area (the mat's grid, minus a 5 mm safety margin while the mat is not calibrated; left puts objects at the left edge of that area). Origin the 0,0 of the grid printed on the mat, y down, units mm. An empty ids list means the current selection. Returns {ids}.",
 );
 
 #[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
@@ -115,7 +119,9 @@ fn span(r: Rect, axis: DistributeAxis) -> (f64, f64) {
 
 fn run_distribute(s: &mut Session, p: DistributeParams, _: Origin) -> Result<Value, CommandError> {
     let from_selection = p.ids.is_empty();
-    let ids = resolve_ids(s, &p.ids)?;
+    let leaves = resolve_ids(s, &p.ids)?;
+    // A whole group is one item with its common box.
+    let ids = units_of(&s.doc().document, &leaves);
     if ids.len() < 3 {
         let have = if from_selection {
             format!("{} are selected", ids.len())
@@ -129,10 +135,9 @@ fn run_distribute(s: &mut Session, p: DistributeParams, _: Origin) -> Result<Val
     let doc = &s.doc().document;
     let mut items: Vec<(ObjectId, f64, f64)> = Vec::with_capacity(ids.len());
     for id in &ids {
-        let o = doc
-            .get(*id)
+        let b = common_box(doc, &unit_leaves(doc, *id))
             .ok_or_else(|| CommandError::NotFound(format!("no object with id {}", id.0)))?;
-        let (lo, hi) = span(placed_bounds_or_center(o), p.axis);
+        let (lo, hi) = span(b, p.axis);
         items.push((*id, lo, hi));
     }
     // Stable: equal centres keep the given order.
@@ -153,7 +158,9 @@ fn run_distribute(s: &mut Session, p: DistributeParams, _: Origin) -> Result<Val
                 DistributeAxis::Horizontal => Vec2::new(d, 0.0),
                 DistributeAxis::Vertical => Vec2::new(0.0, d),
             };
-            translate(object_mut(doc, *id)?, d);
+            for leaf in unit_leaves(doc, *id) {
+                translate(object_mut(doc, leaf)?, d);
+            }
         }
         before += hi - lo;
     }
@@ -168,7 +175,7 @@ command!(
     mutates: true,
     params: DistributeParams,
     run: run_distribute,
-    description: "Spreads 3 or more objects so the gaps between neighbouring bounding boxes are equal. axis: horizontal (left to right, along x) or vertical (top to bottom, along y down). The objects are ordered by the centre of their bounding box on that axis; equal centres keep the order of ids (for the selection, that is id order). The first and the last object stay where they are, the others move only along the axis. If the objects together are longer than the span, the gaps are negative and they overlap evenly. Units mm, origin the 0,0 of the grid printed on the mat. An empty ids list means the current selection. Refuses fewer than 3 objects. Returns {ids (in the new order), gap_mm}.",
+    description: "Spreads 3 or more objects (a whole group counts as one, with its common box) so the gaps between neighbouring bounding boxes are equal. axis: horizontal (left to right, along x) or vertical (top to bottom, along y down). The objects are ordered by the centre of their bounding box on that axis; equal centres keep the order of ids (for the selection, that is id order). The first and the last object stay where they are, the others move only along the axis. If the objects together are longer than the span, the gaps are negative and they overlap evenly. Units mm, origin the 0,0 of the grid printed on the mat. An empty ids list means the current selection. Refuses fewer than 3 objects. Returns {ids (in the new order), gap_mm}.",
 );
 
 /// Moves `o` by `d` if it then lies inside `area`. Otherwise it stays
@@ -182,6 +189,40 @@ fn place(o: &mut Object, d: Vec2, area: Rect) -> bool {
     // Put the saved centre back: moving back by -d can leave float noise.
     o.transform.center_mm = centre;
     false
+}
+
+/// [`place`] for a unit: a whole group moves by `d` if its box then lies
+/// inside `area` (every member's box), else every member stays exactly
+/// where it was.
+fn place_unit(
+    doc: &mut flatcraft_core::document::Document,
+    unit: ObjectId,
+    d: Vec2,
+    area: Rect,
+) -> Result<bool, CommandError> {
+    if doc.group_node(unit).is_none() {
+        return Ok(place(object_mut(doc, unit)?, d, area));
+    }
+    let leaves = unit_leaves(doc, unit);
+    let saved: Vec<kurbo::Point> = leaves
+        .iter()
+        .filter_map(|id| doc.get(*id))
+        .map(|o| o.transform.center_mm)
+        .collect();
+    let mut fits = true;
+    for id in &leaves {
+        let o = object_mut(doc, *id)?;
+        translate(o, d);
+        if o.visible && arrange_bounds(o).is_some_and(|nb| !inside(nb, area)) {
+            fits = false;
+        }
+    }
+    if !fits {
+        for (id, c) in leaves.iter().zip(saved) {
+            object_mut(doc, *id)?.transform.center_mm = c;
+        }
+    }
+    Ok(fits)
 }
 
 fn default_spacing() -> f64 {
@@ -214,24 +255,36 @@ fn run_auto(s: &mut Session, p: AutoParams, _: Origin) -> Result<Value, CommandE
         resolve_ids(s, &p.ids)?
     };
     let doc = &mut s.doc_mut().document;
-    let objects: Vec<placement::AutoObject<ObjectId>> = doc
+    // A top-level group packs as one item (see `placement::auto_units`).
+    let tops = doc.tree().top_of_each();
+    let leaves: Vec<(ObjectId, placement::AutoObject<ObjectId>)> = doc
         .objects
         .iter()
-        .map(|o| placement::AutoObject {
-            key: o.id,
-            visible: o.visible,
-            // An untraced picture by its image; nothing at all (an
-            // empty object without a frame) cannot be placed.
-            bounds: arrange_bounds(o),
+        .map(|o| {
+            let item = placement::AutoObject {
+                key: o.id,
+                visible: o.visible,
+                // An untraced picture by its image; nothing at all (an
+                // empty object without a frame) cannot be placed.
+                bounds: arrange_bounds(o),
+            };
+            (tops.get(&o.id).copied().unwrap_or(o.id), item)
         })
         .collect();
-    let plan = placement::auto_arrange(&objects, &chosen, area, p.spacing_mm);
+    let objects = placement::auto_units(&leaves);
+    let mut chosen_units: Vec<ObjectId> = Vec::new();
+    for id in &chosen {
+        let top = tops.get(id).copied().unwrap_or(*id);
+        if !chosen_units.contains(&top) {
+            chosen_units.push(top);
+        }
+    }
+    let plan = placement::auto_arrange(&objects, &chosen_units, area, p.spacing_mm);
     let mut did_not_fit = plan.did_not_fit;
     let mut placed = Vec::new();
     for (id, d) in plan.moves {
-        let o = object_mut(doc, id)?;
         // Never report an object as placed unless it really is inside.
-        if place(o, d, area) {
+        if place_unit(doc, id, d, area)? {
             placed.push(id);
         } else {
             did_not_fit.push(id);
@@ -252,7 +305,7 @@ command!(
     mutates: true,
     params: AutoParams,
     run: run_auto,
-    description: "Packs objects into the cutting area, keeping rotation and size, in one undo step. ids are the objects to pack; an empty list means the current selection, and with nothing selected every visible object. Hidden objects are never packed and never obstacles; hidden objects among the ones to pack stay where they are and are listed in hidden. A picture that is not traced yet counts by its image. Every other visible object stays exactly where it is and is an obstacle: the packed objects fit around it, spacing_mm (default 5) away from it, and never overlap it. Packing works on bounding boxes: tallest first (equal heights in id order), each one at the free spot nearest the top of the cutting area, then nearest its left, with spacing_mm between packed objects. The same input always gives the same result. Objects that do not fit, or have nothing to place at all, keep their position and are listed in did_not_fit; they may overlap other objects. Origin the 0,0 of the grid printed on the mat, y down, units mm. Returns {placed: [id], did_not_fit: [id], fixed: [id] (the obstacles), hidden: [id]}.",
+    description: "Packs objects into the cutting area, keeping rotation and size, in one undo step. ids are the objects to pack; an empty list means the current selection, and with nothing selected every visible object. Hidden objects are never packed and never obstacles; hidden objects among the ones to pack stay where they are and are listed in hidden. A picture that is not traced yet counts by its image. A top-level group packs as one item with the common box of its visible members, and its members keep their places in it; picking one member packs its whole group, and the group's id is listed in the results. Every other visible object stays exactly where it is and is an obstacle: the packed objects fit around it, spacing_mm (default 5) away from it, and never overlap it. Packing works on bounding boxes: tallest first (equal heights in id order), each one at the free spot nearest the top of the cutting area, then nearest its left, with spacing_mm between packed objects. The same input always gives the same result. Objects that do not fit, or have nothing to place at all, keep their position and are listed in did_not_fit; they may overlap other objects. Origin the 0,0 of the grid printed on the mat, y down, units mm. Returns {placed: [id], did_not_fit: [id], fixed: [id] (the obstacles), hidden: [id]}.",
 );
 
 #[cfg(test)]

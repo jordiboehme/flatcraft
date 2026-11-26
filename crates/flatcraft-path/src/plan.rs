@@ -72,6 +72,10 @@ pub struct PipelineSettings {
     pub alignment_stroke: Option<AlignmentStroke>,
     /// The weed box and weed lines cut after the design ([`crate::weed`]).
     pub weed: WeedSettings,
+    /// What each object counts as for the weed box per object: the
+    /// top-level group of a grouped object, so a group gets one box.
+    /// Objects not listed count on their own.
+    pub weed_units: std::collections::BTreeMap<ObjectId, ObjectId>,
 }
 
 /// The default flatten and join tolerance, in millimetres.
@@ -108,6 +112,7 @@ impl PipelineSettings {
             corner_mode: CornerMode::Arc,
             alignment_stroke: None,
             weed: WeedSettings::default(),
+            weed_units: Default::default(),
         }
     }
 }
@@ -566,7 +571,8 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
     }
     let toolpaths = order::order(toolpaths, &tree, s.home, s);
     // Weeds read the design as one lap each, before passes and overcut.
-    let weeds = weed::generate(&toolpaths, mode_of, s.cutting_area, &s.weed);
+    let unit_of = |o: ObjectId| s.weed_units.get(&o).copied().unwrap_or(o);
+    let weeds = weed::generate(&toolpaths, mode_of, unit_of, s.cutting_area, &s.weed);
     let toolpaths = weed::sequence(toolpaths, &weeds, s);
     let mut toolpaths = if s.chain_closed_passes {
         passes::chain(

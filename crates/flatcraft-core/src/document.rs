@@ -1,5 +1,6 @@
 //! Document model: objects on the mat plus job settings.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -7,6 +8,7 @@ use kurbo::Rect;
 use serde::{Deserialize, Serialize};
 
 use crate::geometry::{CutPath, bounds};
+use crate::nodes::{GroupNode, Tree};
 use crate::project::FORMAT_VERSION;
 use crate::transform::Transform;
 
@@ -211,6 +213,11 @@ pub struct Object {
     /// mirror, name, visibility and whether it is cut.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_group: Option<GroupId>,
+    /// The group ([`crate::nodes::GroupNode`]) this object is in, `None` at
+    /// the top level. Not the same as `link_group`: a group only keeps
+    /// objects together, each with its own source and settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<ObjectId>,
 }
 
 impl Object {
@@ -239,6 +246,7 @@ impl Object {
             local_bounds,
             frame: Rect::ZERO,
             link_group: None,
+            parent: None,
         }
     }
 
@@ -487,6 +495,10 @@ pub struct Document {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub notes: String,
     pub objects: Vec<Object>,
+    /// Groups of objects (see [`crate::nodes`]). Not written when there are
+    /// none; files from before groups load without any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<GroupNode>,
     pub job: JobSettings,
     pub next_id: u64,
 }
@@ -498,6 +510,7 @@ impl Document {
             description: String::new(),
             notes: String::new(),
             objects: Vec::new(),
+            groups: Vec::new(),
             job,
             next_id: 1,
         }
@@ -519,6 +532,7 @@ impl Document {
             local_bounds: Rect::ZERO,
             frame: Rect::ZERO,
             link_group: None,
+            parent: None,
         };
         object.set_geometry(geometry);
         self.objects.push(object);
@@ -698,6 +712,196 @@ impl Document {
                 std::ptr::eq(lead, o) || o.shares_with(lead)
             }
         })
+    }
+}
+
+impl Document {
+    /// The group tree (see [`crate::nodes`]).
+    pub fn tree(&self) -> Tree {
+        Tree::new(
+            self.groups.clone(),
+            self.objects.iter().map(|o| (o.id, o.parent)).collect(),
+        )
+    }
+
+    /// The group with this id.
+    pub fn group_node(&self, id: ObjectId) -> Option<&GroupNode> {
+        self.groups.iter().find(|g| g.id == id)
+    }
+
+    pub fn group_node_mut(&mut self, id: ObjectId) -> Option<&mut GroupNode> {
+        self.groups.iter_mut().find(|g| g.id == id)
+    }
+
+    /// True if `id` names an object or a group.
+    pub fn has_node(&self, id: ObjectId) -> bool {
+        self.get(id).is_some() || self.group_node(id).is_some()
+    }
+
+    /// A new id for an object or a group.
+    pub fn take_id(&mut self) -> ObjectId {
+        let id = ObjectId(self.next_id);
+        self.next_id += 1;
+        id
+    }
+
+    /// Puts `id` (an object or a group) into group `parent`, or at the top
+    /// level for `None`. Nothing on the mat moves.
+    pub fn set_parent(&mut self, id: ObjectId, parent: Option<ObjectId>) {
+        if let Some(o) = self.get_mut(id) {
+            o.parent = parent;
+        } else if let Some(g) = self.group_node_mut(id) {
+            g.parent = parent;
+        }
+    }
+
+    /// A group name no group has yet: "Group 1", "Group 2", ...
+    pub fn new_group_name(&self) -> String {
+        (1..)
+            .map(|n| format!("Group {n}"))
+            .find(|name| self.groups.iter().all(|g| g.name != *name))
+            .unwrap_or_default()
+    }
+
+    /// Puts the nodes `ids` (objects or groups, none inside another of
+    /// them) into a new group named `name` and returns its id. The new
+    /// group sits in the nearest group that holds all of them, or at the
+    /// top level. Nothing on the mat moves. A group left with one member
+    /// dissolves ([`Document::normalize_groups`]).
+    pub fn group(&mut self, ids: &[ObjectId], name: String) -> ObjectId {
+        let tree = self.tree();
+        let chains: Vec<Vec<ObjectId>> = ids.iter().map(|id| tree.ancestors(*id)).collect();
+        let parent = chains.first().and_then(|first| {
+            first
+                .iter()
+                .copied()
+                .find(|g| chains.iter().all(|c| c.contains(g)))
+        });
+        let id = self.take_id();
+        self.groups.push(GroupNode {
+            id,
+            name,
+            parent,
+            rotation_deg: 0.0,
+        });
+        for member in ids {
+            self.set_parent(*member, Some(id));
+        }
+        self.normalize_groups();
+        id
+    }
+
+    /// Ungroup: a group in `ids` dissolves (its children go one level up),
+    /// an object in `ids` that is in a group leaves it for the group's
+    /// parent. Nothing on the mat moves. A group left with fewer than 2
+    /// members dissolves too. Returns the nodes that moved up a level.
+    pub fn ungroup(&mut self, ids: &[ObjectId]) -> Vec<ObjectId> {
+        let mut moved = Vec::new();
+        for id in ids {
+            let tree = self.tree();
+            if tree.is_group(*id) {
+                let up = tree.parent(*id);
+                for child in tree.children(Some(*id)) {
+                    self.set_parent(child, up);
+                    moved.push(child);
+                }
+                self.groups.retain(|g| g.id != *id);
+            } else if let Some(p) = tree.parent(*id) {
+                self.set_parent(*id, tree.parent(p));
+                moved.push(*id);
+            }
+        }
+        self.normalize_groups();
+        moved.retain(|id| self.has_node(*id));
+        moved
+    }
+
+    /// Keeps the group tree sound after any change: a parent that does not
+    /// exist (or a loop, from a hand-edited file) is dropped, and a group
+    /// with fewer than 2 members dissolves into its own parent. A group
+    /// whose id is also an object's id is dropped. `next_id` stays past
+    /// every id.
+    pub fn normalize_groups(&mut self) {
+        if self.groups.is_empty() && self.objects.iter().all(|o| o.parent.is_none()) {
+            return;
+        }
+        // No new id may name a group that is gone (an undo brings it back).
+        if let Some(max) = self.groups.iter().map(|g| g.id.0).max() {
+            self.next_id = self.next_id.max(max + 1);
+        }
+        let objects: BTreeSet<ObjectId> = self.objects.iter().map(|o| o.id).collect();
+        let mut seen = BTreeSet::new();
+        self.groups
+            .retain(|g| !objects.contains(&g.id) && seen.insert(g.id));
+        loop {
+            let ids: BTreeSet<ObjectId> = self.groups.iter().map(|g| g.id).collect();
+            for o in &mut self.objects {
+                if o.parent.is_some_and(|p| !ids.contains(&p)) {
+                    o.parent = None;
+                }
+            }
+            for g in &mut self.groups {
+                if g.parent.is_some_and(|p| !ids.contains(&p) || p == g.id) {
+                    g.parent = None;
+                }
+            }
+            // Break loops: a group that is its own ancestor goes to the top.
+            for i in 0..self.groups.len() {
+                let start = self.groups[i].id;
+                let mut at = self.groups[i].parent;
+                let mut steps = 0;
+                while let Some(p) = at {
+                    if p == start || steps > self.groups.len() {
+                        self.groups[i].parent = None;
+                        break;
+                    }
+                    at = self.group_node(p).and_then(|g| g.parent);
+                    steps += 1;
+                }
+            }
+            let mut count = BTreeMap::<ObjectId, usize>::new();
+            for p in self
+                .objects
+                .iter()
+                .filter_map(|o| o.parent)
+                .chain(self.groups.iter().filter_map(|g| g.parent))
+            {
+                *count.entry(p).or_default() += 1;
+            }
+            let Some(lonely) = self
+                .groups
+                .iter()
+                .find(|g| count.get(&g.id).copied().unwrap_or(0) < 2)
+                .map(|g| (g.id, g.parent))
+            else {
+                break;
+            };
+            for o in &mut self.objects {
+                if o.parent == Some(lonely.0) {
+                    o.parent = lonely.1;
+                }
+            }
+            for g in &mut self.groups {
+                if g.parent == Some(lonely.0) {
+                    g.parent = lonely.1;
+                }
+            }
+            self.groups.retain(|g| g.id != lonely.0);
+        }
+    }
+
+    /// True if the group tree is sound: every parent exists, no loops,
+    /// every group has 2 or more members, no id is used twice. The engine
+    /// checks this after every command.
+    pub fn groups_valid(&self) -> bool {
+        let mut copy = self.clone();
+        copy.normalize_groups();
+        copy.groups == self.groups
+            && copy
+                .objects
+                .iter()
+                .zip(&self.objects)
+                .all(|(a, b)| a.parent == b.parent)
     }
 }
 

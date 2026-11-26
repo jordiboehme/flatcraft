@@ -55,6 +55,53 @@ pub fn rotated_centres(centres: &[Point], degrees: f64, each: bool) -> Vec<Point
         .collect()
 }
 
+/// One unit of a rotate: something that turns as one piece (an object,
+/// or a whole group), with the centre it turns about on its own and the
+/// centres of its objects.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TurnUnit {
+    /// An object's own centre; a group's box centre.
+    pub centre: Point,
+    pub members: Vec<Point>,
+}
+
+/// The centres of the objects of `units` after `object.rotate` by
+/// `degrees`, unit by unit. With `each` (or one unit) every unit turns
+/// about its own centre; else all turn about the mean of the unit
+/// centres. A unit of one object at its own centre stays where it is, so
+/// without groups this is [`rotated_centres`].
+pub fn rotated_units(units: &[TurnUnit], degrees: f64, each: bool) -> Vec<Vec<Point>> {
+    let centres: Vec<Point> = units.iter().map(|u| u.centre).collect();
+    let pivot = if each || units.len() < 2 {
+        None
+    } else {
+        mean_centre(&centres)
+    };
+    units
+        .iter()
+        .map(|u| {
+            let p = pivot.unwrap_or(u.centre);
+            u.members
+                .iter()
+                .map(|c| {
+                    if pivot.is_none() && *c == u.centre {
+                        *c
+                    } else {
+                        rotate_about(*c, p, degrees)
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Where an object of a unit goes when the unit's copy is `to` (see
+/// [`circular_copies`] of the unit centre `unit_centre`): the object
+/// keeps its place in the unit, turned with it.
+pub fn carried(member: Point, unit_centre: Point, to: Turned) -> Point {
+    rotate_about(member, unit_centre, to.rotate_deg) + (to.center - unit_centre)
+}
+
 /// The offsets of `count` copies, each one `step` further than the one
 /// before: copy k (1-based) moves by k times `step`. `object.duplicate`
 /// with a count uses it.
@@ -234,6 +281,44 @@ pub fn auto_arrange<K: Copy + Ord>(
         fixed,
         hidden,
     }
+}
+
+/// The Auto arrange items of objects that may sit in groups: `leaves`
+/// are the objects in document order with the key of what they pack as
+/// (their top-level group, or themselves). A group packs as one item:
+/// visible when any member is, its box the union of its visible members'
+/// boxes, `None` when one of them has no box (it cannot be placed).
+/// Without groups each object is its own item, unchanged. The command
+/// and the window's preview both use it, so the boxes agree to the bit.
+pub fn auto_units<K: Copy + Ord>(leaves: &[(K, AutoObject<K>)]) -> Vec<AutoObject<K>> {
+    let mut order: Vec<K> = Vec::new();
+    for (unit, _) in leaves {
+        if !order.contains(unit) {
+            order.push(*unit);
+        }
+    }
+    order
+        .into_iter()
+        .map(|unit| {
+            let members: Vec<&AutoObject<K>> = leaves
+                .iter()
+                .filter(|(u, _)| *u == unit)
+                .map(|(_, o)| o)
+                .collect();
+            let visible = members.iter().any(|o| o.visible);
+            // The members that count: the visible ones, or all when none is.
+            let boxes = members.iter().filter(|o| o.visible || !visible);
+            let bounds = boxes
+                .map(|o| o.bounds)
+                .reduce(|a, b| a.zip(b).map(|(a, b)| a.union(b)))
+                .flatten();
+            AutoObject {
+                key: unit,
+                visible,
+                bounds,
+            }
+        })
+        .collect()
 }
 
 /// True when `a` and `b` share some area (touching is not overlapping).
