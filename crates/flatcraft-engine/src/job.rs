@@ -170,19 +170,19 @@ fn geometry_kind(c: AppliedCompensation) -> GeometryKind {
 /// emitter sees them.
 pub(crate) fn dropped_short_warning(n: usize) -> String {
     if n == 1 {
-        "1 path is shorter than half a device step and is not cut.".to_string()
+        "1 path is shorter than half a plotter step and is not cut.".to_string()
     } else {
-        format!("{n} paths are shorter than half a device step and are not cut.")
+        format!("{n} paths are shorter than half a plotter step and are not cut.")
     }
 }
 
 /// The warning when the emitter left out paths whose points all round to
-/// one device step.
+/// one plotter step.
 pub(crate) fn collapsed_warning(n: usize) -> String {
     if n == 1 {
-        "1 path fits inside one device step and is not cut.".to_string()
+        "1 path fits inside one plotter step and is not cut.".to_string()
     } else {
-        format!("{n} paths fit inside one device step and are not cut.")
+        format!("{n} paths fit inside one plotter step and are not cut.")
     }
 }
 
@@ -388,25 +388,29 @@ pub fn emit_plan(
     .map_err(emit_error)
 }
 
-/// How many paths of `plan` the emitter left out because each of their
-/// runs rounds to one device point (`collapsed`, indexes of the emitted
-/// runs). A path counts once: only its first pass is looked at, the
-/// alignment stroke never.
-fn paths_not_cut(plan: &CutPlan, collapsed: &[usize]) -> usize {
+/// For each toolpath of `plan`, whether the emitter left out every one of
+/// its runs because each rounds to one device point (`collapsed`, the
+/// indexes of the emitted runs, in order).
+fn left_out(plan: &CutPlan, collapsed: &[usize]) -> Vec<bool> {
     let mut first = 0;
-    let mut count = 0;
-    for t in &plan.toolpaths {
-        let runs = first..first + run_count(t);
-        first = runs.end;
-        let left_out = runs
-            .clone()
-            .filter(|i| collapsed.binary_search(i).is_ok())
-            .count();
-        if t.pass == 1 && t.kind != ToolpathKind::Alignment && left_out == runs.len() {
-            count += 1;
-        }
-    }
-    count
+    plan.toolpaths
+        .iter()
+        .map(|t| {
+            let runs = first..first + run_count(t);
+            first = runs.end;
+            runs.clone().all(|i| collapsed.binary_search(&i).is_ok())
+        })
+        .collect()
+}
+
+/// How many paths of `plan` the emitter left out. A path counts once:
+/// only its first pass is looked at, the alignment stroke never.
+fn paths_not_cut(plan: &CutPlan, collapsed: &[usize]) -> usize {
+    plan.toolpaths
+        .iter()
+        .zip(left_out(plan, collapsed))
+        .filter(|(t, out)| *out && t.pass == 1 && t.kind != ToolpathKind::Alignment)
+        .count()
 }
 
 /// One object as the job build reads it. The geometry `Arc` is shared with
@@ -545,6 +549,16 @@ pub fn build(session: &Session) -> Result<JobResult, CommandError> {
 }
 
 impl JobResult {
+    /// How many toolpaths are really cut: the plan's toolpaths without the
+    /// ones the emitter left out (too small for one plotter step). The
+    /// "Paths" count of `job.preview`, the send reply and the Cut stage.
+    pub fn toolpaths_cut(&self) -> usize {
+        left_out(&self.plan, &self.job.collapsed)
+            .into_iter()
+            .filter(|out| !out)
+            .count()
+    }
+
     /// The warnings that are real problems, not the person's own choices.
     pub fn problem_warnings(&self) -> usize {
         self.warnings.len().saturating_sub(self.choice_warnings)
@@ -695,7 +709,7 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         alignment_stroke: None,
         // Without a mat the feed motor moves the sheet: cut it in bands.
         monotonic_feed: media.kind == MediaKind::NoMat,
-        // Half a device step: anything shorter moves no motor at all.
+        // Half a plotter step: anything shorter moves no motor at all.
         min_cut_mm: 0.5 / plotter.units_per_mm,
         weed: job.weed,
         weed_units: input.weed_units(),
@@ -948,7 +962,7 @@ fn plotter(s: &Session) -> Result<PlotterProfile, CommandError> {
 /// workspace.
 pub fn summary(result: &JobResult) -> JobSummary {
     JobSummary {
-        toolpaths: result.plan.toolpaths.len(),
+        toolpaths: result.toolpaths_cut(),
         cut_mm: result.plan.cut_mm,
         travel_mm: result.plan.travel_mm,
         warnings: result.warnings.clone(),
@@ -1423,7 +1437,7 @@ mod tests {
         }
         assert_eq!(
             dropped_short_warning(2),
-            "2 paths are shorter than half a device step and are not cut."
+            "2 paths are shorter than half a plotter step and are not cut."
         );
         assert_eq!(
             tight_curves_warning(3, 0.25),

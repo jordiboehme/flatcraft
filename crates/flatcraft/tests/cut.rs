@@ -435,6 +435,58 @@ fn path_stage_shows_stats() {
     assert_eq!(app(&h).ui.cut.visible_toolpaths(), 1);
 }
 
+/// A path too small for one plotter step is not cut, so "Paths" leaves it
+/// out, as job.preview and the warning do.
+#[test]
+fn paths_count_leaves_out_what_is_not_cut() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    // 0.03 mm from x = 9.98 mm: both ends round to one plotter step.
+    let speck = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><path d="M60 60 L60.03 60" stroke="black" fill="none"/></svg>"#;
+    let id = run(
+        &s,
+        "object.import_svg",
+        json!({ "svg": speck, "name": "speck" }),
+    )["id"]
+        .clone();
+    run(
+        &s,
+        "object.set_cut_options",
+        json!({ "ids": [id], "mode": "all_lines", "strokes": "centre_line", "auto_threshold_mm": 1.5 }),
+    );
+    run(
+        &s,
+        "object.move",
+        json!({ "ids": [id], "x_mm": 9.98, "y_mm": 20.0 }),
+    );
+    let preview = run(&s, "job.preview", json!({}));
+    assert_eq!(preview["toolpaths"], 1);
+    let planned = s
+        .lock()
+        .unwrap()
+        .doc()
+        .last_job()
+        .unwrap()
+        .plan
+        .toolpaths
+        .len();
+    assert_eq!(planned, 2, "the plan still holds the speck");
+    let mut h = harness(&dir, s, false);
+    to_cut(&mut h);
+    stage(&mut h, "Path");
+    let job = app(&h).ui.cut.job().expect("a built job");
+    assert_eq!(job.toolpaths_cut(), 1);
+    assert!(
+        h.query_by_label("1 path fits inside one plotter step and is not cut.")
+            .is_some()
+    );
+    // The stats show 1 path, not the plan's 2.
+    assert!(h.query_by_label("Paths").is_some());
+    assert!(h.query_by_label("1").is_some());
+    assert!(h.query_by_label("2").is_none());
+}
+
 #[test]
 fn device_stage_shows_the_transport() {
     let dir = tempfile::tempdir().unwrap();

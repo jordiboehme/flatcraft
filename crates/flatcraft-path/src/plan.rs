@@ -60,7 +60,7 @@ pub struct PipelineSettings {
     /// What the cut order optimises for.
     pub strategy: StrategySettings,
     /// Paths shorter than this are dropped and counted in
-    /// [`CutPlan::dropped_short`]. The engine uses half a device step.
+    /// [`CutPlan::dropped_short`]. The engine uses half a plotter step.
     pub min_cut_mm: f64,
     /// Where the knife is steered: the tip path as it is ([`Compensation::Tip`],
     /// the plotter's firmware compensates) or host-compensated axis runs.
@@ -552,7 +552,7 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
             dropped_short += collapsed;
         }
         for line in lines {
-            // Shorter than half a device step, the cut is no cut at all:
+            // Shorter than half a plotter step, the cut is no cut at all:
             // leave it out, but count it so the engine can say so.
             if clean::length(&line.points) < s.min_cut_mm {
                 dropped_short += 1;

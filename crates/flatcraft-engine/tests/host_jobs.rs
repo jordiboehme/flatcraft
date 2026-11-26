@@ -368,12 +368,17 @@ fn dropped_short_paths_warn() {
     let job = s.doc().last_job().unwrap();
     assert_eq!(job.plan.dropped_short, 1);
     assert_eq!(job.job.collapsed.len(), 2, "both passes of the speck");
-    let small: Vec<&String> = w.iter().filter(|w| w.contains("device step")).collect();
+    // "Paths" counts what is cut: the speck's two passes are not.
+    let planned = job.plan.toolpaths.len();
+    assert_eq!(job.toolpaths_cut(), planned - 2);
+    let r = run(&mut s, "job.preview", json!({}));
+    assert_eq!(r["toolpaths"], planned - 2);
+    let small: Vec<&String> = w.iter().filter(|w| w.contains("plotter step")).collect();
     assert_eq!(
         small,
         [
-            "1 path is shorter than half a device step and is not cut.",
-            "1 path fits inside one device step and is not cut.",
+            "1 path is shorter than half a plotter step and is not cut.",
+            "1 path fits inside one plotter step and is not cut.",
         ],
         "{w:?}"
     );
@@ -534,4 +539,35 @@ fn several_runs_get_run_numbers_in_the_listing() {
         "{}",
         r["listing"]
     );
+}
+
+/// People and agents read "plotter step", one word for one thing.
+#[test]
+fn no_user_facing_text_says_device_step() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files = vec![root.join("README.md")];
+    let mut dirs = vec![root.join("crates"), root.join("docs")];
+    while let Some(dir) = dirs.pop() {
+        for e in std::fs::read_dir(&dir).unwrap() {
+            let p = e.unwrap().path();
+            let name = p.file_name().unwrap().to_string_lossy().into_owned();
+            if p.is_dir() {
+                // Plans and specs are not shown to anyone; tests may name
+                // the old word to check it is gone.
+                if !matches!(name.as_str(), "superpowers" | "target" | "tests") {
+                    dirs.push(p);
+                }
+            } else if name.ends_with(".rs") || name.ends_with(".md") || name.ends_with(".toml") {
+                files.push(p);
+            }
+        }
+    }
+    for f in files {
+        let text = std::fs::read_to_string(&f).unwrap_or_default();
+        assert!(
+            !text.to_lowercase().contains("device step"),
+            "{} says device step",
+            f.display()
+        );
+    }
 }

@@ -184,12 +184,19 @@ pub fn end_state(paths: &[Toolpath], home: Point, start_heading: Vec2) -> (Point
     (end, heading)
 }
 
+/// A lone tight vertex that turns at least this many degrees is a corner,
+/// not a tight curve ([`min_radius_spots`]): the blade swivels there, and a
+/// glyph corner between short segments must not warn. The same 30 deg as
+/// [`CORNER_DEG`]. The cost: a fillet so small (about 0.1 mm radius or
+/// less) that flattening leaves one vertex of it is not warned about.
+pub const TIGHT_CORNER_DEG: f64 = 30.0;
+
 /// Places on `points` (a polyline) where the path bends tighter than
 /// `min_radius_mm`. The local radius at a vertex is
 /// `((|seg_in| + |seg_out|) / 2) / turn`, with the turn in radians. A run of
 /// neighbouring vertices below the limit (a flattened arc) is one spot, at
-/// half its length. A single vertex that turns [`CORNER_DEG`] or more is a
-/// corner, not a curve: the blade swivels there, so it is not a spot. A
+/// half its length. A single vertex that turns [`TIGHT_CORNER_DEG`] or more
+/// is a corner, not a curve: the blade swivels there, so it is not a spot. A
 /// path that ends where it starts is a ring: its start vertex is checked
 /// too, and a run across the start is one spot. Used for warnings in every
 /// mode.
@@ -216,7 +223,7 @@ pub fn min_radius_spots(points: &[Point], min_radius_mm: f64) -> Vec<Point> {
     };
     let turns: Vec<Option<f64>> = (0..m).map(tight).collect();
     let flags: Vec<bool> = turns.iter().map(Option::is_some).collect();
-    let corner = CORNER_DEG.to_radians();
+    let corner = TIGHT_CORNER_DEG.to_radians();
     if ring && flags.iter().all(|&f| f) {
         return vec![halfway(points)];
     }

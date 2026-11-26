@@ -170,7 +170,7 @@ pub fn collect(
 ) -> Result<ExportDoc, CommandError> {
     let (media, _) = crate::commands::effective_media(&input.plotter, &input.job)?;
     let tolerance = input.plotter.flatten_tolerance_mm;
-    // The cut leaves out what is shorter than half a device step.
+    // The cut leaves out what is shorter than half a plotter step.
     let min_cut = 0.5 / input.plotter.units_per_mm;
     let wanted = |o: &&JobObject| ids.is_none_or(|ids| ids.contains(&o.id));
     let mut objects = Vec::new();

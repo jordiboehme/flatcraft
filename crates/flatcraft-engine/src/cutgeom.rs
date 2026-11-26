@@ -19,7 +19,7 @@
 //! 1e-7 mm for 100 mm). The pipeline then flattens the straight lines
 //! without error, but its cleaning merges nearly collinear points within
 //! up to `t`. Worst case about `1.5 t` (0.015 mm by default), below the
-//! 0.05 mm device step.
+//! 0.05 mm plotter step.
 //!
 //! Traced raster images are fills, so in object outlines they go through
 //! the fill boolean too; for their simple outlines this only normalises
@@ -43,7 +43,7 @@ const MIN_TOLERANCE_MM: f64 = 1e-4;
 pub const CLOSE_TOLERANCE_MM: f64 = 0.01;
 
 /// A closed line whose fill is on average narrower than this is cut once,
-/// along its spine, mm. Two device steps of 0.05 mm: two cuts that close
+/// along its spine, mm. Two plotter steps of 0.05 mm: two cuts that close
 /// together tear the material. Wider ones are real slots and keep both
 /// sides.
 pub const HAIRLINE_MM: f64 = 0.1;

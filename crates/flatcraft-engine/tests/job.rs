@@ -285,7 +285,7 @@ fn a_line_below_half_a_step_is_dropped_with_a_warning() {
     assert_eq!(r["toolpaths"], 1);
     let w = r["warnings"].to_string();
     assert!(
-        w.contains("1 path is shorter than half a device step and is not cut."),
+        w.contains("1 path is shorter than half a plotter step and is not cut."),
         "{w}"
     );
     assert!(!w.contains('\u{2014}'));
@@ -321,7 +321,7 @@ fn a_line_inside_one_plotter_step_is_left_out_with_a_warning() {
     let r = run(&mut s, "job.preview", json!({}));
     let w = r["warnings"].to_string();
     assert!(
-        w.contains("1 path fits inside one device step and is not cut."),
+        w.contains("1 path fits inside one plotter step and is not cut."),
         "{w}"
     );
     let job = s.doc().last_job().unwrap();

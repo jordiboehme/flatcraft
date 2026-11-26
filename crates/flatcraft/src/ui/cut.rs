@@ -621,7 +621,7 @@ fn stats(ui: &mut Ui, job: &JobResult, snap: &Snapshot, t: &Tokens) {
         .spacing([t.spacing * 2.0, t.spacing * 0.5])
         .show(ui, |ui| {
             ui.label("Paths");
-            ui.label(job.plan.toolpaths.len().to_string());
+            ui.label(job.toolpaths_cut().to_string());
             ui.end_row();
             let r = ui.add_enabled(weeding, egui::Label::new("Weed paths"));
             super::groups::card(
