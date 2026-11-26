@@ -39,6 +39,12 @@ pub const ALGORITHM_LIMIT_MM: f64 = 0.005;
 /// decimals or half units is an open capture question
 /// (`docs/protocol/gpgl.md`).
 pub const DEVICE_LIMIT_MM: f64 = 0.075;
+/// The device mode's strict tolerance for waste moves (lead-ins,
+/// overshoots, the alignment stroke): a waste tip closer than this to a cut
+/// is on the cut, and farther inside kept material is into-kept. One device
+/// unit (0.05 mm), what the rounding alone can do. It does not follow
+/// [`DEVICE_LIMIT_MM`], which also covers the tip drag on the pivot arcs.
+pub const DEVICE_WASTE_TOLERANCE_MM: f64 = 0.05;
 /// The end-to-end limit (R7), the guarantee that counts: the cut against
 /// the source shape, after flattening, the knife stage and the device
 /// rounding, at every grid position. 0.06 mm: one device unit plus the
@@ -152,11 +158,11 @@ impl SimSettings {
     }
 
     /// The device simulation: every run point snapped to `grid`, and a
-    /// strict tolerance of `DEVICE_LIMIT_MM`.
+    /// strict tolerance of [`DEVICE_WASTE_TOLERANCE_MM`].
     pub fn device(blade_offset_mm: f64, grid: DeviceGrid) -> Self {
         Self {
             grid: Some(grid),
-            uncut_eps_mm: DEVICE_LIMIT_MM,
+            uncut_eps_mm: DEVICE_WASTE_TOLERANCE_MM,
             ..Self::float(blade_offset_mm)
         }
     }

@@ -61,6 +61,13 @@ Why these values:
   (0.05 + 0.01 = 0.06 mm). The spec's first target of 0.05 mm cannot be
   held with whole units: the measured worst over 32 grid positions is
   0.0521 mm (table below), and 0.0569 mm on an odd calibrated grid.
+- Waste moves (lead-ins, overshoots, the alignment stroke) must never cut
+  into the material you keep. In device mode the simulator lets a waste tip
+  come only one device unit (0.05 mm) near a cut before it counts as cutting
+  in: that is what rounding alone can do. This tolerance has its own
+  constant (`DEVICE_WASTE_TOLERANCE_MM`) and does not grow with the device
+  limit. Every sweep and every grid position reports 0 mm into kept
+  material.
 - Whether the Cameo 2 takes decimals or half units in `D` is an open
   capture question (`docs/protocol/gpgl.md`, open question 14). If it does,
   the limits can come down again:

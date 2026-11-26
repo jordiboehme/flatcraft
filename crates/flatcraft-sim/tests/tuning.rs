@@ -1177,6 +1177,7 @@ fn quantized_output_meets_device_limit() {
     cases.extend(threshold_probes());
     let mut worst = 0.0f64;
     let (mut pushed, mut over_device, mut over_float) = (Vec::new(), Vec::new(), Vec::new());
+    let mut into_kept = Vec::new();
     for c in &cases {
         for d in OFFSETS {
             // The float plan, rounded only by the simulator: what plain
@@ -1227,6 +1228,11 @@ fn quantized_output_meets_device_limit() {
             if deviation(&fm) > ALGORITHM_LIMIT_MM {
                 over_float.push(format!("{} d {d}: {}", c.name, deviation(&fm)));
             }
+            for (label, m) in [("float", &fm), ("device", &dm), ("calibrated", &cm)] {
+                if m.max_into_kept_mm > 0.0 {
+                    into_kept.push(format!("{} d {d} {label}: {}", c.name, m.max_into_kept_mm));
+                }
+            }
             if dm.pushed > 0 || fm.pushed > 0 {
                 pushed.push(format!("{} d {d}: {}", c.name, dm.pushed));
             }
@@ -1243,6 +1249,10 @@ fn quantized_output_meets_device_limit() {
         "over ALGORITHM_LIMIT_MM: {over_float:?}"
     );
     assert!(pushed.is_empty(), "pushed in device mode: {pushed:?}");
+    assert!(
+        into_kept.is_empty(),
+        "STOP: waste moves into kept material: {into_kept:?}"
+    );
 }
 
 // ------------------------------------------------------- start heading
@@ -1605,6 +1615,7 @@ fn grid_position_rule(grids: &[DeviceGrid]) {
         "end-to-end max",
         "worst case",
         "pushed",
+        "into kept",
     ]);
     let mut cases = sheet();
     cases.extend(threshold_probes());
@@ -1612,6 +1623,7 @@ fn grid_position_rule(grids: &[DeviceGrid]) {
     let (mut worst_dev, mut worst_e2e) = (0.0f64, 0.0f64);
     for g in grids {
         let (mut dev, mut e2e, mut pushed) = ((0.0f64, String::new()), (0.0f64, String::new()), 0);
+        let mut into = 0.0f64;
         for c in &cases {
             for d in OFFSETS {
                 let k = Knob {
@@ -1621,6 +1633,7 @@ fn grid_position_rule(grids: &[DeviceGrid]) {
                 let out = planned(c, &settings(d, k));
                 let (trace, m) = measured(&out, &SimSettings::device(d, *g));
                 pushed += m.pushed;
+                into = into.max(m.max_into_kept_mm);
                 if deviation(&m) > dev.0 {
                     dev = (deviation(&m), format!("{} {d}", c.name));
                 }
@@ -1643,6 +1656,9 @@ fn grid_position_rule(grids: &[DeviceGrid]) {
         if pushed > 0 {
             fails.push(format!("{at}: {pushed} pushed"));
         }
+        if into > 0.0 {
+            fails.push(format!("STOP: {at}: into kept {into}"));
+        }
         worst_dev = worst_dev.max(dev.0);
         worst_e2e = worst_e2e.max(e2e.0);
         row(&[
@@ -1654,6 +1670,7 @@ fn grid_position_rule(grids: &[DeviceGrid]) {
             mm(e2e.0),
             e2e.1,
             pushed.to_string(),
+            mm(into),
         ]);
     }
     println!();

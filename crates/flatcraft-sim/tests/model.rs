@@ -225,7 +225,8 @@ fn sample_step_has_a_floor() {
     assert_eq!(SimSettings::float(0.3).uncut_eps_mm, 0.02);
     let grid = DeviceGrid::new(20.0, Point::ZERO);
     let dev = SimSettings::device(0.3, grid);
-    assert_eq!(dev.uncut_eps_mm, flatcraft_sim::DEVICE_LIMIT_MM);
+    assert_eq!(dev.uncut_eps_mm, flatcraft_sim::DEVICE_WASTE_TOLERANCE_MM);
+    assert_eq!(dev.uncut_eps_mm, 0.05);
     assert_eq!(dev.grid, Some(grid));
     assert_eq!(dev.start_heading, flatcraft_path::ASSUMED_START_HEADING);
 }
