@@ -899,6 +899,12 @@ impl FlatCraftApp {
                     .into_iter()
                     .flat_map(ids)
                     .collect();
+                if let Some(card) = &mut p.report {
+                    card.reloaded(&ids(&result["reloaded"]));
+                    if card.is_empty() {
+                        p.report = None;
+                    }
+                }
                 p.sources.changed.retain(|i| !done.contains(i));
                 for id in ids(&result["missing"]) {
                     p.sources.changed.retain(|i| *i != id);
@@ -915,6 +921,12 @@ impl FlatCraftApp {
                     .into_iter()
                     .flat_map(ids)
                     .collect();
+                if let Some(card) = &mut p.report {
+                    card.reloaded(&ids(&result["reloaded"]));
+                    if card.is_empty() {
+                        p.report = None;
+                    }
+                }
                 p.sources.forget(&done);
                 p.sources.also_found = result["also_found"]
                     .as_array()

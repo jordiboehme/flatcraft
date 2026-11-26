@@ -335,7 +335,7 @@ pub fn svg_issues(id: ObjectId, warnings: &[ImportWarning]) -> Vec<Issue> {
                     Code::MissingFont,
                     Severity::Warning,
                     0,
-                    "Install the font and reload the file, or turn the text into paths in your drawing app (in Inkscape: Path, Object to Path) and import it again.",
+                    "Install the font, restart FlatCraft and reload the file, or turn the text into paths in your drawing app (in Inkscape: Path, Object to Path) and import it again.",
                 ),
                 ImportWarning::ClipOrMaskIgnored { count } => (
                     Code::ClipIgnored,

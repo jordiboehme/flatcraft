@@ -268,3 +268,42 @@ fn an_object_off_the_mat_moves_back_from_cut() {
     h.run();
     assert!(matches!(app(&h).ui.cut.plan, Some(Ok(_))));
 }
+
+const DASHED: &str = r#"<path d="M10 80 H90" fill="none" stroke="black" stroke-width="0.2" stroke-dasharray="2 1"/>"#;
+const DASH_TEXT: &str = "1 stroke is dashed; its dashes are cut as a solid line.";
+
+#[test]
+fn the_most_severe_line_comes_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, mut h) = start(&dir);
+    // A dashed line (info, found in the file) and a hairline (warning).
+    drop_svg(&mut h, &dir, "frame", &page(&format!("{DASHED}{FRAME}")));
+    let card = app(&h).ui.prepare.report.clone().unwrap();
+    let order: Vec<&str> = card.all().iter().map(|i| i.code.as_str()).collect();
+    assert_eq!(order, ["hairline", "dashes_ignored"]);
+    let top = |label: &str| h.get_by_label(label).rect().min.y;
+    assert!(top(HAIRLINE_TEXT) < top(DASH_TEXT));
+}
+
+#[test]
+fn a_reload_forgets_what_the_old_file_had() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, mut h) = start(&dir);
+    drop_svg(&mut h, &dir, "frame", &page(&format!("{DASHED}{FRAME}")));
+    assert!(h.query_by_label(DASH_TEXT).is_some());
+    // The person fixes the file in their drawing app and reloads it.
+    std::fs::write(
+        dir.path().join("frame.svg"),
+        page(&format!(
+            r#"<path d="M10 80 H90" fill="none" stroke="black" stroke-width="0.2"/>{FRAME}"#
+        )),
+    )
+    .unwrap();
+    let doc_id = s.lock().unwrap().doc().id();
+    let ctx = h.ctx.clone();
+    app_mut(&mut h).apply(&ctx, vec![Action::run(doc_id, "object.reload", json!({}))]);
+    wait_for_workers(&mut h);
+    assert!(h.query_by_label(DASH_TEXT).is_none());
+    // The hairline is still there: the reload did not fix it.
+    assert!(h.query_by_label(HAIRLINE_TEXT).is_some());
+}

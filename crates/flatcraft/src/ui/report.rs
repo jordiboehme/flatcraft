@@ -70,9 +70,18 @@ impl ImportCard {
         (!card.is_empty()).then_some(card)
     }
 
-    /// Every issue, the file's first.
-    pub fn all(&self) -> impl Iterator<Item = &Issue> {
-        self.found.iter().chain(&self.issues)
+    /// Every issue, the most severe first (stable within a severity, the
+    /// file's own issues first), so what blocks the cut is never below the
+    /// fold.
+    pub fn all(&self) -> Vec<&Issue> {
+        by_severity(self.found.iter().chain(&self.issues))
+    }
+
+    /// Forgets what the import found in the files of these objects: they
+    /// were read again (reload, relink), so it may no longer be true.
+    pub fn reloaded(&mut self, ids: &[u64]) {
+        self.found
+            .retain(|i| !i.object_ids.iter().all(|id| ids.contains(id)));
     }
 
     pub fn is_empty(&self) -> bool {
@@ -105,6 +114,13 @@ impl ImportCard {
         self.issues = report.issues;
         self.key = Some(input.clone());
     }
+}
+
+/// Issues, the most severe first, keeping their order within a severity.
+pub fn by_severity<'a>(issues: impl Iterator<Item = &'a Issue>) -> Vec<&'a Issue> {
+    let mut v: Vec<&Issue> = issues.collect();
+    v.sort_by_key(|i| std::cmp::Reverse(i.severity));
+    v
 }
 
 /// The colour of a severity.
@@ -191,7 +207,12 @@ pub fn import_card(
     actions: &mut Vec<Action>,
 ) -> bool {
     let mut keep = true;
-    let worst = c.all().map(|i| i.severity).max().unwrap_or(Severity::Info);
+    let worst = c
+        .all()
+        .iter()
+        .map(|i| i.severity)
+        .max()
+        .unwrap_or(Severity::Info);
     let width = CARD_WIDTH.min(canvas.width() - 2.0 * t.spacing).max(120.0);
     let max = egui::Rect::from_min_size(
         egui::pos2(
@@ -230,11 +251,15 @@ pub fn import_card(
                 };
                 ui.label(RichText::new(format!("{}: {shapes}. {lead}", c.title)).color(t.text_dim));
                 ui.add_space(t.spacing / 2.0);
+                // The bar shows whenever more lines are below, not only on
+                // hover.
                 egui::ScrollArea::vertical()
-                    .max_height(canvas.height() * 0.55)
+                    .max_height(ui.available_height())
+                    .scroll_bar_visibility(
+                        egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded,
+                    )
                     .show(ui, |ui| {
-                        let issues: Vec<&Issue> = c.all().collect();
-                        issue_list(ui, &issues, c.doc_id, t, true, actions);
+                        issue_list(ui, &c.all(), c.doc_id, t, true, actions);
                     });
             });
     });
@@ -275,7 +300,6 @@ pub fn reasons_box(
             };
             ui.label(RichText::new(lead).color(t.text_dim));
             ui.add_space(t.spacing / 2.0);
-            let list: Vec<&Issue> = issues.iter().collect();
-            issue_list(ui, &list, doc_id, t, true, actions);
+            issue_list(ui, &by_severity(issues.iter()), doc_id, t, true, actions);
         });
 }
