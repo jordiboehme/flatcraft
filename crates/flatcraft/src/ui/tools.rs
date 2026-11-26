@@ -240,7 +240,7 @@ impl Section {
             Section::Mirror => "Mirror",
             Section::Align => "Align",
             Section::Distribute => "Distribute",
-            Section::Group => "Group",
+            Section::Group => "Groups",
         }
     }
 
