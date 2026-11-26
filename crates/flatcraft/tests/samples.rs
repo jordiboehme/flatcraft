@@ -532,7 +532,9 @@ fn labels_and_stickers(s: &Session) {
 }
 
 /// The name of the shirt motif, which says why it is mirrored.
-const SHIRT_MOTIF: &str = "Shirt motif (mirrored for iron-on)";
+/// The reason comes first, so the object list shows it even when the name
+/// is cut short.
+const SHIRT_MOTIF: &str = "Mirrored for iron-on: shirt motif";
 
 /// A striped 80s sunset over "BORN TO MAKE", mirrored for heat transfer
 /// vinyl, which is cut from the back.
@@ -1071,6 +1073,22 @@ fn the_labels_cut_every_inner_line_before_the_outlines_on_vinyl() {
     // A rim, a groove and a panel: three lines per label.
     let plan = flatcraft_engine::job::build(&st).unwrap().plan;
     assert_eq!(plan.toolpaths.len(), 12 * 3);
+    // The 12 outlines, the largest lines, are cut last.
+    let area = |t: &flatcraft_path::Toolpath| {
+        t.points
+            .iter()
+            .fold(
+                kurbo::Rect::from_points(t.points[0], t.points[0]),
+                |r, p| r.union_pt(*p),
+            )
+            .area()
+    };
+    let mut sizes: Vec<f64> = plan.toolpaths.iter().map(area).collect();
+    sizes.sort_by(f64::total_cmp);
+    let smallest_outline = sizes[sizes.len() - 12];
+    for (i, t) in plan.toolpaths.iter().enumerate() {
+        assert_eq!(area(t) >= smallest_outline, i >= 24, "toolpath {i}");
+    }
 }
 
 #[test]
@@ -1083,7 +1101,7 @@ fn the_shirt_motif_is_mirrored_for_heat_transfer_vinyl() {
     let motif = &doc.objects[0];
     assert!(motif.transform.mirror, "stored mirrored");
     assert_eq!(motif.name, SHIRT_MOTIF);
-    assert!(motif.name.contains("mirrored for iron-on"));
+    assert!(motif.name.starts_with("Mirrored for iron-on"));
 }
 
 #[test]

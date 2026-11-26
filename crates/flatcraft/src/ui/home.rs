@@ -971,7 +971,7 @@ pub const SAMPLES: [Sample; 6] = [
         id: "iron-on-shirt",
         title: "Iron-on shirt motif",
         sentence: "Your design, mirrored for you so the iron-on lands the right way round - no more backwards shirts.",
-        hint: "Opens a copy of a shirt motif for heat transfer vinyl (HTV, the iron-on kind). HTV lies shiny side down on the mat and is cut from the back, so the design is mirrored: it reads backwards on the mat and right on the shirt. Forgetting to mirror is the classic first iron-on mistake. This one is already flipped, so weed it, iron it and wear it.",
+        hint: "Opens a copy of a shirt motif for heat transfer vinyl (HTV, the iron-on kind). HTV lies shiny side down on the mat and is cut from the back, so the design is mirrored: it reads backwards on the mat and right on the shirt. Forgetting to mirror is the classic first iron-on mistake. This one is already flipped: weed it (peel away the vinyl you don't want), iron it on and wear it.",
         bytes: sample_bytes!("iron-on-shirt"),
     },
     Sample {
@@ -999,7 +999,7 @@ pub const SAMPLES: [Sample; 6] = [
         id: "maker-quotes",
         title: "Maker quotes",
         sentence: "Maker wisdom to stick on your toolbox, laptop or shirt - mirror it first for iron-on.",
-        hint: "Opens a copy of six vinyl stickers with maker quotes. The words are cut out of each shape and every line and gap is at least 1 mm wide, so it weeds well. Each name is its own object: use Skip cutting on it to cut only the quote. For a shirt, select all, mirror it and pick heat transfer vinyl.",
+        hint: "Opens a copy of six vinyl stickers with maker quotes. The words are cut out of each shape and every line and gap is at least 1 mm wide, so it is easy to weed (to peel away the vinyl you don't want). Each name is its own object: use Skip cutting on it to cut only the quote. For a shirt, select all, mirror it and pick heat transfer vinyl.",
         bytes: sample_bytes!("maker-quotes"),
     },
 ];
