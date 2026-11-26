@@ -11,9 +11,23 @@ use flatcraft::ui::outcome::{self, OutcomeDialog};
 use flatcraft_engine::cutlog::{self, Target, Verdict};
 use flatcraft_engine::session::Origin;
 use serde_json::json;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// A square on vinyl, sent once to File Output from the Cut workspace.
 fn sent_once() -> (tempfile::TempDir, flatcraft_mcp::SharedSession, AppHarness) {
+    let (dir, s, h, _) = sent_once_with_clock();
+    (dir, s, h)
+}
+
+/// [`sent_once`] with the window's clock in the test's hand, so toasts
+/// can be let run out.
+fn sent_once_with_clock() -> (
+    tempfile::TempDir,
+    flatcraft_mcp::SharedSession,
+    AppHarness,
+    Arc<Mutex<Instant>>,
+) {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     import_square(&s);
@@ -21,18 +35,29 @@ fn sent_once() -> (tempfile::TempDir, flatcraft_mcp::SharedSession, AppHarness) 
         .unwrap()
         .execute("job.set_material", json!({ "id": "vinyl" }), Origin::User)
         .unwrap();
-    // Tall enough that the Job card's rate button, under the material's
-    // tips, is clear of the bottom edge.
-    let mut h = harness_sized(&dir, s.clone(), [1400.0, 1200.0], 4, |a| a);
+    let now = Arc::new(Mutex::new(Instant::now()));
+    let clock = now.clone();
+    let mut h = harness_with(&dir, s.clone(), move |a| {
+        a.with_clock(move || *clock.lock().unwrap())
+    });
     app_mut(&mut h).ui.workspace = Workspace::Cut;
-    h.run();
+    settle(&mut h);
     h.get_by_role_and_label(Role::Tab, "Send").click();
-    h.run();
+    settle(&mut h);
     h.get_by_role_and_label(Role::Button, "Send to File Output")
         .click();
-    h.run();
-    h.run();
-    (dir, s, h)
+    settle(&mut h);
+    settle(&mut h);
+    (dir, s, h, now)
+}
+
+/// Lets every toast run out: they sit in the bottom right corner, over
+/// the end of the stage panel, and would take a click meant for a button
+/// there.
+fn let_toasts_run_out(h: &mut AppHarness, now: &Arc<Mutex<Instant>>) {
+    *now.lock().unwrap() += flatcraft::ui::toasts::WARNING_LIFETIME + Duration::from_secs(1);
+    settle(h);
+    assert!(app(h).ui.toasts.is_empty());
 }
 
 /// The node of `label` inside the open question.
@@ -146,12 +171,12 @@ fn only_a_cut_on_a_plotter_asks_right_after_the_send() {
 
 #[test]
 fn rate_asks_about_the_newest_unrated_cut_while_the_line_shows_the_rated_one() {
-    let (dir, s, mut h) = sent_once();
+    let (dir, s, mut h, now) = sent_once_with_clock();
     // A second send, then rate the first one.
     h.get_by_role_and_label(Role::Button, "Send to File Output")
         .click();
-    h.run();
-    h.run();
+    settle(&mut h);
+    settle(&mut h);
     let (older, newer) = {
         let log = cutlog::read(dir.path());
         assert_eq!(log.entries.len(), 2);
@@ -163,15 +188,17 @@ fn rate_asks_about_the_newest_unrated_cut_while_the_line_shows_the_rated_one() {
         .unwrap();
     h.get_by_role_and_label(Role::Tab, "Device & Material")
         .click();
-    h.run();
+    settle(&mut h);
     let log = s.lock().unwrap().cut_log();
     // The line keeps the rule: the newest rated cut.
     h.get_by_label(&outcome::last_time_text(log.get(&older.id).unwrap()));
     // The button asks about the newer, unrated cut, and says which.
     let label = outcome::rate_label(&newer);
     assert!(label.starts_with("Rate the cut of 20"), "{label}");
+    // In the 900 pt window the button sits low, under the "Sent" toasts.
+    let_toasts_run_out(&mut h, &now);
     h.get_by_role_and_label(Role::Button, &label).click();
-    h.run();
+    settle(&mut h);
     assert_eq!(app(&h).ui.outcome.as_ref().unwrap().entry, newer.id);
 }
 

@@ -785,6 +785,10 @@ fn weeding_controls_set_the_job_and_dim_what_does_not_apply() {
     import_square(&s);
     let mut h = harness(&dir, s.clone(), false);
     to_cut(&mut h);
+    // Each weeding change starts the kept and waste worker; it asks for a
+    // repaint when done, which on a busy machine comes after a few frames.
+    // Settle by clock, not by a count of frames.
+    common::settle(&mut h);
     let disabled =
         |h: &AppHarness, label: &str| h.get_by_label(label).accesskit_node().is_disabled();
     // Off by default: the box margin, per object and the spacing are dimmed.
@@ -794,7 +798,7 @@ fn weeding_controls_set_the_job_and_dim_what_does_not_apply() {
     assert!(!disabled(&h, "Weed box"));
     let before = common::undo_len(&s);
     h.get_by_label("Weed box").click();
-    h.run();
+    common::settle(&mut h);
     let state = run(&s, "document.state", json!({}));
     assert_eq!(state["job"]["weed"]["box"], true);
     assert_eq!(common::undo_len(&s), before + 1, "one undo step");
@@ -802,20 +806,20 @@ fn weeding_controls_set_the_job_and_dim_what_does_not_apply() {
     assert!(!disabled(&h, "One box per object"));
     // The lines combo picks a direction; then the spacing applies.
     h.get_by_label("Weed lines").click();
-    h.run();
+    common::settle(&mut h);
     h.get_by_label("Both").click();
-    h.run();
+    common::settle(&mut h);
     let state = run(&s, "document.state", json!({}));
     assert_eq!(state["job"]["weed"]["lines"], "both");
     assert!(!disabled(&h, "Line spacing"));
     // The margin also sets where the lines stop: with the box off and the
     // lines on it stays enabled; with both off it is dimmed.
     run(&s, "job.set_weeding", json!({ "box": false }));
-    h.run();
+    common::settle(&mut h);
     assert!(!disabled(&h, "Box margin"));
     assert!(disabled(&h, "One box per object"));
     run(&s, "job.set_weeding", json!({ "lines": "off" }));
-    h.run();
+    common::settle(&mut h);
     assert!(disabled(&h, "Box margin"));
 }
 
