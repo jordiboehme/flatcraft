@@ -259,6 +259,13 @@ pub struct Checklist {
 /// The mirror item's hint when some objects are mirrored and some not.
 pub const MIXED_MIRROR: &str = "Some objects are mirrored and some are not. Turn the mirrored ones back (Mirror horizontally on them), then use Mirror for iron-on so the whole layout flips together.";
 
+/// The mirror item's hint for a mixed layout on material that is not
+/// iron-on.
+pub const MIXED_MIRROR_PLAIN: &str = "Some objects are mirrored and some are not. Turn the mirrored ones back with Mirror horizontally.";
+/// The mirror item when only the test shape is cut.
+pub const ONLY_TEST_SHAPE: &str =
+    "Only the test shape is set to cut, and it reads the same either way.";
+
 /// The lead line of every checklist.
 pub const LEAD: &str = "Work from the top: the first things are the most likely. Change one thing at a time, then cut a test shape.";
 
@@ -896,34 +903,53 @@ fn mirror(input: &JobInput) -> Item {
     );
     it.likely = likely;
     // Iron-on vinyl is turned over as a whole sheet, so the whole layout
-    // flips as one rigid group (the test shape too, it is symmetric):
-    // nothing can land on another object. That works only from one state
-    // to the other, so a mixed layout gets a hint instead of a button.
-    let group: Vec<&JobObject> = input
+    // flips as one rigid group: every visible object, skipped ones too
+    // (they are cut once Skip is off), and the test shape, which is
+    // symmetric and follows whatever its own flag. Nothing can land on
+    // another object. The state (none, all or mixed) counts the visible
+    // design objects only; a mixed layout gets a hint instead of a button.
+    let design: Vec<&JobObject> = input
         .objects
         .iter()
-        .filter(|o| o.visible && o.cut_enabled)
+        .filter(|o| o.visible && !is_test_shape(&o.name, &o.geometry))
         .collect();
-    let all_ids: Vec<u64> = group.iter().map(|o| o.id.0).collect();
-    let none_mirrored = group.iter().all(|o| !o.transform.mirror);
-    let all_mirrored = group.iter().all(|o| o.transform.mirror);
+    let shapes: Vec<&JobObject> = input
+        .objects
+        .iter()
+        .filter(|o| o.visible && is_test_shape(&o.name, &o.geometry))
+        .collect();
+    let design_ids: Vec<u64> = design.iter().map(|o| o.id.0).collect();
+    let follow: Vec<u64> = shapes.iter().map(|o| o.id.0).collect();
+    let none_mirrored = design.iter().all(|o| !o.transform.mirror);
+    let all_mirrored = design.iter().all(|o| o.transform.mirror);
     let label = "Mirror for iron-on";
     let back = "Mirror back";
     let shown = if hot { label } else { back };
+    let sheet = design_ids.len() + follow.len();
     // The group mirrors in place (its box stays), so the result is inside
     // the cutting area exactly when the objects are now.
     let off_area = cutting_area(input).is_some_and(|area| {
-        group
+        design
             .iter()
+            .chain(&shapes)
             .filter_map(|o| report::object_bounds(o))
             .reduce(|a, b| a.union(b))
             .is_some_and(|b| !crate::commands::inside(b, area))
     });
     let mixed = !none_mirrored && !all_mirrored;
+    let only_shape = n == 0 && shapes.iter().any(|o| o.cut_enabled);
+    if only_shape {
+        it.message = ONLY_TEST_SHAPE.into();
+    }
     if likely && mixed {
+        let hint = if hot {
+            MIXED_MIRROR
+        } else {
+            MIXED_MIRROR_PLAIN
+        };
         it.message.push(' ');
-        it.message.push_str(MIXED_MIRROR);
-        it.blocked.push(blocked(shown, MIXED_MIRROR.into()));
+        it.message.push_str(hint);
+        it.blocked.push(blocked(shown, hint.into()));
     } else if likely && off_area {
         it.blocked.push(blocked(
             shown,
@@ -933,23 +959,25 @@ fn mirror(input: &JobInput) -> Item {
         it.fixes.push(Fix {
             label: label.into(),
             description: format!(
-                "Mirrors the whole layout ({}) left and right as one group, in place, so the design reads right once it is ironed on. A second click changes nothing. Undo takes it back.",
-                objects(all_ids.len())
+                "Mirrors the whole layout ({}, skipped ones and the test shape too) left and right as one group, in place, so the design reads right once it is ironed on. A second click changes nothing. Undo takes it back.",
+                objects(sheet)
             ),
             command: "object.mirror".into(),
-            args: json!({ "ids": all_ids, "axis": "horizontal", "mirrored": true }),
+            args: json!({ "ids": design_ids, "follow": follow, "axis": "horizontal", "mirrored": true }),
         });
     } else if likely {
         it.fixes.push(Fix {
             label: back.into(),
             description: format!(
-                "Mirrors the whole layout ({}) back as one group, in place, so the design reads right on {}. A second click changes nothing. Undo takes it back.",
-                objects(all_ids.len()),
+                "Mirrors the whole layout ({}, skipped ones and the test shape too) back as one group, in place, so the design reads right on {}. A second click changes nothing. Undo takes it back.",
+                objects(sheet),
                 input.material.name
             ),
             command: "object.mirror".into(),
-            args: json!({ "ids": all_ids, "axis": "horizontal", "mirrored": false }),
+            args: json!({ "ids": design_ids, "follow": follow, "axis": "horizontal", "mirrored": false }),
         });
+    } else if only_shape {
+        it.blocked.push(blocked(label, ONLY_TEST_SHAPE.into()));
     } else if n == 0 {
         it.blocked
             .push(blocked(label, "Nothing is set to cut yet.".into()));
