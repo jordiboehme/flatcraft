@@ -24,7 +24,7 @@ pub const LABEL: &str = "It didn't cut right...";
 /// The dialog's title.
 pub const TITLE: &str = "It didn't cut right?";
 /// The card of the button that opens the helper.
-pub const OPEN_HINT: &str = "Tell FlatCraft what went wrong with a cut, and get a list of what to check, in order. Buttons in the list change this job's speed, force or passes, never the material preset.";
+pub const OPEN_HINT: &str = "Tell FlatCraft what went wrong with a cut, and get a list of what to check, in order. Buttons in the list change only this document (speed, force, passes, cut order, mirror, a test shape), never the material preset, and Undo takes each one back.";
 /// The line under the title.
 pub const ASK: &str = "What happened? Pick the closest.";
 /// Shown before a symptom is picked.
