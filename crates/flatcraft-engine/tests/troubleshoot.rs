@@ -474,30 +474,35 @@ fn iron_on_that_is_not_mirrored_is_the_likely_cause() {
             .contains("1 of 2 is not mirrored, so it comes out backwards"),
         "{it:?}"
     );
+    // A mixed layout gets the hint, not a button: the whole layout must
+    // flip together.
+    assert!(it.fixes.is_empty(), "{it:?}");
+    assert!(it.message.contains(troubleshoot::MIXED_MIRROR), "{it:?}");
+    assert_eq!(
+        blocked_reason(&c, Check::Mirror, "Mirror for iron-on"),
+        troubleshoot::MIXED_MIRROR
+    );
     run(
         &mut s,
         "object.mirror",
         json!({ "ids": [a], "axis": "horizontal" }),
     );
     let c = list(&mut s, Symptom::WrongPlaceOrSize);
+    let it = item(&c, Check::Mirror);
     assert!(
-        item(&c, Check::Mirror)
-            .message
+        it.message
             .contains("2 of 2 are not mirrored, so they come out"),
         "{c:?}"
     );
-    run(
-        &mut s,
-        "object.mirror",
-        json!({ "ids": [a], "axis": "horizontal" }),
-    );
-    // The likely cause comes first, with an absolute fix.
+    // The likely cause comes first, with an absolute fix for the whole
+    // layout.
     assert_eq!(c.items[0].check, Check::Mirror, "{c:?}");
     assert_eq!(it.fixes[0].label, "Mirror for iron-on");
+    assert_eq!(it.fixes[0].args["ids"], json!([a, b]));
     run(
         &mut s,
         "object.mirror",
-        json!({ "ids": [b], "axis": "horizontal" }),
+        json!({ "ids": [a, b], "axis": "horizontal" }),
     );
     let c = list(&mut s, Symptom::WrongPlaceOrSize);
     assert!(!item(&c, Check::Mirror).likely);
@@ -507,6 +512,7 @@ fn iron_on_that_is_not_mirrored_is_the_likely_cause() {
     let it = item(&c, Check::Mirror);
     assert!(it.likely && it.object_ids == [a, b], "{it:?}");
     assert_eq!(it.fixes[0].label, "Mirror back");
+    assert_eq!(it.fixes[0].args["ids"], json!([a, b]));
     // Not iron-on: the mirror check keeps its place.
     assert_eq!(c.items[0].check, Check::Scale, "{c:?}");
 }
@@ -823,33 +829,191 @@ fn the_test_shape_never_counts_for_the_mirror() {
         "job.set_material",
         json!({ "id": "heat-transfer-vinyl" }),
     );
-    let shape_before = s
-        .doc()
-        .document
-        .get(flatcraft_core::document::ObjectId(shape))
-        .unwrap()
-        .transform;
     let c = list(&mut s, Symptom::WrongPlaceOrSize);
     let it = item(&c, Check::Mirror);
     assert!(it.message.contains("2 are not mirrored"), "{it:?}");
     assert!(!it.object_ids.contains(&shape));
-    assert_eq!(it.fixes[0].args["ids"], json!([big, small]));
-    let before = union(&mut s, &[big, small]);
+    // The whole layout flips, the test shape with it.
+    assert_eq!(it.fixes[0].args["ids"], json!([big, small, shape]));
+    let all = [big, small, shape];
+    let before = union(&mut s, &all);
     apply(&mut s, &c, Check::Mirror, "Mirror for iron-on");
-    assert!(same_box(before, union(&mut s, &[big, small])));
-    let shape_after = s
-        .doc()
-        .document
-        .get(flatcraft_core::document::ObjectId(shape))
-        .unwrap()
-        .transform;
-    assert_eq!(shape_before, shape_after, "the test shape is untouched");
-    // No false alarm: the design is mirrored, the test shape is not.
+    assert!(same_box(before, union(&mut s, &all)));
+    assert_no_overlap(&mut s);
+    // No false alarm: everything is mirrored, and the test shape does not
+    // count.
     let c = list(&mut s, Symptom::WrongPlaceOrSize);
     let it = item(&c, Check::Mirror);
     assert!(!it.likely, "{it:?}");
     assert!(it.message.contains("All 2 objects are mirrored"), "{it:?}");
     assert_eq!(run(&mut s, "job.preview", json!({}))["ready"], true);
+}
+
+/// No two visible, cut objects overlap (touching is fine).
+fn assert_no_overlap(s: &mut Session) {
+    let state = run(s, "document.state", json!({}));
+    let boxes: Vec<(u64, Rect)> = state["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|o| o["visible"] == true && o["cut_enabled"] == true)
+        .map(|o| {
+            let b = &o["bounds_mm"];
+            (
+                o["id"].as_u64().unwrap(),
+                Rect::new(
+                    b["x0"].as_f64().unwrap(),
+                    b["y0"].as_f64().unwrap(),
+                    b["x1"].as_f64().unwrap(),
+                    b["y1"].as_f64().unwrap(),
+                ),
+            )
+        })
+        .collect();
+    for (i, (ia, a)) in boxes.iter().enumerate() {
+        for (ib, b) in &boxes[i + 1..] {
+            let overlap = a.intersect(*b);
+            assert!(
+                overlap.width() <= 1e-6 || overlap.height() <= 1e-6,
+                "{ia} {a:?} overlaps {ib} {b:?}"
+            );
+        }
+    }
+}
+
+/// The reviewer's layout: the test shape sits in the gap between a wide
+/// panel and a small square. Flipping only the design would put the
+/// square on the test shape; the whole layout flips together instead.
+#[test]
+fn the_test_shape_in_the_gap_stays_clear() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let r = run(
+        &mut s,
+        "object.import_svg",
+        json!({ "name": "panel", "svg": svg(200.0, r#"<rect width="200" height="100"/>"#) }),
+    );
+    let big = r["id"].as_u64().unwrap();
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [big], "x_mm": 10.0, "y_mm": 20.0 }),
+    );
+    let small = square_at(&mut s, "dot", 20.0, 270.0, 20.0);
+    let shape = run(&mut s, "tools.test_shape", json!({}))["id"]
+        .as_u64()
+        .unwrap();
+    let t = bounds(&mut s, shape);
+    assert!(
+        t.x0 > 210.0 && t.x1 < 270.0,
+        "the test shape is in the gap: {t:?}"
+    );
+    run(
+        &mut s,
+        "job.set_material",
+        json!({ "id": "heat-transfer-vinyl" }),
+    );
+    let c = list(&mut s, Symptom::WrongPlaceOrSize);
+    apply(&mut s, &c, Check::Mirror, "Mirror for iron-on");
+    assert_no_overlap(&mut s);
+    assert_eq!(run(&mut s, "job.preview", json!({}))["ready"], true);
+    let _ = small;
+}
+
+/// A plain, B mirrored, C plain: no button, the hint says what to do.
+#[test]
+fn a_mixed_layout_gets_the_hint_and_no_button() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let _a = square_at(&mut s, "A", 20.0, 10.0, 10.0);
+    let b = square_at(&mut s, "B", 20.0, 50.0, 10.0);
+    let _c = square_at(&mut s, "C", 20.0, 90.0, 10.0);
+    run(
+        &mut s,
+        "object.mirror",
+        json!({ "ids": [b], "axis": "horizontal" }),
+    );
+    for material in ["heat-transfer-vinyl", "copy-paper"] {
+        run(&mut s, "job.set_material", json!({ "id": material }));
+        let c = list(&mut s, Symptom::WrongPlaceOrSize);
+        let it = item(&c, Check::Mirror);
+        assert!(it.likely, "{material}: {it:?}");
+        assert!(it.fixes.is_empty(), "{material}: {it:?}");
+        assert!(it.message.ends_with(troubleshoot::MIXED_MIRROR), "{it:?}");
+        assert_eq!(it.blocked[0].reason, troubleshoot::MIXED_MIRROR);
+    }
+}
+
+/// Property check: random layouts (sizes, places, mirror states, with or
+/// without a test shape, iron-on or not). Whenever a mirror fix is
+/// offered, running it leaves no two cut objects overlapping and the job
+/// ready.
+#[test]
+fn any_offered_mirror_fix_keeps_the_layout_clear() {
+    let mut seed: u64 = 0x5eed_f1a7;
+    let mut rnd = |n: u64| {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (seed >> 33) % n
+    };
+    let mut offered = 0;
+    for case in 0..40 {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = session(&dir);
+        let mut placed: Vec<Rect> = Vec::new();
+        let count = 2 + rnd(3);
+        let mut tries = 0;
+        while (placed.len() as u64) < count && tries < 200 {
+            tries += 1;
+            let side = 10.0 + rnd(50) as f64;
+            let x = 5.0 + rnd(220) as f64;
+            let y = 5.0 + rnd(220) as f64;
+            let r = Rect::new(x, y, x + side, y + side);
+            if placed
+                .iter()
+                .any(|p| p.inflate(1.0, 1.0).intersect(r).area() > 0.0)
+            {
+                continue;
+            }
+            let id = square_at(&mut s, &format!("o{}", placed.len()), side, x, y);
+            if rnd(2) == 0 {
+                run(
+                    &mut s,
+                    "object.mirror",
+                    json!({ "ids": [id], "axis": "horizontal", "about": "each" }),
+                );
+            }
+            placed.push(r);
+        }
+        if rnd(2) == 0 {
+            let _ = s.execute("tools.test_shape", json!({}), Origin::User);
+        }
+        let material = if rnd(2) == 0 {
+            "heat-transfer-vinyl"
+        } else {
+            "copy-paper"
+        };
+        run(&mut s, "job.set_material", json!({ "id": material }));
+        assert_no_overlap(&mut s);
+        let c = list(&mut s, Symptom::WrongPlaceOrSize);
+        let it = item(&c, Check::Mirror).clone();
+        for fix in &it.fixes {
+            offered += 1;
+            s.execute(&fix.command, fix.args.clone(), Origin::Agent)
+                .unwrap_or_else(|e| panic!("case {case}: {e}"));
+            assert_no_overlap(&mut s);
+            assert_eq!(
+                run(&mut s, "job.preview", json!({}))["ready"],
+                true,
+                "case {case}"
+            );
+            // Afterwards the item no longer offers a fix.
+            let again = list(&mut s, Symptom::WrongPlaceOrSize);
+            assert!(item(&again, Check::Mirror).fixes.is_empty(), "case {case}");
+        }
+    }
+    assert!(offered >= 5, "the cases offered a fix {offered} times");
 }
 
 #[test]
@@ -871,4 +1035,26 @@ fn the_mirror_fix_waits_for_a_design_on_the_mat() {
     assert!(item(&c, Check::Mirror).likely);
     let why = blocked_reason(&c, Check::Mirror, "Mirror for iron-on");
     assert!(why.contains("outside the cutting area"), "{why}");
+}
+
+#[test]
+fn one_mirrored_object_reads_well() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = square_at(&mut s, "a", 20.0, 10.0, 10.0);
+    run(
+        &mut s,
+        "job.set_material",
+        json!({ "id": "heat-transfer-vinyl" }),
+    );
+    run(
+        &mut s,
+        "object.mirror",
+        json!({ "ids": [a], "axis": "horizontal" }),
+    );
+    let c = list(&mut s, Symptom::WrongPlaceOrSize);
+    assert_eq!(
+        item(&c, Check::Mirror).message,
+        "The object is mirrored, as heat transfer vinyl needs."
+    );
 }

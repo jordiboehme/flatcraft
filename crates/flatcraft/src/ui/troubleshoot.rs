@@ -237,7 +237,7 @@ fn item_row(
             card(
                 &r,
                 &b.label,
-                &blocked_card(it.check),
+                &blocked_card(it.check, &b.label),
                 Some(&b.reason),
                 false,
             );
@@ -258,12 +258,17 @@ fn item_row(
 }
 
 /// What a dimmed button would do, under the reason it cannot.
-fn blocked_card(check: Check) -> String {
+fn blocked_card(check: Check, label: &str) -> String {
     match check {
         Check::TestShape => {
             "Adds a small test shape on a free spot of the mat, or sets everything else to Skip cutting so only the test shape is cut.".into()
         }
-        Check::Mirror => "Mirrors the design left and right for iron-on vinyl.".into(),
+        Check::Mirror if label == "Mirror back" => {
+            "Mirrors the whole layout back as one group, so it reads right on material that is not iron-on.".into()
+        }
+        Check::Mirror => {
+            "Mirrors the whole layout left and right as one group, for iron-on vinyl.".into()
+        }
         Check::CutOrder => {
             "Sets this document's strategy to Keep sheet, so every outline is cut last.".into()
         }

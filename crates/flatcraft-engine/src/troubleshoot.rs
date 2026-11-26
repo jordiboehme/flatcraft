@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::cutlog::CutEntry;
-use crate::job::JobInput;
+use crate::job::{JobInput, JobObject};
 use crate::patterns::{TEST_HOLE_MM, TEST_SQUARE_MM, is_test_shape};
 use crate::report::{self, Code, Fix};
 
@@ -255,6 +255,9 @@ pub struct Checklist {
     /// What to check, the most likely first.
     pub items: Vec<Item>,
 }
+
+/// The mirror item's hint when some objects are mirrored and some not.
+pub const MIXED_MIRROR: &str = "Some objects are mirrored and some are not. Turn the mirrored ones back (Mirror horizontally on them), then use Mirror for iron-on so the whole layout flips together.";
 
 /// The lead line of every checklist.
 pub const LEAD: &str = "Work from the top: the first things are the most likely. Change one thing at a time, then cut a test shape.";
@@ -856,10 +859,14 @@ fn mirror(input: &JobInput) -> Item {
         )
     } else if hot {
         (
-            format!(
-                "All {} are mirrored, as heat transfer vinyl needs.",
-                objects(n)
-            ),
+            if n == 1 {
+                "The object is mirrored, as heat transfer vinyl needs.".to_string()
+            } else {
+                format!(
+                    "All {} are mirrored, as heat transfer vinyl needs.",
+                    objects(n)
+                )
+            },
             false,
             Vec::new(),
         )
@@ -888,42 +895,60 @@ fn mirror(input: &JobInput) -> Item {
         "Mirror flips a design left and right. Iron-on vinyl lies face down on the mat, so its design must be cut mirrored to read right on the shirt.",
     );
     it.likely = likely;
+    // Iron-on vinyl is turned over as a whole sheet, so the whole layout
+    // flips as one rigid group (the test shape too, it is symmetric):
+    // nothing can land on another object. That works only from one state
+    // to the other, so a mixed layout gets a hint instead of a button.
+    let group: Vec<&JobObject> = input
+        .objects
+        .iter()
+        .filter(|o| o.visible && o.cut_enabled)
+        .collect();
+    let all_ids: Vec<u64> = group.iter().map(|o| o.id.0).collect();
+    let none_mirrored = group.iter().all(|o| !o.transform.mirror);
+    let all_mirrored = group.iter().all(|o| o.transform.mirror);
     let label = "Mirror for iron-on";
+    let back = "Mirror back";
+    let shown = if hot { label } else { back };
     // The group mirrors in place (its box stays), so the result is inside
     // the cutting area exactly when the objects are now.
-    let off_area = likely
-        && cutting_area(input).is_some_and(|area| {
-            cut.iter()
-                .filter(|o| ids.contains(&o.id.0))
-                .filter_map(|o| report::object_bounds(o))
-                .reduce(|a, b| a.union(b))
-                .is_some_and(|b| !crate::commands::inside(b, area))
-        });
-    if off_area {
+    let off_area = cutting_area(input).is_some_and(|area| {
+        group
+            .iter()
+            .filter_map(|o| report::object_bounds(o))
+            .reduce(|a, b| a.union(b))
+            .is_some_and(|b| !crate::commands::inside(b, area))
+    });
+    let mixed = !none_mirrored && !all_mirrored;
+    if likely && mixed {
+        it.message.push(' ');
+        it.message.push_str(MIXED_MIRROR);
+        it.blocked.push(blocked(shown, MIXED_MIRROR.into()));
+    } else if likely && off_area {
         it.blocked.push(blocked(
-            if hot { label } else { "Mirror back" },
+            shown,
             "Part of the design is outside the cutting area. Move it onto the mat first (the Cut workspace shows a Move onto the mat button).".into(),
         ));
     } else if likely && hot {
         it.fixes.push(Fix {
             label: label.into(),
             description: format!(
-                "Mirrors {} left and right, as one group, so the design reads right once it is ironed on. Objects that are mirrored already stay as they are, so a second click changes nothing. Undo takes it back.",
-                objects(ids.len())
+                "Mirrors the whole layout ({}) left and right as one group, in place, so the design reads right once it is ironed on. A second click changes nothing. Undo takes it back.",
+                objects(all_ids.len())
             ),
             command: "object.mirror".into(),
-            args: json!({ "ids": ids, "axis": "horizontal", "mirrored": true }),
+            args: json!({ "ids": all_ids, "axis": "horizontal", "mirrored": true }),
         });
     } else if likely {
         it.fixes.push(Fix {
-            label: "Mirror back".into(),
+            label: back.into(),
             description: format!(
-                "Mirrors {} back, so the design reads right on {}. Objects that are not mirrored stay as they are. Undo takes it back.",
-                objects(ids.len()),
+                "Mirrors the whole layout ({}) back as one group, in place, so the design reads right on {}. A second click changes nothing. Undo takes it back.",
+                objects(all_ids.len()),
                 input.material.name
             ),
             command: "object.mirror".into(),
-            args: json!({ "ids": ids, "axis": "horizontal", "mirrored": false }),
+            args: json!({ "ids": all_ids, "axis": "horizontal", "mirrored": false }),
         });
     } else if n == 0 {
         it.blocked
