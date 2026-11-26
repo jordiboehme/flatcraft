@@ -25,6 +25,8 @@ Many sources are written for newer machines with an automatic blade. Their force
 
 ## The presets
 
+None of these values was checked on a real cut yet. Glitter and flock iron-on are the least certain: their sources disagree the most.
+
 | Id | Name | Group | Speed | Force | Passes | Blade | Mat tack | Backing |
 |---|---|---|---|---|---|---|---|---|
 | `vinyl` | Adhesive vinyl (permanent) | Vinyl | 5 | 8 | 1 | 1 | standard | yes |
@@ -71,11 +73,13 @@ The source numbers (S1 and so on) point to the list at the end.
 
 - Found: blade 3 to 5, force 11 to 33, speed 4 to 5 (S1, S2, S4, S10). The manufacturer's guide says force 33 at blade 3; two shop charts say 18 to 21 at blade 4; one automatic-blade row says 11.
 - Picked: blade 3, force 18, speed 4. The gentle end of the middle group. Glitter is the toughest iron-on: expect to raise the force after the test cut.
+- Least certain: the sources are far apart (force 11 to 33), so this is one of the two least certain presets. Do the test cut.
 
 ### `heat-transfer-vinyl-flock` - Heat transfer vinyl (flock)
 
 - Found: blade 2 to 4, force 14 to 33, speed 4 to 5, one or two passes (S1, S2, S4, S10, S11).
 - Picked: blade 3, force 14, speed 4, one pass.
+- Least certain: the sources are far apart (force 14 to 33, one or two passes), so this is one of the two least certain presets. Do the test cut.
 
 ### `sticker-paper` - Sticker paper
 
