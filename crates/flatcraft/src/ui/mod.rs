@@ -899,11 +899,23 @@ impl FlatCraftApp {
                     .into_iter()
                     .flat_map(ids)
                     .collect();
-                if let Some(card) = &mut p.report {
-                    card.reloaded(&ids(&result["reloaded"]));
-                    if card.is_empty() {
-                        p.report = None;
+                let reloaded = ids(&result["reloaded"]);
+                match &mut p.report {
+                    Some(card) if card.doc_id == doc_id => {
+                        card.reloaded(&reloaded, result);
+                        if card.is_empty() {
+                            p.report = None;
+                        }
                     }
+                    _ if !reloaded.is_empty() => {
+                        let title = if reloaded.len() == 1 {
+                            "Reloaded 1 object".to_string()
+                        } else {
+                            format!("Reloaded {} objects", reloaded.len())
+                        };
+                        p.report = report::ImportCard::from_result(doc_id, title, result);
+                    }
+                    _ => {}
                 }
                 p.sources.changed.retain(|i| !done.contains(i));
                 for id in ids(&result["missing"]) {
@@ -921,11 +933,23 @@ impl FlatCraftApp {
                     .into_iter()
                     .flat_map(ids)
                     .collect();
-                if let Some(card) = &mut p.report {
-                    card.reloaded(&ids(&result["reloaded"]));
-                    if card.is_empty() {
-                        p.report = None;
+                let reloaded = ids(&result["reloaded"]);
+                match &mut p.report {
+                    Some(card) if card.doc_id == doc_id => {
+                        card.reloaded(&reloaded, result);
+                        if card.is_empty() {
+                            p.report = None;
+                        }
                     }
+                    _ if !reloaded.is_empty() => {
+                        let title = if reloaded.len() == 1 {
+                            "Reloaded 1 object".to_string()
+                        } else {
+                            format!("Reloaded {} objects", reloaded.len())
+                        };
+                        p.report = report::ImportCard::from_result(doc_id, title, result);
+                    }
+                    _ => {}
                 }
                 p.sources.forget(&done);
                 p.sources.also_found = result["also_found"]

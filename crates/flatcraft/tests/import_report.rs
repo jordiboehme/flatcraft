@@ -97,7 +97,13 @@ fn the_report_buttons_run_exactly_the_engine_fixes() {
     let gui = &card.issues[0].fixes[0];
     assert_eq!(gui.label, fix["label"]);
     assert_eq!(gui.command, fix["command"]);
-    assert_eq!(gui.args["strokes"], fix["args"]["strokes"]);
+    // The whole args, but for the object's id.
+    let gui_id = card.ids[0];
+    let agent_id = agent["id"].as_u64().unwrap();
+    let mut args = gui.args.clone();
+    assert_eq!(args["ids"], json!([gui_id]));
+    args["ids"] = json!([agent_id]);
+    assert_eq!(args, fix["args"]);
 }
 
 #[test]
@@ -306,4 +312,75 @@ fn a_reload_forgets_what_the_old_file_had() {
     assert!(h.query_by_label(DASH_TEXT).is_none());
     // The hairline is still there: the reload did not fix it.
     assert!(h.query_by_label(HAIRLINE_TEXT).is_some());
+}
+
+#[test]
+fn a_reload_adds_what_the_new_file_has() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, mut h) = start(&dir);
+    drop_svg(&mut h, &dir, "frame", &page(FRAME));
+    assert!(h.query_by_label(DASH_TEXT).is_none());
+    std::fs::write(
+        dir.path().join("frame.svg"),
+        page(&format!("{DASHED}{FRAME}")),
+    )
+    .unwrap();
+    let doc_id = s.lock().unwrap().doc().id();
+    let ctx = h.ctx.clone();
+    app_mut(&mut h).apply(&ctx, vec![Action::run(doc_id, "object.reload", json!({}))]);
+    wait_for_workers(&mut h);
+    assert!(h.query_by_label(DASH_TEXT).is_some());
+    assert!(h.query_by_label(HAIRLINE_TEXT).is_some());
+}
+
+#[test]
+fn an_object_a_hair_wider_than_the_mat_opens_cut_and_moves_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let id = import_square(&s);
+    let a = run(&s, "document.state", json!({}))["cutting_area_mm"].clone();
+    let w = a["x1"].as_f64().unwrap() - a["x0"].as_f64().unwrap();
+    run(
+        &s,
+        "object.scale",
+        json!({ "ids": [id], "width_mm": w + 5e-7, "keep_aspect": false }),
+    );
+    run(&s, "object.move", json!({ "ids": [id], "dy_mm": 1000.0 }));
+    let mut h = harness(&dir, s.clone(), false);
+    to_cut(&mut h);
+    h.get_by_role_and_label(Role::Button, "Move onto the mat")
+        .click();
+    h.run();
+    assert!(matches!(app(&h).ui.cut.plan, Some(Ok(_))));
+}
+
+#[test]
+fn a_job_that_cuts_shows_its_issues_with_fixes_in_cut() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    run(
+        &s,
+        "object.import_svg",
+        json!({ "name": "lines", "svg": page(r#"<rect x="20" y="20" width="30" height="30"/><path d="M10 80 L90 80"/>"#) }),
+    );
+    let mut h = harness(&dir, s.clone(), false);
+    to_cut(&mut h);
+    h.get_by_role_and_label(Role::Tab, "Path").click();
+    h.run();
+    assert!(
+        h.query_by_label(
+            "'lines': 1 filled shape has no area or is thinner than 0.01 mm, so the cut mode Object outlines cuts nothing of it."
+        )
+        .is_some()
+    );
+    // The old warning that says the same is gone.
+    assert!(
+        h.query_by_label_contains("thinner than the cut tolerance")
+            .is_none()
+    );
+    h.get_by_role_and_label(Role::Button, "Cut all lines")
+        .click();
+    h.run();
+    let job = app(&h).ui.cut.job().unwrap();
+    assert!(job.issues.is_empty());
 }

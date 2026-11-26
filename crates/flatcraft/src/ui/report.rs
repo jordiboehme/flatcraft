@@ -45,7 +45,7 @@ impl ImportCard {
     /// nothing to report.
     pub fn from_result(doc_id: u64, title: String, result: &Value) -> Option<Self> {
         let report: Report = serde_json::from_value(result["report"].clone()).ok()?;
-        let ids: Vec<u64> = match result.get("imported") {
+        let ids: Vec<u64> = match result.get("imported").or_else(|| result.get("reloaded")) {
             Some(list) => list
                 .as_array()
                 .into_iter()
@@ -77,11 +77,22 @@ impl ImportCard {
         by_severity(self.found.iter().chain(&self.issues))
     }
 
-    /// Forgets what the import found in the files of these objects: they
-    /// were read again (reload, relink), so it may no longer be true.
-    pub fn reloaded(&mut self, ids: &[u64]) {
+    /// Takes the report of a reload or relink: what the old files had is
+    /// forgotten for the objects read again, and what their new files have
+    /// is added; the geometry checks run again.
+    pub fn reloaded(&mut self, ids: &[u64], result: &Value) {
         self.found
             .retain(|i| !i.object_ids.iter().all(|id| ids.contains(id)));
+        if let Ok(r) = serde_json::from_value::<Report>(result["report"].clone()) {
+            self.found
+                .extend(r.issues.into_iter().filter(|i| i.code.import_only()));
+        }
+        for id in ids {
+            if !self.ids.contains(id) {
+                self.ids.push(*id);
+            }
+        }
+        self.key = None;
     }
 
     pub fn is_empty(&self) -> bool {
@@ -251,8 +262,9 @@ pub fn import_card(
                 };
                 ui.label(RichText::new(format!("{}: {shapes}. {lead}", c.title)).color(t.text_dim));
                 ui.add_space(t.spacing / 2.0);
-                // The bar shows whenever more lines are below, not only on
-                // hover.
+                // A solid bar that shows whenever more lines are below,
+                // not a floating one that shows only on hover.
+                ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
                 egui::ScrollArea::vertical()
                     .max_height(ui.available_height())
                     .scroll_bar_visibility(

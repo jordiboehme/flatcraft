@@ -386,9 +386,18 @@ pub fn mm_text(mm: f64) -> String {
     format!("{mm:.1} mm")
 }
 
-fn warnings(ui: &mut Ui, job: &JobResult, t: &Tokens) {
-    for w in &job.warnings {
-        ui.label(RichText::new(w).color(t.accent_cut));
+/// The job's warnings, then its issues with their fix buttons. A warning
+/// an issue says again (with a fix) is left out.
+fn warnings(ui: &mut Ui, job: &JobResult, doc_id: u64, t: &Tokens, actions: &mut Vec<Action>) {
+    for (i, w) in job.warnings.iter().enumerate() {
+        if !job.covered_warnings.contains(&i) {
+            ui.label(RichText::new(w).color(t.accent_cut));
+        }
+    }
+    if !job.issues.is_empty() {
+        ui.add_space(t.spacing / 2.0);
+        let list = super::report::by_severity(job.issues.iter());
+        super::report::issue_list(ui, &list, doc_id, t, true, actions);
     }
 }
 
@@ -426,7 +435,7 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
         Stage::Path => match &st.plan {
             Some(Ok(job)) => {
                 stats(ui, job, &t);
-                warnings(ui, job, &t);
+                warnings(ui, job, snap.doc_id, &t, actions);
                 ui.add_space(t.spacing);
                 ui.label(
                     RichText::new(
@@ -457,7 +466,7 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
                         job.settings.force,
                         passes_text(job)
                     ));
-                    warnings(ui, job, &t);
+                    warnings(ui, job, snap.doc_id, &t, actions);
                 }
                 Some(Err(e)) => problem(ui, st, e, snap.doc_id, &t, actions),
                 None => {}
