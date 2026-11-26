@@ -37,6 +37,7 @@ pub mod theme;
 pub mod timeline;
 pub mod toasts;
 pub mod tools;
+pub mod troubleshoot;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -141,6 +142,8 @@ pub struct UiState {
     pub close_queue: Vec<u64>,
     /// The open "How did it go?" question about a cut.
     pub outcome: Option<outcome::OutcomeDialog>,
+    /// The "It didn't cut right..." helper.
+    pub troubleshoot: troubleshoot::TroubleshootState,
 }
 
 /// What the unsaved-changes dialog asks about.
@@ -320,6 +323,9 @@ pub enum Action {
     CopyPath(PathBuf),
     /// Ask "How did it go?" about this cut of the cut log.
     AskOutcome(String),
+    /// Open the "It didn't cut right..." helper (Cut workspace, Help
+    /// menu). From Home it goes to Cut first.
+    Troubleshoot,
     /// Record the person's answer about a cut in the cut log.
     RecordOutcome {
         entry: String,
@@ -1349,6 +1355,12 @@ impl FlatCraftApp {
             Action::Profiles(req) => profiles_window::apply(self, req),
             Action::ShowAbout => self.ui.about.open(&mut self.rng),
             Action::ShowShortcuts => self.ui.show_shortcuts = true,
+            Action::Troubleshoot => {
+                if self.ui.workspace == Workspace::Home {
+                    self.ui.workspace = Workspace::Cut;
+                }
+                self.ui.troubleshoot.open();
+            }
             Action::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
             Action::Quit => {
                 let dirty = self.dirty_docs();
@@ -2061,7 +2073,11 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
         && app.ui.prepare.report.is_some()
         && app.ui.prepare.drag.is_none()
         && app.ui.prepare.nudge.is_none();
-    let wants_job = workspace == Workspace::Cut || app.ui.show_debug || rail_dot || report_check;
+    let wants_job = workspace == Workspace::Cut
+        || app.ui.show_debug
+        || app.ui.troubleshoot.open
+        || rail_dot
+        || report_check;
     let snap = (workspace != Workspace::Home).then(|| prepare::snapshot_with(app, &ctx, wants_job));
     if let Some(snap) = &snap {
         app.ui.cut.update(snap);
@@ -2151,6 +2167,7 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
         Some(snap) => {
             let t = app.tokens;
             export_dialog::show(&ctx, &mut app.ui.export, snap, &t, &mut actions);
+            troubleshoot::show(&ctx, &mut app.ui.troubleshoot, snap, &t, &mut actions);
         }
         None => app.ui.export = None,
     }
@@ -2245,6 +2262,7 @@ pub fn modal_open(app: &FlatCraftApp) -> bool {
         || app.ui.prepare.rename.is_some()
         || app.ui.unsaved.is_some()
         || app.ui.export.is_some()
+        || app.ui.troubleshoot.open
         || lock(&app.session).pending_send().is_some()
 }
 

@@ -19,15 +19,17 @@ pub const PLOTTER_URL: &str =
 pub enum HelpItem {
     UserGuide,
     Shortcuts,
+    Troubleshoot,
     ReportProblem,
     AskPlotter,
     About,
 }
 
 impl HelpItem {
-    pub const ALL: [HelpItem; 5] = [
+    pub const ALL: [HelpItem; 6] = [
         HelpItem::UserGuide,
         HelpItem::Shortcuts,
+        HelpItem::Troubleshoot,
         HelpItem::ReportProblem,
         HelpItem::AskPlotter,
         HelpItem::About,
@@ -37,6 +39,7 @@ impl HelpItem {
         match self {
             HelpItem::UserGuide => "User guide",
             HelpItem::Shortcuts => "Keyboard shortcuts",
+            HelpItem::Troubleshoot => super::troubleshoot::LABEL,
             HelpItem::ReportProblem => "Report a problem",
             HelpItem::AskPlotter => "Ask for your plotter",
             HelpItem::About => "About FlatCraft",
@@ -47,6 +50,7 @@ impl HelpItem {
         match self {
             HelpItem::UserGuide => Action::OpenUrl(GUIDE_URL.to_string()),
             HelpItem::Shortcuts => Action::ShowShortcuts,
+            HelpItem::Troubleshoot => Action::Troubleshoot,
             HelpItem::ReportProblem => Action::OpenUrl(bug_url()),
             HelpItem::AskPlotter => Action::OpenUrl(PLOTTER_URL.to_string()),
             HelpItem::About => Action::ShowAbout,
@@ -96,7 +100,17 @@ pub fn bug_url() -> String {
 /// The Help popup's items. Draws them into `ui` and collects the actions.
 pub fn menu(ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     for item in HelpItem::ALL {
-        if ui.button(item.label()).clicked() {
+        let r = ui.button(item.label());
+        if item == HelpItem::Troubleshoot {
+            super::groups::card(
+                &r,
+                super::troubleshoot::TITLE,
+                super::troubleshoot::OPEN_HINT,
+                None,
+                true,
+            );
+        }
+        if r.clicked() {
             actions.push(item.action());
         }
     }

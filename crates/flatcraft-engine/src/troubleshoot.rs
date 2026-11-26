@@ -804,7 +804,7 @@ fn mirror(input: &JobInput) -> Item {
     } else if hot && !plain.is_empty() {
         (
             format!(
-                "{} is cut from the back, but {} of {n} are not mirrored, so they come out backwards when you iron them on. Mirror them in Prepare (Mirror, left and right).",
+                "{} is cut from the back, but {} of {n} are not mirrored, so they come out backwards when you iron them on. Mirror them in Prepare with Mirror horizontally.",
                 input.material.name,
                 plain.len()
             ),

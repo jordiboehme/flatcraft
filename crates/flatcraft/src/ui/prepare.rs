@@ -850,6 +850,9 @@ pub struct Snapshot {
     /// The newest cut with the document's material nobody rated yet (see
     /// `CutLog::to_rate`).
     pub to_rate: Option<flatcraft_engine::cutlog::CutEntry>,
+    /// The newest cut with the document's material rated good (see
+    /// `CutLog::last_good`), for the "It didn't cut right..." helper.
+    pub last_good: Option<flatcraft_engine::cutlog::CutEntry>,
 }
 
 impl Snapshot {
@@ -1049,6 +1052,7 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
             notes: st.document.notes.clone(),
             last_time: s.cut_log().last_time(&st.document.job.material_id).cloned(),
             to_rate: s.cut_log().to_rate(&st.document.job.material_id).cloned(),
+            last_good: s.cut_log().last_good(&st.document.job.material_id).cloned(),
         }
     };
     let doc_id = snap.doc_id;

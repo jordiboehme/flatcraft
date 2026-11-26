@@ -494,6 +494,20 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
                     doc_id: snap.doc_id,
                 });
             }
+            // After a cut: what to check when it went wrong. It stays
+            // usable when this job cannot be cut, the cut may be older.
+            ui.add_space(t.spacing);
+            let r = ui.button(super::troubleshoot::LABEL);
+            super::groups::card(
+                &r,
+                super::troubleshoot::TITLE,
+                super::troubleshoot::OPEN_HINT,
+                None,
+                false,
+            );
+            if r.clicked() {
+                actions.push(Action::Troubleshoot);
+            }
         }
     }
 }

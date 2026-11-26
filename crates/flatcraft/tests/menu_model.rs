@@ -208,6 +208,7 @@ fn the_menus_and_their_items_come_in_order() {
         [
             "User guide",
             "Keyboard shortcuts",
+            "It didn't cut right...",
             "Report a problem",
             "Ask for your plotter",
             "About FlatCraft"
@@ -1032,12 +1033,13 @@ fn effects(f: &Fixture) -> String {
     let requests = f.picker.requests.lock().unwrap().len();
     let revealed = f.revealed.0.lock().unwrap().len();
     format!(
-        "{doc} {docs} {requests} {revealed} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {commands}",
+        "{doc} {docs} {requests} {revealed} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {commands}",
         a.ui.workspace,
         (p.rename.is_some(), p.panel.is_some(), p.fit_pending),
         (p.show_grid, p.show_rulers, p.panels.clone()),
         a.ui.about.open,
         a.ui.show_shortcuts,
+        a.ui.troubleshoot.open,
         a.ui.show_settings,
         (&a.ui.unsaved, &a.ui.export),
         a.ui.toasts.len(),
