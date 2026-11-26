@@ -1,5 +1,6 @@
 //! The samples on Home: original designs made for FlatCraft from simple
-//! geometry, bundled as project files under MPL-2.0.
+//! geometry and IBM Plex lettering (OFL-1.1, outlined here), bundled as
+//! project files under MPL-2.0.
 //!
 //! `regenerate_samples` (ignored) writes them to `assets/samples`:
 //! `cargo nextest run -p flatcraft --test samples --run-ignored only`.
@@ -9,7 +10,10 @@ mod common;
 use std::f64::consts::{PI, TAU};
 use std::fmt::Write as _;
 
-use common::{FakePicker, app, app_mut, harness_with, session, wait_for_source_check, wait_until};
+use common::{
+    FakePicker, app, app_mut, harness_sized, harness_with, session, wait_for_source_check,
+    wait_until,
+};
 use egui::accesskit::Role;
 use egui_kittest::kittest::Queryable as _;
 use flatcraft::ui::Workspace;
@@ -43,18 +47,6 @@ fn polar(cx: f64, cy: f64, r: f64, a: f64) -> (f64, f64) {
     (cx + r * a.sin(), cy - r * a.cos())
 }
 
-/// A daisy: a circle with `petals` soft waves.
-fn daisy(cx: f64, cy: f64) -> String {
-    let pts: Vec<(f64, f64)> = (0..240)
-        .map(|i| {
-            let a = TAU * i as f64 / 240.0;
-            let r = 17.0 + 3.0 * (8.0 * a).cos();
-            polar(cx, cy, r, a)
-        })
-        .collect();
-    poly(&pts)
-}
-
 /// A diamond along the direction `a`, from radius `r0` to `r1`, `w` wide.
 fn diamond(cx: f64, cy: f64, a: f64, r0: f64, r1: f64, w: f64) -> String {
     let mid = (r0 + r1) / 2.0;
@@ -66,6 +58,377 @@ fn diamond(cx: f64, cy: f64, a: f64, r0: f64, r1: f64, w: f64) -> String {
         polar(cx, cy, r1, a),
         (mx - sx, my - sy),
     ])
+}
+
+/// The points of an arc around (cx, cy) from angle `a0` to `a1` (radians,
+/// screen angles: 0 is +x, y down), ends included.
+fn arc(cx: f64, cy: f64, r: f64, a0: f64, a1: f64) -> Vec<(f64, f64)> {
+    let n = ((a1 - a0).abs() * r / 0.5).ceil().max(4.0) as usize;
+    (0..=n)
+        .map(|i| {
+            let a = a0 + (a1 - a0) * i as f64 / n as f64;
+            (cx + r * a.cos(), cy + r * a.sin())
+        })
+        .collect()
+}
+
+/// A rectangle with round corners of radius `r`, clockwise on screen.
+fn rounded_rect(x: f64, y: f64, w: f64, h: f64, r: f64) -> Vec<(f64, f64)> {
+    let q = PI / 2.0;
+    [
+        arc(x + w - r, y + r, r, -q, 0.0),
+        arc(x + w - r, y + h - r, r, 0.0, q),
+        arc(x + r, y + h - r, r, q, 2.0 * q),
+        arc(x + r, y + r, r, 2.0 * q, 3.0 * q),
+    ]
+    .concat()
+}
+
+/// A polygon with round corners: each corner of `corners` is replaced by
+/// an arc of radius `r` that touches both of its edges.
+fn round_corners(corners: &[(f64, f64)], r: f64) -> Vec<(f64, f64)> {
+    let n = corners.len();
+    let mut out = Vec::new();
+    for i in 0..n {
+        let p = corners[i];
+        let a = corners[(i + n - 1) % n];
+        let b = corners[(i + 1) % n];
+        let unit = |(x, y): (f64, f64)| {
+            let l = x.hypot(y);
+            (x / l, y / l)
+        };
+        let u = unit((a.0 - p.0, a.1 - p.1));
+        let v = unit((b.0 - p.0, b.1 - p.1));
+        let half = (u.0 * v.0 + u.1 * v.1).clamp(-1.0, 1.0).acos() / 2.0;
+        let along = r / half.tan();
+        let bis = unit((u.0 + v.0, u.1 + v.1));
+        let dist = r / half.sin();
+        let c = (p.0 + bis.0 * dist, p.1 + bis.1 * dist);
+        let s = (p.0 + u.0 * along, p.1 + u.1 * along);
+        let e = (p.0 + v.0 * along, p.1 + v.1 * along);
+        let a0 = (s.1 - c.1).atan2(s.0 - c.0);
+        let mut a1 = (e.1 - c.1).atan2(e.0 - c.0);
+        // The short way round: a corner arc never turns more than PI.
+        while a1 - a0 > PI {
+            a1 -= TAU;
+        }
+        while a0 - a1 > PI {
+            a1 += TAU;
+        }
+        out.extend(arc(c.0, c.1, r, a0, a1));
+    }
+    out
+}
+
+/// `points` moved `d` mm inwards, each edge parallel to its original.
+/// Good for the gentle shapes of this file: no edge is shorter than the
+/// move and no outward curve is tighter than it.
+fn inset(points: &[(f64, f64)], d: f64) -> Vec<(f64, f64)> {
+    let n = points.len();
+    let area: f64 = (0..n)
+        .map(|i| {
+            let (a, b) = (points[i], points[(i + 1) % n]);
+            a.0 * b.1 - b.0 * a.1
+        })
+        .sum();
+    let side = area.signum();
+    let normal = |i: usize| {
+        let (a, b) = (points[i], points[(i + 1) % n]);
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let l = dx.hypot(dy);
+        (-dy / l * side, dx / l * side)
+    };
+    (0..n)
+        .map(|i| {
+            let (n1, n2) = (normal((i + n - 1) % n), normal(i));
+            let k = d / (1.0 + n1.0 * n2.0 + n1.1 * n2.1);
+            (
+                points[i].0 + (n1.0 + n2.0) * k,
+                points[i].1 + (n1.1 + n2.1) * k,
+            )
+        })
+        .filter(|p| p.0.is_finite() && p.1.is_finite())
+        .collect()
+}
+
+// ---------------------------------------------------------------- lettering
+
+/// The IBM Plex Sans weights FlatCraft ships (OFL-1.1), the only fonts the
+/// lettering of the samples is set in.
+const PLEX: [&[u8]; 3] = [
+    include_bytes!("../../../assets/fonts/IBMPlexSans-Regular.ttf"),
+    include_bytes!("../../../assets/fonts/IBMPlexSans-Medium.ttf"),
+    include_bytes!("../../../assets/fonts/IBMPlexSans-SemiBold.ttf"),
+];
+
+/// Lines of IBM Plex Sans SemiBold, centred on `x`, the block of lines
+/// centred on `y` (by their capital letters), `size` mm, `lead` mm from one
+/// baseline to the next. `spacing` is extra space between letters, in mm.
+fn words(x: f64, y: f64, size: f64, lead: f64, spacing: f64, lines: &[&str]) -> String {
+    let mut out = String::new();
+    let first = y - (lines.len() as f64 - 1.0) * lead / 2.0 + 0.349 * size;
+    for (i, line) in lines.iter().enumerate() {
+        let line = line.replace('&', "&amp;");
+        let _ = write!(
+            out,
+            r#"<text x="{:.3}" y="{:.3}" font-family="IBM Plex Sans" font-weight="600" font-size="{size}" letter-spacing="{spacing}" text-anchor="middle">{line}</text>"#,
+            // Letter spacing also follows the last letter: half of it
+            // to the right keeps the line centred.
+            x + spacing / 2.0,
+            first + i as f64 * lead
+        );
+    }
+    out
+}
+
+/// `body` with every `<text>` turned into the outlines of its letters, as
+/// paths in page mm. The samples keep no text, so they look the same on
+/// every computer, whatever fonts it has.
+fn outlined(body: &str) -> String {
+    outlined_with(body, true)
+}
+
+/// [`outlined`], with the ink traps of the letters filled or not.
+fn outlined_with(body: &str, fill: bool) -> String {
+    let mut fonts = usvg::fontdb::Database::new();
+    for font in PLEX {
+        fonts.load_font_data(font.to_vec());
+    }
+    let options = usvg::Options {
+        fontdb: std::sync::Arc::new(fonts),
+        ..usvg::Options::default()
+    };
+    let page = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300" viewBox="0 0 300 300">{body}</svg>"#
+    );
+    let tree = usvg::Tree::from_str(&page, &options).unwrap();
+    let mut out = String::new();
+    walk(tree.root(), false, fill, &mut out);
+    out
+}
+
+/// Writes the paths of `group` in page mm. The letters (`letters`) get
+/// their ink traps filled, see [`fill_ink_traps`].
+fn walk(group: &usvg::Group, letters: bool, fill: bool, out: &mut String) {
+    use usvg::tiny_skia_path::PathSegment;
+    for node in group.children() {
+        match node {
+            usvg::Node::Group(g) => walk(g, letters, fill, out),
+            usvg::Node::Text(t) => walk(t.flattened(), fill, fill, out),
+            usvg::Node::Path(p) => {
+                let path = p.data().clone().transform(p.abs_transform()).unwrap();
+                let mut d = String::new();
+                if letters {
+                    let mut bez = kurbo::BezPath::new();
+                    let pt =
+                        |a: usvg::tiny_skia_path::Point| kurbo::Point::new(a.x.into(), a.y.into());
+                    for seg in path.segments() {
+                        match seg {
+                            PathSegment::MoveTo(a) => bez.move_to(pt(a)),
+                            PathSegment::LineTo(a) => bez.line_to(pt(a)),
+                            PathSegment::QuadTo(a, b) => bez.quad_to(pt(a), pt(b)),
+                            PathSegment::CubicTo(a, b, c) => bez.curve_to(pt(a), pt(b), pt(c)),
+                            PathSegment::Close => bez.close_path(),
+                        }
+                    }
+                    for line in fill_ink_traps(&bez) {
+                        for (i, q) in line.iter().enumerate() {
+                            let _ = write!(
+                                d,
+                                "{}{:.3},{:.3}",
+                                if i == 0 { "M" } else { "L" },
+                                q.x,
+                                q.y
+                            );
+                        }
+                        d.push('Z');
+                    }
+                } else {
+                    for seg in path.segments() {
+                        let _ = match seg {
+                            PathSegment::MoveTo(a) => write!(d, "M{:.3},{:.3}", a.x, a.y),
+                            PathSegment::LineTo(a) => write!(d, "L{:.3},{:.3}", a.x, a.y),
+                            PathSegment::QuadTo(a, b) => {
+                                write!(d, "Q{:.3},{:.3} {:.3},{:.3}", a.x, a.y, b.x, b.y)
+                            }
+                            PathSegment::CubicTo(a, b, c) => write!(
+                                d,
+                                "C{:.3},{:.3} {:.3},{:.3} {:.3},{:.3}",
+                                a.x, a.y, b.x, b.y, c.x, c.y
+                            ),
+                            PathSegment::Close => write!(d, "Z"),
+                        };
+                    }
+                }
+                let _ = write!(out, r#"<path d="{d}"/>"#);
+            }
+            usvg::Node::Image(_) => {}
+        }
+    }
+}
+
+/// True when `p` is inside the shape of `lines` (even-odd).
+fn inside(lines: &[Vec<kurbo::Point>], p: kurbo::Point) -> bool {
+    let mut odd = false;
+    for line in lines {
+        for (i, a) in line.iter().enumerate() {
+            let b = line[(i + 1) % line.len()];
+            if (a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x) {
+                odd = !odd;
+            }
+        }
+    }
+    odd
+}
+
+/// The outlines of a line of letters as closed polylines, with the ink
+/// traps filled. IBM Plex cuts small slits into some joins (in G, B and
+/// many lower case letters) to soak up ink spread in print. Vinyl has no
+/// ink, and a slit leaves a neck under 1 mm that tears when you weed. A
+/// slit is a notch of the background into a letter, under 0.5 mm wide at
+/// its mouth, at least as deep as it is wide and at most 4 mm round: it is
+/// closed with a straight line across its mouth. Counters, the crotches of
+/// V, W and M and open counters like the e's are wider or longer, and stay.
+fn fill_ink_traps(path: &kurbo::BezPath) -> Vec<Vec<kurbo::Point>> {
+    const MOUTH: f64 = 0.5;
+    const ROUND: f64 = 4.0;
+    const STEP: f64 = 0.05;
+    // Flattened, then no segment longer than STEP.
+    let mut lines: Vec<Vec<kurbo::Point>> = Vec::new();
+    kurbo::flatten(path.iter(), 0.005, |el| match el {
+        kurbo::PathEl::MoveTo(p) => lines.push(vec![p]),
+        kurbo::PathEl::LineTo(p) => {
+            let line = lines.last_mut().unwrap();
+            let a = *line.last().unwrap();
+            let n = (a.distance(p) / STEP).ceil().max(1.0) as usize;
+            line.extend((1..=n).map(|k| a.lerp(p, k as f64 / n as f64)));
+        }
+        kurbo::PathEl::ClosePath => {
+            let line = lines.last_mut().unwrap();
+            let (a, p) = (*line.last().unwrap(), line[0]);
+            let n = (a.distance(p) / STEP).ceil().max(1.0) as usize;
+            line.extend((1..n).map(|k| a.lerp(p, k as f64 / n as f64)));
+        }
+        _ => unreachable!("flatten gives lines"),
+    });
+    lines.retain(|l| l.len() > 2);
+    let original = lines.clone();
+    let window = (ROUND / STEP * 1.5) as usize;
+    for line in &mut lines {
+        let n = line.len();
+        // Per start point, the longest notch that starts there: (from, points round).
+        let mut notches: Vec<(usize, usize)> = Vec::new();
+        for i in 0..n {
+            let mut round = 0.0;
+            let mut longest = None;
+            for k in 1..window.min(n - 1) {
+                round += line[(i + k - 1) % n].distance(line[(i + k) % n]);
+                if round > ROUND {
+                    break;
+                }
+                let (p, q) = (line[i], line[(i + k) % n]);
+                let chord = p.distance(q);
+                if k < 2 || chord >= MOUTH || round < chord + 0.1 {
+                    continue;
+                }
+                // A slit at least as deep as it is wide: not the round end
+                // of a narrow counter, nor the wedge where two curves meet.
+                let depth = (1..k)
+                    .map(|m| {
+                        let r = line[(i + m) % n];
+                        let ab = q - p;
+                        let t = ((r - p).dot(ab) / ab.hypot2()).clamp(0.0, 1.0);
+                        r.distance(p + ab * t)
+                    })
+                    .fold(0.0, f64::max);
+                if depth < chord.max(0.5) {
+                    continue;
+                }
+                if [0.25, 0.5, 0.75]
+                    .iter()
+                    .any(|&t| inside(&original, p.lerp(q, t)))
+                {
+                    continue;
+                }
+                longest = Some(k);
+            }
+            if let Some(k) = longest {
+                notches.push((i, k));
+            }
+        }
+        // The longest notches first; a notch inside a closed one is gone.
+        notches.sort_by_key(|n| std::cmp::Reverse(n.1));
+        let mut skip = vec![false; n];
+        let mut close = vec![None; n];
+        for (i, k) in notches {
+            if (0..=k).any(|m| skip[(i + m) % n] || close[(i + m) % n].is_some()) {
+                continue;
+            }
+            for m in 1..k {
+                skip[(i + m) % n] = true;
+            }
+            close[i] = Some((i + k) % n);
+        }
+        let mut next = Vec::with_capacity(n);
+        for i in 0..n {
+            if skip[i] {
+                continue;
+            }
+            next.push(line[i]);
+            if let Some(j) = close[i] {
+                let (p, q) = (line[i], line[j]);
+                let steps = (p.distance(q) / STEP).ceil().max(1.0) as usize;
+                next.extend((1..steps).map(|m| p.lerp(q, m as f64 / steps as f64)));
+            }
+        }
+        *line = next;
+    }
+    lines.iter().map(|l| simplify(l, 0.002)).collect()
+}
+
+/// A closed polyline with the points dropped that lie within `tol` of the
+/// line between their neighbours that stay (Ramer-Douglas-Peucker).
+fn simplify(line: &[kurbo::Point], tol: f64) -> Vec<kurbo::Point> {
+    fn rdp(pts: &[kurbo::Point], tol: f64, out: &mut Vec<kurbo::Point>) {
+        let (a, b) = (pts[0], pts[pts.len() - 1]);
+        let (far, dist) = pts[1..pts.len() - 1]
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let ab = b - a;
+                let t = if a == b {
+                    0.0
+                } else {
+                    ((*p - a).dot(ab) / ab.hypot2()).clamp(0.0, 1.0)
+                };
+                let d = p.distance(a + ab * t);
+                (i + 1, d)
+            })
+            .fold((0, -1.0), |m, x| if x.1 > m.1 { x } else { m });
+        if dist > tol {
+            rdp(&pts[..=far], tol, out);
+            out.pop();
+            rdp(&pts[far..], tol, out);
+        } else {
+            out.extend([a, b]);
+        }
+    }
+    // Split at the point farthest from the first, so both halves are open.
+    let far = (0..line.len())
+        .max_by(|&x, &y| {
+            line[0]
+                .distance(line[x])
+                .total_cmp(&line[0].distance(line[y]))
+        })
+        .unwrap();
+    let mut out = Vec::new();
+    rdp(&line[..=far], tol, &mut out);
+    out.pop();
+    let mut back: Vec<kurbo::Point> = line[far..].to_vec();
+    back.push(line[0]);
+    rdp(&back, tol, &mut out);
+    out.pop();
+    out
 }
 
 /// Block letters without closed counters, so each falls out as one piece.
@@ -130,14 +493,230 @@ fn run(s: &Session, command: &str, params: serde_json::Value) -> serde_json::Val
         .unwrap_or_else(|e| panic!("{command}: {e}"))
 }
 
-/// 12 daisies: one, then 11 linked copies in 4 columns.
-fn sticker_sheet(s: &Session) {
-    let id = import(s, "Daisy", &daisy(55.0, 75.0));
+/// A pantry label with scooped corners, `w` x `h` mm, its top left corner
+/// at (x, y), moved `d` mm inwards.
+fn label(x: f64, y: f64, w: f64, h: f64, d: f64) -> Vec<(f64, f64)> {
+    let r = 7.0 + d;
+    let (x0, y0, x1, y1) = (x + d, y + d, x + w - d, y + h - d);
+    let (cx0, cy0, cx1, cy1) = (x, y, x + w, y + h);
+    let q = PI / 2.0;
+    [
+        arc(cx1, cy0, r, 2.0 * q, q),
+        arc(cx1, cy1, r, -q, -2.0 * q),
+        arc(cx0, cy1, r, 0.0, -q),
+        arc(cx0, cy0, r, q, 0.0),
+    ]
+    .concat()
+    .into_iter()
+    .map(|(px, py)| (px.clamp(x0, x1), py.clamp(y0, y1)))
+    .collect()
+}
+
+/// 12 pantry labels: one, then 11 linked copies in 3 columns. Each has a
+/// rim, a groove and a blank panel to write on.
+fn labels_and_stickers(s: &Session) {
+    let (x, y, w, h) = (15.0, 25.0, 84.0, 52.0);
+    let body: String = [0.0, 2.5, 4.0]
+        .into_iter()
+        .map(|d| poly(&label(x, y, w, h, d)))
+        .collect();
+    let id = import(s, "Pantry label", &body);
     run(
         s,
         "object.copies",
-        json!({ "id": id, "count": 11, "layout": { "grid": { "columns": 4 } }, "gap_mm": 22.0, "linked": true }),
+        json!({ "id": id, "count": 11, "layout": { "grid": { "columns": 3 } }, "gap_x_mm": 9.0, "gap_y_mm": 14.0, "linked": true }),
     );
+    run(s, "job.set_material", json!({ "id": "vinyl" }));
+    s.lock().unwrap().doc_mut().document.job.strategy =
+        flatcraft_core::document::CutStrategy::KeepSheet;
+}
+
+/// The name of the shirt motif, which says why it is mirrored.
+const SHIRT_MOTIF: &str = "Shirt motif (mirrored for iron-on)";
+
+/// A striped 80s sunset over "BORN TO MAKE", mirrored for heat transfer
+/// vinyl, which is cut from the back.
+fn iron_on_shirt(s: &Session) {
+    let (cx, horizon, r) = (150.0, 146.0, 84.0);
+    let half = |y: f64| (r * r - (y - horizon).powi(2)).max(0.0).sqrt();
+    // Bands of the sun, the gaps between them growing towards the horizon.
+    let mut body = String::new();
+    let mut top = horizon - r;
+    for (gap_at, gap) in [(97.0, 2.5), (114.0, 3.5), (129.0, 4.5), (horizon, 0.0)] {
+        let steps = ((gap_at - top) / 0.5).ceil() as usize;
+        let ys: Vec<f64> = (0..=steps)
+            .map(|i| top + (gap_at - top) * i as f64 / steps as f64)
+            .collect();
+        let mut pts: Vec<(f64, f64)> = ys.iter().map(|&y| (cx + half(y), y)).collect();
+        pts.extend(ys.iter().rev().map(|&y| (cx - half(y), y)));
+        pts.dedup_by(|a, b| (a.0 - b.0).hypot(a.1 - b.1) < 1e-6);
+        if (pts[0].0 - pts[pts.len() - 1].0).abs() < 1e-6 {
+            pts.pop();
+        }
+        body.push_str(&poly(&pts));
+        top = gap_at + gap;
+    }
+    body.push_str(&words(cx, 172.0, 24.0, 0.0, 4.0, &["BORN TO"]));
+    body.push_str(&words(cx, 212.0, 62.0, 0.0, 3.0, &["MAKE"]));
+    let id = import(s, SHIRT_MOTIF, &outlined(&body));
+    run(
+        s,
+        "object.mirror",
+        json!({ "ids": [id], "axis": "horizontal" }),
+    );
+    run(
+        s,
+        "job.set_material",
+        json!({ "id": "heat-transfer-vinyl" }),
+    );
+}
+
+/// The extra sticker of the maker quote sheet, a motto with no author.
+const MOTTO: &str = "Eat. Sleep. Make. Repeat.";
+
+/// A wavy oval seal centred on (cx, cy), moved `d` mm inwards.
+fn seal(cx: f64, cy: f64, rx: f64, ry: f64, d: f64) -> Vec<(f64, f64)> {
+    (0..720)
+        .map(|i| {
+            let a = TAU * i as f64 / 720.0;
+            let wave = 1.2 * (20.0 * a).cos() - d;
+            (cx + (rx + wave) * a.cos(), cy + (ry + wave) * a.sin())
+        })
+        .collect()
+}
+
+/// The three lines of a sticker frame: the outline (`shape(0)`), a 1.5 mm
+/// groove 2.5 mm inside it and the panel the words are cut out of.
+fn frame(shape: &dyn Fn(f64) -> Vec<(f64, f64)>) -> String {
+    [poly(&shape(0.0)), poly(&shape(2.5)), poly(&shape(4.0))].concat()
+}
+
+/// The maker quotes of the About dialog as vinyl stickers: each quote cut
+/// out of a framed shape in capitals, its author's name a separate object
+/// below it, and the motto in a pill. Capitals, because the joins of Plex
+/// lower case letters stay under 1 mm at any size that fits a sticker.
+fn maker_quotes(s: &Session) {
+    use flatcraft::ui::about::QUOTES;
+    let quote = |author: &str| {
+        QUOTES
+            .iter()
+            .find(|(_, a)| *a == author)
+            .unwrap_or_else(|| panic!("no quote by {author}"))
+            .0
+    };
+    let (left, right) = (78.0, 222.0);
+    let (w, h) = (128.0, 64.0);
+    let rows = [49.4, 141.8, 234.2];
+    let hex = |cx: f64, cy: f64, d: f64| {
+        let (x0, x1, y0, y1) = (cx - w / 2.0, cx + w / 2.0, cy - h / 2.0, cy + h / 2.0);
+        let corners = [
+            (x0, cy),
+            (x0 + 12.0, y0),
+            (x1 - 12.0, y0),
+            (x1, cy),
+            (x1 - 12.0, y1),
+            (x0 + 12.0, y1),
+        ];
+        round_corners(&inset(&corners, d), 7.0 - d)
+    };
+    let banner = |cx: f64, cy: f64, d: f64| {
+        let (x0, x1, y0, y1) = (cx - w / 2.0, cx + w / 2.0, cy - 28.0, cy + 28.0);
+        inset(
+            &[
+                (x0, y0),
+                (x1, y0),
+                (x1 - 12.0, cy),
+                (x1, y1),
+                (x0, y1),
+                (x0 + 12.0, cy),
+            ],
+            d,
+        )
+    };
+    let rect = |cx: f64, cy: f64, d: f64| {
+        rounded_rect(
+            cx - w / 2.0 + d,
+            cy - h / 2.0 + d,
+            w - 2.0 * d,
+            h - 2.0 * d,
+            10.0 - d,
+        )
+    };
+    // (centre, shape, quote lines, letter size, author)
+    type Sticker<'a> = ((f64, f64), String, &'a [&'a str], f64, &'a str);
+    let stickers: [Sticker; 5] = [
+        (
+            (left, rows[0]),
+            frame(&|d| hex(left, rows[0], d)),
+            &["Every defect", "gets respect."],
+            12.5,
+            "Laura Kampf",
+        ),
+        (
+            (right, rows[0]),
+            frame(&|d| banner(right, rows[0], d)),
+            &["Failure is", "always an", "option."],
+            12.5,
+            "Adam Savage",
+        ),
+        (
+            (left, rows[1]),
+            frame(&|d| rect(left, rows[1], d)),
+            &["Super massive", "stability", "stuff."],
+            12.5,
+            "Felix Schelhasse",
+        ),
+        (
+            (right, rows[1]),
+            frame(&|d| arc(right, rows[1], 35.0 - d, 0.0, TAU)[1..].to_vec()),
+            &["Words", "are", "hard."],
+            12.0,
+            "Evan & Katelyn",
+        ),
+        (
+            (left, rows[2]),
+            frame(&|d| seal(left, rows[2], w / 2.0, h / 2.0, d)),
+            &["Don't glue", "yourself to", "the table."],
+            12.5,
+            "Joel Telling",
+        ),
+    ];
+    let caps = |lines: &[&str]| lines.iter().map(|l| l.to_uppercase()).collect::<Vec<_>>();
+    for ((cx, cy), shape, lines, size, author) in stickers {
+        let full = lines.join(" ");
+        assert_eq!(full, quote(author), "word for word");
+        let upper = caps(lines);
+        let upper: Vec<&str> = upper.iter().map(String::as_str).collect();
+        let body = format!("{shape}{}", words(cx, cy, size, 14.0, 0.6, &upper));
+        import(s, &full, &outlined(&body));
+        let name = author.to_uppercase();
+        import(
+            s,
+            author,
+            &outlined(&words(cx, cy + 44.0, 12.5, 0.0, 0.6, &[&name])),
+        );
+    }
+    let pill = |d: f64| {
+        let (cy, ph) = (rows[2] + 8.0, 64.0);
+        rounded_rect(
+            right - w / 2.0 + d,
+            cy - ph / 2.0 + d,
+            w - 2.0 * d,
+            ph - 2.0 * d,
+            ph / 2.0 - d,
+        )
+    };
+    let motto: Vec<&str> = vec!["Eat. Sleep.", "Make. Repeat."];
+    assert_eq!(motto.join(" "), MOTTO);
+    let upper = caps(&motto);
+    let upper: Vec<&str> = upper.iter().map(String::as_str).collect();
+    let body = format!(
+        "{}{}",
+        frame(&pill),
+        words(right, rows[2] + 8.0, 12.5, 15.0, 0.6, &upper)
+    );
+    import(s, MOTTO, &outlined(&body));
+    run(s, "job.set_material", json!({ "id": "vinyl" }));
 }
 
 /// "CUT" in a sheet with rounded corners: the letters fall out.
@@ -195,7 +774,9 @@ fn build(name: &str) -> (tempfile::TempDir, Session) {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     match name {
-        "sticker-sheet" => sticker_sheet(&s),
+        "labels-and-stickers" => labels_and_stickers(&s),
+        "iron-on-shirt" => iron_on_shirt(&s),
+        "maker-quotes" => maker_quotes(&s),
         "stencil" => stencil(&s),
         "gift-tags" => gift_tags(&s),
         "window-star" => window_star(&s),
@@ -337,13 +918,221 @@ fn the_window_star_cuts_its_inner_shapes_first() {
 
 #[test]
 fn the_patterns_are_linked_copies() {
-    for (id, n) in [("sticker-sheet", 12), ("gift-tags", 6)] {
+    for (id, n) in [("labels-and-stickers", 12), ("gift-tags", 6)] {
         let sample = SAMPLES.iter().find(|x| x.id == id).unwrap();
         let (doc, _) = flatcraft_core::project::load_report_bytes(sample.bytes).unwrap();
         assert_eq!(doc.objects.len(), n, "{id}");
         let group = doc.objects[0].link_group;
         assert!(group.is_some(), "{id}");
         assert!(doc.objects.iter().all(|o| o.link_group == group), "{id}");
+    }
+}
+
+/// A bundled sample, opened as the app opens it.
+fn open(id: &str) -> (tempfile::TempDir, Session) {
+    let sample = SAMPLES.iter().find(|x| x.id == id).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    flatcraft_engine::commands::project::open_bytes(&mut s.lock().unwrap(), sample.bytes, id)
+        .unwrap();
+    (dir, s)
+}
+
+/// The cut lines of the objects that are cut, on the mat, as points about
+/// every 0.1 mm: (contour, distance along it, point). Per contour: its
+/// length and the name of its object.
+struct CutLines {
+    points: Vec<(usize, f64, kurbo::Point)>,
+    contours: Vec<(f64, String)>,
+}
+
+fn cut_lines(doc: &flatcraft_core::document::Document) -> CutLines {
+    let mut points = Vec::new();
+    let mut contours = Vec::new();
+    for o in doc.objects.iter().filter(|o| o.cut_enabled) {
+        let affine = o.transform.affine(o.local_bounds);
+        for cut in o.geometry.iter() {
+            let mut lines: Vec<Vec<kurbo::Point>> = Vec::new();
+            kurbo::flatten(affine * cut.path.clone(), 0.005, |el| match el {
+                kurbo::PathEl::MoveTo(p) => lines.push(vec![p]),
+                kurbo::PathEl::LineTo(p) => lines.last_mut().unwrap().push(p),
+                kurbo::PathEl::ClosePath => {
+                    let line = lines.last_mut().unwrap();
+                    let first = line[0];
+                    line.push(first);
+                }
+                _ => unreachable!("flatten gives lines"),
+            });
+            for line in lines {
+                let contour = contours.len();
+                let mut along = 0.0;
+                let mut next = 0.0;
+                for w in line.windows(2) {
+                    let len = w[0].distance(w[1]);
+                    while next <= along + len {
+                        let t = if len > 0.0 { (next - along) / len } else { 0.0 };
+                        points.push((contour, next, w[0].lerp(w[1], t)));
+                        next += 0.1;
+                    }
+                    along += len;
+                }
+                contours.push((along, o.name.clone()));
+            }
+        }
+    }
+    CutLines { points, contours }
+}
+
+/// The places where cut lines come closer than 1 mm: two different lines,
+/// or one line that comes back to itself after more than 5 mm along it.
+/// That is a stroke or a gap under 1 mm wide and more than about 2 mm long.
+/// A pointed tip or notch is fine unless it is sharper than about 23
+/// degrees (its sides 1 mm apart 2.5 mm from its point). Returns, per object name, the
+/// narrowest place in mm and where it is.
+fn narrow_places(lines: &CutLines) -> std::collections::BTreeMap<String, (f64, kurbo::Point)> {
+    let cell = |p: kurbo::Point| (p.x.floor() as i64, p.y.floor() as i64);
+    let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> = Default::default();
+    for (i, (_, _, p)) in lines.points.iter().enumerate() {
+        grid.entry(cell(*p)).or_default().push(i);
+    }
+    let mut narrow = std::collections::BTreeMap::<String, (f64, kurbo::Point)>::new();
+    for (i, &(c, at, p)) in lines.points.iter().enumerate() {
+        let (gx, gy) = cell(p);
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for &j in grid.get(&(gx + dx, gy + dy)).into_iter().flatten() {
+                    let (d, bt, q) = lines.points[j];
+                    let gap = p.distance(q);
+                    if j <= i || gap >= 1.0 {
+                        continue;
+                    }
+                    let length = lines.contours[c].0;
+                    let apart = (at - bt).abs().min(length - (at - bt).abs());
+                    if d != c || apart > 5.0 {
+                        let name = &lines.contours[c].1;
+                        if name.starts_with("Words") && gap < 0.4 {
+                            eprintln!(
+                                "DBG {c} {d} {at:.2} {bt:.2} {apart:.2} {length:.2} {p:?} {q:?}"
+                            );
+                        }
+                        let e = narrow.entry(name.clone()).or_insert((gap, p));
+                        if gap < e.0 {
+                            *e = (gap, p);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    narrow
+}
+
+/// Every cut stroke and every gap is at least 1 mm wide, so the pieces
+/// weed on adhesive vinyl and iron-on.
+#[test]
+fn every_cut_stroke_and_gap_is_at_least_1_mm() {
+    for sample in &SAMPLES {
+        let (_dir, s) = open(sample.id);
+        let narrow = narrow_places(&cut_lines(&s.lock().unwrap().doc().document));
+        assert!(narrow.is_empty(), "{}: {narrow:#?}", sample.id);
+    }
+}
+
+#[test]
+fn the_narrow_place_check_finds_a_thin_stroke_and_a_tight_gap() {
+    // The narrowest place of `body`, or None when all is 1 mm or more.
+    let narrowest = |body: &str| {
+        let dir = tempfile::tempdir().unwrap();
+        let s = session(&dir);
+        import(&s, "Shapes", body);
+        let doc = s.lock().unwrap().doc().document.clone();
+        narrow_places(&cut_lines(&doc)).get("Shapes").map(|n| n.0)
+    };
+    let wide_bar = r#"<rect x="80" y="20" width="1.2" height="30"/>"#;
+    let squares = r#"<rect x="40" y="20" width="10" height="10"/><rect x="50.9" y="20" width="10" height="10"/>"#;
+    let thin_bar = r#"<rect x="20" y="20" width="0.8" height="30"/>"#;
+    assert_eq!(narrowest(wide_bar), None);
+    let gap = narrowest(&format!("{wide_bar}{squares}")).unwrap();
+    assert!((gap - 0.9).abs() < 0.05, "{gap}");
+    let stroke = narrowest(&format!("{wide_bar}{thin_bar}")).unwrap();
+    assert!((stroke - 0.8).abs() < 0.05, "{stroke}");
+}
+
+#[test]
+fn the_labels_cut_every_inner_line_before_the_outlines_on_vinyl() {
+    let (_dir, s) = open("labels-and-stickers");
+    let st = s.lock().unwrap();
+    let job = &st.doc().document.job;
+    assert_eq!(
+        job.strategy,
+        flatcraft_core::document::CutStrategy::KeepSheet
+    );
+    assert_eq!(job.material_id, "vinyl");
+    // A rim, a groove and a panel: three lines per label.
+    let plan = flatcraft_engine::job::build(&st).unwrap().plan;
+    assert_eq!(plan.toolpaths.len(), 12 * 3);
+}
+
+#[test]
+fn the_shirt_motif_is_mirrored_for_heat_transfer_vinyl() {
+    let (_dir, s) = open("iron-on-shirt");
+    let st = s.lock().unwrap();
+    let doc = &st.doc().document;
+    assert_eq!(doc.job.material_id, "heat-transfer-vinyl");
+    assert_eq!(doc.objects.len(), 1);
+    let motif = &doc.objects[0];
+    assert!(motif.transform.mirror, "stored mirrored");
+    assert_eq!(motif.name, SHIRT_MOTIF);
+    assert!(motif.name.contains("mirrored for iron-on"));
+}
+
+#[test]
+fn the_maker_quotes_are_word_for_word_with_their_authors_apart() {
+    use flatcraft::ui::about::QUOTES;
+    let (_dir, s) = open("maker-quotes");
+    let st = s.lock().unwrap();
+    let doc = &st.doc().document;
+    assert_eq!(doc.job.material_id, "vinyl");
+    let names: Vec<&str> = doc.objects.iter().map(|o| o.name.as_str()).collect();
+    // The short quotes; the two long ones would not weed as vinyl.
+    let short: Vec<(&str, &str)> = QUOTES
+        .iter()
+        .copied()
+        .filter(|(q, _)| q.len() < 40)
+        .collect();
+    assert_eq!(short.len(), 5);
+    let mut want = Vec::new();
+    for (quote, author) in short {
+        want.extend([quote, author]);
+    }
+    want.push(MOTTO);
+    assert_eq!(names, want);
+    // Every letter is its own cut line: none is merged into its shape.
+    let contours: usize = doc
+        .objects
+        .iter()
+        .flat_map(|o| o.geometry.iter())
+        .map(|c| {
+            c.path
+                .elements()
+                .iter()
+                .filter(|e| matches!(e, kurbo::PathEl::MoveTo(_)))
+                .count()
+        })
+        .sum();
+    let plan = flatcraft_engine::job::build(&st).unwrap().plan;
+    assert_eq!(plan.toolpaths.len(), contours);
+    // Each sticker has a rim, a groove and a panel, and its quote's letters.
+    for o in doc.objects.iter().filter(|o| o.name.ends_with('.')) {
+        let lines = o.geometry.iter().map(|c| {
+            c.path
+                .elements()
+                .iter()
+                .filter(|e| matches!(e, kurbo::PathEl::MoveTo(_)))
+                .count()
+        });
+        let letters = o.name.chars().filter(|c| c.is_alphanumeric()).count();
+        assert!(lines.sum::<usize>() > 3 + letters, "{}", o.name);
     }
 }
 
@@ -354,7 +1143,10 @@ fn a_sample_opens_as_an_untitled_copy() {
     let before: Vec<Vec<u8>> = SAMPLES.iter().map(|x| x.bytes.to_vec()).collect();
     let picker = FakePicker::default();
     let requests = picker.requests.clone();
-    let mut h = harness_with(&dir, s.clone(), |a| a.with_file_picker(picker));
+    // Tall enough for the second row of sample cards.
+    let mut h = harness_sized(&dir, s.clone(), [1400.0, 1400.0], 4, |a| {
+        a.with_file_picker(picker)
+    });
     h.get_by_role_and_label(Role::Button, "Gift tags").click();
     wait_for_source_check(&mut h);
     {
@@ -447,4 +1239,22 @@ fn the_gift_tags_cut_each_hole_before_its_tag() {
             .unwrap_or_else(|| panic!("hole {h} is in no tag"));
         assert!(h < tag, "hole {h} is cut after its tag {tag}");
     }
+}
+
+#[test]
+fn the_ink_trap_fill_closes_the_slits_and_keeps_the_counters() {
+    let line = words(150.0, 50.0, 12.5, 0.0, 0.6, &["GETS RESPECT."]);
+    let narrow = |body: &str| {
+        let dir = tempfile::tempdir().unwrap();
+        let s = session(&dir);
+        import(&s, "Line", body);
+        let doc = s.lock().unwrap().doc().document.clone();
+        let lines = cut_lines(&doc).contours.len();
+        (narrow_places(&cut_lines(&doc)).contains_key("Line"), lines)
+    };
+    let (before, contours) = narrow(&outlined_with(&line, false));
+    let (after, filled) = narrow(&outlined(&line));
+    assert!(before, "the G of Plex has a slit under 1 mm");
+    assert!(!after);
+    assert_eq!(filled, contours, "every counter stays");
 }

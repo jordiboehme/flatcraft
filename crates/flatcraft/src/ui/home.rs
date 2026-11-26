@@ -933,9 +933,9 @@ fn trunc(text: &str, font: egui::FontId, colour: Color32, width: f32) -> egui::t
 /// The height of the picture on a sample card.
 const SAMPLE_PICTURE: f32 = 170.0;
 /// The height of a sample card.
-pub const SAMPLE_CARD_HEIGHT: f32 = SAMPLE_PICTURE + 72.0;
-/// A sample card is never narrower than this while there are 4 columns.
-const SAMPLE_CARD_MIN: f32 = 220.0;
+pub const SAMPLE_CARD_HEIGHT: f32 = SAMPLE_PICTURE + 92.0;
+/// A sample card is never narrower than this while there are 3 columns.
+const SAMPLE_CARD_MIN: f32 = 260.0;
 
 /// A sample project built into the app: an original design made for
 /// FlatCraft, bundled under MPL-2.0 (`assets/samples`).
@@ -959,13 +959,20 @@ macro_rules! sample_bytes {
 }
 
 /// The samples, in order.
-pub const SAMPLES: [Sample; 4] = [
+pub const SAMPLES: [Sample; 6] = [
     Sample {
-        id: "sticker-sheet",
-        title: "Sticker sheet",
-        sentence: "Twelve daisies as linked copies in a rectangular pattern.",
-        hint: "Opens a copy of a sticker sheet: one daisy and 11 linked copies in a grid. Linked copies share their shape, size and cut options, so a change to one changes them all. Try Scale on one of them.",
-        bytes: sample_bytes!("sticker-sheet"),
+        id: "labels-and-stickers",
+        title: "Labels and stickers",
+        sentence: "A whole sheet of tidy labels from one design - edit one and all the copies follow.",
+        hint: "Opens a copy of 12 pantry labels: one label and 11 linked copies in a grid. Linked copies share their shape, size and cut options, so a change to one changes them all. Try Scale on one of them. Cut them from vinyl, chalkboard vinyl or sticker paper. The job uses Keep sheet: every inner cut comes before the outlines, so the sheet holds together until the end.",
+        bytes: sample_bytes!("labels-and-stickers"),
+    },
+    Sample {
+        id: "iron-on-shirt",
+        title: "Iron-on shirt motif",
+        sentence: "Your design, mirrored for you so the iron-on lands the right way round - no more backwards shirts.",
+        hint: "Opens a copy of a shirt motif for heat transfer vinyl (HTV, the iron-on kind). HTV lies shiny side down on the mat and is cut from the back, so the design is mirrored: it reads backwards on the mat and right on the shirt. Forgetting to mirror is the classic first iron-on mistake. This one is already flipped, so weed it, iron it and wear it.",
+        bytes: sample_bytes!("iron-on-shirt"),
     },
     Sample {
         id: "stencil",
@@ -987,6 +994,13 @@ pub const SAMPLES: [Sample; 4] = [
         sentence: "Paper cut work with 25 inner shapes, cut from the inside out.",
         hint: "Opens a copy of an eight-point window star with 25 inner shapes. FlatCraft cuts every inner shape before the outline around it. See the order in the Cut workspace, on the Path stage.",
         bytes: sample_bytes!("window-star"),
+    },
+    Sample {
+        id: "maker-quotes",
+        title: "Maker quotes",
+        sentence: "Maker wisdom to stick on your toolbox, laptop or shirt - mirror it first for iron-on.",
+        hint: "Opens a copy of six vinyl stickers with maker quotes. The words are cut out of each shape and every line and gap is at least 1 mm wide, so it weeds well. Each name is its own object: use Skip cutting on it to cut only the quote. For a shirt, select all, mirror it and pick heat transfer vinyl.",
+        bytes: sample_bytes!("maker-quotes"),
     },
 ];
 
@@ -1017,7 +1031,7 @@ fn samples(
             )
         })
         .collect();
-    let cols = columns(width, SAMPLE_CARD_MIN, &[4, 2, 1]);
+    let cols = columns(width, SAMPLE_CARD_MIN, &[3, 2, 1]);
     card_grid(
         ui,
         width,
@@ -1154,6 +1168,43 @@ mod tests {
             short_folder(Path::new("/Users/makerspace/a.flatcraft"), Some(home)),
             "/Users/makerspace"
         );
+    }
+
+    /// The title and the sentence of every sample fit under its picture,
+    /// on the narrowest card.
+    #[test]
+    fn sample_texts_fit_their_cards() {
+        let ctx = egui::Context::default();
+        fonts::install(&ctx);
+        let mut out = ctx.run_ui(Default::default(), |_| {});
+        out.textures_delta.clear();
+        let width = SAMPLE_CARD_MIN - 28.0;
+        for x in &SAMPLES {
+            let (title, line) = ctx.fonts_mut(|f| {
+                (
+                    f.layout(x.title.into(), fonts::semibold(14.0), Color32::WHITE, width)
+                        .size()
+                        .y,
+                    f.layout(
+                        x.sentence.into(),
+                        egui::FontId::proportional(12.0),
+                        Color32::WHITE,
+                        width,
+                    )
+                    .size()
+                    .y,
+                )
+            });
+            // 12 above the title, 3 between, at least 8 below.
+            let used = 12.0 + title + 3.0 + line + 8.0;
+            assert!(
+                used <= SAMPLE_CARD_HEIGHT - SAMPLE_PICTURE - 1.0,
+                "{}: {used}",
+                x.id
+            );
+        }
+        let mut out = ctx.run_ui(Default::default(), |_| {});
+        out.textures_delta.clear();
     }
 
     #[test]
