@@ -138,3 +138,35 @@ fn the_job_card_shows_the_notes_of_the_picked_presets() {
     assert!(h.query_by_label("Weed within a day.").is_none());
     h.get_by_label("Check the output folder.");
 }
+
+#[test]
+fn a_user_preset_without_a_parent_saves_its_notes_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let materials = dir.path().join("profiles/materials");
+    std::fs::create_dir_all(&materials).unwrap();
+    std::fs::write(
+        materials.join("solo.toml"),
+        "id = \"solo\"\nname = \"Solo\"\nspeed = 4\nforce = 9\npasses = 1\nreverse_alternate_passes = false\novercut_mm = 0.5\ntrack_enhancing = false\n",
+    )
+    .unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    open(&mut h, "Materials");
+    click(&mut h, "Solo");
+    assert!(disabled(&h, "Save notes"), "nothing to save yet");
+    type_into(&mut h, "Preset notes", "Felt, cut twice.");
+    click(&mut h, "Save notes");
+    let text = std::fs::read_to_string(materials.join("solo.toml")).unwrap();
+    assert!(text.contains("Felt, cut twice."), "{text}");
+    assert!(text.contains("force = 9"), "{text}");
+    assert_eq!(
+        s.lock()
+            .unwrap()
+            .profiles
+            .material("solo")
+            .unwrap()
+            .notes
+            .as_deref(),
+        Some("Felt, cut twice.")
+    );
+}

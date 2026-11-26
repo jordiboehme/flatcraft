@@ -168,7 +168,8 @@ pub enum Request {
     },
     Delete(Kind, String),
     /// Store the notes of a system preset beside it (the preset itself
-    /// stays as it ships). `name` is for the toast.
+    /// stays as it ships), or of a user preset without a parent in its
+    /// file. `name` is for the toast.
     SaveNotes {
         kind: Kind,
         id: String,
@@ -1809,7 +1810,9 @@ pub const NOTES_UNCHANGED: &str = "The notes did not change, so there is nothing
 /// The notes of a preset, under its form. They are always the person's
 /// own, so the field is open on a system preset too: there "Save notes"
 /// stores them beside the preset, which stays as it ships. On a user
-/// preset "Save preset" stores them with the rest.
+/// preset "Save preset" stores them with the rest, and on one without a
+/// parent (where Save preset is dimmed) "Save notes" writes them into its
+/// file.
 fn notes_field<T: PresetNotes + PartialEq>(
     ui: &mut Ui,
     kind: Kind,
@@ -1830,15 +1833,22 @@ fn notes_field<T: PresetNotes + PartialEq>(
     if r.changed() {
         *d.edit.notes_mut() = (!text.is_empty()).then_some(text);
     }
-    if !d.system {
+    // A user preset with a parent saves its notes with "Save preset"; one
+    // without a parent cannot use that, so it gets "Save notes" too.
+    if !d.system && d.parent.is_some() {
         return None;
     }
     let changed = d.edit.notes() != d.saved.notes();
     let b = ui.add_enabled(changed, egui::Button::new("Save notes"));
+    let what = if d.system {
+        "Stores your notes on this system preset in your own settings folder. The preset itself stays as it ships."
+    } else {
+        "Stores your notes in this preset's file. Nothing else in it changes."
+    };
     action_card(
         &b,
         "Save notes",
-        "Stores your notes on this system preset in your own settings folder. The preset itself stays as it ships.",
+        what,
         (!changed).then_some(NOTES_UNCHANGED),
     );
     b.clicked().then(|| Request::SaveNotes {
