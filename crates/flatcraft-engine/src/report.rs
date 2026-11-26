@@ -74,11 +74,18 @@ pub enum Code {
     /// cardstock) has closed inner parts (the middle of an O) that fall
     /// out. Information only: it never blocks the cut.
     StencilIsland,
+    /// Two objects closer than the minimum feature size, not overlapping:
+    /// the strip between them is too thin to cut cleanly or to weed. A
+    /// hint only (info): close objects can be the design.
+    ObjectsClose,
+    /// Two objects that overlap: the knife cuts through both. A hint only
+    /// (info): overlapping objects can be the design.
+    ObjectsOverlap,
 }
 
 impl Code {
     /// Every code, in the order the tool description lists them.
-    pub const ALL: [Code; 21] = [
+    pub const ALL: [Code; 23] = [
         Code::OpenPaths,
         Code::Hairline,
         Code::BelowMinFeature,
@@ -100,6 +107,8 @@ impl Code {
         Code::Skipped,
         Code::TooSmall,
         Code::StencilIsland,
+        Code::ObjectsClose,
+        Code::ObjectsOverlap,
     ];
 
     /// The code as agents see it, like `open_paths`.
@@ -126,6 +135,8 @@ impl Code {
             Code::Skipped => "skipped",
             Code::TooSmall => "too_small",
             Code::StencilIsland => "stencil_island",
+            Code::ObjectsClose => "objects_close",
+            Code::ObjectsOverlap => "objects_overlap",
         }
     }
 
@@ -153,6 +164,8 @@ impl Code {
             Code::Skipped => "Skipped objects",
             Code::TooSmall => "Too tiny to cut",
             Code::StencilIsland => "Stencil middles fall out",
+            Code::ObjectsClose => "Objects nearly touching",
+            Code::ObjectsOverlap => "Objects overlap",
         }
     }
 
@@ -688,6 +701,7 @@ pub fn check(input: &JobInput, ids: Option<&[ObjectId]>) -> Report {
             report.issues.push(i);
         }
     }
+    report.issues.extend(pair_issues(input, ids, &limits));
     report
 }
 
@@ -1178,6 +1192,368 @@ fn fit_anchor(b: Rect, f: f64, area: Rect) -> (&'static str, bool) {
         }
     }
     ("center", false)
+}
+
+// ---------------------------------------------------------------- pairs
+
+/// The hint about objects that nearly touch.
+pub const OBJECTS_CLOSE_HINT: &str = "Close shaves can be part of the design. If they are not, move the objects apart until the gap is at least the minimum feature size. If they are, ignore this hint for the pair.";
+
+/// The hint about objects that overlap.
+pub const OBJECTS_OVERLAP_HINT: &str = "Overlapping objects can be part of the design, like a sticker on a sticker. If they are not, move one of them away. If they are, ignore this hint for the pair.";
+
+/// The cut lines of one object for the pair checks: flattened polylines,
+/// each with whether it is closed, and their box.
+struct Lines {
+    lines: Vec<(Vec<Point>, bool)>,
+    bounds: Rect,
+}
+
+impl Lines {
+    fn of(pieces: &[CutPiece], tolerance: f64) -> Option<Self> {
+        let mut lines: Vec<(Vec<Point>, bool)> = Vec::new();
+        for piece in pieces {
+            let mut cur: Vec<Point> = Vec::new();
+            let finish =
+                |cur: &mut Vec<Point>, closed: bool, lines: &mut Vec<(Vec<Point>, bool)>| {
+                    if closed && cur.len() > 1 {
+                        cur.push(cur[0]);
+                    }
+                    if cur.len() > 1 {
+                        lines.push((std::mem::take(cur), closed));
+                    } else {
+                        cur.clear();
+                    }
+                };
+            kurbo::flatten(piece.path.iter(), tolerance.max(0.01), |el| match el {
+                PathEl::MoveTo(q) => {
+                    finish(&mut cur, false, &mut lines);
+                    cur.push(q);
+                }
+                PathEl::LineTo(q) => cur.push(q),
+                PathEl::ClosePath => finish(&mut cur, true, &mut lines),
+                _ => {}
+            });
+            finish(&mut cur, false, &mut lines);
+        }
+        let bounds = lines
+            .iter()
+            .flat_map(|(l, _)| l.iter())
+            .fold(None, |b: Option<Rect>, p| {
+                Some(b.map_or(Rect::from_points(*p, *p), |b| b.union_pt(*p)))
+            })?;
+        Some(Self { lines, bounds })
+    }
+
+    fn translated(&self, d: kurbo::Vec2) -> Self {
+        Self {
+            lines: self
+                .lines
+                .iter()
+                .map(|(l, c)| (l.iter().map(|p| *p + d).collect(), *c))
+                .collect(),
+            bounds: self.bounds + d,
+        }
+    }
+
+    /// True if `q` lies in this object's material: inside an odd number
+    /// of its closed lines (the middle of an O is not).
+    fn holds(&self, q: Point) -> bool {
+        self.lines
+            .iter()
+            .filter(|(l, closed)| *closed && l.len() > 3)
+            .filter(|(l, _)| {
+                flatcraft_path::containment::point_in_ring(q, &l[..l.len() - 1]) == Some(true)
+            })
+            .count()
+            % 2
+            == 1
+    }
+
+    fn first_point(&self) -> Option<Point> {
+        self.lines.first().map(|(l, _)| l[0])
+    }
+}
+
+/// The closest points of the segments `a0 a1` and `b0 b1`, and their
+/// distance (0 where they cross).
+fn segment_gap(a0: Point, a1: Point, b0: Point, b1: Point) -> (f64, Point, Point) {
+    let cross = |o: Point, p: Point, q: Point| (p - o).cross(q - o);
+    let (d1, d2) = (cross(a0, a1, b0), cross(a0, a1, b1));
+    let (d3, d4) = (cross(b0, b1, a0), cross(b0, b1, a1));
+    if ((d1 > 0.0 && d2 < 0.0) || (d1 < 0.0 && d2 > 0.0))
+        && ((d3 > 0.0 && d4 < 0.0) || (d3 < 0.0 && d4 > 0.0))
+    {
+        let t = d3 / (d3 - d4);
+        let p = a0.lerp(a1, t);
+        return (0.0, p, p);
+    }
+    let nearest = |p: Point, s0: Point, s1: Point| {
+        let d = s1 - s0;
+        let len2 = d.hypot2();
+        let t = if len2 > 0.0 {
+            ((p - s0).dot(d) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        s0 + d * t
+    };
+    let options = [
+        (a0, nearest(a0, b0, b1)),
+        (a1, nearest(a1, b0, b1)),
+        (nearest(b0, a0, a1), b0),
+        (nearest(b1, a0, a1), b1),
+    ];
+    options
+        .into_iter()
+        .map(|(p, q)| (p.distance(q), p, q))
+        .min_by(|x, y| x.0.total_cmp(&y.0))
+        .expect("four options")
+}
+
+/// The closest approach of the lines `a` and `b` if they come within
+/// `reach`: the gap and the closest point on each. Segments are sorted
+/// into a grid of cells two `reach` wide, by marks every half cell, so
+/// only segments near each other are compared (as in `cutgeom::all_near`).
+fn approach(a: &Lines, b: &Lines, reach: f64) -> Option<(f64, Point, Point)> {
+    use std::collections::{HashMap, HashSet};
+    let cell = 2.0 * reach.max(1e-3);
+    let key = |p: Point| ((p.x / cell).floor() as i64, (p.y / cell).floor() as i64);
+    let segments = |l: &Lines| -> Vec<(Point, Point)> {
+        l.lines
+            .iter()
+            .flat_map(|(pts, _)| pts.windows(2).map(|w| (w[0], w[1])))
+            .collect()
+    };
+    let marks = |(p, q): (Point, Point)| {
+        let n = (p.distance(q) / (cell / 2.0)).ceil().max(1.0) as usize;
+        (0..=n).map(move |m| p.lerp(q, m as f64 / n as f64))
+    };
+    let sa = segments(a);
+    let sb = segments(b);
+    let mut grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (i, s) in sa.iter().enumerate() {
+        for m in marks(*s) {
+            let cells = grid.entry(key(m)).or_default();
+            if cells.last() != Some(&i) {
+                cells.push(i);
+            }
+        }
+    }
+    let mut best: Option<(f64, Point, Point)> = None;
+    let mut seen: HashSet<(usize, usize)> = HashSet::new();
+    for (j, s) in sb.iter().enumerate() {
+        for m in marks(*s) {
+            let (cx, cy) = key(m);
+            for ox in -1..=1 {
+                for oy in -1..=1 {
+                    let Some(near) = grid.get(&(cx + ox, cy + oy)) else {
+                        continue;
+                    };
+                    for &i in near {
+                        if !seen.insert((i, j)) {
+                            continue;
+                        }
+                        let (a0, a1) = sa[i];
+                        let found = segment_gap(a0, a1, s.0, s.1);
+                        if found.0 <= reach && best.is_none_or(|b| found.0 < b.0) {
+                            best = Some(found);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    best
+}
+
+/// What the pair check found about two objects.
+enum Pair {
+    Overlap,
+    Close { gap: f64, a: Point, b: Point },
+}
+
+/// How two objects lie: overlapping (their cut lines cross or touch, or
+/// one lies in the other's material), closer than `limit`, or neither.
+fn pair_of(a: &Lines, b: &Lines, limit: f64, tolerance: f64) -> Option<Pair> {
+    let near = a.bounds.inflate(limit, limit);
+    if near.x0 > b.bounds.x1
+        || b.bounds.x0 > near.x1
+        || near.y0 > b.bounds.y1
+        || b.bounds.y0 > near.y1
+    {
+        return None;
+    }
+    let inside =
+        b.first_point().is_some_and(|q| a.holds(q)) || a.first_point().is_some_and(|q| b.holds(q));
+    let near = approach(a, b, limit);
+    match near {
+        Some((gap, _, _)) if gap <= tolerance => Some(Pair::Overlap),
+        _ if inside => Some(Pair::Overlap),
+        Some((gap, pa, pb)) if gap < limit => Some(Pair::Close { gap, a: pa, b: pb }),
+        _ => None,
+    }
+}
+
+/// The hints about pairs of objects that nearly touch or overlap, for
+/// the pairs with at least one object of `ids` (every pair when `None`).
+/// Only objects that are cut count: a hidden or skipped object is not on
+/// the sheet. A pair inside one group is still a pair of objects. Pairs
+/// the person turned off (`Document::ignored_pairs`) are left out.
+fn pair_issues(input: &JobInput, ids: Option<&[ObjectId]>, limits: &Limits) -> Vec<Issue> {
+    let cut = input.cut_geometry();
+    let tolerance = limits.tolerance_mm.max(0.01);
+    let limit = gap_limit_mm(limits.min_feature_mm);
+    let objects: Vec<(&JobObject, Lines)> = input
+        .objects
+        .iter()
+        .filter(|o| o.visible && o.cut_enabled)
+        .filter_map(|o| Some((o, Lines::of(cut.pieces(o.id), tolerance)?)))
+        .collect();
+    let wanted = |o: &JobObject| ids.is_none_or(|ids| ids.contains(&o.id));
+    let ignored = |code: Code, a: &JobObject, b: &JobObject| {
+        input
+            .ignored_pairs
+            .contains(&flatcraft_core::document::IgnoredPair::new(
+                code.as_str(),
+                a.id.0,
+                b.id.0,
+            ))
+    };
+    let mut out = Vec::new();
+    for (i, (a, la)) in objects.iter().enumerate() {
+        for (b, lb) in &objects[i + 1..] {
+            if !wanted(a) && !wanted(b) {
+                continue;
+            }
+            match pair_of(la, lb, limit, tolerance) {
+                Some(Pair::Overlap) if !ignored(Code::ObjectsOverlap, a, b) => {
+                    out.push(Issue {
+                        code: Code::ObjectsOverlap,
+                        severity: Severity::Info,
+                        object_ids: vec![a.id.0, b.id.0],
+                        paths: 0,
+                        message: format!(
+                            "{} and {} overlap, so the knife cuts through both.",
+                            quoted(&a.name),
+                            quoted(&b.name)
+                        ),
+                        hint: OBJECTS_OVERLAP_HINT.into(),
+                        fixes: vec![ignore_fix(Code::ObjectsOverlap, a, b)],
+                    });
+                }
+                Some(Pair::Close { gap, a: pa, b: pb }) if !ignored(Code::ObjectsClose, a, b) => {
+                    let mut fixes: Vec<Fix> =
+                        move_apart_fix(input, limits, (a, la), (b, lb), (gap, pa, pb))
+                            .into_iter()
+                            .collect();
+                    fixes.push(ignore_fix(Code::ObjectsClose, a, b));
+                    out.push(Issue {
+                        code: Code::ObjectsClose,
+                        severity: Severity::Info,
+                        object_ids: vec![a.id.0, b.id.0],
+                        paths: 0,
+                        message: format!(
+                            "{} and {} are only {} apart. The strip between them is too thin to cut cleanly or to weed, and the blade may tear it.",
+                            quoted(&a.name),
+                            quoted(&b.name),
+                            mm(gap)
+                        ),
+                        hint: OBJECTS_CLOSE_HINT.into(),
+                        fixes,
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// "Ignore for this object pair": turns the hint `code` off for `a` and
+/// `b`, stored in the project.
+fn ignore_fix(code: Code, a: &JobObject, b: &JobObject) -> Fix {
+    Fix {
+        label: "Ignore for this object pair".into(),
+        description: "Hides this hint for these two objects, for good: it is kept in the project. Nothing in the design changes. Undo brings it back.".into(),
+        command: "document.ignore_issue".into(),
+        args: json!({ "code": code.as_str(), "object_ids": [a.id.0, b.id.0] }),
+    }
+}
+
+/// Room a "Move apart" leaves over the minimum gap, so rounding never
+/// leaves it just short.
+const MOVE_APART_SLACK: f64 = 1.02;
+
+/// "Move apart": moves the second object `b` (with its group, when the
+/// two are not in the same group) straight away from `a`, from the
+/// closest point of `a` to the closest point of `b`, until the gap reaches
+/// the minimum. As an absolute position, so running it again does no
+/// harm. `None` when no straight move gets there in a few steps, or when
+/// it would leave the cutting area.
+fn move_apart_fix(
+    input: &JobInput,
+    limits: &Limits,
+    (a, la): (&JobObject, &Lines),
+    (b, lb): (&JobObject, &Lines),
+    (gap, pa, pb): (f64, Point, Point),
+) -> Option<Fix> {
+    let limit = gap_limit_mm(limits.min_feature_mm);
+    let dir = pb - pa;
+    let len = dir.hypot();
+    if len <= 0.0 || !len.is_finite() {
+        return None;
+    }
+    let dir = dir / len;
+    // The whole group of `b` moves, unless `a` is in it too.
+    let unit = if a.unit != b.unit { b.unit } else { b.id };
+    let movers: Vec<&JobObject> = input
+        .objects
+        .iter()
+        .filter(|o| {
+            if unit == b.id {
+                o.id == b.id
+            } else {
+                o.unit == unit
+            }
+        })
+        .collect();
+    let any_shown = movers.iter().any(|o| o.visible);
+    let start = movers
+        .iter()
+        .filter(|o| o.visible || !any_shown)
+        .map(|o| {
+            object_bounds(o)
+                .unwrap_or_else(|| Rect::from_points(o.transform.center_mm, o.transform.center_mm))
+        })
+        .reduce(|x, y| x.union(y))?;
+    let mut shift = (limit - gap) * MOVE_APART_SLACK + 0.01;
+    for _ in 0..8 {
+        let d = dir * shift;
+        let now = approach(la, &lb.translated(d), limit).map_or(limit, |(g, _, _)| g);
+        if now >= limit {
+            let moved = start + d;
+            if let Some(area) = limits.area
+                && !crate::commands::inside(moved, area)
+            {
+                return None;
+            }
+            return Some(Fix {
+                label: "Move apart".into(),
+                description: format!(
+                    "Moves {} {} away from {}, so the gap is at least {}. One undo step.",
+                    quoted(&b.name),
+                    mm(shift),
+                    quoted(&a.name),
+                    mm(limit)
+                ),
+                command: "object.move".into(),
+                args: json!({ "ids": [unit.0], "x_mm": moved.x0, "y_mm": moved.y0 }),
+            });
+        }
+        shift += (limit - now) * MOVE_APART_SLACK + 0.01;
+    }
+    None
 }
 
 // ---------------------------------------------------------------- nothing to cut

@@ -555,6 +555,30 @@ pub struct Document {
     pub groups: Vec<GroupNode>,
     pub job: JobSettings,
     pub next_id: u64,
+    /// Hints about two objects (too close, overlapping) the person turned
+    /// off for that pair, so they stay gone. Not written when there are
+    /// none; files from before load without any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ignored_pairs: Vec<IgnoredPair>,
+}
+
+/// One hint about a pair of objects that is turned off: the hint's code
+/// (as the engine's report names it, like `objects_close`) and the two
+/// object ids, the lower first.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct IgnoredPair {
+    pub code: String,
+    pub ids: [u64; 2],
+}
+
+impl IgnoredPair {
+    /// The pair of `a` and `b` for `code`, in either order.
+    pub fn new(code: &str, a: u64, b: u64) -> Self {
+        Self {
+            code: code.to_string(),
+            ids: [a.min(b), a.max(b)],
+        }
+    }
 }
 
 impl Document {
@@ -567,7 +591,13 @@ impl Document {
             groups: Vec::new(),
             job,
             next_id: 1,
+            ignored_pairs: Vec::new(),
         }
+    }
+
+    /// True if the hint `code` about objects `a` and `b` is turned off.
+    pub fn is_ignored(&self, code: &str, a: u64, b: u64) -> bool {
+        self.ignored_pairs.contains(&IgnoredPair::new(code, a, b))
     }
 
     pub fn add(&mut self, name: String, source: Source, geometry: Vec<CutPath>) -> ObjectId {

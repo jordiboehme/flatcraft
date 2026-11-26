@@ -412,3 +412,49 @@ fn hidden_lines_are_counted_and_one_click_scrolls_to_them() {
     }
     assert_eq!(more(&h), None);
 }
+
+/// Two objects 0.3 mm apart: a hint (info, a dim dot), with Move apart
+/// and Ignore. Ignoring it hides it for good, in one undo step; nothing
+/// is moved on its own.
+#[test]
+fn a_near_touching_pair_is_a_hint_that_can_be_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, mut h) = start(&dir);
+    run(
+        &s,
+        "object.import_svg",
+        json!({ "svg": page(r#"<rect x="20" y="20" width="30" height="30"/>"#), "name": "left" }),
+    );
+    drop_svg(
+        &mut h,
+        &dir,
+        "right",
+        &page(r#"<rect x="50.3" y="20" width="30" height="30"/>"#),
+    );
+    let text = "'left' and 'right' are only 0.3 mm apart. The strip between them is too thin to cut cleanly or to weed, and the blade may tear it.";
+    assert!(h.query_by_label(text).is_some());
+    let card = app(&h).ui.prepare.report.clone().unwrap();
+    assert!(
+        card.all()
+            .iter()
+            .all(|i| i.severity == flatcraft_engine::report::Severity::Info)
+    );
+    assert!(
+        h.query_by_role_and_label(Role::Button, "Move apart")
+            .is_some()
+    );
+    let before = s.lock().unwrap().doc().document.objects[1].transform;
+    let undo = common::undo_len(&s);
+    h.get_by_role_and_label(Role::Button, "Ignore for this object pair")
+        .click();
+    wait_for_workers(&mut h);
+    assert_eq!(common::undo_len(&s), undo + 1);
+    assert_eq!(
+        s.lock().unwrap().doc().document.objects[1].transform,
+        before
+    );
+    assert!(h.query_by_label(text).is_none());
+    assert!(app(&h).ui.prepare.report.is_none());
+    let c = run(&s, "document.check", json!({}));
+    assert_eq!(c["issues"], json!([]), "{c}");
+}

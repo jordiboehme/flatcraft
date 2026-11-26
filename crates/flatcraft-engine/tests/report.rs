@@ -380,7 +380,7 @@ fn a_shape_sticking_out_says_so() {
 fn document_check_takes_ids() {
     let mut t = t();
     let (a, _) = import(&mut t.s, "a", RECT);
-    let (b, _) = import(&mut t.s, "b", r#"<circle cx="20" cy="20" r="0.4"/>"#);
+    let (b, _) = import(&mut t.s, "b", r#"<circle cx="80" cy="80" r="0.4"/>"#);
     assert_eq!(
         codes(&run(&mut t.s, "document.check", json!({ "ids": [a] }))),
         Vec::<String>::new()
@@ -401,7 +401,7 @@ fn importing_several_files_reports_each_object() {
     let clean = dir.path().join("clean.svg");
     let dots = dir.path().join("dots.svg");
     std::fs::write(&clean, svg(RECT)).unwrap();
-    std::fs::write(&dots, svg(r#"<circle cx="20" cy="20" r="0.4"/>"#)).unwrap();
+    std::fs::write(&dots, svg(r#"<circle cx="80" cy="80" r="0.4"/>"#)).unwrap();
     let r = run(&mut t.s, "object.import", json!({ "paths": [clean, dots] }));
     let ids = r["imported"].as_array().unwrap().clone();
     assert_eq!(r["report"]["shapes"], 2, "{r}");
@@ -410,9 +410,13 @@ fn importing_several_files_reports_each_object() {
         issue(&r["report"], "below_min_feature")["object_ids"],
         json!([ids[1]])
     );
-    // One file with path: the same report.
+    // One file with path: the same report, and the new dot lies on the
+    // first one.
     let one = run(&mut t.s, "object.import", json!({ "path": dots }));
-    assert_eq!(codes(&one["report"]), ["below_min_feature"]);
+    assert_eq!(
+        codes(&one["report"]),
+        ["below_min_feature", "objects_overlap"]
+    );
 }
 
 #[test]
@@ -989,4 +993,252 @@ fn each_fix_is_one_undo_step() {
     let before = undo(&t.s);
     apply(&mut t.s, &fix);
     assert_eq!(undo(&t.s), before + 1);
+}
+
+// ---------------------------------------------------------------- pairs of objects
+
+/// Two 30 mm squares side by side, `gap` mm apart; returns their ids.
+fn two_squares(s: &mut Session, gap: f64) -> (u64, u64) {
+    let (a, _) = import(s, "left", RECT);
+    let (b, _) = import(
+        s,
+        "right",
+        &format!(
+            r#"<rect x="{}" y="20" width="30" height="30"/>"#,
+            50.0 + gap
+        ),
+    );
+    (a, b)
+}
+
+fn pair_codes(v: &Value) -> Vec<String> {
+    codes(v)
+        .into_iter()
+        .filter(|c| c.starts_with("objects_"))
+        .collect()
+}
+
+#[test]
+fn objects_closer_than_the_minimum_feature_are_a_hint() {
+    let mut t = self::t();
+    let (a, b) = two_squares(&mut t.s, 0.3);
+    let c = check(&mut t.s);
+    well_formed(&c);
+    let i = issue(&c, "objects_close");
+    assert_eq!(i["severity"], "info");
+    assert_eq!(i["object_ids"], json!([a, b]));
+    assert_eq!(
+        i["message"],
+        "'left' and 'right' are only 0.3 mm apart. The strip between them is too thin to cut cleanly or to weed, and the blade may tear it."
+    );
+    let labels: Vec<&str> = i["fixes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["label"].as_str().unwrap())
+        .collect();
+    assert_eq!(labels, ["Move apart", "Ignore for this object pair"]);
+    // The import report of the second object names the pair too.
+    let mut t = self::t();
+    let (_, _) = import(&mut t.s, "left", RECT);
+    let (_, r) = import(
+        &mut t.s,
+        "right",
+        r#"<rect x="50.3" y="20" width="30" height="30"/>"#,
+    );
+    assert_eq!(pair_codes(&r["report"]), ["objects_close"], "{r}");
+
+    let mut t = self::t();
+    two_squares(&mut t.s, 2.0);
+    assert_eq!(pair_codes(&check(&mut t.s)), Vec::<String>::new());
+}
+
+#[test]
+fn overlapping_objects_are_a_hint() {
+    let mut t = self::t();
+    let (a, b) = two_squares(&mut t.s, -5.0);
+    let c = check(&mut t.s);
+    well_formed(&c);
+    let i = issue(&c, "objects_overlap");
+    assert_eq!(i["severity"], "info");
+    assert_eq!(i["object_ids"], json!([a, b]));
+    assert_eq!(
+        i["message"],
+        "'left' and 'right' overlap, so the knife cuts through both."
+    );
+    assert_eq!(i["fixes"][0]["label"], "Ignore for this object pair");
+    assert_eq!(pair_codes(&c), ["objects_overlap"]);
+    // One inside the other, no line crossing: an overlap too.
+    let mut t = self::t();
+    import(&mut t.s, "big", RECT);
+    import(
+        &mut t.s,
+        "small",
+        r#"<rect x="30" y="30" width="5" height="5"/>"#,
+    );
+    assert_eq!(pair_codes(&check(&mut t.s)), ["objects_overlap"]);
+}
+
+#[test]
+fn move_apart_clears_the_hint_in_one_undo_step() {
+    let mut t = self::t();
+    let (_, b) = two_squares(&mut t.s, 0.3);
+    let c = check(&mut t.s);
+    let fix = issue(&c, "objects_close")["fixes"][0].clone();
+    assert_eq!(fix["command"], "object.move");
+    assert_eq!(fix["args"]["ids"], json!([b]));
+    let undo = t.s.doc().undo.undo_len();
+    apply(&mut t.s, &fix);
+    assert_eq!(t.s.doc().undo.undo_len(), undo + 1);
+    assert_eq!(pair_codes(&check(&mut t.s)), Vec::<String>::new());
+    // Absolute: running it again changes nothing.
+    apply(&mut t.s, &fix);
+    assert_eq!(t.s.doc().undo.undo_len(), undo + 1);
+    run(&mut t.s, "edit.undo", json!({}));
+    assert_eq!(pair_codes(&check(&mut t.s)), ["objects_close"]);
+}
+
+#[test]
+fn move_apart_is_not_offered_off_the_mat() {
+    let mut t = self::t();
+    let [_, _, x1, _] = area(&mut t.s);
+    let (a, _) = import(&mut t.s, "left", RECT);
+    let (b, _) = import(&mut t.s, "right", RECT);
+    // b against the right edge of the cutting area, a 0.3 mm to its left.
+    run(
+        &mut t.s,
+        "object.move",
+        json!({ "ids": [b], "x_mm": x1 - 30.0 }),
+    );
+    run(
+        &mut t.s,
+        "object.move",
+        json!({ "ids": [a], "x_mm": x1 - 60.3 }),
+    );
+    let c = check(&mut t.s);
+    let i = issue(&c, "objects_close");
+    let labels: Vec<&str> = i["fixes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["label"].as_str().unwrap())
+        .collect();
+    assert_eq!(labels, ["Ignore for this object pair"], "{c}");
+}
+
+#[test]
+fn ignoring_a_pair_is_kept_in_the_project() {
+    let mut t = self::t();
+    let (a, b) = two_squares(&mut t.s, -5.0);
+    let c = check(&mut t.s);
+    let fix = issue(&c, "objects_overlap")["fixes"][0].clone();
+    assert_eq!(fix["command"], "document.ignore_issue");
+    let undo = t.s.doc().undo.undo_len();
+    apply(&mut t.s, &fix);
+    assert_eq!(t.s.doc().undo.undo_len(), undo + 1, "one undo step");
+    assert!(t.s.doc().dirty);
+    assert_eq!(pair_codes(&check(&mut t.s)), Vec::<String>::new());
+    // Saved and opened again, the pair stays ignored.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pair.flatcraft");
+    run(&mut t.s, "project.save", json!({ "path": path }));
+    let mut t2 = self::t();
+    run(&mut t2.s, "project.open", json!({ "path": path }));
+    assert_eq!(pair_codes(&check(&mut t2.s)), Vec::<String>::new());
+    assert!(t2.s.doc().document.is_ignored("objects_overlap", b, a));
+    // Undo brings the hint back; ignore false too.
+    run(&mut t.s, "edit.undo", json!({}));
+    assert_eq!(pair_codes(&check(&mut t.s)), ["objects_overlap"]);
+    run(&mut t.s, "edit.redo", json!({}));
+    run(
+        &mut t.s,
+        "document.ignore_issue",
+        json!({ "code": "objects_overlap", "object_ids": [b, a], "ignore": false }),
+    );
+    assert_eq!(pair_codes(&check(&mut t.s)), ["objects_overlap"]);
+    // Only pair hints, only objects.
+    for bad in [
+        json!({ "code": "hairline", "object_ids": [a, b] }),
+        json!({ "code": "objects_close", "object_ids": [a, a] }),
+        json!({ "code": "objects_close", "object_ids": [a, 999] }),
+    ] {
+        assert!(
+            t.s.execute("document.ignore_issue", bad.clone(), Origin::Agent)
+                .is_err(),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn overlapping_objects_plan_and_send_normally() {
+    let mut t = self::t();
+    two_squares(&mut t.s, -5.0);
+    let p = run(&mut t.s, "job.preview", json!({}));
+    assert_eq!(p["ready"], true, "{p}");
+    assert_eq!(p["issues"], json!([]), "{p}");
+    let r = run(&mut t.s, "job.send", json!({}));
+    assert!(r["bytes_sent"].as_u64().unwrap() > 0, "{r}");
+    let mut t = self::t();
+    two_squares(&mut t.s, 0.3);
+    let p = run(&mut t.s, "job.preview", json!({}));
+    assert_eq!(p["ready"], true, "{p}");
+    assert_eq!(p["issues"], json!([]), "{p}");
+}
+
+#[test]
+fn a_pair_in_one_group_is_a_pair_and_moves_alone() {
+    let mut t = self::t();
+    let (a, b) = two_squares(&mut t.s, 0.3);
+    run(&mut t.s, "object.group", json!({ "ids": [a, b] }));
+    let c = check(&mut t.s);
+    let fix = issue(&c, "objects_close")["fixes"][0].clone();
+    assert_eq!(
+        fix["args"]["ids"],
+        json!([b]),
+        "only the second object moves"
+    );
+    apply(&mut t.s, &fix);
+    assert_eq!(pair_codes(&check(&mut t.s)), Vec::<String>::new());
+
+    // In different groups, the second one's group moves with it.
+    let mut t = self::t();
+    let (a, b) = two_squares(&mut t.s, 0.3);
+    let (c3, _) = import(
+        &mut t.s,
+        "far",
+        r#"<rect x="85" y="20" width="5" height="5"/>"#,
+    );
+    let g = run(&mut t.s, "object.group", json!({ "ids": [b, c3] }))["group_id"].clone();
+    let c = check(&mut t.s);
+    let fix = issue(&c, "objects_close")["fixes"][0].clone();
+    assert!(g.is_u64(), "{g}");
+    assert_eq!(fix["args"]["ids"], json!([g]));
+    apply(&mut t.s, &fix);
+    assert_eq!(pair_codes(&check(&mut t.s)), Vec::<String>::new());
+    let _ = a;
+}
+
+/// Hidden and skipped objects are not on the sheet: no pair hints.
+#[test]
+fn hidden_and_skipped_objects_form_no_pairs() {
+    let mut t = self::t();
+    let (a, b) = two_squares(&mut t.s, -5.0);
+    run(
+        &mut t.s,
+        "object.set_visible",
+        json!({ "ids": [a], "visible": false }),
+    );
+    assert_eq!(pair_codes(&check(&mut t.s)), Vec::<String>::new());
+    run(
+        &mut t.s,
+        "object.set_visible",
+        json!({ "ids": [a], "visible": true }),
+    );
+    run(
+        &mut t.s,
+        "object.set_cut",
+        json!({ "ids": [b], "cut": false }),
+    );
+    assert_eq!(pair_codes(&check(&mut t.s)), Vec::<String>::new());
 }

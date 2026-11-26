@@ -44,6 +44,7 @@ static ALL: &[&dyn Command] = &[
     &notes::DocumentSetNotes,
     &sources::DocumentCheckSources,
     &check::DocumentCheck,
+    &check::DocumentIgnoreIssue,
     &object::ObjectImport,
     &object::ObjectImportSvg,
     &object::ObjectRetrace,

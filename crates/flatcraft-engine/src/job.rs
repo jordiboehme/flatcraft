@@ -476,6 +476,9 @@ pub struct JobInput {
     pub plotter: PlotterProfile,
     /// The material with the plotter's overrides applied.
     pub material: MaterialProfile,
+    /// The object pairs whose hints the person turned off
+    /// (`Document::ignored_pairs`).
+    pub ignored_pairs: Vec<flatcraft_core::document::IgnoredPair>,
     /// The cut geometry of `objects` (see [`JobInput::cut_geometry`]).
     pub cut: CutSeed,
 }
@@ -615,6 +618,7 @@ impl JobInput {
             job: doc.job.clone(),
             plotter,
             material,
+            ignored_pairs: doc.ignored_pairs.clone(),
             cut: CutSeed::default(),
         }
     }
