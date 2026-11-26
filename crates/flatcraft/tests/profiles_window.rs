@@ -1347,3 +1347,64 @@ fn ring_direction_saves_to_user_plotter() {
     let t = plotter_toml(&dir, "user-my-cameo");
     assert_eq!(t["ring_direction"].as_str(), Some("cw"));
 }
+
+#[test]
+fn corner_mode_and_min_radius_override_per_plotter() {
+    use flatcraft::ui::profiles_window::{OVERRIDE_OFF, OVERSHOOT_OFF};
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = common::harness_sized(&dir, s.clone(), [1400.0, 2400.0], 8, |app| app);
+    let hover = |h: &mut AppHarness, label: &str| {
+        let at = h.get_by_label(label).rect().center();
+        h.hover_at(egui::pos2(at.x, at.y));
+        h.run();
+        h.run();
+    };
+    open(&mut h, "Materials");
+    click(&mut h, "Copy paper");
+    click(&mut h, "Save as user preset...");
+    type_into(&mut h, "Preset name", "My Paper");
+    click(&mut h, "Add override for");
+    click(&mut h, "Silhouette Cameo 2");
+    // Nothing set yet: every field dimmed, saying why.
+    let cameo = "Silhouette Cameo 2";
+    for field in ["corner mode", "corner overshoot", "minimum radius"] {
+        let label = format!("{cameo} {field}");
+        assert!(disabled(&h, &label), "{label}");
+        hover(&mut h, &label);
+        assert!(h.query_by_label(OVERRIDE_OFF).is_some(), "{label}");
+    }
+    // Set the corner mode: it still swivels, so the overshoot stays dimmed.
+    click(&mut h, "Silhouette Cameo 2 corner mode set");
+    assert!(!disabled(&h, "Silhouette Cameo 2 corner mode"));
+    assert!(disabled(&h, "Silhouette Cameo 2 corner overshoot"));
+    hover(&mut h, "Silhouette Cameo 2 corner overshoot");
+    assert!(h.query_by_label(OVERSHOOT_OFF).is_some());
+    click(&mut h, "Silhouette Cameo 2 corner mode");
+    click(&mut h, "Lift and overshoot");
+    type_into(&mut h, "Silhouette Cameo 2 corner overshoot", "0.15");
+    click(&mut h, "Silhouette Cameo 2 minimum radius set");
+    type_into(&mut h, "Silhouette Cameo 2 minimum radius", "0.7");
+    click(&mut h, "Save preset");
+
+    let st = store(&s);
+    assert_eq!(
+        st.modified_material_fields("user-my-paper"),
+        [
+            "overrides.silhouette-cameo-2.corner_mode.LiftOvershoot.overshoot_mm",
+            "overrides.silhouette-cameo-2.min_radius_mm"
+        ]
+    );
+    let m = st.material("user-my-paper").unwrap();
+    assert_eq!(m.corner_mode, flatcraft_device::CornerModeSpec::Arc);
+    let c = m.for_plotter("silhouette-cameo-2");
+    assert_eq!(
+        c.corner_mode,
+        flatcraft_device::CornerModeSpec::LiftOvershoot { overshoot_mm: 0.15 }
+    );
+    assert_eq!(c.min_radius_mm, Some(0.7));
+    assert_eq!(
+        m.for_plotter("file-output-gpgl-cameo2").corner_mode,
+        flatcraft_device::CornerModeSpec::Arc
+    );
+}

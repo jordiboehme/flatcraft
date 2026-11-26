@@ -2040,45 +2040,63 @@ fn material_form(
 }
 
 /// The corner mode, its overshoot and the minimum radius of a material.
-fn corner_rows(ui: &mut Ui, f: &Form<'_>, m: &mut MaterialProfile) {
-    #[derive(Clone, Copy, PartialEq)]
-    enum C {
-        Arc,
-        Lift,
+/// The two corner modes as combo choices, without the overshoot length.
+#[derive(Clone, Copy, PartialEq)]
+enum CornerChoice {
+    Arc,
+    Lift,
+}
+
+impl CornerChoice {
+    const CHOICES: [(CornerChoice, &'static str); 2] = [
+        (CornerChoice::Arc, "Swivel (arc)"),
+        (CornerChoice::Lift, "Lift and overshoot"),
+    ];
+
+    fn of(c: CornerModeSpec) -> Self {
+        match c {
+            CornerModeSpec::Arc => CornerChoice::Arc,
+            CornerModeSpec::LiftOvershoot { .. } => CornerChoice::Lift,
+        }
     }
-    let mut c = match m.corner_mode {
-        CornerModeSpec::Arc => C::Arc,
-        CornerModeSpec::LiftOvershoot { .. } => C::Lift,
-    };
+
+    /// The corner mode of this choice; a switch to lift starts at the
+    /// default overshoot.
+    fn spec(self) -> CornerModeSpec {
+        match self {
+            CornerChoice::Arc => CornerModeSpec::Arc,
+            CornerChoice::Lift => CornerModeSpec::LiftOvershoot {
+                overshoot_mm: DEFAULT_CORNER_OVERSHOOT_MM,
+            },
+        }
+    }
+}
+
+/// The overshoot a corner mode shows in its field: its own, or the default
+/// (dimmed) while the blade swivels.
+fn shown_overshoot(c: CornerModeSpec) -> f64 {
+    match c {
+        CornerModeSpec::LiftOvershoot { overshoot_mm } => overshoot_mm,
+        CornerModeSpec::Arc => DEFAULT_CORNER_OVERSHOOT_MM,
+    }
+}
+
+fn corner_rows(ui: &mut Ui, f: &Form<'_>, m: &mut MaterialProfile) {
+    let mut c = CornerChoice::of(m.corner_mode);
     let before = c;
     f.row(
         ui,
         "Corner mode",
         "corner_mode",
         Setting::CornerMode,
-        |ui| {
-            combo(
-                ui,
-                "corner-mode",
-                &mut c,
-                &[(C::Arc, "Swivel (arc)"), (C::Lift, "Lift and overshoot")],
-            )
-        },
+        |ui| combo(ui, "corner-mode", &mut c, &CornerChoice::CHOICES),
     );
     if c != before {
-        m.corner_mode = match c {
-            C::Arc => CornerModeSpec::Arc,
-            C::Lift => CornerModeSpec::LiftOvershoot {
-                overshoot_mm: DEFAULT_CORNER_OVERSHOOT_MM,
-            },
-        };
+        m.corner_mode = c.spec();
     }
     // The overshoot stays visible while the blade swivels, dimmed.
     let lift = matches!(m.corner_mode, CornerModeSpec::LiftOvershoot { .. });
-    let mut shown = match m.corner_mode {
-        CornerModeSpec::LiftOvershoot { overshoot_mm } => overshoot_mm,
-        CornerModeSpec::Arc => DEFAULT_CORNER_OVERSHOOT_MM,
-    };
+    let mut shown = shown_overshoot(m.corner_mode);
     f.row_dimmed(
         ui,
         "Corner overshoot (mm)",
@@ -2220,6 +2238,7 @@ fn overrides(ui: &mut Ui, f: &Form<'_>, m: &mut MaterialProfile, view: &View, t:
     if let Some(pid) = remove {
         m.overrides.remove(&pid);
     }
+    corner_overrides(ui, f, m, &name_of, t);
     let free: Vec<&PresetInfo> = view
         .plotters
         .iter()
@@ -2243,6 +2262,118 @@ fn overrides(ui: &mut Ui, f: &Form<'_>, m: &mut MaterialProfile, view: &View, t:
             m.overrides.insert(id, MaterialOverride::default());
         }
     }
+}
+
+/// The corner mode, overshoot and minimum radius of each plotter override,
+/// as a second table under the first (one wide table would not fit).
+fn corner_overrides(
+    ui: &mut Ui,
+    f: &Form<'_>,
+    m: &mut MaterialProfile,
+    name_of: &dyn Fn(&str) -> String,
+    t: &Tokens,
+) {
+    if m.overrides.is_empty() {
+        return;
+    }
+    let base_corner = m.corner_mode;
+    let base_radius = m.min_radius_mm.unwrap_or(DEFAULT_MIN_RADIUS_MM);
+    ui.add_space(t.spacing * 0.5);
+    egui::Grid::new("flatcraft-profiles-corner-overrides")
+        .num_columns(4)
+        .spacing([t.spacing, t.spacing * 0.6])
+        .show(ui, |ui| {
+            let dim = t.text_dim;
+            for h in [
+                "Plotter",
+                "Corner mode",
+                "Corner overshoot (mm)",
+                "Minimum radius (mm)",
+            ] {
+                paint_text(ui, h, dim, None);
+            }
+            ui.end_row();
+            for (pid, o) in m.overrides.iter_mut() {
+                let name = name_of(pid);
+                let key = format!("overrides.{pid}");
+                let corner_key = format!("{key}.corner_mode");
+                let radius_key = format!("{key}.min_radius_mm");
+                let dot = (f.is_modified(&corner_key) || f.is_modified(&radius_key))
+                    .then_some(t.accent_prepare);
+                paint_text(ui, &name, ui.visuals().text_color(), dot);
+                ui.horizontal(|ui| {
+                    let label = format!("{name} corner mode");
+                    let mut on = o.corner_mode.is_some();
+                    let r = ui.checkbox(&mut on, "");
+                    set_name(ui, &r, &format!("{label} set"));
+                    f.card(&r, &label, Setting::OverrideSet, None);
+                    if r.changed() {
+                        o.corner_mode = on.then_some(base_corner);
+                    }
+                    let mut c = CornerChoice::of(o.corner_mode.unwrap_or(base_corner));
+                    let before = c;
+                    let r = ui
+                        .add_enabled_ui(on, |ui| {
+                            combo(
+                                ui,
+                                &format!("corner-mode-{pid}"),
+                                &mut c,
+                                &CornerChoice::CHOICES,
+                            )
+                        })
+                        .inner;
+                    set_name(ui, &r, &f.name(&label, &corner_key));
+                    f.card(
+                        &r,
+                        &label,
+                        Setting::CornerMode,
+                        (!on).then_some(OVERRIDE_OFF),
+                    );
+                    if on && c != before {
+                        o.corner_mode = Some(c.spec());
+                    }
+                });
+                let label = format!("{name} corner overshoot");
+                let lift = matches!(o.corner_mode, Some(CornerModeSpec::LiftOvershoot { .. }));
+                let reason = if o.corner_mode.is_none() {
+                    Some(OVERRIDE_OFF)
+                } else if !lift {
+                    Some(OVERSHOOT_OFF)
+                } else {
+                    None
+                };
+                let mut v = shown_overshoot(o.corner_mode.unwrap_or(base_corner));
+                let r = num(ui, lift, &mut v, 2, NumKind::Length);
+                set_name(ui, &r, &f.name(&label, &corner_key));
+                f.card(&r, &label, Setting::CornerOvershoot, reason);
+                if lift {
+                    o.corner_mode = Some(CornerModeSpec::LiftOvershoot { overshoot_mm: v });
+                }
+                ui.horizontal(|ui| {
+                    let label = format!("{name} minimum radius");
+                    let mut on = o.min_radius_mm.is_some();
+                    let r = ui.checkbox(&mut on, "");
+                    set_name(ui, &r, &format!("{label} set"));
+                    f.card(&r, &label, Setting::OverrideSet, None);
+                    if r.changed() {
+                        o.min_radius_mm = on.then_some(base_radius);
+                    }
+                    let mut v = o.min_radius_mm.unwrap_or(base_radius);
+                    let r = num(ui, on, &mut v, 2, NumKind::Length);
+                    set_name(ui, &r, &f.name(&label, &radius_key));
+                    f.card(
+                        &r,
+                        &label,
+                        Setting::MinRadius,
+                        (!on).then_some(OVERRIDE_OFF),
+                    );
+                    if on {
+                        o.min_radius_mm = Some(v);
+                    }
+                });
+                ui.end_row();
+            }
+        });
 }
 
 /// A checkbox ("<label> set") and a value that only counts while it is on.

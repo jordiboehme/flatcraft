@@ -1663,7 +1663,7 @@ impl Setting {
                 "Your own notes on this preset: what worked, what to watch out for. The job settings show them whenever this preset is picked. On a system preset they are kept in your own settings folder, so the preset itself stays as it ships. Agents can read them but never change them."
             }
             Setting::AddOverride => {
-                "Pick a plotter to give this material its own speed, force, passes or overcut on that plotter only. Everything you leave alone keeps the material's value."
+                "Pick a plotter to give this material its own speed, force, passes, overcut, corner mode or minimum radius on that plotter only. Everything you leave alone keeps the material's value."
             }
             Setting::OverrideSet => {
                 "Tick this to use a different value with this one plotter. While it is ticked, the value next to it counts for that plotter; untick it and the material's own value applies again."
