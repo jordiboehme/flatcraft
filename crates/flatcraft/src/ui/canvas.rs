@@ -124,8 +124,14 @@ impl CanvasView {
 
 pub use flatcraft_core::colour::{
     contrast_colour, contrast_ratio, cut_colour, luminance, margin_colour, object_colour,
-    selection_colour,
+    selection_colour, weed_colour,
 };
+
+/// The weed path colour on `mat` for the theme `t` (see [`weed_colour`]).
+pub fn weed_rgb(mat: [u8; 3], t: &Tokens) -> Color32 {
+    let w = t.weed_path;
+    rgb(weed_colour(mat, [w.r(), w.g(), w.b()]))
+}
 
 pub fn rgb(c: [u8; 3]) -> Color32 {
     Color32::from_rgb(c[0], c[1], c[2])

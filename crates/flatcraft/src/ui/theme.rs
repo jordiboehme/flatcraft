@@ -23,6 +23,9 @@ pub struct Tokens {
     /// Amber, the colour of the Cut workspace.
     pub accent_cut: Color32,
     pub danger: Color32,
+    /// Weed paths (the weed box and weed lines) in the Cut workspace. A
+    /// blue, not the Prepare teal; see `colour::weed_colour` for the mat.
+    pub weed_path: Color32,
     /// The rail dot of a job that is ready to cut.
     pub ok: Color32,
     /// The rail dot of a job with warnings.
@@ -42,6 +45,10 @@ pub struct Tokens {
     pub spacing: f32,
 }
 
+const fn rgb(c: [u8; 3]) -> Color32 {
+    Color32::from_rgb(c[0], c[1], c[2])
+}
+
 impl Tokens {
     pub const fn dark() -> Self {
         Self {
@@ -55,6 +62,7 @@ impl Tokens {
             accent_prepare: Color32::from_rgb(0x2B, 0xB3, 0xA3),
             accent_cut: Color32::from_rgb(0xF2, 0xA3, 0x3A),
             danger: Color32::from_rgb(0xE5, 0x48, 0x4D),
+            weed_path: rgb(flatcraft_core::colour::WEED_DARK),
             ok: Color32::from_rgb(0x46, 0xC2, 0x7A),
             warn: Color32::from_rgb(0xE8, 0xB2, 0x3A),
             icon_paper: Color32::from_rgb(0xF3, 0xEC, 0xDD),
@@ -80,6 +88,7 @@ impl Tokens {
             accent_prepare: Color32::from_rgb(0x2B, 0xB3, 0xA3),
             accent_cut: Color32::from_rgb(0xF2, 0xA3, 0x3A),
             danger: Color32::from_rgb(0xC8, 0x2E, 0x34),
+            weed_path: rgb(flatcraft_core::colour::WEED_LIGHT),
             ok: Color32::from_rgb(0x2F, 0x9E, 0x5B),
             warn: Color32::from_rgb(0xD9, 0x9A, 0x1E),
             icon_paper: Color32::from_rgb(0xFB, 0xF4, 0xE4),
@@ -248,6 +257,57 @@ mod tests {
             }
             // The cut line must show against the paper it outlines.
             assert!(contrast(t.icon_cut, t.icon_paper) >= 2.0);
+        }
+    }
+
+    /// Weed paths read at 3:1 or better on the paper mat, a dark vinyl
+    /// mat and the canvas of their theme, in the colour the canvas picks
+    /// (`weed_colour`), and they are blue: neither the Prepare teal nor
+    /// the cut orange.
+    #[test]
+    fn weed_paths_read_on_the_mats_and_the_canvas() {
+        use flatcraft_core::colour::{cut_colour, weed_colour};
+        let paper = flatcraft_device::PAPER_COLOR;
+        // A dark vinyl backing used as a mat colour (no preset has one).
+        let vinyl = [0x33, 0x37, 0x3C];
+        let raw = |c: Color32| [c.r(), c.g(), c.b()];
+        for t in [Tokens::dark(), Tokens::light()] {
+            let own = raw(t.weed_path);
+            for mat in [
+                paper,
+                flatcraft_device::DEFAULT_MAT_COLOR,
+                flatcraft_device::DEFAULT_NO_MAT_COLOR,
+                vinyl,
+            ] {
+                let c = super::rgb(weed_colour(mat, own));
+                assert!(contrast(c, super::rgb(mat)) >= 3.0, "{c:?} on {mat:?}");
+                assert_ne!(c, super::rgb(cut_colour(mat)));
+            }
+            // The theme's own blue on the paper mat and on its canvas.
+            assert_eq!(weed_colour(paper, own), own);
+            assert!(
+                contrast(t.weed_path, t.bg) >= 3.0,
+                "{:?} on {:?}",
+                t.weed_path,
+                t.bg
+            );
+            // Blue: blue leads.
+            assert!(t.weed_path.b() > t.weed_path.g() && t.weed_path.b() > t.weed_path.r());
+            // Hue in degrees: the teal sits near 173, the blues past 210.
+            let hue = |c: Color32| {
+                let (r, g, b) = (f64::from(c.r()), f64::from(c.g()), f64::from(c.b()));
+                let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+                let h = if max == b {
+                    4.0 + (r - g) / (max - min)
+                } else if max == g {
+                    2.0 + (b - r) / (max - min)
+                } else {
+                    ((g - b) / (max - min)).rem_euclid(6.0)
+                };
+                h * 60.0
+            };
+            let apart = (hue(t.weed_path) - hue(t.accent_prepare)).abs();
+            assert!(apart >= 30.0, "only {apart} degrees from the Prepare teal");
         }
     }
 

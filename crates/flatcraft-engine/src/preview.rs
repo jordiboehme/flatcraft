@@ -292,6 +292,13 @@ fn draw(
         Some(result) => {
             let [cr, cg, cb] = flatcraft_core::colour::cut_colour(media.color);
             let cut = paint(color(cr, cg, cb));
+            // The light theme's weed blue (the image has no theme), or the
+            // dark one when only that reads on the mat.
+            let [wr, wg, wb] = flatcraft_core::colour::weed_colour(
+                media.color,
+                flatcraft_core::colour::WEED_LIGHT,
+            );
+            let weed = paint(color(wr, wg, wb));
             let travel = paint(Color::from_rgba8(lr, lg, lb, 150));
             let start = paint(color(0xd6, 0x28, 0x28));
             let [tr, tg, tb] = label_colour(media.color);
@@ -334,12 +341,12 @@ fn draw(
                 if let Some(p) = polyline(&t.points, t.closed) {
                     // Weed paths are dashed: they read apart from the
                     // design (solid) and the travel (short dashes, thin).
-                    let stroke = if t.kind == flatcraft_path::ToolpathKind::Weed {
-                        &weed_stroke
+                    let (ink, stroke) = if t.kind == flatcraft_path::ToolpathKind::Weed {
+                        (&weed, &weed_stroke)
                     } else {
-                        &cut_stroke
+                        (&cut, &cut_stroke)
                     };
-                    pm.stroke_path(&p, &cut, stroke, mat, None);
+                    pm.stroke_path(&p, ink, stroke, mat, None);
                 }
                 at = *t.points.last().unwrap_or(first);
                 let (sx, sy) = ((first.x as f32 + ox) * sc, (first.y as f32 + oy) * sc);

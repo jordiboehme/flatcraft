@@ -69,6 +69,29 @@ pub fn selection_colour(mat: [u8; 3]) -> [u8; 3] {
     }
 }
 
+/// The weed path blue of the light theme: deep enough for the paper mat
+/// and a light canvas.
+pub const WEED_LIGHT: [u8; 3] = [0x25, 0x63, 0xEB];
+/// The weed path blue of the dark theme: bright enough for the dark
+/// canvas and a dark mat, and still at least 3:1 on the paper mat.
+pub const WEED_DARK: [u8; 3] = [0x4A, 0x86, 0xE8];
+
+/// The colour of weed paths on `mat`: the theme's blue (`preferred`, one
+/// of [`WEED_LIGHT`] and [`WEED_DARK`]) when it reads on the mat (ratio at
+/// least 3), else whichever of the two reads better. A blue, so it is
+/// never the cut orange nor the Prepare and selection teal; the dashes
+/// tell weed paths apart without colour too.
+pub fn weed_colour(mat: [u8; 3], preferred: [u8; 3]) -> [u8; 3] {
+    if contrast_ratio(mat, preferred) >= 3.0 {
+        return preferred;
+    }
+    if contrast_ratio(mat, WEED_LIGHT) >= contrast_ratio(mat, WEED_DARK) {
+        WEED_LIGHT
+    } else {
+        WEED_DARK
+    }
+}
+
 /// An object's own colour if it reads on the mat (ratio at least 3), else
 /// the contrast colour.
 pub fn object_colour(own: Option<[u8; 3]>, mat: [u8; 3]) -> [u8; 3] {

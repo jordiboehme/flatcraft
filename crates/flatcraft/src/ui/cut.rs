@@ -462,9 +462,10 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
                 stats(ui, job, &t);
                 warnings(ui, job, snap.doc_id, &t, actions);
                 ui.add_space(t.spacing);
+                legend(ui, snap, &t);
                 ui.label(
                     RichText::new(
-                        "Numbers show the cut order, dots the starts, arrows the direction and the dotted lines where the knife travels up. Dashed lines are the weed box and weed lines.",
+                        "Numbers show the cut order, dots the starts and arrows the direction.",
                     )
                     .color(t.text_dim),
                 );
@@ -534,6 +535,75 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
                 actions.push(Action::Troubleshoot);
             }
         }
+    }
+}
+
+/// The legend rows of the Path stage: name and hover card.
+pub const LEGEND_CUT: (&str, &str) = (
+    "Cut",
+    "Solid lines are the cuts of your design. The blade goes down and cuts along them.",
+);
+pub const LEGEND_WEED: (&str, &str) = (
+    "Weed box and lines",
+    "Dashed blue lines are the weed box and weed lines: extra cuts through the waste only, so it peels off easily after the cut. Change them in Device & Material, under Weeding.",
+);
+pub const LEGEND_TRAVEL: (&str, &str) = (
+    "Travel",
+    "Dotted lines are where the knife moves up, from the end of one cut to the start of the next. Nothing is cut there.",
+);
+
+/// How a legend sample is drawn.
+#[derive(Clone, Copy)]
+enum Sample {
+    Solid,
+    Dashed,
+    Dotted,
+}
+
+/// A small legend of the Path view: a short line of each kind, drawn on
+/// the mat colour with the canvas's own strokes and colours. The weed row
+/// shows only while weeding is on.
+fn legend(ui: &mut Ui, snap: &Snapshot, t: &Tokens) {
+    let mat = canvas::mat_rgb(snap);
+    let contrast = canvas::rgb(canvas::contrast_colour(mat));
+    let mut rows = vec![(
+        LEGEND_CUT,
+        Sample::Solid,
+        canvas::rgb(canvas::cut_colour(mat)),
+    )];
+    if snap.job.weed.any() {
+        rows.push((LEGEND_WEED, Sample::Dashed, canvas::weed_rgb(mat, t)));
+    }
+    rows.push((LEGEND_TRAVEL, Sample::Dotted, contrast.gamma_multiply(0.45)));
+    for ((name, hint), sample, colour) in rows {
+        ui.horizontal(|ui| {
+            let (rect, r) = ui.allocate_exact_size(Vec2::new(44.0, 14.0), Sense::hover());
+            let p = ui.painter();
+            p.rect_filled(rect, 3.0, canvas::rgb(mat));
+            let line = [
+                rect.left_center() + Vec2::new(5.0, 0.0),
+                rect.right_center() - Vec2::new(5.0, 0.0),
+            ];
+            match sample {
+                Sample::Solid => {
+                    p.line_segment(line, Stroke::new(1.5, colour));
+                }
+                Sample::Dashed => {
+                    p.extend(egui::Shape::dashed_line(
+                        &line,
+                        Stroke::new(1.5, colour),
+                        WEED_DASH,
+                        WEED_GAP,
+                    ));
+                }
+                Sample::Dotted => {
+                    p.extend(egui::Shape::dotted_line(&line, colour, 5.0, 0.9));
+                }
+            }
+            super::groups::card(&r, name, hint, None, false);
+            let l = ui.label(name);
+            super::groups::card(&l, name, hint, None, false);
+        });
     }
 }
 
@@ -614,7 +684,11 @@ fn cut_canvas(
             rect,
             job,
             visible,
-            (contrast, canvas::rgb(canvas::cut_colour(mat_rgb))),
+            (
+                contrast,
+                canvas::rgb(canvas::cut_colour(mat_rgb)),
+                canvas::weed_rgb(mat_rgb, t),
+            ),
             &mut st.labels,
         );
         if crowded {
@@ -633,15 +707,16 @@ fn cut_canvas(
 
 /// Draws the first `visible` toolpaths: the cut lines, dotted travel moves
 /// from the device home, a start dot, a direction arrow and the order number.
-/// Cut moves, start dots and arrows are in the cut orange (`cut`), travel
-/// and the order numbers in the mat's contrast colour, so all read on any mat.
+/// Cut moves, start dots and arrows are in the cut orange (`cut`), weed
+/// paths dashed in the weed blue (`weed`), travel and the order numbers in
+/// the mat's contrast colour, so all read on any mat.
 fn draw_toolpaths(
     painter: &egui::Painter,
     view: &CanvasView,
     rect: Rect,
     job: &Arc<JobResult>,
     visible: usize,
-    (contrast, cut): (Color32, Color32),
+    (contrast, cut, weed): (Color32, Color32, Color32),
     cache: &mut LabelCache,
 ) -> bool {
     let paths = &job.plan.toolpaths;
@@ -675,7 +750,7 @@ fn draw_toolpaths(
             // (solid) and the travel (dotted).
             painter.extend(egui::Shape::dashed_line(
                 &pts,
-                Stroke::new(width, cut),
+                Stroke::new(width, weed),
                 WEED_DASH,
                 WEED_GAP,
             ));

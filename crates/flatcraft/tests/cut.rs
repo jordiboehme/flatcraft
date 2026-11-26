@@ -612,6 +612,12 @@ fn path_stage_counts_and_dashes_weed_paths() {
             .count()
     };
     assert!(h.query_by_label("Weed paths").is_none());
+    // The legend names travel always, the weed paths only with weeding on.
+    h.get_by_label(flatcraft::ui::cut::LEGEND_TRAVEL.0);
+    assert!(
+        h.query_by_label(flatcraft::ui::cut::LEGEND_WEED.0)
+            .is_none()
+    );
     let plain = dashes(&h);
     run(
         &s,
@@ -620,6 +626,15 @@ fn path_stage_counts_and_dashes_weed_paths() {
     );
     h.run();
     h.get_by_label("Weed paths");
-    // The weed box is drawn in dashes: many more line segments.
+    h.get_by_label(flatcraft::ui::cut::LEGEND_WEED.0);
+    // The weed box is drawn in dashes: many more line segments, in the
+    // weed blue of the theme on this mat.
     assert!(dashes(&h) > plain + 20, "{} vs {plain}", dashes(&h));
+    let t = app(&h).tokens;
+    let blue = flatcraft::ui::canvas::weed_rgb(flatcraft_device::PAPER_COLOR, &t);
+    let blue_dashes = common::painted(&h)
+        .iter()
+        .filter(|s| matches!(s, egui::Shape::LineSegment { stroke, .. } if stroke.color == blue))
+        .count();
+    assert!(blue_dashes > 20, "{blue_dashes} blue dashes");
 }
