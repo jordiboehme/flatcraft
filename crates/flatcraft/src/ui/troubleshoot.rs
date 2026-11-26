@@ -270,7 +270,7 @@ fn blocked_card(check: Check, label: &str) -> String {
             "Mirrors the whole layout left and right as one group, for iron-on vinyl.".into()
         }
         Check::CutOrder => {
-            "Sets this document's strategy to Keep sheet, so every outline is cut last.".into()
+            "Sets the strategy of this document to Outlines last, so every outline is cut after its holes and inner pieces.".into()
         }
         Check::LastGood => {
             "Sets this job's speed, force and passes to those of your last good cut.".into()

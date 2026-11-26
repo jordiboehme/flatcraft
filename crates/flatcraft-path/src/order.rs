@@ -2175,7 +2175,7 @@ mod tests {
     }
 
     #[test]
-    fn keep_sheet_cuts_all_holes_before_any_outline() {
+    fn outlines_last_cuts_all_holes_before_any_outline() {
         // Two frames with a hole each; the head starts at the left one.
         let paths = || {
             vec![
@@ -2191,7 +2191,7 @@ mod tests {
             vec![2, 1, 4, 3],
             "Quality frees each piece in turn"
         );
-        let sheet = run(paths(), Point::ZERO, &settings(CutStrategy::KeepSheet));
+        let sheet = run(paths(), Point::ZERO, &settings(CutStrategy::OutlinesLast));
         // Both holes first, then the outlines, nearest first.
         assert_eq!(ids(&sheet), vec![2, 4, 3, 1]);
     }
@@ -2409,7 +2409,7 @@ mod tests {
         #[test]
         fn child_before_parent_holds_for_random_trees(
             rects in rects(),
-            keep_sheet in proptest::bool::ANY,
+            outlines_last in proptest::bool::ANY,
         ) {
             let paths: Vec<Toolpath> = rects
                 .iter()
@@ -2423,7 +2423,7 @@ mod tests {
                 })
                 .collect();
             let (paths, tree) = prepared(paths);
-            let strategy = if keep_sheet { CutStrategy::KeepSheet } else { CutStrategy::Quality };
+            let strategy = if outlines_last { CutStrategy::OutlinesLast } else { CutStrategy::Quality };
             let s = settings(strategy);
             let units: Vec<Unit> = paths.iter().map(|t| Unit::new(t, &s)).collect();
             let tour = construct(&units, &tree, Point::ZERO, &s);
@@ -2439,7 +2439,7 @@ mod tests {
                     prop_assert!(pos[child] < pos[*parent], "{} after its parent {}", child, parent);
                 }
             }
-            if keep_sheet {
+            if outlines_last {
                 let last_inner = (0..paths.len()).filter(|&u| tree.parent[u].is_some()).map(|u| pos[u]).max();
                 let first_root = tree.roots.iter().map(|&u| pos[u]).min();
                 if let (Some(a), Some(b)) = (last_inner, first_root) {
@@ -2768,7 +2768,7 @@ mod tests {
                 })
                 .collect();
             let (paths, tree) = prepared(paths);
-            let strategy = [CutStrategy::Quality, CutStrategy::Fast, CutStrategy::KeepSheet][strategy];
+            let strategy = [CutStrategy::Quality, CutStrategy::Fast, CutStrategy::OutlinesLast][strategy];
             let s = settings(strategy);
             let start = p(start.0, start.1);
             let units: Vec<Unit> = paths.iter().map(|t| Unit::new(t, &s)).collect();

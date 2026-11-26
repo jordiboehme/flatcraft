@@ -389,7 +389,7 @@ pub enum CutStrategy {
     Fast,
     /// As Quality, but every outline comes after every hole and inner
     /// piece, so the sheet holds together until the end.
-    KeepSheet,
+    OutlinesLast,
 }
 
 /// Job settings; `None` options mean the material value.

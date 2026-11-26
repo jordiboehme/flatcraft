@@ -42,14 +42,33 @@ fn the_stored_strategy_round_trips_and_new_documents_use_it() {
         dir.path().to_path_buf(),
     )));
     let mut s = s.lock().unwrap();
-    s.update_prefs(|p| p.default_strategy = CutStrategy::KeepSheet)
+    s.update_prefs(|p| p.default_strategy = CutStrategy::OutlinesLast)
         .unwrap();
     let text = std::fs::read_to_string(dir.path().join("preferences.toml")).unwrap();
-    assert!(text.contains("default_strategy = \"keep_sheet\""), "{text}");
+    assert!(
+        text.contains("default_strategy = \"outlines_last\""),
+        "{text}"
+    );
     assert_eq!(
         Preferences::load(dir.path()).default_strategy,
-        CutStrategy::KeepSheet
+        CutStrategy::OutlinesLast
     );
     s.execute("document.new", json!({}), Origin::Agent).unwrap();
-    assert_eq!(s.doc().document.job.strategy, CutStrategy::KeepSheet);
+    assert_eq!(s.doc().document.job.strategy, CutStrategy::OutlinesLast);
+}
+
+#[test]
+fn an_unknown_stored_strategy_gives_quality_and_keeps_the_rest() {
+    // "keep_sheet" was renamed to "outlines_last"; the old value is not
+    // read, but it never resets the other preferences.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("preferences.toml"),
+        "default_strategy = \"keep_sheet\"\nauto_arrange_spacing_mm = 7.5\n",
+    )
+    .unwrap();
+    let (prefs, warning) = Preferences::load_reporting(dir.path());
+    assert_eq!(warning, None);
+    assert_eq!(prefs.default_strategy, CutStrategy::Quality);
+    assert_eq!(prefs.auto_arrange_spacing_mm, 7.5);
 }

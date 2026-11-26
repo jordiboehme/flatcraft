@@ -55,7 +55,7 @@ impl StrategySettings {
                 turn_weight_mm_per_rad: 0.0,
                 ..quality
             },
-            CutStrategy::KeepSheet => Self {
+            CutStrategy::OutlinesLast => Self {
                 outlines_last: true,
                 ..quality
             },
@@ -78,7 +78,7 @@ mod tests {
     fn strategies_differ_only_where_the_table_says() {
         let q = StrategySettings::for_strategy(CutStrategy::Quality);
         let f = StrategySettings::for_strategy(CutStrategy::Fast);
-        let k = StrategySettings::for_strategy(CutStrategy::KeepSheet);
+        let k = StrategySettings::for_strategy(CutStrategy::OutlinesLast);
         assert_eq!(q, StrategySettings::default());
         assert_eq!(
             (q.turn_weight_mm_per_rad, q.outlines_last),

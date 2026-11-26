@@ -16,7 +16,7 @@
 //! by default) on top, and passes repeat a path in place, so they add no
 //! backtrack.
 //!
-//! With the KeepSheet strategy bands win over the outlines-last rule. A hole
+//! With the OutlinesLast strategy bands win over the outlines-last rule. A hole
 //! whose outer ring lies in a later band is cut as an outline of its own
 //! band: last in that band, not early.
 
@@ -209,7 +209,7 @@ mod tests {
         for seed in [3, 9] {
             let paths = layout(seed);
             let tree = containment::build(&paths);
-            for strategy in [CutStrategy::Quality, CutStrategy::KeepSheet] {
+            for strategy in [CutStrategy::Quality, CutStrategy::OutlinesLast] {
                 let out = run(paths.clone(), &settings(strategy, true));
                 let at = |id: u64| ids(&out).iter().position(|&x| x == id).unwrap();
                 for (c, parent) in tree.parent.iter().enumerate() {
@@ -245,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn keep_sheet_with_bands_orders_outlines_last_per_band() {
+    fn outlines_last_with_bands_orders_per_band() {
         // Band 0: two pieces with a hole each; band 1: one piece with a hole.
         // Ids: pieces 1, 2, 5; holes 3, 4, 6.
         let paths = vec![
@@ -256,7 +256,7 @@ mod tests {
             ring(5, 0.0, 60.0, 30.0, 90.0),
             ring(6, 5.0, 65.0, 10.0, 70.0),
         ];
-        let out = run(paths, &settings(CutStrategy::KeepSheet, true));
+        let out = run(paths, &settings(CutStrategy::OutlinesLast, true));
         let order = ids(&out);
         let at = |id: u64| order.iter().position(|&x| x == id).unwrap();
         for (band0, band1) in [(1, 5), (2, 6), (3, 5), (4, 6), (1, 6), (2, 5)] {

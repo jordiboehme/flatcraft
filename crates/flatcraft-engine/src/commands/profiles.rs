@@ -258,7 +258,7 @@ pub enum StrategyParam {
     /// Short travel first: blade turns cost nothing.
     Fast,
     /// As quality, but every outline comes after every hole and inner piece, so the sheet holds together until the end.
-    KeepSheet,
+    OutlinesLast,
 }
 
 impl From<StrategyParam> for flatcraft_core::document::CutStrategy {
@@ -267,7 +267,7 @@ impl From<StrategyParam> for flatcraft_core::document::CutStrategy {
         match p {
             StrategyParam::Quality => CutStrategy::Quality,
             StrategyParam::Fast => CutStrategy::Fast,
-            StrategyParam::KeepSheet => CutStrategy::KeepSheet,
+            StrategyParam::OutlinesLast => CutStrategy::OutlinesLast,
         }
     }
 }
@@ -275,7 +275,7 @@ impl From<StrategyParam> for flatcraft_core::document::CutStrategy {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StrategyParams {
-    /// quality, fast or keep_sheet.
+    /// quality, fast or outlines_last.
     pub strategy: StrategyParam,
 }
 
@@ -291,7 +291,7 @@ command!(
     mutates: true,
     params: StrategyParams,
     run: run_set_strategy,
-    description: "Sets the cut strategy of the active document, in one undo step: quality (clean corners first), fast (short travel first) or keep_sheet (as quality, but every outline after every hole and inner piece, so the sheet holds together until the end: on a mat for the whole job; without a mat, per 50 mm feed band). Every strategy cuts the holes and inner pieces of a shape before its outline. New documents start with the strategy of the preferences. Returns {strategy}.",
+    description: "Sets the cut strategy of the active document, in one undo step: quality (clean corners first), fast (short travel first) or outlines_last (as quality, but every outline after every hole and inner piece, so the sheet holds together until the end: on a mat for the whole job; without a mat, per 50 mm feed band). Every strategy cuts the holes and inner pieces of a shape before its outline. New documents start with the strategy of the preferences. Returns {strategy}.",
 );
 
 #[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]

@@ -1004,7 +1004,7 @@ pub const SAMPLES: [Sample; 6] = [
         id: "pantry-labels",
         title: "Pantry labels",
         sentence: "A whole sheet of tidy labels from one design - edit one and all the copies follow.",
-        hint: "Opens a copy of 12 pantry labels: one label and 11 linked copies in a grid. Linked copies share their shape, size and cut options, so a change to one changes them all. Try Scale on one of them. Cut them from vinyl, chalkboard vinyl or sticker paper. The job uses Keep sheet: every inner cut comes before the outlines, so the sheet holds together until the end.",
+        hint: "Opens a copy of 12 pantry labels: one label and 11 linked copies in a grid. Linked copies share their shape, size and cut options, so a change to one changes them all. Try Scale on one of them. Cut them from vinyl, chalkboard vinyl or sticker paper. The job uses Outlines last: every inner cut comes before the outlines, so the sheet holds together until the end.",
         bytes: sample_bytes!("pantry-labels"),
     },
     Sample {

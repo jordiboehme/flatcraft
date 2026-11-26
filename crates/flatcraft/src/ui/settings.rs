@@ -301,7 +301,7 @@ pub fn job(
             super::groups::card(
                 &r,
                 "Strategy",
-                "The order this document cuts in. Quality cleans up the corners, Fast keeps the travel short, and Keep sheet cuts the outlines last. New documents take it from Settings, Cutting.",
+                "The order this document cuts in. Quality cleans up the corners, Fast keeps the travel short, and Outlines last cuts every outline after the holes and inner pieces. New documents take it from Settings, Cutting.",
                 None,
                 false,
             );

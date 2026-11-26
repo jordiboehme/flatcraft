@@ -306,9 +306,9 @@ pub const ROWS: [Row; 24] = [
         "New documents",
         "Cut strategy",
         Card::Text(
-            "The order new documents cut in. Quality cleans up the corners, Fast keeps the travel short, and Keep sheet cuts the outlines last. An open document keeps its own.",
+            "The order new documents cut in. Quality cleans up the corners, Fast keeps the travel short, and Outlines last cuts every outline after the holes and inner pieces. An open document keeps its own.",
         ),
-        "order quality fast keep sheet travel strategy",
+        "order quality fast outlines last travel strategy",
     ),
     pref(
         "rotate_each",
@@ -539,7 +539,7 @@ pub fn strategy_name(s: CutStrategy) -> &'static str {
     match s {
         CutStrategy::Quality => "Quality",
         CutStrategy::Fast => "Fast",
-        CutStrategy::KeepSheet => "Keep sheet",
+        CutStrategy::OutlinesLast => "Outlines last",
     }
 }
 
@@ -1609,8 +1609,8 @@ fn cutting(ui: &mut Ui, cx: &mut Cx<'_>, d: &mut Preferences, view: &profiles_wi
                         "Short travel first. Good for test cuts and simple shapes.",
                     ),
                     (
-                        CutStrategy::KeepSheet,
-                        strategy_name(CutStrategy::KeepSheet),
+                        CutStrategy::OutlinesLast,
+                        strategy_name(CutStrategy::OutlinesLast),
                         "Like Quality, but every outline comes last, so the sheet holds together until the end.",
                     ),
                 ],

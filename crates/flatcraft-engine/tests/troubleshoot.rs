@@ -552,7 +552,7 @@ fn mirror_for_iron_on_twice_changes_nothing_the_second_time() {
 }
 
 #[test]
-fn the_cut_order_fix_sets_keep_sheet_in_one_step() {
+fn the_cut_order_fix_sets_outlines_last_in_one_step() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = session(&dir);
     square_at(&mut s, "sq", 20.0, 40.0, 40.0);
@@ -562,16 +562,16 @@ fn the_cut_order_fix_sets_keep_sheet_in_one_step() {
     assert_eq!(s.doc().undo.undo_len(), before + 1);
     assert_eq!(
         s.doc().document.job.strategy,
-        flatcraft_core::document::CutStrategy::KeepSheet
+        flatcraft_core::document::CutStrategy::OutlinesLast
     );
     let c = list(&mut s, Symptom::PiecesMoved);
     assert!(blocked_reason(&c, Check::CutOrder, "Cut outlines last").contains("already"));
-    assert!(item(&c, Check::CutOrder).message.contains("Keep sheet"));
+    assert!(item(&c, Check::CutOrder).message.contains("Outlines last"));
     // Running it again changes nothing.
     run(
         &mut s,
         "job.set_strategy",
-        json!({ "strategy": "keep_sheet" }),
+        json!({ "strategy": "outlines_last" }),
     );
     assert_eq!(s.doc().undo.undo_len(), before + 1);
     run(&mut s, "edit.undo", json!({}));

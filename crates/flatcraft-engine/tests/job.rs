@@ -354,7 +354,7 @@ fn the_job_strategy_reaches_the_order() {
             .all(|k| *k == flatcraft_path::KeepSide::Outside)
     };
     assert!(!holes_first(CutStrategy::Quality));
-    assert!(holes_first(CutStrategy::KeepSheet));
+    assert!(holes_first(CutStrategy::OutlinesLast));
 }
 
 #[test]

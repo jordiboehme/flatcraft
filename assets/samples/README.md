@@ -9,7 +9,7 @@ rest of the code.
 
 | File | What it shows |
 | --- | --- |
-| pantry-labels.flatcraft | Linked copies in a rectangular pattern: 12 pantry labels with a rim, a groove and a blank panel, on vinyl, cut with the Keep sheet strategy. |
+| pantry-labels.flatcraft | Linked copies in a rectangular pattern: 12 pantry labels with a rim, a groove and a blank panel, on vinyl, cut with the Outlines last strategy. |
 | iron-on-shirt.flatcraft | A striped sunset over "BORN TO MAKE" on heat transfer vinyl, stored mirrored because iron-on is cut from the back. |
 | stencil.flatcraft | The letters C, U and T cut out of a sheet. The letters have no closed counters, so only the letters fall out. |
 | gift-tags.flatcraft | A circular pattern of 6 linked tags, each with a hole. |

@@ -396,7 +396,7 @@ pub fn strategy_name(s: CutStrategy) -> &'static str {
     match s {
         CutStrategy::Quality => "Quality",
         CutStrategy::Fast => "Fast",
-        CutStrategy::KeepSheet => "Keep sheet",
+        CutStrategy::OutlinesLast => "Outlines last",
     }
 }
 
@@ -783,8 +783,8 @@ fn cut_order(input: &JobInput) -> Item {
         "FlatCraft cuts the holes and inner pieces of a shape before its outline, so a piece is still held while its inside is cut. This document cuts with the strategy {}.",
         strategy_name(strategy)
     );
-    if strategy != CutStrategy::KeepSheet {
-        message.push_str(" Keep sheet cuts every outline after every hole and inner piece on a mat, so the whole sheet holds together until the end; without a mat it does this per 50 mm feed band.");
+    if strategy != CutStrategy::OutlinesLast {
+        message.push_str(" The Outlines last strategy cuts every outline after every hole and inner piece on a mat, so the whole sheet holds together until the end; without a mat it does this per 50 mm feed band.");
     }
     let mut it = item(
         Check::CutOrder,
@@ -793,20 +793,20 @@ fn cut_order(input: &JobInput) -> Item {
         "The strategy decides the order of the cuts. The Path stage shows the order with numbers on every line.",
     );
     let label = "Cut outlines last";
-    if strategy == CutStrategy::KeepSheet {
+    if strategy == CutStrategy::OutlinesLast {
         it.blocked.push(blocked(
             label,
-            "This document already cuts every outline last (Keep sheet).".into(),
+            "This document already uses Outlines last: every outline is cut after the holes and inner pieces.".into(),
         ));
     } else {
         it.fixes.push(Fix {
             label: label.into(),
             description: format!(
-                "Sets the strategy of this document to Keep sheet: on a mat every outline comes after every hole and inner piece; without a mat, per 50 mm feed band. It was {}. New documents still start with the strategy in Settings, Cutting. Undo takes it back.",
+                "Sets the strategy of this document to Outlines last: on a mat every outline comes after every hole and inner piece; without a mat, per 50 mm feed band. It was {}. New documents still start with the strategy in Settings, Cutting. Undo takes it back.",
                 strategy_name(strategy)
             ),
             command: "job.set_strategy".into(),
-            args: json!({ "strategy": "keep_sheet" }),
+            args: json!({ "strategy": "outlines_last" }),
         });
     }
     it

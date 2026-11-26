@@ -69,7 +69,7 @@ const REACHABLE: [(&str, &[&str]); 24] = [
         &[
             "Cut strategy: Quality",
             "Cut strategy: Fast",
-            "Cut strategy: Keep sheet",
+            "Cut strategy: Outlines last",
         ],
     ),
     (
@@ -387,20 +387,20 @@ fn the_default_strategy_starts_new_documents_and_the_panel_shows_it() {
     let s = session(&dir);
     let mut h = harness(&dir, &s);
     open(&mut h, "Cutting");
-    click(&mut h, "Cut strategy: Keep sheet");
+    click(&mut h, "Cut strategy: Outlines last");
     click(&mut h, "OK");
-    assert_eq!(stored(&dir).default_strategy, CutStrategy::KeepSheet);
+    assert_eq!(stored(&dir).default_strategy, CutStrategy::OutlinesLast);
     s.lock()
         .unwrap()
         .execute("document.new", json!({}), Origin::User)
         .unwrap();
     assert_eq!(
         s.lock().unwrap().doc().document.job.strategy,
-        CutStrategy::KeepSheet
+        CutStrategy::OutlinesLast
     );
     to_prepare(&mut h);
     // The Cut and Job panel shows the strategy of the document.
-    h.get_by_label("Keep sheet");
+    h.get_by_label("Outlines last");
 }
 
 #[test]

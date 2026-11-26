@@ -223,12 +223,12 @@ fn old_project_without_strategy_loads_quality_and_strategy_roundtrips() {
     write_project(&path, &project_with(OLD_OBJECT));
     let mut doc = project::load(&path).unwrap();
     assert_eq!(doc.job.strategy, CutStrategy::Quality);
-    doc.job.strategy = CutStrategy::KeepSheet;
+    doc.job.strategy = CutStrategy::OutlinesLast;
     project::save(&doc, &path).unwrap();
-    assert!(project_text(&path).contains(r#""keep_sheet""#));
+    assert!(project_text(&path).contains(r#""outlines_last""#));
     assert_eq!(
         project::load(&path).unwrap().job.strategy,
-        CutStrategy::KeepSheet
+        CutStrategy::OutlinesLast
     );
 }
 

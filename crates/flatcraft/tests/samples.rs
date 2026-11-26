@@ -535,7 +535,7 @@ fn pantry_labels(s: &Session) {
     );
     run(s, "job.set_material", json!({ "id": "vinyl" }));
     s.lock().unwrap().doc_mut().document.job.strategy =
-        flatcraft_core::document::CutStrategy::KeepSheet;
+        flatcraft_core::document::CutStrategy::OutlinesLast;
 }
 
 /// The name of the shirt motif, which says why it is mirrored.
@@ -1161,7 +1161,7 @@ fn the_labels_cut_every_inner_line_before_the_outlines_on_vinyl() {
     let job = &st.doc().document.job;
     assert_eq!(
         job.strategy,
-        flatcraft_core::document::CutStrategy::KeepSheet
+        flatcraft_core::document::CutStrategy::OutlinesLast
     );
     assert_eq!(job.material_id, "vinyl");
     // A rim, a groove and a panel: three lines per label.

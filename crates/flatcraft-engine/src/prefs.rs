@@ -6,6 +6,13 @@ use std::path::{Path, PathBuf};
 use flatcraft_core::document::CutStrategy;
 use serde::{Deserialize, Serialize};
 
+/// A strategy this version knows, else the default: one unknown value
+/// never resets every other preference.
+fn lenient_strategy<'de, D: serde::Deserializer<'de>>(d: D) -> Result<CutStrategy, D::Error> {
+    let value = toml::Value::deserialize(d)?;
+    Ok(CutStrategy::deserialize(value).unwrap_or_default())
+}
+
 /// File name of the preferences inside the config dir.
 pub const FILE_NAME: &str = "preferences.toml";
 
@@ -81,7 +88,10 @@ pub struct Preferences {
     pub panel_stage: PanelUser,
     /// The cut strategy new documents start with. Only the Settings window
     /// writes it (a UI preference); no registry command reads or changes
-    /// it. A file without the key gets Quality.
+    /// it. A file without the key, or with a value this version does not
+    /// know (a strategy that was renamed), gets Quality; the rest of the
+    /// file still loads.
+    #[serde(deserialize_with = "lenient_strategy")]
     pub default_strategy: CutStrategy,
     /// What the Home page says about each recent project: when it was
     /// last opened and the workspace it was last in. Kept in step with
