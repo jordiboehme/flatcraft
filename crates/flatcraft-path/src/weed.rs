@@ -408,8 +408,9 @@ fn weed_toolpath(points: Vec<Point>, closed: bool, index: usize) -> Toolpath {
     t
 }
 
-/// The feed band of a weed piece: by its top, so a piece that ends on a
-/// band edge belongs to the band it lies in.
+/// The feed band of the given points: by their top (smallest y), so a
+/// piece that ends on a band edge belongs to the band it lies in. Callers
+/// that split a line at band edges pass the piece's middle point instead.
 fn piece_band(points: &[Point]) -> usize {
     let y = points.iter().map(|p| p.y).fold(f64::INFINITY, f64::min);
     if y.is_finite() && y > 0.0 {
