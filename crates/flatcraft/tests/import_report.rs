@@ -7,7 +7,7 @@ use common::{
     AppHarness, app, app_mut, harness, import_square, session, to_prepare, wait_for_workers,
 };
 use egui::accesskit::Role;
-use egui_kittest::kittest::Queryable as _;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use flatcraft::ui::{Action, Workspace};
 use flatcraft_core::document::{ObjectId, StrokeMode};
 use flatcraft_engine::session::Origin;
@@ -383,4 +383,33 @@ fn a_job_that_cuts_shows_its_issues_with_fixes_in_cut() {
     h.run();
     let job = app(&h).ui.cut.job().unwrap();
     assert!(job.issues.is_empty());
+}
+
+/// Six issues in a short window: the card says how many lines are below,
+/// and clicking that line scrolls until none are left.
+#[test]
+fn hidden_lines_are_counted_and_one_click_scrolls_to_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = common::harness_sized(&dir, s, [1400.0, 450.0], 8, |a| a);
+    to_prepare(&mut h);
+    let many = page(&format!(
+        r#"{FRAME}<path d="M60 10 H90 V40 H60 V10.4" fill="none" stroke="black" stroke-width="0.2"/><circle cx="70" cy="70" r="0.4"/><path d="M10 80 L50 80"/>{DASHED}"#
+    ));
+    drop_svg(&mut h, &dir, "many", &many);
+    let more = |h: &AppHarness| {
+        h.query_all_by_label_contains("more below")
+            .next()
+            .and_then(|n| n.accesskit_node().value())
+    };
+    let first = more(&h).expect("a 'more below' line");
+    let n: usize = first.split(' ').next().unwrap().parse().unwrap();
+    assert!(n >= 1, "{first}");
+    for _ in 0..10 {
+        let Some(_) = more(&h) else { break };
+        h.get_by_label_contains("more below").click();
+        h.run();
+        h.run();
+    }
+    assert_eq!(more(&h), None);
 }

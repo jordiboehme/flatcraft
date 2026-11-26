@@ -18,6 +18,16 @@ pub const SHOW_ME_HINT: &str =
     "Selects the object and moves the view to it, so you can see what this is about.";
 /// The card of the import report's Dismiss button.
 pub const DISMISS_HINT: &str = "Hides this report. Nothing in the document changes.";
+/// The card of the "N more below" line.
+pub const MORE_HINT: &str = "More lines are below. Click to scroll down, or scroll the list.";
+
+/// How many lines are not fully visible below the bottom of `view`.
+pub fn hidden_below(rows: &[egui::Rect], view: egui::Rect) -> usize {
+    rows.iter()
+        .filter(|r| r.bottom() > view.bottom() + 0.5)
+        .count()
+}
+
 /// The width of the import report card, in points.
 pub const CARD_WIDTH: f32 = 360.0;
 
@@ -155,12 +165,25 @@ pub fn issue_list(
     show_me: bool,
     actions: &mut Vec<Action>,
 ) -> bool {
+    issue_rows(ui, issues, doc_id, t, show_me, actions).0
+}
+
+/// [`issue_list`], and the screen rect of each line.
+fn issue_rows(
+    ui: &mut Ui,
+    issues: &[&Issue],
+    doc_id: u64,
+    t: &Tokens,
+    show_me: bool,
+    actions: &mut Vec<Action>,
+) -> (bool, Vec<egui::Rect>) {
     let mut clicked = false;
+    let mut rows = Vec::with_capacity(issues.len());
     for (n, issue) in issues.iter().enumerate() {
         if n > 0 {
             ui.add_space(t.spacing * 0.75);
         }
-        ui.horizontal_top(|ui| {
+        let row = ui.horizontal_top(|ui| {
             let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 14.0), egui::Sense::hover());
             ui.painter()
                 .circle_filled(dot.center(), 3.5, severity_colour(issue.severity, t));
@@ -204,8 +227,9 @@ pub fn issue_list(
                 });
             });
         });
+        rows.push(row.response.rect);
     }
-    clicked
+    (clicked, rows)
 }
 
 /// The import report card at the top right of the Prepare canvas. Returns
@@ -265,14 +289,39 @@ pub fn import_card(
                 // A solid bar that shows whenever more lines are below,
                 // not a floating one that shows only on hover.
                 ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
-                egui::ScrollArea::vertical()
-                    .max_height(ui.available_height())
+                // Room for the "N more below" line under the list.
+                let more_h = ui.text_style_height(&egui::TextStyle::Body) + t.spacing / 2.0;
+                let jump_id = egui::Id::unique("flatcraft-report-scroll-down");
+                let jump: Option<f32> = ui.ctx().data_mut(|d| d.remove_temp(jump_id));
+                let mut area = egui::ScrollArea::vertical()
+                    .max_height((ui.available_height() - more_h).max(40.0))
                     .scroll_bar_visibility(
                         egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded,
-                    )
-                    .show(ui, |ui| {
-                        issue_list(ui, &c.all(), c.doc_id, t, true, actions);
-                    });
+                    );
+                if let Some(offset) = jump {
+                    area = area.vertical_scroll_offset(offset);
+                }
+                let out = area.show(ui, |ui| {
+                    issue_rows(ui, &c.all(), c.doc_id, t, true, actions).1
+                });
+                let hidden = hidden_below(&out.inner, out.inner_rect);
+                if hidden > 0 {
+                    let text = if hidden == 1 {
+                        "1 more below".to_string()
+                    } else {
+                        format!("{hidden} more below")
+                    };
+                    let r = ui.add(
+                        egui::Label::new(RichText::new(text).color(t.text_dim))
+                            .sense(egui::Sense::click()),
+                    );
+                    card(&r, "More below", MORE_HINT, None, false);
+                    if r.clicked() {
+                        let down = out.state.clamped_offset().y + out.inner_rect.height();
+                        ui.ctx().data_mut(|d| d.insert_temp(jump_id, down));
+                        ui.ctx().request_repaint();
+                    }
+                }
             });
     });
     keep
