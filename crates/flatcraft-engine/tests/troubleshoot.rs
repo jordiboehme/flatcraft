@@ -1437,3 +1437,41 @@ fn the_cut_log_knows_a_material_was_cut() {
     assert!(s.cut_log().has_cut("copy-paper"));
     assert!(!s.cut_log().has_cut("vellum"));
 }
+
+#[test]
+fn the_profile_command_texts_name_no_brand() {
+    for id in ["profiles.list", "profiles.get"] {
+        let text = registry::get(id).unwrap().description().to_lowercase();
+        for b in [
+            "silhouette",
+            "cameo",
+            "cricut",
+            "siser",
+            "oracal",
+            "graphtec",
+        ] {
+            assert!(!text.contains(b), "{id} names {b}");
+        }
+    }
+}
+
+#[test]
+fn the_test_shape_item_follows_the_backing_sheet() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    square_at(&mut s, "sq", 20.0, 40.0, 40.0);
+    run(&mut s, "job.set_material", json!({ "id": "vinyl" }));
+    let c = list(&mut s, Symptom::NotThrough);
+    let m = &item(&c, Check::TestShape).message;
+    assert!(
+        m.contains("not cut through") && !m.contains("drop out"),
+        "{m}"
+    );
+    run(&mut s, "job.set_material", json!({ "id": "cardstock" }));
+    let c = list(&mut s, Symptom::NotThrough);
+    assert!(
+        item(&c, Check::TestShape)
+            .message
+            .contains("does the hole drop out")
+    );
+}

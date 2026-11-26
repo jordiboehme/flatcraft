@@ -60,6 +60,35 @@ pub fn cards(profiles: &ProfileStore, log: &CutLog) -> Vec<MaterialCard> {
     out
 }
 
+/// The picker entries, built again only when the presets (their store
+/// revision) or the cut log change, not on every frame.
+#[derive(Debug, Clone, Default)]
+pub struct CardsCache {
+    key: Option<(u64, std::sync::Arc<CutLog>)>,
+    cards: Vec<MaterialCard>,
+    /// How often the entries were built (for tests).
+    pub builds: u64,
+}
+
+impl CardsCache {
+    pub fn get(
+        &mut self,
+        profiles: &ProfileStore,
+        log: &std::sync::Arc<CutLog>,
+    ) -> Vec<MaterialCard> {
+        let fresh = self
+            .key
+            .as_ref()
+            .is_some_and(|(r, l)| *r == profiles.revision() && std::sync::Arc::ptr_eq(l, log));
+        if !fresh {
+            self.cards = cards(profiles, log);
+            self.builds += 1;
+            self.key = Some((profiles.revision(), log.clone()));
+        }
+        self.cards.clone()
+    }
+}
+
 /// What a mat tack means for this material, with the term explained.
 pub fn tack_text(t: MatTack) -> &'static str {
     match t {
@@ -78,7 +107,7 @@ pub fn tack_text(t: MatTack) -> &'static str {
 /// What the backing sheet means for this material.
 pub fn backing_text(backing: bool) -> &'static str {
     if backing {
-        "It sits on a backing sheet: small loose parts stay on it until transfer tape lifts them."
+        "It sits on a backing sheet: small loose parts stay on it until you lift them (with transfer tape for vinyl)."
     } else {
         "It has no backing sheet, so small loose parts, like the middle of an O, fall out."
     }
@@ -125,6 +154,24 @@ pub fn card_text(c: &MaterialCard) -> String {
     parts.join("\n\n")
 }
 
+/// The card of a group heading in the picker.
+pub fn group_hint(g: MaterialGroup) -> &'static str {
+    match g {
+        MaterialGroup::Vinyl => {
+            "Self-adhesive vinyl on a backing sheet, for decals, signs and labels. You lift the finished design with transfer tape."
+        }
+        MaterialGroup::IronOn => {
+            "Heat transfer vinyl that you iron onto fabric. It is cut from the back, so the design is cut mirrored (flipped left to right)."
+        }
+        MaterialGroup::PaperAndCard => {
+            "Paper, card, kraft, vellum and sticker paper. Most have no backing sheet, so small loose parts fall out."
+        }
+        MaterialGroup::Other => {
+            "Stencil film, window cling, magnet sheets, and your own materials that have no group."
+        }
+    }
+}
+
 /// The card of the picker itself.
 pub const PICKER_HINT: &str = "What you cut. It sets the starting speed, force and passes, and the card of each material says which side goes up and which mat to use. Hover a material in the list to read it.";
 
@@ -153,11 +200,12 @@ pub fn picker_row(ui: &mut Ui, snap: &Snapshot, t: &Tokens) -> Option<String> {
                 if entries.peek().is_none() {
                     continue;
                 }
-                ui.label(
+                let h = ui.label(
                     RichText::new(group.label())
                         .font(fonts::semibold(12.0))
                         .color(t.text_dim),
                 );
+                super::groups::card(&h, group.label(), group_hint(group), None, true);
                 for c in entries {
                     let r = ui.selectable_label(&c.id == current, &c.name);
                     super::groups::card(&r, &c.name, &card_text(c), None, true);
@@ -177,15 +225,48 @@ pub fn picker_row(ui: &mut Ui, snap: &Snapshot, t: &Tokens) -> Option<String> {
     picked
 }
 
+/// The Job card line when the person's own preset file with the
+/// document's material id was not loaded (see `ProfileStore::diagnostics`).
+pub fn skipped_text(built_in: bool) -> &'static str {
+    if built_in {
+        "Your own preset file with this id is not loaded, so the built-in values are used."
+    } else {
+        "Your preset file for this material is not loaded."
+    }
+}
+
+/// Shows [`skipped_text`] with the reason on its card.
+pub fn skipped_note(ui: &mut Ui, snap: &Snapshot, t: &Tokens) {
+    let Some(reason) = &snap.material_skipped else {
+        return;
+    };
+    let built_in = presets::is_system(&snap.job.material_id);
+    ui.add_space(t.spacing / 2.0);
+    let r = ui.add(egui::Label::new(RichText::new(skipped_text(built_in)).color(t.danger)).wrap());
+    super::groups::card(
+        &r,
+        "Preset file not loaded",
+        &format!("{reason}. Settings, Materials lists the file and why."),
+        None,
+        false,
+    );
+}
+
 /// The test cut hint's heading.
 pub const TEST_CUT_TITLE: &str = "Start with a test cut";
 /// The test cut hint's button.
 pub const TEST_CUT_BUTTON: &str = "Add a test shape";
 
-/// The card of the test cut hint.
-pub fn test_cut_text(material: &str) -> String {
+/// The card of the test cut hint. What a good test cut looks like
+/// depends on the backing sheet: on one, the blade must not go through it.
+pub fn test_cut_text(material: &str, backing: bool) -> String {
+    let good = if backing {
+        "a good cut lets the square peel off its backing cleanly, the hole lifts out of the square, and the backing shows only a light line, not a cut through it. If the backing is cut through, lower the force"
+    } else {
+        "a good cut goes all the way through: the square comes free and the hole drops out. If a corner still hangs on, raise the force a little or cut again"
+    };
     format!(
-        "You have not cut {material} on this computer yet, so these are starting values, not your values. Cut a small test shape first: in a minute it shows whether the blade goes through and the hole drops out, before the whole design is at stake. A test cut is cheaper than a ruined sheet."
+        "You have not cut {material} on this computer yet, so these are starting values, not your values. Cut a small test shape first and look at it: {good}. A test cut is cheaper than a ruined sheet."
     )
 }
 
@@ -203,7 +284,8 @@ pub fn test_cut_hint(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec
         .material
         .as_ref()
         .map_or(snap.job.material_id.as_str(), |m| m.name.as_str());
-    let text = test_cut_text(name);
+    let backing = snap.material.as_ref().is_none_or(|m| m.backing);
+    let text = test_cut_text(name, backing);
     ui.add_space(t.spacing / 2.0);
     let r = ui.label(
         RichText::new(TEST_CUT_TITLE)

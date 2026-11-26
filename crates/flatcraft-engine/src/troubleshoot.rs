@@ -1079,9 +1079,15 @@ fn test_shape(input: &JobInput) -> Item {
         Check::TestShape,
         "Cut a test shape first",
         format!(
-            "Put a {} square with a {} hole on a free spot of the mat, away from your design, and cut it first: does it come out, does the hole drop out, is it the right size?",
+            "Put a {} square with a {} hole on a free spot of the mat, away from your design, and cut it first: {}, is it the right size?",
             report::mm(TEST_SQUARE_MM),
-            report::mm(TEST_HOLE_MM)
+            report::mm(TEST_HOLE_MM),
+            // On a backing sheet the blade must not go through it.
+            if input.material.backing {
+                "does it peel off the backing cleanly, does the hole lift out, is the backing only lightly marked and not cut through"
+            } else {
+                "does it come out, does the hole drop out"
+            }
         ),
         "Cut only the test shape sets everything else to Skip cutting for the next send. Afterwards, press Undo, or turn Skip cutting off in the Objects list or the right-click menu. Adding the test shape again moves the one already there, so you never get two.",
     );

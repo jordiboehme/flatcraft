@@ -254,6 +254,8 @@ pub struct PrepareState {
     pub view: CanvasView,
     /// Room for the test shape, per document revision (Job card hint).
     pub test_cut_cache: super::materials::TestCutCache,
+    /// The material picker's entries (see `materials::CardsCache`).
+    pub cards_cache: super::materials::CardsCache,
     /// Fit the mat into the canvas on the next frame.
     pub fit_pending: bool,
     /// The document the view was fitted for.
@@ -380,6 +382,7 @@ impl Default for PrepareState {
         Self {
             view: CanvasView::default(),
             test_cut_cache: Default::default(),
+            cards_cache: Default::default(),
             fit_pending: true,
             view_doc: None,
             canvas_rect: Rect::NOTHING,
@@ -883,6 +886,9 @@ pub struct Snapshot {
     /// Set when the document's material was never cut on this computer:
     /// the Job card suggests a test cut.
     pub test_cut: Option<super::materials::TestCut>,
+    /// Why the person's own preset file with the document's material id
+    /// was skipped at load, when it was.
+    pub material_skipped: Option<String>,
     pub mat: Option<Media>,
     /// The cutting area, in mm.
     pub area: Option<kurbo::Rect>,
@@ -1077,6 +1083,7 @@ pub fn snapshot(app: &mut FlatCraftApp, ctx: &egui::Context) -> Snapshot {
 pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool) -> Snapshot {
     let cache = &mut app.ui.prepare.cache;
     let test_cut_cache = &mut app.ui.prepare.test_cut_cache;
+    let cards_cache = &mut app.ui.prepare.cards_cache;
     cache.collect();
     let trace = &mut app.ui.trace;
     let mut misses: Vec<(usize, ShapeInput)> = Vec::new();
@@ -1169,7 +1176,21 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
             material: material.clone(),
             plotters: s.profiles.plotters(),
             materials: s.profiles.materials(),
-            material_cards: super::materials::cards(&s.profiles, &cut_log),
+            material_cards: cards_cache.get(&s.profiles, &cut_log),
+            material_skipped: s
+                .profiles
+                .diagnostics()
+                .iter()
+                .find(|d| {
+                    d.path
+                        .parent()
+                        .and_then(|p| p.file_name())
+                        .is_some_and(|n| n == "materials")
+                        && d.path
+                            .file_stem()
+                            .is_some_and(|f| *f == *st.document.job.material_id)
+                })
+                .map(|d| d.reason.clone()),
             test_cut: (!cut_log.has_cut(&st.document.job.material_id))
                 .then(|| {
                     test_cut_cache.room(st.id(), st.revision(), &plotter, &material, || {

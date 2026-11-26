@@ -248,7 +248,8 @@ fn the_new_texts_have_no_em_dash() {
         materials::MIRROR_BUTTON,
         materials::backing_text(true),
         materials::backing_text(false),
-        &materials::test_cut_text("Vellum"),
+        &materials::test_cut_text("Vellum", false),
+        &materials::test_cut_text("Vinyl", true),
     ];
     for t in texts {
         assert!(!t.contains('\u{2014}'), "{t}");
@@ -278,4 +279,161 @@ fn the_test_shape_room_is_measured_once_per_revision() {
     h.run();
     h.run();
     assert_eq!(builds(&h), first + 1);
+}
+
+#[test]
+fn the_test_cut_card_follows_the_backing_sheet() {
+    // On a backing sheet the blade must not go through it: nothing drops
+    // out, the backing shows a light line only.
+    for (id, backing) in [
+        ("vinyl", true),
+        ("sticker-paper", true),
+        ("copy-paper", false),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let s = session(&dir);
+        set_material(&s, id);
+        let mut h = tall(&dir, &s);
+        cut_stage(&mut h, "Device & Material");
+        h.get_by_label(materials::TEST_CUT_TITLE).hover();
+        h.run();
+        assert_eq!(shows(&h, "drops out"), !backing, "{id}");
+        assert_eq!(
+            shows(&h, "only a light line, not a cut through it"),
+            backing,
+            "{id}"
+        );
+    }
+    assert!(!materials::test_cut_text("Vinyl", true).contains("drops out"));
+    assert!(materials::test_cut_text("Copy paper", false).contains("drops out"));
+}
+
+#[test]
+fn every_group_heading_has_a_card() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = tall(&dir, &s);
+    cut_stage(&mut h, "Device & Material");
+    open_picker(&mut h);
+    for g in flatcraft_device::MaterialGroup::ALL {
+        // The last heading sits below the popup's fold.
+        h.get_by_label(g.label()).scroll_to_me();
+        h.run();
+        h.get_by_label(g.label()).hover();
+        h.run();
+        assert!(shows(&h, materials::group_hint(g)), "{g:?}");
+    }
+    assert!(materials::group_hint(flatcraft_device::MaterialGroup::IronOn).contains("mirrored"));
+}
+
+#[test]
+fn a_skipped_user_file_for_the_material_shows_in_the_job_card() {
+    let dir = tempfile::tempdir().unwrap();
+    let materials_dir = dir.path().join("profiles/materials");
+    std::fs::create_dir_all(&materials_dir).unwrap();
+    std::fs::write(
+        materials_dir.join("vellum.toml"),
+        "id = \"vellum\"\nname = \"My vellum\"\ninherits = \"copy-paper\"\n",
+    )
+    .unwrap();
+    let s = session(&dir);
+    set_material(&s, "vellum");
+    let mut h = tall(&dir, &s);
+    cut_stage(&mut h, "Device & Material");
+    h.get_by_label(materials::skipped_text(true)).hover();
+    h.run();
+    assert!(shows(&h, "new id"));
+    // Another material: no note.
+    set_material(&s, "kraft-paper");
+    h.run();
+    assert!(h.query_by_label(materials::skipped_text(true)).is_none());
+}
+
+#[test]
+fn the_picker_entries_are_built_once_until_something_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let mut h = tall(&dir, &s);
+    cut_stage(&mut h, "Device & Material");
+    let builds = |h: &AppHarness| app(h).ui.prepare.cards_cache.builds;
+    let first = builds(&h);
+    for _ in 0..5 {
+        h.run();
+    }
+    assert_eq!(builds(&h), first);
+    // A cut changes the log: the "never cut" marks are built again.
+    s.lock()
+        .unwrap()
+        .execute("job.send", json!({}), Origin::User)
+        .unwrap();
+    h.run();
+    h.run();
+    assert_eq!(builds(&h), first + 1);
+}
+
+/// Brand and product words of cutting machines and their materials.
+const BRANDS: &[&str] = &[
+    "silhouette",
+    "cameo",
+    "portrait",
+    "curio",
+    "cricut",
+    "brother",
+    "scanncut",
+    "siser",
+    "easyweed",
+    "stahls",
+    "oracal",
+    "orafol",
+    "avery",
+    "onlinelabels",
+    "mylar",
+    "thermoflex",
+    "glitterflex",
+    "graphtec",
+    "sizzix",
+    "singer",
+    "roland",
+    "heat n bond",
+    "teckwrap",
+    "hotmarks",
+];
+
+#[test]
+fn the_new_texts_name_no_brand() {
+    use flatcraft::ui::tools::Setting;
+    let mut texts: Vec<String> = vec![
+        materials::PICKER_HINT.into(),
+        materials::NEVER_CUT_TEXT.into(),
+        materials::MIRROR_TEXT.into(),
+        materials::NO_ROOM.into(),
+        materials::TEST_CUT_TITLE.into(),
+        materials::TEST_CUT_BUTTON.into(),
+        materials::MIRROR_TITLE.into(),
+        materials::MIRROR_BUTTON.into(),
+        materials::backing_text(true).into(),
+        materials::backing_text(false).into(),
+        materials::test_cut_text("x", true),
+        materials::test_cut_text("x", false),
+        materials::skipped_text(true).into(),
+        materials::skipped_text(false).into(),
+        Setting::MatTack.card().into(),
+        Setting::MaterialGroup.card().into(),
+        Setting::PresetTips.card().into(),
+        flatcraft::ui::settings::TIPS_HEADING.into(),
+    ];
+    for g in flatcraft_device::MaterialGroup::ALL {
+        texts.push(g.label().into());
+        texts.push(materials::group_hint(g).into());
+    }
+    for t in flatcraft_device::MatTack::ALL {
+        texts.push(materials::tack_text(t).into());
+    }
+    for text in &texts {
+        let low = text.to_lowercase();
+        for b in BRANDS {
+            assert!(!low.contains(b), "'{b}' in: {text}");
+        }
+    }
 }

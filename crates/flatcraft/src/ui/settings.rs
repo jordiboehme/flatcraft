@@ -444,6 +444,7 @@ pub fn job(
             ui.end_row();
         });
 
+    super::materials::skipped_note(ui, snap, t);
     super::materials::test_cut_hint(ui, snap, t, actions);
     let (Some(plotter), Some(material)) = (&snap.plotter, &snap.material) else {
         return;

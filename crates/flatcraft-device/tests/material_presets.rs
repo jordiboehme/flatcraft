@@ -51,6 +51,13 @@ const BRANDS: &[&str] = &[
     "gm crafts",
     "expressions",
     "printable press",
+    "graphtec",
+    "sizzix",
+    "singer",
+    "roland",
+    "heat n bond",
+    "teckwrap",
+    "hotmarks",
 ];
 
 fn store() -> (tempfile::TempDir, ProfileStore) {
@@ -327,4 +334,13 @@ fn user_presets_made_from_the_old_presets_still_load() {
         s.material("my-heat-transfer-vinyl").unwrap().group,
         MaterialGroup::IronOn
     );
+}
+
+#[test]
+fn no_built_in_id_starts_like_a_user_preset() {
+    // "Save as user preset" makes ids that start with "user-"; a built-in
+    // preset with such an id could hide one of them.
+    for (id, _) in presets::PLOTTERS.iter().chain(presets::MATERIALS) {
+        assert!(!id.starts_with("user-"), "{id}");
+    }
 }
