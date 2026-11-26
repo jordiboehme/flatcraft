@@ -804,9 +804,22 @@ fn mirror(input: &JobInput) -> Item {
     } else if hot && !plain.is_empty() {
         (
             format!(
-                "{} is cut from the back, but {} of {n} are not mirrored, so they come out backwards when you iron them on. Mirror them in Prepare with Mirror horizontally.",
+                "{} is cut from the back, but {}, so {} backwards when you iron {} on. Mirror {} in Prepare with Mirror horizontally.",
                 input.material.name,
-                plain.len()
+                if plain.len() == 1 && n == 1 {
+                    "the object is not mirrored".to_string()
+                } else if plain.len() == 1 {
+                    format!("1 of {n} is not mirrored")
+                } else {
+                    format!("{} of {n} are not mirrored", plain.len())
+                },
+                if plain.len() == 1 {
+                    "it comes out"
+                } else {
+                    "they come out"
+                },
+                if plain.len() == 1 { "it" } else { "them" },
+                if plain.len() == 1 { "it" } else { "them" },
             ),
             true,
             plain,

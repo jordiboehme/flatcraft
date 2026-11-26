@@ -462,7 +462,28 @@ fn iron_on_that_is_not_mirrored_is_the_likely_cause() {
     let it = item(&c, Check::Mirror);
     assert!(it.likely, "{it:?}");
     assert_eq!(it.object_ids, [b]);
-    assert!(it.message.contains("1 of 2 are not mirrored"), "{it:?}");
+    assert!(
+        it.message
+            .contains("1 of 2 is not mirrored, so it comes out backwards"),
+        "{it:?}"
+    );
+    run(
+        &mut s,
+        "object.mirror",
+        json!({ "ids": [a], "axis": "horizontal" }),
+    );
+    let c = list(&mut s, Symptom::WrongPlaceOrSize);
+    assert!(
+        item(&c, Check::Mirror)
+            .message
+            .contains("2 of 2 are not mirrored, so they come out"),
+        "{c:?}"
+    );
+    run(
+        &mut s,
+        "object.mirror",
+        json!({ "ids": [a], "axis": "horizontal" }),
+    );
     // No button: Mirror flips, so a second click would undo it.
     assert!(it.fixes.is_empty());
     run(
