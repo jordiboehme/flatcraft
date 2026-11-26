@@ -2869,3 +2869,32 @@ fn escape_in_the_search_box_leaves_the_panel_open() {
     h.run();
     assert!(app(&h).ui.prepare.panel.is_none());
 }
+
+#[test]
+fn a_field_message_does_not_come_back_when_the_panel_opens_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    open_panel(&mut h, "Move / Copy...");
+    h.get_by_role_and_label(Role::SpinButton, "X offset")
+        .click();
+    h.run();
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+    h.run();
+    h.event(Event::Text("5+".into()));
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    let msg = "Can't read '5+': something is missing after +.";
+    h.get_by_label(msg);
+    h.get_by_role_and_label(Role::Button, &cancel_name())
+        .click();
+    h.run();
+    assert!(app(&h).ui.prepare.panel.is_none());
+    open_panel(&mut h, "Move / Copy...");
+    h.run();
+    assert!(h.query_by_label(msg).is_none(), "an old message is gone");
+}

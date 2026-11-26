@@ -31,17 +31,28 @@ fn message_id(id: egui::Id) -> egui::Id {
     id.with("flatcraft-calc-message")
 }
 
-/// The message a field shows, if any.
+/// The message a field shows, if any, with the pass it was last drawn in.
+#[derive(Clone)]
+struct Message {
+    text: String,
+    pass: u64,
+}
+
+/// The message a field shows, if any. A message of a field that was not
+/// drawn in the last pass (its panel or window closed) is gone.
 pub fn message(ctx: &egui::Context, id: egui::Id) -> Option<String> {
-    ctx.data(|d| d.get_temp::<String>(message_id(id)))
+    let now = ctx.cumulative_pass_nr();
+    let m = ctx.data(|d| d.get_temp::<Message>(message_id(id)))?;
+    (m.pass + 1 >= now).then_some(m.text)
 }
 
 fn set_message(ctx: &egui::Context, id: egui::Id, msg: Option<String>) {
+    let pass = ctx.cumulative_pass_nr();
     ctx.data_mut(|d| match msg {
-        Some(m) => {
-            d.insert_temp(message_id(id), m);
+        Some(text) => {
+            d.insert_temp(message_id(id), Message { text, pass });
         }
-        None => d.remove::<String>(message_id(id)),
+        None => d.remove::<Message>(message_id(id)),
     });
 }
 
@@ -189,7 +200,10 @@ fn after_edit(ui: &Ui, resp: &Response, outcome: Option<Result<(), String>>) {
         }
     }
     select_on_double_click(ui, resp);
-    if let Some(msg) = message(ctx, resp.id) {
+    let msg = message(ctx, resp.id);
+    // Drawn in this pass: it stays for the next one, or goes.
+    set_message(ctx, resp.id, msg.clone());
+    if let Some(msg) = msg {
         show_message(ui, resp.id, resp.rect, &msg);
     }
 }
