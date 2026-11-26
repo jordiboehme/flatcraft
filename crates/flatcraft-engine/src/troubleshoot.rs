@@ -420,10 +420,21 @@ fn blocked(label: &str, reason: String) -> Blocked {
 pub fn checklist(input: &JobInput, symptom: Symptom, last_good: Option<&CutEntry>) -> Checklist {
     let set = settings(input);
     let last_good = last_good.map(LastGood::of);
-    let items = order(symptom)
+    let mut items: Vec<Item> = order(symptom)
         .iter()
         .filter_map(|c| make(*c, symptom, input, &set, last_good.as_ref()))
         .collect();
+    // Iron-on that is not mirrored is the most likely cause of a design
+    // that comes out backwards: it goes first.
+    if symptom == Symptom::WrongPlaceOrSize
+        && iron_on(&input.material)
+        && let Some(i) = items
+            .iter()
+            .position(|it| it.check == Check::Mirror && it.likely)
+    {
+        let it = items.remove(i);
+        items.insert(0, it);
+    }
     Checklist {
         symptom,
         title: symptom.label().to_string(),
@@ -759,14 +770,32 @@ fn cut_order(input: &JobInput) -> Item {
         strategy_name(strategy)
     );
     if strategy != CutStrategy::KeepSheet {
-        message.push_str(" Keep sheet cuts every outline after every hole and inner piece, so the whole sheet holds together until the end. To use it, pick it in Settings, Cutting, then start a new document: a document keeps the strategy it started with.");
+        message.push_str(" Keep sheet cuts every outline after every hole and inner piece, so the whole sheet holds together until the end.");
     }
-    item(
+    let mut it = item(
         Check::CutOrder,
         "Cut order",
         message,
         "The strategy decides the order of the cuts. The Path stage shows the order with numbers on every line.",
-    )
+    );
+    let label = "Cut outlines last";
+    if strategy == CutStrategy::KeepSheet {
+        it.blocked.push(blocked(
+            label,
+            "This document already cuts every outline last (Keep sheet).".into(),
+        ));
+    } else {
+        it.fixes.push(Fix {
+            label: label.into(),
+            description: format!(
+                "Sets the strategy of this document to Keep sheet: every outline comes after every hole and inner piece. It was {}. New documents still start with the strategy in Settings, Cutting. Undo takes it back.",
+                strategy_name(strategy)
+            ),
+            command: "job.set_strategy".into(),
+            args: json!({ "strategy": "keep_sheet" }),
+        });
+    }
+    it
 }
 
 fn mirror(input: &JobInput) -> Item {
@@ -804,7 +833,7 @@ fn mirror(input: &JobInput) -> Item {
     } else if hot && !plain.is_empty() {
         (
             format!(
-                "{} is cut from the back, but {}, so {} backwards when you iron {} on. Mirror {} in Prepare with Mirror horizontally.",
+                "{} is cut from the back, but {}, so {} backwards when you iron {} on. Mirror {} with the button, or in Prepare with Mirror horizontally.",
                 input.material.name,
                 if plain.len() == 1 && n == 1 {
                     "the object is not mirrored".to_string()
@@ -858,6 +887,43 @@ fn mirror(input: &JobInput) -> Item {
         "Mirror flips a design left and right. Iron-on vinyl lies face down on the mat, so its design must be cut mirrored to read right on the shirt.",
     );
     it.likely = likely;
+    let label = "Mirror for iron-on";
+    if likely && hot {
+        it.fixes.push(Fix {
+            label: label.into(),
+            description: format!(
+                "Mirrors {} left and right, as one group, so the design reads right once it is ironed on. Objects that are mirrored already stay as they are, so a second click changes nothing. Undo takes it back.",
+                objects(ids.len())
+            ),
+            command: "object.mirror".into(),
+            args: json!({ "ids": ids, "axis": "horizontal", "mirrored": true }),
+        });
+    } else if likely {
+        it.fixes.push(Fix {
+            label: "Mirror back".into(),
+            description: format!(
+                "Mirrors {} back, so the design reads right on {}. Objects that are not mirrored stay as they are. Undo takes it back.",
+                objects(ids.len()),
+                input.material.name
+            ),
+            command: "object.mirror".into(),
+            args: json!({ "ids": ids, "axis": "horizontal", "mirrored": false }),
+        });
+    } else if n == 0 {
+        it.blocked
+            .push(blocked(label, "Nothing is set to cut yet.".into()));
+    } else if hot {
+        it.blocked
+            .push(blocked(label, "Every object is mirrored already.".into()));
+    } else {
+        it.blocked.push(blocked(
+            label,
+            format!(
+                "{} is not iron-on vinyl, so it is cut the right way round. Pick Heat Transfer Vinyl as the material if you cut iron-on.",
+                input.material.name
+            ),
+        ));
+    }
     it.object_ids = ids;
     it
 }
@@ -917,7 +983,7 @@ fn test_shape(input: &JobInput) -> Item {
             report::mm(TEST_SQUARE_MM),
             report::mm(TEST_HOLE_MM)
         ),
-        "To cut only the test shape, use Skip cutting on your design (in the Objects list or the right-click menu) and turn it back on after the test. Adding it again moves the one already there, so you never get two.",
+        "Cut only the test shape sets everything else to Skip cutting for the next send. Afterwards, press Undo, or turn Skip cutting off in the Objects list or the right-click menu. Adding the test shape again moves the one already there, so you never get two.",
     );
     let label = "Add a test shape";
     if test_shape_spot(input).is_some() {
@@ -942,6 +1008,40 @@ fn test_shape(input: &JobInput) -> Item {
                 report::mm(TEST_SHAPE_GAP_MM)
             ),
         ));
+    }
+    let only = "Cut only the test shape";
+    let shape = input
+        .objects
+        .iter()
+        .find(|o| is_test_shape(&o.name, &o.geometry));
+    let others: Vec<u64> = input
+        .objects
+        .iter()
+        .filter(|o| o.visible && o.cut_enabled && !is_test_shape(&o.name, &o.geometry))
+        .map(|o| o.id.0)
+        .collect();
+    match shape {
+        None => it.blocked.push(blocked(only, "Add the test shape first.".into())),
+        Some(o) if !(o.visible && o.cut_enabled) => it.blocked.push(blocked(
+            only,
+            "The test shape itself is hidden or set to Skip cutting. Show it and turn Skip cutting off first.".into(),
+        )),
+        Some(_) if others.is_empty() => it.blocked.push(blocked(
+            only,
+            "Only the test shape is set to cut already.".into(),
+        )),
+        Some(_) => {
+            let n = others.len();
+            it.fixes.push(Fix {
+                label: only.into(),
+                description: format!(
+                    "Sets {} to Skip cutting, so the next send cuts only the test shape. To cut your design again, press Undo, or turn Skip cutting off in the Objects list or the right-click menu.",
+                    if n == 1 { "the other object".to_string() } else { format!("the other {n} objects") }
+                ),
+                command: "object.set_cut".into(),
+                args: json!({ "ids": others, "cut": false }),
+            });
+        }
     }
     it
 }

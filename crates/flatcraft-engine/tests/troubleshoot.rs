@@ -491,8 +491,9 @@ fn iron_on_that_is_not_mirrored_is_the_likely_cause() {
         "object.mirror",
         json!({ "ids": [a], "axis": "horizontal" }),
     );
-    // No button: Mirror flips, so a second click would undo it.
-    assert!(it.fixes.is_empty());
+    // The likely cause comes first, with an absolute fix.
+    assert_eq!(c.items[0].check, Check::Mirror, "{c:?}");
+    assert_eq!(it.fixes[0].label, "Mirror for iron-on");
     run(
         &mut s,
         "object.mirror",
@@ -505,6 +506,135 @@ fn iron_on_that_is_not_mirrored_is_the_likely_cause() {
     let c = list(&mut s, Symptom::WrongPlaceOrSize);
     let it = item(&c, Check::Mirror);
     assert!(it.likely && it.object_ids == [a, b], "{it:?}");
+    assert_eq!(it.fixes[0].label, "Mirror back");
+    // Not iron-on: the mirror check keeps its place.
+    assert_eq!(c.items[0].check, Check::Scale, "{c:?}");
+}
+
+#[test]
+fn mirror_for_iron_on_twice_changes_nothing_the_second_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = square_at(&mut s, "a", 20.0, 10.0, 10.0);
+    let b = square_at(&mut s, "b", 20.0, 50.0, 10.0);
+    run(
+        &mut s,
+        "job.set_material",
+        json!({ "id": "heat-transfer-vinyl" }),
+    );
+    let c = list(&mut s, Symptom::WrongPlaceOrSize);
+    let before = s.doc().undo.undo_len();
+    apply(&mut s, &c, Check::Mirror, "Mirror for iron-on");
+    assert_eq!(s.doc().undo.undo_len(), before + 1);
+    let doc = s.doc().document.clone();
+    assert!(doc.objects.iter().all(|o| o.transform.mirror));
+    // The same (now stale) fix again: nothing flips, no undo step.
+    let out = apply(&mut s, &c, Check::Mirror, "Mirror for iron-on");
+    assert_eq!(out["ids"], json!([]));
+    assert_eq!(s.doc().undo.undo_len(), before + 1);
+    let again = &s.doc().document;
+    for (x, y) in doc.objects.iter().zip(&again.objects) {
+        assert_eq!(x.transform, y.transform);
+    }
+    let c = list(&mut s, Symptom::WrongPlaceOrSize);
+    let why = blocked_reason(&c, Check::Mirror, "Mirror for iron-on");
+    assert!(why.contains("mirrored already"), "{why}");
+    assert_eq!(c.items[0].check, Check::Scale);
+    run(&mut s, "edit.undo", json!({}));
+    assert!(s.doc().document.objects.iter().all(|o| !o.transform.mirror));
+    let _ = (a, b);
+}
+
+#[test]
+fn the_cut_order_fix_sets_keep_sheet_in_one_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    square_at(&mut s, "sq", 20.0, 40.0, 40.0);
+    let c = list(&mut s, Symptom::PiecesMoved);
+    let before = s.doc().undo.undo_len();
+    apply(&mut s, &c, Check::CutOrder, "Cut outlines last");
+    assert_eq!(s.doc().undo.undo_len(), before + 1);
+    assert_eq!(
+        s.doc().document.job.strategy,
+        flatcraft_core::document::CutStrategy::KeepSheet
+    );
+    let c = list(&mut s, Symptom::PiecesMoved);
+    assert!(blocked_reason(&c, Check::CutOrder, "Cut outlines last").contains("already"));
+    assert!(item(&c, Check::CutOrder).message.contains("Keep sheet"));
+    // Running it again changes nothing.
+    run(
+        &mut s,
+        "job.set_strategy",
+        json!({ "strategy": "keep_sheet" }),
+    );
+    assert_eq!(s.doc().undo.undo_len(), before + 1);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(
+        s.doc().document.job.strategy,
+        flatcraft_core::document::CutStrategy::Quality
+    );
+    assert!(matches!(
+        s.execute(
+            "job.set_strategy",
+            json!({ "strategy": "slow" }),
+            Origin::Agent
+        ),
+        Err(CommandError::InvalidParams(_))
+    ));
+}
+
+#[test]
+fn cut_only_the_test_shape_skips_the_rest_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = square_at(&mut s, "a", 20.0, 10.0, 10.0);
+    let b = square_at(&mut s, "b", 20.0, 50.0, 10.0);
+    let hidden = square_at(&mut s, "hidden", 20.0, 90.0, 10.0);
+    run(
+        &mut s,
+        "object.set_visible",
+        json!({ "ids": [hidden], "visible": false }),
+    );
+    let c = list(&mut s, Symptom::NotThrough);
+    let why = blocked_reason(&c, Check::TestShape, "Cut only the test shape");
+    assert!(why.contains("Add the test shape first"), "{why}");
+    let shape = apply(&mut s, &c, Check::TestShape, "Add a test shape")["id"]
+        .as_u64()
+        .unwrap();
+    let c = list(&mut s, Symptom::NotThrough);
+    let before = s.doc().undo.undo_len();
+    apply(&mut s, &c, Check::TestShape, "Cut only the test shape");
+    assert_eq!(s.doc().undo.undo_len(), before + 1);
+    let cut: Vec<u64> = s
+        .doc()
+        .document
+        .objects
+        .iter()
+        .filter(|o| o.cut_enabled)
+        .map(|o| o.id.0)
+        .collect();
+    assert_eq!(
+        cut,
+        [hidden, shape],
+        "only the test shape is cut (hidden stays as it was)"
+    );
+    // The job cuts only the test shape.
+    let p = run(&mut s, "job.preview", json!({}));
+    assert_eq!(p["toolpaths"], 2, "{p}");
+    // A second click changes nothing.
+    apply(&mut s, &c, Check::TestShape, "Cut only the test shape");
+    assert_eq!(s.doc().undo.undo_len(), before + 1);
+    let c = list(&mut s, Symptom::NotThrough);
+    assert!(blocked_reason(&c, Check::TestShape, "Cut only the test shape").contains("already"));
+    // Undo turns the design back on.
+    run(&mut s, "edit.undo", json!({}));
+    let doc = &s.doc().document;
+    assert!(
+        doc.objects
+            .iter()
+            .filter(|o| o.id.0 == a || o.id.0 == b)
+            .all(|o| o.cut_enabled)
+    );
 }
 
 #[test]

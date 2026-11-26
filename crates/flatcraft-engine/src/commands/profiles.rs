@@ -248,3 +248,47 @@ command!(
     run: run_set_overrides,
     description: "Overrides the material's speed, force or passes for the active document. Values are checked against the plotter's speed_range, force_range and passes_range (Cameo 2: speed 1-10, force 1-33, passes 1-20). Fields you leave out stay as they are; a field set to null removes that override, so the material value applies again; clear: true first removes all overrides. Returns {speed, force, passes}, where null means the material value.",
 );
+
+#[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StrategyParam {
+    /// Clean corners first: entries on waste-side corners, few blade turns, short travel.
+    Quality,
+    /// Short travel first: blade turns cost nothing.
+    Fast,
+    /// As quality, but every outline comes after every hole and inner piece, so the sheet holds together until the end.
+    KeepSheet,
+}
+
+impl From<StrategyParam> for flatcraft_core::document::CutStrategy {
+    fn from(p: StrategyParam) -> Self {
+        use flatcraft_core::document::CutStrategy;
+        match p {
+            StrategyParam::Quality => CutStrategy::Quality,
+            StrategyParam::Fast => CutStrategy::Fast,
+            StrategyParam::KeepSheet => CutStrategy::KeepSheet,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StrategyParams {
+    /// quality, fast or keep_sheet.
+    pub strategy: StrategyParam,
+}
+
+fn run_set_strategy(s: &mut Session, p: StrategyParams, _: Origin) -> Result<Value, CommandError> {
+    s.doc_mut().document.job.strategy = p.strategy.into();
+    Ok(json!({ "strategy": s.doc().document.job.strategy }))
+}
+
+command!(
+    JobSetStrategy,
+    id: "job.set_strategy",
+    title: "Set cut strategy",
+    mutates: true,
+    params: StrategyParams,
+    run: run_set_strategy,
+    description: "Sets the cut strategy of the active document, in one undo step: quality (clean corners first), fast (short travel first) or keep_sheet (as quality, but every outline after every hole and inner piece, so the sheet holds together until the end). Every strategy cuts the holes and inner pieces of a shape before its outline. New documents start with the strategy of the preferences. Returns {strategy}.",
+);

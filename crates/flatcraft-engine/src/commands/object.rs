@@ -1738,10 +1738,16 @@ pub struct MirrorParams {
     /// group (default): mirror the objects as one group across a line through their common centre, the mean of their centres. each: mirror each across its own centre. One object mirrors across its own centre either way.
     #[serde(default)]
     pub about: About,
+    /// Leave out to flip. true or false sets the result instead: only the objects whose mirror state differs flip, so running it again changes nothing.
+    pub mirrored: Option<bool>,
 }
 
 fn run_mirror(s: &mut Session, p: MirrorParams, _: Origin) -> Result<Value, CommandError> {
-    let ids = resolve_ids(s, &p.ids)?;
+    let mut ids = resolve_ids(s, &p.ids)?;
+    if let Some(want) = p.mirrored {
+        let doc = &s.doc().document;
+        ids.retain(|id| doc.get(*id).is_some_and(|o| o.transform.mirror != want));
+    }
     let doc = &mut s.doc_mut().document;
     let centre = group_centre(doc, &ids, p.about);
     for id in &ids {
@@ -1768,7 +1774,7 @@ command!(
     mutates: true,
     params: MirrorParams,
     run: run_mirror,
-    description: "Mirrors objects along a screen axis, in one undo step. horizontal flips left and right, vertical flips top and bottom. about: group | each, default group. With group, several objects mirror as one group across a line through their common centre, the mean of the selected objects' centres: each centre is reflected across it and each object is mirrored, so the layout flips with them (the window does this for a multi-selection). With each, every object mirrors across its own centre and the centres stay. One object mirrors across its own centre either way. Positions in mm, origin the 0,0 of the grid printed on the mat, y down. Linked copies (see object.copies) keep their own mirror: only the objects in ids flip. Use horizontal for iron-on vinyl, which is cut from the back. An empty ids list means the current selection. Returns {ids}.",
+    description: "Mirrors objects along a screen axis, in one undo step. horizontal flips left and right, vertical flips top and bottom. about: group | each, default group. With group, several objects mirror as one group across a line through their common centre, the mean of the selected objects' centres: each centre is reflected across it and each object is mirrored, so the layout flips with them (the window does this for a multi-selection). With each, every object mirrors across its own centre and the centres stay. One object mirrors across its own centre either way. Positions in mm, origin the 0,0 of the grid printed on the mat, y down. Linked copies (see object.copies) keep their own mirror: only the objects in ids flip. Use horizontal for iron-on vinyl, which is cut from the back. mirrored: true or false makes it absolute: only objects whose mirror state differs flip (as one group with about group), so a second run changes nothing; leave it out to flip every object. An empty ids list means the current selection. Returns {ids} (the objects that flipped).",
 );
 
 // ---------------------------------------------------------------- cut options
