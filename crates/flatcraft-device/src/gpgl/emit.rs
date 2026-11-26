@@ -93,9 +93,9 @@ pub struct ListingLine {
 pub struct EmittedJob {
     pub bytes: Vec<u8>,
     pub listing: Vec<ListingLine>,
-    /// The indexes into the given paths of the paths with 2 or more points
-    /// that were left out because all their points round to one device
-    /// point (gpgl.md section 9), in order.
+    /// The indexes into the given paths of the paths that were left out,
+    /// in order: paths with fewer than 2 points, and paths whose points all
+    /// round to one device point (gpgl.md section 9).
     pub collapsed: Vec<usize>,
 }
 
@@ -228,14 +228,11 @@ pub fn emit_job(
     let width = media_units(media.width_mm, plotter.units_per_mm, "width")?;
 
     // Paths with fewer than 2 points, also after merging points that round
-    // to the same device point, are skipped (gpgl.md section 9).
+    // to the same device point, are skipped and reported in `collapsed`,
+    // never silently (gpgl.md section 9).
     let mut cut: Vec<(Vec<DevPoint>, &str)> = Vec::new();
     let mut collapsed = Vec::new();
-    for (i, path) in paths
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| p.points.len() >= 2)
-    {
+    for (i, path) in paths.iter().enumerate() {
         let mut points = quantize_path(path, plotter, media, height, width)?;
         points.dedup();
         if points.len() >= 2 {

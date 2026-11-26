@@ -693,6 +693,20 @@ fn duplicate_device_points_are_merged() {
     .unwrap();
     assert_eq!(job.listing.len(), 15);
     assert_eq!(job.collapsed, vec![0], "the emitter names what it left out");
+    // A path of fewer than 2 points is reported too, never skipped silently.
+    let job = emit_job(
+        &[
+            path(&[]),
+            path(&[(10., 10.), (20., 10.)]),
+            path(&[(30., 30.)]),
+        ],
+        GeometryKind::Tip,
+        &p,
+        "mat-12x12",
+        &s,
+    )
+    .unwrap();
+    assert_eq!(job.collapsed, vec![0, 2]);
 }
 
 #[test]

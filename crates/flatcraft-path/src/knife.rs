@@ -184,19 +184,32 @@ pub fn end_state(paths: &[Toolpath], home: Point, start_heading: Vec2) -> (Point
     (end, heading)
 }
 
-/// A lone tight vertex that turns at least this many degrees is a corner,
-/// not a tight curve ([`min_radius_spots`]): the blade swivels there, and a
-/// glyph corner between short segments must not warn. The same 30 deg as
-/// [`CORNER_DEG`]. The cost: a fillet so small (about 0.1 mm radius or
-/// less) that flattening leaves one vertex of it is not warned about.
+/// A lone tight vertex that turns at least this many degrees, between
+/// segments of at least [`CORNER_SEGMENT_FACTOR`] times the minimum radius,
+/// is a corner, not a tight curve ([`min_radius_spots`]): the blade swivels
+/// there, and a glyph corner between short segments must not warn. The
+/// same 30 deg as [`CORNER_DEG`].
 pub const TIGHT_CORNER_DEG: f64 = 30.0;
+
+/// How long both segments of a lone tight vertex must be, in minimum radii,
+/// for it to count as a corner ([`TIGHT_CORNER_DEG`]). It makes the rule
+/// independent of the flatten tolerance: an arc of radius `r` below the
+/// minimum radius `R` that flattens to a single vertex has two chords of
+/// `2 r sin(A / 4)` for an arc of `A`, shorter than `1.5 R` for every arc
+/// up to 194 deg, so such a rounded corner always warns, however coarse the
+/// flattening. The cost: a fillet of more than 194 deg that flattens to one
+/// vertex, which a sane tolerance never gives, is taken for a corner.
+/// 1.5 and not 2: a glyph corner of 98 deg between segments of 0.39 and
+/// 0.42 mm (the maker-quotes sample, minimum radius 0.25) is a corner.
+pub const CORNER_SEGMENT_FACTOR: f64 = 1.5;
 
 /// Places on `points` (a polyline) where the path bends tighter than
 /// `min_radius_mm`. The local radius at a vertex is
 /// `((|seg_in| + |seg_out|) / 2) / turn`, with the turn in radians. A run of
 /// neighbouring vertices below the limit (a flattened arc) is one spot, at
 /// half its length. A single vertex that turns [`TIGHT_CORNER_DEG`] or more
-/// is a corner, not a curve: the blade swivels there, so it is not a spot. A
+/// between segments of at least [`CORNER_SEGMENT_FACTOR`] minimum radii is
+/// a corner, not a curve: the blade swivels there, so it is not a spot. A
 /// path that ends where it starts is a ring: its start vertex is checked
 /// too, and a run across the start is one spot. Used for warnings in every
 /// mode.
@@ -211,19 +224,22 @@ pub fn min_radius_spots(points: &[Point], min_radius_mm: f64) -> Vec<Point> {
     let m = if ring { n - 1 } else { n - 2 };
     let vertex = |k: usize| if ring { k } else { k + 1 };
     let at = |k: usize| points[vertex(k)];
-    // The turn at vertex k, in radians, when it bends tighter than the
-    // limit.
+    // When vertex k bends tighter than the limit: whether it would be a
+    // corner on its own (a turn of at least TIGHT_CORNER_DEG between long
+    // segments).
+    let corner_turn = TIGHT_CORNER_DEG.to_radians();
+    let corner_len = CORNER_SEGMENT_FACTOR * min_radius_mm;
     let tight = |k: usize| {
         let v = vertex(k);
         let prev = if v == 0 { points[n - 2] } else { points[v - 1] };
         let next = points[v + 1];
         let (a, b) = (points[v] - prev, next - points[v]);
         let turn = a.cross(b).atan2(a.dot(b)).abs();
-        (turn > 0.0 && (a.hypot() + b.hypot()) / 2.0 / turn < min_radius_mm).then_some(turn)
+        (turn > 0.0 && (a.hypot() + b.hypot()) / 2.0 / turn < min_radius_mm)
+            .then(|| turn >= corner_turn && a.hypot() >= corner_len && b.hypot() >= corner_len)
     };
-    let turns: Vec<Option<f64>> = (0..m).map(tight).collect();
+    let turns: Vec<Option<bool>> = (0..m).map(tight).collect();
     let flags: Vec<bool> = turns.iter().map(Option::is_some).collect();
-    let corner = TIGHT_CORNER_DEG.to_radians();
     if ring && flags.iter().all(|&f| f) {
         return vec![halfway(points)];
     }
@@ -237,7 +253,7 @@ pub fn min_radius_spots(points: &[Point], min_radius_mm: f64) -> Vec<Point> {
     let mut spots = Vec::new();
     let mut run: Vec<usize> = Vec::new();
     let mut close = |run: &mut Vec<usize>| {
-        let lone_corner = run.len() == 1 && turns[run[0]].is_some_and(|t| t >= corner);
+        let lone_corner = run.len() == 1 && turns[run[0]] == Some(true);
         if !run.is_empty() && !lone_corner {
             let pts: Vec<Point> = run.iter().map(|&k| at(k)).collect();
             spots.push(halfway(&pts));
@@ -1229,6 +1245,36 @@ mod tests {
         );
         let (pts, _) = rounded_corner(1.0);
         assert_eq!(min_radius_spots(&pts, 0.25), Vec::<Point>::new());
+    }
+
+    /// Every rounded corner of radius 0.25 mm warns at the minimum radius
+    /// 0.25 mm, however coarsely it is flattened.
+    #[test]
+    fn a_rounded_corner_warns_at_any_flatten_tolerance() {
+        for tol in [0.005, 0.01, 0.02, 0.05] {
+            let r = 0.25;
+            // A rectangle 10 x 6 mm with corners of radius r, closed.
+            let rect = kurbo::RoundedRect::new(10.0, 10.0, 20.0, 16.0, r);
+            let flat = crate::flatten::flatten(&rect.to_path(0.01), tol);
+            let mut pts: Vec<Point> = Vec::new();
+            for el in flat.elements() {
+                match el {
+                    kurbo::PathEl::MoveTo(q) | kurbo::PathEl::LineTo(q) => pts.push(*q),
+                    kurbo::PathEl::ClosePath => pts.push(pts[0]),
+                    _ => {}
+                }
+            }
+            pts.dedup();
+            let spots = min_radius_spots(&pts, 0.25);
+            // The radius sits right on the limit, so a corner's arc may
+            // split into two runs; every corner must warn.
+            for c in [p(10.0, 10.0), p(20.0, 10.0), p(20.0, 16.0), p(10.0, 16.0)] {
+                assert!(
+                    spots.iter().any(|q| q.distance(c) < 0.25),
+                    "tolerance {tol}: no spot at {c:?}: {spots:?}"
+                );
+            }
+        }
     }
 
     /// A sharp corner between short segments is a corner, not a tight

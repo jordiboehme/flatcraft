@@ -642,11 +642,10 @@ fn stats(ui: &mut Ui, job: &JobResult, snap: &Snapshot, t: &Tokens) {
         });
 }
 
-/// How many toolpaths of the plan are weed paths.
+/// How many weed paths are cut: the weed part of the job's cut
+/// toolpaths, so "Weed paths" and "Paths" count the same way.
 pub fn weed_count(job: &JobResult) -> usize {
-    job.plan
-        .toolpaths
-        .iter()
+    job.cut_toolpaths()
         .filter(|t| t.kind == flatcraft_path::ToolpathKind::Weed)
         .count()
 }

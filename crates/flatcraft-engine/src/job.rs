@@ -64,7 +64,14 @@ pub struct JobResult {
     /// window that shows the issues leaves these warnings out.
     pub covered_warnings: Vec<usize>,
     pub sent: Option<SendReport>,
+    /// The plotter profile the job was built for, with every setting as
+    /// it was then. [`send_built`] refuses to send it with another one.
+    pub built_for: PlotterProfile,
 }
+
+/// The failure when a built job is sent with another plotter profile than
+/// it was built for, or with the same one after its settings changed.
+pub const BUILT_FOR_OTHER_PLOTTER: &str = "internal: the job was built for another plotter preset or for other settings of it, so it is not sent. Build the job again.";
 
 /// Replaces line breaks and other control characters with spaces, so a note
 /// stays on one listing line.
@@ -553,10 +560,19 @@ impl JobResult {
     /// ones the emitter left out (too small for one plotter step). The
     /// "Paths" count of `job.preview`, the send reply and the Cut stage.
     pub fn toolpaths_cut(&self) -> usize {
-        left_out(&self.plan, &self.job.collapsed)
-            .into_iter()
-            .filter(|out| !out)
-            .count()
+        self.cut_toolpaths().count()
+    }
+
+    /// The toolpaths that are really cut, in order: the plan's toolpaths
+    /// without the ones the emitter left out. Every count of cut paths
+    /// (all of them, the weed paths) reads them here.
+    pub fn cut_toolpaths(&self) -> impl Iterator<Item = &Toolpath> {
+        self.plan
+            .toolpaths
+            .iter()
+            .zip(left_out(&self.plan, &self.job.collapsed))
+            .filter(|(_, out)| !out)
+            .map(|(t, _)| t)
     }
 
     /// The warnings that are real problems, not the person's own choices.
@@ -821,6 +837,7 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         issues,
         covered_warnings,
         sent: None,
+        built_for: plotter.clone(),
     })
 }
 
@@ -1015,7 +1032,8 @@ pub(crate) fn send(
 /// stored as the pending send (a snapshot: confirming sends exactly these
 /// bytes) and nothing is sent. Otherwise it is delivered through the
 /// plotter's transport, logged and kept as the document's last sent job.
-/// `result` must be built with `plotter`.
+/// `result` must be built for `plotter` with its current settings (id and
+/// every value): anything else is an internal failure and nothing is sent.
 pub fn send_built(
     s: &mut Session,
     plotter: &PlotterProfile,
@@ -1023,6 +1041,9 @@ pub fn send_built(
     name: String,
     origin: Origin,
 ) -> Result<Value, CommandError> {
+    if result.built_for != *plotter {
+        return Err(CommandError::Failed(BUILT_FOR_OTHER_PLOTTER.into()));
+    }
     let decision = gate::check_send(origin, &plotter.transport, &s.prefs, s.has_ui);
     if let GateDecision::Refuse(reason) = decision {
         return Err(CommandError::Refused(reason));

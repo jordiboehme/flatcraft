@@ -487,6 +487,36 @@ fn paths_count_leaves_out_what_is_not_cut() {
     assert!(h.query_by_label("2").is_none());
 }
 
+/// "Weed paths" counts like "Paths": a weed path the emitter leaves out
+/// is not cut, so it is not counted.
+#[test]
+fn weed_count_leaves_out_what_is_not_cut() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    run(
+        &s,
+        "job.set_weeding",
+        json!({ "box": true, "lines": "both" }),
+    );
+    run(&s, "job.preview", json!({}));
+    let mut job = s.lock().unwrap().doc().last_job().unwrap().clone();
+    let weeds = flatcraft::ui::cut::weed_count(&job);
+    assert!(weeds > 0);
+    let all = job.toolpaths_cut();
+    // Firmware compensation: one run per toolpath, so the run index is the
+    // toolpath index.
+    let first_weed = job
+        .plan
+        .toolpaths
+        .iter()
+        .position(|t| t.kind == flatcraft_path::ToolpathKind::Weed)
+        .unwrap();
+    job.job.collapsed = vec![first_weed];
+    assert_eq!(flatcraft::ui::cut::weed_count(&job), weeds - 1);
+    assert_eq!(job.toolpaths_cut(), all - 1);
+}
+
 #[test]
 fn device_stage_shows_the_transport() {
     let dir = tempfile::tempdir().unwrap();

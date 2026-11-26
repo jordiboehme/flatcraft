@@ -571,3 +571,57 @@ fn no_user_facing_text_says_device_step() {
         );
     }
 }
+
+/// A job is only sent with the plotter profile it was built for, with the
+/// same settings.
+#[test]
+fn send_built_refuses_a_job_built_for_another_plotter() {
+    let d = dirs();
+    let mut s = session(&d);
+    import(&mut s, SQUARE, "square");
+    let result = job::build(&s).unwrap();
+    let mut changed = result.built_for.clone();
+    changed.blade_offset_mm = 0.3;
+    let other = s.profiles.plotter("silhouette-cameo-2").unwrap();
+    for plotter in [changed, other] {
+        let e = job::send_built(&mut s, &plotter, result.clone(), "x".into(), Origin::User)
+            .unwrap_err();
+        assert_eq!(
+            e,
+            CommandError::Failed(job::BUILT_FOR_OTHER_PLOTTER.into()),
+            "{}",
+            plotter.id
+        );
+    }
+    assert_eq!(
+        std::fs::read_dir(d.out.path()).unwrap().count(),
+        0,
+        "nothing sent"
+    );
+    let plotter = result.built_for.clone();
+    let r = job::send_built(&mut s, &plotter, result, "ok".into(), Origin::User).unwrap();
+    assert_eq!(r["files"].as_array().unwrap().len(), 3, "{r}");
+}
+
+/// A corner rounded with the blade's own radius warns, also when the
+/// plotter flattens curves coarsely.
+#[test]
+fn rounded_corners_warn_at_any_flatten_tolerance() {
+    let d = dirs();
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><rect x="20" y="20" width="10" height="6" rx="0.25"/></svg>"#;
+    let mut s = session(&d);
+    import(&mut s, svg, "tile");
+    let coarse = "flatten_tolerance_mm = 0.02\n";
+    user_plotter(d.config.path(), "coarse", coarse);
+    let mut c = session(&d);
+    run(&mut c, "job.set_plotter", json!({ "id": "coarse" }));
+    import(&mut c, svg, "tile");
+    for s in [&mut s, &mut c] {
+        let w = warnings(&run(s, "job.preview", json!({})));
+        assert!(
+            w.iter()
+                .any(|w| w.contains("curves are tighter than 0.25 mm")),
+            "{w:?}"
+        );
+    }
+}
