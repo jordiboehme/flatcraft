@@ -875,7 +875,7 @@ fn scale(input: &JobInput) -> Item {
             p.name, p.scale_x, p.scale_y
         ));
     }
-    message.push_str(" If the plotter cuts it a little too long or too short, change Scale x or Scale y of the plotter in Settings (save it as your own preset first).");
+    message.push_str(" For an exact check, cut the test sheet in a new project (Home, New, Test patterns) and measure its two 100 mm rulers: 1 mm off there is 1 % off. If the plotter cuts a little too long or too short, change Scale x or Scale y of the plotter in Settings (save it as your own preset first).");
     item(
         Check::Scale,
         "Size",

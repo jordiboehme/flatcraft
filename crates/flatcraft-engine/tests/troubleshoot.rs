@@ -217,6 +217,13 @@ fn notes_and_the_last_good_cut_come_first() {
     assert!(good.contains("You noted: clean edges"), "{good}");
     // The size check has no use for it.
     assert!(!checks(&list(&mut s, Symptom::WrongPlaceOrSize)).contains(&Check::LastGood));
+    // Scale is measured on the test sheet's rulers.
+    let c = list(&mut s, Symptom::WrongPlaceOrSize);
+    let scale = &item(&c, Check::Scale).message;
+    assert!(
+        scale.contains("test sheet") && scale.contains("100 mm rulers"),
+        "{scale}"
+    );
 }
 
 #[test]
