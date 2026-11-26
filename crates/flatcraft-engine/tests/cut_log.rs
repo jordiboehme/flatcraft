@@ -233,3 +233,38 @@ fn agents_cannot_write_the_log() {
     assert!(matches!(r, Err(CommandError::Refused(_))), "{r:?}");
     assert_eq!(log_text(&dir), before);
 }
+
+#[test]
+fn the_history_names_files_but_never_gives_absolute_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = ready(&dir);
+    run(
+        &mut s,
+        "project.save",
+        json!({ "path": dir.path().join("coasters.flatcraft") }),
+    );
+    run(&mut s, "job.send", json!({}));
+    let h = s.execute("job.history", json!({}), Origin::Agent).unwrap();
+    let e = &h["entries"][0];
+    assert_eq!(e["path"], "coasters.flatcraft");
+    let files = e["target"]["files"].as_array().unwrap();
+    assert_eq!(files.len(), 3);
+    for f in files {
+        let f = f.as_str().unwrap();
+        assert!(!f.contains('/') && !f.contains('\\'), "{f}");
+    }
+    let text = h.to_string();
+    assert!(!text.contains(&dir.path().display().to_string()), "{text}");
+}
+
+#[test]
+fn the_cached_log_sees_a_send_from_another_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = ready(&dir);
+    let mut b = ready(&dir);
+    assert_eq!(a.cut_log().entries.len(), 0);
+    run(&mut b, "job.send", json!({}));
+    assert_eq!(a.cut_log().entries.len(), 1, "another session's send shows");
+    run(&mut a, "job.send", json!({}));
+    assert_eq!(b.cut_log().entries.len(), 2);
+}

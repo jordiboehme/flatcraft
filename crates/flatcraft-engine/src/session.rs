@@ -97,6 +97,10 @@ impl PendingSend {
     }
 }
 
+/// What the cached cut log was read at: this session's revision, and the
+/// file's length and modification time.
+type CutLogKey = (u64, Option<u64>, Option<std::time::SystemTime>);
+
 /// Media new documents start on when the plotter lists it (see
 /// [`Session::default_media`]).
 pub const DEFAULT_MEDIA: &str = "mat-12x12";
@@ -419,8 +423,9 @@ pub struct Session {
     save_gate: Arc<Mutex<()>>,
     /// Counts the lines this session added to the cut log.
     cut_log_rev: u64,
-    /// The cut log as read at a revision (see [`Session::cut_log`]).
-    cut_log_cache: Mutex<Option<(u64, Arc<crate::cutlog::CutLog>)>>,
+    /// The cut log as read at a revision and file stamp (see
+    /// [`Session::cut_log`]).
+    cut_log_cache: Mutex<Option<(CutLogKey, Arc<crate::cutlog::CutLog>)>>,
     /// Tests only: runs in the write step of every save, without the
     /// session lock, with the file the save replaces.
     #[doc(hidden)]
@@ -636,20 +641,27 @@ impl Session {
         })
     }
 
-    /// The cut log in the config dir. Read once and again after this
-    /// session adds to it, so the window can ask every frame.
+    /// The cut log in the config dir. Read again after this session adds
+    /// to it and when the file's length or modification time changed (a
+    /// send from another FlatCraft), so the window can ask every frame.
     pub fn cut_log(&self) -> Arc<crate::cutlog::CutLog> {
+        let meta = std::fs::metadata(crate::cutlog::path(&self.config_dir)).ok();
+        let key: CutLogKey = (
+            self.cut_log_rev,
+            meta.as_ref().map(std::fs::Metadata::len),
+            meta.and_then(|m| m.modified().ok()),
+        );
         let mut cache = self
             .cut_log_cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some((rev, log)) = cache.as_ref()
-            && *rev == self.cut_log_rev
+        if let Some((k, log)) = cache.as_ref()
+            && *k == key
         {
             return log.clone();
         }
         let log = Arc::new(crate::cutlog::read(&self.config_dir));
-        *cache = Some((self.cut_log_rev, log.clone()));
+        *cache = Some((key, log.clone()));
         log
     }
 

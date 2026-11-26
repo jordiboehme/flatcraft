@@ -225,3 +225,24 @@ fn agents_read_preset_notes_but_no_command_writes_them() {
         }
     }
 }
+
+#[test]
+fn document_state_has_the_notes_and_cut_commands_point_to_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    run(
+        &mut s,
+        "document.set_notes",
+        json!({ "description": "Labels", "notes": "Weed slowly." }),
+    );
+    let st = run(&mut s, "document.state", json!({}));
+    assert_eq!(st["description"], "Labels");
+    assert_eq!(st["notes"], "Weed slowly.");
+    for id in ["job.preview", "job.send"] {
+        let d = flatcraft_engine::registry::get(id).unwrap().description();
+        assert!(
+            d.contains("Read the project notes (document.notes or document.state) before a cut."),
+            "{id}: {d}"
+        );
+    }
+}
