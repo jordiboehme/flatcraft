@@ -1095,3 +1095,58 @@ fn export_selected_is_dimmed_for_hidden_objects_and_says_why() {
     );
     assert!(!ExportSelected.description().is_empty());
 }
+
+#[test]
+fn auto_arrange_on_the_empty_mat_is_active_from_the_first_frame() {
+    // Only a hidden object is selected. The empty-mat menu clears the
+    // selection, so its Auto arrange packs every visible object: it must
+    // never look dimmed, not even in the frame the menu opens.
+    let mut r = rig(2);
+    r.s.lock()
+        .unwrap()
+        .execute(
+            "object.set_visible",
+            json!({ "ids": [r.ids[0]], "visible": false }),
+            Origin::User,
+        )
+        .unwrap();
+    select(&r.s, &r.ids[..1]);
+    r.h.run();
+    wait_for_workers(&mut r.h);
+    // The item is judged by what it will do (the cleared selection), not
+    // by the selection the snapshot still holds.
+    let ctx = r.h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut r.h), &ctx);
+    assert_eq!(snap.selection.len(), 1);
+    assert_eq!(
+        AutoArrange.why(&snap, &app(&r.h).ui.prepare, &[]),
+        None,
+        "dimmed while the old selection is still in the snapshot"
+    );
+    let p = at_mm(&r.view, 200.0, 120.0);
+    r.h.event(Event::PointerMoved(p));
+    r.h.run();
+    for pressed in [true, false] {
+        r.h.event(Event::PointerButton {
+            pos: p,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    // Frame by frame, up to the first one that shows the menu.
+    let mut frames = 0;
+    while !menu_open(&r.h) {
+        r.h.step();
+        frames += 1;
+        assert!(frames < 10, "the menu does not open");
+    }
+    assert!(!dimmed(&r.h, AutoArrange), "dimmed in frame {frames}");
+    r.h.run();
+    assert!(!dimmed(&r.h, AutoArrange));
+    // It packs the visible object, the hidden one stays.
+    let undo = r.s.lock().unwrap().doc().undo.undo_len();
+    click_item(&mut r.h, AutoArrange);
+    wait_for_workers(&mut r.h);
+    assert_eq!(r.s.lock().unwrap().doc().undo.undo_len(), undo + 1);
+}

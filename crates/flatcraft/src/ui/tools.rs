@@ -891,7 +891,10 @@ impl Tool {
             Act::AutoArrangePanel | Act::AutoArrange => {
                 if snap.objects.is_empty() {
                     Some("Import something first. There is nothing to arrange yet.")
-                } else if !snap.selection.is_empty() && snap.selected().all(|o| !o.visible) {
+                } else if n > 0 && snap.selected().all(|o| !o.visible) {
+                    // `n` 0 is the empty mat's menu: it clears the
+                    // selection and packs every visible object, so the
+                    // selection the snapshot still holds does not count.
                     Some(ONLY_HIDDEN_SELECTED)
                 } else {
                     None
