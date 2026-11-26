@@ -85,7 +85,7 @@ pub const GROUPS: [GroupDef; 9] = [
         tab: RibbonTab::Layout,
         title: "Transform",
         icon: Icon::Transform,
-        description: "Move, turn and flip the selection by exact amounts. Each object decides whether every object turns and flips about its own centre or the selection moves as one piece. Pin the ones you use most to the ribbon.",
+        description: "Move, turn and flip the selection by exact amounts; scale it in the Position and size fields. The Each object switch decides how scale, rotate and mirror work on several objects: each about its own centre, or the selection as one piece. Moving always moves the selection as one piece. Pin the ones you use most to the ribbon.",
         fold: fold(5, Some(10)),
     },
     GroupDef {

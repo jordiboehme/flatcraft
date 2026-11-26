@@ -220,8 +220,8 @@ const DEFAULT_PINS: [&str; 22] = [
 
 /// The pins of the groups that had no pins before `ribbon_pins` existed
 /// (Add, Edit, Linked files and View), as those builds showed them. A file
-/// of that time gets them back; [`RETIRED_DEFAULT_PINS`] then drops what
-/// is no longer a default.
+/// of that time gets them back; [`upgrade_default_pins`] then brings them
+/// up to the current defaults.
 const OLD_NON_ARRANGE_PINS: [&str; 15] = [
     "import",
     "trace",
@@ -252,17 +252,31 @@ const OLD_ARRANGE_PINS: [&str; 6] = [
     "mirror.vertical",
 ];
 
-/// The version of the default pins. It goes up by one whenever a default
-/// pin stops being a default; [`RETIRED_DEFAULT_PINS`] says which.
+/// The version of the default pins. It goes up by one whenever the
+/// default pins change; [`RETIRED_DEFAULT_PINS`] and [`ADDED_DEFAULT_PINS`]
+/// say how.
 pub const PIN_DEFAULTS_VERSION: u32 = 1;
 
 /// The default pins each version dropped. A file with an older
 /// `pin_defaults_version` (a file without the key is version 0) loses
 /// them once; after that the file carries the current version, so a pin
 /// the person adds again stays.
+///
+/// A file of version 0 cannot tell a Test patterns pin of the old
+/// defaults from one the person added: both leave once (accepted by
+/// Jordi, 2026-11-27).
 const RETIRED_DEFAULT_PINS: [(u32, &[&str]); 1] = [
     // Test patterns left the ribbon (Jordi, 2026-11-27).
     (1, &["test_patterns"]),
+];
+
+/// The default pins each version added. A file with an older
+/// `pin_defaults_version` gets the ones it does not have yet, once; after
+/// that the file carries the current version, so a pin the person removes
+/// stays removed.
+const ADDED_DEFAULT_PINS: [(u32, &[&str]); 1] = [
+    // The Arrange group of Task 58 (Jordi, 2026-11-27).
+    (1, &["auto_arrange", "group"]),
 ];
 
 /// The pins of a new install: the buttons the ribbon showed before pins
@@ -272,11 +286,22 @@ pub fn default_ribbon_pins() -> Vec<String> {
     DEFAULT_PINS.map(String::from).to_vec()
 }
 
-/// Drops the default pins retired after version `from` from `pins`.
-pub fn retire_default_pins(pins: &mut Vec<String>, from: u32) {
+/// Brings `pins` of default-pins version `from` up to
+/// [`PIN_DEFAULTS_VERSION`]: drops the default pins retired since and adds
+/// the ones added since, unless they are already pinned.
+pub fn upgrade_default_pins(pins: &mut Vec<String>, from: u32) {
     for (version, ids) in RETIRED_DEFAULT_PINS {
         if version > from {
             pins.retain(|p| !ids.contains(&p.as_str()));
+        }
+    }
+    for (version, ids) in ADDED_DEFAULT_PINS {
+        if version > from {
+            for id in ids {
+                if !pins.iter().any(|p| p == id) {
+                    pins.push(id.to_string());
+                }
+            }
         }
     }
 }
@@ -445,14 +470,14 @@ impl Preferences {
             (None, Some(old)) => ribbon_pins_from_arrange(&old),
             (None, None) => default_ribbon_pins(),
         };
-        // Default pins that are no longer defaults leave once.
+        // The default pins changed since the file was written: once.
         let version = table
             .get("pin_defaults_version")
             .and_then(toml::Value::as_integer)
             .and_then(|v| u32::try_from(v).ok())
             .unwrap_or(0);
         if version < PIN_DEFAULTS_VERSION {
-            retire_default_pins(&mut prefs.ribbon_pins, version);
+            upgrade_default_pins(&mut prefs.ribbon_pins, version);
         }
         prefs.pin_defaults_version = version.max(PIN_DEFAULTS_VERSION);
         if !(prefs.auto_arrange_spacing_mm.is_finite() && prefs.auto_arrange_spacing_mm >= 0.0) {

@@ -75,13 +75,20 @@ const NEW_INSTALL: [&str; 22] = [
     "panel.debug",
 ];
 
-/// The old Home and View pins, less Test patterns, then `arrange`.
+/// The old Home and View pins, less Test patterns, then `arrange`, then
+/// the pins Task 58 added to the defaults (Auto arrange, Group) that
+/// `arrange` does not hold yet: what an old file loads as.
 fn with_home_view(arrange: &[&str]) -> Vec<String> {
     let mut v: Vec<String> = strings(&OLD_HOME_VIEW)
         .into_iter()
         .filter(|p| p != "test_patterns")
         .collect();
     v.extend(strings(arrange));
+    for added in ["auto_arrange", "group"] {
+        if !arrange.contains(&added) {
+            v.push(added.to_string());
+        }
+    }
     v
 }
 
@@ -128,7 +135,10 @@ fn pin_and_unpin_round_trip() {
 #[test]
 fn an_empty_list_stays_empty() {
     let dir = tempfile::tempdir().unwrap();
-    write(&dir, "ribbon_pins = []\n");
+    write(
+        &dir,
+        &format!("pin_defaults_version = {PIN_DEFAULTS_VERSION}\nribbon_pins = []\n"),
+    );
     assert!(Preferences::load(dir.path()).ribbon_pins.is_empty());
 }
 
@@ -202,7 +212,9 @@ fn a_new_key_wins_over_an_old_one() {
     let dir = tempfile::tempdir().unwrap();
     write(
         &dir,
-        "ribbon_pins = [\"zoom.fit\"]\narrange_pins = [\"mirror\"]\n",
+        &format!(
+            "pin_defaults_version = {PIN_DEFAULTS_VERSION}\nribbon_pins = [\"zoom.fit\"]\narrange_pins = [\"mirror\"]\n"
+        ),
     );
     assert_eq!(Preferences::load(dir.path()).ribbon_pins, ["zoom.fit"]);
 }
@@ -330,4 +342,33 @@ fn every_default_pin_is_an_id_in_table_order() {
         })
         .collect();
     assert!(places.windows(2).all(|w| w[0] < w[1]), "{defaults:?}");
+}
+
+#[test]
+fn the_new_default_pins_arrive_once_in_old_files() {
+    let dir = tempfile::tempdir().unwrap();
+    // An old file with Auto arrange already pinned: only Group is added.
+    write(&dir, "ribbon_pins = [\"import\", \"auto_arrange\"]\n");
+    assert_eq!(
+        Preferences::load(dir.path()).ribbon_pins,
+        ["import", "auto_arrange", "group"]
+    );
+    // An old file that unpinned everything gets them too: they are new.
+    write(&dir, "ribbon_pins = [\"import\"]\n");
+    let p = Preferences::load(dir.path());
+    assert_eq!(p.ribbon_pins, ["import", "auto_arrange", "group"]);
+    // The person removes them; after a restart they stay removed.
+    let current = Preferences {
+        output_dir: Some(dir.path().join("output")),
+        ..p
+    };
+    let (p, written) = Preferences::update(dir.path(), &current, |p| {
+        p.ribbon_pins
+            .retain(|id| id != "auto_arrange" && id != "group");
+    });
+    written.unwrap();
+    assert_eq!(p.ribbon_pins, ["import"]);
+    for _ in 0..2 {
+        assert_eq!(Preferences::load(dir.path()).ribbon_pins, ["import"]);
+    }
 }
