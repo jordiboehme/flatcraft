@@ -162,3 +162,32 @@ command!(
     run: run_history,
     description: "Reads the local cut log: one entry per completed send, newest first, with how it went when the person said so. Use it to find settings that worked for a material. Read-only: only the person records outcomes, in the window. Paths are file names only (the project file, the output files), never absolute paths. Returns {total (matching entries), entries: [{id, date (RFC 3339 UTC), document, path (project file name), plotter_id, plotter, material_id, material, mat_id, mat, speed, force, passes, strategy, keep_mode, size: {bytes, toolpaths, cut_mm, travel_mm}, target: {kind: file (with files: output file names) or usb}, outcome: {verdict: good|bad, note, date} or null}], diagnostics: [text] (log lines that could not be read and were skipped, like \"cut-log.jsonl line 3 was skipped (damaged)\")}.",
 );
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TroubleshootParams {
+    /// What went wrong: not_through, tore_or_dragged, pieces_moved or wrong_place_or_size.
+    pub symptom: crate::troubleshoot::Symptom,
+}
+
+fn run_troubleshoot(
+    s: &mut Session,
+    p: TroubleshootParams,
+    _: Origin,
+) -> Result<Value, CommandError> {
+    let input = crate::job::JobInput::of(s)?;
+    let log = s.cut_log();
+    let last_good = log.last_good(&input.job.material_id);
+    let list = crate::troubleshoot::checklist(&input, p.symptom, last_good);
+    serde_json::to_value(list).map_err(|e| CommandError::Failed(e.to_string()))
+}
+
+command!(
+    JobTroubleshoot,
+    id: "job.troubleshoot",
+    title: "It didn't cut right",
+    mutates: false,
+    params: TroubleshootParams,
+    run: run_troubleshoot,
+    description: "What to check when a cut went wrong, in order, for the active document: the same checklist the window's \"It didn't cut right...\" helper shows, so give the person this advice in this order. symptom: not_through (the pieces do not come out), tore_or_dragged (ragged edges, torn corners, material pulled along), pieces_moved (material or pieces shifted or lifted), wrong_place_or_size (wrong spot, wrong size or backwards). Returns {symptom, title, lead, settings: {material_id, material, plotter_id, plotter, speed, force, passes (what the job cuts with now), material_speed, material_force, material_passes, speed_range, force_range, passes_range, blade_depth_hint}, last_good: {entry, date, plotter_id, plotter, speed, force, passes, note} or null (the newest cut with this material the person rated good in the cut log), items: [{check, title, message, hint, likely, object_ids, fixes: [{label, description, command, args}], blocked: [{label, reason}]}]}. check is one of notes, last_good, blade_depth, force, passes, speed, blade, mat, material_face, tiny_details, cut_order, mirror, scale, position, test_shape. A fix is one registry command with absolute values: run it with execute {command, params: args}; each is one undo step. Speed, force and passes fixes set the job overrides (job.set_overrides), never the material preset; test_shape runs tools.test_shape. blocked lists fixes that cannot run now, with the reason. The blade depth is a hint only: it is set by hand on the blade and never sent. Propose a change to the person before you run it; you cannot confirm a USB cut yourself.",
+);

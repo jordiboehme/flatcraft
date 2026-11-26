@@ -16,6 +16,7 @@ pub mod report;
 pub mod session;
 pub mod simulate;
 pub mod thumbnails;
+pub mod troubleshoot;
 
 pub use job::JobResult;
 pub use prefs::Preferences;

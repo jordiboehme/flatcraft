@@ -79,7 +79,9 @@ static ALL: &[&dyn Command] = &[
     &job::JobPreview,
     &job::JobSend,
     &job::JobHistory,
+    &job::JobTroubleshoot,
     &tools::ToolsTestPatterns,
+    &tools::ToolsTestShape,
     &tools::DocumentPreview,
     &export::DocumentExport,
 ];

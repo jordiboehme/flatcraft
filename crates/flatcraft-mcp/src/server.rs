@@ -29,7 +29,10 @@ Each issue has a stable code, a severity (info, warning or error), object_ids, p
 and fixes: a list of {label, description, command, args}; run a fix with execute {command, params: args}. No fix means: follow the hint. \
 Codes: open_paths, hairline, below_min_feature, fill_ignored, outside_area, larger_than_area, missing_font, clip_ignored, images_skipped, \
 dashes_ignored, no_paths, nothing_traced, trace_downscaled, dpi_ignored, shapes_dropped (import report and document.check); \
-empty_document, hidden, skipped, too_small (job.preview, nothing to cut). describe_command document.check explains each code.";
+empty_document, hidden, skipped, too_small (job.preview, nothing to cut). describe_command document.check explains each code. \
+When a cut went wrong, run job.troubleshoot {symptom: not_through, tore_or_dragged, pieces_moved or wrong_place_or_size}: it returns the checklist \
+the window's \"It didn't cut right...\" helper shows, in order, so give the same advice in the same order. Its items have fixes in the same shape; \
+speed, force and passes fixes change only this job's overrides, never the presets. Propose them to the person: you may run them, but you cannot confirm a USB cut.";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListArgs {

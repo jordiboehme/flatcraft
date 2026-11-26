@@ -200,6 +200,71 @@ pub fn shelf_pack<K: Copy>(
     (placed, did_not_fit)
 }
 
+/// The most cells [`free_spot`] looks at; a larger area gets coarser steps.
+const FREE_SPOT_CELLS: f64 = 1_000_000.0;
+
+/// The top-left corner of the first spot, reading the area row by row from
+/// its top-left on a 1 mm grid (coarser for a very large area), where a box
+/// of `size` lies inside `area` and keeps at least `gap` mm from every box
+/// in `taken`. `None` when there is no such spot.
+///
+/// The forbidden corners of each taken box are marked in a 2D difference
+/// array, so the search costs one pass over the grid plus one step per box,
+/// however many objects lie on the mat.
+pub fn free_spot(area: Rect, taken: &[Rect], size: Vec2, gap: f64) -> Option<Point> {
+    let (room_x, room_y) = (area.width() - size.x, area.height() - size.y);
+    if !(room_x >= -FIT_EPS && room_y >= -FIT_EPS) {
+        return None;
+    }
+    let room_x = room_x.max(0.0);
+    let room_y = room_y.max(0.0);
+    let mut step = 1.0_f64;
+    let cells = |step: f64| ((room_x / step).floor() + 1.0) * ((room_y / step).floor() + 1.0);
+    if cells(step) > FREE_SPOT_CELLS {
+        step = (room_x * room_y / FREE_SPOT_CELLS).sqrt().ceil().max(1.0);
+    }
+    let nx = (room_x / step + FIT_EPS).floor() as usize + 1;
+    let ny = (room_y / step + FIT_EPS).floor() as usize + 1;
+    // diff[(nx + 1) * j + i]
+    let w = nx + 1;
+    let mut diff = vec![0i32; w * (ny + 1)];
+    // Cells i with lo < x0 + i * step < hi: a box exactly `gap` away is
+    // fine.
+    let span = |lo: f64, hi: f64, origin: f64, n: usize| -> Option<(usize, usize)> {
+        let a = ((lo - origin) / step).floor() + 1.0;
+        let b = ((hi - origin) / step).ceil() - 1.0;
+        let a = a.max(0.0);
+        let b = b.min(n as f64 - 1.0);
+        (a <= b).then_some((a as usize, b as usize))
+    };
+    for r in taken {
+        let xs = span(r.x0 - gap - size.x, r.x1 + gap, area.x0, nx);
+        let ys = span(r.y0 - gap - size.y, r.y1 + gap, area.y0, ny);
+        if let (Some((i0, i1)), Some((j0, j1))) = (xs, ys) {
+            diff[w * j0 + i0] += 1;
+            diff[w * j0 + i1 + 1] -= 1;
+            diff[w * (j1 + 1) + i0] -= 1;
+            diff[w * (j1 + 1) + i1 + 1] += 1;
+        }
+    }
+    // Prefix sums, row by row: a cell is free when its sum is 0.
+    let mut above = vec![0i32; nx];
+    for j in 0..ny {
+        let mut run = 0;
+        for (i, col) in above.iter_mut().enumerate() {
+            run += diff[w * j + i];
+            *col += run;
+            if *col == 0 {
+                return Some(Point::new(
+                    area.x0 + i as f64 * step,
+                    area.y0 + j as f64 * step,
+                ));
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,5 +350,65 @@ mod tests {
         ];
         assert_eq!(pattern_centre(&boxes), Some(Point::new(20.0, 15.0)));
         assert_eq!(pattern_centre(&[]), None);
+    }
+
+    fn clear_of(spot: Point, size: Vec2, taken: &[Rect], gap: f64) -> bool {
+        let r = Rect::from_origin_size(spot, size.to_size());
+        taken.iter().all(|t| {
+            r.x0 >= t.x1 + gap - 1e-9
+                || r.x1 <= t.x0 - gap + 1e-9
+                || r.y0 >= t.y1 + gap - 1e-9
+                || r.y1 <= t.y0 - gap + 1e-9
+        })
+    }
+
+    #[test]
+    fn an_empty_area_gives_its_top_left() {
+        let area = Rect::new(5.0, 5.0, 300.0, 300.0);
+        let size = Vec2::new(30.0, 30.0);
+        assert_eq!(free_spot(area, &[], size, 5.0), Some(Point::new(5.0, 5.0)));
+    }
+
+    #[test]
+    fn the_spot_keeps_the_gap_and_stays_inside() {
+        let area = Rect::new(5.0, 5.0, 299.8, 299.8);
+        let size = Vec2::new(30.0, 30.0);
+        let taken = [
+            Rect::new(0.0, 0.0, 100.0, 50.0),
+            Rect::new(120.5, 3.0, 180.0, 20.0),
+            Rect::new(200.0, 0.0, 299.8, 299.8),
+        ];
+        let spot = free_spot(area, &taken, size, 5.0).unwrap();
+        assert!(clear_of(spot, size, &taken, 5.0), "{spot:?}");
+        let r = Rect::from_origin_size(spot, size.to_size());
+        assert!(r.x0 >= area.x0 && r.y0 >= area.y0 && r.x1 <= area.x1 && r.y1 <= area.y1);
+        // Row by row from the top: between the first two boxes there is
+        // room only from x 105 (gap after 100), and 105 + 30 + 5 > 120.5,
+        // so the first row that fits is below the second box.
+        assert_eq!(spot, Point::new(105.0, 25.0));
+    }
+
+    #[test]
+    fn a_full_area_has_no_spot() {
+        let area = Rect::new(5.0, 5.0, 299.8, 299.8);
+        let size = Vec2::new(30.0, 30.0);
+        assert_eq!(
+            free_spot(area, &[Rect::new(20.0, 20.0, 280.0, 280.0)], size, 5.0),
+            None
+        );
+        assert_eq!(
+            free_spot(Rect::new(0.0, 0.0, 20.0, 20.0), &[], size, 5.0),
+            None
+        );
+    }
+
+    #[test]
+    fn a_long_roll_is_searched_in_coarser_steps() {
+        let area = Rect::new(5.0, 5.0, 299.8, 2995.0);
+        let size = Vec2::new(30.0, 30.0);
+        let taken = [Rect::new(0.0, 0.0, 300.0, 2000.0)];
+        let spot = free_spot(area, &taken, size, 5.0).unwrap();
+        assert!(clear_of(spot, size, &taken, 5.0), "{spot:?}");
+        assert!(spot.y >= 2005.0 && spot.y < 2010.0, "{spot:?}");
     }
 }

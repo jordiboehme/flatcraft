@@ -433,3 +433,63 @@ async fn nothing_to_cut_comes_back_as_reasons_with_fixes() {
     let p = exec(&f, "job.preview", json!({})).await;
     assert_eq!(p["ready"], true, "{p}");
 }
+
+#[test]
+fn instructions_point_to_the_troubleshooter() {
+    let text = flatcraft_mcp::server::INSTRUCTIONS;
+    assert!(text.contains("job.troubleshoot"), "{text}");
+    for s in flatcraft_engine::troubleshoot::Symptom::ALL {
+        assert!(text.contains(s.as_str()), "{} missing", s.as_str());
+    }
+    assert!(!text.contains('\u{2014}'));
+}
+
+/// An agent gets the same checklist the window shows, runs a fix with
+/// one execute (the job override changes, the preset does not), and
+/// still cannot send to a USB plotter on its own.
+#[tokio::test]
+async fn an_agent_troubleshoots_like_the_window() {
+    use flatcraft_engine::troubleshoot::{Symptom, checklist};
+    let f = connect().await;
+    exec(
+        &f,
+        "object.import_svg",
+        json!({ "svg": SVG, "name": "box" }),
+    )
+    .await;
+    let c = exec(&f, "job.troubleshoot", json!({ "symptom": "not_through" })).await;
+    let want = {
+        let s = f.session.lock().unwrap();
+        let input = flatcraft_engine::job::JobInput::of(&s).unwrap();
+        let log = s.cut_log();
+        checklist(
+            &input,
+            Symptom::NotThrough,
+            log.last_good(&input.job.material_id),
+        )
+    };
+    assert_eq!(c, serde_json::to_value(&want).unwrap());
+    let force = c["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["check"] == "force")
+        .unwrap();
+    let fix = &force["fixes"][0];
+    assert_eq!(fix["label"], "Force +2");
+    assert_eq!(fix["command"], "job.set_overrides");
+    let before = c["settings"]["force"].as_u64().unwrap();
+    let out = exec(&f, "job.set_overrides", fix["args"].clone()).await;
+    assert_eq!(out["force"], before + 2);
+    let p = exec(&f, "profiles.get", json!({ "id": "copy-paper" })).await;
+    assert_eq!(p["force"], before, "the preset stays");
+    // A USB cut still needs the person.
+    exec(&f, "job.set_plotter", json!({ "id": "silhouette-cameo-2" })).await;
+    let r = call(
+        &f,
+        "execute",
+        json!({ "command": "job.send", "params": {} }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true), "{}", text(&r));
+}

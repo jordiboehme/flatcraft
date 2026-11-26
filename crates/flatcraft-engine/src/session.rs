@@ -1326,6 +1326,7 @@ mod tests {
                 "profiles.get",
                 "job.preview",
                 "job.history",
+                "job.troubleshoot",
                 "document.preview",
                 "document.export",
             ]

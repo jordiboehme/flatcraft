@@ -92,6 +92,62 @@ command!(
     description: "Makes the FlatCraft test sheet, 280 x 280 mm, to cut first on a real machine. It holds a 50 mm square, eight V tips (15 to 170 degrees, legs 20 mm), circles of radius 0.5 to 25 mm, a 30 mm square with a 10 mm hole, a 40 mm line, an S curve, an asymmetric F (stem on the left, arms pointing right, 20 mm tall) and 100 mm rulers along x and y with 10 mm ticks. With add_to_document (default true) it is added as the object 'Test patterns', centred in the cutting area. With svg_path it is also written as an SVG file (agents may not write inside the FlatCraft config directory). Returns {id (when added), svg_path (when written)}.",
 );
 
+// ---------------------------------------------------------------- tools.test_shape
+
+fn run_test_shape(s: &mut Session, _: super::NoParams, _: Origin) -> Result<Value, CommandError> {
+    use crate::patterns::{TEST_SHAPE_NAME, is_test_shape, test_shape_svg};
+    use crate::troubleshoot::TEST_SHAPE_GAP_MM;
+    let input = crate::job::JobInput::of(s)?;
+    let Some(spot) = crate::troubleshoot::test_shape_spot(&input) else {
+        return Err(CommandError::Refused(format!(
+            "There is no free spot for the test shape: it needs a {} square with {} around it inside the cutting area. Move your design closer together, or pick a larger mat.",
+            crate::report::mm(crate::patterns::TEST_SQUARE_MM),
+            crate::report::mm(TEST_SHAPE_GAP_MM)
+        )));
+    };
+    let existing = s
+        .doc()
+        .document
+        .objects
+        .iter()
+        .find(|o| is_test_shape(&o.name, &o.geometry))
+        .map(|o| o.id);
+    let (id, added) = match existing {
+        Some(id) => (id, false),
+        None => (
+            add_svg(
+                s,
+                TEST_SHAPE_NAME.to_string(),
+                test_shape_svg().into_bytes(),
+            )?
+            .0,
+            true,
+        ),
+    };
+    let o = object_mut(&mut s.doc_mut().document, id)?;
+    let b = super::placed_bounds_or_center(o);
+    super::translate(o, spot - b.origin());
+    let b = super::placed_bounds_or_center(o);
+    let st = s.doc_mut();
+    st.selection.clear();
+    st.selection.insert(id);
+    Ok(json!({
+        "id": id.0,
+        "added": added,
+        "bounds_mm": super::rect_json(b),
+    }))
+}
+
+command!(
+    ToolsTestShape,
+    id: "tools.test_shape",
+    title: "Test shape",
+    mutates: true,
+    params: super::NoParams,
+    run: run_test_shape,
+    description: "Puts the test shape on the mat: the 30 mm square with a 10 mm hole from the test sheet, as the object 'Test shape', selected. It goes to the first free spot of the cutting area, reading from the top-left row by row, at least 5 mm away from every other object (hidden and skipped ones too). If the test shape is already there, it moves to that spot instead of adding a second one. Cut it first to check that the knife cuts through, the hole drops out and the size is right. Refused when there is no room. Returns {id, added (false when it moved the one already there), bounds_mm: {x0, y0, x1, y1}}.",
+);
+
 // ---------------------------------------------------------------- document.preview
 
 fn default_max_px() -> u32 {

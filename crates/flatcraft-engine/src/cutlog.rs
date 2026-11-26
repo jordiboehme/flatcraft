@@ -150,6 +150,17 @@ impl CutLog {
             .find(|e| e.material_id == material_id && e.outcome.is_none())
     }
 
+    /// The newest cut with this material that the person rated good: the
+    /// troubleshooter's "Last good cut with this material".
+    pub fn last_good(&self, material_id: &str) -> Option<&CutEntry> {
+        self.entries.iter().rev().find(|e| {
+            e.material_id == material_id
+                && e.outcome
+                    .as_ref()
+                    .is_some_and(|o| o.verdict == Verdict::Good)
+        })
+    }
+
     /// The cut the Job card recalls for this material: the newest with an
     /// outcome, else the newest.
     pub fn last_time(&self, material_id: &str) -> Option<&CutEntry> {
