@@ -619,6 +619,14 @@ fn a_hidden_member_is_not_part_of_the_group_box() {
     assert!(close(after.center().y, before.center().y));
 }
 
+/// The common box of the objects `ids`.
+fn box_of(s: &mut Session, ids: &[u64]) -> Rect {
+    ids.iter()
+        .map(|id| bounds(s, *id))
+        .reduce(|x, y| x.union(y))
+        .unwrap()
+}
+
 fn scale_of(s: &Session, id: u64) -> f64 {
     s.doc()
         .document
@@ -677,6 +685,7 @@ fn linked_copies_in_groups_scale_once() {
     run(&mut s, "object.ungroup", json!({ "ids": [g] }));
     let g1 = group(&mut s, &[a, b]);
     let g2 = group(&mut s, &[l, c]);
+    let (b1, b2) = (box_of(&mut s, &[a, b]), box_of(&mut s, &[l, c]));
     run(
         &mut s,
         "object.scale",
@@ -686,6 +695,13 @@ fn linked_copies_in_groups_scale_once() {
         assert_eq!(scale_of(&s, id), 2.0, "object {id}");
     }
     assert!(s.doc().document.link_groups_agree());
+    // Each group scales about its own box centre, measured before anything
+    // scaled: neither slides.
+    for (ids, before) in [([a, b], b1), ([l, c], b2)] {
+        let after = box_of(&mut s, &ids);
+        let want = Rect::from_center_size(before.center(), before.size() * 2.0);
+        assert!(close_rect(after, want), "{before:?} -> {after:?}");
+    }
     // As one piece (the canvas handles) too.
     run(&mut s, "edit.undo", json!({}));
     run(
@@ -716,16 +732,35 @@ fn rotate_and_mirror_apply_once_to_linked_copies_in_groups() {
     let c = rect(&mut s, "c", 120.0, 10.0, 10.0, 10.0);
     let g1 = group(&mut s, &[a, b]);
     let g2 = group(&mut s, &[l, c]);
+    let (b1, b2) = (box_of(&mut s, &[a, b]), box_of(&mut s, &[l, c]));
+    // A quarter turn of each group about its own box centre keeps it.
     run(
         &mut s,
         "object.rotate",
-        json!({ "ids": [g1, g2], "degrees": 30.0, "about": "each" }),
+        json!({ "ids": [g1, g2], "degrees": 90.0, "about": "each" }),
     );
+    for (ids, before) in [([a, b], b1), ([l, c], b2)] {
+        let after = box_of(&mut s, &ids).center();
+        let c0 = before.center();
+        assert!(
+            close(after.x, c0.x) && close(after.y, c0.y),
+            "{c0:?} -> {after:?}"
+        );
+    }
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [g1, g2], "degrees": -60.0, "about": "each" }),
+    );
+    let (m1, m2) = (box_of(&mut s, &[a, b]), box_of(&mut s, &[l, c]));
     run(
         &mut s,
         "object.mirror",
         json!({ "ids": [g1, g2], "axis": "horizontal", "about": "each" }),
     );
+    // Each group mirrors across its own box, which stays.
+    assert!(close_rect(box_of(&mut s, &[a, b]), m1));
+    assert!(close_rect(box_of(&mut s, &[l, c]), m2));
     for id in [a, b, l, c] {
         let t = s.doc().document.get(ObjectId(id)).unwrap().transform;
         assert!(

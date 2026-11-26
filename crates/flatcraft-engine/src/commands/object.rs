@@ -1493,7 +1493,7 @@ fn run_scale(s: &mut Session, p: ScaleParams, _: Origin) -> Result<Value, Comman
     // or not.
     let mut scaled: Vec<ObjectId> = Vec::new();
     if p.group {
-        scale_group(s, &ids, factor, width, height, &p, &mut scaled)?;
+        scale_group(s, &ids, factor, width, height, &p, &mut scaled, None)?;
         return Ok(json!({ "ids": ids_json(&ids) }));
     }
     // Each unit on its own: a whole group scales as one piece about its
@@ -1511,9 +1511,25 @@ fn run_scale(s: &mut Session, p: ScaleParams, _: Origin) -> Result<Value, Comman
             CommandError::InvalidParams(format!("object {} has no geometry to scale", id.0))
         })?);
     }
+    // Every group's box too, before anything scales: a linked member
+    // scaled with an earlier group must not move a later group's anchor.
+    let mut group_olds = Vec::with_capacity(groups.len());
     for g in &groups {
-        let leaves = unit_leaves(&s.doc().document, *g);
-        scale_group(s, &leaves, factor, width, height, &p, &mut scaled)?;
+        let doc = &s.doc().document;
+        let leaves = unit_leaves(doc, *g);
+        group_olds.push((leaves.clone(), scale_box(doc, &leaves)?));
+    }
+    for (leaves, old) in group_olds {
+        scale_group(
+            s,
+            &leaves,
+            factor,
+            width,
+            height,
+            &p,
+            &mut scaled,
+            Some(old),
+        )?;
     }
     let doc = &mut s.doc_mut().document;
     for (id, &old) in objects.iter().zip(&olds) {
@@ -1601,9 +1617,30 @@ fn odd_quarter(deg: f64) -> Option<bool> {
     ((quarter - k).abs() <= 1e-9).then_some((k as i64).rem_euclid(2) == 1)
 }
 
+/// The box `object.scale` scales a set of objects by: what is cut of the
+/// shown ones (see `box_members`). Every id must exist and have geometry.
+fn scale_box(doc: &Document, ids: &[ObjectId]) -> Result<Rect, CommandError> {
+    for id in ids {
+        check_exists(doc, *id)?;
+    }
+    let mut out: Option<Rect> = None;
+    // Hidden objects are not part of the box (see `box_members`).
+    for o in super::box_members(doc, ids) {
+        let id = o.id;
+        let b = placed_bounds(o).ok_or_else(|| {
+            CommandError::InvalidParams(format!("object {} has no geometry to scale", id.0))
+        })?;
+        out = Some(out.map_or(b, |r| r.union(b)));
+    }
+    out.ok_or_else(|| CommandError::InvalidParams("no objects to scale".into()))
+}
+
 /// `object.scale` with `group`: the common bounding box of all objects
 /// scales about its anchor, by one factor, or by a factor along x and one
-/// along y when every object is straight.
+/// along y when every object is straight. `measured` is the box measured
+/// before the command changed anything (several groups scale in one
+/// command), else it is measured now.
+#[allow(clippy::too_many_arguments)]
 fn scale_group(
     s: &mut Session,
     ids: &[ObjectId],
@@ -1612,24 +1649,14 @@ fn scale_group(
     height: Option<f64>,
     p: &ScaleParams,
     scaled: &mut Vec<ObjectId>,
+    measured: Option<Rect>,
 ) -> Result<(), CommandError> {
     let doc = &mut s.doc_mut().document;
-    let group_box = |doc: &Document| -> Result<Rect, CommandError> {
-        for id in ids {
-            check_exists(doc, *id)?;
-        }
-        let mut out: Option<Rect> = None;
-        // Hidden objects are not part of the box (see `box_members`).
-        for o in super::box_members(doc, ids) {
-            let id = o.id;
-            let b = placed_bounds(o).ok_or_else(|| {
-                CommandError::InvalidParams(format!("object {} has no geometry to scale", id.0))
-            })?;
-            out = Some(out.map_or(b, |r| r.union(b)));
-        }
-        out.ok_or_else(|| CommandError::InvalidParams("no objects to scale".into()))
+    let group_box = |doc: &Document| scale_box(doc, ids);
+    let old = match measured {
+        Some(b) => b,
+        None => group_box(doc)?,
     };
-    let old = group_box(doc)?;
     let ratio = |target: Option<f64>, have: f64, what: &str| match target {
         None => Ok(None),
         Some(_) if have <= 1e-12 => Err(CommandError::InvalidParams(format!(
