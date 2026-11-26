@@ -78,6 +78,8 @@ fn close(a: Rect, b: Rect) -> bool {
 
 #[test]
 fn the_box_keeps_the_margin_around_the_design() {
+    // structural: the box is the design box plus the margin by
+    // construction; flatcraft-sim/tests/weed.rs judges the behaviour.
     let input = [
         placed(1, rect_path(50.0, 60.0, 20.0, 10.0)),
         placed(2, rect_path(100.0, 40.0, 5.0, 5.0)),
@@ -96,6 +98,8 @@ fn the_box_keeps_the_margin_around_the_design() {
 
 #[test]
 fn a_box_per_object_merges_boxes_that_would_touch() {
+    // structural: restates the merge rule; the behaviour is judged by
+    // weeds_keep_clear_of_the_design and the simulation.
     // 1 and 2 are 5 mm apart: their 3 mm boxes overlap and merge. 3 is
     // far away and gets its own box.
     let input = [
@@ -133,6 +137,7 @@ fn a_box_that_does_not_fit_is_left_out_and_counted() {
 
 #[test]
 fn no_weed_paths_when_off() {
+    // structural
     let input = [
         placed(1, rect_path(20.0, 20.0, 100.0, 100.0)),
         placed(2, rect_path(150.0, 150.0, 10.0, 10.0)),
@@ -154,6 +159,7 @@ fn no_weed_paths_when_off() {
 
 #[test]
 fn design_first_then_lines_then_the_box() {
+    // structural: the order `weed::sequence` builds.
     let input = [
         placed(1, rect_path(20.0, 20.0, 30.0, 30.0)),
         placed(2, rect_path(80.0, 30.0, 40.0, 20.0)),

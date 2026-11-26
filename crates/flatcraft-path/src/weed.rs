@@ -301,7 +301,8 @@ fn lines(
 }
 
 /// A weed line or box as a toolpath: `Weed` kind, [`WEED_OBJECT`], its
-/// index among the lines or the boxes as path index.
+/// index among the lines (renumbered in cut order by [`sequence`]) or the
+/// boxes as path index.
 fn weed_toolpath(points: Vec<Point>, closed: bool, index: usize) -> Toolpath {
     let mut t = Toolpath::new(
         points,
@@ -425,6 +426,15 @@ pub fn sequence(design: Vec<Toolpath>, weeds: &Weeds, s: &PipelineSettings) -> V
         out.extend(design);
         out.extend(greedy(indexed, head).0);
     }
+    // Number the weed lines in cut order, so the listing names each piece
+    // once (band pieces of one line get their own numbers).
+    for (n, t) in out
+        .iter_mut()
+        .filter(|t| t.kind == ToolpathKind::Weed)
+        .enumerate()
+    {
+        t.source.path_index = n;
+    }
     for (i, r) in weeds.boxes.iter().enumerate() {
         let head = out.last().and_then(end_of).unwrap_or(s.home);
         let corners = [
@@ -494,6 +504,7 @@ mod tests {
 
     #[test]
     fn nothing_when_off() {
+        // structural
         let t = Toolpath::new(
             vec![
                 Point::new(10.0, 10.0),

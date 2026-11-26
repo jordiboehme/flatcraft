@@ -105,6 +105,7 @@ fn set_weeding_refuses_values_out_of_range() {
 
 #[test]
 fn the_listing_names_weed_paths_after_the_design() {
+    // structural: the listing format and the order `weed::sequence` builds.
     let d = dirs();
     let mut s = session(&d);
     with_labels(&mut s);
