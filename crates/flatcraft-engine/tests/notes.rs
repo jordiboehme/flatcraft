@@ -206,12 +206,12 @@ fn agents_read_preset_notes_but_no_command_writes_them() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = session(&dir);
     s.profiles
-        .set_material_notes("vinyl", "Oracal 651: force 10 works.")
+        .set_material_notes("vinyl", "Glossy vinyl: force 10 works.")
         .unwrap();
     let r = s
         .execute("profiles.get", json!({ "id": "vinyl" }), Origin::Agent)
         .unwrap();
-    assert_eq!(r["notes"], "Oracal 651: force 10 works.");
+    assert_eq!(r["notes"], "Glossy vinyl: force 10 works.");
     let r = s
         .execute("profiles.get", json!({ "id": "cardstock" }), Origin::Agent)
         .unwrap();

@@ -49,13 +49,13 @@ fn system_presets_have_no_notes_until_the_person_adds_some() {
 fn notes_on_a_system_preset_go_into_the_annotation_file() {
     let d = tempdir().unwrap();
     let mut s = ProfileStore::load(d.path()).unwrap();
-    s.set_material_notes("vinyl", "Oracal 651: force 10 works.")
+    s.set_material_notes("vinyl", "Glossy vinyl: force 10 works.")
         .unwrap();
     s.set_plotter_notes("silhouette-cameo-2", "Blade 3 for cardstock.")
         .unwrap();
     assert_eq!(
         s.material("vinyl").unwrap().notes.as_deref(),
-        Some("Oracal 651: force 10 works.")
+        Some("Glossy vinyl: force 10 works.")
     );
     assert_eq!(
         s.plotter("silhouette-cameo-2").unwrap().notes.as_deref(),
@@ -69,7 +69,7 @@ fn notes_on_a_system_preset_go_into_the_annotation_file() {
     let mut again = ProfileStore::load(d.path()).unwrap();
     assert_eq!(
         again.material("vinyl").unwrap().notes.as_deref(),
-        Some("Oracal 651: force 10 works.")
+        Some("Glossy vinyl: force 10 works.")
     );
     again.reload().unwrap();
     assert_eq!(

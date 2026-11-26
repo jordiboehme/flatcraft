@@ -56,13 +56,13 @@ fn notes_on_a_system_preset_are_kept_beside_it() {
         "but its notes are the person's"
     );
     assert!(disabled(&h, "Save notes"), "nothing to save yet");
-    type_into(&mut h, "Preset notes", "Oracal 651: force 10 works.");
+    type_into(&mut h, "Preset notes", "Glossy vinyl: force 10 works.");
     assert!(!disabled(&h, "Save notes"));
     click(&mut h, "Save notes");
     let st = s.lock().unwrap();
     assert_eq!(
         st.profiles.material("vinyl").unwrap().notes.as_deref(),
-        Some("Oracal 651: force 10 works.")
+        Some("Glossy vinyl: force 10 works.")
     );
     let profiles = dir.path().join("profiles");
     assert!(profiles.join(flatcraft_device::PRESET_NOTES_FILE).exists());
