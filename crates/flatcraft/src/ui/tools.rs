@@ -201,6 +201,8 @@ pub enum Act {
     Align(AlignMode, AlignTo),
     DistributeHorizontal,
     DistributeVertical,
+    Group,
+    Ungroup,
     RectangularPattern,
     CircularPattern,
     AutoArrangePanel,
@@ -229,6 +231,7 @@ pub enum Section {
     Mirror,
     Align,
     Distribute,
+    Group,
 }
 
 impl Section {
@@ -237,6 +240,7 @@ impl Section {
             Section::Mirror => "Mirror",
             Section::Align => "Align",
             Section::Distribute => "Distribute",
+            Section::Group => "Group",
         }
     }
 
@@ -245,6 +249,7 @@ impl Section {
             Section::Mirror => Icon::Mirror,
             Section::Align => Icon::Align,
             Section::Distribute => Icon::DistributeHorizontal,
+            Section::Group => Icon::Group,
         }
     }
 }
@@ -319,7 +324,7 @@ use Style::{Big, Small};
 
 /// Every action, in the order of the ribbon and of the lists. The ids are
 /// `flatcraft_engine::prefs::RIBBON_PIN_IDS`, in the same order.
-pub const TOOLS: [Tool; 38] = [
+pub const TOOLS: [Tool; 40] = [
     tool(
         "import",
         Act::Import,
@@ -563,6 +568,30 @@ pub const TOOLS: [Tool; 38] = [
         ),
         Section::Distribute,
     ),
+    in_section(
+        tool(
+            "group",
+            Act::Group,
+            "Group",
+            Icon::Group,
+            G::Arrange,
+            Small,
+            "Put the selected objects together so they act as one: one click selects them all, and they move, turn, line up and get packed as one piece. Each keeps its own cut settings. Double-click a member to change it alone. Like the Fellowship: many members, one quest.",
+        ),
+        Section::Group,
+    ),
+    in_section(
+        tool(
+            "ungroup",
+            Act::Ungroup,
+            "Ungroup",
+            Icon::Ungroup,
+            G::Arrange,
+            Small,
+            "Take the selected group apart: its members stay where they are and act on their own again. A group inside it stays a group. With members picked inside a group (double-click), only those leave it.",
+        ),
+        Section::Group,
+    ),
     tool(
         "pattern.rectangular",
         Act::RectangularPattern,
@@ -670,7 +699,7 @@ pub const TOOLS: [Tool; 38] = [
 /// the one accent part that tells what happens, in the accent colour.
 /// Every other child is ink. Every icon of an action, a group or a
 /// switch has an entry; the framed Align icons use their base icon's.
-pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 44] = [
+pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 46] = [
     (Icon::Import, &[2], &[0, 1]),
     (Icon::Trace, &[], &[2]),
     (Icon::TestPatterns, &[0], &[1]),
@@ -708,8 +737,10 @@ pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 44] = [
     (Icon::ZoomIn, &[], &[2, 3]),
     (Icon::Eye, &[], &[1]),
     (Icon::Panels, &[0], &[1, 2]),
-    (Icon::EachObject, &[1], &[0]),
-    (Icon::AsGroup, &[4, 5], &[0, 1, 2, 3]),
+    (Icon::EachObject, &[1, 2], &[0]),
+    (Icon::AsGroup, &[], &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
+    (Icon::Group, &[4, 5], &[0, 1, 2, 3]),
+    (Icon::Ungroup, &[1], &[0]),
     (Icon::AutoArrangePanel, &[0, 2], &[1, 3]),
     // Home's New cards.
     (Icon::NewFile, &[0, 1], &[2, 3]),
@@ -836,6 +867,8 @@ impl Tool {
             Act::MirrorHorizontal | Act::MirrorVertical => "object.mirror",
             Act::Align(..) => "arrange.align",
             Act::DistributeHorizontal | Act::DistributeVertical => "arrange.distribute",
+            Act::Group => "object.group",
+            Act::Ungroup => "object.ungroup",
             Act::CircularPattern => "object.circular_copies",
             Act::AutoArrangePanel | Act::AutoArrange => "arrange.auto",
             _ => return None,
@@ -845,12 +878,46 @@ impl Tool {
     /// Why the action cannot run now, as a full sentence that says what to
     /// do, or `None` when it can.
     pub fn blocked(&self, snap: &Snapshot) -> Option<&'static str> {
-        self.blocked_for(snap, snap.selection.len())
+        let ids: Vec<u64> = snap.selection.iter().copied().collect();
+        self.blocked_for(snap, &ids)
     }
 
-    /// Like [`Self::blocked`], for `n` objects (the context menu works on
-    /// the objects it was opened for).
-    pub fn blocked_for(&self, snap: &Snapshot, n: usize) -> Option<&'static str> {
+    /// The title it shows for the objects `ids`: Ungroup says what it will
+    /// do ("Remove 2 objects from group").
+    pub fn live_title(&self, snap: &Snapshot, ids: &[u64]) -> String {
+        match self.act {
+            Act::Ungroup => ungroup_plan(snap, ids).title(),
+            _ => self.title.to_string(),
+        }
+    }
+
+    /// The text of its hover card for the objects `ids`.
+    pub fn live_description(&self, snap: &Snapshot, ids: &[u64]) -> &'static str {
+        match self.act {
+            Act::Ungroup if !ungroup_plan(snap, ids).dissolve.is_empty() => self.description,
+            Act::Ungroup if !ungroup_plan(snap, ids).release.is_empty() => RELEASE_CARD,
+            _ => self.description,
+        }
+    }
+
+    /// Like [`Self::blocked`], for the objects `ids` (the context menu
+    /// works on the objects it was opened for).
+    pub fn blocked_for(&self, snap: &Snapshot, ids: &[u64]) -> Option<&'static str> {
+        // Counted as the engine counts: a whole group is one object.
+        let n = if matches!(
+            self.act,
+            Act::Group
+                | Act::Ungroup
+                | Act::Align(_, AlignTo::Selection)
+                | Act::DistributeHorizontal
+                | Act::DistributeVertical
+                | Act::Copies
+                | Act::RectangularPattern
+        ) {
+            snap.units_of(ids).len()
+        } else {
+            ids.len()
+        };
         const SELECT: &str = "Select something first.";
         // The engine refuses these without a cutting area.
         let needs_area = matches!(
@@ -888,6 +955,10 @@ impl Tool {
             Act::DistributeHorizontal | Act::DistributeVertical => {
                 (n < 3).then_some("Select 3 or more objects first.")
             }
+            Act::Group => flatcraft_engine::commands::group::group_refusal(n),
+            Act::Ungroup => ungroup_plan(snap, ids)
+                .is_empty()
+                .then_some(flatcraft_engine::commands::group::UNGROUP_REFUSAL),
             Act::AutoArrangePanel | Act::AutoArrange => {
                 if snap.objects.is_empty() {
                     Some("Import something first. There is nothing to arrange yet.")
@@ -990,6 +1061,8 @@ impl Tool {
             Act::DistributeVertical => {
                 push(actions, ribbon::distribute_action(doc_id, &ids, "vertical"))
             }
+            Act::Group => push(actions, group_action(doc_id, &ids)),
+            Act::Ungroup => push(actions, ungroup_action(doc_id, &ids)),
             Act::AutoArrange => push(actions, auto_arrange_action(snap)),
             Act::ZoomFit => st.fit_pending = true,
             Act::Zoom100 => {
@@ -1006,6 +1079,33 @@ impl Tool {
             Act::DebugPanel => *show_debug = !*show_debug,
         }
     }
+}
+
+/// What Ungroup does with the objects `ids` (see `UngroupPlan`).
+pub fn ungroup_plan(
+    snap: &Snapshot,
+    ids: &[u64],
+) -> flatcraft_engine::commands::group::UngroupPlan {
+    let units: Vec<flatcraft_core::document::ObjectId> = snap
+        .units_of(ids)
+        .into_iter()
+        .map(flatcraft_core::document::ObjectId)
+        .collect();
+    flatcraft_engine::commands::group::UngroupPlan::of(&snap.tree, &units)
+}
+
+/// The card of Ungroup when it takes members out of their group.
+pub const RELEASE_CARD: &str = "Take the picked members out of their group: they stay where they are and act on their own again. The rest of the group stays together. A group left with one member is no group.";
+
+/// The `object.group` of Group (the ribbon, the context menu, Cmd+G).
+pub fn group_action(doc_id: u64, ids: &[u64]) -> Action {
+    Action::run(doc_id, "object.group", json!({ "ids": ids }))
+}
+
+/// The `object.ungroup` of Ungroup (the ribbon, the context menu,
+/// Shift+Cmd+G).
+pub fn ungroup_action(doc_id: u64, ids: &[u64]) -> Action {
+    Action::run(doc_id, "object.ungroup", json!({ "ids": ids }))
 }
 
 /// Why Auto arrange cannot run when every selected object is hidden.
@@ -1255,7 +1355,7 @@ impl Setting {
             Setting::RotateZone => ROTATE_CARD.as_str(),
             Setting::Angle => ANGLE_CARD.as_str(),
             Setting::EachObject => {
-                "Two separate boxes (on): the Rotate and Mirror buttons and the % field work on each selected object about its own centre. Boxes in one frame (off): the selection moves as one piece, like Voltron. The Angle field always sets the angle of each object on its own, and turning by hand on the mat always turns the selection as one piece."
+                "Separate shapes (on): the Rotate and Mirror buttons and the % field work on each selected object about its own centre. One dashed frame (off): the selection moves as one piece, like Voltron. A group always counts as one object and turns about its own centre. The Angle field always sets the angle of each object on its own, and turning by hand on the mat always turns the selection as one piece."
             }
             Setting::Search => {
                 "Type a few letters of what you want to do, then pick it from the list or press Enter."

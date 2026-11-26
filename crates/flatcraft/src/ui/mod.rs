@@ -2495,16 +2495,35 @@ fn prepare_keys(
         actions.push(ribbon::duplicate_action(snap.doc_id, &ids));
         return;
     }
+    // Shift+Cmd+G first: Cmd+G must not take it.
+    for (key, act) in [
+        (help::PrepareKey::Ungroup, tools::Act::Ungroup),
+        (help::PrepareKey::Group, tools::Act::Group),
+    ] {
+        if help::pressed(ctx, key) {
+            let t = tools::by_act(act);
+            if t.blocked(snap).is_none() {
+                actions.push(if act == tools::Act::Group {
+                    tools::group_action(snap.doc_id, &ids)
+                } else {
+                    tools::ungroup_action(snap.doc_id, &ids)
+                });
+            }
+            return;
+        }
+    }
     canvas::nudge_keys(ctx, snap, st, now, actions);
     let delete = help::pressed(ctx, help::PrepareKey::Delete);
     let escape = help::pressed(ctx, help::PrepareKey::ClearSelection);
     if delete {
         actions.push(ribbon::delete_action(snap.doc_id, &ids));
     } else if escape {
+        // Inside a group, Escape leaves it: the whole group is selected.
+        let ids = canvas::leave_group(snap, st).unwrap_or_default();
         actions.push(Action::run(
             snap.doc_id,
             "object.select",
-            json!({ "ids": [] }),
+            json!({ "ids": ids }),
         ));
     }
 }

@@ -78,8 +78,10 @@ except the two files below.
 | Edit group | pencil |
 | Zoom group | zoom-in |
 | Panels group | panels-top-left |
-| Each object on (each on its own) | ungroup |
-| Each object off (one group) | group |
+| Each object on (each on its own) | shapes |
+| Each object off (the selection as one piece) | square-dashed |
+| Group | group |
+| Ungroup | ungroup |
 | Auto arrange... (panel) | layout-dashboard |
 | Warning (dialog badge) | triangle-exclamation-point |
 | Info (dialog badge) | info |

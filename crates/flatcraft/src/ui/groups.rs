@@ -124,10 +124,16 @@ pub fn card_ui(ui: &mut Ui, title: &str, description: &str, reason: Option<&str>
 
 /// The card of an action, with the reason when it cannot run now.
 pub fn tool_card(resp: &Response, tool: &Tool, snap: &Snapshot, beside: bool) {
+    let ids: Vec<u64> = snap.selection.iter().copied().collect();
+    // Ungroup names what it will do ("Remove 2 objects from group").
+    let title = match tool.act {
+        super::tools::Act::Ungroup => tool.live_title(snap, &ids),
+        _ => tool.card_title(snap),
+    };
     card(
         resp,
-        &tool.card_title(snap),
-        tool.description,
+        &title,
+        tool.live_description(snap, &ids),
         tool.blocked(snap),
         beside,
     );
@@ -728,7 +734,9 @@ fn row(ui: &mut Ui, t: &'static Tool, cx: &mut Cx) {
             ui.add_space(ICON_SIZE);
         }
         let main_width = ui.available_width() - ICON_SIZE - 3.0 * ui.spacing().item_spacing.x;
-        let mut b = egui::Button::image_and_text(image(ui, t.icon, ICON_SIZE), t.title)
+        let ids: Vec<u64> = cx.snap.selection.iter().copied().collect();
+        let title = t.live_title(cx.snap, &ids);
+        let mut b = egui::Button::image_and_text(image(ui, t.icon, ICON_SIZE), title)
             .min_size(egui::vec2(main_width, 0.0));
         // The shortcut at the right; without one, an empty right part keeps
         // the icon and title at the left.

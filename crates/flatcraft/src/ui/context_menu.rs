@@ -40,6 +40,8 @@ pub enum Item {
     Align,
     /// A submenu.
     Distribute,
+    Group,
+    Ungroup,
     Hide,
     Show,
     SkipCutting,
@@ -72,6 +74,8 @@ impl Item {
             Item::RotateRight => Act::RotateRight,
             Item::MirrorHorizontal => Act::MirrorHorizontal,
             Item::MirrorVertical => Act::MirrorVertical,
+            Item::Group => Act::Group,
+            Item::Ungroup => Act::Ungroup,
             Item::Delete => Act::Delete,
             Item::Import => Act::Import,
             Item::AutoArrange => Act::AutoArrange,
@@ -148,6 +152,23 @@ impl Item {
         }
     }
 
+    /// Its text for the objects `ids`: Ungroup says what it will do
+    /// ("Remove 2 objects from group").
+    pub fn text(self, snap: &Snapshot, ids: &[u64]) -> String {
+        match self.tool() {
+            Some(t) => t.live_title(snap, ids),
+            None => self.label().to_string(),
+        }
+    }
+
+    /// Its hover card text for the objects `ids`.
+    pub fn card_text(self, snap: &Snapshot, ids: &[u64]) -> &'static str {
+        match self.tool() {
+            Some(t) => t.live_description(snap, ids),
+            None => self.description(),
+        }
+    }
+
     /// The key hint, from the shortcut table.
     pub fn hint(self) -> Option<String> {
         let key = match self {
@@ -163,18 +184,20 @@ impl Item {
     pub fn why(self, snap: &Snapshot, st: &PrepareState, ids: &[u64]) -> Option<&'static str> {
         let n = ids.len();
         match self {
-            Item::Rename => (n > 1).then_some("Select only one object to rename it."),
+            // A whole group is renamed as one.
+            Item::Rename => (snap.units_of(ids).len() > 1)
+                .then_some("Select only one object or group to rename it."),
             Item::TraceAgain => (n > 1).then_some("Select only one picture to trace it again."),
             Item::LinkCopies => (n < 2).then_some("Select 2 or more copies of one design first."),
             Item::Align => None,
-            Item::Distribute => tools::by_act(Act::DistributeHorizontal).blocked_for(snap, n),
+            Item::Distribute => tools::by_act(Act::DistributeHorizontal).blocked_for(snap, ids),
             Item::SelectAll => snap
                 .objects
                 .is_empty()
                 .then_some("Import something first. There is nothing to select yet."),
             Item::RevealSource | Item::CopySourcePath => source_file(snap, st, ids)?.err(),
             Item::ExportSelected => super::export_dialog::selected_why(snap, ids),
-            _ => self.tool()?.blocked_for(snap, n),
+            _ => self.tool()?.blocked_for(snap, ids),
         }
     }
 }
@@ -220,21 +243,22 @@ pub fn source_path(snap: &Snapshot, id: u64) -> Option<std::path::PathBuf> {
     flatcraft_engine::commands::sources::find_linked_file(link, o.raster, snap.project.as_deref())
 }
 
-/// The objects a right-click works on. A click on an object outside the
-/// selection selects it; a click inside the selection keeps it; a click on
-/// the empty mat clears the selection. Pushes the select command when the
-/// selection changes.
-pub fn target(snap: &Snapshot, clicked: Option<u64>, actions: &mut Vec<Action>) -> Vec<u64> {
+/// The objects a right-click works on. `clicked` are the objects the
+/// click picks (an object, or all of its group, see `canvas::pick`). A
+/// click on objects outside the selection selects them; a click inside the
+/// selection keeps it; a click on the empty mat clears the selection.
+/// Pushes the select command when the selection changes.
+pub fn target(snap: &Snapshot, clicked: Option<Vec<u64>>, actions: &mut Vec<Action>) -> Vec<u64> {
     let selection: Vec<u64> = snap.selection.iter().copied().collect();
     match clicked {
-        Some(id) if snap.selection.contains(&id) => selection,
-        Some(id) => {
+        Some(ids) if ids.iter().any(|id| snap.selection.contains(id)) => selection,
+        Some(ids) => {
             actions.push(Action::run(
                 snap.doc_id,
                 "object.select",
-                json!({ "ids": [id] }),
+                json!({ "ids": ids }),
             ));
-            vec![id]
+            ids
         }
         None => {
             if !selection.is_empty() {
@@ -287,6 +311,7 @@ pub fn items(snap: &Snapshot, st: &PrepareState, ids: &[u64]) -> Vec<Vec<Item>> 
     ]);
 
     groups.push(vec![Item::Align, Item::Distribute]);
+    groups.push(vec![Item::Group, Item::Ungroup]);
 
     let mut g = vec![if objs.iter().any(|o| o.visible) {
         Item::Hide
@@ -374,7 +399,7 @@ fn draw(
                     _ => false,
                 });
                 for t in rows {
-                    let blocked = t.blocked_for(snap, ids.len());
+                    let blocked = t.blocked_for(snap, ids);
                     let r = ui.add_enabled(blocked.is_none(), egui::Button::new(t.title));
                     groups::card(&r, &t.full_title(), t.description, blocked, true);
                     if r.clicked() {
@@ -388,16 +413,18 @@ fn draw(
         }
         _ => {}
     }
-    let mut button = egui::Button::new(item.label());
+    let text = item.text(snap, ids);
+    let mut button = egui::Button::new(&text);
     if let Some(hint) = item.hint() {
         button = button.shortcut_text(hint);
     }
     let r = ui.add_enabled(why.is_none(), button);
-    let title = match item.tool() {
-        Some(t) => t.card_title(snap),
-        None => item.label().to_string(),
+    let title = match (item, item.tool()) {
+        (Item::Ungroup, _) => text,
+        (_, Some(t)) => t.card_title(snap),
+        (_, None) => item.label().to_string(),
     };
-    groups::card(&r, &title, item.description(), why, true);
+    groups::card(&r, &title, item.card_text(snap, ids), why, true);
     if !r.clicked() {
         return false;
     }
@@ -444,14 +471,17 @@ pub fn run_item(
             }
         }
         Item::Rename => {
-            if let Some(o) = first {
-                st.rename = Some(RenameDialog {
-                    doc_id,
-                    id: o.id,
-                    name: o.name.clone(),
-                });
+            // A whole group is renamed as one, else the one object.
+            let target = match snap.units_of(ids).as_slice() {
+                [one] => Some(*one),
+                _ => first.map(|o| o.id),
+            };
+            if let Some((id, name)) = target.and_then(|id| Some((id, snap.name_of(id)?))) {
+                st.rename = Some(RenameDialog { doc_id, id, name });
             }
         }
+        Item::Group => actions.push(tools::group_action(doc_id, ids)),
+        Item::Ungroup => actions.push(tools::ungroup_action(doc_id, ids)),
         Item::TraceAgain => {
             if let Some(id) = ribbon::single_raster_of(snap, ids) {
                 actions.push(Action::TraceDialog { doc_id, id });

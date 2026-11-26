@@ -194,7 +194,8 @@ fn not_ready(snap: &Snapshot, p: &ArrangePanel) -> Option<String> {
     if let Some(why) = p.kind.tool().blocked(snap) {
         return Some(why.into());
     }
-    let n = snap.selection.len() as u64;
+    // Copies are counted per unit: a whole group is copied as one.
+    let n = snap.units().len() as u64;
     let too_many = |copies: u64| {
         (copies * n > u64::from(MAX_COPIES))
             .then(|| format!("That is more than {MAX_COPIES} copies. Even Kamino has limits."))
@@ -246,7 +247,8 @@ pub fn ok_action(snap: &Snapshot, p: &ArrangePanel) -> Option<Action> {
                 doc_id,
                 "object.copies",
                 json!({
-                    "id": ids[0],
+                    // One object, or one whole group.
+                    "id": snap.units().first().copied().unwrap_or(ids[0]),
                     "count": copies_count(r),
                     "layout": { "grid": { "columns": r.columns } },
                     "gap_x_mm": r.gap_x_mm,
@@ -300,17 +302,34 @@ struct PlanKey {
 
 impl PlanKey {
     fn of(snap: &Snapshot, spacing_mm: f64) -> Option<Self> {
-        Some(Self {
-            objects: snap
-                .objects
-                .iter()
-                .map(|o| placement::AutoObject {
+        // A top-level group packs as one item, as `arrange.auto` has it.
+        let tops = snap.tree.top_of_each();
+        let top = |id: u64| {
+            tops.get(&flatcraft_core::document::ObjectId(id))
+                .map_or(id, |t| t.0)
+        };
+        let leaves: Vec<(u64, placement::AutoObject<u64>)> = snap
+            .objects
+            .iter()
+            .map(|o| {
+                let item = placement::AutoObject {
                     key: o.id,
                     visible: o.visible,
                     bounds: o.arrange_bounds(),
-                })
-                .collect(),
-            chosen: snap.selection.iter().copied().collect(),
+                };
+                (top(o.id), item)
+            })
+            .collect();
+        let mut chosen: Vec<u64> = Vec::new();
+        for id in &snap.selection {
+            let t = top(*id);
+            if !chosen.contains(&t) {
+                chosen.push(t);
+            }
+        }
+        Some(Self {
+            objects: placement::auto_units(&leaves),
+            chosen,
             area: snap.area?,
             spacing_mm,
         })
@@ -426,27 +445,56 @@ pub fn ghosts_with(
             }
         }
         PanelKind::Rotate => {
-            let centres: Vec<Point> = objs.iter().map(|o| o.transform.center_mm).collect();
-            let deg = v.rotate.degrees;
-            for (o, c) in objs
+            // A whole group turns as one piece, as `object.rotate` has it.
+            let units = snap.units();
+            let members: Vec<Vec<&ObjView>> = units
                 .iter()
-                .zip(placement::rotated_centres(&centres, deg, v.rotate.each))
-            {
-                out.push((o.id, turned(c, deg)));
+                .map(|u| {
+                    snap.leaves_of(*u)
+                        .iter()
+                        .filter_map(|id| snap.object(*id))
+                        .collect()
+                })
+                .collect();
+            let turn_units: Vec<placement::TurnUnit> = units
+                .iter()
+                .zip(&members)
+                .filter_map(|(u, m)| {
+                    Some(placement::TurnUnit {
+                        centre: snap.unit_centre(*u)?,
+                        members: m.iter().map(|o| o.transform.center_mm).collect(),
+                    })
+                })
+                .collect();
+            if turn_units.len() != units.len() {
+                return out;
+            }
+            let deg = v.rotate.degrees;
+            let moved = placement::rotated_units(&turn_units, deg, v.rotate.each);
+            for (m, centres) in members.iter().zip(moved) {
+                for (o, c) in m.iter().zip(centres) {
+                    out.push((o.id, turned(c, deg)));
+                }
             }
         }
         PanelKind::RectangularPattern => {
             let r = &v.rect;
-            let o = objs[0];
+            // One object, or a whole group laid out by its common box.
+            let ids: Vec<u64> = objs.iter().map(|o| o.id).collect();
             // No box yet (a big shape still building): no preview rather
             // than a wrong one.
-            let Some(b) = o.bounds() else {
+            if objs.iter().any(|o| o.bounds().is_none()) {
+                return out;
+            }
+            let Some(b) = snap.box_of(&ids) else {
                 return out;
             };
             for off in
                 placement::grid_offsets(b, Some(r.columns), copies_count(r), r.gap_x_mm, r.gap_y_mm)
             {
-                out.push((o.id, at(o.transform.center_mm + off)));
+                for o in &objs {
+                    out.push((o.id, at(o.transform.center_mm + off)));
+                }
             }
         }
         PanelKind::CircularPattern => {
@@ -454,22 +502,32 @@ pub fn ghosts_with(
             let Some(pivot) = circular_centre(snap, c) else {
                 return out;
             };
-            for o in &objs {
-                for t in placement::circular_copies(
-                    o.transform.center_mm,
-                    pivot,
-                    c.count,
-                    c.total_deg,
-                    c.rotate_copies,
-                ) {
-                    out.push((o.id, turned(t.center, t.rotate_deg)));
+            for u in snap.units() {
+                let Some(centre) = snap.unit_centre(u) else {
+                    continue;
+                };
+                let members: Vec<&ObjView> = snap
+                    .leaves_of(u)
+                    .iter()
+                    .filter_map(|id| snap.object(*id))
+                    .collect();
+                for t in
+                    placement::circular_copies(centre, pivot, c.count, c.total_deg, c.rotate_copies)
+                {
+                    for o in &members {
+                        let to = placement::carried(o.transform.center_mm, centre, t);
+                        out.push((o.id, turned(to, t.rotate_deg)));
+                    }
                 }
             }
         }
         PanelKind::AutoArrange => {
             for (id, d) in auto.map_or(&[][..], |p| &p.moves[..]).iter().copied() {
-                if let Some(o) = snap.object(id) {
-                    out.push((id, at(o.transform.center_mm + d)));
+                // A packed group moves all its members.
+                for leaf in snap.leaves_of(id) {
+                    if let Some(o) = snap.object(leaf) {
+                        out.push((leaf, at(o.transform.center_mm + d)));
+                    }
                 }
             }
         }

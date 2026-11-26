@@ -73,9 +73,13 @@ pub enum Icon {
     ZoomIn,
     /// "Panels" group.
     Panels,
-    /// The Each object toggle: each on its own (on), as one group (off).
+    /// The Each object toggle: each on its own (on), the selection as one
+    /// piece (off).
     EachObject,
     AsGroup,
+    /// The Group and Ungroup actions.
+    Group,
+    Ungroup,
     /// "Auto arrange...", the panel (the one-click one uses Arrange).
     AutoArrangePanel,
     /// The badges of the dialogs.
@@ -120,7 +124,7 @@ macro_rules! svg {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 82] = [
+    pub const ALL: [Icon; 84] = [
         Icon::Import,
         Icon::Trace,
         Icon::Duplicate,
@@ -183,6 +187,8 @@ impl Icon {
         Icon::Panels,
         Icon::EachObject,
         Icon::AsGroup,
+        Icon::Group,
+        Icon::Ungroup,
         Icon::AutoArrangePanel,
         Icon::Warning,
         Icon::Info,
@@ -286,8 +292,10 @@ impl Icon {
             Icon::Pencil => svg!("pencil"),
             Icon::ZoomIn => svg!("zoom-in"),
             Icon::Panels => svg!("panels-top-left"),
-            Icon::EachObject => svg!("ungroup"),
-            Icon::AsGroup => svg!("group"),
+            Icon::EachObject => svg!("shapes"),
+            Icon::AsGroup => svg!("square-dashed"),
+            Icon::Group => svg!("group"),
+            Icon::Ungroup => svg!("ungroup"),
             Icon::AutoArrangePanel => svg!("layout-dashboard"),
             Icon::Warning => svg!("triangle-exclamation-point"),
             Icon::Info => svg!("info"),

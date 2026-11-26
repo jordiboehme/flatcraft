@@ -161,7 +161,7 @@ fn name(item: Item) -> String {
     }
 }
 
-const ALL: [Item; 26] = [
+const ALL: [Item; 28] = [
     Item::Duplicate,
     Item::Copies,
     Item::LinkCopies,
@@ -172,6 +172,8 @@ const ALL: [Item; 26] = [
     Item::MirrorVertical,
     Item::Align,
     Item::Distribute,
+    Item::Group,
+    Item::Ungroup,
     Item::Hide,
     Item::Show,
     Item::SkipCutting,
@@ -368,6 +370,8 @@ fn the_menu_of_one_object() {
             MirrorVertical,
             Align,
             Distribute,
+            Group,
+            Ungroup,
             Hide,
             SkipCutting,
             Rename,
@@ -376,7 +380,10 @@ fn the_menu_of_one_object() {
         ]
     );
     // Not now: shown dimmed, with the reason on hover.
-    assert_eq!(dimmed_items(&r.h), vec![LinkCopies, Distribute]);
+    assert_eq!(
+        dimmed_items(&r.h),
+        vec![LinkCopies, Distribute, Group, Ungroup]
+    );
 }
 
 #[test]
@@ -434,6 +441,8 @@ fn the_menu_of_two_objects() {
             MirrorVertical,
             Align,
             Distribute,
+            Group,
+            Ungroup,
             Hide,
             SkipCutting,
             Rename,
@@ -441,7 +450,10 @@ fn the_menu_of_two_objects() {
             Delete
         ]
     );
-    assert_eq!(dimmed_items(&r.h), vec![Copies, Distribute, Rename]);
+    assert_eq!(
+        dimmed_items(&r.h),
+        vec![Copies, Distribute, Ungroup, Rename]
+    );
 }
 
 #[test]
@@ -456,7 +468,7 @@ fn the_menu_of_three_objects_adds_distribute() {
         "{items:?}"
     );
     // Rename and Copies are for one object: dimmed, not gone.
-    assert_eq!(dimmed_items(&r.h), vec![Copies, Rename]);
+    assert_eq!(dimmed_items(&r.h), vec![Copies, Ungroup, Rename]);
 }
 
 #[test]

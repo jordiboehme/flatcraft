@@ -1326,10 +1326,11 @@ fn linked_note(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
 
 /// The "Each object" switch for Rotate, Mirror and the % field.
 fn each_switch(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
-    // Several objects turn and flip as one group, or each on its own.
-    let several = cx.snap.selection.len() > 1;
+    // Several objects turn and flip as one piece, or each on its own. A
+    // whole group counts as one object.
+    let several = cx.snap.units().len() > 1;
     let why = (!several)
-        .then_some("Select 2 or more objects first. One object always turns about its own centre.");
+        .then_some("Select 2 or more objects first. One object, or one group, always turns about its own centre.");
     let f = &mut cx.st.fields;
     if switch(
         ui,

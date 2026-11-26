@@ -1,4 +1,4 @@
-//! The Objects panel: one flat row per object with its kind, name, a mark for
+//! The Objects panel: one row per object with its kind, name, a mark for
 //! linked copies, file status, an eye to show or hide it and scissors to
 //! skip its cut. The two toggles are quiet until the row is hovered, and
 //! clear when the object is hidden or skipped. Below the list, the details of a single selected object with its linked copies
@@ -57,15 +57,19 @@ pub fn show(
                 .auto_shrink([false, true])
                 .max_height(list_h)
                 .show(ui, |ui| {
-                    for o in &snap.objects {
-                        object_row(ui, st, snap, o, t, actions);
-                    }
+                    tree_rows(ui, st, snap, t, actions, None, 0);
+                    top_level_drop(ui, snap, t, actions);
                 });
 
             let mut selected = snap.selected();
             if let (Some(o), None) = (selected.next(), selected.next()) {
                 ui.separator();
                 details(ui, o, st, snap, t, actions);
+            } else if let [unit] = snap.units().as_slice()
+                && snap.is_group(*unit)
+            {
+                ui.separator();
+                group_details(ui, snap, *unit, t);
             }
             ui.separator();
             notes(ui, st, snap, t, actions);
@@ -172,6 +176,322 @@ fn notes(
     }
 }
 
+/// How far a member's row is indented per group level.
+const INDENT: f32 = 16.0;
+
+/// A row dragged in the list: the objects or groups it moves into or out
+/// of a group.
+#[derive(Debug, Clone)]
+struct RowDrag {
+    ids: Vec<u64>,
+}
+
+/// The card of a group row.
+pub const GROUP_ROW_HINT: &str = "A group: its objects act as one. Click to select the whole group, click the arrow to see its members. Drag a row onto a group to put it in, or below the list to take it out. Double-click to rename.";
+
+/// The rows of the children of `parent` (the top level for `None`), in
+/// order, with the members of open groups under their group.
+fn tree_rows(
+    ui: &mut Ui,
+    st: &mut PrepareState,
+    snap: &Snapshot,
+    t: &Tokens,
+    actions: &mut Vec<Action>,
+    parent: Option<u64>,
+    depth: usize,
+) {
+    let parent_id = parent.map(flatcraft_core::document::ObjectId);
+    for node in snap.tree.children(parent_id) {
+        let id = node.0;
+        if snap.is_group(id) {
+            group_row(ui, st, snap, id, depth, t, actions);
+            if st.open_groups.contains(&(snap.doc_id, id)) {
+                tree_rows(ui, st, snap, t, actions, Some(id), depth + 1);
+            }
+        } else if let Some(o) = snap.object(id) {
+            object_row(ui, st, snap, o, depth, t, actions);
+        }
+    }
+}
+
+/// The room under the list: a row dropped there leaves its groups for
+/// the top level.
+fn top_level_drop(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec<Action>) {
+    if !egui::DragAndDrop::has_payload_of_type::<RowDrag>(ui.ctx()) {
+        return;
+    }
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), ROW_HEIGHT),
+        egui::Sense::hover(),
+    );
+    if resp.dnd_hover_payload::<RowDrag>().is_some() {
+        ui.painter().rect_stroke(
+            rect,
+            t.radius,
+            egui::Stroke::new(1.5, t.accent_prepare),
+            egui::StrokeKind::Inside,
+        );
+    }
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "Drop here to take it out of its group",
+        egui::TextStyle::Small.resolve(ui.style()),
+        t.text_dim,
+    );
+    if let Some(p) = resp.dnd_release_payload::<RowDrag>() {
+        actions.push(Action::run(
+            snap.doc_id,
+            "object.move_to_group",
+            json!({ "ids": p.ids }),
+        ));
+    }
+}
+
+/// Makes `row` a drag source for `ids` and a drop target: a row dropped
+/// on a group goes into it, on an object into that object's group.
+/// Returns true while something is held over it.
+fn drag_and_drop(
+    row: &egui::Response,
+    snap: &Snapshot,
+    ids: Vec<u64>,
+    into: Option<u64>,
+    actions: &mut Vec<Action>,
+) -> bool {
+    let me = ids.clone();
+    row.dnd_set_drag_payload(RowDrag { ids });
+    let hover = row
+        .dnd_hover_payload::<RowDrag>()
+        .is_some_and(|p| p.ids != me);
+    if let Some(p) = row.dnd_release_payload::<RowDrag>()
+        && p.ids != me
+    {
+        actions.push(Action::run(
+            snap.doc_id,
+            "object.move_to_group",
+            json!({ "ids": p.ids, "group_id": into }),
+        ));
+    }
+    hover
+}
+
+/// A group's row: the fold arrow, the group icon, its name and size, and
+/// the eye and scissors for all its objects.
+fn group_row(
+    ui: &mut Ui,
+    st: &mut PrepareState,
+    snap: &Snapshot,
+    id: u64,
+    depth: usize,
+    t: &Tokens,
+    actions: &mut Vec<Action>,
+) {
+    let doc_id = snap.doc_id;
+    let leaves = snap.leaves_of(id);
+    let name = snap.name_of(id).unwrap_or_default();
+    let selected = !leaves.is_empty() && leaves.iter().all(|l| snap.selection.contains(l));
+    let open = st.open_groups.contains(&(doc_id, id));
+    let (rect, row) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), ROW_HEIGHT),
+        egui::Sense::click_and_drag(),
+    );
+    let label = format!("{name}, group of {} objects", leaves.len());
+    row.widget_info(|| {
+        egui::WidgetInfo::selected(egui::accesskit::Role::Button, true, selected, label.clone())
+    });
+    let over = row.contains_pointer();
+    let objs: Vec<&ObjView> = leaves.iter().filter_map(|l| snap.object(*l)).collect();
+    let visible = objs.iter().any(|o| o.visible);
+    let cut = objs.iter().any(|o| o.cut_enabled);
+    let quiet = !(visible && cut);
+    let hover = drag_and_drop(&row, snap, vec![id], Some(id), actions);
+    if ui.is_rect_visible(rect) {
+        let fill = if selected {
+            t.accent_prepare.gamma_multiply(0.22)
+        } else if over {
+            t.surface
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        ui.painter().rect_filled(rect, t.radius, fill);
+        if hover {
+            ui.painter().rect_stroke(
+                rect,
+                t.radius,
+                egui::Stroke::new(1.5, t.accent_prepare),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
+    let mut left = rect;
+    left.set_left(rect.left() + depth as f32 * INDENT);
+    left.set_right(rect.right() - 2.0 * TOGGLE - 6.0);
+    // The fold arrow, a button of its own.
+    let arrow = egui::Rect::from_center_size(
+        egui::pos2(left.left() + 6.0 + ICON_SIZE * 0.4, rect.center().y),
+        egui::Vec2::splat(ICON_SIZE),
+    );
+    let fold = ui.interact(
+        arrow,
+        ui.make_persistent_id(("group-fold", id)),
+        egui::Sense::click(),
+    );
+    let fold_name = if open {
+        format!("Fold {name}")
+    } else {
+        format!("Open {name}")
+    };
+    fold.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::accesskit::Role::Button, true, fold_name.clone())
+    });
+    let fold = fold.on_hover_text(if open {
+        "Hide the members of this group."
+    } else {
+        "Show the members of this group."
+    });
+    if fold.clicked() {
+        if open {
+            st.open_groups.remove(&(doc_id, id));
+        } else {
+            st.open_groups.insert((doc_id, id));
+        }
+    }
+    let chevron = if open {
+        Icon::ChevronDown
+    } else {
+        Icon::ChevronRight
+    };
+    let tex = icons::texture_colored(ui.ctx(), chevron, ICON_SIZE * 0.8, t.text_dim);
+    ui.painter().image(
+        tex.id(),
+        egui::Rect::from_center_size(arrow.center(), egui::Vec2::splat(ICON_SIZE * 0.8)),
+        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+        egui::Color32::WHITE,
+    );
+    let mut text = left;
+    text.set_left(arrow.right() + 2.0);
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(text.shrink2(egui::vec2(0.0, 0.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            badge(ui, Icon::Group, "Group", t.text_dim);
+            let colour = if quiet { t.text_dim } else { t.text };
+            ui.add(
+                egui::Label::new(RichText::new(&name).color(colour))
+                    .truncate()
+                    .selectable(false),
+            );
+            ui.add(
+                egui::Label::new(RichText::new(format!("{}", leaves.len())).color(t.text_dim))
+                    .selectable(false),
+            );
+        },
+    );
+    let toggle_rect = |i: f32| {
+        egui::Rect::from_center_size(
+            egui::pos2(rect.right() - 2.0 - TOGGLE * (1.5 - i), rect.center().y),
+            egui::Vec2::splat(TOGGLE),
+        )
+    };
+    let (hint, toggle_name) = if cut {
+        ("Skip cutting", format!("Skip cutting {name}"))
+    } else {
+        ("Cut again", format!("Cut again {name}"))
+    };
+    if toggle(
+        ui,
+        toggle_rect(0.0),
+        id,
+        Icon::Cut,
+        &toggle_name,
+        hint,
+        !cut,
+        over,
+        selected,
+        t,
+    )
+    .clicked()
+    {
+        actions.push(Action::run(
+            doc_id,
+            "object.set_cut",
+            json!({ "ids": [id], "cut": !cut }),
+        ));
+    }
+    let (icon, hint, toggle_name) = if visible {
+        (Icon::Eye, "Hide", format!("Hide {name}"))
+    } else {
+        (Icon::EyeOff, "Show", format!("Show {name}"))
+    };
+    if toggle(
+        ui,
+        toggle_rect(1.0),
+        id,
+        icon,
+        &toggle_name,
+        hint,
+        !visible,
+        over,
+        selected,
+        t,
+    )
+    .clicked()
+    {
+        actions.push(set_visible_action(doc_id, &[id], !visible));
+    }
+    super::groups::card(&row, &name, GROUP_ROW_HINT, None, false);
+    if row.clicked() && !fold.clicked() {
+        let shift = ui.input(|i| i.modifiers.shift);
+        let mut ids: Vec<u64> = if shift {
+            snap.selection.iter().copied().collect()
+        } else {
+            Vec::new()
+        };
+        for l in &leaves {
+            if !ids.contains(l) {
+                ids.push(*l);
+            }
+        }
+        // A nested group is picked inside its parent group.
+        st.entered = snap
+            .tree
+            .parent(flatcraft_core::document::ObjectId(id))
+            .map(|g| (doc_id, g.0));
+        actions.push(Action::run(doc_id, "object.select", json!({ "ids": ids })));
+    }
+    if row.double_clicked() {
+        st.rename = Some(super::prepare::RenameDialog { doc_id, id, name });
+    }
+    if row.secondary_clicked() {
+        st.context = Some(context_menu::target(snap, Some(leaves.clone()), actions));
+    }
+    row.context_menu(|ui| context_menu::show(ui, snap, st, actions));
+}
+
+/// What the panel says about one selected group.
+fn group_details(ui: &mut Ui, snap: &Snapshot, id: u64, t: &Tokens) {
+    let name = snap.name_of(id).unwrap_or_default();
+    ui.label(RichText::new(&name).font(fonts::medium(14.0)));
+    let n = snap.leaves_of(id).len();
+    if let Some(b) = snap.box_of(&snap.leaves_of(id)) {
+        ui.label(
+            RichText::new(format!(
+                "Group of {n} objects, {:.1} x {:.1} mm",
+                b.width(),
+                b.height()
+            ))
+            .color(t.text_dim),
+        );
+    }
+    ui.label(
+        RichText::new(
+            "It moves, turns and gets packed as one. Double-click a member on the mat to change it alone.",
+        )
+        .color(t.text_dim),
+    );
+}
+
 /// The height of a row: comfortable to click.
 const ROW_HEIGHT: f32 = 28.0;
 /// The side of a toggle button.
@@ -184,15 +504,19 @@ fn object_row(
     st: &mut PrepareState,
     snap: &Snapshot,
     o: &ObjView,
+    depth: usize,
     t: &Tokens,
     actions: &mut Vec<Action>,
 ) {
     let doc_id = snap.doc_id;
     let selected = snap.selection.contains(&o.id);
-    let (rect, row) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), ROW_HEIGHT),
-        egui::Sense::click(),
-    );
+    // Drag sense only where a row can go somewhere: with groups.
+    let sense = if snap.tree.is_flat() {
+        egui::Sense::click()
+    } else {
+        egui::Sense::click_and_drag()
+    };
+    let (rect, row) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_HEIGHT), sense);
     let name_text = o.name.clone();
     row.widget_info(|| {
         egui::WidgetInfo::selected(
@@ -204,6 +528,7 @@ fn object_row(
     });
     let over = row.contains_pointer();
     let quiet = !(o.visible && o.cut_enabled);
+    let hover = !snap.tree.is_flat() && drag_and_drop(&row, snap, vec![o.id], o.parent, actions);
     if ui.is_rect_visible(rect) {
         let fill = if selected {
             t.accent_prepare.gamma_multiply(0.22)
@@ -213,9 +538,21 @@ fn object_row(
             egui::Color32::TRANSPARENT
         };
         ui.painter().rect_filled(rect, t.radius, fill);
+        if hover {
+            ui.painter().rect_stroke(
+                rect,
+                t.radius,
+                egui::Stroke::new(1.5, t.accent_prepare),
+                egui::StrokeKind::Inside,
+            );
+        }
     }
-    // The kind, the name and the marks.
+    // The kind, the name and the marks; members sit under their group,
+    // past its fold arrow.
     let mut left = rect;
+    if depth > 0 {
+        left.set_left(rect.left() + depth as f32 * INDENT + ICON_SIZE);
+    }
     left.set_right(rect.right() - 2.0 * TOGGLE - 6.0);
     ui.scope_builder(
         egui::UiBuilder::new()
@@ -308,6 +645,8 @@ fn object_row(
         } else {
             vec![o.id]
         };
+        // A member picked in the list is picked inside its group.
+        st.entered = o.parent.map(|g| (doc_id, g));
         actions.push(Action::run(doc_id, "object.select", json!({ "ids": ids })));
     }
     if row.double_clicked() {
@@ -318,7 +657,7 @@ fn object_row(
         });
     }
     if row.secondary_clicked() {
-        st.context = Some(context_menu::target(snap, Some(o.id), actions));
+        st.context = Some(context_menu::target(snap, Some(vec![o.id]), actions));
     }
     row.context_menu(|ui| context_menu::show(ui, snap, st, actions));
 }

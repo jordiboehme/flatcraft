@@ -129,7 +129,7 @@ impl Preferences {
 /// Every id `ribbon_pins` can hold, in the order of the ribbon's table
 /// (`flatcraft::ui::tools::TOOLS`). An Align id carries what it lines up
 /// with: `align.left.selection` and `align.left.area` are two pins.
-pub const RIBBON_PIN_IDS: [&str; 38] = [
+pub const RIBBON_PIN_IDS: [&str; 40] = [
     "import",
     "trace",
     "test_patterns",
@@ -157,6 +157,8 @@ pub const RIBBON_PIN_IDS: [&str; 38] = [
     "align.bottom.area",
     "distribute.horizontal",
     "distribute.vertical",
+    "group",
+    "ungroup",
     "pattern.rectangular",
     "pattern.circular",
     "auto_arrange.panel",

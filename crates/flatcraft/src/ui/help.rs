@@ -141,6 +141,8 @@ pub enum PrepareKey {
     SelectAll,
     Import,
     Duplicate,
+    Group,
+    Ungroup,
     /// One row per arrow key; Shift and Alt change the step.
     Nudge,
     Delete,
@@ -397,7 +399,7 @@ const fn while_dragging(what: &'static str, action: PrepareKey) -> Shortcut {
 /// Every shortcut the app has. The key handler runs the entries with a
 /// `run`, in this order (a Shift variant before its plain key), and the
 /// shortcuts sheet lists all of them.
-pub const SHORTCUTS: [Shortcut; 25] = [
+pub const SHORTCUTS: [Shortcut; 27] = [
     global(
         CMD_SHIFT,
         Key::S,
@@ -429,6 +431,15 @@ pub const SHORTCUTS: [Shortcut; 25] = [
         PrepareKey::Duplicate,
     )
     .for_tool("duplicate"),
+    // Shift+Cmd+G before Cmd+G, as the other Shift variants.
+    prepare(
+        CMD_SHIFT,
+        Key::G,
+        "Ungroup the selection",
+        PrepareKey::Ungroup,
+    )
+    .for_tool("ungroup"),
+    prepare(CMD, Key::G, "Group the selection", PrepareKey::Group).for_tool("group"),
     prepare(
         Modifiers::NONE,
         Key::ArrowLeft,
@@ -470,7 +481,7 @@ pub const SHORTCUTS: [Shortcut; 25] = [
     prepare(
         Modifiers::NONE,
         Key::Escape,
-        "Close the open panel, else clear the selection",
+        "Close the panel, leave the group, or clear the selection",
         PrepareKey::ClearSelection,
     ),
     prepare(
@@ -645,6 +656,21 @@ pub fn show_shortcuts(ctx: &egui::Context, t: &Tokens) -> bool {
         ui.set_width(460.0);
         ui.label(RichText::new("Keyboard shortcuts").font(fonts::semibold(16.0)));
         ui.add_space(t.spacing);
+        // The list scrolls in a short window, so Close stays in reach.
+        let room = (ctx.content_rect().height() * 0.6).max(120.0);
+        egui::ScrollArea::vertical()
+            .max_height(room)
+            .min_scrolled_height(room)
+            .show(ui, |ui| sheet_body(ui, t));
+        ui.add_space(t.spacing);
+        ui.button("Close").clicked()
+    });
+    !(modal.inner || modal.should_close())
+}
+
+/// The keys and the calculations of the shortcuts sheet.
+fn sheet_body(ui: &mut egui::Ui, t: &Tokens) {
+    {
         egui::Grid::new("flatcraft-shortcut-grid")
             .num_columns(2)
             .spacing([24.0, 4.0])
@@ -668,8 +694,5 @@ pub fn show_shortcuts(ctx: &egui::Context, t: &Tokens) -> bool {
                     ui.end_row();
                 }
             });
-        ui.add_space(t.spacing);
-        ui.button("Close").clicked()
-    });
-    !(modal.inner || modal.should_close())
+    }
 }

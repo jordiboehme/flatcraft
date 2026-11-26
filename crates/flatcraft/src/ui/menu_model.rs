@@ -502,7 +502,15 @@ fn tool_item(id: &'static str, inp: &MenuInput) -> Entry {
             )
         }),
         accel: tool_accel(t),
-        ..leaf(Cmd::Tool(t.id), t.title, enabled)
+        // Ungroup says what it will do with the selection.
+        ..leaf(
+            Cmd::Tool(t.id),
+            inp.snap.map_or_else(
+                || t.title.to_string(),
+                |s| t.live_title(s, &inp.selection()),
+            ),
+            enabled,
+        )
     })
 }
 
@@ -721,6 +729,9 @@ fn object_menu(inp: &MenuInput) -> Sub {
                 tool_item("duplicate", inp),
                 tool_item("copies", inp),
                 arrange,
+                Entry::Separator,
+                tool_item("group", inp),
+                tool_item("ungroup", inp),
                 Entry::Separator,
                 item(
                     Cmd::LinkCopies,

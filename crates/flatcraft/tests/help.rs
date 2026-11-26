@@ -228,6 +228,9 @@ fn every_prepare_key_does_what_the_sheet_says() {
             }
             Key::Delete | Key::Backspace => assert_eq!(objects(), 1, "{who}"),
             Key::Escape => assert_eq!(selection(), 0, "{who}"),
+            // One object: nothing to group or ungroup, nothing changes
+            // (tests/groups.rs presses them on a real group).
+            Key::G => assert_eq!(common::undo_len(&sess), undo_before, "{who}"),
             other => panic!("no check for {other:?}"),
         }
     }

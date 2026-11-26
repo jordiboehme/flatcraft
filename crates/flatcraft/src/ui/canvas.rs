@@ -271,7 +271,8 @@ fn turned_box(snap: &Snapshot, ids: &[u64], a: kurbo::Affine) -> Option<kurbo::R
 /// are turned different ways (the field says Mixed) or nothing is
 /// selected.
 pub fn live_angle(snap: &Snapshot, st: &PrepareState) -> Option<f64> {
-    let common = common_angle(snap.selected().map(|o| o.transform.rotation_deg))?;
+    // A whole group shows its own angle.
+    let common = common_angle(snap.units().into_iter().filter_map(|u| snap.unit_angle(u)))?;
     let turn = match &st.drag {
         Some(d @ Drag::Rotate { .. }) => rotate_delta_of(d).unwrap_or(0.0),
         _ => 0.0,
@@ -359,11 +360,12 @@ fn drag_turn(d: &Drag) -> Option<kurbo::Affine> {
 /// centres, as `object.rotate` does.
 fn rotate_drag(snap: &Snapshot, start: kurbo::Point) -> Option<Drag> {
     let ids: Vec<u64> = snap.selection.iter().copied().collect();
-    let objects: Vec<&ObjView> = ids.iter().filter_map(|id| snap.object(*id)).collect();
-    let centres: Vec<kurbo::Point> = objects.iter().map(|o| o.transform.center_mm).collect();
+    // A whole group turns as one piece about its box centre.
+    let units = snap.units_of(&ids);
+    let centres: Vec<kurbo::Point> = units.iter().filter_map(|u| snap.unit_centre(*u)).collect();
     let pivot = placement::mean_centre(&centres)?;
-    let base = match objects.as_slice() {
-        [one] => Some(one.transform.rotation_deg),
+    let base = match units.as_slice() {
+        [one] => snap.unit_angle(*one),
         _ => None,
     };
     Some(Drag::Rotate {
@@ -557,6 +559,56 @@ fn drag_stretch(d: &Drag) -> Option<Stretch> {
     }
 }
 
+/// The group the person is in: it still exists in this document and the
+/// selection lies in it (a selection made elsewhere, in the Objects panel
+/// or with Select all, leaves it).
+pub fn entered(snap: &Snapshot, st: &PrepareState) -> Option<u64> {
+    let (doc, g) = st.entered?;
+    let g = flatcraft_core::document::ObjectId(g);
+    (doc == snap.doc_id
+        && snap.tree.is_group(g)
+        && !snap.selection.is_empty()
+        && snap
+            .selection
+            .iter()
+            .all(|id| snap.tree.within(flatcraft_core::document::ObjectId(*id), g)))
+    .then_some(g.0)
+}
+
+/// What a click on object `leaf` selects, and the group the person is in
+/// afterwards. A click picks the whole outermost group of the object, as
+/// one object. `deep` (a double-click, or Cmd-click on macOS and
+/// Ctrl-click elsewhere) picks the object alone and goes into its group.
+/// Inside a group, a click on one of its members picks that member (or
+/// the nested group it is in); a click outside leaves the group.
+pub fn pick(snap: &Snapshot, st: &PrepareState, leaf: u64, deep: bool) -> (Vec<u64>, Option<u64>) {
+    let tree = &snap.tree;
+    let id = flatcraft_core::document::ObjectId(leaf);
+    if deep {
+        return (vec![leaf], tree.parent(id).map(|g| g.0));
+    }
+    if let Some(g) = entered(snap, st)
+        && tree.within(id, flatcraft_core::document::ObjectId(g))
+    {
+        // The child of the group that holds the object.
+        let up = tree.ancestors(id);
+        let child = match up.iter().position(|a| a.0 == g) {
+            Some(0) | None => leaf,
+            Some(k) => up[k - 1].0,
+        };
+        return (snap.leaves_of(child), Some(g));
+    }
+    (snap.leaves_of(tree.top(id).0), None)
+}
+
+/// Escape inside a group: leaves it and returns the whole group's objects
+/// to select, or `None` when the person is in no group.
+pub fn leave_group(snap: &Snapshot, st: &mut PrepareState) -> Option<Vec<u64>> {
+    let g = entered(snap, st)?;
+    st.entered = None;
+    Some(snap.leaves_of(g))
+}
+
 fn hit_test(snap: &Snapshot, view: &CanvasView, at: Pos2) -> Hit {
     if let Some(b) = selection_box(snap) {
         let screen = view.rect_to_screen(b);
@@ -732,7 +784,13 @@ pub fn show(
     {
         // The same hit test as the left click.
         st.context = Some(match hit_test(snap, &st.view, p) {
-            Hit::Object(id) => context_menu::target(snap, Some(id), actions),
+            Hit::Object(id) => {
+                let (ids, inside) = pick(snap, st, id, false);
+                if !ids.iter().any(|i| snap.selection.contains(i)) {
+                    st.entered = inside.map(|g| (snap.doc_id, g));
+                }
+                context_menu::target(snap, Some(ids), actions)
+            }
             Hit::Handle(_) | Hit::Rotate(_) => snap.selection.iter().copied().collect(),
             Hit::Nothing => context_menu::target(snap, None, actions),
         });
@@ -900,6 +958,20 @@ pub fn ghost_colour(mat: [u8; 3]) -> Color32 {
     rgb(selection_colour(mat)).gamma_multiply(0.8)
 }
 
+/// The Auto arrange box of an object, or of a whole group (its visible
+/// members).
+fn unit_arrange_box(snap: &Snapshot, id: u64) -> Option<kurbo::Rect> {
+    if let Some(o) = snap.object(id) {
+        return o.arrange_bounds();
+    }
+    snap.leaves_of(id)
+        .iter()
+        .filter_map(|l| snap.object(*l))
+        .filter(|o| o.visible)
+        .filter_map(ObjView::arrange_bounds)
+        .reduce(|a, b| a.union(b))
+}
+
 /// Marks the objects an open Auto arrange panel packs around (see
 /// [`super::arrange::fixed`]): their box, and faintly the band of
 /// `spacing_mm` around it that the packed objects keep clear of.
@@ -913,7 +985,7 @@ pub(crate) fn draw_fixed(
 ) {
     let stroke = Stroke::new(1.0, contrast.gamma_multiply(0.7));
     for id in fixed {
-        let Some(b) = snap.object(*id).and_then(|o| o.arrange_bounds()) else {
+        let Some(b) = unit_arrange_box(snap, *id) else {
             continue;
         };
         let zone = view.rect_to_screen(b.inflate(spacing_mm, spacing_mm));
@@ -938,7 +1010,7 @@ pub(crate) fn draw_did_not_fit(
     ids: &[u64],
 ) {
     for id in ids {
-        if let Some(b) = snap.object(*id).and_then(|o| o.arrange_bounds()) {
+        if let Some(b) = unit_arrange_box(snap, *id) {
             let r = view.rect_to_screen(b);
             painter.rect_filled(r, 0.0, danger.gamma_multiply(0.12));
             painter.rect_stroke(r, 0.0, Stroke::new(2.0, danger), egui::StrokeKind::Outside);
@@ -1118,6 +1190,27 @@ fn draw_selection(
     st: &PrepareState,
     pick: Color32,
 ) -> Option<Rect> {
+    // Inside a group: its box, dashed, around the picked member.
+    if let Some(g) = entered(snap, st)
+        && let Some(gb) = snap.box_of(&snap.leaves_of(g))
+    {
+        let r = st.view.rect_to_screen(gb).expand(4.0);
+        let dash = Stroke::new(1.0, pick.gamma_multiply(0.8));
+        let corners = [
+            r.left_top(),
+            r.right_top(),
+            r.right_bottom(),
+            r.left_bottom(),
+        ];
+        for i in 0..4 {
+            painter.extend(egui::Shape::dashed_line(
+                &[corners[i], corners[(i + 1) % 4]],
+                dash,
+                5.0,
+                4.0,
+            ));
+        }
+    }
     let b = live_box(snap, st)?;
     let r = st.view.rect_to_screen(b);
     painter.rect_stroke(r, 0.0, Stroke::new(1.5, pick), egui::StrokeKind::Outside);
@@ -1499,8 +1592,10 @@ fn pointer(
                 let ids: Vec<u64> = if snap.selection.contains(&id) {
                     snap.selection.iter().copied().collect()
                 } else {
-                    actions.push(Action::run(doc_id, "object.select", json!({ "ids": [id] })));
-                    vec![id]
+                    let (ids, inside) = pick(snap, st, id, deep_click(mods));
+                    st.entered = inside.map(|g| (doc_id, g));
+                    actions.push(Action::run(doc_id, "object.select", json!({ "ids": ids })));
+                    ids
                 };
                 Some(Drag::Move {
                     doc_id,
@@ -1592,24 +1687,50 @@ fn pointer(
         }
     }
 
-    if resp.clicked()
+    // A double-click goes into the group: the object alone. The first
+    // click of it already picked the whole group.
+    let deep = deep_click(mods) || resp.double_clicked();
+    if (resp.clicked() || resp.double_clicked())
         && let Some(p) = resp.interact_pointer_pos()
     {
-        let ids: Vec<u64> = match hit_test(snap, &st.view, p) {
-            Hit::Object(id) if shift => {
-                let mut ids: Vec<u64> = snap.selection.iter().copied().collect();
-                if !ids.contains(&id) {
-                    ids.push(id);
-                }
-                ids
+        let hit = match hit_test(snap, &st.view, p) {
+            // Inside the selection box a double-click still reaches the
+            // object under the pointer.
+            Hit::Handle(_) | Hit::Rotate(_) if deep => {
+                object_at(snap, &st.view, p).map_or(Hit::Nothing, Hit::Object)
             }
-            Hit::Object(id) => vec![id],
+            other => other,
+        };
+        let ids: Vec<u64> = match hit {
+            Hit::Object(id) => {
+                let (picked, inside) = pick(snap, st, id, deep);
+                st.entered = inside.map(|g| (doc_id, g));
+                if shift {
+                    let mut ids: Vec<u64> = snap.selection.iter().copied().collect();
+                    for i in picked {
+                        if !ids.contains(&i) {
+                            ids.push(i);
+                        }
+                    }
+                    ids
+                } else {
+                    picked
+                }
+            }
             Hit::Handle(_) | Hit::Rotate(_) => return,
             Hit::Nothing if shift => return,
-            Hit::Nothing => Vec::new(),
+            Hit::Nothing => {
+                st.entered = None;
+                Vec::new()
+            }
         };
         actions.push(Action::run(doc_id, "object.select", json!({ "ids": ids })));
     }
+}
+
+/// A click with Cmd (macOS) or Ctrl held picks one member of a group.
+fn deep_click(mods: egui::Modifiers) -> bool {
+    mods.command
 }
 
 /// The `object.scale` a handle drag sends when it ends, if it changed

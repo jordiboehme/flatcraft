@@ -11,8 +11,9 @@ use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use egui::{Pos2, Rect, Ui};
-use flatcraft_core::document::{CutOptions, JobSettings, Object, Source};
+use flatcraft_core::document::{CutOptions, JobSettings, Object, ObjectId, Source};
 use flatcraft_core::geometry::CutPath;
+use flatcraft_core::nodes::Tree;
 use flatcraft_core::transform::Transform;
 use flatcraft_device::{MaterialProfile, Media, MediaKind, PlotterProfile, PresetInfo};
 use flatcraft_engine::commands::{placed_bounds, sources};
@@ -301,6 +302,12 @@ pub struct PrepareState {
     pub popup_was_open: bool,
     /// The objects the open context menu works on (see `context_menu`).
     pub context: Option<Vec<u64>>,
+    /// The group the person went into (double-click or Cmd-click on a
+    /// member), with its document: clicks then pick its members one by
+    /// one. Escape or a click outside it leaves it (see `canvas::pick`).
+    pub entered: Option<(u64, u64)>,
+    /// The groups folded open in the Objects panel, with their document.
+    pub open_groups: BTreeSet<(u64, u64)>,
     /// Where the canvas painted its rotate cursor last frame (egui has no
     /// rotate cursor, so it hides the pointer and paints one), if it did.
     pub rotate_cursor: Option<Pos2>,
@@ -383,6 +390,8 @@ impl Default for PrepareState {
             text_focus_elsewhere: false,
             popup_was_open: false,
             context: None,
+            entered: None,
+            open_groups: BTreeSet::new(),
             rotate_cursor: None,
             rename: None,
             ribbon_layout: None,
@@ -799,6 +808,8 @@ pub struct ObjView {
     pub source_link: Option<flatcraft_core::document::SourceLink>,
     /// The group of linked copies the object belongs to.
     pub link_group: Option<u64>,
+    /// The group of objects it is in (Group, Cmd+G), if any.
+    pub parent: Option<u64>,
     /// The source bytes, shared with the document. See [`ObjView::same_source`].
     pub source: Arc<[u8]>,
     pub shape: Arc<Shape>,
@@ -837,6 +848,8 @@ pub struct Snapshot {
     /// every change of the document, undo and redo included.
     pub doc_rev: u64,
     pub objects: Vec<ObjView>,
+    /// The groups of objects over `objects` (see `flatcraft_core::nodes`).
+    pub tree: Tree,
     pub selection: BTreeSet<u64>,
     pub job: JobSettings,
     pub plotter: Option<PlotterProfile>,
@@ -902,6 +915,65 @@ impl Snapshot {
 
     pub fn object(&self, id: u64) -> Option<&ObjView> {
         self.objects.iter().find(|o| o.id == id)
+    }
+
+    /// What moves as one in the selection: whole groups, and objects
+    /// picked inside a group or outside any (see `Tree::units`).
+    pub fn units(&self) -> Vec<u64> {
+        self.units_of(&self.selection.iter().copied().collect::<Vec<_>>())
+    }
+
+    /// What moves as one for the objects `ids`.
+    pub fn units_of(&self, ids: &[u64]) -> Vec<u64> {
+        let leaves: Vec<ObjectId> = ids.iter().map(|i| ObjectId(*i)).collect();
+        self.tree.units(&leaves).into_iter().map(|u| u.0).collect()
+    }
+
+    /// The objects of a unit: the object itself, or all of a group's.
+    pub fn leaves_of(&self, unit: u64) -> Vec<u64> {
+        self.tree
+            .leaves_of(ObjectId(unit))
+            .into_iter()
+            .map(|u| u.0)
+            .collect()
+    }
+
+    pub fn is_group(&self, id: u64) -> bool {
+        self.tree.is_group(ObjectId(id))
+    }
+
+    /// The common box of the objects `ids` (the engine's bounds).
+    pub fn box_of(&self, ids: &[u64]) -> Option<kurbo::Rect> {
+        ids.iter()
+            .filter_map(|id| self.object(*id))
+            .filter_map(ObjView::bounds)
+            .reduce(|a, b| a.union(b))
+    }
+
+    /// The point a unit turns about on its own, as `object.rotate` has it:
+    /// an object's centre, a group's box centre.
+    pub fn unit_centre(&self, unit: u64) -> Option<kurbo::Point> {
+        match self.object(unit) {
+            Some(o) => Some(o.transform.center_mm),
+            None => self.box_of(&self.leaves_of(unit)).map(|b| b.center()),
+        }
+    }
+
+    /// The angle of a unit as the Angle field shows it: an object's
+    /// rotation, a group's own angle.
+    pub fn unit_angle(&self, unit: u64) -> Option<f64> {
+        match self.object(unit) {
+            Some(o) => Some(o.transform.rotation_deg),
+            None => self.tree.group(ObjectId(unit)).map(|g| g.rotation_deg),
+        }
+    }
+
+    /// The name of an object or a group.
+    pub fn name_of(&self, id: u64) -> Option<String> {
+        match self.object(id) {
+            Some(o) => Some(o.name.clone()),
+            None => self.tree.group(ObjectId(id)).map(|g| g.name.clone()),
+        }
     }
 
     /// How many different linked files the objects `ids` have: linked
@@ -1046,6 +1118,7 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
                 link: o.link.as_ref().map(|l| l.path.clone()),
                 source_link: o.link.clone(),
                 link_group: o.link_group.map(|g| g.0),
+                parent: o.parent.map(|g| g.0),
                 source: match &o.source {
                     Source::Svg { bytes, .. } | Source::Raster { bytes, .. } => bytes.clone(),
                 },
@@ -1056,6 +1129,7 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
             doc_id: st.id(),
             doc_rev: st.revision(),
             objects,
+            tree: st.document.tree(),
             selection: st.selection.iter().map(|i| i.0).collect(),
             job,
             plotter: plotter.clone(),
