@@ -22,6 +22,9 @@ pub fn write(doc: &ExportDoc) -> String {
     out.section("HEADER");
     out.pair(9, "$ACADVER");
     out.pair(1, "AC1009");
+    // $INSUNITS came with later DXF versions; R12 readers ignore it and
+    // take the numbers as they are. The coordinates are millimetres either
+    // way, and newer readers read the unit from here.
     out.pair(9, "$INSUNITS");
     out.pair(70, "4");
     out.pair(9, "$EXTMIN");

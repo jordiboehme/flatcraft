@@ -123,17 +123,31 @@ fn svg_reads_back_to_the_same_geometry() {
     assert_eq!(back.paths.len(), 2);
     let ours = &doc.objects[0].shapes;
     for (sh, p) in ours.iter().zip(&back.paths) {
-        let lines = flatcraft_path::shape_lines(&p.path, 0.001, 0.01);
+        // Read back as the cut reads paths: flattened, joined and with
+        // collinear points merged at the default tolerance.
+        let lines = flatcraft_path::shape_lines(&p.path, 0.01, 0.01);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].closed, sh.closed);
-        // Every exported vertex is in the read-back path within 0.01 mm.
+        let mut theirs = lines[0].points.clone();
+        if lines[0].closed {
+            theirs.pop();
+        }
+        // Both directions: the same number of vertices, each exported
+        // vertex in the file and each vertex of the file exported, so a
+        // stray extra or missing vertex fails.
+        assert_eq!(theirs.len(), sh.points.len());
         for v in &sh.points {
             assert!(
-                lines[0].points.iter().any(|q| near(*v, *q, 0.01)),
+                theirs.iter().any(|q| near(*v, *q, 0.01)),
                 "{v:?} is missing"
             );
         }
-        assert!(lines[0].points.len() >= sh.points.len());
+        for q in &theirs {
+            assert!(
+                sh.points.iter().any(|v| near(*v, *q, 0.01)),
+                "{q:?} was not exported"
+            );
+        }
     }
 }
 
