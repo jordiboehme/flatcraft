@@ -6,7 +6,7 @@ mod common;
 
 use common::{
     AppHarness, app, app_mut, harness, import_square, painted, session, to_prepare, undo_len,
-    wait_for_workers,
+    wait_for_workers, wait_until,
 };
 use egui::accesskit::Role;
 use egui_kittest::kittest::Queryable as _;
@@ -41,6 +41,11 @@ fn drawn(h: &AppHarness, text: &str) -> bool {
         egui::Shape::Text(t) => t.galley.text() == text,
         _ => false,
     })
+}
+
+/// Runs frames until the mask worker is done.
+fn wait_for_mask(h: &mut AppHarness) {
+    wait_until(h, |a| a.ui.cut.kept.pending());
 }
 
 /// True when the overlay's texture was painted last frame.
@@ -120,8 +125,14 @@ fn prepare_shows_kept_and_waste_only_when_switched_on() {
     let toggle = Cmd::Tool("view.kept").action(doc, &[]).unwrap();
     app_mut(&mut h).apply(&ctx, vec![toggle.clone()]);
     h.run();
+    wait_for_mask(&mut h);
     assert!(app(&h).ui.prepare.show_kept_waste);
     assert!(overlay_drawn(&h), "the overlay is drawn");
+    assert_eq!(
+        app(&h).ui.cut.kept.built_on.as_deref(),
+        Some(flatcraft::ui::kept::WORKER),
+        "the frame never builds the mask"
+    );
     let made = app(&h).ui.cut.kept.made;
     for _ in 0..3 {
         h.step();
@@ -130,6 +141,7 @@ fn prepare_shows_kept_and_waste_only_when_switched_on() {
     // A new plan makes a new mask.
     run(&s, "object.set_keep", json!({ "keep": "stencil" }));
     h.run();
+    wait_for_mask(&mut h);
     assert_eq!(app(&h).ui.cut.kept.made, made + 1);
     app_mut(&mut h).apply(&ctx, vec![toggle]);
     h.run();
@@ -145,10 +157,73 @@ fn cut_always_shows_kept_and_waste() {
     assert!(!app(&h).ui.prepare.show_kept_waste);
     app_mut(&mut h).ui.workspace = Workspace::Cut;
     h.run();
+    wait_for_mask(&mut h);
     assert!(overlay_drawn(&h));
+    assert_eq!(
+        app(&h).ui.cut.kept.built_on.as_deref(),
+        Some(flatcraft::ui::kept::WORKER)
+    );
     h.get_by_role_and_label(Role::Tab, "Path").click();
     h.run();
     assert!(overlay_drawn(&h));
     h.get_by_label(flatcraft::ui::cut::LEGEND_KEPT.0);
     h.get_by_label(flatcraft::ui::cut::LEGEND_WASTE.0);
+}
+
+#[test]
+fn the_toggle_is_dimmed_with_a_reason_when_nothing_can_be_planned() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let ctx = h.ctx.clone();
+    let tool = flatcraft::ui::tools::by_id("view.kept").unwrap();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    let why = tool.blocked(&snap).expect("dimmed on an empty mat");
+    assert!(why.contains("import something"), "{why}");
+    let id = import_square(&s);
+    run(&s, "object.set_cut", json!({ "ids": [id], "cut": false }));
+    h.run();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    assert!(tool.blocked(&snap).unwrap().contains("hidden or skipped"));
+    run(&s, "object.set_cut", json!({ "ids": [id], "cut": true }));
+    h.run();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    assert_eq!(tool.blocked(&snap), None);
+}
+
+#[test]
+fn a_paper_stencil_shows_its_hint_once_per_object() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    run(&s, "job.set_material", json!({ "id": "copy-paper" }));
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="200mm" viewBox="0 0 200 200"><path fill-rule="evenodd" d="M20 20 H60 V70 H20 Z M30 30 H50 V60 H30 Z"/></svg>"#;
+    let o = run(&s, "object.import_svg", json!({ "svg": svg, "name": "O" }))["id"]
+        .as_u64()
+        .unwrap();
+    run(&s, "object.select", json!({ "ids": [o] }));
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let pick = |h: &mut AppHarness, mode: &str| {
+        h.get_by_role_and_label(Role::ComboBox, "Keep").click();
+        h.run();
+        h.get_by_label(mode).click();
+        h.run();
+        wait_for_workers(h);
+    };
+    assert!(app(&h).ui.prepare.report.is_none());
+    pick(&mut h, "Stencil");
+    let card = app(&h).ui.prepare.report.as_ref().expect("the hint card");
+    assert!(
+        card.all()
+            .iter()
+            .any(|i| i.code == flatcraft_engine::report::Code::StencilIsland)
+    );
+    // Closed, then Stencil again: it was said already.
+    app_mut(&mut h).ui.prepare.report = None;
+    pick(&mut h, "Pieces");
+    pick(&mut h, "Stencil");
+    assert!(app(&h).ui.prepare.report.is_none(), "once per object");
+    // Nothing is blocked: the job still plans.
+    assert!(flatcraft_engine::job::build(&s.lock().unwrap()).is_ok());
 }

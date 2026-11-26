@@ -11,7 +11,7 @@
 //! The thresholds live here only ([`min_feature_mm`], [`gap_limit_mm`]), so
 //! a later tuning of the minimum feature size changes every check at once.
 
-use flatcraft_core::document::{CutMode, CutOptions, ObjectId};
+use flatcraft_core::document::{CutMode, CutOptions, KeepMode, ObjectId};
 use flatcraft_core::geometry::CutPath;
 use flatcraft_import::ImportWarning;
 use kurbo::{Affine, BezPath, PathEl, Point, Rect, Shape};
@@ -66,11 +66,15 @@ pub enum Code {
     Skipped,
     /// Nothing to cut: every cut path is shorter than half a plotter step.
     TooSmall,
+    /// A Stencil object on a material without a backing sheet (paper,
+    /// cardstock) has closed inner parts (the middle of an O) that fall
+    /// out. Information only: it never blocks the cut.
+    StencilIsland,
 }
 
 impl Code {
     /// Every code, in the order the tool description lists them.
-    pub const ALL: [Code; 19] = [
+    pub const ALL: [Code; 20] = [
         Code::OpenPaths,
         Code::Hairline,
         Code::BelowMinFeature,
@@ -90,6 +94,7 @@ impl Code {
         Code::Hidden,
         Code::Skipped,
         Code::TooSmall,
+        Code::StencilIsland,
     ];
 
     /// The code as agents see it, like `open_paths`.
@@ -114,6 +119,7 @@ impl Code {
             Code::Hidden => "hidden",
             Code::Skipped => "skipped",
             Code::TooSmall => "too_small",
+            Code::StencilIsland => "stencil_island",
         }
     }
 
@@ -139,6 +145,7 @@ impl Code {
             Code::Hidden => "Hidden objects",
             Code::Skipped => "Skipped objects",
             Code::TooSmall => "Too tiny to cut",
+            Code::StencilIsland => "Stencil middles fall out",
         }
     }
 
@@ -777,10 +784,78 @@ fn check_object(input: &JobInput, o: &JobObject, limits: &Limits) -> Report {
     if let (Some(area), Some(b)) = (limits.area, bounds) {
         issues.extend(area_issue(o, b, area, &shared));
     }
+    if o.keep == KeepMode::Stencil && !input.material.backing {
+        let n = islands(o, affine, limits.tolerance_mm);
+        if n > 0 {
+            issues.push(Issue {
+                code: Code::StencilIsland,
+                severity: Severity::Info,
+                // Linked copies share the keep mode: one line for all.
+                object_ids: shared.clone(),
+                paths: n,
+                message: format!(
+                    "{name}: {} inside the letters of this paper stencil {} out.",
+                    count(n, "closed part", "closed parts"),
+                    if n == 1 { "falls" } else { "fall" }
+                ),
+                hint: STENCIL_ISLAND_HINT.into(),
+                fixes: Vec::new(),
+            });
+        }
+    }
     Report {
         shapes: m.total,
         issues,
     }
+}
+
+/// The hint of [`Code::StencilIsland`].
+pub const STENCIL_ISLAND_HINT: &str = "The middle of letters like O, A and B falls out of a paper stencil. Use a stencil font with bridges if you need them.";
+
+/// How many closed cut rings of `o` lie inside an odd number of its other
+/// rings: the counter of an O (inside the letter's outline), whose middle
+/// is an island in a stencil. Each ring is flattened and tested by one of
+/// its points against the rings whose box holds that point.
+fn islands(o: &JobObject, affine: Affine, tolerance: f64) -> usize {
+    let mut rings: Vec<(Vec<Point>, Rect)> = Vec::new();
+    for p in o.geometry.iter() {
+        for cut in cutgeom::cut_path(p, &o.cut, affine, tolerance) {
+            let mut ring: Vec<Point> = Vec::new();
+            let mut finish = |ring: &mut Vec<Point>, closed: bool| {
+                if closed && ring.len() > 2 {
+                    let b = ring
+                        .iter()
+                        .skip(1)
+                        .fold(Rect::from_points(ring[0], ring[0]), |r, q| r.union_pt(*q));
+                    rings.push((std::mem::take(ring), b));
+                } else {
+                    ring.clear();
+                }
+            };
+            kurbo::flatten(cut, tolerance.max(0.01), |el| match el {
+                PathEl::MoveTo(q) => {
+                    finish(&mut ring, false);
+                    ring.push(q);
+                }
+                PathEl::LineTo(q) => ring.push(q),
+                PathEl::ClosePath => finish(&mut ring, true),
+                _ => {}
+            });
+            finish(&mut ring, false);
+        }
+    }
+    (0..rings.len())
+        .filter(|&i| {
+            let q = rings[i].0[0];
+            let depth = (0..rings.len())
+                .filter(|&j| j != i && rings[j].1.contains(q))
+                .filter(|&j| {
+                    flatcraft_path::containment::point_in_ring(q, &rings[j].0) == Some(true)
+                })
+                .count();
+            depth % 2 == 1
+        })
+        .count()
 }
 
 /// `object.scale` to a size `factor` times the object's, by its larger

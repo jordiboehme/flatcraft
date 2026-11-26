@@ -4,7 +4,7 @@
 //! exactly what the planner keeps. Always on in Cut; a View toggle in
 //! Prepare.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use egui::{Color32, ColorImage, Pos2, Rect, Stroke, TextureHandle, TextureOptions, pos2};
 use flatcraft_engine::job::JobResult;
@@ -19,6 +19,11 @@ pub const MAX_TEXELS: usize = 1600;
 /// The smallest texel, in mm: finer shows nothing a cut line does not
 /// cover anyway.
 pub const MIN_TEXEL_MM: f64 = 0.1;
+
+/// What Prepare says while Show kept and waste is on but the job cannot
+/// be planned.
+pub const NO_PLAN: &str =
+    "Kept and waste show once the job can be planned. The Cut workspace says what to fix.";
 
 /// The hatch spacing on screen, in points.
 pub const HATCH_PX: f32 = 7.0;
@@ -102,21 +107,34 @@ impl Mask {
     }
 }
 
-/// The overlay of the newest plan: its mask, made once per plan, and the
-/// texture made from it once per window.
+/// The worker's answer: the mask (`None` for a broken area) and the name
+/// of the thread that built it.
+type Built = (Option<Arc<Mask>>, Option<String>);
+
+/// The overlay of the newest plan. The mask is built on a worker thread,
+/// once per plan, so a new plan never costs a frame; until it is there
+/// the last mask stays on screen. The texture is made once per mask.
 #[derive(Default)]
 pub struct KeptCache {
-    plan: Option<Arc<JobResult>>,
+    /// The plan and area the newest request is for.
+    key: Option<(Arc<JobResult>, kurbo::Rect)>,
+    /// Where the worker of the newest request puts its mask.
+    slot: Arc<Mutex<Option<Built>>>,
+    /// True from a request until its mask arrived.
+    pending: bool,
     mask: Option<Arc<Mask>>,
     texture: Option<TextureHandle>,
-    /// How many masks were made, for tests.
+    /// How many masks were asked for, for tests.
     pub made: usize,
+    /// The thread that built the newest mask, for tests.
+    pub built_on: Option<String>,
 }
 
 impl std::fmt::Debug for KeptCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KeptCache")
             .field("made", &self.made)
+            .field("pending", &self.pending)
             .finish_non_exhaustive()
     }
 }
@@ -128,18 +146,59 @@ impl Clone for KeptCache {
     }
 }
 
+/// The name of the thread that builds masks.
+pub const WORKER: &str = "flatcraft-kept-mask";
+
 impl KeptCache {
-    /// The mask of `job` over `area`: made once per plan.
-    pub fn mask(&mut self, job: &Arc<JobResult>, area: kurbo::Rect) -> Option<Arc<Mask>> {
-        let same = self.plan.as_ref().is_some_and(|p| Arc::ptr_eq(p, job))
-            && self.mask.as_ref().is_some_and(|m| m.area == area);
+    /// The newest mask there is for `job` over `area`. A new plan or area
+    /// starts a worker; until it is done this gives the last mask (or
+    /// none). The worker asks `ctx` for a repaint when it is done.
+    pub fn mask(
+        &mut self,
+        ctx: &egui::Context,
+        job: &Arc<JobResult>,
+        area: kurbo::Rect,
+    ) -> Option<Arc<Mask>> {
+        let same = self
+            .key
+            .as_ref()
+            .is_some_and(|(p, a)| Arc::ptr_eq(p, job) && *a == area);
         if !same {
-            self.plan = Some(job.clone());
-            self.mask = Mask::of(&job.plan.kept, area, MAX_TEXELS).map(Arc::new);
-            self.texture = None;
+            self.key = Some((job.clone(), area));
             self.made += 1;
+            self.pending = true;
+            // A fresh slot: a worker of an older plan writes into its own.
+            let slot: Arc<Mutex<Option<Built>>> = Arc::default();
+            self.slot = slot.clone();
+            let kept = job.plan.kept.clone();
+            let repaint = ctx.clone();
+            let build = move || {
+                let mask = Mask::of(&kept, area, MAX_TEXELS).map(Arc::new);
+                let name = std::thread::current().name().map(str::to_string);
+                if let Ok(mut s) = slot.lock() {
+                    *s = Some((mask, name));
+                }
+                repaint.request_repaint();
+            };
+            if let Err(e) = std::thread::Builder::new().name(WORKER.into()).spawn(build) {
+                eprintln!("flatcraft: cannot start the kept and waste worker: {e}");
+                self.pending = false;
+            }
+        }
+        if self.pending
+            && let Some((mask, name)) = self.slot.lock().ok().and_then(|mut s| s.take())
+        {
+            self.pending = false;
+            self.mask = mask;
+            self.built_on = name;
+            self.texture = None;
         }
         self.mask.clone()
+    }
+
+    /// True while a worker builds the mask of the newest plan.
+    pub fn pending(&self) -> bool {
+        self.pending
     }
 
     /// The texture of the newest mask, once it was drawn.
@@ -149,6 +208,7 @@ impl KeptCache {
 
     /// Draws the overlay of `job` on the cutting area: the hatch over all
     /// of it, then the kept paper on top, so only waste shows the hatch.
+    /// Until the mask of a new plan is built, the last one is drawn.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
@@ -160,13 +220,13 @@ impl KeptCache {
         mat: [u8; 3],
         t: &Tokens,
     ) {
-        let Some(mask) = self.mask(job, area) else {
+        let Some(mask) = self.mask(ctx, job, area) else {
             return;
         };
         let texture = self.texture.get_or_insert_with(|| {
             ctx.load_texture("flatcraft-kept", mask.image(), TextureOptions::LINEAR)
         });
-        let r = view.rect_to_screen(area);
+        let r = view.rect_to_screen(mask.area);
         hatch(painter, r, hatch_colour(mat, t));
         painter.image(
             texture.id(),
@@ -291,9 +351,9 @@ mod tests {
         let area = kurbo::Rect::new(0.0, 0.0, 100.0, 100.0);
         let paths = job();
         // The overlapping square is a stencil, the others pieces: inside
-        // the first square the piece wins; inside its hole the stencil's
-        // sheet wins; inside the stencil's own square, away from the
-        // piece, it falls out.
+        // the first square the piece wins; its hole stays waste (the
+        // piece's outline cuts it free of the stencil's sheet); inside
+        // the stencil's own square, away from the piece, it falls out.
         let mode = |o: ObjectId| {
             if o.0 == 3 {
                 KeepMode::Stencil
@@ -306,7 +366,11 @@ mod tests {
         agrees(&kept, &mask);
         let at = |x: f64, y: f64| mask.at(Point::new(x, y)).unwrap();
         assert_eq!(at(45.1, 45.1), 255, "the piece overlaps the stencil");
-        assert_eq!(at(25.1, 25.1), 255, "the hole is on the stencil's sheet");
+        assert_eq!(
+            at(25.1, 25.1),
+            0,
+            "the piece's hole is cut free of the sheet"
+        );
         assert_eq!(at(60.1, 50.1), 0, "the stencil's shape falls out");
         assert_eq!(at(5.1, 95.1), 255, "the sheet");
         assert_eq!(at(75.1, 85.1), 255, "the triangle piece");
@@ -346,5 +410,30 @@ mod tests {
         assert_eq!(at(45.05, 30.0 - b / 2.0 - 0.05), 255, "in the band above");
         assert_eq!(at(60.0 + b + 0.55, 45.05), 0, "past the band");
         assert_eq!(at(5.05, 5.05), 0, "far away");
+    }
+
+    #[test]
+    fn the_overlay_shows_a_tag_hole_as_waste_next_to_a_stencil() {
+        let area = kurbo::Rect::new(0.0, 0.0, 100.0, 100.0);
+        let paths = [
+            square(1, 10.0, 10.0, 50.0, 50.0),
+            square(1, 25.0, 25.0, 35.0, 35.0),
+            square(2, 70.0, 10.0, 90.0, 30.0),
+        ];
+        let mode = |o: ObjectId| {
+            if o.0 == 2 {
+                KeepMode::Stencil
+            } else {
+                KeepMode::Pieces
+            }
+        };
+        let kept = KeptMaterial::from_toolpaths(&paths, mode, area);
+        let mask = Mask::of(&kept, area, 500).unwrap();
+        agrees(&kept, &mask);
+        let at = |x: f64, y: f64| mask.at(Point::new(x, y)).unwrap();
+        assert_eq!(at(30.1, 30.1), 0, "the tag's hole is waste");
+        assert_eq!(at(15.1, 30.1), 255, "the tag");
+        assert_eq!(at(60.1, 70.1), 255, "the stencils' sheet");
+        assert_eq!(at(80.1, 20.1), 0, "the stencil's cut-out");
     }
 }

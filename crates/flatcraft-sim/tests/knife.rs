@@ -944,37 +944,86 @@ fn both_gets_no_lead_in_and_no_overshoot() {
     }
 }
 
-/// Across objects kept wins: a piece lying on a stencil's sheet has the
-/// sheet kept around it, so its lead-ins stay inside it like a hole's.
+/// Across objects kept wins: a piece lying on a stencil's sheet is kept
+/// inside (the piece) and outside (the sheet), so there is no waste for a
+/// lead-in or an overshoot: its starts only swivel in place.
 #[test]
-fn kept_wins_a_piece_on_a_stencil_sheet_leads_in_from_inside() {
+fn a_piece_on_a_stencil_sheet_only_swivels() {
     let piece = Rect::new(20.0, 20.0, 40.0, 35.0);
     let stencil = Rect::new(80.0, 20.0, 100.0, 35.0);
+    for corner in [CornerMode::Arc, LIFT] {
+        for start in [0.0, 90.0, 180.0, 270.0] {
+            let input = [
+                placed(
+                    1,
+                    rect_path(piece.x0, piece.y0, piece.width(), piece.height()),
+                ),
+                placed(
+                    2,
+                    rect_path(stencil.x0, stencil.y0, stencil.width(), stencil.height()),
+                ),
+            ];
+            let s = host_keeping(corner, &[(2, KeepMode::Stencil)], start);
+            let (out, _, m) = planned_kept(&input, &s);
+            let (inside, outside) = (Point::new(30.0, 27.0), Point::new(60.0, 27.0));
+            assert!(out.kept.is_kept(inside) && out.kept.is_kept(outside));
+            assert!(!out.kept.is_kept(Point::new(90.0, 27.0)));
+            for t in out
+                .toolpaths
+                .iter()
+                .filter(|t| t.source.object == ObjectId(1))
+            {
+                assert_eq!(runs(t).len(), 1, "{corner:?} {start}: no lift");
+                assert_eq!(branch(t, 0), Branch::Swivel, "{corner:?} {start}");
+            }
+            assert_eq!(m.max_into_kept_mm, 0.0, "{start}");
+        }
+    }
+}
+
+/// A Pieces tag's hole stays waste when a stencil is on the same mat
+/// (its outline cuts the hole free of the stencils' sheet): the round
+/// hole still gets a real lead-in, inside the hole.
+#[test]
+fn a_hole_next_to_a_stencil_leads_in_inside_the_hole() {
+    let c = p(40.0, 40.0);
+    let tag = rect_path(20.0, 20.0, 40.0, 40.0);
+    let mut branches = Vec::new();
     for start in [0.0, 90.0, 180.0, 270.0] {
         let input = [
-            placed(
-                1,
-                rect_path(piece.x0, piece.y0, piece.width(), piece.height()),
-            ),
-            placed(
-                2,
-                rect_path(stencil.x0, stencil.y0, stencil.width(), stencil.height()),
-            ),
+            placed(1, tag.clone()),
+            placed(1, Circle::new(c, 5.0).to_path(0.01)),
+            placed(2, rect_path(150.0, 20.0, 30.0, 20.0)),
         ];
         let s = host_keeping(CornerMode::Arc, &[(2, KeepMode::Stencil)], start);
         let (out, trace, m) = planned_kept(&input, &s);
-        let (inside, outside) = (Point::new(30.0, 27.0), Point::new(60.0, 27.0));
-        assert!(out.kept.is_kept(inside) && out.kept.is_kept(outside));
-        assert!(!out.kept.is_kept(Point::new(90.0, 27.0)));
-        for x in trace.samples.iter().filter(|x| x.down) {
-            let near = |r: Rect| {
-                r.inflate(ALGORITHM_LIMIT_MM, ALGORITHM_LIMIT_MM)
-                    .contains(x.tip)
-            };
-            assert!(near(piece) || near(stencil), "{start}: tip at {:?}", x.tip);
+        assert!(!out.kept.is_kept(c), "the hole is waste");
+        let hole = out
+            .toolpaths
+            .iter()
+            .position(|t| {
+                t.source.object == ObjectId(1) && t.points.iter().all(|q| q.distance(c) < 5.1)
+            })
+            .expect("the hole ring");
+        branches
+            .extend((0..runs(&out.toolpaths[hole]).len()).map(|r| branch(&out.toolpaths[hole], r)));
+        for x in trace
+            .samples
+            .iter()
+            .filter(|x| x.down && x.toolpath == hole)
+        {
+            assert!(
+                x.tip.distance(c) <= 5.0 + ALGORITHM_LIMIT_MM,
+                "{start}: {:?}",
+                x.tip
+            );
         }
         assert_eq!(m.max_into_kept_mm, 0.0, "{start}");
     }
+    assert!(
+        branches.iter().any(|b| *b != Branch::Swivel),
+        "a real lead-in: {branches:?}"
+    );
 }
 
 /// Nothing near a Both object is waste: a Pieces neighbour 1 or 2 mm away

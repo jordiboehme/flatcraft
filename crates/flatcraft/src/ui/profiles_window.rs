@@ -1945,6 +1945,13 @@ fn material_form(
                     Setting::TrackEnhancing,
                     &mut m.track_enhancing,
                 );
+                f.check(
+                    ui,
+                    "Backing sheet",
+                    "backing",
+                    Setting::Backing,
+                    &mut m.backing,
+                );
                 f.row(
                     ui,
                     "Blade depth hint",

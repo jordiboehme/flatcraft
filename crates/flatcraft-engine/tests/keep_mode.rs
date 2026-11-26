@@ -56,7 +56,8 @@ fn a_group_id_sets_every_member_in_one_step() {
         json!({ "ids": [g], "keep": "both" }),
     );
     assert_eq!(s.doc().undo.undo_len(), before + 1);
-    assert_eq!(r, json!({ "ids": [a, b], "keep": "both" }));
+    assert_eq!((&r["ids"], &r["keep"]), (&json!([a, b]), &json!("both")));
+    assert_eq!(r["report"]["issues"], json!([]));
     assert_eq!((keep(&s, a), keep(&s, b)), (KeepMode::Both, KeepMode::Both));
     assert_eq!(keep(&s, c), KeepMode::Pieces);
 }
@@ -100,7 +101,10 @@ fn an_agent_sets_and_reads_it_like_the_window() {
             Origin::Agent,
         )
         .unwrap();
-    assert_eq!(by_agent, json!({ "ids": [a], "keep": "stencil" }));
+    assert_eq!(
+        (&by_agent["ids"], &by_agent["keep"]),
+        (&json!([a]), &json!("stencil"))
+    );
     let state = s
         .execute("document.state", json!({}), Origin::Agent)
         .unwrap();
@@ -189,4 +193,100 @@ fn a_stencil_keeps_the_sheet_so_nothing_is_weeded() {
         json!({ "ids": [a], "keep": "stencil" }),
     );
     assert_eq!(weeds(&s), (0, 1));
+}
+
+/// An O (a ring with its counter) or an L (one ring) on a 200 mm page.
+fn letter(s: &mut Session, o: bool) -> u64 {
+    let d = if o {
+        "M20 20 H60 V70 H20 Z M30 30 H50 V60 H30 Z"
+    } else {
+        "M100 20 H110 V60 H130 V70 H100 Z"
+    };
+    let svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="200mm" viewBox="0 0 200 200"><path fill-rule="evenodd" d="{d}"/></svg>"#
+    );
+    let name = if o { "O" } else { "L" };
+    run(s, "object.import_svg", json!({ "svg": svg, "name": name }))["id"]
+        .as_u64()
+        .unwrap()
+}
+
+fn islands(r: &Value) -> Vec<Value> {
+    r["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["code"] == "stencil_island")
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn a_paper_stencil_says_that_the_middle_of_an_o_falls_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    run(&mut s, "job.set_material", json!({ "id": "copy-paper" }));
+    let o = letter(&mut s, true);
+    let l = letter(&mut s, false);
+    let r = run(
+        &mut s,
+        "object.set_keep",
+        json!({ "ids": [o, l], "keep": "stencil" }),
+    );
+    let found = islands(&r["report"]);
+    assert_eq!(found.len(), 1, "{r}");
+    let i = &found[0];
+    assert_eq!(i["severity"], "info");
+    assert_eq!(i["object_ids"], json!([o]), "the O, not the L");
+    assert_eq!(i["paths"], 1);
+    assert_eq!(i["fixes"], json!([]));
+    assert_eq!(i["hint"], flatcraft_engine::report::STENCIL_ISLAND_HINT);
+    assert_eq!(islands(&run(&mut s, "document.check", json!({}))).len(), 1);
+    // The counter stays kept material, and the hint never blocks the cut.
+    let job = job::build(&s).unwrap();
+    assert!(job.plan.kept.is_kept(Point::new(40.0, 45.0)), "the counter");
+    assert!(!job.plan.kept.is_kept(Point::new(25.0, 45.0)), "the letter");
+    // As pieces there is nothing to say.
+    run(
+        &mut s,
+        "object.set_keep",
+        json!({ "ids": [o], "keep": "pieces" }),
+    );
+    assert!(islands(&run(&mut s, "document.check", json!({}))).is_empty());
+}
+
+#[test]
+fn a_stencil_on_a_backing_sheet_keeps_its_counters_without_a_hint() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    run(&mut s, "job.set_material", json!({ "id": "vinyl" }));
+    let o = letter(&mut s, true);
+    let r = run(
+        &mut s,
+        "object.set_keep",
+        json!({ "ids": [o], "keep": "stencil" }),
+    );
+    assert!(islands(&r["report"]).is_empty(), "{r}");
+    assert!(islands(&run(&mut s, "document.check", json!({}))).is_empty());
+    let job = job::build(&s).unwrap();
+    assert!(job.plan.kept.is_kept(Point::new(40.0, 45.0)), "the counter");
+}
+
+#[test]
+fn a_project_with_the_old_keep_sheet_strategy_is_refused_by_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    square(&mut s, 20.0, "a");
+    let path = dir.path().join("old labels.flatcraft");
+    run(&mut s, "project.save", json!({ "path": path }));
+    flatcraft_core::project::Archive::edit(&path, |a| {
+        a.project["job"]["strategy"] = json!("keep_sheet");
+    })
+    .unwrap();
+    let e = s
+        .execute("project.open", json!({ "path": path }), Origin::User)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("old labels.flatcraft"), "{e}");
+    assert!(e.contains("keep_sheet"), "{e}");
 }

@@ -2213,7 +2213,13 @@ fn run_set_keep(s: &mut Session, p: SetKeepParams, _: Origin) -> Result<Value, C
         doc.spread_shared(*id);
         out.extend(doc.members(*id).into_iter().map(|m| m.0));
     }
-    Ok(json!({ "ids": out, "keep": keep.key() }))
+    // What the new mode means for these objects: the stencil hints.
+    let changed: Vec<ObjectId> = out.iter().map(|i| ObjectId(*i)).collect();
+    let mut report = report_of(s, &changed, Vec::new());
+    report
+        .issues
+        .retain(|i| i.code == report::Code::StencilIsland);
+    Ok(json!({ "ids": out, "keep": keep.key(), "report": report.to_json() }))
 }
 
 command!(
@@ -2223,7 +2229,7 @@ command!(
     mutates: true,
     params: SetKeepParams,
     run: run_set_keep,
-    description: "Sets what is kept after cutting each object, in one undo step. The plan keeps the blade's lead-ins and corner overshoots in the waste and never in what is kept, and weed lines and the weed box cut only waste. keep: pieces (default) keeps the cut shapes, like a sticker: the outside and the holes are waste. stencil keeps the sheet, like a stencil: the cut shapes fall out and are waste, the rest of the cutting area is kept, so weeding cuts nothing outside them. both keeps both sides: nothing within 1 mm of the object's cuts is waste, so no lead-in, overshoot or weed line lands there, and its own cuts only turn the blade in place. A stencil with a cut outer frame is pieces (the framed sheet is the piece). Across objects kept wins: a place is waste only when no object keeps it. A group id sets every object in the group. Linked copies (see object.copies) share their keep mode, so setting it on one sets it on all members of its group. An empty ids list means the current selection. Returns {ids: [every changed object, linked copies included], keep}.",
+    description: "Sets what is kept after cutting each object, in one undo step. The plan keeps the blade's lead-ins and corner overshoots in the waste and never in what is kept, and weed lines and the weed box cut only waste. keep: pieces (default) keeps the cut shapes, like a sticker: the outside and the holes are waste. stencil keeps the sheet, like a stencil: the cut shapes fall out and are waste, the rest of the cutting area is kept, so weeding cuts nothing outside them. both keeps both sides: nothing within 1 mm of the object's cuts is waste, so no lead-in, overshoot or weed line lands there, and its own cuts only turn the blade in place. A stencil with a cut outer frame is pieces (the framed sheet is the piece). Across objects: a piece of any object is kept; all stencils share one sheet, which each stencil's shapes cut out of, and a hole of a pieces or both object is cut free of that sheet, so it stays waste. In stencil mode the middle of an O stays on the sheet: on a backing sheet the transfer tape lifts it with the stencil; on a material without backing (paper, cardstock) it falls out, and the report says so (stencil_island, info). A group id sets every object in the group. Linked copies (see object.copies) share their keep mode, so setting it on one sets it on all members of its group. An empty ids list means the current selection. Returns {ids: [every changed object, linked copies included], keep, report: {shapes, issues}} where issues holds only the stencil_island hints of these objects (see document.check).",
 );
 
 #[cfg(test)]

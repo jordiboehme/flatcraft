@@ -437,6 +437,15 @@ pub struct MaterialProfile {
     pub reverse_alternate_passes: bool,
     pub overcut_mm: f64,
     pub track_enhancing: bool,
+    /// The material sits on a backing sheet, like vinyl: small loose
+    /// parts (the middle of a stencil's O) stay on it until transfer tape
+    /// lifts them. Paper and cardstock have none, so such parts fall out.
+    /// Files without the key get true; true is not written.
+    #[serde(
+        default = "backing_default",
+        skip_serializing_if = "is_backing_default"
+    )]
+    pub backing: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blade_depth_hint: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -446,6 +455,14 @@ pub struct MaterialProfile {
     /// ([`crate::store::PRESET_NOTES_FILE`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+}
+
+fn backing_default() -> bool {
+    true
+}
+
+fn is_backing_default(b: &bool) -> bool {
+    *b
 }
 
 impl MaterialProfile {

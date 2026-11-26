@@ -809,6 +809,14 @@ pub fn show(
     {
         cut.kept
             .draw(ui.ctx(), &painter, &view, &job, area, mat_rgb, t);
+    } else if st.show_kept_waste && matches!(cut.plan, Some(Err(_))) {
+        painter.text(
+            rect.left_top() + Vec2::splat(RULER + t.spacing),
+            egui::Align2::LEFT_TOP,
+            super::kept::NO_PLAN,
+            super::fonts::medium(12.0),
+            t.text_dim,
+        );
     }
     draw_objects(&painter, snap, &view, mat_rgb, 1.0, false, |id| {
         drag_preview(st.drag.as_ref(), snap, id)

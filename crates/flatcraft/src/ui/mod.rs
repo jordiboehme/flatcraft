@@ -901,6 +901,27 @@ impl FlatCraftApp {
                 p.report =
                     report::ImportCard::from_result(doc_id, format!("Imported '{name}'"), result);
             }
+            "object.set_keep" => {
+                // The stencil hint shows once per object: only for objects
+                // that were not told yet in this document.
+                let island_ids: Vec<u64> = result["report"]["issues"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .flat_map(|i| ids(&i["object_ids"]))
+                    .collect();
+                let new: Vec<u64> = island_ids
+                    .iter()
+                    .copied()
+                    .filter(|id| !p.stencil_told.contains(&(doc_id, *id)))
+                    .collect();
+                if !new.is_empty() {
+                    p.stencil_told
+                        .extend(island_ids.iter().map(|id| (doc_id, *id)));
+                    p.report =
+                        report::ImportCard::from_result(doc_id, "Stencil on paper".into(), result);
+                }
+            }
             "object.reload" => {
                 let done: Vec<u64> = [&result["reloaded"], &result["unchanged"]]
                     .into_iter()

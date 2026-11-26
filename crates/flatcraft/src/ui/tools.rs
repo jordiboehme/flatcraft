@@ -949,10 +949,10 @@ impl Tool {
             | Act::Zoom100
             | Act::Grid
             | Act::Rulers
-            | Act::KeptWaste
             | Act::ObjectsPanel
             | Act::SettingsPanel
             | Act::DebugPanel => None,
+            Act::KeptWaste => kept_waste_blocked(snap),
             Act::Trace => ribbon::single_raster(snap)
                 .is_none()
                 .then_some("Select one picture first. Only pictures can be traced."),
@@ -1096,6 +1096,23 @@ impl Tool {
     }
 }
 
+/// Why Show kept and waste has nothing to show: no object, or none that
+/// is cut. `None` when a job may be planned (a plan that still fails says
+/// why on the canvas).
+pub fn kept_waste_blocked(snap: &Snapshot) -> Option<&'static str> {
+    if snap.objects.is_empty() {
+        Some(
+            "Nothing can be planned yet: import something first. Then this shows what you keep and what is waste.",
+        )
+    } else if !snap.objects.iter().any(|o| o.visible && o.cut_enabled) {
+        Some(
+            "Nothing can be planned yet: every object is hidden or skipped. Show an object or turn its cut back on first.",
+        )
+    } else {
+        None
+    }
+}
+
 /// What Ungroup does with the objects `ids` (see `UngroupPlan`).
 pub fn ungroup_plan(
     snap: &Snapshot,
@@ -1199,6 +1216,7 @@ pub enum Setting {
     Calibrated,
     HiddenMat,
     TrackEnhancing,
+    Backing,
     OverrideSet,
     PresetName,
     Vendor,
@@ -1241,7 +1259,7 @@ pub enum Setting {
 }
 
 impl Setting {
-    pub const ALL: [Setting; 78] = [
+    pub const ALL: [Setting; 79] = [
         Setting::PositionX,
         Setting::PositionY,
         Setting::Width,
@@ -1281,6 +1299,7 @@ impl Setting {
         Setting::Calibrated,
         Setting::HiddenMat,
         Setting::TrackEnhancing,
+        Setting::Backing,
         Setting::OverrideSet,
         Setting::PresetName,
         Setting::Vendor,
@@ -1453,6 +1472,9 @@ impl Setting {
             }
             Setting::TrackEnhancing => {
                 "Turns on track enhancing for this material: a mode for the feed rollers (the rubber wheels that move the mat or sheet) that is meant to help long or heavy material run straight. It only works when the plotter's own Track enhancing box is on too."
+            }
+            Setting::Backing => {
+                "The material sits on a backing sheet, like vinyl. Small loose parts stay on it until you lift them with transfer tape. Vinyl, sticker paper and masking film sit on a backing sheet; copy paper and cardstock do not, so there the middle of a stencil's O falls out."
             }
             Setting::PresetName => {
                 "The name this preset shows in the lists, so you can find it again. It does not change the cut."

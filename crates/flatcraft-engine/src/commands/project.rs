@@ -640,7 +640,14 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
         ProjectError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => {
             CommandError::NotFound(format!("file {}", p.path.display()))
         }
-        other => CommandError::Failed(other.to_string()),
+        // Say which file: the person may have several open.
+        other => CommandError::Failed(format!(
+            "cannot open {}: {other}",
+            p.path.file_name().map_or_else(
+                || p.path.display().to_string(),
+                |n| n.to_string_lossy().into_owned()
+            )
+        )),
     })?;
     let blade = blade_offset_for(s, &document.job.plotter_id);
     let warnings = rebuild_loaded(

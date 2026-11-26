@@ -28,7 +28,7 @@ and job.preview returns issues (with ready false instead of an error) when nothi
 Each issue has a stable code, a severity (info, warning or error), object_ids, paths, message (the text the person sees), hint, \
 and fixes: a list of {label, description, command, args}; run a fix with execute {command, params: args}. No fix means: follow the hint. \
 Codes: open_paths, hairline, below_min_feature, fill_ignored, outside_area, larger_than_area, missing_font, clip_ignored, images_skipped, \
-dashes_ignored, no_paths, nothing_traced, trace_downscaled, dpi_ignored, shapes_dropped (import report and document.check); \
+dashes_ignored, no_paths, nothing_traced, trace_downscaled, dpi_ignored, shapes_dropped, stencil_island (import report and document.check); \
 empty_document, hidden, skipped, too_small (job.preview, nothing to cut). describe_command document.check explains each code. \
 When a cut went wrong, run job.troubleshoot {symptom: not_through, tore_or_dragged, pieces_moved or wrong_place_or_size}: it returns the checklist \
 the window's \"It didn't cut right...\" helper shows, in order, so give the same advice in the same order. Its items have fixes in the same shape; \

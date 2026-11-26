@@ -179,7 +179,8 @@ pub enum KeepMode {
     Pieces,
     /// The sheet is kept and the cut shapes fall out (a stencil): inside
     /// an odd number of the object's rings is waste, the rest of the
-    /// cutting area is kept.
+    /// cutting area is kept (the counter of an O too: on a backing sheet
+    /// it stays in place). All stencils share that one sheet.
     Stencil,
     /// Both sides of its cuts are kept: nothing near the object is waste.
     /// Its own cuts get no lead-in and no corner overshoot, the blade only

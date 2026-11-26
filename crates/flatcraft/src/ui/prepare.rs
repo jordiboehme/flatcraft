@@ -263,6 +263,9 @@ pub struct PrepareState {
     pub panels: super::rails::Panels,
     pub show_grid: bool,
     pub show_rulers: bool,
+    /// The objects (document id, object id) the stencil hint was shown for
+    /// (`stencil_island`): it shows once per object.
+    pub stencil_told: std::collections::BTreeSet<(u64, u64)>,
     /// The kept and waste overlay on the Prepare canvas (View, Show). Off
     /// until switched on; the Cut workspace always shows it.
     pub show_kept_waste: bool,
@@ -376,6 +379,7 @@ impl Default for PrepareState {
             show_grid: true,
             show_rulers: true,
             show_kept_waste: false,
+            stencil_told: Default::default(),
             fields: Fields::default(),
             search_open: false,
             drag: None,

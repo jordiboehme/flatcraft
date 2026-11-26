@@ -55,7 +55,11 @@ impl ImportCard {
     /// nothing to report.
     pub fn from_result(doc_id: u64, title: String, result: &Value) -> Option<Self> {
         let report: Report = serde_json::from_value(result["report"].clone()).ok()?;
-        let ids: Vec<u64> = match result.get("imported").or_else(|| result.get("reloaded")) {
+        let ids: Vec<u64> = match result
+            .get("imported")
+            .or_else(|| result.get("reloaded"))
+            .or_else(|| result.get("ids"))
+        {
             Some(list) => list
                 .as_array()
                 .into_iter()
