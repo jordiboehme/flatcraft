@@ -290,3 +290,145 @@ fn a_project_with_the_old_keep_sheet_strategy_is_refused_by_name() {
     assert!(e.contains("old labels.flatcraft"), "{e}");
     assert!(e.contains("keep_sheet"), "{e}");
 }
+
+/// The bounds of object `id` in mm, from document.state.
+fn bounds(s: &mut Session, id: u64) -> [f64; 4] {
+    let state = run(s, "document.state", json!({}));
+    let o = state["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["id"] == id)
+        .unwrap()
+        .clone();
+    let b = &o["bounds_mm"];
+    ["x0", "y0", "x1", "y1"].map(|k| b[k].as_f64().unwrap())
+}
+
+/// A 40 x 50 mm O with a 20 x 30 mm middle, at (`x`, 20) on the page.
+fn letter_o(s: &mut Session, x: f64) -> u64 {
+    let svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="200mm" viewBox="0 0 200 200"><path fill-rule="evenodd" d="M{x} 20 h40 v50 h-40 Z M{} 30 h20 v30 h-20 Z"/></svg>"#,
+        x + 10.0
+    );
+    run(s, "object.import_svg", json!({ "svg": svg, "name": "O" }))["id"]
+        .as_u64()
+        .unwrap()
+}
+
+fn keep_at(s: &mut Session, ids: &[u64], points: &[(f64, f64)]) -> Result<Value, String> {
+    let points: Vec<Value> = points
+        .iter()
+        .map(|(x, y)| json!({ "x_mm": x, "y_mm": y }))
+        .collect();
+    s.execute(
+        "object.keep_at",
+        json!({ "ids": ids, "points": points }),
+        Origin::Agent,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[test]
+fn keep_at_maps_the_points_that_stay_to_the_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = square(&mut s, 20.0, "a");
+    let [x0, y0, x1, y1] = bounds(&mut s, a);
+    let inside = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+    let outside = (x1 + 20.0, (y0 + y1) / 2.0);
+    for (points, want, regions) in [
+        (vec![inside], KeepMode::Pieces, json!(["shape"])),
+        (vec![outside], KeepMode::Stencil, json!(["sheet"])),
+        (
+            vec![inside, outside],
+            KeepMode::Both,
+            json!(["shape", "sheet"]),
+        ),
+        (
+            vec![inside, inside],
+            KeepMode::Pieces,
+            json!(["shape", "shape"]),
+        ),
+    ] {
+        let r = keep_at(&mut s, &[a], &points).unwrap();
+        assert_eq!(keep(&s, a), want, "{points:?}");
+        assert_eq!((&r["keep"], &r["regions"]), (&json!(want.key()), &regions));
+        assert_eq!(r["ids"], json!([a]));
+    }
+}
+
+#[test]
+fn keep_at_refuses_nothing_a_cut_line_and_off_the_mat() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = square(&mut s, 20.0, "a");
+    let [x0, y0, _, y1] = bounds(&mut s, a);
+    let before = s.doc().undo.undo_len();
+    let nothing = keep_at(&mut s, &[a], &[]).unwrap_err();
+    assert!(nothing.contains("at least one point"), "{nothing}");
+    let on_cut = keep_at(&mut s, &[a], &[(x0, (y0 + y1) / 2.0)]).unwrap_err();
+    assert!(on_cut.contains("cut line"), "{on_cut}");
+    let off = keep_at(&mut s, &[a], &[(-500.0, 10.0)]).unwrap_err();
+    assert!(off.contains("outside the cutting area"), "{off}");
+    run(
+        &mut s,
+        "object.set_cut",
+        json!({ "ids": [a], "cut": false }),
+    );
+    let before_skip = s.doc().undo.undo_len();
+    let skipped = keep_at(&mut s, &[a], &[(x0 + 5.0, y0 + 5.0)]).unwrap_err();
+    assert!(skipped.contains("hidden or skipped"), "{skipped}");
+    assert_eq!(s.doc().undo.undo_len(), before_skip);
+    assert_eq!(before + 1, before_skip, "only set_cut changed anything");
+    assert_eq!(keep(&s, a), KeepMode::Pieces);
+}
+
+#[test]
+fn keep_at_the_middle_of_an_o_is_the_sheet() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let o = letter_o(&mut s, 20.0);
+    let [x0, y0, x1, y1] = bounds(&mut s, o);
+    let middle = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+    let stroke = (x0 + 5.0, (y0 + y1) / 2.0);
+    let r = keep_at(&mut s, &[o], &[middle]).unwrap();
+    assert_eq!(
+        (r["keep"].as_str(), &r["regions"]),
+        (Some("stencil"), &json!(["sheet"]))
+    );
+    let r = keep_at(&mut s, &[o], &[stroke]).unwrap();
+    assert_eq!(r["keep"], "pieces");
+}
+
+#[test]
+fn keep_at_is_one_undo_step_and_reaches_groups_and_linked_copies() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = square(&mut s, 20.0, "a");
+    let b = square(&mut s, 100.0, "b");
+    let copy = run(
+        &mut s,
+        "object.copies",
+        json!({ "id": a, "count": 1, "linked": true }),
+    )["ids"][0]
+        .as_u64()
+        .unwrap();
+    let g = run(&mut s, "object.group", json!({ "ids": [a, b] }))["group_id"]
+        .as_u64()
+        .unwrap();
+    let [x0, y0, x1, y1] = bounds(&mut s, b);
+    let before = s.doc().undo.undo_len();
+    let r = keep_at(&mut s, &[g], &[((x0 + x1) / 2.0, (y0 + y1) / 2.0)]).unwrap();
+    assert_eq!(r["keep"], "pieces", "inside b: the shape of the group");
+    assert_eq!(s.doc().undo.undo_len(), before, "Pieces already: no step");
+    keep_at(&mut s, &[g], &[(x1 + 5.0, y0 + 5.0)]).unwrap();
+    assert_eq!(s.doc().undo.undo_len(), before + 1);
+    for id in [a, b, copy] {
+        assert_eq!(keep(&s, id), KeepMode::Stencil, "object {id}");
+    }
+    run(&mut s, "edit.undo", json!({}));
+    for id in [a, b, copy] {
+        assert_eq!(keep(&s, id), KeepMode::Pieces, "object {id} after undo");
+    }
+}

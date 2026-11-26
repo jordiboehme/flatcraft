@@ -802,6 +802,8 @@ fn id_call(cmd: &str, id: u64) -> Option<Value> {
         }
         "object.set_cut_options" => json!({ "ids": [id], "mode": "all_lines" }),
         "object.set_keep" => json!({ "ids": [id], "keep": "stencil" }),
+        // A point on the sheet, away from every object of the test.
+        "object.keep_at" => json!({ "ids": [id], "points": [{ "x_mm": 150.0, "y_mm": 150.0 }] }),
         "arrange.align" => json!({ "ids": [id], "mode": "left" }),
         "arrange.distribute" => json!({ "ids": [id], "axis": "horizontal" }),
         "document.export" => return None,

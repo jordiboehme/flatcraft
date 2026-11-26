@@ -2201,10 +2201,15 @@ pub struct SetKeepParams {
 
 fn run_set_keep(s: &mut Session, p: SetKeepParams, _: Origin) -> Result<Value, CommandError> {
     let ids = resolve_ids(s, &p.ids)?;
-    let keep: KeepMode = p.keep.into();
+    set_keep(s, &ids, p.keep.into())
+}
+
+/// Sets `keep` on the objects `ids` and their linked copies, for
+/// `object.set_keep` and `object.keep_at`.
+fn set_keep(s: &mut Session, ids: &[ObjectId], keep: KeepMode) -> Result<Value, CommandError> {
     let doc = &mut s.doc_mut().document;
     let mut out = Vec::new();
-    for id in &ids {
+    for id in ids {
         if out.contains(&id.0) {
             continue;
         }
@@ -2230,6 +2235,91 @@ command!(
     params: SetKeepParams,
     run: run_set_keep,
     description: "Sets what is kept after cutting each object, in one undo step. The plan keeps the blade's lead-ins and corner overshoots in the waste and never in what is kept, and weed lines and the weed box cut only waste. keep: pieces (default) keeps the cut shapes, like a sticker: the outside and the holes are waste. stencil keeps the sheet, like a stencil: the cut shapes fall out and are waste, the rest of the cutting area is kept, so weeding cuts nothing outside them. both keeps both sides: nothing within 1 mm of the object's cuts is waste, so no lead-in, overshoot or weed line lands there, and its own cuts only turn the blade in place. A stencil with a cut outer frame is pieces (the framed sheet is the piece). Across objects: a piece of any object is kept; all stencils share one sheet, which each stencil's shapes cut out of, and a hole of a pieces or both object is cut free of that sheet, so it stays waste. In stencil mode the middle of an O stays on the sheet: on a backing sheet the transfer tape lifts it with the stencil; on a material without backing (paper, cardstock) it falls out, and the report says so (stencil_island, info). A group id sets every object in the group. Linked copies (see object.copies) share their keep mode, so setting it on one sets it on all members of its group. An empty ids list means the current selection. Returns {ids: [every changed object, linked copies included], keep, report: {shapes, issues}} where issues holds only the stencil_island hints of these objects (see document.check).",
+);
+
+// ---------------------------------------------------------------- keep at
+
+#[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MatPoint {
+    pub x_mm: f64,
+    pub y_mm: f64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct KeepAtParams {
+    /// Object or group ids; empty means the current selection.
+    #[serde(default)]
+    pub ids: Vec<u64>,
+    /// Points on the mat that must stay after cutting, in mm (origin the 0,0 of the grid printed on the mat, y down): inside the objects' shape, or on the sheet around them.
+    pub points: Vec<MatPoint>,
+}
+
+/// The name of a region in `object.keep_at`'s answer.
+fn region_key(r: flatcraft_path::Region) -> &'static str {
+    match r {
+        flatcraft_path::Region::Shape => "shape",
+        flatcraft_path::Region::Sheet => "sheet",
+    }
+}
+
+fn run_keep_at(s: &mut Session, p: KeepAtParams, _: Origin) -> Result<Value, CommandError> {
+    let ids = resolve_ids(s, &p.ids)?;
+    if p.points.is_empty() {
+        return Err(CommandError::InvalidParams(
+            "give at least one point that must stay".into(),
+        ));
+    }
+    let doc = &s.doc().document;
+    let cut = |id: &ObjectId| doc.get(*id).is_some_and(|o| o.visible && o.cut_enabled);
+    if !ids.iter().any(cut) {
+        return Err(CommandError::Failed(
+            "these objects are hidden or skipped, so nothing of them is cut: show them or cut them again first".into(),
+        ));
+    }
+    // The window's picker reads the same plan: its rings and its sheet.
+    let job = crate::job::build(s).map_err(|e| {
+        CommandError::Failed(format!(
+            "the job cannot be planned, so the shape and the sheet cannot be told apart: {e}"
+        ))
+    })?;
+    let kept = &job.plan.kept;
+    if ids.iter().all(|id| kept.mode_of(*id).is_none()) {
+        return Err(CommandError::Failed(
+            "these objects have no closed cut to keep a side of, only open lines".into(),
+        ));
+    }
+    let (mut shape, mut sheet) = (false, false);
+    let mut regions = Vec::new();
+    for (k, q) in p.points.iter().enumerate() {
+        let at = Point::new(q.x_mm, q.y_mm);
+        let Some(hit) = kept.region_at(at, |o| ids.contains(&o)) else {
+            return Err(CommandError::InvalidParams(format!(
+                "point {k} ({}, {}) lies on a cut line or outside the cutting area; give a point clearly inside the shape or on the sheet around it",
+                q.x_mm, q.y_mm
+            )));
+        };
+        match hit.region {
+            flatcraft_path::Region::Shape => shape = true,
+            flatcraft_path::Region::Sheet => sheet = true,
+        }
+        regions.push(region_key(hit.region));
+    }
+    let keep = flatcraft_path::keep_for(shape, sheet).expect("every point marks a region");
+    let mut out = set_keep(s, &ids, keep)?;
+    out["regions"] = json!(regions);
+    Ok(out)
+}
+
+command!(
+    ObjectKeepAt,
+    id: "object.keep_at",
+    title: "Keep at points",
+    mutates: true,
+    params: KeepAtParams,
+    run: run_keep_at,
+    description: "Sets the keep mode of objects by the points on the mat that must stay, as the window's \"Pick on the mat\" helper does (\"keep the letters\" is a point inside a letter). Each point lies in the objects' shape (inside their cut outline, by the even-odd rule of the plan: the middle of an O is not in the shape) or on the sheet around them. Shape only gives pieces, sheet only stencil, shape and sheet both; see object.set_keep for what each keeps. Points are mm, origin the 0,0 of the grid printed on the mat, x right, y down. A point on a cut line or outside the cutting area is refused, and so are objects that are all hidden, skipped or open lines only. It needs a job that can be planned (see job.preview). One undo step; nothing changes when the mode is already set. A group id sets every object in the group, and linked copies (see object.copies) share the keep mode. An empty ids list means the current selection. Returns {ids: [every changed object, linked copies included], keep, regions: [shape|sheet, one per point], report: {shapes, issues}} where issues holds only the stencil_island hints of these objects.",
 );
 
 #[cfg(test)]

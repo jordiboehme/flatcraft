@@ -88,10 +88,18 @@ struct Depths {
     cut_out: usize,
 }
 
+/// True when an object's own ring depth at a point puts it inside the
+/// object's shape: an odd number of its rings enclose it (piece 1, hole 2,
+/// piece in a hole 3). The one even-odd rule of [`KeptMaterial`] and of
+/// the keep picker ([`KeptMaterial::region_at`]).
+pub fn in_shape(depth: usize) -> bool {
+    depth % 2 == 1
+}
+
 impl Depths {
     /// Moves an object of `mode` from depth `old` to `new`.
     fn change(&mut self, mode: KeepMode, old: usize, new: usize) {
-        let flag = |n: usize, odd: bool| if odd { n % 2 == 1 } else { n > 0 };
+        let flag = |n: usize, odd: bool| if odd { in_shape(n) } else { n > 0 };
         let step = |count: &mut usize, was: bool, is: bool| match (was, is) {
             (false, true) => *count += 1,
             (true, false) => *count -= 1,
@@ -431,9 +439,46 @@ pub fn keep_side(tree: &ContainmentTree, i: usize, closed: bool, mode: KeepMode)
 /// Which side of an object's cuts is kept material: the document's type.
 pub use flatcraft_core::document::KeepMode;
 
+/// How close to a cut a point of the keep picker is too close to say
+/// which side it is on, in millimetres.
+pub const PICK_CLEARANCE_MM: f64 = 0.1;
+
+/// The two parts the keep picker tells apart for some objects: their
+/// shape (inside their cut outline) and the sheet around them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Region {
+    Shape,
+    Sheet,
+}
+
+/// What [`KeptMaterial::region_at`] found under a point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegionHit {
+    pub region: Region,
+    /// The object whose shape holds the point, or whose hole does (on
+    /// the sheet). `None` on the open sheet.
+    pub object: Option<ObjectId>,
+    /// The point lies in a hole of `object`, at an even ring depth above
+    /// zero: the middle of an O.
+    pub hole: bool,
+}
+
+/// The keep mode for what should stay (the keep picker): the shape alone
+/// is [`KeepMode::Pieces`], the sheet alone [`KeepMode::Stencil`], both
+/// [`KeepMode::Both`]. Nothing staying is no mode.
+pub fn keep_for(shape: bool, sheet: bool) -> Option<KeepMode> {
+    match (shape, sheet) {
+        (true, false) => Some(KeepMode::Pieces),
+        (false, true) => Some(KeepMode::Stencil),
+        (true, true) => Some(KeepMode::Both),
+        (false, false) => None,
+    }
+}
+
 /// The closed `Cut` rings of one object, one lap each, and its keep mode.
 #[derive(Debug, Clone)]
 struct KeptObject<'a> {
+    id: ObjectId,
     rings: Vec<&'a [Point]>,
     mode: KeepMode,
 }
@@ -473,6 +518,8 @@ pub struct KeptMaterial {
     ring_object: Vec<usize>,
     /// The keep mode of each object.
     modes: Vec<KeepMode>,
+    /// The id of each object.
+    ids: Vec<ObjectId>,
     /// How many objects are [`KeepMode::Stencil`].
     stencils: usize,
     /// A stencil's sheet: the whole cutting area, boundary included.
@@ -510,6 +557,7 @@ impl KeptMaterial {
             let o = t.source.object;
             let k = *index.entry(o).or_insert_with(|| {
                 objects.push(KeptObject {
+                    id: o,
                     rings: Vec::new(),
                     mode: mode_of(o),
                 });
@@ -525,6 +573,7 @@ impl KeptMaterial {
     fn single_object(rings: &[&[Point]], mode: KeepMode) -> Self {
         Self::with_modes(
             &[KeptObject {
+                id: ObjectId(1),
                 rings: rings.to_vec(),
                 mode,
             }],
@@ -549,6 +598,7 @@ impl KeptMaterial {
             segs: Vec::new(),
             ring_object: Vec::new(),
             modes: objects.iter().map(|o| o.mode).collect(),
+            ids: objects.iter().map(|o| o.id).collect(),
             stencils: objects
                 .iter()
                 .filter(|o| o.mode == KeepMode::Stencil)
@@ -655,6 +705,131 @@ impl KeptMaterial {
         !p.is_finite() || !self.enclosing_rings(p).is_empty()
     }
 
+    /// The ring depth of every object at `p`, by object index: how many
+    /// of its own rings enclose `p` strictly (a ring `p` lies on does not
+    /// count). [`Self::is_kept`] and [`Self::region_at`] both read it.
+    fn depths(&self, p: Point) -> Vec<usize> {
+        let mut depth = vec![0usize; self.modes.len()];
+        for r in self.enclosing_rings(p) {
+            depth[self.ring_object[r]] += 1;
+        }
+        depth
+    }
+
+    /// The sheet a [`KeepMode::Stencil`] keeps: the cutting area.
+    pub fn sheet(&self) -> Rect {
+        self.sheet
+    }
+
+    /// The keep mode of object `id`, `None` when it has no closed cut.
+    pub fn mode_of(&self, id: ObjectId) -> Option<KeepMode> {
+        let o = self.ids.iter().position(|i| *i == id)?;
+        Some(self.modes[o])
+    }
+
+    /// Where `p` lies for the objects `of` (the keep picker): in their
+    /// shape when some of them has `p` at an odd ring depth ([`in_shape`],
+    /// the rule [`Self::is_kept`] counts with), else on the sheet around
+    /// them. `None` off the cutting area, for a non-finite `p` and within
+    /// [`PICK_CLEARANCE_MM`] of a cut of these objects, where the side is
+    /// not clear.
+    pub fn region_at(&self, p: Point, of: impl Fn(ObjectId) -> bool) -> Option<RegionHit> {
+        let on_sheet = p.is_finite()
+            && p.x >= self.sheet.x0
+            && p.x <= self.sheet.x1
+            && p.y >= self.sheet.y0
+            && p.y <= self.sheet.y1;
+        if !on_sheet || self.nearest(p, |o| of(self.ids[o]), PICK_CLEARANCE_MM) <= PICK_CLEARANCE_MM
+        {
+            return None;
+        }
+        let depth = self.depths(p);
+        let picked = || depth.iter().enumerate().filter(|&(o, _)| of(self.ids[o]));
+        if let Some((o, _)) = picked().find(|&(_, &n)| in_shape(n)) {
+            return Some(RegionHit {
+                region: Region::Shape,
+                object: Some(self.ids[o]),
+                hole: false,
+            });
+        }
+        let hole = picked().find(|&(_, &n)| n > 0).map(|(o, _)| self.ids[o]);
+        Some(RegionHit {
+            region: Region::Sheet,
+            object: hole,
+            hole: hole.is_some(),
+        })
+    }
+
+    /// True when object `id` has a hole: one of its rings lies inside
+    /// another of its rings (the middle of an O). One vertex of each ring
+    /// is tested.
+    pub fn has_holes(&self, id: ObjectId) -> bool {
+        let Some(o) = self.ids.iter().position(|i| *i == id) else {
+            return false;
+        };
+        let mut seen = std::collections::HashSet::new();
+        self.segs.iter().any(|&(a, _, ring)| {
+            self.ring_object[ring] == o
+                && seen.insert(ring)
+                && self
+                    .enclosing_rings(a)
+                    .iter()
+                    .any(|&r| r != ring && self.ring_object[r] == o)
+        })
+    }
+
+    /// The same rings with other keep modes: `f` gets each object's id and
+    /// mode and gives its new mode. The keep picker previews a mode with it
+    /// before anything changes.
+    pub fn with_modes_of(&self, f: impl Fn(ObjectId, KeepMode) -> KeepMode) -> Self {
+        let mut out = self.clone();
+        for (o, mode) in out.modes.iter_mut().enumerate() {
+            *mode = f(self.ids[o], *mode);
+        }
+        out.stencils = out
+            .modes
+            .iter()
+            .filter(|m| **m == KeepMode::Stencil)
+            .count();
+        out
+    }
+
+    /// The rings of the objects `of` alone, as [`KeepMode::Pieces`]: kept
+    /// is exactly their shape ([`Region::Shape`] of [`Self::region_at`]).
+    pub fn shapes_of(&self, of: impl Fn(ObjectId) -> bool) -> Self {
+        let mut out = Self {
+            segs: Vec::new(),
+            ring_object: Vec::new(),
+            modes: Vec::new(),
+            ids: Vec::new(),
+            stencils: 0,
+            sheet: self.sheet,
+            clearance_mm: self.clearance_mm,
+            cells: HashMap::new(),
+            row_end: HashMap::new(),
+            extent: None,
+        };
+        let mut objects: HashMap<usize, usize> = HashMap::new();
+        let mut rings: HashMap<usize, usize> = HashMap::new();
+        for &(a, b, ring) in &self.segs {
+            let o = self.ring_object[ring];
+            if !of(self.ids[o]) {
+                continue;
+            }
+            let new_o = *objects.entry(o).or_insert_with(|| {
+                out.modes.push(KeepMode::Pieces);
+                out.ids.push(self.ids[o]);
+                out.modes.len() - 1
+            });
+            let r = *rings.entry(ring).or_insert_with(|| {
+                out.ring_object.push(new_o);
+                out.ring_object.len() - 1
+            });
+            out.insert(a, b, r);
+        }
+        out
+    }
+
     /// True when `p` is kept material: some object calls it kept.
     ///
     /// A point on a ring (within [`EPS`]) is not inside that ring. So a
@@ -668,10 +843,7 @@ impl KeptMaterial {
         if !p.is_finite() {
             return true;
         }
-        let mut depth = vec![0usize; self.modes.len()];
-        for r in self.enclosing_rings(p) {
-            depth[self.ring_object[r]] += 1;
-        }
+        let depth = self.depths(p);
         let mut d = Depths::default();
         for (o, &n) in depth.iter().enumerate() {
             d.change(self.modes[o], 0, n);
@@ -1364,6 +1536,7 @@ mod tests {
         let r = sq(50.0, 50.0, 80.0, 70.0);
         let kept = KeptMaterial::with_modes(
             &[KeptObject {
+                id: ObjectId(1),
                 rings: vec![r.lap()],
                 mode: KeepMode::Stencil,
             }],
@@ -1387,6 +1560,7 @@ mod tests {
         let inner = sq(60.0, 60.0, 80.0, 80.0);
         let kept = KeptMaterial::with_modes(
             &[KeptObject {
+                id: ObjectId(2),
                 rings: vec![outer.lap(), inner.lap()],
                 mode: KeepMode::Stencil,
             }],
@@ -1403,6 +1577,7 @@ mod tests {
         let hole = sq(60.0, 60.0, 80.0, 80.0);
         let kept = KeptMaterial::with_modes(
             &[KeptObject {
+                id: ObjectId(3),
                 rings: vec![outer.lap(), hole.lap()],
                 mode: KeepMode::Both,
             }],
@@ -1436,10 +1611,12 @@ mod tests {
         let kept = KeptMaterial::with_modes(
             &[
                 KeptObject {
+                    id: ObjectId(4),
                     rings: vec![piece.lap()],
                     mode: KeepMode::Pieces,
                 },
                 KeptObject {
+                    id: ObjectId(5),
                     rings: vec![stencil.lap()],
                     mode: KeepMode::Stencil,
                 },
@@ -1471,10 +1648,12 @@ mod tests {
         let per_object = KeptMaterial::with_modes(
             &[
                 KeptObject {
+                    id: ObjectId(6),
                     rings: vec![a.lap()],
                     mode: KeepMode::Pieces,
                 },
                 KeptObject {
+                    id: ObjectId(7),
                     rings: vec![b.lap()],
                     mode: KeepMode::Pieces,
                 },
@@ -1839,5 +2018,117 @@ mod tests {
             0.0,
             100.0,
         );
+    }
+
+    /// An O (object 1: an outline with a counter) and a square (object 2).
+    fn o_and_square() -> Vec<Toolpath> {
+        vec![
+            sqo(1, 20.0, 20.0, 60.0, 70.0),
+            sqo(1, 30.0, 30.0, 50.0, 60.0),
+            sqo(2, 100.0, 20.0, 140.0, 60.0),
+        ]
+    }
+
+    #[test]
+    fn the_picker_tells_the_shape_from_the_sheet_by_the_kept_rule() {
+        let paths = o_and_square();
+        let kept = KeptMaterial::from_toolpaths(&paths, |_| KeepMode::Pieces, mat());
+        let o = |id: ObjectId| id == ObjectId(1);
+        let at = |x, y| kept.region_at(Point::new(x, y), o);
+        let hit = at(25.0, 40.0).unwrap();
+        assert_eq!(
+            (hit.region, hit.object, hit.hole),
+            (Region::Shape, Some(ObjectId(1)), false)
+        );
+        // The middle of the O: the sheet, in a hole of the O.
+        let hit = at(40.0, 45.0).unwrap();
+        assert_eq!(
+            (hit.region, hit.object, hit.hole),
+            (Region::Sheet, Some(ObjectId(1)), true)
+        );
+        // Far off, and inside the other object's shape: the open sheet.
+        for (x, y) in [(200.0, 200.0), (120.0, 40.0)] {
+            let hit = at(x, y).unwrap();
+            assert_eq!(
+                (hit.region, hit.object, hit.hole),
+                (Region::Sheet, None, false)
+            );
+        }
+        // On a cut or right next to it, and off the cutting area: no
+        // answer.
+        assert_eq!(at(20.0, 40.0), None);
+        assert_eq!(at(20.05, 40.0), None);
+        assert!(at(20.2, 40.0).is_some());
+        assert_eq!(at(-5.0, 40.0), None);
+        assert_eq!(at(f64::NAN, 40.0), None);
+        // The shape is where Pieces keeps, for every point of a grid.
+        let pieces = KeptMaterial::from_toolpaths(&paths[..2], |_| KeepMode::Pieces, mat());
+        for i in 0..80 {
+            for j in 0..80 {
+                let p = Point::new(10.0 + i as f64 * 0.73, 10.0 + j as f64 * 0.81);
+                if let Some(hit) = kept.region_at(p, o) {
+                    assert_eq!(hit.region == Region::Shape, pieces.is_kept(p), "{p:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_o_has_a_hole_and_a_square_has_none() {
+        let kept = KeptMaterial::from_toolpaths(&o_and_square(), |_| KeepMode::Pieces, mat());
+        assert!(kept.has_holes(ObjectId(1)));
+        assert!(!kept.has_holes(ObjectId(2)));
+        assert!(!kept.has_holes(ObjectId(9)));
+    }
+
+    #[test]
+    fn what_stays_picks_the_mode() {
+        assert_eq!(keep_for(true, false), Some(KeepMode::Pieces));
+        assert_eq!(keep_for(false, true), Some(KeepMode::Stencil));
+        assert_eq!(keep_for(true, true), Some(KeepMode::Both));
+        assert_eq!(keep_for(false, false), None);
+    }
+
+    #[test]
+    fn other_modes_on_the_same_rings_equal_a_fresh_build() {
+        let paths = o_and_square();
+        let base = KeptMaterial::from_toolpaths(&paths, |_| KeepMode::Pieces, mat());
+        for mode in [KeepMode::Pieces, KeepMode::Stencil, KeepMode::Both] {
+            let pick = |o: ObjectId| {
+                if o == ObjectId(1) {
+                    mode
+                } else {
+                    KeepMode::Pieces
+                }
+            };
+            let fresh = KeptMaterial::from_toolpaths(&paths, pick, mat());
+            assert_eq!(base.with_modes_of(|o, _| pick(o)), fresh, "{mode:?}");
+            assert_eq!(fresh.mode_of(ObjectId(1)), Some(mode));
+        }
+        assert_eq!(base.mode_of(ObjectId(9)), None);
+        assert_eq!(base.sheet(), mat());
+        // The shapes alone: Pieces of those rings only.
+        let shapes = base.shapes_of(|o| o == ObjectId(1));
+        let alone = KeptMaterial::from_toolpaths(&paths[..2], |_| KeepMode::Pieces, mat());
+        assert_eq!(shapes, alone);
+    }
+
+    #[test]
+    fn both_keeps_only_a_band_of_the_sheet_and_of_a_counter() {
+        // What the picker's Both text promises: the piece and 1 mm around
+        // every cut. The far sheet and the middle of a large O are waste.
+        let kept = KeptMaterial::from_toolpaths(&o_and_square()[..2], |_| KeepMode::Both, mat());
+        assert!(kept.is_kept(Point::new(25.0, 40.0)), "the letter");
+        assert!(kept.is_kept(Point::new(19.5, 40.0)), "the band outside");
+        assert!(kept.is_kept(Point::new(30.5, 40.0)), "the band inside");
+        assert!(!kept.is_kept(Point::new(40.0, 45.0)), "the middle of the O");
+        assert!(!kept.is_kept(Point::new(200.0, 200.0)), "the far sheet");
+        // Stencil keeps the middle of the O on the sheet; Pieces does not.
+        let stencil =
+            KeptMaterial::from_toolpaths(&o_and_square()[..2], |_| KeepMode::Stencil, mat());
+        assert!(stencil.is_kept(Point::new(40.0, 45.0)));
+        let pieces =
+            KeptMaterial::from_toolpaths(&o_and_square()[..2], |_| KeepMode::Pieces, mat());
+        assert!(!pieces.is_kept(Point::new(40.0, 45.0)));
     }
 }
