@@ -95,6 +95,7 @@ fn the_quotes_are_word_for_word() {
             ),
             ("Words are hard.", "Evan & Katelyn"),
             ("Don't glue yourself to the table.", "Joel Telling"),
+            ("Always Be Knolling.", "Tom Sachs"),
         ]
     );
 }

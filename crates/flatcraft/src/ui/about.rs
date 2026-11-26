@@ -45,7 +45,7 @@ pub const LICENSES: &str = "Licenses";
 
 /// The maker quotes, word for word, with their authors. One shows per
 /// opening, never the same one twice in a row.
-pub const QUOTES: [(&str, &str); 7] = [
+pub const QUOTES: [(&str, &str); 8] = [
     ("Every defect gets respect.", "Laura Kampf"),
     ("Failure is always an option.", "Adam Savage"),
     ("Super massive stability stuff.", "Felix Schelhasse"),
@@ -59,6 +59,7 @@ pub const QUOTES: [(&str, &str); 7] = [
     ),
     ("Words are hard.", "Evan & Katelyn"),
     ("Don't glue yourself to the table.", "Joel Telling"),
+    ("Always Be Knolling.", "Tom Sachs"),
 ];
 
 /// The third-party crates in the app and their licences, kept in step with

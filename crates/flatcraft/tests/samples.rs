@@ -521,7 +521,7 @@ fn label(x: f64, y: f64, w: f64, h: f64, d: f64) -> Vec<(f64, f64)> {
 
 /// 12 pantry labels: one, then 11 linked copies in 3 columns. Each has a
 /// rim, a groove and a blank panel to write on.
-fn labels_and_stickers(s: &Session) {
+fn pantry_labels(s: &Session) {
     let (x, y, w, h) = (15.0, 25.0, 84.0, 52.0);
     let body: String = [0.0, 2.5, 4.0]
         .into_iter()
@@ -594,16 +594,18 @@ fn seal(cx: f64, cy: f64, rx: f64, ry: f64, d: f64) -> Vec<(f64, f64)> {
         .collect()
 }
 
-/// The three lines of a sticker frame: the outline (`shape(0)`), a 1.5 mm
-/// groove 2.5 mm inside it and the panel the words are cut out of.
+/// The two lines of a sticker frame: the outline (`shape(0)`) and a line
+/// 3 mm inside it. The 3 mm band is kept, and the background inside it
+/// weeds as one piece around the letters.
 fn frame(shape: &dyn Fn(f64) -> Vec<(f64, f64)>) -> String {
-    [poly(&shape(0.0)), poly(&shape(2.5)), poly(&shape(4.0))].concat()
+    [poly(&shape(0.0)), poly(&shape(3.0))].concat()
 }
 
-/// The maker quotes of the About dialog as vinyl stickers: each quote cut
-/// out of a framed shape in capitals, its author's name a separate object
-/// below it, and the motto in a pill. Capitals, because the joins of Plex
-/// lower case letters stay under 1 mm at any size that fits a sticker.
+/// The maker quotes of the About dialog as vinyl stickers: each quote in
+/// solid capital letters inside a framed shape, its author's name a
+/// separate object below it, and the motto in a pill at the bottom.
+/// Capitals, because the joins of Plex lower case letters stay under 1 mm
+/// at any size that fits a sticker.
 fn maker_quotes(s: &Session) {
     use flatcraft::ui::about::QUOTES;
     let quote = |author: &str| {
@@ -614,9 +616,13 @@ fn maker_quotes(s: &Session) {
             .0
     };
     let (left, right) = (78.0, 222.0);
-    let (w, h) = (128.0, 64.0);
-    let rows = [49.4, 141.8, 234.2];
-    let hex = |cx: f64, cy: f64, d: f64| {
+    let w = 132.0;
+    // Row centres: a banner and a circle, a hex badge and a seal, two
+    // rectangles, then the motto alone.
+    let rows = [48.6, 130.85, 200.1, 264.35];
+    // The author lines sit this far under their row centre.
+    let names = [48.6 + 43.9, 130.85 + 35.9, 200.1 + 30.9];
+    let hex = |cx: f64, cy: f64, h: f64, d: f64| {
         let (x0, x1, y0, y1) = (cx - w / 2.0, cx + w / 2.0, cy - h / 2.0, cy + h / 2.0);
         let corners = [
             (x0, cy),
@@ -642,56 +648,70 @@ fn maker_quotes(s: &Session) {
             d,
         )
     };
-    let rect = |cx: f64, cy: f64, d: f64| {
+    let rect = |cx: f64, cy: f64, h: f64, r: f64, d: f64| {
         rounded_rect(
             cx - w / 2.0 + d,
             cy - h / 2.0 + d,
             w - 2.0 * d,
             h - 2.0 * d,
-            10.0 - d,
+            r - d,
         )
     };
-    // (centre, shape, quote lines, letter size, author)
-    type Sticker<'a> = ((f64, f64), String, &'a [&'a str], f64, &'a str);
-    let stickers: [Sticker; 5] = [
+    // (centre, shape, quote lines, letter size, author line y, author),
+    // in the order of QUOTES.
+    type Sticker<'a> = ((f64, f64), String, &'a [&'a str], f64, f64, &'a str);
+    let stickers: [Sticker; 6] = [
         (
-            (left, rows[0]),
-            frame(&|d| hex(left, rows[0], d)),
+            (right, rows[1]),
+            frame(&|d| seal(right, rows[1], w / 2.0, 27.0, d)),
             &["Every defect", "gets respect."],
             12.5,
+            names[1],
             "Laura Kampf",
         ),
         (
-            (right, rows[0]),
-            frame(&|d| banner(right, rows[0], d)),
+            (left, rows[0]),
+            frame(&|d| banner(left, rows[0], d)),
             &["Failure is", "always an", "option."],
             12.5,
+            names[0],
             "Adam Savage",
         ),
         (
-            (left, rows[1]),
-            frame(&|d| rect(left, rows[1], d)),
-            &["Super massive", "stability", "stuff."],
+            (left, rows[2]),
+            frame(&|d| rect(left, rows[2], 44.0, 10.0, d)),
+            &["Super massive", "stability stuff."],
             12.5,
+            names[2],
             "Felix Schelhasse",
         ),
         (
-            (right, rows[1]),
-            frame(&|d| arc(right, rows[1], 35.0 - d, 0.0, TAU)[1..].to_vec()),
+            (right, rows[0]),
+            frame(&|d| arc(right, rows[0], 35.0 - d, 0.0, TAU)[1..].to_vec()),
             &["Words", "are", "hard."],
             12.0,
+            names[0],
             "Evan & Katelyn",
         ),
         (
-            (left, rows[2]),
-            frame(&|d| seal(left, rows[2], w / 2.0, h / 2.0, d)),
+            (left, rows[1]),
+            frame(&|d| hex(left, rows[1], 56.0, d)),
             &["Don't glue", "yourself to", "the table."],
             12.5,
+            names[1],
             "Joel Telling",
+        ),
+        (
+            (right, rows[2]),
+            frame(&|d| rect(right, rows[2], 44.0, 4.0, d)),
+            &["Always Be", "Knolling."],
+            12.5,
+            names[2],
+            "Tom Sachs",
         ),
     ];
     let caps = |lines: &[&str]| lines.iter().map(|l| l.to_uppercase()).collect::<Vec<_>>();
-    for ((cx, cy), shape, lines, size, author) in stickers {
+    for ((cx, cy), shape, lines, size, name_y, author) in stickers {
         let full = lines.join(" ");
         assert_eq!(full, quote(author), "word for word");
         let upper = caps(lines);
@@ -702,19 +722,10 @@ fn maker_quotes(s: &Session) {
         import(
             s,
             author,
-            &outlined(&words(cx, cy + 44.0, 12.5, 0.0, 0.6, &[&name])),
+            &outlined(&words(cx, name_y, 12.5, 0.0, 0.6, &[&name])),
         );
     }
-    let pill = |d: f64| {
-        let (cy, ph) = (rows[2] + 8.0, 64.0);
-        rounded_rect(
-            right - w / 2.0 + d,
-            cy - ph / 2.0 + d,
-            w - 2.0 * d,
-            ph - 2.0 * d,
-            ph / 2.0 - d,
-        )
-    };
+    let pill = |d: f64| rect(150.0, rows[3], 44.0, 22.0, d);
     let motto: Vec<&str> = vec!["Eat. Sleep.", "Make. Repeat."];
     assert_eq!(motto.join(" "), MOTTO);
     let upper = caps(&motto);
@@ -722,7 +733,7 @@ fn maker_quotes(s: &Session) {
     let body = format!(
         "{}{}",
         frame(&pill),
-        words(right, rows[2] + 8.0, 12.5, 15.0, 0.6, &upper)
+        words(150.0, rows[3], 12.5, 14.0, 0.6, &upper)
     );
     import(s, MOTTO, &outlined(&body));
     run(s, "job.set_material", json!({ "id": "vinyl" }));
@@ -783,7 +794,7 @@ fn build(name: &str) -> (tempfile::TempDir, Session) {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     match name {
-        "labels-and-stickers" => labels_and_stickers(&s),
+        "pantry-labels" => pantry_labels(&s),
         "iron-on-shirt" => iron_on_shirt(&s),
         "maker-quotes" => maker_quotes(&s),
         "stencil" => stencil(&s),
@@ -927,7 +938,7 @@ fn the_window_star_cuts_its_inner_shapes_first() {
 
 #[test]
 fn the_patterns_are_linked_copies() {
-    for (id, n) in [("labels-and-stickers", 12), ("gift-tags", 6)] {
+    for (id, n) in [("pantry-labels", 12), ("gift-tags", 6)] {
         let sample = SAMPLES.iter().find(|x| x.id == id).unwrap();
         let (doc, _) = flatcraft_core::project::load_report_bytes(sample.bytes).unwrap();
         assert_eq!(doc.objects.len(), n, "{id}");
@@ -1145,7 +1156,7 @@ fn the_narrow_place_check_finds_a_thin_stroke_and_a_tight_gap() {
 
 #[test]
 fn the_labels_cut_every_inner_line_before_the_outlines_on_vinyl() {
-    let (_dir, s) = open("labels-and-stickers");
+    let (_dir, s) = open("pantry-labels");
     let st = s.lock().unwrap();
     let job = &st.doc().document.job;
     assert_eq!(
@@ -1201,7 +1212,7 @@ fn the_maker_quotes_are_word_for_word_with_their_authors_apart() {
         .copied()
         .filter(|(q, _)| q.len() < 40)
         .collect();
-    assert_eq!(short.len(), 5);
+    assert_eq!(short.len(), 6);
     let mut want = Vec::new();
     for (quote, author) in short {
         want.extend([quote, author]);
@@ -1223,7 +1234,7 @@ fn the_maker_quotes_are_word_for_word_with_their_authors_apart() {
         .sum();
     let plan = flatcraft_engine::job::build(&st).unwrap().plan;
     assert_eq!(plan.toolpaths.len(), contours);
-    // Each sticker has a rim, a groove and a panel, and its quote's letters.
+    // Each sticker has a frame band (two lines) and its quote's letters.
     for o in doc.objects.iter().filter(|o| o.name.ends_with('.')) {
         let lines = o.geometry.iter().map(|c| {
             c.path
@@ -1233,7 +1244,7 @@ fn the_maker_quotes_are_word_for_word_with_their_authors_apart() {
                 .count()
         });
         let letters = o.name.chars().filter(|c| c.is_alphanumeric()).count();
-        assert!(lines.sum::<usize>() > 3 + letters, "{}", o.name);
+        assert!(lines.sum::<usize>() > 2 + letters, "{}", o.name);
     }
 }
 
@@ -1351,8 +1362,8 @@ fn the_ink_trap_fill_closes_the_slits_and_keeps_the_counters() {
         drop(build(sample.id));
     }
     let lettering = LETTERING.with(|l| l.borrow().clone());
-    // 2 blocks on the shirt; 5 quotes, 5 names and the motto.
-    assert_eq!(lettering.len(), 2 + 11);
+    // 2 blocks on the shirt; 6 quotes, 6 names and the motto.
+    assert_eq!(lettering.len(), 2 + 13);
     // (narrow places, number of cut lines) of `body`.
     let check = |body: &str| {
         let dir = tempfile::tempdir().unwrap();

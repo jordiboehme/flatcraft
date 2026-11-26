@@ -9,12 +9,12 @@ rest of the code.
 
 | File | What it shows |
 | --- | --- |
-| labels-and-stickers.flatcraft | Linked copies in a rectangular pattern: 12 pantry labels with a rim, a groove and a blank panel, on vinyl, cut with the Keep sheet strategy. |
+| pantry-labels.flatcraft | Linked copies in a rectangular pattern: 12 pantry labels with a rim, a groove and a blank panel, on vinyl, cut with the Keep sheet strategy. |
 | iron-on-shirt.flatcraft | A striped sunset over "BORN TO MAKE" on heat transfer vinyl, stored mirrored because iron-on is cut from the back. |
 | stencil.flatcraft | The letters C, U and T cut out of a sheet. The letters have no closed counters, so only the letters fall out. |
 | gift-tags.flatcraft | A circular pattern of 6 linked tags, each with a hole. |
 | window-star.flatcraft | Paper cut work: an eight-point star with 25 inner shapes, cut from the inside out. |
-| maker-quotes.flatcraft | Six vinyl stickers: the short maker quotes of the About dialog and "Eat. Sleep. Make. Repeat.", cut out of framed shapes, each author's name a separate object. |
+| maker-quotes.flatcraft | Seven vinyl stickers: the six short maker quotes of the About dialog and "Eat. Sleep. Make. Repeat.", in solid capitals inside a 3 mm frame band, each author's name a separate object. |
 
 Every cut stroke and gap in the samples is at least 1 mm wide, so they weed on
 adhesive vinyl and iron-on; the test `every_cut_stroke_and_gap_is_at_least_1_mm`

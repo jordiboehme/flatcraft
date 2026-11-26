@@ -1001,11 +1001,11 @@ macro_rules! sample_bytes {
 /// The samples, in order.
 pub const SAMPLES: [Sample; 6] = [
     Sample {
-        id: "labels-and-stickers",
-        title: "Labels and stickers",
+        id: "pantry-labels",
+        title: "Pantry labels",
         sentence: "A whole sheet of tidy labels from one design - edit one and all the copies follow.",
         hint: "Opens a copy of 12 pantry labels: one label and 11 linked copies in a grid. Linked copies share their shape, size and cut options, so a change to one changes them all. Try Scale on one of them. Cut them from vinyl, chalkboard vinyl or sticker paper. The job uses Keep sheet: every inner cut comes before the outlines, so the sheet holds together until the end.",
-        bytes: sample_bytes!("labels-and-stickers"),
+        bytes: sample_bytes!("pantry-labels"),
     },
     Sample {
         id: "iron-on-shirt",
@@ -1039,7 +1039,7 @@ pub const SAMPLES: [Sample; 6] = [
         id: "maker-quotes",
         title: "Maker quotes",
         sentence: "Maker wisdom to stick on your toolbox, laptop or shirt - mirror it first for iron-on.",
-        hint: "Opens a copy of six vinyl stickers with maker quotes. The words are cut out of each shape and every line and gap is at least 1 mm wide, so it is easy to weed (to peel away the vinyl you don't want). Each name is its own object: use Skip cutting on it to cut only the quote. For a shirt, select all, mirror it and pick heat transfer vinyl.",
+        hint: "Opens a copy of seven vinyl stickers with maker quotes: solid letters inside a frame. Every line and gap is at least 1 mm wide and the background inside each frame comes out in one piece, so it is easy to weed (to peel away the vinyl you don't want). Each name is its own object: use Skip cutting on it to cut only the quote. For a shirt, select all, mirror it and pick heat transfer vinyl.",
         bytes: sample_bytes!("maker-quotes"),
     },
 ];
