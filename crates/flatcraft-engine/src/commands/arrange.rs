@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{
-    command, cutting_area, ids_json, inside, object_mut, placed_bounds, placed_bounds_or_center,
+    arrange_bounds, command, cutting_area, ids_json, inside, object_mut, placed_bounds_or_center,
     resolve_ids, translate,
 };
 use crate::placement;
@@ -176,7 +176,7 @@ command!(
 fn place(o: &mut Object, d: Vec2, area: Rect) -> bool {
     let centre = o.transform.center_mm;
     translate(o, d);
-    if placed_bounds(o).is_some_and(|nb| inside(nb, area)) {
+    if arrange_bounds(o).is_some_and(|nb| inside(nb, area)) {
         return true;
     }
     // Put the saved centre back: moving back by -d can leave float noise.
@@ -220,9 +220,9 @@ fn run_auto(s: &mut Session, p: AutoParams, _: Origin) -> Result<Value, CommandE
         .map(|o| placement::AutoObject {
             key: o.id,
             visible: o.visible,
-            // Objects without geometry (for example untraced rasters)
-            // cannot be placed.
-            bounds: placed_bounds(o),
+            // An untraced picture by its image; nothing at all (an
+            // empty object without a frame) cannot be placed.
+            bounds: arrange_bounds(o),
         })
         .collect();
     let plan = placement::auto_arrange(&objects, &chosen, area, p.spacing_mm);
@@ -241,6 +241,7 @@ fn run_auto(s: &mut Session, p: AutoParams, _: Origin) -> Result<Value, CommandE
         "placed": ids_json(&placed),
         "did_not_fit": ids_json(&did_not_fit),
         "fixed": ids_json(&plan.fixed),
+        "hidden": ids_json(&plan.hidden),
     }))
 }
 
@@ -251,7 +252,7 @@ command!(
     mutates: true,
     params: AutoParams,
     run: run_auto,
-    description: "Packs objects into the cutting area, keeping rotation and size, in one undo step. ids are the objects to pack; an empty list means the current selection, and with nothing selected every visible object. Hidden objects are never packed. Every other visible object stays exactly where it is and is an obstacle: the packed objects fit around it, spacing_mm (default 5) away from it, and never overlap it. Packing works on bounding boxes: tallest first, each one at the free spot nearest the top of the cutting area, then nearest its left, with spacing_mm between packed objects. The same input always gives the same result. Objects that do not fit, or have no cut geometry yet, keep their position and are listed in did_not_fit; they may overlap other objects. Origin the 0,0 of the grid printed on the mat, y down, units mm. Returns {placed: [id], did_not_fit: [id], fixed: [id] (the obstacles)}.",
+    description: "Packs objects into the cutting area, keeping rotation and size, in one undo step. ids are the objects to pack; an empty list means the current selection, and with nothing selected every visible object. Hidden objects are never packed and never obstacles; hidden objects among the ones to pack stay where they are and are listed in hidden. A picture that is not traced yet counts by its image. Every other visible object stays exactly where it is and is an obstacle: the packed objects fit around it, spacing_mm (default 5) away from it, and never overlap it. Packing works on bounding boxes: tallest first, each one at the free spot nearest the top of the cutting area, then nearest its left, with spacing_mm between packed objects. The same input always gives the same result. Objects that do not fit, or have nothing to place at all, keep their position and are listed in did_not_fit; they may overlap other objects. Origin the 0,0 of the grid printed on the mat, y down, units mm. Returns {placed: [id], did_not_fit: [id], fixed: [id] (the obstacles), hidden: [id]}.",
 );
 
 #[cfg(test)]

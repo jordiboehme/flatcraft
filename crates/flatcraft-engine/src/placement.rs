@@ -175,13 +175,15 @@ pub struct AutoObject<K> {
 }
 
 /// What Auto arrange does: the move of each packed object, the objects
-/// that stay because they do not fit or have no box (`did_not_fit`), and
-/// the objects that stay where they are and are packed around (`fixed`).
+/// that stay because they do not fit or have no box (`did_not_fit`), the
+/// objects that stay where they are and are packed around (`fixed`), and
+/// the chosen objects that stay because they are hidden (`hidden`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct AutoPlan<K> {
     pub moves: Vec<(K, Vec2)>,
     pub did_not_fit: Vec<K>,
     pub fixed: Vec<K>,
+    pub hidden: Vec<K>,
 }
 
 /// Auto arrange: which objects are packed and where they go. The command
@@ -189,7 +191,7 @@ pub struct AutoPlan<K> {
 ///
 /// `chosen` are the objects to pack (the selection or the given ids);
 /// empty means every visible object. Hidden objects are neither packed
-/// nor packed around. Every other visible object with a box is fixed: the
+/// nor packed around; chosen ones are listed in `hidden`. Every other visible object with a box is fixed: the
 /// packed ones keep `spacing` mm from it and never overlap it. A chosen
 /// object without a box cannot be placed and is listed in `did_not_fit`.
 ///
@@ -204,8 +206,15 @@ pub fn auto_arrange<K: Copy + PartialEq>(
     let mut obstacles = Vec::new();
     let mut fixed = Vec::new();
     let mut no_box = Vec::new();
-    for o in objects.iter().filter(|o| o.visible) {
+    let mut hidden = Vec::new();
+    for o in objects {
         let packed = chosen.is_empty() || chosen.contains(&o.key);
+        if !o.visible {
+            if !chosen.is_empty() && packed {
+                hidden.push(o.key);
+            }
+            continue;
+        }
         match (packed, o.bounds) {
             (true, Some(b)) => items.push((o.key, b)),
             (true, None) => no_box.push(o.key),
@@ -223,6 +232,7 @@ pub fn auto_arrange<K: Copy + PartialEq>(
         moves,
         did_not_fit: no_box,
         fixed,
+        hidden,
     }
 }
 

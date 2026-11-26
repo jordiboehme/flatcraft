@@ -593,4 +593,60 @@ fn auto_arrange_panel_says_what_it_packs_and_shows_what_stays() {
             .next()
             .is_some()
     );
+
+    // A hidden selected object is not counted: it stays where it is.
+    let set_visible = |ids: &[u64], visible: bool| {
+        s.lock()
+            .unwrap()
+            .execute(
+                "object.set_visible",
+                json!({ "ids": ids, "visible": visible }),
+                Origin::User,
+            )
+            .unwrap();
+    };
+    set_visible(&ids[2..3], false);
+    select(&s, &ids[..3]);
+    h.run();
+    assert!(
+        h.query_all_by_label("Auto arrange 2 selected objects")
+            .next()
+            .is_some()
+    );
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    assert_eq!(flatcraft::ui::arrange::ghosts(&snap, &panel).len(), 2);
+    // Only hidden ones selected: nothing to pack, OK is dimmed and says why.
+    select(&s, &ids[2..3]);
+    h.run();
+    h.get_by_label(
+        "The selected objects are hidden, so there is nothing to pack. Show them, or select nothing to pack every visible object.",
+    );
+    assert!(disabled(&h, "OK"));
+    set_visible(&ids[2..3], true);
+
+    // A picture that is not traced yet stays by its image.
+    let png = dir.path().join("blank.png");
+    std::fs::write(&png, BLANK_PNG).unwrap();
+    let pic = s
+        .lock()
+        .unwrap()
+        .execute("object.import", json!({ "path": png }), Origin::User)
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    select(&s, &ids[..1]);
+    h.run();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    let o = snap.object(pic).unwrap();
+    assert!(o.bounds().is_none() && o.arrange_bounds().is_some());
+    assert!(flatcraft::ui::arrange::fixed(&snap, &panel).contains(&pic));
 }
+
+/// A blank (all white) 8 x 8 px PNG: it traces to nothing.
+const BLANK_PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x08, 0x00, 0x00, 0x00, 0x00, 0xe1, 0x64, 0xe1,
+    0x57, 0x00, 0x00, 0x00, 0x0e, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0x0f, 0x05, 0x0c,
+    0x94, 0x31, 0x00, 0xf7, 0xc0, 0x3f, 0xc1, 0xb2, 0x34, 0x41, 0xbb, 0x00, 0x00, 0x00, 0x00, 0x49,
+    0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+];

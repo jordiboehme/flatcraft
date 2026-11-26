@@ -55,7 +55,34 @@ fn rect_at(s: &mut Session, w: f64, h: f64, at: Point) -> u64 {
 
 fn boxed(s: &Session, id: u64) -> Rect {
     let o = s.doc().document.get(ObjectId(id)).unwrap();
-    bounds(&o.placed_paths()).unwrap()
+    bounds(&o.placed_paths())
+        .or_else(|| flatcraft_engine::commands::placed_frame(o))
+        .unwrap()
+}
+
+/// A blank 300 x 300 px picture (about 25.4 mm at 300 dpi): it traces to
+/// nothing, so it has no cut geometry, only its image. Its box starts at `at`.
+fn blank_picture(s: &mut Session, dir: &tempfile::TempDir, at: Point) -> u64 {
+    let path = dir.path().join("blank.png");
+    image::GrayImage::from_pixel(300, 300, image::Luma([255]))
+        .save(&path)
+        .unwrap();
+    let id = run(s, "object.import", json!({ "path": path }))["id"]
+        .as_u64()
+        .unwrap();
+    let o = s.doc().document.get(ObjectId(id)).unwrap();
+    assert!(
+        o.placed_paths().is_empty(),
+        "the blank picture traced to something"
+    );
+    let b = boxed(s, id);
+    assert!(b.width() > 20.0 && b.height() > 20.0, "{b:?}");
+    run(
+        s,
+        "object.move",
+        json!({ "ids": [id], "dx_mm": at.x - b.x0, "dy_mm": at.y - b.y0 }),
+    );
+    id
 }
 
 fn ids(v: &Value) -> Vec<u64> {
@@ -325,7 +352,84 @@ proptest! {
         }
         let all = plan.moves.len() + plan.did_not_fit.len() + plan.fixed.len();
         prop_assert_eq!(all, objects.iter().filter(|o| o.visible).count());
+        for k in &plan.hidden {
+            prop_assert!(!objects[*k].visible && chosen.contains(k));
+        }
+        let hidden_chosen = chosen.iter().filter(|k| !objects[**k].visible).count();
+        prop_assert_eq!(plan.hidden.len(), hidden_chosen);
     }
+}
+
+#[test]
+fn an_untraced_picture_is_packed_around_by_its_image() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    // The picture sits at the top-left, where the first packed object
+    // would go.
+    let pic = blank_picture(&mut s, &dir, Point::new(5.0, 5.0));
+    let pic_box = boxed(&s, pic);
+    let a = rect_at(&mut s, 40.0, 40.0, Point::new(200.0, 200.0));
+    let b = rect_at(&mut s, 30.0, 20.0, Point::new(100.0, 250.0));
+    run(&mut s, "object.select", json!({ "ids": [a, b] }));
+    let r = run(&mut s, "arrange.auto", json!({ "spacing_mm": 5.0 }));
+    assert_eq!(ids(&r["placed"]), vec![a, b], "{r}");
+    assert_eq!(ids(&r["fixed"]), vec![pic], "{r}");
+    assert_eq!(boxed(&s, pic), pic_box, "the picture did not move");
+    for id in [a, b] {
+        let bx = boxed(&s, id);
+        assert!(
+            gap(bx, pic_box) >= 5.0 - TOL,
+            "{bx:?} near the picture {pic_box:?}"
+        );
+    }
+}
+
+#[test]
+fn a_selected_untraced_picture_is_packed_by_its_image() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let wall = rect_at(&mut s, 100.0, 100.0, Point::new(5.0, 5.0));
+    let pic = blank_picture(&mut s, &dir, Point::new(200.0, 200.0));
+    let size = boxed(&s, pic).size();
+    run(&mut s, "object.select", json!({ "ids": [pic] }));
+    let r = run(&mut s, "arrange.auto", json!({ "spacing_mm": 5.0 }));
+    assert_eq!(ids(&r["placed"]), vec![pic], "{r}");
+    assert!(ids(&r["did_not_fit"]).is_empty(), "{r}");
+    let b = boxed(&s, pic);
+    assert!((b.width() - size.width).abs() < TOL && (b.height() - size.height).abs() < TOL);
+    // Right of the wall, at the top.
+    assert!(
+        (b.x0 - 110.0).abs() < TOL && (b.y0 - 5.0).abs() < TOL,
+        "{b:?}"
+    );
+    assert!(gap(b, boxed(&s, wall)) >= 5.0 - TOL);
+}
+
+#[test]
+fn hidden_selected_objects_stay_and_are_listed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = rect_at(&mut s, 40.0, 40.0, Point::new(200.0, 200.0));
+    let h = rect_at(&mut s, 30.0, 30.0, Point::new(100.0, 100.0));
+    let other = rect_at(&mut s, 30.0, 30.0, Point::new(250.0, 20.0));
+    run(
+        &mut s,
+        "object.set_visible",
+        json!({ "ids": [h], "visible": false }),
+    );
+    let h_before = boxed(&s, h);
+    run(&mut s, "object.select", json!({ "ids": [a, h] }));
+    let r = run(&mut s, "arrange.auto", json!({}));
+    assert_eq!(ids(&r["placed"]), vec![a], "{r}");
+    assert_eq!(ids(&r["hidden"]), vec![h], "{r}");
+    assert_eq!(ids(&r["fixed"]), vec![other], "{r}");
+    assert!(ids(&r["did_not_fit"]).is_empty(), "{r}");
+    assert_eq!(boxed(&s, h), h_before);
+    // Nothing selected: hidden objects are skipped, not listed.
+    run(&mut s, "object.select", json!({ "ids": [] }));
+    let r = run(&mut s, "arrange.auto", json!({}));
+    assert!(ids(&r["hidden"]).is_empty(), "{r}");
+    assert_eq!(boxed(&s, h), h_before);
 }
 
 #[test]

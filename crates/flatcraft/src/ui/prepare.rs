@@ -787,6 +787,9 @@ pub struct ObjView {
     /// The source bytes, shared with the document. See [`ObjView::same_source`].
     pub source: Arc<[u8]>,
     pub shape: Arc<Shape>,
+    /// The source's page frame placed on the mat, in mm (for a picture,
+    /// the image), `None` when unknown.
+    pub frame: Option<kurbo::Rect>,
 }
 
 impl ObjView {
@@ -801,6 +804,13 @@ impl ObjView {
         self.shape
             .bounds
             .map(|b| b + self.transform.center_mm.to_vec2())
+    }
+
+    /// The box Auto arrange packs or packs around, as the engine's
+    /// `arrange_bounds`: [`Self::bounds`], or the placed frame while the
+    /// object has no geometry (an untraced picture).
+    pub fn arrange_bounds(&self) -> Option<kurbo::Rect> {
+        self.bounds().or(self.frame)
     }
 }
 
@@ -1025,6 +1035,7 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
                     Source::Svg { bytes, .. } | Source::Raster { bytes, .. } => bytes.clone(),
                 },
                 shape,
+                frame: flatcraft_engine::commands::placed_frame(o),
             });
         }
         Snapshot {

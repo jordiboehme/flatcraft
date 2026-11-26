@@ -210,6 +210,9 @@ fn not_ready(snap: &Snapshot, p: &ArrangePanel) -> Option<String> {
             Some("A total angle of 0 stacks every copy on the original. Pick another angle.".into())
         }
         PanelKind::CircularPattern => too_many(u64::from(v.circular.count.saturating_sub(1))),
+        PanelKind::AutoArrange if n > 0 && snap.selected().all(|o| !o.visible) => Some(
+            "The selected objects are hidden, so there is nothing to pack. Show them, or select nothing to pack every visible object.".into(),
+        ),
         _ => None,
     }
 }
@@ -292,7 +295,7 @@ pub fn auto_arrange_plan(snap: &Snapshot, spacing_mm: f64) -> Option<placement::
         .map(|o| placement::AutoObject {
             key: o.id,
             visible: o.visible,
-            bounds: o.bounds(),
+            bounds: o.arrange_bounds(),
         })
         .collect();
     let chosen: Vec<u64> = snap.selection.iter().copied().collect();
@@ -301,9 +304,12 @@ pub fn auto_arrange_plan(snap: &Snapshot, spacing_mm: f64) -> Option<placement::
 
 /// What the Auto arrange panel packs, for its title: "3 selected
 /// objects", or "all objects" with nothing selected.
+/// Hidden selected objects are not counted: they stay where they are.
 pub fn auto_arrange_what(snap: &Snapshot) -> String {
-    match snap.selection.len() {
-        0 => "all objects".into(),
+    if snap.selection.is_empty() {
+        return "all objects".into();
+    }
+    match snap.selected().filter(|o| o.visible).count() {
         1 => "1 selected object".into(),
         n => format!("{n} selected objects"),
     }

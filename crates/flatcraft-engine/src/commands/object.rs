@@ -91,13 +91,7 @@ fn add_object(
     let o = object_mut(doc, id)?;
     o.frame = frame;
     o.transform.center_mm = o.local_bounds.center();
-    let placed = placed_bounds(o).or_else(|| {
-        (frame != Rect::ZERO).then(|| {
-            o.transform
-                .affine(o.local_bounds)
-                .transform_rect_bbox(frame)
-        })
-    });
+    let placed = super::arrange_bounds(o);
     if let (Some(area), Some(b)) = (area, placed) {
         let inside = b.x0 >= area.x0 && b.y0 >= area.y0 && b.x1 <= area.x1 && b.y1 <= area.y1;
         if !inside {

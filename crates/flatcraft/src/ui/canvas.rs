@@ -904,7 +904,7 @@ pub(crate) fn draw_fixed(
 ) {
     let stroke = Stroke::new(1.0, contrast.gamma_multiply(0.7));
     for id in fixed {
-        let Some(b) = snap.object(*id).and_then(|o| o.bounds()) else {
+        let Some(b) = snap.object(*id).and_then(|o| o.arrange_bounds()) else {
             continue;
         };
         let zone = view.rect_to_screen(b.inflate(spacing_mm, spacing_mm));
@@ -944,6 +944,23 @@ pub(crate) fn draw_ghosts(
             {
                 pts.push(first);
             }
+            painter.extend(egui::Shape::dashed_line(&pts, stroke, 4.0, 3.0));
+        }
+        // A picture that is not traced yet has no lines: its image box.
+        if o.shape.lines.is_empty()
+            && let Some(f) = o.frame
+        {
+            let f = f - o.transform.center_mm.to_vec2();
+            let pts: Vec<Pos2> = [
+                (f.x0, f.y0),
+                (f.x1, f.y0),
+                (f.x1, f.y1),
+                (f.x0, f.y1),
+                (f.x0, f.y0),
+            ]
+            .into_iter()
+            .map(|(x, y)| view.mm_to_screen(*place * kurbo::Point::new(x, y)))
+            .collect();
             painter.extend(egui::Shape::dashed_line(&pts, stroke, 4.0, 3.0));
         }
     }

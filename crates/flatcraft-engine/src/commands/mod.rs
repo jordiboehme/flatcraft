@@ -128,6 +128,24 @@ pub fn placed_bounds(o: &Object) -> Option<Rect> {
     crate::cutgeom::cut_bounds(o).or_else(|| bounds(&o.placed_paths()))
 }
 
+/// The source's page frame placed on the mat (its bounding box after the
+/// object's transform), or `None` when the frame is unknown. For a picture
+/// that traced to nothing this is the image the person placed.
+pub fn placed_frame(o: &Object) -> Option<Rect> {
+    (o.frame != Rect::ZERO).then(|| {
+        o.transform
+            .affine(o.local_bounds)
+            .transform_rect_bbox(o.frame)
+    })
+}
+
+/// The box Auto arrange packs or packs around: the cut geometry's box
+/// ([`placed_bounds`]), or for an object without geometry (an untraced
+/// picture) its placed frame ([`placed_frame`]).
+pub fn arrange_bounds(o: &Object) -> Option<Rect> {
+    placed_bounds(o).or_else(|| placed_frame(o))
+}
+
 /// Bounding box of the placed geometry, or the transform centre as a point
 /// when the object has no geometry.
 pub(crate) fn placed_bounds_or_center(o: &Object) -> Rect {
