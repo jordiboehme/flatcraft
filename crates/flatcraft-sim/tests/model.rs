@@ -208,7 +208,7 @@ proptest! {
     #[test]
     fn grid_snap_matches_emitter_rounding(x in -3.3f64..300.0, y in -7.1f64..600.0) {
         let (plotter, media) = &*EMITTER;
-        let grid = DeviceGrid { units_per_mm: 20.0, origin: Point::new(3.3, 7.1) };
+        let grid = DeviceGrid::new(20.0, Point::new(3.3, 7.1));
         let snapped = grid.snap(Point::new(x, y));
         let dev = flatcraft_device::gpgl::quantize::to_device(Point::new(x, y), plotter, media);
         prop_assert!(((snapped.x + 3.3) * 20.0 - f64::from(dev.x)).abs() < 1e-9, "x {x}: {snapped:?} vs {dev:?}");
@@ -223,10 +223,7 @@ fn sample_step_has_a_floor() {
     assert_eq!(SimSettings::float(0.05).sample_step_mm, 0.005);
     assert_eq!(SimSettings::float(0.3).sample_step_mm, 0.3 / 20.0);
     assert_eq!(SimSettings::float(0.3).uncut_eps_mm, 0.02);
-    let grid = DeviceGrid {
-        units_per_mm: 20.0,
-        origin: Point::ZERO,
-    };
+    let grid = DeviceGrid::new(20.0, Point::ZERO);
     let dev = SimSettings::device(0.3, grid);
     assert_eq!(dev.uncut_eps_mm, flatcraft_sim::DEVICE_LIMIT_MM);
     assert_eq!(dev.grid, Some(grid));
@@ -300,10 +297,7 @@ fn runs_lift_between() {
 
 #[test]
 fn device_mode_snaps_every_run_point() {
-    let grid = DeviceGrid {
-        units_per_mm: 20.0,
-        origin: Point::new(3.3, 7.1),
-    };
+    let grid = DeviceGrid::new(20.0, Point::new(3.3, 7.1));
     let trace = simulate(
         &[open(&[(1.01, 1.02), (5.333, 1.02), (5.333, 4.977)])],
         Point::ZERO,

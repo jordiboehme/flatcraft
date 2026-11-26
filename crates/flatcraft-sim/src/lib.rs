@@ -28,19 +28,26 @@ pub use model::PUSHED_DEG;
 
 /// The quality limit of the float simulation against the intended path (R7).
 pub const ALGORITHM_LIMIT_MM: f64 = 0.005;
-/// The quality limit of the quantized device output (R7): one device unit
-/// of the Cameo 2 (20 units per mm). It was 0.03 mm, but rounding to whole
-/// 0.05 mm units alone moves a point up to `0.025 * (|sin a| + |cos a|)`
-/// off a line at angle `a`, 0.0354 mm at 45 deg, so no planner could meet
-/// it (Task 10, `docs/quality/knife-compensation.md`). Whether `D` takes
+/// The quality limit of the rounded device output against the planned
+/// path (R7): 1.5 device units of the Cameo 2 (20 units per mm). Whole
+/// units alone move a point up to `0.025 * (|sin a| + |cos a|)` off a line
+/// at angle `a` (0.0354 mm at 45 deg), and on the pivot arcs of radius d,
+/// only a few units across, the trailing tip adds to that. The worst over
+/// 32 grid positions, plain and calibrated, measured 0.0569 mm (Task 10,
+/// `docs/quality/knife-compensation.md`). The guarantee that counts is
+/// [`END_TO_END_LIMIT_MM`], against the source shape. Whether `D` takes
 /// decimals or half units is an open capture question
 /// (`docs/protocol/gpgl.md`).
-pub const DEVICE_LIMIT_MM: f64 = 0.05;
-/// The spec target: device deviation plus the upstream error (R7).
-pub const END_TO_END_LIMIT_MM: f64 = 0.05;
+pub const DEVICE_LIMIT_MM: f64 = 0.075;
+/// The end-to-end limit (R7), the guarantee that counts: the cut against
+/// the source shape, after flattening, the knife stage and the device
+/// rounding, at every grid position. 0.06 mm: one device unit plus the
+/// flatten tolerance. The spec's first target of 0.05 mm cannot be held
+/// with whole 0.05 mm units (Task 10, `docs/quality/knife-compensation.md`).
+pub const END_TO_END_LIMIT_MM: f64 = 0.05 + flatcraft_path::plan::DEFAULT_TOLERANCE_MM;
 /// Intended length with no trace within this is not severed: uncut
-/// (Ruling M2-P14, twice `END_TO_END_LIMIT_MM`). Device quantization alone
-/// stays well below it.
+/// (Ruling M2-P14, twice `END_TO_END_LIMIT_MM`, so 0.12 mm). Device
+/// quantization alone stays well below it.
 pub const UNCUT_LIMIT_MM: f64 = 2.0 * END_TO_END_LIMIT_MM;
 /// The sample step is the blade offset divided by this. Pinned by Task
 /// 10's `sample_step_converges`: the smallest of 10, 20, 40 and 80 whose

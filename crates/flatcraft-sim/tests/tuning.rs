@@ -25,8 +25,8 @@ use flatcraft_path::{
     WASTE_SEG, passes, plan, rings,
 };
 use flatcraft_sim::{
-    ALGORITHM_LIMIT_MM, DEVICE_LIMIT_MM, DeviceGrid, JobMetrics, SAMPLE_STEP_FACTOR, SimSettings,
-    SimTrace, measure_kept, simulate,
+    ALGORITHM_LIMIT_MM, DEVICE_LIMIT_MM, DeviceGrid, END_TO_END_LIMIT_MM, JobMetrics,
+    SAMPLE_STEP_FACTOR, SimSettings, SimTrace, measure_kept, simulate,
 };
 use kurbo::{Arc, BezPath, Circle, Point, Rect, Shape, Vec2};
 
@@ -43,9 +43,19 @@ const HOME: Point = Point::ZERO;
 
 /// The Cameo 2 rounding: 20 units per mm from the grid origin.
 fn grid() -> DeviceGrid {
+    DeviceGrid::new(20.0, Point::ZERO)
+}
+
+/// A calibrated plotter on a mat with an odd grid origin: scale 1.002 and
+/// 0.998, mirrored across the carriage, inside a 12x12 mat.
+fn calibrated_grid() -> DeviceGrid {
     DeviceGrid {
         units_per_mm: 20.0,
-        origin: Point::ZERO,
+        origin: Point::new(0.37, 0.013),
+        media_size: kurbo::Size::new(304.8, 330.2),
+        mirror_x: true,
+        mirror_y: false,
+        scale: Vec2::new(1.002, 0.998),
     }
 }
 
@@ -209,19 +219,19 @@ fn hairpin() -> Case {
 
 /// Probes for the pivot threshold: the sheet's curves all turn more than
 /// 2 deg per flattened vertex, so they cannot tell 0.5, 1 and 2 deg apart.
-/// - `turns`: eight open lines, each 10 mm, then one turn of just under
-///   0.5, 1, 2 or 10 deg (the largest turn that threshold skips), either
+/// - `turns`: ten open lines, each 10 mm, then one turn of just under
+///   0.5, 1, 2, 5 or 10 deg (the largest turn that threshold skips), either
 ///   way, then 150 mm straight on. A skipped turn leaves the axis
 ///   `d * sin(turn)` off the next segment's axis line, and the axis only
 ///   closes that gap over the segment, so a long segment is the worst case.
 /// - `circle-r100` turns about 1.6 deg per vertex once flattened, and
 ///   `arc-r400` about 0.8 deg: the gentle curves of large designs.
 fn threshold_probes() -> Vec<Case> {
-    let turns = [0.5, -0.5, 1.0, -1.0, 2.0, -2.0, 10.0, -10.0]
+    let turns = [0.5, -0.5, 1.0, -1.0, 2.0, -2.0, 5.0, -5.0, -10.0, 10.0]
         .iter()
         .enumerate()
         .map(|(k, &t)| {
-            let a = p(20.0, 20.0 + 35.0 * k as f64);
+            let a = p(20.0, 20.0 + 28.0 * k as f64);
             let b = a + Vec2::new(10.0, 0.0);
             let c = b + 150.0 * heading(t * (1.0 - 1e-6));
             placed(k as u64 + 1, polyline(&[a, b, c]))
@@ -532,26 +542,33 @@ fn sample_step_factor_is_the_rule() {
         })
         .collect();
     assert_eq!(cases.len(), 4);
-    assert_eq!(sample_step_rule(&cases), SAMPLE_STEP_FACTOR);
+    assert_eq!(
+        sample_step_rule(&cases),
+        SAMPLE_STEP_FACTOR,
+        "the rule moved, not a bug in the simulator: at factor 20 the misaligned \
+         square-50 start measured 0.00495 mm, only 0.00005 under the 0.005 mm \
+         tolerance (Task 10), so a small planner or metric change can tip it to 40"
+    );
 }
 
 // ------------------------------------------------------- pivot threshold
 
-const THRESHOLDS: [f64; 5] = [0.0, 0.5, 1.0, 2.0, 10.0];
-const FAST_THRESHOLDS: [f64; 4] = [0.0, 0.5, 1.0, 2.0];
+/// The pivot threshold candidates: the brief's 0, 0.5, 1, 2 and 10 deg,
+/// and 5 deg, the step between 2 and 10.
+const THRESHOLDS: [f64; 6] = [0.0, 0.5, 1.0, 2.0, 5.0, 10.0];
 
 /// The share of segments a Quality threshold above 0 must save to become
-/// the default (ruling 2026-11-26: 0.5 deg saves 4 of 4808, not worth a
+/// the default (ruling 2026-11-26: 0.5 deg saves 4 of 4720, not worth a
 /// change of the default).
 const MIN_SEGMENT_SAVING: f64 = 0.01;
 
 /// The pivot threshold rules over `cases`: (Quality, Fast). Prints the
 /// table.
 fn pivot_threshold_rule(cases: &[Case]) -> (f64, f64) {
-    let mut float_dev = [0.0f64; 5];
-    let mut device_dev = [0.0f64; 5];
-    let mut segments = [0usize; 5];
-    let mut skips = [0usize; 5];
+    let mut float_dev = [0.0f64; 6];
+    let mut device_dev = [0.0f64; 6];
+    let mut segments = [0usize; 6];
+    let mut skips = [0usize; 6];
     table_header(&[
         "case",
         "d",
@@ -617,13 +634,13 @@ fn pivot_threshold_rule(cases: &[Case]) -> (f64, f64) {
         .filter(|&(k, _)| 1.0 - segments[k] as f64 / segments[0] as f64 >= MIN_SEGMENT_SAVING)
         .map(|(_, &t)| t)
         .fold(0.0, f64::max);
-    // Fast: the largest of 0, 0.5, 1 and 2 within the device limit, 0 if
-    // none is.
-    let fast = FAST_THRESHOLDS
+    // Fast: the largest candidate within the device limit that also keeps
+    // the float deviation within the algorithm limit, 0 if none does.
+    let fast = THRESHOLDS
         .iter()
-        .zip(device_dev)
-        .filter(|&(_, v)| v <= DEVICE_LIMIT_MM)
-        .map(|(&t, _)| t)
+        .enumerate()
+        .filter(|&(k, _)| device_dev[k] <= DEVICE_LIMIT_MM && float_dev[k] <= ALGORITHM_LIMIT_MM)
+        .map(|(_, &t)| t)
         .fold(0.0, f64::max);
     // A candidate the shapes never exercise proves nothing.
     for (k, &t) in THRESHOLDS.iter().enumerate().skip(1) {
@@ -653,7 +670,10 @@ fn pivot_threshold_choice() {
 }
 
 /// The fast twin: the probes decide the rule (the sheet's curves turn more
-/// than 2 deg per vertex), plus the S-curve.
+/// than 2 deg per vertex), plus the S-curve. Its segment total is smaller
+/// than the sheet's, so the Quality saving filter is weaker here (1 deg
+/// saves 1.7 % of these segments, 0.6 % of the sheet's): the twin checks
+/// the deviation part of the Quality rule, the full sweep both parts.
 #[test]
 fn pivot_thresholds_are_the_rule() {
     let mut cases = threshold_probes();
@@ -1149,6 +1169,8 @@ fn quantized_output_meets_device_limit() {
         "pushed",
         "into kept",
         "worst spot",
+        "calibrated: device max dev",
+        "calibrated: pushed",
     ]);
     let mut cases = sheet();
     cases.push(whole_sheet());
@@ -1163,7 +1185,14 @@ fn quantized_output_meets_device_limit() {
             let (_, plain) = measured(&out, &sim(d, Mode::Device, None));
             // The plan for the device units: rounding-aware runs.
             let (_, _, dm) = run_mode(c, d, Knob::pinned(), Mode::Device);
-            worst = worst.max(deviation(&dm));
+            // The same on a calibrated, mirrored plotter with a grid origin.
+            let cal = Knob {
+                grid: Some(calibrated_grid()),
+                ..Knob::pinned()
+            };
+            let out_cal = planned(c, &settings(d, cal));
+            let (_, cm) = measured(&out_cal, &SimSettings::device(d, calibrated_grid()));
+            worst = worst.max(deviation(&dm)).max(deviation(&cm));
             row(&[
                 c.name.clone(),
                 format!("{d}"),
@@ -1183,7 +1212,15 @@ fn quantized_output_meets_device_limit() {
                 dm.worst_spots.first().map_or(String::new(), |w| {
                     format!("{:?} {:.1},{:.1}", w.kind, w.at.x, w.at.y)
                 }),
+                mm(deviation(&cm)),
+                cm.pushed.to_string(),
             ]);
+            if deviation(&cm) > DEVICE_LIMIT_MM {
+                over_device.push(format!("{} d {d} calibrated: {}", c.name, deviation(&cm)));
+            }
+            if cm.pushed > 0 {
+                pushed.push(format!("{} d {d} calibrated: {}", c.name, cm.pushed));
+            }
             if deviation(&dm) > DEVICE_LIMIT_MM {
                 over_device.push(format!("{} d {d}: {}", c.name, deviation(&dm)));
             }
@@ -1429,10 +1466,7 @@ fn device_resolution_report() {
         for d in OFFSETS {
             let (mut worst, mut at, mut pushed) = (0.0f64, String::new(), 0);
             for c in &cases {
-                let g = DeviceGrid {
-                    units_per_mm: upm,
-                    origin: Point::ZERO,
-                };
+                let g = DeviceGrid::new(upm, Point::ZERO);
                 let knob = Knob {
                     grid: Some(g),
                     ..Knob::pinned()
@@ -1454,4 +1488,200 @@ fn device_resolution_report() {
             ]);
         }
     }
+}
+
+// The knife stage's drop bound stays within the device limit.
+const _: () = assert!(flatcraft_path::quantize::MAX_DROP_MM <= DEVICE_LIMIT_MM);
+
+/// The points the knife stage rounds go through the emitter's transform
+/// unchanged: on a calibrated (scale 1.002 and 0.998), mirrored plotter
+/// with a grid origin, every axis point is already on a device unit, so
+/// the emitter rounds it to itself. The device simulation of that job
+/// pushes nothing.
+#[test]
+fn rounded_points_go_through_the_emitter_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = flatcraft_device::ProfileStore::load(dir.path()).unwrap();
+    for mirror in [false, true] {
+        let mut plotter = store.plotter("file-output-gpgl-cameo2").unwrap();
+        plotter.scale_x = 1.002;
+        plotter.scale_y = 0.998;
+        plotter.axis.mirror_x = mirror;
+        let mut media = plotter.media[0].clone();
+        media.grid.origin_x_mm = 0.37;
+        media.grid.origin_y_mm = 0.013;
+        let g = flatcraft_device::gpgl::quantize::device_grid(&plotter, &media);
+        for d in OFFSETS {
+            let knob = Knob {
+                grid: Some(g),
+                ..Knob::pinned()
+            };
+            let out = planned(&whole_sheet(), &settings(d, knob));
+            let mut points = 0;
+            for t in &out.toolpaths {
+                for q in t.runs().iter().flat_map(|r| r.points.clone()) {
+                    let dev = flatcraft_device::gpgl::quantize::to_device(q, &plotter, &media);
+                    let back = g.from_units(Point::new(f64::from(dev.x), f64::from(dev.y)));
+                    assert!(
+                        back.distance(q) < 1e-9,
+                        "mirror {mirror}: {q:?} goes to {back:?}"
+                    );
+                    let u = g.to_units(q);
+                    assert!((u.x - u.x.round()).abs() < 1e-6 && (u.y - u.y.round()).abs() < 1e-6);
+                    points += 1;
+                }
+            }
+            assert!(points > 1000);
+            let (_, m) = measured(&out, &SimSettings::device(d, g));
+            assert_eq!(m.pushed, 0, "mirror {mirror} d {d}");
+            assert!(
+                deviation(&m) <= DEVICE_LIMIT_MM,
+                "mirror {mirror} d {d}: {}",
+                deviation(&m)
+            );
+        }
+    }
+}
+
+/// The distance of `q` from the source geometry of `c` (before flattening).
+fn source_distance(c: &Case, q: Point) -> f64 {
+    use kurbo::ParamCurveNearest as _;
+    c.input
+        .iter()
+        .flat_map(|pp| pp.path.segments())
+        .map(|seg| seg.nearest(q, 1e-9).distance_sq.sqrt())
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// The 16 grid positions a quarter unit apart, plain and on a calibrated
+/// (scale 1.002 and 0.998), mirrored plotter: where the grid lies under
+/// the shapes changes how the pivot arcs round.
+fn grid_positions() -> Vec<DeviceGrid> {
+    let mut out = Vec::new();
+    for (sx, sy, mx) in [(1.0, 1.0, false), (1.002, 0.998, true)] {
+        for ox in [0.0, 0.0125, 0.025, 0.0375] {
+            for oy in [0.0, 0.0125, 0.025, 0.0375] {
+                out.push(DeviceGrid {
+                    units_per_mm: 20.0,
+                    origin: Point::new(ox, oy),
+                    media_size: kurbo::Size::new(304.8, 330.2),
+                    mirror_x: mx,
+                    mirror_y: false,
+                    scale: Vec2::new(sx, sy),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The largest distance of a cut sample of `trace` from the source
+/// geometry of `c`: flattening, the knife stage and the device rounding
+/// together.
+fn end_to_end(c: &Case, out: &CutPlan, trace: &SimTrace) -> f64 {
+    trace
+        .samples
+        .iter()
+        .filter(|x| {
+            x.down && x.seg != WASTE_SEG && out.toolpaths[x.toolpath].kind == ToolpathKind::Cut
+        })
+        .map(|x| source_distance(c, x.tip))
+        .fold(0.0, f64::max)
+}
+
+/// The device output on `grids`, for the sheet and the probes at d 0.25
+/// and 0.3, planned for each grid. Per grid: the device deviation against
+/// the planned path, the end-to-end deviation against the source shapes
+/// and the pushed blades. Asserts, collected over all grids: end to end
+/// within `END_TO_END_LIMIT_MM` (the guarantee that counts), the device
+/// deviation within `DEVICE_LIMIT_MM`, and nothing pushed.
+fn grid_position_rule(grids: &[DeviceGrid]) {
+    table_header(&[
+        "scale",
+        "mirror x",
+        "grid origin",
+        "device max dev",
+        "worst case",
+        "end-to-end max",
+        "worst case",
+        "pushed",
+    ]);
+    let mut cases = sheet();
+    cases.extend(threshold_probes());
+    let mut fails = Vec::new();
+    let (mut worst_dev, mut worst_e2e) = (0.0f64, 0.0f64);
+    for g in grids {
+        let (mut dev, mut e2e, mut pushed) = ((0.0f64, String::new()), (0.0f64, String::new()), 0);
+        for c in &cases {
+            for d in OFFSETS {
+                let k = Knob {
+                    grid: Some(*g),
+                    ..Knob::pinned()
+                };
+                let out = planned(c, &settings(d, k));
+                let (trace, m) = measured(&out, &SimSettings::device(d, *g));
+                pushed += m.pushed;
+                if deviation(&m) > dev.0 {
+                    dev = (deviation(&m), format!("{} {d}", c.name));
+                }
+                let e = end_to_end(c, &out, &trace);
+                if e > e2e.0 {
+                    e2e = (e, format!("{} {d}", c.name));
+                }
+            }
+        }
+        let at = format!(
+            "scale {:?} mirror {} origin {:?}",
+            g.scale, g.mirror_x, g.origin
+        );
+        if e2e.0 > END_TO_END_LIMIT_MM {
+            fails.push(format!("STOP: {at}: end to end {} at {}", e2e.0, e2e.1));
+        }
+        if dev.0 > DEVICE_LIMIT_MM {
+            fails.push(format!("{at}: device {} at {}", dev.0, dev.1));
+        }
+        if pushed > 0 {
+            fails.push(format!("{at}: {pushed} pushed"));
+        }
+        worst_dev = worst_dev.max(dev.0);
+        worst_e2e = worst_e2e.max(e2e.0);
+        row(&[
+            format!("{}, {}", g.scale.x, g.scale.y),
+            g.mirror_x.to_string(),
+            format!("{}, {}", g.origin.x, g.origin.y),
+            mm(dev.0),
+            dev.1,
+            mm(e2e.0),
+            e2e.1,
+            pushed.to_string(),
+        ]);
+    }
+    println!();
+    println!("worst device deviation {worst_dev:.5}, worst end to end {worst_e2e:.5}");
+    assert!(fails.is_empty(), "{fails:#?}");
+}
+
+/// The device output end to end at every grid position (32 grids).
+#[test]
+#[ignore = "full sweep; run with --ignored --nocapture"]
+fn device_output_end_to_end_at_every_grid_position() {
+    grid_position_rule(&grid_positions());
+}
+
+/// The fast twin: origin 0, the review's odd calibrated grid and the two
+/// worst positions of the full sweep.
+#[test]
+fn end_to_end_on_curves_stays_within_the_limit() {
+    let all = grid_positions();
+    let pick = |mirror: bool, x: f64, y: f64| {
+        *all.iter()
+            .find(|g| g.mirror_x == mirror && g.origin == Point::new(x, y))
+            .unwrap()
+    };
+    grid_position_rule(&[
+        grid(),
+        calibrated_grid(),
+        pick(true, 0.0125, 0.0125),
+        pick(false, 0.025, 0.0375),
+    ]);
 }

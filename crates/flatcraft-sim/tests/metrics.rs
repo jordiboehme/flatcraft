@@ -607,10 +607,7 @@ fn a_large_offset_is_stray_and_uncut() {
 #[test]
 fn device_quantization_alone_is_not_uncut() {
     // M2-P14: a perfect knife on the device grid (d = 0) leaves no uncut.
-    let grid = DeviceGrid {
-        units_per_mm: 20.0,
-        origin: Point::new(3.33, 7.12),
-    };
+    let grid = DeviceGrid::new(20.0, Point::new(3.33, 7.12));
     let s = SimSettings::device(0.0, grid);
     let ring: Vec<Point> = (0..=37)
         .map(|k| {

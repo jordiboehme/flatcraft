@@ -15,12 +15,12 @@ pub const TURN_WEIGHT: f64 = 2.0;
 pub const ROUNDS: u32 = 3;
 
 /// The Fast strategy's host pivot threshold. Pinned by Task 10's
-/// `pivot_threshold_choice`: the largest of 0, 0.5, 1 and 2 deg whose
-/// quantized output stays within `DEVICE_LIMIT_MM` (0.0406 mm at 2 deg). It
-/// saves about 11 % of the segments. Quality and Outlines last keep 0, an
-/// arc at every corner: their candidate 0.5 deg saved 4 of 4720 segments,
-/// too little to leave the simpler default.
-pub const FAST_PIVOT_THRESHOLD_DEG: f64 = 2.0;
+/// `pivot_threshold_choice`: the largest of 0, 0.5, 1, 2, 5 and 10 deg whose
+/// rounded output stays within `DEVICE_LIMIT_MM` and whose float output
+/// stays within `ALGORITHM_LIMIT_MM` (1 deg measures 0.0052 mm). Quality
+/// and Outlines last keep 0, an arc at every corner: 0.5 deg saved 4 of
+/// 4720 segments, too little to leave the simpler default.
+pub const FAST_PIVOT_THRESHOLD_DEG: f64 = 0.5;
 
 /// The order settings of a [`CutStrategy`].
 #[derive(Debug, Clone, Copy, PartialEq)]

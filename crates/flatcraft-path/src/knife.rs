@@ -19,9 +19,11 @@ pub const SWIVEL_MAX_DEG: f64 = 90.0;
 
 /// The tip radius of the arc lead-in. Pinned by Task 10's
 /// `hole_lead_in_choice`: the smallest of 0.5, 1, 2 and 3 mm whose starts
-/// stay within `ALGORITHM_LIMIT_MM`, push nothing and touch no kept
-/// material. Every radius passed, so the smallest wins: it fits the
-/// smallest holes and wastes the least (0.8 mm against 3.2 mm at 2 mm).
+/// stay within `ALGORITHM_LIMIT_MM`, push nothing, touch no kept material
+/// and take the arc lead-in in every hole (radius 1 to 10 mm). Every radius
+/// meets the deviation, push and kept limits; only 0.5 mm takes the arc on
+/// every hole (1 mm and larger do not fit the 1 or 2 mm holes). It also
+/// wastes the least (0.8 mm against 3.2 mm at 2 mm).
 pub const HOLE_LEAD_IN_RADIUS_MM: f64 = 0.5;
 
 /// The angle between two axis points of an arc. Pinned by Task 10's
@@ -158,7 +160,9 @@ pub fn apply(
         heading = heading_after(t, heading);
     }
     if let Some(grid) = hs.device_grid {
-        quantize::round_runs(paths, &grid, hs.offset_mm, start_heading);
+        // A push it keeps (to hold the cut within `MAX_DROP_MM`) is not
+        // silent: the simulator's device mode reports it as pushed.
+        let _ = quantize::round_runs(paths, &grid, hs.offset_mm, start_heading);
     }
     AppliedCompensation::Host {
         offset_mm: hs.offset_mm,
@@ -251,7 +255,8 @@ fn halfway(pts: &[Point]) -> Point {
 /// The first knife value of `s` that is out of range, for `plan`'s
 /// validation: offsets, radii and the overshoot must be finite and at least
 /// 0, the angles from 0 to 180 degrees, the arc step above 0 and a device
-/// grid with positive, finite units and a finite origin.
+/// grid without an invalid value ([`DeviceGrid::invalid_value`]), which is
+/// the value reported.
 pub(crate) fn invalid_value(s: &PipelineSettings) -> Option<f64> {
     let mut bad = Vec::new();
     if let Compensation::Host(h) = s.compensation {
@@ -268,8 +273,8 @@ pub(crate) fn invalid_value(s: &PipelineSettings) -> Option<f64> {
                     angle(h.arc_step_deg) || h.arc_step_deg == 0.0,
                 ),
                 (
-                    h.device_grid.map_or(0.0, |g| g.units_per_mm),
-                    h.device_grid.is_some_and(|g| !g.is_valid()),
+                    h.device_grid.and_then(|g| g.invalid_value()).unwrap_or(0.0),
+                    h.device_grid.is_some_and(|g| g.invalid_value().is_some()),
                 ),
             ]
             .into_iter()
@@ -982,6 +987,8 @@ mod tests {
             bad_host(|h| h.swivel_max_deg = 200.0),
             bad_host(|h| h.hole_lead_in_radius_mm = f64::INFINITY),
             bad_host(|h| h.arc_step_deg = 0.0),
+            bad_host(|h| h.device_grid = Some(DeviceGrid::new(0.0, Point::ZERO))),
+            bad_host(|h| h.device_grid = Some(DeviceGrid::new(20.0, Point::new(f64::NAN, 0.0)))),
             PipelineSettings {
                 corner_mode: CornerMode::LiftOvershoot { overshoot_mm: -1.0 },
                 ..host(0.0)
