@@ -1021,23 +1021,20 @@ fn cut_canvas(
         );
         if crowded {
             // Above the notices while they show there, so both stay
-            // readable.
+            // readable, and always inside the canvas.
+            let galley =
+                painter.layout_no_wrap(ZOOM_HINT.to_string(), fonts::medium(12.0), t.text_dim);
+            let size = galley.size();
             let at = rect.left_bottom() + Vec2::new(canvas::RULER + t.spacing, -t.spacing);
+            let hint =
+                egui::Rect::from_min_max(at - Vec2::new(0.0, size.y), at + Vec2::new(size.x, 0.0));
             let at = match super::toasts::stack_rect(ui.ctx()) {
-                Some(n)
-                    if n.left() < at.x + 240.0 && n.right() > at.x && n.bottom() >= at.y - 20.0 =>
-                {
-                    egui::pos2(at.x, n.top() - t.spacing)
-                }
+                Some(n) if n.intersects(hint) => egui::pos2(at.x, n.top() - t.spacing),
                 _ => at,
             };
-            painter.text(
-                at,
-                Align2::LEFT_BOTTOM,
-                ZOOM_HINT,
-                fonts::medium(12.0),
-                t.text_dim,
-            );
+            let lowest_top = rect.top() + canvas::RULER + t.spacing + size.y;
+            let at = egui::pos2(at.x, at.y.max(lowest_top).min(rect.bottom() - t.spacing));
+            painter.galley(at - Vec2::new(0.0, size.y), galley, t.text_dim);
         }
     }
     canvas::draw_area(&painter, snap, &view, t, contrast);

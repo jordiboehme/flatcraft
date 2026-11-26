@@ -420,6 +420,12 @@ fn on_a_canvas_too_short_for_a_card_the_notices_fold_into_one_line() {
     h.get_by_role_and_label(Role::Button, &label).click();
     settle(&mut h);
     h.get_by_label("second");
+    // Open, it stays inside the canvas: it scrolls instead of growing
+    // past the top.
+    let canvas = app(&h).ui.prepare.canvas_rect;
+    let stack = stack_rect(&h);
+    assert!(stack.top() >= canvas.top(), "{stack:?} above {canvas:?}");
+    assert!(stack.bottom() <= canvas.bottom() + 0.5, "{stack:?}");
     h.get_by_role_and_label(Role::Button, flatcraft::ui::toasts::FOLD_LABEL)
         .click();
     settle(&mut h);

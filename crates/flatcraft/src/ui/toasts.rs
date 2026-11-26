@@ -210,6 +210,8 @@ pub fn folded_label(n: usize) -> String {
 pub const FOLDED_HINT: &str = "The canvas is too short to show the notices here. Click to open them over the canvas; click Hide to fold them again.";
 /// The button that folds opened notices again.
 pub const FOLD_LABEL: &str = "Hide notices";
+/// The card of [`FOLD_LABEL`].
+pub const FOLD_HINT: &str = "Folds the notices back into one line, so the canvas is free again.";
 
 fn rect_id() -> egui::Id {
     egui::Id::unique("flatcraft-toasts-rect")
@@ -280,18 +282,27 @@ pub fn show(
                     o.bottom() + t.spacing
                 });
             let room = bottom - top;
-            let full = r.bottom() - gap - (r.top() + super::canvas::RULER + gap);
             cramped = room < MIN_STACK_HEIGHT;
             folded = cramped && !opened;
-            (
-                area.pivot(egui::Align2::LEFT_BOTTOM)
-                    .fixed_pos(egui::pos2(left, bottom)),
-                if room < MIN_STACK_HEIGHT {
-                    full.max(MIN_STACK_HEIGHT)
-                } else {
-                    room
-                },
-            )
+            if cramped && opened {
+                // Opened over the canvas on purpose: from its bottom up to
+                // its top (over the ruler if need be), the Hide button
+                // included, never past the top.
+                let bottom = r.bottom() - gap;
+                let button = ctx.global_style().spacing.interact_size.y + t.spacing;
+                let full = bottom - (r.top() + t.spacing) - button;
+                (
+                    area.pivot(egui::Align2::LEFT_BOTTOM)
+                        .fixed_pos(egui::pos2(left, bottom)),
+                    full.max(1.0),
+                )
+            } else {
+                (
+                    area.pivot(egui::Align2::LEFT_BOTTOM)
+                        .fixed_pos(egui::pos2(left, bottom)),
+                    room.max(1.0),
+                )
+            }
         }
         None => (
             area.anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-gap, -gap)),
@@ -310,13 +321,16 @@ pub fn show(
         }
         if opened && cramped {
             let b = ui.button(FOLD_LABEL);
-            super::groups::card(&b, FOLD_LABEL, FOLDED_HINT, None, false);
+            super::groups::card(&b, FOLD_LABEL, FOLD_HINT, None, false);
             if b.clicked() {
                 ui.ctx().data_mut(|d| d.insert_temp(open_id(), false));
             }
         }
         egui::ScrollArea::vertical()
             .max_height(max_height)
+            // A very short canvas still keeps the stack inside it (egui
+            // keeps 64 pt by default).
+            .min_scrolled_height(max_height.min(64.0))
             .stick_to_bottom(true)
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = t.spacing;
