@@ -3,8 +3,8 @@
 id = "cardstock"
 name = "Cardstock (light, about 160-200 g/m2)"
 group = "paper_and_card"
-speed = 4
-force = 14
+speed = 3
+force = 10
 passes = 1
 reverse_alternate_passes = false
 overcut_mm = 0.5

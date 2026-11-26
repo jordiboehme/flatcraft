@@ -33,18 +33,20 @@ None of these values was checked on a real cut yet. Glitter and flock iron-on ar
 | `vinyl-removable` | Adhesive vinyl (removable) | Vinyl | 5 | 8 | 1 | 1 | standard | yes |
 | `heat-transfer-vinyl` | Heat transfer vinyl (smooth) | Iron-on | 5 | 4 | 1 | 2 | standard | yes |
 | `heat-transfer-vinyl-glitter` | Heat transfer vinyl (glitter) | Iron-on | 4 | 18 | 1 | 3 | standard | yes |
-| `heat-transfer-vinyl-flock` | Heat transfer vinyl (flock) | Iron-on | 4 | 14 | 1 | 3 | standard | yes |
+| `heat-transfer-vinyl-flock` | Heat transfer vinyl (flock) | Iron-on | 4 | 14 | 1 | 2 | standard | yes |
 | `sticker-paper` | Sticker paper | Paper and card | 4 | 14 | 1 | 2 | light | yes |
 | `copy-paper` | Copy paper | Paper and card | 5 | 10 | 1 | 2 | light | no |
-| `cardstock` | Cardstock (light, about 160-200 g/m2) | Paper and card | 4 | 14 | 1 | 3 | light | no |
-| `cardstock-heavy` | Cardstock (heavy, about 250-300 g/m2) | Paper and card | 2 | 33 | 2 | 7 | strong | no |
+| `cardstock` | Cardstock (light, about 160-200 g/m2) | Paper and card | 3 | 10 | 1 | 3 | light | no |
+| `cardstock-heavy` | Cardstock (heavy, about 250-300 g/m2) | Paper and card | 2 | 33 | 1 | 7 | strong | no |
 | `kraft-paper` | Kraft paper | Paper and card | 3 | 20 | 1 | 3 | light | no |
 | `vellum` | Vellum | Paper and card | 3 | 19 | 1 | 1 | light | no |
-| `stencil-film` | Stencil and masking film | Film and other | 5 | 7 | 1 | 1 | standard | yes |
+| `stencil-film` | Stencil and masking film | Film and other | 5 | 4 | 1 | 1 | standard | yes |
 | `window-cling` | Window cling | Film and other | 5 | 8 | 1 | 1 | light | yes |
 | `magnet-sheet` | Printable magnet sheet (thin) | Film and other | 1 | 24 | 1 | 4 | strong | no |
 
 The ids `vinyl`, `heat-transfer-vinyl`, `copy-paper` and `cardstock` are the four presets of the first milestone. They keep their ids, so projects, the cut log and your own presets made from them keep working; only their names and values changed.
+
+The "Start with a test cut" hint shows for every material that has no cut in the cut log on this computer. Any send counts, a file export too, and the check goes by the preset id: a preset of the first milestone that was cut before does not show the hint again, even though its values changed.
 
 Each preset also carries one or two tips (which side goes up, how to weed). The picker shows them when you hover a material, and the Job card shows them under "Material tips". Your own notes on a preset stay separate and are never overwritten.
 
@@ -78,7 +80,7 @@ The source numbers (S1 and so on) point to the list at the end.
 ### `heat-transfer-vinyl-flock` - Heat transfer vinyl (flock)
 
 - Found: blade 2 to 4, force 14 to 33, speed 4 to 5, one or two passes (S1, S2, S4, S10, S11).
-- Picked: blade 3, force 14, speed 4, one pass.
+- Picked: blade 2, force 14, speed 4, one pass. Blade 2 is the gentle end of the blade range; if the flock does not come free, turn the blade to 3 before you raise the force much.
 - Least certain: the sources are far apart (force 14 to 33, one or two passes), so this is one of the two least certain presets. Do the test cut.
 
 ### `sticker-paper` - Sticker paper
@@ -94,12 +96,12 @@ The source numbers (S1 and so on) point to the list at the end.
 ### `cardstock` - Cardstock (light, about 160-200 g/m2)
 
 - Found: blade 3 to 6, force 10 to 29, speed 3 to 10 (S1, S4, S6, S7, S9, S11). A reader with this plotter model says its software suggests blade 3 for card (S7).
-- Picked: blade 3, force 14, speed 4.
+- Picked: blade 3, force 10, speed 3. The gentle and slow end of the range. Many readers cut card harder than this (force 14 to 24), so expect to raise the force after the test cut; that costs a second cut, not a scored mat.
 
 ### `cardstock-heavy` - Cardstock (heavy, about 250-300 g/m2)
 
 - Found: blade 7, force 33, speed 1 to 3, one or two passes (S6, S13, S14).
-- Picked: blade 7, force 33, speed 2, two passes. Every source is at the top of the force scale, so the second pass is what finishes the cut; two of three sources use it.
+- Picked: blade 7, force 33, speed 2, one pass. Every source is at the top of the force scale and blade 7. Two of three sources add a second pass; we start with one, as rule 3 says, and the tip says to send the cut again without moving the mat when a corner still hangs on.
 - Mat: strong, so the stiff sheet does not shift (S16).
 
 ### `kraft-paper` - Kraft paper
@@ -115,7 +117,7 @@ The source numbers (S1 and so on) point to the list at the end.
 ### `stencil-film` - Stencil and masking film
 
 - Found for adhesive stencil film on a liner: blade 1 to 2, force 4 to 10, speed 5 to 8 (S1, S4, S5, S9).
-- Picked: blade 1, force 7, speed 5.
+- Picked: blade 1, force 4, speed 5. The gentle end: thin masking film is the softest film here.
 - Thick reusable stencil sheets without a liner are a different material: sources give blade 3 to 6, force 10 to 33, slow (S1, S9). Make your own preset from this one for those.
 
 ### `window-cling` - Window cling

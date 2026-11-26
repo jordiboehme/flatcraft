@@ -11,5 +11,5 @@ overcut_mm = 0.5
 track_enhancing = false
 backing = true
 mat_tack = "standard"
-blade_depth_hint = "blade 3"
-tips = "Mirror the design and cut with the shiny carrier side down. The fuzzy top hides the cut lines, so weed in good light and pull the waste off at a low angle."
+blade_depth_hint = "blade 2"
+tips = "Mirror the design and cut with the shiny carrier side down. These values are the least sure of all, they vary a lot: do a test cut first and expect to raise the force a little. Weed in good light, the fuzzy top hides the cut lines."

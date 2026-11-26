@@ -12,4 +12,4 @@ track_enhancing = false
 backing = true
 mat_tack = "standard"
 blade_depth_hint = "blade 3"
-tips = "Mirror the design and cut with the shiny carrier side down. Glitter is thick and rough, so keep details bigger than about 2 mm and weed slowly."
+tips = "Mirror the design and cut with the shiny carrier side down. These values are the least sure of all, they vary a lot: do a test cut first and expect to raise the force a little. Keep details bigger than about 2 mm and weed slowly."
