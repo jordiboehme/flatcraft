@@ -6,8 +6,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{
-    arrange_bounds, command, common_box, cutting_area, ids_json, inside, object_mut,
-    placed_bounds_or_center, resolve_ids, translate, unit_leaves, units_of,
+    arrange_bounds, command, common_box, cutting_area, ids_json, inside, object_mut, resolve_ids,
+    translate, unit_leaves, units_of,
 };
 use crate::placement;
 use crate::session::{CommandError, Origin, Session};
@@ -50,14 +50,7 @@ fn run_align(s: &mut Session, p: AlignParams, _: Origin) -> Result<Value, Comman
     let ids = resolve_ids(s, &p.ids)?;
     let target = match p.relative_to {
         AlignTarget::CuttingArea => cutting_area(s)?,
-        AlignTarget::Selection => {
-            let doc = &s.doc().document;
-            ids.iter()
-                .filter_map(|id| doc.get(*id))
-                .map(placed_bounds_or_center)
-                .reduce(|a, b| a.union(b))
-                .unwrap_or(Rect::ZERO)
-        }
+        AlignTarget::Selection => common_box(&s.doc().document, &ids).unwrap_or(Rect::ZERO),
     };
     // A whole group lines up as one box; its members keep their places.
     let units = units_of(&s.doc().document, &ids);

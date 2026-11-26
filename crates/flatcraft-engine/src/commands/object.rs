@@ -18,8 +18,7 @@ use serde_json::{Value, json};
 use super::sources::{FileKind, ReadError, absolute, clip, file_kind, new_link, read_capped};
 use super::{
     check_exists, check_node, command, common_box, cutting_area, ids_json, inside, object_mut,
-    placed_bounds, placed_bounds_or_center, rect_json, resolve_ids, resolve_units, translate,
-    unit_leaves, units_of,
+    placed_bounds, rect_json, resolve_ids, resolve_units, translate, unit_leaves, units_of,
 };
 use crate::commands::normalize_deg;
 use crate::placement;
@@ -1122,11 +1121,7 @@ fn run_circular_copies(
         }
         None => {
             let doc = &s.doc().document;
-            let boxes: Vec<Rect> = ids
-                .iter()
-                .filter_map(|id| doc.get(*id))
-                .map(placed_bounds_or_center)
-                .collect();
+            let boxes: Vec<Rect> = common_box(doc, &ids).into_iter().collect();
             placement::pattern_centre(&boxes).unwrap_or_default()
         }
     };
@@ -1358,14 +1353,8 @@ fn run_move(s: &mut Session, p: MoveParams, _: Origin) -> Result<Value, CommandE
     let ids = resolve_ids(s, &p.ids)?;
     let relative = p.dx_mm.is_some() || p.dy_mm.is_some();
     let corner = p.x_mm.is_some() || p.y_mm.is_some();
-    let common = |s: &Session| {
-        let doc = &s.doc().document;
-        ids.iter()
-            .filter_map(|id| doc.get(*id))
-            .map(placed_bounds_or_center)
-            .reduce(|a, b| a.union(b))
-            .unwrap_or(Rect::ZERO)
-    };
+    // The box the window shows: hidden objects do not count.
+    let common = |s: &Session| common_box(&s.doc().document, &ids).unwrap_or(Rect::ZERO);
     let delta = match (relative, p.center_mm, corner) {
         (false, None, false) => {
             return Err(CommandError::InvalidParams(
@@ -1620,11 +1609,13 @@ fn scale_group(
 ) -> Result<(), CommandError> {
     let doc = &mut s.doc_mut().document;
     let group_box = |doc: &Document| -> Result<Rect, CommandError> {
-        let mut out: Option<Rect> = None;
         for id in ids {
-            let o = doc
-                .get(*id)
-                .ok_or_else(|| CommandError::NotFound(format!("no object with id {}", id.0)))?;
+            check_exists(doc, *id)?;
+        }
+        let mut out: Option<Rect> = None;
+        // Hidden objects are not part of the box (see `box_members`).
+        for o in super::box_members(doc, ids) {
+            let id = o.id;
             let b = placed_bounds(o).ok_or_else(|| {
                 CommandError::InvalidParams(format!("object {} has no geometry to scale", id.0))
             })?;
@@ -1951,12 +1942,7 @@ fn mirror_set(
     axis: MirrorAxis,
     keep_box: bool,
 ) -> Result<(), CommandError> {
-    let group_box = |doc: &Document| {
-        ids.iter()
-            .filter_map(|id| doc.get(*id))
-            .map(placed_bounds_or_center)
-            .reduce(|a, b| a.union(b))
-    };
+    let group_box = |doc: &Document| common_box(doc, ids);
     let before = keep_box.then(|| group_box(doc)).flatten();
     let centre = before.filter(|_| ids.len() >= 2).map(|b| b.center());
     for id in ids {

@@ -223,13 +223,12 @@ fn handle_shown(i: usize, screen: Rect) -> bool {
     }
 }
 
-/// The common box of the selected objects, in mm.
+/// The common box of the selected objects, in mm: the shown ones, or all
+/// when every one is hidden.
 pub fn selection_box(snap: &Snapshot) -> Option<kurbo::Rect> {
-    snap.objects
-        .iter()
-        .filter(|o| snap.selection.contains(&o.id))
-        .filter_map(ObjView::bounds)
-        .reduce(|a, b| a.union(b))
+    // Hidden members do not count while something shown is selected.
+    let ids: Vec<u64> = snap.selection.iter().copied().collect();
+    snap.box_of(&ids)
 }
 
 /// The selection box as it is right now: during a drag, where the drag
@@ -1589,7 +1588,9 @@ fn pointer(
                 })
             }
             Hit::Object(id) => {
-                let ids: Vec<u64> = if snap.selection.contains(&id) {
+                // Cmd (Ctrl) picks one member and drags it alone, even out
+                // of a selected group.
+                let ids: Vec<u64> = if snap.selection.contains(&id) && !deep_click(mods) {
                     snap.selection.iter().copied().collect()
                 } else {
                     let (ids, inside) = pick(snap, st, id, deep_click(mods));

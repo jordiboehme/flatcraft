@@ -51,13 +51,48 @@ pub struct Tree {
     groups: Vec<GroupNode>,
     /// Every object in document order with its parent group.
     leaves: Vec<(ObjectId, Option<ObjectId>)>,
+    /// The parent of every object and group, built once, so lookups do not
+    /// search the lists.
+    parents: BTreeMap<ObjectId, Option<ObjectId>>,
+    /// The index of every group in `groups`.
+    group_at: BTreeMap<ObjectId, usize>,
+    /// The ids of the objects.
+    leaf_ids: BTreeSet<ObjectId>,
+    /// The objects of every group at any depth, in document order.
+    group_leaves: BTreeMap<ObjectId, Vec<ObjectId>>,
 }
 
 impl Tree {
     /// A tree of `groups` over `leaves` (objects in document order with
     /// their parent).
     pub fn new(groups: Vec<GroupNode>, leaves: Vec<(ObjectId, Option<ObjectId>)>) -> Self {
-        Self { groups, leaves }
+        let mut parents: BTreeMap<ObjectId, Option<ObjectId>> =
+            groups.iter().map(|g| (g.id, g.parent)).collect();
+        // An object wins over a group with the same id (a broken file).
+        parents.extend(leaves.iter().copied());
+        let group_at = groups
+            .iter()
+            .enumerate()
+            .map(|(i, g)| (g.id, i))
+            .rev()
+            .collect();
+        let leaf_ids = leaves.iter().map(|(l, _)| *l).collect();
+        let mut tree = Self {
+            groups,
+            leaves,
+            parents,
+            group_at,
+            leaf_ids,
+            group_leaves: BTreeMap::new(),
+        };
+        let mut group_leaves: BTreeMap<ObjectId, Vec<ObjectId>> = BTreeMap::new();
+        for (leaf, _) in &tree.leaves {
+            for g in tree.ancestors(*leaf) {
+                group_leaves.entry(g).or_default().push(*leaf);
+            }
+        }
+        tree.group_leaves = group_leaves;
+        tree
     }
 
     pub fn groups(&self) -> &[GroupNode] {
@@ -70,7 +105,7 @@ impl Tree {
     }
 
     pub fn group(&self, id: ObjectId) -> Option<&GroupNode> {
-        self.groups.iter().find(|g| g.id == id)
+        self.group_at.get(&id).map(|i| &self.groups[*i])
     }
 
     pub fn is_group(&self, id: ObjectId) -> bool {
@@ -78,15 +113,12 @@ impl Tree {
     }
 
     pub fn is_leaf(&self, id: ObjectId) -> bool {
-        self.leaves.iter().any(|(l, _)| *l == id)
+        self.leaf_ids.contains(&id)
     }
 
     /// The group `id` (an object or a group) is in.
     pub fn parent(&self, id: ObjectId) -> Option<ObjectId> {
-        if let Some((_, p)) = self.leaves.iter().find(|(l, _)| *l == id) {
-            return *p;
-        }
-        self.group(id).and_then(|g| g.parent)
+        self.parents.get(&id).copied().flatten()
     }
 
     /// The groups `id` is in, the nearest first.
@@ -125,14 +157,7 @@ impl Tree {
         if self.is_leaf(id) {
             return vec![id];
         }
-        if !self.is_group(id) {
-            return Vec::new();
-        }
-        self.leaves
-            .iter()
-            .map(|(l, _)| *l)
-            .filter(|l| self.ancestors(*l).contains(&id))
-            .collect()
+        self.group_leaves.get(&id).cloned().unwrap_or_default()
     }
 
     /// The children of `group` (or of the top level for `None`): objects
@@ -140,6 +165,7 @@ impl Tree {
     /// Groups without objects come last.
     pub fn children(&self, group: Option<ObjectId>) -> Vec<ObjectId> {
         let mut out = Vec::new();
+        let mut seen = BTreeSet::new();
         for (leaf, _) in &self.leaves {
             // The node on the path from `leaf` up that sits right in `group`.
             let up = self.ancestors(*leaf);
@@ -150,13 +176,13 @@ impl Tree {
                 Some(g) => up.iter().position(|a| *a == g).map(|k| path[k]),
             };
             if let Some(node) = node
-                && !out.contains(&node)
+                && seen.insert(node)
             {
                 out.push(node);
             }
         }
         for g in &self.groups {
-            if g.parent == group && !out.contains(&g.id) {
+            if g.parent == group && seen.insert(g.id) {
                 out.push(g.id);
             }
         }
@@ -183,6 +209,7 @@ impl Tree {
         let set: BTreeSet<ObjectId> = leaves.iter().copied().collect();
         let mut full: BTreeMap<ObjectId, bool> = BTreeMap::new();
         let mut out = Vec::new();
+        let mut seen = BTreeSet::new();
         for (leaf, _) in &self.leaves {
             if !set.contains(leaf) {
                 continue;
@@ -197,7 +224,7 @@ impl Tree {
                 }
                 unit = g;
             }
-            if !out.contains(&unit) {
+            if seen.insert(unit) {
                 out.push(unit);
             }
         }

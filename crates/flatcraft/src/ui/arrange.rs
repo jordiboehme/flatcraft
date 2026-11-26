@@ -182,7 +182,16 @@ pub fn circular_centre(snap: &Snapshot, v: &CircularValues) -> Option<Point> {
     if v.own_centre {
         return Some(Point::new(v.center_mm[0], v.center_mm[1]));
     }
-    let boxes: Vec<Rect> = selected(snap).into_iter().map(bounds).collect();
+    // As the engine: hidden objects do not count unless all are hidden.
+    let objs = selected(snap);
+    let any_shown = objs.iter().any(|o| o.visible);
+    let boxes: Vec<Rect> = objs
+        .into_iter()
+        .filter(|o| o.visible || !any_shown)
+        .map(bounds)
+        .reduce(|a, b| a.union(b))
+        .into_iter()
+        .collect();
     placement::pattern_centre(&boxes)
 }
 

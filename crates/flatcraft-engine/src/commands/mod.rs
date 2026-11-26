@@ -152,11 +152,23 @@ pub(crate) fn unit_leaves(doc: &Document, unit: ObjectId) -> Vec<ObjectId> {
     }
 }
 
+/// The objects of `ids` that count for their common box: the shown ones,
+/// or all of them when every one is hidden. A hidden member of a group or
+/// a selection is not part of its box, as the window draws it.
+pub(crate) fn box_members<'a>(doc: &'a Document, ids: &[ObjectId]) -> Vec<&'a Object> {
+    let objs: Vec<&Object> = ids.iter().filter_map(|id| doc.get(*id)).collect();
+    let any_shown = objs.iter().any(|o| o.visible);
+    objs.into_iter()
+        .filter(|o| o.visible || !any_shown)
+        .collect()
+}
+
 /// The box of what is cut of the objects `ids` together (see
-/// [`placed_bounds_or_center`]), `None` for no objects.
+/// [`placed_bounds_or_center`] and [`box_members`]), `None` for no
+/// objects.
 pub(crate) fn common_box(doc: &Document, ids: &[ObjectId]) -> Option<Rect> {
-    ids.iter()
-        .filter_map(|id| doc.get(*id))
+    box_members(doc, ids)
+        .into_iter()
         .map(placed_bounds_or_center)
         .reduce(|a, b| a.union(b))
 }

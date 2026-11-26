@@ -590,3 +590,31 @@ fn a_broken_group_tree_in_a_file_is_mended() {
     assert!(doc.objects.iter().all(|o| o.parent.is_none()));
     assert!(doc.next_id > 11);
 }
+
+#[test]
+fn a_hidden_member_is_not_part_of_the_group_box() {
+    let d = dirs();
+    let mut s = session(&d);
+    let a = rect(&mut s, "a", 10.0, 10.0, 10.0, 10.0);
+    let b = rect(&mut s, "b", 50.0, 10.0, 10.0, 10.0);
+    let g = group(&mut s, &[a, b]);
+    run(
+        &mut s,
+        "object.set_visible",
+        json!({ "ids": [a], "visible": false }),
+    );
+    // The X field puts the box of what is shown: b's left edge.
+    run(&mut s, "object.move", json!({ "ids": [g], "x_mm": 100.0 }));
+    assert!(close(bounds(&mut s, b).x0, 100.0));
+    assert!(close(bounds(&mut s, a).x0, 60.0), "a moves along");
+    // Each: the group turns about the centre of b alone.
+    let before = bounds(&mut s, b);
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [g], "degrees": 90.0, "about": "each" }),
+    );
+    let after = bounds(&mut s, b);
+    assert!(close(after.center().x, before.center().x));
+    assert!(close(after.center().y, before.center().y));
+}

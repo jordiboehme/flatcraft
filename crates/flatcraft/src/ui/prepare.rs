@@ -943,9 +943,13 @@ impl Snapshot {
     }
 
     /// The common box of the objects `ids` (the engine's bounds).
+    /// Hidden objects do not count, unless all of them are hidden, as the
+    /// engine's `common_box`.
     pub fn box_of(&self, ids: &[u64]) -> Option<kurbo::Rect> {
-        ids.iter()
-            .filter_map(|id| self.object(*id))
+        let objs: Vec<&ObjView> = ids.iter().filter_map(|id| self.object(*id)).collect();
+        let any_shown = objs.iter().any(|o| o.visible);
+        objs.into_iter()
+            .filter(|o| o.visible || !any_shown)
             .filter_map(ObjView::bounds)
             .reduce(|a, b| a.union(b))
     }

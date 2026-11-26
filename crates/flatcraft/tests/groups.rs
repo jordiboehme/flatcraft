@@ -357,3 +357,85 @@ fn rows_drag_into_and_out_of_a_group() {
     h.run();
     assert_eq!(parent(&s, a), None);
 }
+
+/// A real double-click at `p`: two clicks 20 ms apart by the input clock,
+/// one frame per press and release, so egui sees a double-click whatever
+/// the harness's step time.
+fn double_click(h: &mut AppHarness, p: Pos2) {
+    h.event(Event::PointerMoved(p));
+    h.run();
+    let mut t = h.ctx.input(|i| i.time);
+    for _ in 0..2 {
+        for pressed in [true, false] {
+            t += 0.02;
+            h.input_mut().time = Some(t);
+            h.event(Event::PointerButton {
+                pos: p,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+            h.step();
+        }
+    }
+    h.run();
+}
+
+#[test]
+fn a_real_double_click_goes_into_the_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, [_, b, _], g) = grouped(&dir);
+    let (mut h, v) = rig(&dir, s.clone());
+    double_click(&mut h, at(&v, 145.0, 45.0));
+    assert_eq!(selection(&s), vec![b]);
+    let doc_id = s.lock().unwrap().doc().id();
+    assert_eq!(app(&h).ui.prepare.entered, Some((doc_id, g)));
+}
+
+#[test]
+fn cmd_drag_moves_one_member_of_a_selected_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, [a, b, _], _) = grouped(&dir);
+    exec(&s, "object.select", json!({ "ids": [a, b] }));
+    let (mut h, v) = rig(&dir, s.clone());
+    let centre = |id: u64| {
+        s.lock()
+            .unwrap()
+            .doc()
+            .document
+            .get(ObjectId(id))
+            .unwrap()
+            .transform
+            .center_mm
+    };
+    let (a0, b0) = (centre(a), centre(b));
+    h.event(Event::ModifiersChanged(Modifiers::COMMAND));
+    drag(&mut h, at(&v, 145.0, 60.0), at(&v, 145.0, 80.0));
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    h.run();
+    assert_eq!(centre(a), a0, "the other member stays");
+    assert!((centre(b).y - b0.y - 20.0).abs() < 1e-6, "{:?}", centre(b));
+    assert_eq!(selection(&s), vec![b]);
+}
+
+#[test]
+fn a_selected_group_box_leaves_out_hidden_members() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, [a, b, _], _) = grouped(&dir);
+    exec(
+        &s,
+        "object.set_visible",
+        json!({ "ids": [a], "visible": false }),
+    );
+    exec(&s, "object.select", json!({ "ids": [a, b] }));
+    let (mut h, _) = rig(&dir, s.clone());
+    let sn = snap(&mut h);
+    let bx = flatcraft::ui::canvas::selection_box(&sn).unwrap();
+    // Only the shown square (120..170 mm) counts.
+    assert!((bx.x0 - 120.0).abs() < 1e-3, "{bx:?}");
+    // The X field and object.move agree on that box.
+    exec(&s, "object.move", json!({ "ids": [a, b], "x_mm": 30.0 }));
+    let sn = snap(&mut h);
+    let bx = flatcraft::ui::canvas::selection_box(&sn).unwrap();
+    assert!((bx.x0 - 30.0).abs() < 1e-3, "{bx:?}");
+}
