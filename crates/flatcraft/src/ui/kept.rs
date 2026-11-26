@@ -226,6 +226,8 @@ impl KeptCache {
             .is_some_and(|(p, a, v)| Arc::ptr_eq(p, job) && *a == area && v == variant);
         if !same {
             self.key = Some((job.clone(), area, variant.clone()));
+            // Images of an older mask are never drawn now: free them.
+            self.images = (None, None);
             self.made += 1;
             self.pending = true;
             // A fresh slot: a worker of an older plan writes into its own.

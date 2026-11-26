@@ -614,7 +614,7 @@ fn problem(
 /// "Weed paths" always shows; dimmed, with the reason, while weeding is
 /// off.
 fn stats(ui: &mut Ui, job: &JobResult, snap: &Snapshot, t: &Tokens) {
-    let why = weed_why(snap);
+    let why = weed_why(snap, job.plan.kept.sheet_kept_besides(|_| false));
     let weeding = why.is_none();
     egui::Grid::new("flatcraft-cut-stats")
         .num_columns(2)
@@ -707,7 +707,7 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
                 stats(ui, job, snap, &t);
                 warnings(ui, job, snap.doc_id, &t, actions);
                 ui.add_space(t.spacing);
-                legend(ui, snap, &t);
+                legend(ui, snap, job, &t);
                 ui.label(
                     RichText::new(
                         "Numbers show the cut order, dots the starts and arrows the direction.",
@@ -809,13 +809,23 @@ pub const LEGEND_WASTE: (&str, &str) = (
 /// Why the weed row of the legend and the weed path count are dimmed.
 pub const WEEDING_OFF: &str = "Weeding is off. Turn it on in Device & Material, under Weeding.";
 
+/// True when the shared sheet is kept (an object set to Stencil or Both
+/// with a closed cut): the plan's own rule when the plan is current for
+/// `snap`, else the document's guess ([`settings::sheet_kept`]).
+pub fn sheet_kept_now(cut: &CutState, snap: &Snapshot) -> bool {
+    match (&snap.job_input, cut.job()) {
+        (Some(Ok(_)), Some(job)) => job.plan.kept.sheet_kept_besides(|_| false),
+        _ => settings::sheet_kept(snap),
+    }
+}
+
 /// Why the weed row and the weed path count are dimmed, if they are:
 /// weeding is off, or an object keeps the sheet so nothing is waste to
 /// weed.
-pub fn weed_why(snap: &Snapshot) -> Option<&'static str> {
+pub fn weed_why(snap: &Snapshot, sheet_kept: bool) -> Option<&'static str> {
     if !snap.job.weed.any() {
         Some(WEEDING_OFF)
-    } else if settings::sheet_kept(snap) {
+    } else if sheet_kept {
         Some(settings::SHEET_KEPT_NO_WEEDING)
     } else {
         None
@@ -837,10 +847,10 @@ enum Sample {
 /// A small legend of the Path view: a short line of each kind, drawn on
 /// the mat colour with the canvas's own strokes and colours. The weed row
 /// is dimmed, with the reason, while weeding is off.
-fn legend(ui: &mut Ui, snap: &Snapshot, t: &Tokens) {
+fn legend(ui: &mut Ui, snap: &Snapshot, job: &JobResult, t: &Tokens) {
     let mat = canvas::mat_rgb(snap);
     let contrast = canvas::rgb(canvas::contrast_colour(mat));
-    let weed_why = weed_why(snap);
+    let weed_why = weed_why(snap, job.plan.kept.sheet_kept_besides(|_| false));
     let weeding = weed_why.is_none();
     let rows = [
         (

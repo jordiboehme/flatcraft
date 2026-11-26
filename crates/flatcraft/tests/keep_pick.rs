@@ -731,9 +731,7 @@ fn weeding_says_why_it_cuts_nothing_while_another_object_keeps_the_sheet() {
     wait_for_workers(&mut h);
     let text = flatcraft::ui::settings::SHEET_KEPT_NO_WEEDING;
     assert!(!drawn(&h, text), "Pieces only: weeding cuts");
-    let ctx = h.ctx.clone();
-    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
-    assert_eq!(flatcraft::ui::cut::weed_why(&snap), None);
+    assert_eq!(why_now(&mut h), None);
     run(
         &s,
         "object.set_keep",
@@ -741,8 +739,7 @@ fn weeding_says_why_it_cuts_nothing_while_another_object_keeps_the_sheet() {
     );
     h.run();
     assert!(drawn(&h, text), "the Weeding section says why");
-    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
-    assert_eq!(flatcraft::ui::cut::weed_why(&snap), Some(text));
+    assert_eq!(why_now(&mut h), Some(text));
     // The settings stay usable.
     assert!(!h.get_by_label("Weed box").accesskit_node().is_disabled());
     // And the plan has no weed path.
@@ -759,9 +756,56 @@ fn weeding_says_why_it_cuts_nothing_while_another_object_keeps_the_sheet() {
         json!({ "box": false, "lines": "off" }),
     );
     h.run();
-    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
-    assert_eq!(
-        flatcraft::ui::cut::weed_why(&snap),
-        Some(flatcraft::ui::cut::WEEDING_OFF)
+    assert_eq!(why_now(&mut h), Some(flatcraft::ui::cut::WEEDING_OFF));
+}
+
+/// Why the weed row is dimmed now, by the plan when the app has a current
+/// one for the snapshot, as the window asks it.
+fn why_now(h: &mut AppHarness) -> Option<&'static str> {
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot_with(app_mut(h), &ctx, true);
+    app_mut(h).ui.cut.update(&snap);
+    let kept = flatcraft::ui::cut::sheet_kept_now(&app(h).ui.cut, &snap);
+    flatcraft::ui::cut::weed_why(&snap, kept)
+}
+
+#[test]
+fn an_open_line_stencil_does_not_stop_weeding_as_the_plan_says() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="200mm" viewBox="0 0 200 200"><path d="M20 100 H90" fill="none" stroke="black" stroke-width="0.1"/></svg>"#;
+    let score = run(
+        &s,
+        "object.import_svg",
+        json!({ "svg": svg, "name": "score" }),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    run(
+        &s,
+        "object.set_keep",
+        json!({ "ids": [score], "keep": "stencil" }),
     );
+    square(&s, 20.0);
+    run(
+        &s,
+        "job.set_weeding",
+        json!({ "box": true, "lines": "both" }),
+    );
+    let mut h = harness(&dir, s.clone(), false);
+    app_mut(&mut h).ui.workspace = Workspace::Cut;
+    h.run();
+    // The score lines have no closed cut, so the plan keeps no sheet and
+    // weeds around the square.
+    let job = app(&h).ui.cut.job().unwrap();
+    assert!(!job.plan.kept.sheet_kept_besides(|_| false));
+    assert!(flatcraft::ui::cut::weed_count(&job) > 0);
+    assert_eq!(why_now(&mut h), None, "the plan's rule, not the guess");
+    // Without a current plan the document's guess is used.
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    assert!(flatcraft::ui::settings::sheet_kept(&snap));
+    assert!(flatcraft::ui::cut::sheet_kept_now(&app(&h).ui.cut, &snap));
+    assert!(!app(&h).ui.prepare.sheet_kept, "the window used the plan");
+    assert!(!drawn(&h, flatcraft::ui::settings::SHEET_KEPT_NO_WEEDING));
 }

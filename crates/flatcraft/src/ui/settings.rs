@@ -597,7 +597,7 @@ pub fn job(
     if eleven_shown(st, snap) {
         ui.label(RichText::new(ELEVEN).color(t.accent_cut));
     }
-    weeding(ui, snap, t, actions);
+    weeding(ui, snap, st.sheet_kept, t, actions);
     if let Some(hint) = &material.blade_depth_hint {
         ui.add_space(t.spacing / 2.0);
         ui.label(RichText::new(format!("Blade depth: {hint}")).color(t.text_dim));
@@ -695,7 +695,7 @@ fn weed_mm(
 }
 
 /// The weed box and weed lines of the job (`job.set_weeding`).
-fn weeding(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec<Action>) {
+fn weeding(ui: &mut Ui, snap: &Snapshot, sheet_kept: bool, t: &Tokens, actions: &mut Vec<Action>) {
     use flatcraft_core::limits::{
         MAX_WEED_MARGIN_MM, MAX_WEED_SPACING_MM, MIN_WEED_MARGIN_MM, MIN_WEED_SPACING_MM,
     };
@@ -707,7 +707,7 @@ fn weeding(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec<Action>) 
     super::groups::card(&r, "Weeding", WEEDING_HINT, None, false);
     // The settings stay usable: they apply again once no object keeps
     // the sheet.
-    if sheet_kept(snap) {
+    if sheet_kept {
         ui.label(RichText::new(SHEET_KEPT_NO_WEEDING).color(t.text_dim));
     }
     egui::Grid::new("flatcraft-weeding")
@@ -774,11 +774,11 @@ fn weeding(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec<Action>) 
 /// Why weeding cuts nothing while an object keeps the shared sheet: the
 /// Weeding section, the Path legend's weed row and its weed path count.
 pub const SHEET_KEPT_NO_WEEDING: &str =
-    "Another object keeps the sheet on this mat, so there is nothing to weed.";
+    "An object set to Stencil or Both keeps the sheet on this mat, so there is nothing to weed.";
 
-/// True when an object that is cut keeps the shared sheet (Keep is
-/// Stencil or Both): then the sheet is kept material and weeding has
-/// nothing to cut, as the planner's kept material says.
+/// The guess of [`super::cut::sheet_kept_now`] without a current plan:
+/// an object that is cut keeps the shared sheet (Keep is Stencil or
+/// Both). The plan counts only objects with a closed cut.
 pub fn sheet_kept(snap: &Snapshot) -> bool {
     snap.objects
         .iter()

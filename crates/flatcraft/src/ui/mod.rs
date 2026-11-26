@@ -2127,6 +2127,7 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     let snap = (workspace != Workspace::Home).then(|| prepare::snapshot_with(app, &ctx, wants_job));
     if let Some(snap) = &snap {
         app.ui.cut.update(snap);
+        app.ui.prepare.sheet_kept = cut::sheet_kept_now(&app.ui.cut, snap);
         if report_check && let Some(card) = &mut app.ui.prepare.report {
             card.refresh(snap);
             if card.is_empty() {

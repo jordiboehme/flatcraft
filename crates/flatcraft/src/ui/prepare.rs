@@ -270,6 +270,9 @@ pub struct PrepareState {
     /// The kept and waste overlay on the Prepare canvas (View, Show). Off
     /// until switched on; the Cut workspace always shows it.
     pub show_kept_waste: bool,
+    /// The shared sheet is kept (see `cut::sheet_kept_now`), for the
+    /// Weeding section. Set each frame.
+    pub sheet_kept: bool,
     /// The keep picker on the canvas ("Pick what stays"), while it is on.
     pub keep_pick: Option<super::keep_pick::KeepPick>,
     pub fields: Fields,
@@ -383,6 +386,7 @@ impl Default for PrepareState {
             show_rulers: true,
             show_kept_waste: false,
             keep_pick: None,
+            sheet_kept: false,
             stencil_told: Default::default(),
             fields: Fields::default(),
             search_open: false,
