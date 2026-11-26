@@ -139,7 +139,7 @@ impl Preferences {
 /// Every id `ribbon_pins` can hold, in the order of the ribbon's table
 /// (`flatcraft::ui::tools::TOOLS`). An Align id carries what it lines up
 /// with: `align.left.selection` and `align.left.area` are two pins.
-pub const RIBBON_PIN_IDS: [&str; 40] = [
+pub const RIBBON_PIN_IDS: [&str; 41] = [
     "import",
     "trace",
     "test_patterns",
@@ -177,6 +177,7 @@ pub const RIBBON_PIN_IDS: [&str; 40] = [
     "zoom.100",
     "view.grid",
     "view.rulers",
+    "view.kept",
     "panel.objects",
     "panel.settings",
     "panel.debug",
@@ -184,7 +185,7 @@ pub const RIBBON_PIN_IDS: [&str; 40] = [
 
 /// The pins of a new install outside the Arrange group (Add, Edit, Linked
 /// files and View): every button they showed before pins existed.
-const NON_ARRANGE_DEFAULTS: [&str; 14] = [
+const NON_ARRANGE_DEFAULTS: [&str; 15] = [
     "import",
     "trace",
     "test_patterns",
@@ -196,6 +197,7 @@ const NON_ARRANGE_DEFAULTS: [&str; 14] = [
     "zoom.100",
     "view.grid",
     "view.rulers",
+    "view.kept",
     "panel.objects",
     "panel.settings",
     "panel.debug",

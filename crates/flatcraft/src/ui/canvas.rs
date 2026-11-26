@@ -743,6 +743,7 @@ pub fn show(
     rect: Rect,
     snap: &Snapshot,
     st: &mut PrepareState,
+    cut: &mut super::cut::CutState,
     t: &Tokens,
     actions: &mut Vec<Action>,
 ) {
@@ -799,6 +800,16 @@ pub fn show(
     let painter = ui.painter_at(rect);
     let view = st.view;
     let (mat_rgb, contrast) = draw_mat(&painter, rect, snap, &view, st.show_grid, t);
+    // The plan is rebuilt only without a drag or a nudge burst, so the
+    // overlay waits for them to end.
+    if st.show_kept_waste
+        && st.drag.is_none()
+        && st.nudge.is_none()
+        && let (Some(job), Some(area)) = (cut.job(), snap.area)
+    {
+        cut.kept
+            .draw(ui.ctx(), &painter, &view, &job, area, mat_rgb, t);
+    }
     draw_objects(&painter, snap, &view, mat_rgb, 1.0, false, |id| {
         drag_preview(st.drag.as_ref(), snap, id)
     });

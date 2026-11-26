@@ -2,7 +2,7 @@
 //! mat, material and the speed, force and passes of the job.
 
 use egui::{Response, RichText, Ui};
-use flatcraft_core::document::{CutMode, StrokeMode, WeedLines};
+use flatcraft_core::document::{CutMode, KeepMode, StrokeMode, WeedLines};
 use flatcraft_core::numexpr::{Field, Kind};
 use serde_json::{Value, json};
 
@@ -64,6 +64,28 @@ fn mode_name(m: CutMode) -> &'static str {
     }
 }
 
+/// The name of a keep mode in the Keep combo.
+pub fn keep_name(k: KeepMode) -> &'static str {
+    match k {
+        KeepMode::Pieces => "Pieces",
+        KeepMode::Stencil => "Stencil",
+        KeepMode::Both => "Both",
+    }
+}
+
+/// The short hint of a keep mode, on its entry in the Keep combo.
+pub fn keep_hint(k: KeepMode) -> &'static str {
+    match k {
+        KeepMode::Pieces => {
+            "Keep the shapes, like stickers. The sheet around them and their holes are waste."
+        }
+        KeepMode::Stencil => "Keep the sheet, like a stencil. The shapes fall out and are waste.",
+        KeepMode::Both => {
+            "Keep both sides of every cut. The blade never starts or overshoots next to these cuts; it only turns on the spot."
+        }
+    }
+}
+
 fn strokes_name(m: StrokeMode) -> &'static str {
     match m {
         StrokeMode::Auto => "Auto",
@@ -85,6 +107,33 @@ fn combo<T: Clone + PartialEq>(
     current: Option<&T>,
     enabled: bool,
 ) -> Option<T> {
+    combo_hinted(
+        ui,
+        label,
+        setting,
+        text,
+        choices,
+        &[],
+        selected,
+        current,
+        enabled,
+    )
+}
+
+/// [`combo`] with a short hint on each entry (`hints`, in the order of
+/// `choices`; an entry without one has none).
+#[allow(clippy::too_many_arguments)]
+fn combo_hinted<T: Clone + PartialEq>(
+    ui: &mut Ui,
+    label: &str,
+    setting: Option<Setting>,
+    text: &str,
+    choices: &[(T, String)],
+    hints: &[&str],
+    selected: Option<&T>,
+    current: Option<&T>,
+    enabled: bool,
+) -> Option<T> {
     let mut picked = None;
     painted_label(ui, label);
     ui.add_enabled_ui(enabled, |ui| {
@@ -92,12 +141,12 @@ fn combo<T: Clone + PartialEq>(
             .selected_text(text)
             .width(ui.available_width())
             .show_ui(ui, |ui| {
-                for (value, text) in choices {
-                    if ui
-                        .selectable_label(selected == Some(value), text.as_str())
-                        .clicked()
-                        && current != Some(value)
-                    {
+                for (i, (value, text)) in choices.iter().enumerate() {
+                    let mut r = ui.selectable_label(selected == Some(value), text.as_str());
+                    if let Some(hint) = hints.get(i) {
+                        r = r.on_hover_text(*hint);
+                    }
+                    if r.clicked() && current != Some(value) {
                         picked = Some(value.clone());
                     }
                 }
@@ -159,6 +208,27 @@ pub fn show(
                     CutMode::ObjectOutlines => "object_outlines",
                 };
                 run(actions, "object.set_cut_options", json!({ "mode": v }));
+            }
+            let keep = common(selected.iter().map(|o| o.keep));
+            let kinds = [KeepMode::Pieces, KeepMode::Stencil, KeepMode::Both];
+            let choices = kinds.map(|k| (k, keep_name(k).to_string()));
+            let text = match (any, keep) {
+                (false, _) => "",
+                (true, Some(k)) => keep_name(k),
+                (true, None) => "Mixed",
+            };
+            if let Some(k) = combo_hinted(
+                ui,
+                "Keep",
+                Some(Setting::Keep),
+                text,
+                &choices,
+                &kinds.map(keep_hint),
+                keep.as_ref(),
+                keep.as_ref(),
+                any,
+            ) {
+                run(actions, "object.set_keep", json!({ "keep": k.key() }));
             }
             let strokes = common(selected.iter().map(|o| o.cut.strokes));
             let choices = [

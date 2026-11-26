@@ -263,6 +263,9 @@ pub struct PrepareState {
     pub panels: super::rails::Panels,
     pub show_grid: bool,
     pub show_rulers: bool,
+    /// The kept and waste overlay on the Prepare canvas (View, Show). Off
+    /// until switched on; the Cut workspace always shows it.
+    pub show_kept_waste: bool,
     pub fields: Fields,
     /// The search hits stay open (see `ribbon::search_box`).
     pub search_open: bool,
@@ -372,6 +375,7 @@ impl Default for PrepareState {
             panels: super::rails::Panels::default(),
             show_grid: true,
             show_rulers: true,
+            show_kept_waste: false,
             fields: Fields::default(),
             search_open: false,
             drag: None,
@@ -801,6 +805,8 @@ pub struct ObjView {
     pub cut_enabled: bool,
     pub transform: Transform,
     pub cut: CutOptions,
+    /// What is kept after cutting (shared by linked copies).
+    pub keep: flatcraft_core::document::KeepMode,
     /// Last known path of the linked file.
     pub link: Option<PathBuf>,
     /// The whole link, to find the file where Reload would read it
@@ -1119,6 +1125,7 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
                 cut_enabled: o.cut_enabled,
                 transform: o.transform,
                 cut: o.cut,
+                keep: o.keep,
                 link: o.link.as_ref().map(|l| l.path.clone()),
                 source_link: o.link.clone(),
                 link_group: o.link_group.map(|g| g.0),
@@ -1388,7 +1395,15 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
         .frame(egui::Frame::new().fill(t.bg))
         .show(ui, |ui| {
             let rect = ui.max_rect();
-            canvas::show(ui, rect, snap, &mut app.ui.prepare, &t, actions);
+            canvas::show(
+                ui,
+                rect,
+                snap,
+                &mut app.ui.prepare,
+                &mut app.ui.cut,
+                &t,
+                actions,
+            );
             pills(ui, rect, snap, &mut app.ui.prepare, &t, actions);
             let p = &mut app.ui.prepare;
             if let Some(card) = p.report.as_ref().filter(|c| c.doc_id == snap.doc_id)

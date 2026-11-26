@@ -246,6 +246,7 @@ fn the_default_pins_are_the_buttons_the_ribbon_had() {
                 "Zoom 100%",
                 "Grid",
                 "Rulers",
+                "Show kept and waste",
                 "Objects panel",
                 "Settings panel",
                 "Debug panel",

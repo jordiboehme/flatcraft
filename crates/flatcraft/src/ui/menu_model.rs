@@ -498,7 +498,12 @@ fn tool_item(id: &'static str, inp: &MenuInput) -> Entry {
         checked: t.selected(inp.prepare, inp.show_debug).filter(|_| {
             matches!(
                 t.act,
-                Act::Grid | Act::Rulers | Act::ObjectsPanel | Act::SettingsPanel | Act::DebugPanel
+                Act::Grid
+                    | Act::Rulers
+                    | Act::KeptWaste
+                    | Act::ObjectsPanel
+                    | Act::SettingsPanel
+                    | Act::DebugPanel
             )
         }),
         accel: tool_accel(t),
@@ -798,6 +803,7 @@ fn view_menu(inp: &MenuInput) -> Sub {
                 Entry::Separator,
                 tool_item("view.grid", inp),
                 tool_item("view.rulers", inp),
+                tool_item("view.kept", inp),
                 Entry::Separator,
                 tool_item("panel.objects", inp),
                 tool_item("panel.settings", inp),

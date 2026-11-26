@@ -948,7 +948,7 @@ fn settings_rows_have_one_accessible_node_each() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     for label in [
-        "Cut mode", "Strokes", "Plotter", "Mat", "Material", "Speed", "Force", "Passes",
+        "Cut mode", "Keep", "Strokes", "Plotter", "Mat", "Material", "Speed", "Force", "Passes",
     ] {
         assert_eq!(h.query_all_by_label(label).count(), 1, "{label}");
     }

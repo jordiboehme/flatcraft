@@ -749,7 +749,11 @@ fn stencil(s: &Session) {
         body.push_str(&letter(c, 55.0 + i as f64 * 70.0, 120.0));
     }
     let id = import(s, "Stencil", &body);
-    run(s, "object.set_keep", json!({ "ids": [id], "keep": "stencil" }));
+    run(
+        s,
+        "object.set_keep",
+        json!({ "ids": [id], "keep": "stencil" }),
+    );
 }
 
 /// A tag with clipped top corners and a hole, then 5 linked copies
@@ -1424,7 +1428,12 @@ fn the_stencil_keeps_the_sheet_and_its_letters_fall_out() {
     for p in inside {
         assert!(!kept.is_kept(p), "{p:?} is in a letter: waste");
     }
-    for p in [(40.0, 150.0), (150.0, 110.0), (150.0, 200.0), (280.0, 150.0)] {
+    for p in [
+        (40.0, 150.0),
+        (150.0, 110.0),
+        (150.0, 200.0),
+        (280.0, 150.0),
+    ] {
         let p = kurbo::Point::new(p.0, p.1);
         assert!(kept.is_kept(p), "{p:?} is the sheet: kept");
     }

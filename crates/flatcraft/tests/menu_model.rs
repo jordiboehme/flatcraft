@@ -197,6 +197,7 @@ fn the_menus_and_their_items_come_in_order() {
             "-",
             "Grid",
             "Rulers",
+            "Show kept and waste",
             "-",
             "Objects panel",
             "Settings panel"
@@ -1039,7 +1040,12 @@ fn effects(f: &Fixture) -> String {
         "{doc} {docs} {requests} {revealed} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {commands}",
         a.ui.workspace,
         (p.rename.is_some(), p.panel.is_some(), p.fit_pending),
-        (p.show_grid, p.show_rulers, p.panels.clone()),
+        (
+            p.show_grid,
+            p.show_rulers,
+            p.show_kept_waste,
+            p.panels.clone()
+        ),
         a.ui.about.open,
         a.ui.show_shortcuts,
         a.ui.troubleshoot.open,

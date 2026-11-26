@@ -19,6 +19,7 @@ pub mod help;
 pub mod home;
 pub mod icons;
 pub mod import_dialog;
+pub mod kept;
 #[cfg(target_os = "macos")]
 pub mod menu;
 pub mod menu_model;
@@ -2073,7 +2074,14 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
         && app.ui.prepare.report.is_some()
         && app.ui.prepare.drag.is_none()
         && app.ui.prepare.nudge.is_none();
+    // The kept and waste overlay in Prepare reads the plan; not while a
+    // drag or a nudge burst changes the document every frame.
+    let kept_overlay = workspace == Workspace::Prepare
+        && app.ui.prepare.show_kept_waste
+        && app.ui.prepare.drag.is_none()
+        && app.ui.prepare.nudge.is_none();
     let wants_job = workspace == Workspace::Cut
+        || kept_overlay
         || app.ui.show_debug
         || app.ui.troubleshoot.open
         || rail_dot

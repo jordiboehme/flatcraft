@@ -104,6 +104,8 @@ pub struct CutState {
     /// The active plotter's transport.
     pub transport: Option<TransportSpec>,
     pub labels: LabelCache,
+    /// The kept and waste overlay of the plan, for Cut and Prepare.
+    pub kept: super::kept::KeptCache,
     /// The project's notes above the send button are open.
     pub notes_open: bool,
 }
@@ -123,6 +125,7 @@ impl Default for CutState {
             issues: Vec::new(),
             transport: None,
             labels: LabelCache::default(),
+            kept: super::kept::KeptCache::default(),
             notes_open: true,
         }
     }
@@ -792,6 +795,15 @@ pub const LEGEND_TRAVEL: (&str, &str) = (
     "Dotted lines are where the knife moves up, from the end of one cut to the start of the next. Nothing is cut there.",
 );
 
+pub const LEGEND_KEPT: (&str, &str) = (
+    "Kept",
+    "Plain paper is what you keep after cutting: the shapes of a sticker, the sheet of a stencil. The blade never starts or overshoots in it. Each object's Keep setting in Prepare decides what is kept.",
+);
+pub const LEGEND_WASTE: (&str, &str) = (
+    "Waste",
+    "Hatched areas are waste: the part you throw away after cutting. Lead-ins, the short moves that turn the blade before a cut, and weed lines only go here.",
+);
+
 /// Why the weed row of the legend and the weed path count are dimmed.
 pub const WEEDING_OFF: &str = "Weeding is off. Turn it on in Device & Material, under Weeding.";
 
@@ -801,6 +813,10 @@ enum Sample {
     Solid,
     Dashed,
     Dotted,
+    /// A swatch of kept paper.
+    Kept,
+    /// A swatch of hatched waste.
+    Waste,
 }
 
 /// A small legend of the Path view: a short line of each kind, drawn on
@@ -827,6 +843,13 @@ fn legend(ui: &mut Ui, snap: &Snapshot, t: &Tokens) {
             LEGEND_TRAVEL,
             Sample::Dotted,
             contrast.gamma_multiply(0.45),
+            true,
+        ),
+        (LEGEND_KEPT, Sample::Kept, t.kept_paper, true),
+        (
+            LEGEND_WASTE,
+            Sample::Waste,
+            super::kept::hatch_colour(mat, t),
             true,
         ),
     ];
@@ -857,6 +880,12 @@ fn legend(ui: &mut Ui, snap: &Snapshot, t: &Tokens) {
                 }
                 Sample::Dotted => {
                     p.extend(egui::Shape::dotted_line(&line, colour, 5.0, 0.9));
+                }
+                Sample::Kept => {
+                    p.rect_filled(rect.shrink(3.0), 2.0, colour);
+                }
+                Sample::Waste => {
+                    super::kept::hatch(p, rect.shrink(3.0), colour);
                 }
             }
             super::groups::card(&r, name, hint, why, false);
@@ -932,6 +961,11 @@ fn cut_canvas(
     let painter = ui.painter_at(rect);
     let view = st.view;
     let (mat_rgb, contrast) = canvas::draw_mat(&painter, rect, snap, &view, show_grid, t);
+    // Kept material and waste, always, under everything the plan draws.
+    if let (Some(job), Some(area)) = (st.job(), snap.area) {
+        st.kept
+            .draw(ui.ctx(), &painter, &view, &job, area, mat_rgb, t);
+    }
     let job = st.job().filter(|_| st.stage != Stage::Device);
     let faded = if job.is_some() { 0.3 } else { 1.0 };
     canvas::draw_objects(&painter, snap, &view, mat_rgb, faded, true, |_| None);

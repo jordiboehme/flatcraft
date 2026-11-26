@@ -211,6 +211,7 @@ pub enum Act {
     Zoom100,
     Grid,
     Rulers,
+    KeptWaste,
     ObjectsPanel,
     SettingsPanel,
     DebugPanel,
@@ -324,7 +325,7 @@ use Style::{Big, Small};
 
 /// Every action, in the order of the ribbon and of the lists. The ids are
 /// `flatcraft_engine::prefs::RIBBON_PIN_IDS`, in the same order.
-pub const TOOLS: [Tool; 40] = [
+pub const TOOLS: [Tool; 41] = [
     tool(
         "import",
         Act::Import,
@@ -665,6 +666,15 @@ pub const TOOLS: [Tool; 40] = [
         "Show rulers in millimetres along the edges of the canvas.",
     ),
     tool(
+        "view.kept",
+        Act::KeptWaste,
+        "Show kept and waste",
+        Icon::Layers,
+        G::Show,
+        Big,
+        "Shows what you keep after cutting as plain paper and the waste, the part you throw away, with a light hatch. Each object's Keep setting decides it: a sticker keeps its shape, a stencil keeps the sheet. The Cut workspace always shows it. It needs a job that can be planned.",
+    ),
+    tool(
         "panel.objects",
         Act::ObjectsPanel,
         "Objects panel",
@@ -699,7 +709,7 @@ pub const TOOLS: [Tool; 40] = [
 /// the one accent part that tells what happens, in the accent colour.
 /// Every other child is ink. Every icon of an action, a group or a
 /// switch has an entry; the framed Align icons use their base icon's.
-pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 46] = [
+pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 47] = [
     (Icon::Import, &[2], &[0, 1]),
     (Icon::Trace, &[], &[2]),
     (Icon::TestPatterns, &[0], &[1]),
@@ -727,6 +737,8 @@ pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 46] = [
     (Icon::ZoomActual, &[], &[0]),
     (Icon::Grid, &[0], &[1, 2, 3, 4]),
     (Icon::Ruler, &[0], &[1, 2, 3, 4]),
+    // The top sheet is the paper you keep, the ones below the rest.
+    (Icon::Layers, &[0], &[1, 2]),
     (Icon::PanelLeft, &[0], &[1]),
     (Icon::PanelRight, &[0], &[1]),
     (Icon::Debug, &[], &[0]),
@@ -937,6 +949,7 @@ impl Tool {
             | Act::Zoom100
             | Act::Grid
             | Act::Rulers
+            | Act::KeptWaste
             | Act::ObjectsPanel
             | Act::SettingsPanel
             | Act::DebugPanel => None,
@@ -989,6 +1002,7 @@ impl Tool {
         Some(match self.act {
             Act::Grid => st.show_grid,
             Act::Rulers => st.show_rulers,
+            Act::KeptWaste => st.show_kept_waste,
             Act::ObjectsPanel => !st.panels.collapsed(SidePanel::Objects),
             Act::SettingsPanel => !st.panels.collapsed(SidePanel::Settings),
             Act::DebugPanel => show_debug,
@@ -1074,6 +1088,7 @@ impl Tool {
             }
             Act::Grid => st.show_grid = !st.show_grid,
             Act::Rulers => st.show_rulers = !st.show_rulers,
+            Act::KeptWaste => st.show_kept_waste = !st.show_kept_waste,
             Act::ObjectsPanel => st.panels.toggle(SidePanel::Objects),
             Act::SettingsPanel => st.panels.toggle(SidePanel::Settings),
             Act::DebugPanel => *show_debug = !*show_debug,
@@ -1385,7 +1400,7 @@ impl Setting {
                 "Blade offset: the tip of a drag blade trails behind the centre of the holder by this much. FlatCraft steers around corners to make up for it."
             }
             Setting::Keep => {
-                "What you keep after cutting. Pieces keeps the shapes, Stencil keeps the sheet with holes, Both keeps everything."
+                "What you keep after cutting, so the blade starts and turns only in the waste, the part you throw away. Pieces keeps the cut shapes, like stickers you peel off the sheet. Stencil keeps the sheet with the holes, like a stencil you paint through: the shapes fall out. Both keeps both sides: the blade never starts or overshoots next to these cuts, it only turns on the spot. Where objects meet, kept wins. View, Show kept and waste draws it on the mat."
             }
             Setting::Threshold => {
                 "Tracing turns the picture into black and white first. Pixels darker than this become cut shapes."
