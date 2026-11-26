@@ -170,3 +170,43 @@ fn a_user_preset_without_a_parent_saves_its_notes_too() {
         Some("Felt, cut twice.")
     );
 }
+
+#[test]
+fn save_notes_keeps_the_other_edits_that_are_not_saved() {
+    let dir = tempfile::tempdir().unwrap();
+    let materials = dir.path().join("profiles/materials");
+    std::fs::create_dir_all(&materials).unwrap();
+    std::fs::write(
+        materials.join("solo.toml"),
+        "id = \"solo\"\nname = \"Solo\"\nspeed = 4\nforce = 9\npasses = 1\nreverse_alternate_passes = false\novercut_mm = 0.5\ntrack_enhancing = false\n",
+    )
+    .unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    open(&mut h, "Materials");
+    click(&mut h, "Solo");
+    // An edit of the force that is not saved, then the notes.
+    h.get_by_label("Force (modified)").click();
+    h.run();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run();
+    h.get_by_label("Force (modified)").type_text("12");
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    type_into(&mut h, "Preset notes", "Felt, cut twice.");
+    click(&mut h, "Save notes");
+    h.run();
+    let text = std::fs::read_to_string(materials.join("solo.toml")).unwrap();
+    assert!(text.contains("Felt, cut twice."), "{text}");
+    assert!(
+        text.contains("force = 9"),
+        "only the notes were written: {text}"
+    );
+    let d = common::app(&h).ui.profiles.material.as_ref().unwrap();
+    assert_eq!(d.edit.force, 12, "the unsaved force edit stays");
+    assert_eq!(d.saved.force, 9);
+    assert_eq!(d.edit.notes.as_deref(), Some("Felt, cut twice."));
+    assert_eq!(d.saved.notes, d.edit.notes, "the notes count as saved");
+    assert!(d.changed(), "the force edit is still unsaved");
+}

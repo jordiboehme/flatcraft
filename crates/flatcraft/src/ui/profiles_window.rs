@@ -1859,6 +1859,13 @@ fn notes_field<T: PresetNotes + PartialEq>(
     })
 }
 
+/// The notes of the draft were stored as `saved`: they count as saved now,
+/// and every other edit of the draft stays as it is.
+fn notes_saved<T: PresetNotes>(d: &mut Draft<T>, saved: Option<String>) {
+    *d.saved.notes_mut() = saved.clone();
+    *d.edit.notes_mut() = saved;
+}
+
 /// The notes of a plotter or material preset.
 trait PresetNotes {
     fn notes(&self) -> Option<&String>;
@@ -2344,10 +2351,24 @@ pub fn apply(app: &mut FlatCraftApp, req: Request) {
             };
             match result {
                 Ok(()) => {
+                    // Only the notes are stored: the draft keeps every
+                    // other edit that is not saved yet.
+                    let saved = {
+                        let t = notes.trim_end();
+                        (!t.trim().is_empty()).then(|| t.to_string())
+                    };
                     let st = &mut app.ui.profiles;
                     match kind {
-                        Kind::Plotter => st.want_plotter = Some(id),
-                        Kind::Material => st.want_material = Some(id),
+                        Kind::Plotter => {
+                            if let Some(d) = st.plotter.as_mut().filter(|d| d.id == id) {
+                                notes_saved(d, saved);
+                            }
+                        }
+                        Kind::Material => {
+                            if let Some(d) = st.material.as_mut().filter(|d| d.id == id) {
+                                notes_saved(d, saved);
+                            }
+                        }
                     }
                     app.toast(Toast::info(format!("Saved the notes of {name}.")));
                 }
