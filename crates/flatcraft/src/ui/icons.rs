@@ -99,6 +99,10 @@ pub enum Icon {
     NewFile,
     /// Home's Open card.
     FolderOpen,
+    /// "How did it go?": it went well.
+    ThumbsUp,
+    /// "How did it go?": it did not.
+    ThumbsDown,
 }
 
 macro_rules! svg {
@@ -108,7 +112,7 @@ macro_rules! svg {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 79] = [
+    pub const ALL: [Icon; 81] = [
         Icon::Import,
         Icon::Trace,
         Icon::Duplicate,
@@ -188,6 +192,8 @@ impl Icon {
         Icon::Layers,
         Icon::NewFile,
         Icon::FolderOpen,
+        Icon::ThumbsUp,
+        Icon::ThumbsDown,
     ];
 
     /// The plain icon a framed "to the cutting area" icon is made from.
@@ -284,6 +290,8 @@ impl Icon {
             Icon::Layers => svg!("layers"),
             Icon::NewFile => svg!("file-plus"),
             Icon::FolderOpen => svg!("folder-open"),
+            Icon::ThumbsUp => svg!("thumbs-up"),
+            Icon::ThumbsDown => svg!("thumbs-down"),
             Icon::AlignLeftArea
             | Icon::AlignCentreArea
             | Icon::AlignRightArea

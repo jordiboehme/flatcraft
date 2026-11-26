@@ -3,6 +3,7 @@
 
 pub mod commands;
 pub mod cutgeom;
+pub mod cutlog;
 pub mod export;
 pub mod gate;
 pub mod job;

@@ -77,6 +77,7 @@ static ALL: &[&dyn Command] = &[
     &profiles::JobSetOverrides,
     &job::JobPreview,
     &job::JobSend,
+    &job::JobHistory,
     &tools::ToolsTestPatterns,
     &tools::DocumentPreview,
     &export::DocumentExport,

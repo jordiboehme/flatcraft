@@ -23,6 +23,7 @@ pub mod import_dialog;
 pub mod menu;
 pub mod menu_model;
 pub mod objects;
+pub mod outcome;
 pub mod prepare;
 pub mod profiles_window;
 pub mod rails;
@@ -137,6 +138,8 @@ pub struct UiState {
     /// Documents "Close other tabs" still has to ask about, after the one
     /// the unsaved-changes dialog asks about now.
     pub close_queue: Vec<u64>,
+    /// The open "How did it go?" question about a cut.
+    pub outcome: Option<outcome::OutcomeDialog>,
 }
 
 /// What the unsaved-changes dialog asks about.
@@ -308,6 +311,14 @@ pub enum Action {
     Reveal(PathBuf),
     /// Copy this path to the clipboard.
     CopyPath(PathBuf),
+    /// Ask "How did it go?" about this cut of the cut log.
+    AskOutcome(String),
+    /// Record the person's answer about a cut in the cut log.
+    RecordOutcome {
+        entry: String,
+        verdict: flatcraft_engine::cutlog::Verdict,
+        note: String,
+    },
     /// Show this error as a toast.
     Error(String),
     /// Close every document but this one; each one with unsaved changes
@@ -1161,6 +1172,28 @@ impl FlatCraftApp {
                     self.toast(Toast::info("Cut request denied. Nothing was sent."));
                 }
             }
+            Action::AskOutcome(entry) => {
+                let log = lock(&self.session).cut_log();
+                match log.get(&entry) {
+                    Some(e) => self.ui.outcome = Some(outcome::OutcomeDialog::about(e)),
+                    None => self.toast(Toast::error(
+                        "That cut is no longer in the cut log.".to_string(),
+                    )),
+                }
+            }
+            Action::RecordOutcome {
+                entry,
+                verdict,
+                note,
+            } => {
+                let result = lock(&self.session).record_outcome(&entry, verdict, &note);
+                match result {
+                    Ok(()) => self.toast(Toast::success(
+                        "Noted. The job settings remind you next time.",
+                    )),
+                    Err(e) => self.toast(Toast::error(format!("Cannot note it: {e}"))),
+                }
+            }
             Action::CopyPath(path) => {
                 let text = path.display().to_string();
                 ctx.copy_text(text.clone());
@@ -1627,6 +1660,17 @@ impl FlatCraftApp {
     /// The toast of a finished send: the written files and a link that
     /// shows them in the file manager.
     fn sent(&mut self, result: &Value) {
+        if let Some(e) = result["cut_log_error"].as_str() {
+            self.toast(Toast::error(e.to_string()));
+        }
+        // "How did it go?" right after a cut on a plotter, never after
+        // File Output.
+        if let Some(id) = result["cut_log_entry"].as_str() {
+            let log = lock(&self.session).cut_log();
+            if let Some(d) = log.get(id).and_then(outcome::after_send) {
+                self.ui.outcome = Some(d);
+            }
+        }
         let files: Vec<PathBuf> = result["files"]
             .as_array()
             .into_iter()
@@ -2025,6 +2069,7 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
         }
         None => app.ui.export = None,
     }
+    outcome::show(&ctx, &mut app.ui.outcome, &t, &mut actions);
     pending_modal(&ctx, app, &mut actions);
     app.skip_settled_quit_question(&ctx);
     unsaved_modal(&ctx, app, &mut actions);

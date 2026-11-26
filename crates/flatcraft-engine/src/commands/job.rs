@@ -67,5 +67,59 @@ command!(
     session: true,
     params: SendParams,
     run: run_send,
-    description: "Builds the job of the active document (as job.preview) and sends it through the plotter's transport. File Output writes <name>.<ext> (the exact bytes), <name>.<ext>.txt (a readable listing) and <name>.bytelog.jsonl into the output folder; a taken name gets -2, -3 and so on. An output folder with a '..' after a folder that does not exist is refused. USB cutting arrives in milestone 3. For a USB plotter an agent needs the preference 'Allow agents to start cuts'; without it a session with a window asks the person to confirm (the call returns a refusal that says it is waiting) and a headless session refuses. Agents cannot confirm a cut themselves; a waiting request expires after 5 minutes. Returns {files: [path], bytes_sent, toolpaths, cut_mm, travel_mm, warnings: [text]}.",
+    description: "Builds the job of the active document (as job.preview) and sends it through the plotter's transport. File Output writes <name>.<ext> (the exact bytes), <name>.<ext>.txt (a readable listing) and <name>.bytelog.jsonl into the output folder; a taken name gets -2, -3 and so on. An output folder with a '..' after a folder that does not exist is refused. Every completed send adds an entry to the local cut log (see job.history); the reply then has cut_log_entry (its id), or cut_log_error when the log could not be written (the job was still sent). USB cutting arrives in milestone 3. For a USB plotter an agent needs the preference 'Allow agents to start cuts'; without it a session with a window asks the person to confirm (the call returns a refusal that says it is waiting) and a headless session refuses. Agents cannot confirm a cut themselves; a waiting request expires after 5 minutes. Returns {files: [path], bytes_sent, toolpaths, cut_mm, travel_mm, warnings: [text], cut_log_entry or cut_log_error}.",
+);
+
+/// Most entries `job.history` returns.
+const HISTORY_MAX: usize = 500;
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HistoryParams {
+    /// Only cuts with this material preset id.
+    pub material_id: Option<String>,
+    /// Most entries to return, newest first: 1 to 500 (default 20).
+    pub limit: Option<usize>,
+}
+
+fn run_history(s: &mut Session, p: HistoryParams, _: Origin) -> Result<Value, CommandError> {
+    let limit = p.limit.unwrap_or(20);
+    if !(1..=HISTORY_MAX).contains(&limit) {
+        return Err(CommandError::InvalidParams(format!(
+            "limit must be 1 to {HISTORY_MAX}"
+        )));
+    }
+    let log = crate::cutlog::read(&s.config_dir);
+    let matching: Vec<&crate::cutlog::CutEntry> = log
+        .entries
+        .iter()
+        .rev()
+        .filter(|e| p.material_id.as_ref().is_none_or(|m| e.material_id == *m))
+        .collect();
+    let entries: Vec<Value> = matching
+        .iter()
+        .take(limit)
+        .map(|e| {
+            let mut v = serde_json::to_value(e).unwrap_or(Value::Null);
+            v["outcome"] = e.outcome.as_ref().map_or(Value::Null, |o| {
+                serde_json::to_value(o).unwrap_or(Value::Null)
+            });
+            v
+        })
+        .collect();
+    Ok(json!({
+        "total": matching.len(),
+        "entries": entries,
+        "diagnostics": log.diagnostics,
+    }))
+}
+
+command!(
+    JobHistory,
+    id: "job.history",
+    title: "Cut history",
+    mutates: false,
+    params: HistoryParams,
+    run: run_history,
+    description: "Reads the local cut log: one entry per completed send, newest first, with how it went when the person said so. Use it to find settings that worked for a material. Read-only: only the person records outcomes, in the window. Returns {total (matching entries), entries: [{id, date (RFC 3339 UTC), document, path, plotter_id, plotter, material_id, material, mat_id, mat, speed, force, passes, strategy, keep_mode, size: {bytes, toolpaths, cut_mm, travel_mm}, target: {kind: file (with files) or usb}, outcome: {verdict: good|bad, note, date} or null}], diagnostics: [text] (log lines that could not be read and were skipped)}.",
 );

@@ -77,6 +77,9 @@ pub struct PendingSend {
     /// Checked when the agent asked, so only safe bytes ever wait.
     pub job: CheckedJob,
     pub summary: JobSummary,
+    /// The cut log entry, made when the agent asked; a confirmed send logs
+    /// it with the time and the target of the send.
+    pub log: crate::cutlog::CutEntry,
 }
 
 /// A send that waits for confirmation expires after this long.
@@ -414,6 +417,10 @@ pub struct Session {
     prefs_warning: Option<String>,
     /// One save at a time (see [`Session::save_gate`]).
     save_gate: Arc<Mutex<()>>,
+    /// Counts the lines this session added to the cut log.
+    cut_log_rev: u64,
+    /// The cut log as read at a revision (see [`Session::cut_log`]).
+    cut_log_cache: Mutex<Option<(u64, Arc<crate::cutlog::CutLog>)>>,
     /// Tests only: runs in the write step of every save, without the
     /// session lock, with the file the save replaces.
     #[doc(hidden)]
@@ -474,6 +481,8 @@ impl Session {
             prefs_watch: None,
             prefs_warning: None,
             save_gate: Arc::default(),
+            cut_log_rev: 0,
+            cut_log_cache: Mutex::default(),
             save_write_hook: None,
         };
         s.docs.push(s.new_doc_state());
@@ -627,6 +636,53 @@ impl Session {
         })
     }
 
+    /// The cut log in the config dir. Read once and again after this
+    /// session adds to it, so the window can ask every frame.
+    pub fn cut_log(&self) -> Arc<crate::cutlog::CutLog> {
+        let mut cache = self
+            .cut_log_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((rev, log)) = cache.as_ref()
+            && *rev == self.cut_log_rev
+        {
+            return log.clone();
+        }
+        let log = Arc::new(crate::cutlog::read(&self.config_dir));
+        *cache = Some((self.cut_log_rev, log.clone()));
+        log
+    }
+
+    /// Appends a completed send to the cut log.
+    pub(crate) fn log_cut(&mut self, entry: &crate::cutlog::CutEntry) -> std::io::Result<()> {
+        let result = crate::cutlog::append(&self.config_dir, entry);
+        self.cut_log_rev += 1;
+        result
+    }
+
+    /// The person said how the cut `entry` went: appends it to the cut
+    /// log. GUI only, not a registry command: agents read the log
+    /// (`job.history`) but never write it. An entry that is not in the
+    /// log is refused.
+    pub fn record_outcome(
+        &mut self,
+        entry: &str,
+        verdict: crate::cutlog::Verdict,
+        note: &str,
+    ) -> Result<(), String> {
+        if self.cut_log().get(entry).is_none() {
+            return Err(format!("the cut log has no cut {entry}"));
+        }
+        let outcome = crate::cutlog::Outcome {
+            verdict,
+            note: note.trim().to_string(),
+            date: crate::cutlog::now(),
+        };
+        let result = crate::cutlog::append_outcome(&self.config_dir, entry, &outcome);
+        self.cut_log_rev += 1;
+        result.map_err(|e| format!("the cut log could not be written: {e}"))
+    }
+
     /// The send that waits for confirmation in the GUI, if any.
     pub fn pending_send(&self) -> Option<&PendingSend> {
         self.pending_send.as_ref()
@@ -641,6 +697,7 @@ impl Session {
         transport: TransportSpec,
         job: CheckedJob,
         summary: JobSummary,
+        log: crate::cutlog::CutEntry,
     ) -> u64 {
         let id = self.next_pending_id;
         self.next_pending_id += 1;
@@ -653,6 +710,7 @@ impl Session {
             transport,
             job,
             summary,
+            log,
         });
         id
     }
@@ -725,7 +783,9 @@ impl Session {
             &pending.name,
             Origin::User,
         )?;
-        Ok(crate::job::sent_json(&report, &pending.summary))
+        let mut value = crate::job::sent_json(&report, &pending.summary);
+        crate::job::log_sent(self, pending.log, &pending.transport, &report, &mut value);
+        Ok(value)
     }
 
     /// Runs a registry command. Commands that change the document record an
@@ -1252,6 +1312,7 @@ mod tests {
                 "profiles.list",
                 "profiles.get",
                 "job.preview",
+                "job.history",
                 "document.preview",
                 "document.export",
             ]

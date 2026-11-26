@@ -81,6 +81,8 @@ https://raw.githubusercontent.com/lucide-icons/lucide/1.79.0/icons/<name>.svg, u
 | Materials (Settings) | layers |
 | New project (Home) | file-plus |
 | Open (Home) | folder-open |
+| Thumbs up (How did it go?) | thumbs-up |
+| Thumbs down (How did it go?) | thumbs-down |
 
 The Align directions "to the cutting area" use the Align icons above. The app draws
 them smaller inside a dashed frame at render time; the files are not changed.

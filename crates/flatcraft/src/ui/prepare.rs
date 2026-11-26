@@ -841,6 +841,9 @@ pub struct Snapshot {
     pub description: String,
     /// The project's notes (empty when none).
     pub notes: String,
+    /// The cut the Job card recalls for the document's material (see
+    /// `CutLog::last_time`).
+    pub last_time: Option<flatcraft_engine::cutlog::CutEntry>,
 }
 
 impl Snapshot {
@@ -1038,6 +1041,7 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
             project: st.path.clone(),
             description: st.document.description.clone(),
             notes: st.document.notes.clone(),
+            last_time: s.cut_log().last_time(&st.document.job.material_id).cloned(),
         }
     };
     let doc_id = snap.doc_id;

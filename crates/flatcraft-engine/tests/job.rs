@@ -466,8 +466,10 @@ fn agent_job_names_never_reach_the_config_dir() {
         }
     }
     assert!(!d.config.path().join("mcp-token").exists());
-    assert!(
-        files(d.config.path()).is_empty(),
+    // Only FlatCraft's own cut log, which every completed send adds to.
+    assert_eq!(
+        files(d.config.path()),
+        [flatcraft_engine::cutlog::FILE],
         "{:?}",
         files(d.config.path())
     );

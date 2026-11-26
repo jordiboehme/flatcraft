@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 use crate::commands::profile_error;
 use crate::commands::project::{in_config, lexical, resolve_strict, resolved};
 use crate::cutgeom;
+use crate::cutlog;
 use crate::gate::{self, GateDecision};
 use crate::session::{CommandError, JobSummary, Origin, Session};
 
@@ -607,6 +608,7 @@ pub(crate) fn send(
         GateDecision::NeedsConfirmation => {
             let result = build(s)?;
             let summary = summary(&result);
+            let log = log_entry(s, &summary, result.job.bytes.len(), &plotter, &name);
             let job = checked(result.job)?;
             s.request_confirmation(
                 name,
@@ -614,17 +616,95 @@ pub(crate) fn send(
                 plotter.transport.clone(),
                 job,
                 summary,
+                log,
             );
             Err(CommandError::Refused(WAITING.into()))
         }
         GateDecision::Allow => {
             let mut result = build(s)?;
             let job = checked(result.job.clone())?;
+            let sum = summary(&result);
+            let log = log_entry(s, &sum, result.job.bytes.len(), &plotter, &name);
             let report = deliver_built(s, &plotter.transport, &job, &name, origin)?;
-            let value = sent_json(&report, &summary(&result));
+            let mut value = sent_json(&report, &sum);
+            log_sent(s, log, &plotter.transport, &report, &mut value);
             result.sent = Some(report);
             s.doc_mut().set_last_sent(result);
             Ok(value)
+        }
+    }
+}
+
+/// The cut log entry of the active document's job, without its id, time
+/// and target, which [`log_sent`] fills in once the job went out.
+fn log_entry(
+    s: &Session,
+    summary: &JobSummary,
+    bytes: usize,
+    plotter: &PlotterProfile,
+    name: &str,
+) -> cutlog::CutEntry {
+    let st = s.doc();
+    let job = &st.document.job;
+    let material = s.profiles.material(&job.material_id).ok();
+    let mat = crate::commands::effective_media(plotter, job)
+        .ok()
+        .map(|(m, _)| (m.id.clone(), m.name.clone()));
+    let (mat_id, mat) = mat.unwrap_or_else(|| (job.media_id.clone(), job.media_id.clone()));
+    cutlog::CutEntry {
+        id: String::new(),
+        date: String::new(),
+        document: st
+            .path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .map_or_else(|| name.to_string(), |n| n.to_string_lossy().into_owned()),
+        path: st.path.clone(),
+        plotter_id: plotter.id.clone(),
+        plotter: plotter.name.clone(),
+        material_id: job.material_id.clone(),
+        material: material.map_or_else(|| job.material_id.clone(), |m| m.name),
+        mat_id,
+        mat,
+        speed: summary.speed,
+        force: summary.force,
+        passes: summary.passes,
+        strategy: job.strategy,
+        keep_mode: None,
+        size: cutlog::JobSize {
+            bytes,
+            toolpaths: summary.toolpaths,
+            cut_mm: summary.cut_mm,
+            travel_mm: summary.travel_mm,
+        },
+        target: cutlog::Target::Usb,
+        outcome: None,
+    }
+}
+
+/// Appends a completed send to the cut log and says so in the reply
+/// (`cut_log_entry`). A log that cannot be written never fails the send:
+/// the reply says why instead (`cut_log_error`).
+pub(crate) fn log_sent(
+    s: &mut Session,
+    mut entry: cutlog::CutEntry,
+    transport: &TransportSpec,
+    report: &SendReport,
+    value: &mut Value,
+) {
+    entry.id = cutlog::new_id();
+    entry.date = cutlog::now();
+    entry.target = match transport {
+        TransportSpec::File { .. } => cutlog::Target::File {
+            files: report.files.clone(),
+        },
+        TransportSpec::Usb { .. } => cutlog::Target::Usb,
+    };
+    match s.log_cut(&entry) {
+        Ok(()) => value["cut_log_entry"] = entry.id.into(),
+        Err(e) => {
+            value["cut_log_error"] =
+                format!("The job was sent, but the cut log could not be written: {e}").into();
         }
     }
 }
