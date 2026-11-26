@@ -622,11 +622,24 @@ impl Form<'_> {
         setting: Setting,
         add: impl FnOnce(&mut Ui) -> Response,
     ) {
+        self.row_dimmed(ui, label, key, setting, None, add);
+    }
+
+    /// Like [`Self::row`], for a widget that `reason` says is dimmed.
+    fn row_dimmed(
+        &self,
+        ui: &mut Ui,
+        label: &str,
+        key: &str,
+        setting: Setting,
+        reason: Option<&str>,
+        add: impl FnOnce(&mut Ui) -> Response,
+    ) {
         let dot = self.is_modified(key).then_some(self.t.accent_prepare);
         let at = paint_text(ui, label, ui.visuals().text_color(), dot);
         let r = add(ui);
         set_name(ui, &r, &self.name(label, key));
-        self.card(&r, label, setting, None);
+        self.card(&r, label, setting, reason);
         self.mark(ui, label, at.union(r.rect));
         ui.end_row();
     }
@@ -2060,14 +2073,24 @@ fn corner_rows(ui: &mut Ui, f: &Form<'_>, m: &mut MaterialProfile) {
             },
         };
     }
-    if let CornerModeSpec::LiftOvershoot { overshoot_mm } = &mut m.corner_mode {
-        f.row(
-            ui,
-            "Corner overshoot (mm)",
-            "corner_mode",
-            Setting::CornerOvershoot,
-            |ui| num(ui, true, overshoot_mm, 2, NumKind::Length),
-        );
+    // The overshoot stays visible while the blade swivels, dimmed.
+    let lift = matches!(m.corner_mode, CornerModeSpec::LiftOvershoot { .. });
+    let mut shown = match m.corner_mode {
+        CornerModeSpec::LiftOvershoot { overshoot_mm } => overshoot_mm,
+        CornerModeSpec::Arc => DEFAULT_CORNER_OVERSHOOT_MM,
+    };
+    f.row_dimmed(
+        ui,
+        "Corner overshoot (mm)",
+        "corner_mode",
+        Setting::CornerOvershoot,
+        (!lift).then_some(OVERSHOOT_OFF),
+        |ui| num(ui, lift, &mut shown, 2, NumKind::Length),
+    );
+    if lift {
+        m.corner_mode = CornerModeSpec::LiftOvershoot {
+            overshoot_mm: shown,
+        };
     }
     let label = "Minimum radius (mm)";
     let key = "min_radius_mm";
@@ -2106,8 +2129,10 @@ fn corner_rows(ui: &mut Ui, f: &Form<'_>, m: &mut MaterialProfile) {
 const DEFAULT_CORNER_OVERSHOOT_MM: f64 = 0.1;
 /// The minimum radius a material gets when it switches to its own value.
 const DEFAULT_MIN_RADIUS_MM: f64 = 0.25;
+/// Why the corner overshoot field is dimmed.
+pub const OVERSHOOT_OFF: &str = "Corner mode is Swivel (arc), so the blade never overshoots. Pick Lift and overshoot to set one.";
 /// Why the minimum radius field is dimmed.
-const MIN_RADIUS_OFF: &str = "Own value is off, so the plotter's blade offset is the minimum radius. Tick Own value to set one for this material.";
+pub const MIN_RADIUS_OFF: &str = "Own value is off, so the plotter's blade offset is the minimum radius. Tick Own value to set one for this material.";
 
 fn overrides(ui: &mut Ui, f: &Form<'_>, m: &mut MaterialProfile, view: &View, t: &Tokens) {
     let name_of = |id: &str| {

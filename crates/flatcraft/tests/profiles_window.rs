@@ -1053,7 +1053,9 @@ fn every_control_in_the_preset_pages_has_a_hover_card() {
 
 #[test]
 fn dimmed_fields_say_why_on_their_card() {
-    use flatcraft::ui::profiles_window::{OVERRIDE_OFF, SYSTEM_READ_ONLY};
+    use flatcraft::ui::profiles_window::{
+        MIN_RADIUS_OFF, OVERRIDE_OFF, OVERSHOOT_OFF, SYSTEM_READ_ONLY,
+    };
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let mut h = common::harness_sized(&dir, s.clone(), [1400.0, 2400.0], 8, |app| app);
@@ -1080,6 +1082,16 @@ fn dimmed_fields_say_why_on_their_card() {
     hover(&mut h, "Silhouette Cameo 2 force");
     assert!(h.query_by_label(OVERRIDE_OFF).is_some());
     assert!(h.query_by_label(SYSTEM_READ_ONLY).is_none());
+    // The overshoot only counts with Lift and overshoot, the minimum
+    // radius only with its own value.
+    for (field, reason) in [
+        ("Corner overshoot (mm)", OVERSHOOT_OFF),
+        ("Minimum radius (mm)", MIN_RADIUS_OFF),
+    ] {
+        assert!(disabled(&h, field), "{field}");
+        hover(&mut h, field);
+        assert!(h.query_by_label(reason).is_some(), "{field}");
+    }
 }
 
 #[test]
@@ -1260,10 +1272,10 @@ fn corner_mode_saves_to_user_material() {
     let mut h = harness(&dir, &s);
     open(&mut h, "Materials");
     click(&mut h, "Copy paper");
-    // Copy paper swivels: no overshoot row.
-    assert!(h.query_by_label("Corner overshoot (mm)").is_none());
     click(&mut h, "Save as user preset...");
     type_into(&mut h, "Preset name", "My Paper");
+    // Copy paper swivels: the overshoot is dimmed.
+    assert!(disabled(&h, "Corner overshoot (mm)"));
     click(&mut h, "Corner mode");
     click(&mut h, "Lift and overshoot");
     type_into(&mut h, "Corner overshoot (mm)", "0.2");

@@ -1590,16 +1590,16 @@ impl Setting {
                 "For Host compensation: at a corner that turns more than this many degrees, the blade swivels before the next line. 0 swivels at every corner. A job with Host compensation cannot be built yet, so this changes nothing today."
             }
             Setting::RingDirection => {
-                "Which way round the blade cuts closed shapes (rings, like a circle or the outline of a letter), as you see them on the canvas: counter-clockwise (against the hands of a clock) or clockwise. A drag blade trails behind its holder, so cutting every ring the same way gives the same kind of corner everywhere. Counter-clockwise is the usual choice. Change it only when test cuts come out cleaner the other way. It only changes the order of the points, never the shape."
+                "Which way round the blade cuts closed shapes (rings, like a circle or the outline of a letter), as you see them on the canvas: counter-clockwise (against the hands of a clock) or clockwise. A drag blade trails behind its holder, so cutting every ring the same way gives the same kind of corner everywhere. Counter-clockwise is the usual choice. Change it only when test cuts come out cleaner the other way. It only changes the order of the points, never the shape. FlatCraft does not use it in a job yet, so this changes nothing today."
             }
             Setting::CornerMode => {
                 "What the blade does at a sharp corner when FlatCraft steers it (Host knife compensation). Swivel (arc): the blade stays down and turns on the spot around the corner point. Fine for vinyl and thin paper. Lift and overshoot: the blade cuts a little past the corner, lifts, and starts the next line fresh. Thick or dense material like heavy card holds a buried blade so tight that it turns badly, and this gives cleaner corners there. FlatCraft only overshoots where the extra cut lands in the waste, and curves are never lifted. A job with Host compensation cannot be built yet, so this changes nothing today."
             }
             Setting::CornerOvershoot => {
-                "For Lift and overshoot: how far the blade cuts past a sharp corner before it lifts, in millimetres. The overshoot is the small extra cut beyond the corner; it makes sure the corner is cut through. 0.1 mm is the usual value. It always lands in the waste."
+                "For Lift and overshoot: how far the blade cuts past a sharp corner before it lifts, in millimetres. The overshoot is the small extra cut beyond the corner; it makes sure the corner is cut through. 0.1 mm is the usual value. It always lands in the waste. FlatCraft does not use it in a job yet, so this changes nothing today."
             }
             Setting::MinRadius => {
-                "The smallest curve radius this material cuts cleanly, in millimetres. The radius says how tight a curve is: a smaller radius is a tighter curve. Curves tighter than this get a warning before the cut, because the blade may round or tear them. Raise it after a test cut shows torn small curves."
+                "The smallest curve radius this material cuts cleanly, in millimetres. The radius says how tight a curve is: a smaller radius is a tighter curve. Curves tighter than this are meant to get a warning before the cut, because the blade may round or tear them. Raise it after a test cut shows torn small curves. FlatCraft does not use it in a job yet, so this changes nothing today."
             }
             Setting::MinRadiusOwn => {
                 "Tick this to give this material its own minimum radius. While it is off, the plotter's blade offset is used, which suits most materials."
