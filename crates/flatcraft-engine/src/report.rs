@@ -897,9 +897,10 @@ fn fill_ignored(
 /// The issue of an object with bounds `b` that is larger than `area` or
 /// does not lie inside it.
 fn area_issue(o: &JobObject, b: Rect, area: Rect, shared: &[u64]) -> Option<Issue> {
-    // The same slack as `inside` on both edges: what it calls inside never
-    // counts as too large, and what fits can always be clamped in.
-    const EPS: f64 = 2.0 * crate::commands::AREA_SLACK_MM;
+    // The slack of `inside` on one edge: anything not larger than this
+    // fits, and clamped to the left (top) edge it passes `inside`.
+    // Anything larger gets "Scale to fit".
+    const EPS: f64 = crate::commands::AREA_SLACK_MM;
     let name = quoted(&o.name);
     let id = o.id.0;
     if b.width() > area.width() + EPS || b.height() > area.height() + EPS {
@@ -949,8 +950,8 @@ fn area_issue(o: &JobObject, b: Rect, area: Rect, shared: &[u64]) -> Option<Issu
     }
     // A box up to EPS wider than the area goes to its left (top) edge;
     // the upper bound never falls below the lower one.
-    let x = b.x0.clamp(area.x0, (area.x1 - b.width()).max(area.x0));
-    let y = b.y0.clamp(area.y0, (area.y1 - b.height()).max(area.y0));
+    let x = clamp_in(b.x0, b.width(), area.x0, area.x1);
+    let y = clamp_in(b.y0, b.height(), area.y0, area.y1);
     let overlaps = b.intersect(area).area() > 0.0;
     let message = if overlaps {
         format!("{name} sticks out of the cutting area.")
@@ -972,6 +973,18 @@ fn area_issue(o: &JobObject, b: Rect, area: Rect, shared: &[u64]) -> Option<Issu
             args: json!({ "ids": [id], "x_mm": x, "y_mm": y }),
         }],
     })
+}
+
+/// The start of a span of length `len` at `at`, moved the shortest way
+/// into `lo..hi`. A span up to the slack longer than the range is centred
+/// on it, so it reaches over each end by at most half the slack. The
+/// bounds never cross.
+fn clamp_in(at: f64, len: f64, lo: f64, hi: f64) -> f64 {
+    if len >= hi - lo {
+        lo - (len - (hi - lo)) / 2.0
+    } else {
+        at.clamp(lo, hi - len)
+    }
 }
 
 /// The anchor for a "Scale to fit": the first one about which the scaled
@@ -1184,12 +1197,23 @@ pub fn out_of_area(input: &JobInput, ids: &[ObjectId]) -> Vec<Issue> {
     let Some(area) = limits.area else {
         return Vec::new();
     };
-    input
-        .objects
-        .iter()
-        .filter(|o| ids.contains(&o.id))
-        .filter_map(|o| area_issue(o, object_bounds(o)?, area, &members(input, o)))
-        .collect()
+    let mut out: Vec<Issue> = Vec::new();
+    for o in input.objects.iter().filter(|o| ids.contains(&o.id)) {
+        let Some(i) = object_bounds(o).and_then(|b| area_issue(o, b, area, &members(input, o)))
+        else {
+            continue;
+        };
+        // Linked copies share their scale: one "Scale to fit" per group,
+        // as `check` gives it.
+        let dup = i.object_ids.len() > 1
+            && out
+                .iter()
+                .any(|x| x.code == i.code && x.object_ids == i.object_ids);
+        if !dup {
+            out.push(i);
+        }
+    }
+    out
 }
 
 #[cfg(test)]

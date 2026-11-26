@@ -662,8 +662,82 @@ fn open_paths_and_fill_ignored_never_undo_each_other() {
     }
 }
 
+/// An object 1.5e-6 mm wider (or taller) than the area: more than the
+/// slack, so it is larger than the area and "Scale to fit" resolves it.
+#[test]
+fn an_object_just_over_the_slack_scales_to_fit() {
+    for wide in [true, false] {
+        let mut t = t();
+        hair_off_the_mat(&mut t.s, wide, 1.5e-6);
+        let c = check(&mut t.s);
+        assert_eq!(codes(&c), ["larger_than_area"], "{c}");
+        let p = preview(&mut t.s);
+        assert_eq!(codes(&p), ["larger_than_area"], "{p}");
+        // Scale to fit, then (it is off the mat) move onto it.
+        assert!(fix_until_done(&mut t.s, 4) <= 2);
+        assert_eq!(codes(&check(&mut t.s)), Vec::<String>::new());
+        assert_eq!(preview(&mut t.s)["ready"], true);
+    }
+}
+
+/// Imports a square, makes it `over` mm wider (or taller) than the area
+/// and moves it off the mat the other way.
+fn hair_off_the_mat(s: &mut Session, wide: bool, over: f64) -> u64 {
+    let (id, _) = import(s, "sq", RECT);
+    let [x0, y0, x1, y1] = area(s);
+    let size = if wide {
+        json!({ "ids": [id], "width_mm": x1 - x0 + over, "keep_aspect": false })
+    } else {
+        json!({ "ids": [id], "height_mm": y1 - y0 + over, "keep_aspect": false })
+    };
+    run(s, "object.scale", size);
+    let off = if wide {
+        json!({ "ids": [id], "dy_mm": 1000.0 })
+    } else {
+        json!({ "ids": [id], "dx_mm": 1000.0 })
+    };
+    run(s, "object.move", off);
+    id
+}
+
+#[test]
+fn a_group_too_large_for_the_mat_gets_one_scale_to_fit_in_preview() {
+    let mut t = t();
+    let r = run(
+        &mut t.s,
+        "object.import_svg",
+        json!({ "name": "big", "svg": r#"<svg xmlns="http://www.w3.org/2000/svg" width="500mm" height="100mm" viewBox="0 0 500 100"><rect width="500" height="100"/></svg>"# }),
+    );
+    let id = r["id"].as_u64().unwrap();
+    run(
+        &mut t.s,
+        "object.copies",
+        json!({ "id": id, "count": 2, "linked": true }),
+    );
+    let p = preview(&mut t.s);
+    let large: Vec<Value> = issues(&p)
+        .into_iter()
+        .filter(|i| i["code"] == "larger_than_area")
+        .collect();
+    assert_eq!(large.len(), 1, "{p}");
+    assert_eq!(large[0]["object_ids"].as_array().unwrap().len(), 3);
+}
+
 #[test]
 fn offered_fixes_always_come_to_an_end() {
+    // Objects a hair over the area, between the slacks and beyond.
+    for over in [5e-7, 1e-6, 1.5e-6, 2.5e-6] {
+        for wide in [true, false] {
+            let mut t = t();
+            hair_off_the_mat(&mut t.s, wide, over);
+            assert!(fix_until_done(&mut t.s, 10) <= 10, "{over} {wide}");
+            assert_eq!(
+                codes(&check(&mut t.s)),
+                Vec::<String>::new(),
+                "{over} {wide}"
+            );
+        }
+    }
     let bodies = [
         format!("{TRIANGLE}{FLAT}"),
         format!("{TRIANGLE}{FLAT}{FRAME}"),
