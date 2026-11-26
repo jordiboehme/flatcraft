@@ -71,7 +71,7 @@ impl Tokens {
             // A paper a little dimmer than white, so it does not glare on
             // the dark canvas.
             kept_paper: Color32::from_rgb(0xEC, 0xE7, 0xDC),
-            waste_hatch: Color32::from_rgba_unmultiplied_const(0x2A, 0x2F, 0x36, 0x8C),
+            waste_hatch: Color32::from_rgba_unmultiplied_const(0x2A, 0x2F, 0x36, 0x66),
             ok: Color32::from_rgb(0x46, 0xC2, 0x7A),
             warn: Color32::from_rgb(0xE8, 0xB2, 0x3A),
             icon_paper: Color32::from_rgb(0xF3, 0xEC, 0xDD),
@@ -99,7 +99,7 @@ impl Tokens {
             danger: Color32::from_rgb(0xC8, 0x2E, 0x34),
             weed_path: rgb(flatcraft_core::colour::WEED_LIGHT),
             kept_paper: Color32::from_rgb(0xFF, 0xFD, 0xF8),
-            waste_hatch: Color32::from_rgba_unmultiplied_const(0x4A, 0x52, 0x5C, 0x73),
+            waste_hatch: Color32::from_rgba_unmultiplied_const(0x4A, 0x52, 0x5C, 0x80),
             ok: Color32::from_rgb(0x2F, 0x9E, 0x5B),
             warn: Color32::from_rgb(0xD9, 0x9A, 0x1E),
             icon_paper: Color32::from_rgb(0xFB, 0xF4, 0xE4),

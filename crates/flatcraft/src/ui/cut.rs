@@ -882,7 +882,14 @@ fn legend(ui: &mut Ui, snap: &Snapshot, t: &Tokens) {
                     p.extend(egui::Shape::dotted_line(&line, colour, 5.0, 0.9));
                 }
                 Sample::Kept => {
-                    p.rect_filled(rect.shrink(3.0), 2.0, colour);
+                    // Outlined, so paper reads on a paper mat too.
+                    p.rect(
+                        rect.shrink(3.0),
+                        2.0,
+                        colour,
+                        Stroke::new(1.0, contrast.gamma_multiply(0.35)),
+                        egui::StrokeKind::Inside,
+                    );
                 }
                 Sample::Waste => {
                     super::kept::hatch(p, rect.shrink(3.0), colour);
