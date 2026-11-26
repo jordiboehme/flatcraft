@@ -1,5 +1,6 @@
 //! Profile queries and job settings of the active document.
 
+use flatcraft_core::document::{WeedLines, WeedSettings};
 use flatcraft_device::{PresetInfo, ProfileError};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -291,4 +292,106 @@ command!(
     params: StrategyParams,
     run: run_set_strategy,
     description: "Sets the cut strategy of the active document, in one undo step: quality (clean corners first), fast (short travel first) or keep_sheet (as quality, but every outline after every hole and inner piece, so the sheet holds together until the end: on a mat for the whole job; without a mat, per 50 mm feed band). Every strategy cuts the holes and inner pieces of a shape before its outline. New documents start with the strategy of the preferences. Returns {strategy}.",
+);
+
+#[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WeedLinesParam {
+    /// No weed lines.
+    Off,
+    /// Lines across the carriage (along x).
+    Horizontal,
+    /// Lines in the feed direction (along y).
+    Vertical,
+    /// Both directions: a grid.
+    Both,
+}
+
+impl From<WeedLinesParam> for WeedLines {
+    fn from(p: WeedLinesParam) -> Self {
+        match p {
+            WeedLinesParam::Off => WeedLines::Off,
+            WeedLinesParam::Horizontal => WeedLines::Horizontal,
+            WeedLinesParam::Vertical => WeedLines::Vertical,
+            WeedLinesParam::Both => WeedLines::Both,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WeedingParams {
+    /// Cut a weed box (a rectangle around the design).
+    #[serde(rename = "box")]
+    pub weed_box: Option<bool>,
+    /// How far the weed box stays from the design, mm (1 to 50).
+    pub margin_mm: Option<f64>,
+    /// One weed box per object instead of one around everything.
+    pub per_object: Option<bool>,
+    /// Weed lines: off, horizontal, vertical or both.
+    pub lines: Option<WeedLinesParam>,
+    /// The distance between weed lines, mm (5 to 300).
+    pub spacing_mm: Option<f64>,
+}
+
+/// The weed settings as `document.state` and `job.set_weeding` show them.
+pub(crate) fn weed_json(w: &WeedSettings) -> Value {
+    json!({
+        "box": w.weed_box,
+        "margin_mm": w.margin_mm,
+        "per_object": w.per_object,
+        "lines": w.lines,
+        "spacing_mm": w.spacing_mm,
+    })
+}
+
+fn check_mm(name: &str, v: f64, lo: f64, hi: f64) -> Result<f64, CommandError> {
+    if v.is_finite() && (lo..=hi).contains(&v) {
+        Ok(v)
+    } else {
+        Err(CommandError::InvalidParams(format!(
+            "{name} {v} is outside the range {lo} to {hi} mm"
+        )))
+    }
+}
+
+fn run_set_weeding(s: &mut Session, p: WeedingParams, _: Origin) -> Result<Value, CommandError> {
+    use flatcraft_core::limits::{
+        MAX_WEED_MARGIN_MM, MAX_WEED_SPACING_MM, MIN_WEED_MARGIN_MM, MIN_WEED_SPACING_MM,
+    };
+    let margin = p
+        .margin_mm
+        .map(|v| check_mm("margin_mm", v, MIN_WEED_MARGIN_MM, MAX_WEED_MARGIN_MM))
+        .transpose()?;
+    let spacing = p
+        .spacing_mm
+        .map(|v| check_mm("spacing_mm", v, MIN_WEED_SPACING_MM, MAX_WEED_SPACING_MM))
+        .transpose()?;
+    let w = &mut s.doc_mut().document.job.weed;
+    if let Some(v) = p.weed_box {
+        w.weed_box = v;
+    }
+    if let Some(v) = margin {
+        w.margin_mm = v;
+    }
+    if let Some(v) = p.per_object {
+        w.per_object = v;
+    }
+    if let Some(v) = p.lines {
+        w.lines = v.into();
+    }
+    if let Some(v) = spacing {
+        w.spacing_mm = v;
+    }
+    Ok(weed_json(&s.doc().document.job.weed))
+}
+
+command!(
+    JobSetWeeding,
+    id: "job.set_weeding",
+    title: "Set weed box and weed lines",
+    mutates: true,
+    params: WeedingParams,
+    run: run_set_weeding,
+    description: "Sets the weed box and weed lines of the active document, in one undo step. Weeding means peeling the waste off the backing after the cut; these extra cuts go through the waste only and make that easier. box: a rectangle around the design, margin_mm (1 to 50, default 3) away from it; per_object: one box per object instead of one around everything (boxes that would overlap become one). A box that does not fit inside the cutting area with 1 mm to spare is left out with a warning. lines: off, horizontal, vertical or both, every spacing_mm (5 to 300, default 20) across the box area; they stop more than 1 mm before every design cut and never cut inside a shape or a letter's counter. Weed lines are cut after the design, the weed box last; without a mat each feed band's weed lines follow that band's design. They are cut with the job's passes, shown in the path preview and included in document.export. Fields you leave out stay as they are. Returns {box, margin_mm, per_object, lines, spacing_mm}.",
 );

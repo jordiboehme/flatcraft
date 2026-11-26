@@ -6,7 +6,10 @@
 //! cut paths placed by [`crate::job::place_object`] (tracing, scale,
 //! rotation, mirror and the cut options applied), then flattened, joined
 //! and cleaned by [`flatcraft_path::shape_lines`] with the plotter's
-//! flatten tolerance, exactly as the cut plan reads them. Not included:
+//! flatten tolerance, exactly as the cut plan reads them. The weed box and
+//! weed lines of the job settings are cut too, so they are exported as
+//! well: [`flatcraft_path::weed::generate`] on the exported shapes, the
+//! same function and the same geometry the plan cuts. Not included:
 //! overcut, passes, lead-ins, swivels, knife compensation and travel.
 //!
 //! Coordinates: the mat's grid origin is 0,0 and y points down (the app's
@@ -96,20 +99,56 @@ pub struct ExportObject {
     pub shapes: Vec<ExportShape>,
 }
 
-/// Everything an export writes: the page (the mat's grid) and the objects
-/// with their shapes, in document order.
+/// Everything an export writes: the page (the mat's grid), the objects
+/// with their shapes, in document order, and the weed box and weed lines
+/// around the exported objects.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExportDoc {
     pub width_mm: f64,
     pub height_mm: f64,
     pub objects: Vec<ExportObject>,
+    /// The weed lines, then the weed boxes (see [`flatcraft_path::weed`]).
+    pub weeds: Vec<ExportShape>,
 }
 
 impl ExportDoc {
-    /// How many shapes the export holds.
+    /// How many shapes the export holds, weeds included.
     pub fn shape_count(&self) -> usize {
-        self.objects.iter().map(|o| o.shapes.len()).sum()
+        self.objects.iter().map(|o| o.shapes.len()).sum::<usize>() + self.weeds.len()
     }
+}
+
+/// The name of the weed group (SVG) and layer (DXF).
+pub const WEED_NAME: &str = "Weed box and weed lines";
+
+/// The weed shapes for the exported `design` (one lap per toolpath, as
+/// the plan reads them), with the job's weed settings.
+fn weed_shapes(
+    design: &[flatcraft_path::Toolpath],
+    input: &JobInput,
+    area: kurbo::Rect,
+) -> Vec<ExportShape> {
+    // Every object is Pieces until Task 29, as in the plan.
+    let weeds = flatcraft_path::weed::generate(
+        design,
+        |_| flatcraft_path::KeepMode::Pieces,
+        area,
+        &input.job.weed,
+    );
+    let lines = weeds.lines.iter().map(|l| ExportShape {
+        points: l.to_vec(),
+        closed: false,
+    });
+    let boxes = weeds.boxes.iter().map(|r| ExportShape {
+        points: vec![
+            Point::new(r.x0, r.y0),
+            Point::new(r.x1, r.y0),
+            Point::new(r.x1, r.y1),
+            Point::new(r.x0, r.y1),
+        ],
+        closed: true,
+    });
+    lines.chain(boxes).collect()
 }
 
 /// Whether an object is exported: hidden objects never are (as in the
@@ -132,6 +171,7 @@ pub fn collect(
     let min_cut = 0.5 / input.plotter.units_per_mm;
     let wanted = |o: &&JobObject| ids.is_none_or(|ids| ids.contains(&o.id));
     let mut objects = Vec::new();
+    let mut design = Vec::new();
     let (mut hidden, mut skipped) = (0, 0);
     for o in input.objects.iter().filter(wanted) {
         if !o.visible {
@@ -152,6 +192,14 @@ pub fn collect(
             })
             .filter(|l| flatcraft_path::clean::length(&l.points) >= min_cut)
             .map(|l| {
+                design.push(flatcraft_path::Toolpath::new(
+                    l.points.clone(),
+                    l.closed,
+                    flatcraft_path::PathRef {
+                        object: o.id,
+                        path_index: 0,
+                    },
+                ));
                 let mut points = l.points;
                 if l.closed {
                     points.pop();
@@ -186,10 +234,15 @@ pub fn collect(
         }
         return Err(CommandError::Refused(text));
     }
+    let area = input
+        .plotter
+        .cutting_area(&media.id)
+        .ok_or_else(|| CommandError::Failed("the mat has no cutting area".into()))?;
     Ok(ExportDoc {
         width_mm: media.grid.width_mm,
         height_mm: media.grid.height_mm,
         objects,
+        weeds: weed_shapes(&design, input, area),
     })
 }
 

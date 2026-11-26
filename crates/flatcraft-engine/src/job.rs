@@ -12,7 +12,7 @@ use flatcraft_device::{
     TransportError, TransportSpec,
 };
 use flatcraft_path::{
-    CutPlan, PathRef, PipelineSettings, PlacedPath, PlanError, StrategySettings, plan,
+    CutPlan, PathRef, PipelineSettings, PlacedPath, PlanError, StrategySettings, ToolpathKind, plan,
 };
 use serde_json::{Value, json};
 
@@ -95,6 +95,33 @@ fn note(
         "object {} '{}', path {path}{label}, {passes}",
         id.0,
         one_line(name)
+    )
+}
+
+/// Listing note of a weed toolpath: `weed line {n}, pass {p}` or
+/// `weed box {n}, passes {p}-{q}`, numbered from 1.
+fn weed_note(closed: bool, index: usize, pass: u32, laps: u32) -> String {
+    let what = if closed { "weed box" } else { "weed line" };
+    let passes = if laps > 1 {
+        format!("passes {pass}-{}", last_pass(pass, laps))
+    } else {
+        format!("pass {pass}")
+    };
+    format!("{what} {}, {passes}", index + 1)
+}
+
+/// The warning when weed boxes do not fit inside the cutting area.
+pub(crate) fn weed_box_warning(dropped: usize, per_object: bool) -> String {
+    let what = if per_object && dropped > 1 {
+        format!("{dropped} weed boxes do not fit")
+    } else if per_object {
+        "1 weed box does not fit".to_string()
+    } else {
+        "The weed box does not fit".to_string()
+    };
+    let it = if dropped > 1 { "they are" } else { "it is" };
+    format!(
+        "{what} inside the cutting area with 1 mm to spare around the design, so {it} not cut. Move the design away from the edge or make the weed box margin smaller."
     )
 }
 
@@ -372,6 +399,7 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         monotonic_feed: media.kind == MediaKind::NoMat,
         // Half a device step: anything shorter moves no motor at all.
         min_cut_mm: 0.5 / plotter.units_per_mm,
+        weed: job.weed,
         ..PipelineSettings::with_defaults(area, plotter.home_mm(media))
     };
     let cut_plan = plan(&placed, &pipeline).map_err(|e| match e {
@@ -445,10 +473,23 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         ));
     }
 
+    if cut_plan.dropped_weed_boxes > 0 {
+        warnings.push(weed_box_warning(
+            cut_plan.dropped_weed_boxes,
+            job.weed.per_object,
+        ));
+    }
+
     let paths: Vec<EmitPath> = cut_plan
         .toolpaths
         .iter()
         .map(|t| {
+            if t.kind == ToolpathKind::Weed {
+                return EmitPath {
+                    points: t.points.clone(),
+                    note: weed_note(t.closed, t.source.path_index, t.pass, t.laps),
+                };
+            }
             let id = t.source.object;
             let name = names.get(&id).copied().unwrap_or("");
             let label = labels.get(&(id, t.source.path_index)).map(String::as_str);

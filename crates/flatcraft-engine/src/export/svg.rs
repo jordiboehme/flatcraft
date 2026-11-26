@@ -1,11 +1,12 @@
 //! SVG writer: the page is the mat's grid, `width`/`height` in mm and a
 //! `viewBox` in mm, so one user unit is one millimetre and y points down
 //! as on the mat. One `<g>` per object (`id="object-<id>"`, the object's
-//! name in `data-name`), one stroked `<path>` per shape, no fill.
+//! name in `data-name`), one stroked `<path>` per shape, no fill. The weed
+//! box and weed lines come last, in `<g id="weed">`.
 
 use std::fmt::Write;
 
-use super::{ExportDoc, num};
+use super::{ExportDoc, ExportShape, num};
 
 /// Stroke width of the paths, mm: thin, but visible in a viewer.
 pub const STROKE_MM: f64 = 0.1;
@@ -29,20 +30,37 @@ pub fn write(doc: &ExportDoc) -> String {
             num(STROKE_MM)
         );
         for shape in &o.shapes {
-            let mut d = String::new();
-            for (i, p) in shape.points.iter().enumerate() {
-                let cmd = if i == 0 { "M" } else { " L" };
-                let _ = write!(d, "{cmd}{} {}", num(p.x), num(p.y));
-            }
-            if shape.closed {
-                d.push_str(" Z");
-            }
-            let _ = writeln!(out, "<path d=\"{d}\"/>");
+            let _ = writeln!(out, "<path d=\"{}\"/>", path_data(shape));
+        }
+        out.push_str("</g>\n");
+    }
+    if !doc.weeds.is_empty() {
+        let _ = writeln!(
+            out,
+            "<g id=\"weed\" data-name=\"{}\" fill=\"none\" stroke=\"#000000\" stroke-width=\"{}\" stroke-linejoin=\"round\" stroke-linecap=\"round\">",
+            super::WEED_NAME,
+            num(STROKE_MM)
+        );
+        for shape in &doc.weeds {
+            let _ = writeln!(out, "<path d=\"{}\"/>", path_data(shape));
         }
         out.push_str("</g>\n");
     }
     out.push_str("</svg>\n");
     out
+}
+
+/// The `d` attribute of one shape.
+fn path_data(shape: &ExportShape) -> String {
+    let mut d = String::new();
+    for (i, p) in shape.points.iter().enumerate() {
+        let cmd = if i == 0 { "M" } else { " L" };
+        let _ = write!(d, "{cmd}{} {}", num(p.x), num(p.y));
+    }
+    if shape.closed {
+        d.push_str(" Z");
+    }
+    d
 }
 
 /// `s` as XML attribute text. Control characters, which XML 1.0 does not
@@ -92,6 +110,7 @@ mod tests {
                     },
                 ],
             }],
+            weeds: Vec::new(),
         }
     }
 

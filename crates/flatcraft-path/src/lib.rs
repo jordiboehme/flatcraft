@@ -5,7 +5,8 @@
 //! `knife`. `plan` wires them together. `feed` holds the feed bands the
 //! order can work in. `containment` holds the ring geometry they share: the
 //! containment tree, the kept side of each ring and the job's kept
-//! material. `rings` holds the ring direction, entry candidates and exit
+//! material. `weed` adds the weed box and weed lines after the design.
+//! `rings` holds the ring direction, entry candidates and exit
 //! states the order uses, and `strategy` what the order optimises for.
 
 pub mod clean;
@@ -19,6 +20,7 @@ pub mod passes;
 pub mod plan;
 pub mod rings;
 pub mod strategy;
+pub mod weed;
 
 pub use clean::Polyline;
 pub use containment::{KeepMode, KeptMaterial};

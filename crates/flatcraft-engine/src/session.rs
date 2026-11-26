@@ -527,6 +527,7 @@ impl Session {
             force: None,
             passes: None,
             strategy: self.prefs.default_strategy,
+            weed: Default::default(),
         }))
     }
 
@@ -1528,6 +1529,7 @@ mod tests {
             force: None,
             passes: None,
             strategy: Default::default(),
+            weed: Default::default(),
         });
         a.add(
             "a".into(),
@@ -1553,6 +1555,7 @@ mod tests {
             force: None,
             passes: None,
             strategy: Default::default(),
+            weed: Default::default(),
         });
         for name in ["one", "two"] {
             a.add(

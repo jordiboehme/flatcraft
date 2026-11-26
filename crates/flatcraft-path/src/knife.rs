@@ -142,7 +142,7 @@ pub fn apply(
                 points: t.points.clone(),
                 seg: vec![WASTE_SEG; t.points.len()],
             }],
-            ToolpathKind::Cut => knife.runs(t, heading),
+            ToolpathKind::Cut | ToolpathKind::Weed => knife.runs(t, heading),
         };
         t.axis = Some(runs);
         heading = heading_after(t, heading);

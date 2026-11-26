@@ -1,7 +1,9 @@
 //! DXF writer: ASCII AutoCAD R12 (`AC1009`), millimetres (`$INSUNITS` 4).
 //! One layer per object (its name made safe for R12 and unique), declared
 //! in the LAYER table; one POLYLINE with VERTEX entities per shape, the
-//! closed flag set on rings (the first point is not repeated).
+//! closed flag set on rings (the first point is not repeated). The weed
+//! box and weed lines go on a layer of their own, `WEED` (made unique
+//! when an object already took the name).
 //!
 //! DXF's y axis points up, the mat's points down: y is flipped against
 //! the page height (`y_dxf = height - y`), so the drawing shows the layout
@@ -17,6 +19,7 @@ const MAX_LAYER: usize = 31;
 /// The DXF text of `doc`.
 pub fn write(doc: &ExportDoc) -> String {
     let layers = layer_names(doc);
+    let weed_layer = (!doc.weeds.is_empty()).then(|| weed_layer(&layers));
     let h = doc.height_mm;
     let mut out = Dxf::default();
     out.section("HEADER");
@@ -47,8 +50,11 @@ pub fn write(doc: &ExportDoc) -> String {
     out.pair(0, "ENDTAB");
     out.pair(0, "TABLE");
     out.pair(2, "LAYER");
-    out.pair(70, &layers.len().to_string());
-    for name in &layers {
+    out.pair(
+        70,
+        &(layers.len() + usize::from(weed_layer.is_some())).to_string(),
+    );
+    for name in layers.iter().chain(&weed_layer) {
         out.pair(0, "LAYER");
         out.pair(2, name);
         out.pair(70, "0");
@@ -59,21 +65,28 @@ pub fn write(doc: &ExportDoc) -> String {
     out.end_section();
 
     out.section("ENTITIES");
-    for (o, layer) in doc.objects.iter().zip(&layers) {
-        for shape in &o.shapes {
-            out.pair(0, "POLYLINE");
+    let weeds = weed_layer
+        .iter()
+        .flat_map(|l| doc.weeds.iter().map(move |s| (s, l)));
+    let shapes = doc
+        .objects
+        .iter()
+        .zip(&layers)
+        .flat_map(|(o, layer)| o.shapes.iter().map(move |s| (s, layer)))
+        .chain(weeds);
+    for (shape, layer) in shapes {
+        out.pair(0, "POLYLINE");
+        out.pair(8, layer);
+        out.pair(66, "1");
+        out.point(0.0, 0.0);
+        out.pair(70, if shape.closed { "1" } else { "0" });
+        for p in &shape.points {
+            out.pair(0, "VERTEX");
             out.pair(8, layer);
-            out.pair(66, "1");
-            out.point(0.0, 0.0);
-            out.pair(70, if shape.closed { "1" } else { "0" });
-            for p in &shape.points {
-                out.pair(0, "VERTEX");
-                out.pair(8, layer);
-                out.point(p.x, h - p.y);
-            }
-            out.pair(0, "SEQEND");
-            out.pair(8, layer);
+            out.point(p.x, h - p.y);
         }
+        out.pair(0, "SEQEND");
+        out.pair(8, layer);
     }
     out.end_section();
     out.pair(0, "EOF");
@@ -104,6 +117,18 @@ impl Dxf {
     fn end_section(&mut self) {
         self.pair(0, "ENDSEC");
     }
+}
+
+/// The weed layer's name: `WEED`, or `WEED_2`, `WEED_3` and so on when an
+/// object's layer took it.
+fn weed_layer(layers: &[String]) -> String {
+    let mut name = "WEED".to_string();
+    let mut n = 2;
+    while layers.contains(&name) {
+        name = format!("WEED_{n}");
+        n += 1;
+    }
+    name
 }
 
 /// One layer name per object, in order: upper case `A-Z`, `0-9`, `_` and
@@ -174,6 +199,7 @@ mod tests {
                 object(5, &"x".repeat(50)),
                 object(6, "Über"),
             ],
+            weeds: Vec::new(),
         };
         let names = layer_names(&doc);
         assert_eq!(names[0], "STAR_BADGE");
@@ -190,6 +216,7 @@ mod tests {
             width_mm: 100.0,
             height_mm: 80.0,
             objects: vec![object(1, "a")],
+            weeds: Vec::new(),
         };
         let text = write(&doc);
         assert!(text.contains(" 70\n0\n  0\nVERTEX\n"), "{text}");
@@ -197,5 +224,24 @@ mod tests {
         assert!(text.contains(" 10\n10\n 20\n75\n"), "{text}");
         assert!(text.starts_with("  0\nSECTION\n  2\nHEADER\n"));
         assert!(text.ends_with("  0\nEOF\n"));
+    }
+
+    #[test]
+    fn weeds_get_a_layer_of_their_own() {
+        let doc = ExportDoc {
+            width_mm: 100.0,
+            height_mm: 80.0,
+            objects: vec![object(1, "weed")],
+            weeds: vec![ExportShape {
+                points: vec![Point::new(1.0, 2.0), Point::new(9.0, 2.0)],
+                closed: false,
+            }],
+        };
+        let text = write(&doc);
+        // The object took WEED, so the weeds go on WEED_2, declared in
+        // the LAYER table with the object's layer.
+        assert!(text.contains("  2\nLAYER\n 70\n2\n"), "{text}");
+        assert!(text.contains("  0\nLAYER\n  2\nWEED_2\n"), "{text}");
+        assert!(text.contains("  0\nPOLYLINE\n  8\nWEED_2\n"), "{text}");
     }
 }

@@ -576,6 +576,44 @@ impl KeptMaterial {
         odd
     }
 
+    /// True when `p` lies strictly inside at least one ring, whatever its
+    /// object and keep mode: a piece, or a hole (a letter's counter) of
+    /// one. A point on a ring (within [`EPS`]) is not inside it. A
+    /// non-finite `p` counts as inside.
+    pub fn enclosed(&self, p: Point) -> bool {
+        if !p.is_finite() {
+            return true;
+        }
+        let (pc, pr) = (cell(p.x), cell(p.y));
+        let (Some(&end), Some((c0, ..))) = (self.row_end.get(&pr), self.extent) else {
+            return false;
+        };
+        // A ring p lies on does not count (as in `odd_objects`).
+        let on: Vec<usize> = self
+            .cells
+            .get(&(pc, pr))
+            .into_iter()
+            .flatten()
+            .map(|&id| self.segs[id])
+            .filter(|&(a, b, _)| kurbo::Line::new(a, b).nearest(p, 0.0).distance_sq <= EPS * EPS)
+            .map(|s| s.2)
+            .collect();
+        let mut rings = Vec::new();
+        for col in pc.max(c0)..=end {
+            for &id in self.cells.get(&(col, pr)).into_iter().flatten() {
+                let (a, b, ring) = self.segs[id];
+                if let Some(x) = crosses_ray(a, b, p)
+                    && cell(x) == col
+                    && !on.contains(&ring)
+                {
+                    rings.push(ring);
+                }
+            }
+        }
+        rings.sort_unstable();
+        rings.chunk_by(|a, b| a == b).any(|run| run.len() % 2 == 1)
+    }
+
     /// True when `p` is kept material: some object calls it kept.
     ///
     /// A point on a ring (within [`EPS`]) is not inside that ring. So a

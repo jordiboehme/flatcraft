@@ -2,7 +2,8 @@
 //! thin black strokes, no fill. The content stream draws in millimetres
 //! with y down, like the mat: its transform scales mm to points and flips
 //! y against the page height, so the mat's 0,0 is the top left of the
-//! page. The stream is not compressed.
+//! page. The weed box and weed lines are drawn after the objects. The
+//! stream is not compressed.
 
 use pdf_writer::types::{LineCapStyle, LineJoinStyle};
 use pdf_writer::{Content, Pdf, Rect, Ref, TextStr};
@@ -49,7 +50,7 @@ pub fn write(doc: &ExportDoc) -> Vec<u8> {
     c.set_line_join(LineJoinStyle::RoundJoin);
     c.set_line_cap(LineCapStyle::RoundCap);
     c.set_stroke_gray(0.0);
-    for shape in doc.objects.iter().flat_map(|o| &o.shapes) {
+    for shape in doc.objects.iter().flat_map(|o| &o.shapes).chain(&doc.weeds) {
         let Some((first, rest)) = shape.points.split_first() else {
             continue;
         };

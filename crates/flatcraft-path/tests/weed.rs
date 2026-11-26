@@ -1,0 +1,437 @@
+//! Weed box and weed lines (Task 51), through the whole pipeline.
+
+use flatcraft_core::document::{ObjectId, WeedLines, WeedSettings};
+use flatcraft_path::feed::{BAND_MM, band_of};
+use flatcraft_path::weed::{WEED_CLEARANCE_MM, WEED_OBJECT};
+use flatcraft_path::{
+    CutPlan, PathRef, PipelineSettings, PlacedPath, PlanError, SettingsField, Toolpath,
+    ToolpathKind, plan,
+};
+use kurbo::{BezPath, Circle, Point, Rect, Shape};
+use proptest::prelude::*;
+
+fn rect_path(x: f64, y: f64, w: f64, h: f64) -> BezPath {
+    let mut p = BezPath::new();
+    p.move_to((x, y));
+    p.line_to((x + w, y));
+    p.line_to((x + w, y + h));
+    p.line_to((x, y + h));
+    p.close_path();
+    p
+}
+
+fn placed(id: u64, path: BezPath) -> PlacedPath {
+    PlacedPath {
+        path,
+        source: PathRef {
+            object: ObjectId(id),
+            path_index: 0,
+        },
+    }
+}
+
+fn settings(weed: WeedSettings) -> PipelineSettings {
+    PipelineSettings {
+        weed,
+        ..PipelineSettings::with_defaults(Rect::new(0.0, 0.0, 300.0, 300.0), Point::ZERO)
+    }
+}
+
+fn box_only(margin_mm: f64, per_object: bool) -> WeedSettings {
+    WeedSettings {
+        weed_box: true,
+        margin_mm,
+        per_object,
+        ..WeedSettings::default()
+    }
+}
+
+fn lines_only(lines: WeedLines, spacing_mm: f64) -> WeedSettings {
+    WeedSettings {
+        lines,
+        spacing_mm,
+        ..WeedSettings::default()
+    }
+}
+
+fn weeds(out: &CutPlan) -> Vec<&Toolpath> {
+    out.toolpaths
+        .iter()
+        .filter(|t| t.kind == ToolpathKind::Weed)
+        .collect()
+}
+
+fn bounds(points: &[Point]) -> Rect {
+    points
+        .iter()
+        .skip(1)
+        .fold(Rect::from_points(points[0], points[0]), |r, p| {
+            r.union_pt(*p)
+        })
+}
+
+fn close(a: Rect, b: Rect) -> bool {
+    [a.x0 - b.x0, a.y0 - b.y0, a.x1 - b.x1, a.y1 - b.y1]
+        .iter()
+        .all(|d| d.abs() < 1e-9)
+}
+
+#[test]
+fn the_box_keeps_the_margin_around_the_design() {
+    let input = [
+        placed(1, rect_path(50.0, 60.0, 20.0, 10.0)),
+        placed(2, rect_path(100.0, 40.0, 5.0, 5.0)),
+    ];
+    let out = plan(&input, &settings(box_only(3.0, false))).unwrap();
+    let w = weeds(&out);
+    assert_eq!(w.len(), 1, "{w:?}");
+    let b = w[0];
+    assert!(b.closed);
+    assert_eq!(b.source.object, WEED_OBJECT);
+    // A closed ring: four corners and the start again, then the overcut.
+    assert_eq!(b.lap().len(), 5);
+    assert!(close(bounds(b.lap()), Rect::new(47.0, 37.0, 108.0, 73.0)));
+    assert_eq!(out.dropped_weed_boxes, 0);
+}
+
+#[test]
+fn a_box_per_object_merges_boxes_that_would_touch() {
+    // 1 and 2 are 5 mm apart: their 3 mm boxes overlap and merge. 3 is
+    // far away and gets its own box.
+    let input = [
+        placed(1, rect_path(20.0, 20.0, 10.0, 10.0)),
+        placed(2, rect_path(35.0, 20.0, 10.0, 10.0)),
+        placed(3, rect_path(150.0, 150.0, 10.0, 10.0)),
+    ];
+    let out = plan(&input, &settings(box_only(3.0, true))).unwrap();
+    let mut boxes: Vec<Rect> = weeds(&out).iter().map(|t| bounds(t.lap())).collect();
+    boxes.sort_by(|a, b| a.x0.total_cmp(&b.x0));
+    assert_eq!(boxes.len(), 2, "{boxes:?}");
+    assert!(close(boxes[0], Rect::new(17.0, 17.0, 48.0, 33.0)));
+    assert!(close(boxes[1], Rect::new(147.0, 147.0, 163.0, 163.0)));
+    // One box around everything without per object.
+    let out = plan(&input, &settings(box_only(3.0, false))).unwrap();
+    let boxes: Vec<Rect> = weeds(&out).iter().map(|t| bounds(t.lap())).collect();
+    assert_eq!(boxes.len(), 1);
+    assert!(close(boxes[0], Rect::new(17.0, 17.0, 163.0, 163.0)));
+}
+
+#[test]
+fn a_box_that_does_not_fit_is_left_out_and_counted() {
+    // 0.5 mm from the area's left edge: a box there would lie on the design.
+    let input = [placed(1, rect_path(0.5, 20.0, 10.0, 10.0))];
+    let out = plan(&input, &settings(box_only(3.0, false))).unwrap();
+    assert!(weeds(&out).is_empty());
+    assert_eq!(out.dropped_weed_boxes, 1);
+    // 1.5 mm fits: the box is clamped to the area and still keeps 1 mm.
+    let input = [placed(1, rect_path(1.5, 20.0, 10.0, 10.0))];
+    let out = plan(&input, &settings(box_only(3.0, false))).unwrap();
+    let w = weeds(&out);
+    assert_eq!(w.len(), 1);
+    assert!(close(bounds(w[0].lap()), Rect::new(0.0, 17.0, 14.5, 33.0)));
+}
+
+#[test]
+fn no_weed_paths_when_off() {
+    let input = [
+        placed(1, rect_path(20.0, 20.0, 100.0, 100.0)),
+        placed(2, rect_path(150.0, 150.0, 10.0, 10.0)),
+    ];
+    for weed in [
+        WeedSettings::default(),
+        WeedSettings {
+            margin_mm: 10.0,
+            spacing_mm: 5.0,
+            per_object: true,
+            ..WeedSettings::default()
+        },
+    ] {
+        let out = plan(&input, &settings(weed)).unwrap();
+        assert!(weeds(&out).is_empty());
+        assert_eq!(out.toolpaths.len(), 2);
+    }
+}
+
+#[test]
+fn design_first_then_lines_then_the_box() {
+    let input = [
+        placed(1, rect_path(20.0, 20.0, 30.0, 30.0)),
+        placed(2, rect_path(80.0, 30.0, 40.0, 20.0)),
+        placed(3, Circle::new((60.0, 100.0), 15.0).to_path(0.1)),
+    ];
+    let weed = WeedSettings {
+        weed_box: true,
+        lines: WeedLines::Both,
+        spacing_mm: 10.0,
+        ..WeedSettings::default()
+    };
+    for passes in [1, 2] {
+        let s = PipelineSettings {
+            passes,
+            ..settings(weed)
+        };
+        let out = plan(&input, &s).unwrap();
+        // 0 design, 1 weed line, 2 weed box: never goes down.
+        let rank: Vec<u8> = out
+            .toolpaths
+            .iter()
+            .map(|t| match (t.kind, t.closed) {
+                (ToolpathKind::Cut, _) => 0,
+                (ToolpathKind::Weed, false) => 1,
+                (ToolpathKind::Weed, true) => 2,
+                (ToolpathKind::Alignment, _) => panic!("no alignment stroke"),
+            })
+            .collect();
+        assert!(rank.windows(2).all(|w| w[0] <= w[1]), "{rank:?}");
+        assert!(rank.contains(&1), "{rank:?}");
+        assert_eq!(rank.last(), Some(&2));
+        // Weed paths get the passes too: the box chains its laps.
+        let b = out.toolpaths.last().unwrap();
+        assert_eq!(b.laps, passes);
+    }
+}
+
+#[test]
+fn weed_lines_split_at_shapes_and_skip_counters() {
+    // A ring with a hole (one object, like the letter O): a horizontal
+    // line through its middle has a piece left and right of it, none in
+    // the counter, and keeps the clearance.
+    let mut o = rect_path(100.0, 100.0, 60.0, 40.0);
+    o.extend(rect_path(110.0, 105.0, 40.0, 30.0));
+    let input = [placed(1, o)];
+    let s = settings(WeedSettings {
+        margin_mm: 10.0,
+        ..lines_only(WeedLines::Horizontal, 20.0)
+    });
+    let out = plan(&input, &s).unwrap();
+    let at_110: Vec<(f64, f64)> = weeds(&out)
+        .iter()
+        .filter(|t| (t.points[0].y - 110.0).abs() < 1e-9)
+        .map(|t| {
+            let (a, b) = (t.points[0].x, t.points[1].x);
+            (a.min(b), a.max(b))
+        })
+        .collect();
+    let mut at_110 = at_110;
+    at_110.sort_by(|a, b| a.0.total_cmp(&b.0));
+    assert_eq!(at_110.len(), 2, "{at_110:?}");
+    // The lines run across the design's box plus the margin (lines at
+    // 90 + 20 k: 110 crosses the counter).
+    assert!((at_110[0].0 - 90.0).abs() < 1e-9, "{at_110:?}");
+    assert!(at_110[0].1 < 100.0 - WEED_CLEARANCE_MM, "{at_110:?}");
+    assert!(at_110[1].0 > 160.0 + WEED_CLEARANCE_MM, "{at_110:?}");
+    assert!((at_110[1].1 - 170.0).abs() < 1e-9, "{at_110:?}");
+}
+
+#[test]
+fn weed_settings_out_of_range_are_refused() {
+    let input = [placed(1, rect_path(20.0, 20.0, 10.0, 10.0))];
+    for (weed, field) in [
+        (box_only(0.5, false), SettingsField::WeedMargin),
+        (box_only(f64::NAN, false), SettingsField::WeedMargin),
+        (lines_only(WeedLines::Both, 1.0), SettingsField::WeedSpacing),
+    ] {
+        match plan(&input, &settings(weed)) {
+            Err(PlanError::InvalidSettings { field: f, .. }) => assert_eq!(f, field),
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
+#[test]
+fn without_a_mat_weed_lines_follow_their_feed_band() {
+    // Shapes in three bands and vertical lines through all of them: each
+    // weed piece lies in one band and comes before any design path of a
+    // later band.
+    let input = [
+        placed(1, rect_path(20.0, 10.0, 30.0, 20.0)),
+        placed(2, rect_path(60.0, 70.0, 30.0, 20.0)),
+        placed(3, rect_path(20.0, 120.0, 70.0, 20.0)),
+    ];
+    let s = PipelineSettings {
+        monotonic_feed: true,
+        ..settings(WeedSettings {
+            weed_box: true,
+            lines: WeedLines::Both,
+            spacing_mm: 15.0,
+            ..WeedSettings::default()
+        })
+    };
+    let out = plan(&input, &s).unwrap();
+    let band = |y: f64| (y.max(0.0) / BAND_MM).floor() as usize;
+    let paths = &out.toolpaths;
+    let mut seen_lines = 0;
+    for (i, t) in paths.iter().enumerate() {
+        if t.kind != ToolpathKind::Weed || t.closed {
+            continue;
+        }
+        seen_lines += 1;
+        let top = t.points[0].y.min(t.points[1].y);
+        let bottom = t.points[0].y.max(t.points[1].y);
+        // One band per piece (a piece may end on the band's lower edge).
+        assert!(
+            bottom <= (band(top) + 1) as f64 * BAND_MM + 1e-9,
+            "piece {i} spans bands: {top}..{bottom}"
+        );
+        for later in &paths[i + 1..] {
+            if later.kind == ToolpathKind::Cut {
+                assert!(
+                    band_of(later) >= band(top),
+                    "a design path of an earlier band comes after weed piece {i}"
+                );
+            }
+        }
+    }
+    assert!(seen_lines > 0);
+    // The box is still last.
+    assert!(paths.last().unwrap().kind == ToolpathKind::Weed && paths.last().unwrap().closed);
+}
+
+// ------------------------------------------------------------ property
+
+/// The distance between segments `a`-`b` and `c`-`d`, 0 when they cross.
+fn seg_distance(a: Point, b: Point, c: Point, d: Point) -> f64 {
+    let cross = |o: Point, p: Point, q: Point| (p - o).cross(q - o);
+    let (d1, d2) = (cross(c, d, a), cross(c, d, b));
+    let (d3, d4) = (cross(a, b, c), cross(a, b, d));
+    if ((d1 > 0.0 && d2 < 0.0) || (d1 < 0.0 && d2 > 0.0))
+        && ((d3 > 0.0 && d4 < 0.0) || (d3 < 0.0 && d4 > 0.0))
+    {
+        return 0.0;
+    }
+    let pt = |p: Point, s0: Point, s1: Point| {
+        let v = s1 - s0;
+        let t = if v.hypot2() > 0.0 {
+            ((p - s0).dot(v) / v.hypot2()).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        p.distance(s0 + v * t)
+    };
+    pt(a, c, d)
+        .min(pt(b, c, d))
+        .min(pt(c, a, b))
+        .min(pt(d, a, b))
+}
+
+/// Plain even-odd point in polygon, independent of the crate's own.
+fn inside(p: Point, ring: &[Point]) -> bool {
+    let mut odd = false;
+    let n = ring.len();
+    for i in 0..n {
+        let (a, b) = (ring[i], ring[(i + 1) % n]);
+        if (a.y > p.y) != (b.y > p.y) {
+            let x = a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x);
+            if p.x < x {
+                odd = !odd;
+            }
+        }
+    }
+    odd
+}
+
+#[derive(Debug, Clone)]
+enum Shape_ {
+    Rect(f64, f64, f64, f64),
+    Ring(f64, f64, f64, f64),
+    Circle(f64, f64, f64),
+    Line(f64, f64, f64, f64),
+}
+
+fn shape() -> impl Strategy<Value = Shape_> {
+    prop_oneof![
+        (10.0f64..200.0, 10.0f64..200.0, 2.0f64..80.0, 2.0f64..80.0)
+            .prop_map(|(x, y, w, h)| Shape_::Rect(x, y, w, h)),
+        (10.0f64..200.0, 10.0f64..200.0, 12.0f64..80.0, 12.0f64..80.0)
+            .prop_map(|(x, y, w, h)| Shape_::Ring(x, y, w, h)),
+        (30.0f64..240.0, 30.0f64..240.0, 1.0f64..25.0)
+            .prop_map(|(x, y, r)| Shape_::Circle(x, y, r)),
+        (
+            10.0f64..280.0,
+            10.0f64..280.0,
+            10.0f64..280.0,
+            10.0f64..280.0
+        )
+            .prop_map(|(a, b, c, d)| Shape_::Line(a, b, c, d)),
+    ]
+}
+
+fn path_of(s: &Shape_) -> BezPath {
+    match *s {
+        Shape_::Rect(x, y, w, h) => rect_path(x, y, w, h),
+        Shape_::Ring(x, y, w, h) => {
+            let mut p = rect_path(x, y, w, h);
+            p.extend(rect_path(x + 4.0, y + 4.0, w - 8.0, h - 8.0));
+            p
+        }
+        Shape_::Circle(x, y, r) => Circle::new((x, y), r).to_path(0.05),
+        Shape_::Line(a, b, c, d) => {
+            let mut p = BezPath::new();
+            p.move_to((a, b));
+            p.line_to((c, d));
+            p
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// Weed lines and boxes never come within 1 mm of a design cut and
+    /// never cut inside a design ring.
+    #[test]
+    fn weeds_keep_clear_of_the_design(
+        shapes in proptest::collection::vec(shape(), 1..8),
+        spacing in 5.0f64..30.0,
+        margin in 1.0f64..10.0,
+        per_object in any::<bool>(),
+        monotonic_feed in any::<bool>(),
+    ) {
+        let input: Vec<PlacedPath> = shapes
+            .iter()
+            .enumerate()
+            .map(|(i, s)| placed(i as u64 + 1, path_of(s)))
+            .collect();
+        let s = PipelineSettings {
+            monotonic_feed,
+            ..settings(WeedSettings {
+                weed_box: true,
+                margin_mm: margin,
+                per_object,
+                lines: WeedLines::Both,
+                spacing_mm: spacing,
+            })
+        };
+        let out = plan(&input, &s).unwrap();
+        let design: Vec<&Toolpath> = out
+            .toolpaths
+            .iter()
+            .filter(|t| t.kind == ToolpathKind::Cut)
+            .collect();
+        let segs: Vec<(Point, Point)> = design
+            .iter()
+            .flat_map(|t| t.points.windows(2).map(|w| (w[0], w[1])))
+            .collect();
+        let rings: Vec<&[Point]> = design.iter().filter(|t| t.closed).map(|t| t.lap()).collect();
+        for w in weeds(&out) {
+            for e in w.lap().windows(2) {
+                for &(a, b) in &segs {
+                    let d = seg_distance(e[0], e[1], a, b);
+                    prop_assert!(
+                        d >= WEED_CLEARANCE_MM - 1e-9,
+                        "weed {:?} is {d} mm from a design cut", w.source
+                    );
+                }
+                if !w.closed {
+                    // Clear of every cut, so the whole piece lies on the
+                    // side of its midpoint.
+                    let mid = e[0].midpoint(e[1]);
+                    prop_assert!(
+                        rings.iter().all(|r| !inside(mid, r)),
+                        "weed line at {mid:?} cuts inside a design ring"
+                    );
+                }
+            }
+        }
+    }
+}

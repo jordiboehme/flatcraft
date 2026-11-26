@@ -28,6 +28,7 @@ fn job() -> JobSettings {
         force: None,
         passes: Some(2),
         strategy: Default::default(),
+        weed: Default::default(),
     }
 }
 

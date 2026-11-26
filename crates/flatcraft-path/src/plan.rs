@@ -3,7 +3,11 @@
 use std::ops::Range;
 
 use flatcraft_core::document::ObjectId;
-use flatcraft_core::limits::{MAX_OVERCUT_MM, MAX_TOLERANCE_MM, MIN_TOLERANCE_MM};
+use flatcraft_core::document::WeedSettings;
+use flatcraft_core::limits::{
+    MAX_OVERCUT_MM, MAX_TOLERANCE_MM, MAX_WEED_MARGIN_MM, MAX_WEED_SPACING_MM, MIN_TOLERANCE_MM,
+    MIN_WEED_MARGIN_MM, MIN_WEED_SPACING_MM,
+};
 use kurbo::{BezPath, PathEl, Point, Rect, Vec2};
 
 use flatcraft_core::geometry::RingDirection;
@@ -11,7 +15,7 @@ use flatcraft_core::geometry::RingDirection;
 use crate::containment::{self, KeepMode, KeptMaterial};
 use crate::knife::{self, Compensation, CornerMode};
 use crate::strategy::StrategySettings;
-use crate::{clean, flatten, order, passes};
+use crate::{clean, flatten, order, passes, weed};
 
 /// Which path of which object a toolpath came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +70,8 @@ pub struct PipelineSettings {
     /// A stroke cut first to turn the blade to a known heading. M2 never
     /// sets it from the engine.
     pub alignment_stroke: Option<AlignmentStroke>,
+    /// The weed box and weed lines cut after the design ([`crate::weed`]).
+    pub weed: WeedSettings,
 }
 
 /// The default flatten and join tolerance, in millimetres.
@@ -81,8 +87,8 @@ impl PipelineSettings {
     /// The spec defaults for `cutting_area` with travel from `home`: 0.01 mm
     /// tolerances, 0.5 mm overcut, one pass, chained closed passes,
     /// counter-clockwise rings, no feed bands, the Quality strategy, a
-    /// 0.025 mm shortest cut, tip compensation, arcs at corners and no
-    /// alignment stroke.
+    /// 0.025 mm shortest cut, tip compensation, arcs at corners, no
+    /// alignment stroke and no weeding.
     pub fn with_defaults(cutting_area: Rect, home: Point) -> Self {
         Self {
             cutting_area,
@@ -101,6 +107,7 @@ impl PipelineSettings {
             compensation: Compensation::Tip,
             corner_mode: CornerMode::Arc,
             alignment_stroke: None,
+            weed: WeedSettings::default(),
         }
     }
 }
@@ -121,6 +128,10 @@ pub enum ToolpathKind {
     /// The optional alignment stroke: the first blade-down run of a job,
     /// which turns the blade to a known heading. It counts as waste.
     Alignment,
+    /// A weed line or weed box ([`crate::weed`]): a cut through the waste
+    /// only, after the design, so the waste peels off easily. It adds no
+    /// kept material and the simulator measures it as waste.
+    Weed,
 }
 
 /// A short straight stroke that turns the blade to `direction` before the first cut.
@@ -259,6 +270,9 @@ pub struct CutPlan {
     /// Paths left out because they are shorter than
     /// `PipelineSettings::min_cut_mm`.
     pub dropped_short: usize,
+    /// Weed boxes left out because they do not fit inside the cutting
+    /// area with the weed clearance to the design.
+    pub dropped_weed_boxes: usize,
 }
 
 /// The pipeline setting an [`PlanError::InvalidSettings`] is about.
@@ -275,6 +289,10 @@ pub enum SettingsField {
     Knife,
     /// The alignment stroke.
     AlignmentStroke,
+    /// The weed box margin.
+    WeedMargin,
+    /// The weed line spacing.
+    WeedSpacing,
 }
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -334,6 +352,13 @@ fn validate(s: &PipelineSettings) -> Result<(), PlanError> {
             return bad(F::AlignmentStroke, a.length_mm);
         }
     }
+    let w = s.weed;
+    if !(MIN_WEED_MARGIN_MM..=MAX_WEED_MARGIN_MM).contains(&w.margin_mm) {
+        return bad(F::WeedMargin, w.margin_mm);
+    }
+    if !(MIN_WEED_SPACING_MM..=MAX_WEED_SPACING_MM).contains(&w.spacing_mm) {
+        return bad(F::WeedSpacing, w.spacing_mm);
+    }
     let a = s.cutting_area;
     for v in [a.x0, a.y0, a.x1, a.y1] {
         if !v.is_finite() {
@@ -392,6 +417,12 @@ fn invalid_settings_message(field: SettingsField, value: f64) -> String {
         ),
         F::AlignmentStroke => format!(
             "The alignment stroke must have a finite start, a direction and a length above 0 mm (got {value})."
+        ),
+        F::WeedMargin => format!(
+            "The weed box margin must be a number from {MIN_WEED_MARGIN_MM} to {MAX_WEED_MARGIN_MM} mm (got {value})."
+        ),
+        F::WeedSpacing => format!(
+            "The weed line spacing must be a number from {MIN_WEED_SPACING_MM} to {MAX_WEED_SPACING_MM} mm (got {value})."
         ),
     }
 }
@@ -466,11 +497,13 @@ fn lines_of_flat(
 /// 5. drop paths shorter than `min_cut_mm`, counted in `dropped_short`
 /// 6. containment and keep sides
 /// 7. order
-/// 8. passes and overcut: chained laps on closed rings, the overcut after
+/// 8. weeding: the weed lines, then the weed box, after the design
+///    ([`weed::generate`], [`weed::sequence`])
+/// 9. passes and overcut: chained laps on closed rings, the overcut after
 ///    the last lap ([`passes::chain`])
-/// 9. knife: the alignment stroke and host compensation ([`knife::apply`]),
-///    with the job's kept material built from the first lap of each
-///    ordered `Cut` ring (Ruling F3)
+/// 10. knife: the alignment stroke and host compensation ([`knife::apply`]),
+///     with the job's kept material built from the first lap of each
+///     ordered `Cut` ring (Ruling F3)
 pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanError> {
     validate(s)?;
     let flat: Vec<BezPath> = input
@@ -530,6 +563,9 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
         t.keep = containment::keep_side(&tree, i, t.closed, mode_of(t.source.object));
     }
     let toolpaths = order::order(toolpaths, &tree, s.home, s);
+    // Weeds read the design as one lap each, before passes and overcut.
+    let weeds = weed::generate(&toolpaths, mode_of, s.cutting_area, &s.weed);
+    let toolpaths = weed::sequence(toolpaths, &weeds, s);
     let mut toolpaths = if s.chain_closed_passes {
         passes::chain(
             toolpaths,
@@ -574,6 +610,7 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
         end_heading,
         compensation,
         dropped_short,
+        dropped_weed_boxes: weeds.dropped_boxes,
     })
 }
 

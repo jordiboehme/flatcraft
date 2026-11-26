@@ -81,6 +81,7 @@ mod tests {
             force: None,
             passes: None,
             strategy: Default::default(),
+            weed: Default::default(),
         });
         doc.add(
             "x".into(),

@@ -396,6 +396,81 @@ pub struct JobSettings {
     /// A file written before Milestone 2 has none and gets the default.
     #[serde(default)]
     pub strategy: CutStrategy,
+    /// Extra cuts through the waste that make weeding easier. Off unless
+    /// the person turns them on; not written while off.
+    #[serde(default, skip_serializing_if = "WeedSettings::is_default")]
+    pub weed: WeedSettings,
+}
+
+/// Which weed lines a job cuts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WeedLines {
+    #[default]
+    Off,
+    /// Lines across the carriage (along x).
+    Horizontal,
+    /// Lines in the feed direction (along y).
+    Vertical,
+    Both,
+}
+
+impl WeedLines {
+    /// Cuts horizontal lines.
+    pub fn horizontal(self) -> bool {
+        matches!(self, WeedLines::Horizontal | WeedLines::Both)
+    }
+
+    /// Cuts vertical lines.
+    pub fn vertical(self) -> bool {
+        matches!(self, WeedLines::Vertical | WeedLines::Both)
+    }
+}
+
+/// The default margin of the weed box, mm.
+pub const DEFAULT_WEED_MARGIN_MM: f64 = 3.0;
+/// The default spacing of weed lines, mm.
+pub const DEFAULT_WEED_SPACING_MM: f64 = 20.0;
+
+/// The weed box and weed lines of a job (Task 51): extra cuts through the
+/// waste only, so the waste peels off in pieces.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WeedSettings {
+    /// Cut a rectangle around the design.
+    #[serde(rename = "box")]
+    pub weed_box: bool,
+    /// How far the box stays from the design, mm.
+    pub margin_mm: f64,
+    /// One box per object instead of one around everything. Boxes that
+    /// would overlap become one.
+    pub per_object: bool,
+    pub lines: WeedLines,
+    /// The distance between weed lines, mm.
+    pub spacing_mm: f64,
+}
+
+impl Default for WeedSettings {
+    fn default() -> Self {
+        Self {
+            weed_box: false,
+            margin_mm: DEFAULT_WEED_MARGIN_MM,
+            per_object: false,
+            lines: WeedLines::Off,
+            spacing_mm: DEFAULT_WEED_SPACING_MM,
+        }
+    }
+}
+
+impl WeedSettings {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// True when the job cuts any weed path.
+    pub fn any(&self) -> bool {
+        self.weed_box || self.lines != WeedLines::Off
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

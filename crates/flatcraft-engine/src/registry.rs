@@ -77,6 +77,7 @@ static ALL: &[&dyn Command] = &[
     &profiles::JobSetMedia,
     &profiles::JobSetOverrides,
     &profiles::JobSetStrategy,
+    &profiles::JobSetWeeding,
     &job::JobPreview,
     &job::JobSend,
     &job::JobHistory,
