@@ -1,6 +1,7 @@
 //! Registry commands and the helpers they share.
 
 pub mod arrange;
+pub mod check;
 pub mod edit;
 pub mod export;
 pub mod job;

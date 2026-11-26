@@ -21,6 +21,7 @@ use super::{
 };
 use crate::commands::normalize_deg;
 use crate::placement;
+use crate::report::{self, Code, Issue, Report};
 use crate::session::{CommandError, Origin, Session};
 
 /// Text for an import warning, for people and agents.
@@ -137,37 +138,84 @@ pub(crate) fn add_svg(
         import.page_frame_mm,
     )?;
     warnings.extend(larger_than_area(s, id));
-    let out = json!({ "id": id.0, "bounds_mm": bounds_json(s, id), "warnings": warnings });
+    let found = report::svg_issues(id, &import.warnings);
+    let out = json!({
+        "id": id.0,
+        "bounds_mm": bounds_json(s, id),
+        "warnings": warnings,
+        "report": import_report(s, id, found).to_json(),
+    });
     Ok((id, out))
 }
 
-/// Warnings and numbers that describe a trace, for people and agents.
-pub(crate) fn trace_report(t: &TraceResult, invert: bool) -> (Vec<String>, Value) {
-    let mut warnings = Vec::new();
+/// The report of a new object: what the import found in the file, then
+/// the geometry checks of `document.check`.
+fn import_report(s: &Session, id: ObjectId, found: Vec<Issue>) -> Report {
+    let mut report = crate::job::JobInput::of(s)
+        .map(|input| report::check(&input, Some(&[id])))
+        .unwrap_or_default();
+    let mut issues = found;
+    issues.append(&mut report.issues);
+    report.issues = issues;
+    report
+}
+
+/// What a trace found that is worth a warning: the code, how many shapes
+/// it is about and the warning text.
+fn trace_findings(t: &TraceResult, invert: bool) -> Vec<(Code, usize, String)> {
+    let mut out = Vec::new();
     if t.paths.is_empty() {
         let shape = if invert { "light" } else { "dark" };
-        warnings.push(format!(
-            "nothing was traced: no {shape} shape is big enough. Try another threshold, invert, or a smaller despeckle area"
+        out.push((
+            Code::NothingTraced,
+            0,
+            format!(
+                "nothing was traced: no {shape} shape is big enough. Try another threshold, invert, or a smaller despeckle area"
+            ),
         ));
     }
     if let Some((w, h)) = t.downscaled_from {
-        warnings.push(format!(
-            "The image was traced at a lower resolution ({w} x {h} px) to keep memory in check."
+        out.push((
+            Code::TraceDownscaled,
+            0,
+            format!(
+                "The image was traced at a lower resolution ({w} x {h} px) to keep memory in check."
+            ),
         ));
     }
     if let Some(dpi) = t.ignored_dpi {
-        warnings.push(format!(
-            "The file declares {dpi:.1} dpi, which is not plausible. It was ignored and 300 dpi used; set dpi_override to change it."
+        out.push((
+            Code::DpiIgnored,
+            0,
+            format!(
+                "The file declares {dpi:.1} dpi, which is not plausible. It was ignored and 300 dpi used; set dpi_override to change it."
+            ),
         ));
     }
     match t.dropped_small {
         0 => {}
-        1 => warnings
-            .push("1 shape was dropped because it is smaller than the minimum feature size".into()),
-        n => warnings.push(format!(
-            "{n} shapes were dropped because they are smaller than the minimum feature size"
+        1 => out.push((
+            Code::ShapesDropped,
+            1,
+            "1 shape was dropped because it is smaller than the minimum feature size".into(),
+        )),
+        n => out.push((
+            Code::ShapesDropped,
+            n,
+            format!(
+                "{n} shapes were dropped because they are smaller than the minimum feature size"
+            ),
         )),
     }
+    out
+}
+
+/// Warnings and numbers that describe a trace, for people and agents.
+pub(crate) fn trace_report(t: &TraceResult, invert: bool) -> (Vec<String>, Value) {
+    let warnings = trace_findings(t, invert)
+        .into_iter()
+        .map(|(_, _, text)| text)
+        .collect();
     let numbers = json!({
         "dropped_small": t.dropped_small,
         "despeckled": t.despeckled,
@@ -187,6 +235,7 @@ fn add_raster(
     let settings = TraceSettings::default();
     let t = trace(&bytes, &settings, blade_offset_mm(s)).map_err(import_error)?;
     let (warnings, numbers) = trace_report(&t, settings.invert);
+    let findings = trace_findings(&t, settings.invert);
     let id = add_object(
         s,
         name.clone(),
@@ -200,7 +249,16 @@ fn add_raster(
     )?;
     let mut warnings = warnings;
     warnings.extend(larger_than_area(s, id));
-    let mut out = json!({ "id": id.0, "bounds_mm": bounds_json(s, id), "warnings": warnings });
+    let found = findings
+        .iter()
+        .map(|(code, n, text)| report::trace_issue(id, *code, *n, text))
+        .collect();
+    let mut out = json!({
+        "id": id.0,
+        "bounds_mm": bounds_json(s, id),
+        "warnings": warnings,
+        "report": import_report(s, id, found).to_json(),
+    });
     merge(&mut out, numbers);
     Ok((id, out))
 }
@@ -301,10 +359,14 @@ fn run_import(s: &mut Session, p: ImportParams, _: Origin) -> Result<Value, Comm
 /// that imported nothing changes nothing (no undo step, not dirty).
 fn import_many(s: &mut Session, paths: &[PathBuf]) -> Result<Value, CommandError> {
     let (mut ids, mut failed, mut warnings) = (Vec::new(), Vec::new(), Vec::new());
+    let mut all = Report::default();
     for path in paths {
         match import_one(s, path) {
             Ok(out) => {
                 ids.extend(out["id"].as_u64().map(ObjectId));
+                if let Ok(r) = serde_json::from_value::<Report>(out["report"].clone()) {
+                    all.extend(r);
+                }
                 let name = path.display();
                 for w in out["warnings"].as_array().into_iter().flatten() {
                     if let Some(w) = w.as_str() {
@@ -318,7 +380,12 @@ fn import_many(s: &mut Session, paths: &[PathBuf]) -> Result<Value, CommandError
     if !ids.is_empty() {
         s.doc_mut().selection = ids.iter().copied().collect();
     }
-    Ok(json!({ "imported": ids_json(&ids), "failed": failed, "warnings": warnings }))
+    Ok(json!({
+        "imported": ids_json(&ids),
+        "failed": failed,
+        "warnings": warnings,
+        "report": all.to_json(),
+    }))
 }
 
 command!(
@@ -328,7 +395,7 @@ command!(
     mutates: true,
     params: ImportParams,
     run: run_import,
-    description: "Imports a vector file from disk as a new object and selects it. Supported: .svg and .svgz, and the raster types .png, .jpg, .jpeg, .webp and .gif (by extension). The object name is the file name without extension. The object keeps an embedded copy and remembers the file, so after the file is changed in another app object.reload picks up the changes. SVG sizes come from the SVG in mm. A raster image is traced into cut outlines with the default trace settings (automatic threshold, dark pixels are cut) at the dpi stored in the file, or 300 dpi; use object.retrace to change the settings. Images over 16384 x 16384 px are refused. The object keeps its position from the SVG page if that lies inside the cutting area, otherwise its top-left corner moves to the top-left of the cutting area. Coordinates are mm, origin the 0,0 of the grid printed on the mat, y down. With paths instead of path, several files are imported as one undo step and all new objects are selected; the call never fails because of a file: a file that cannot be imported is listed in failed and the others are still imported, and when none could be imported nothing changes (no undo step); it returns {imported: [id], failed: [{path, reason}], warnings: [text, each starting with the file path]}. With path it returns {id, bounds_mm: {x0,y0,x1,y1}, warnings: [text]}; raster imports also return dropped_small (shapes below the minimum feature size that were dropped), despeckled (specks below the despeckle area that were removed), threshold_used (0-255) and size_mm [width, height] of the whole image.",
+    description: "Imports a vector file from disk as a new object and selects it. Supported: .svg and .svgz, and the raster types .png, .jpg, .jpeg, .webp and .gif (by extension). The object name is the file name without extension. The object keeps an embedded copy and remembers the file, so after the file is changed in another app object.reload picks up the changes. SVG sizes come from the SVG in mm. A raster image is traced into cut outlines with the default trace settings (automatic threshold, dark pixels are cut) at the dpi stored in the file, or 300 dpi; use object.retrace to change the settings. Images over 16384 x 16384 px are refused. The object keeps its position from the SVG page if that lies inside the cutting area, otherwise its top-left corner moves to the top-left of the cutting area. Coordinates are mm, origin the 0,0 of the grid printed on the mat, y down. With paths instead of path, several files are imported as one undo step and all new objects are selected; the call never fails because of a file: a file that cannot be imported is listed in failed and the others are still imported, and when none could be imported nothing changes (no undo step); it returns {imported: [id], failed: [{path, reason}], warnings: [text, each starting with the file path]}. With path it returns {id, bounds_mm: {x0,y0,x1,y1}, warnings: [text], report: {shapes, issues: [issue]}}; with paths the report covers every imported object (each issue names its object_ids). The report lists what to know about the new objects (open paths, hairlines, shapes below the minimum feature size, fills the cut mode ignores, objects larger than the cutting area, missing fonts and more), each with a code, a severity, a plain message, a hint and fixes that are ready-to-run commands; see document.check for the format and the codes. An empty issues list means nothing to report. Raster imports also return dropped_small (shapes below the minimum feature size that were dropped), despeckled (specks below the despeckle area that were removed), threshold_used (0-255) and size_mm [width, height] of the whole image.",
 );
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -351,7 +418,7 @@ command!(
     mutates: true,
     params: ImportSvgParams,
     run: run_import_svg,
-    description: "Imports SVG markup given as text as a new object and selects it. Give the SVG a width and height in mm (for example width=\"50mm\") so the size is exact; plain numbers are CSS pixels (96 per inch). Every visible path, fill or stroke, is cut as set by object.set_cut_options (default: the outline of fills and of strokes 0.5 mm or wider); text is cut as outlines. Placement as in object.import. Coordinates are mm, origin the 0,0 of the grid printed on the mat, y down. Returns {id, bounds_mm: {x0,y0,x1,y1}, warnings: [text]}.",
+    description: "Imports SVG markup given as text as a new object and selects it. Give the SVG a width and height in mm (for example width=\"50mm\") so the size is exact; plain numbers are CSS pixels (96 per inch). Every visible path, fill or stroke, is cut as set by object.set_cut_options (default: the outline of fills and of strokes 0.5 mm or wider); text is cut as outlines. Placement as in object.import. Coordinates are mm, origin the 0,0 of the grid printed on the mat, y down. Returns {id, bounds_mm: {x0,y0,x1,y1}, warnings: [text], report: {shapes, issues: [issue]}}: the import report, with codes, plain messages and fixes as ready-to-run commands (see document.check for the format and the codes).",
 );
 
 // ---------------------------------------------------------------- retrace

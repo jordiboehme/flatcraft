@@ -357,3 +357,79 @@ fn instructions_put_the_origin_on_the_mat_grid() {
     assert!(!text.contains("top-left corner of the media"), "{text}");
     assert!(!text.contains('\u{2014}'), "no em-dash");
 }
+
+#[test]
+fn instructions_name_the_report_codes() {
+    let text = flatcraft_mcp::server::INSTRUCTIONS;
+    for code in flatcraft_engine::report::Code::ALL {
+        assert!(text.contains(code.as_str()), "{} missing", code.as_str());
+    }
+    assert!(text.contains("fixes"), "{text}");
+    assert!(text.contains("document.check"), "{text}");
+}
+
+async fn exec(f: &Fixture, command: &str, params: Value) -> Value {
+    let r = call(
+        f,
+        "execute",
+        json!({ "command": command, "params": params }),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{command}: {}", text(&r));
+    serde_json::from_str(&text(&r)).unwrap()
+}
+
+/// An agent reads the import report, runs the offered fix with one
+/// execute call, and the issue is gone.
+#[tokio::test]
+async fn an_agent_runs_the_fix_of_an_import_report() {
+    let f = connect().await;
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><rect x="20" y="20" width="30" height="30" fill="none" stroke="black" stroke-width="1"/></svg>"#;
+    let r = exec(
+        &f,
+        "object.import_svg",
+        json!({ "svg": svg, "name": "frame" }),
+    )
+    .await;
+    let issue = &r["report"]["issues"][0];
+    assert_eq!(issue["code"], "hairline");
+    assert_eq!(issue["severity"], "warning");
+    assert_eq!(issue["object_ids"], json!([r["id"]]));
+    let fix = &issue["fixes"][0];
+    exec(&f, fix["command"].as_str().unwrap(), fix["args"].clone()).await;
+    let c = exec(&f, "document.check", json!({})).await;
+    assert_eq!(c["issues"], json!([]), "{c}");
+}
+
+/// job.preview of a job with nothing to cut is data with the reasons,
+/// not a tool error.
+#[tokio::test]
+async fn nothing_to_cut_comes_back_as_reasons_with_fixes() {
+    let f = connect().await;
+    let r = exec(
+        &f,
+        "object.import_svg",
+        json!({ "svg": SVG, "name": "box" }),
+    )
+    .await;
+    exec(
+        &f,
+        "object.set_cut",
+        json!({ "ids": [r["id"]], "cut": false }),
+    )
+    .await;
+    let p = exec(&f, "job.preview", json!({})).await;
+    assert_eq!(p["ready"], false);
+    assert_eq!(p["nothing_to_cut"], true);
+    let issue = &p["issues"][0];
+    assert_eq!(issue["code"], "skipped");
+    assert_eq!(
+        issue["message"],
+        "'box' is set to skip, so the knife leaves it out."
+    );
+    let fix = &issue["fixes"][0];
+    assert_eq!(fix["command"], "object.set_cut");
+    exec(&f, "object.set_cut", fix["args"].clone()).await;
+    let p = exec(&f, "job.preview", json!({})).await;
+    assert_eq!(p["ready"], true, "{p}");
+}

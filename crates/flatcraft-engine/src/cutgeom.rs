@@ -71,11 +71,25 @@ pub fn cut_bounds(object: &Object) -> Option<Rect> {
     #[cfg(test)]
     tests::CUT_BOUNDS_CALLS.with(|n| n.set(n.get() + 1));
     let affine = object.transform.affine(object.local_bounds);
-    object
-        .geometry
+    cut_bounds_of(&object.geometry, &object.cut, affine)
+}
+
+/// [`cut_bounds`] of geometry placed with `affine` and cut with `options`,
+/// for callers that hold the parts of an object (a job input).
+pub fn cut_bounds_of(geometry: &[CutPath], options: &CutOptions, affine: Affine) -> Option<Rect> {
+    geometry
         .iter()
-        .filter_map(|p| path_bounds(p, &object.cut, affine))
+        .filter_map(|p| path_bounds(p, options, affine))
         .reduce(|a, b| a.union(b))
+}
+
+/// The placed width of the stroke of `paint` when it is cut around its
+/// outline (both edges), else `None`.
+pub fn outline_width(paint: Paint, options: &CutOptions, affine: Affine) -> Option<f64> {
+    match options.mode {
+        CutMode::AllLines => None,
+        CutMode::ObjectOutlines => outline_style(paint, options, affine).map(|s| s.width),
+    }
 }
 
 fn path_bounds(path: &CutPath, options: &CutOptions, affine: Affine) -> Option<Rect> {

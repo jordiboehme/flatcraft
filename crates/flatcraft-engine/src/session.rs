@@ -1321,6 +1321,7 @@ mod tests {
                 "document.state",
                 "document.notes",
                 "document.check_sources",
+                "document.check",
                 "profiles.list",
                 "profiles.get",
                 "job.preview",

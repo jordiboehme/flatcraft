@@ -21,6 +21,7 @@ use crate::commands::project::{in_config, lexical, resolve_strict, resolved};
 use crate::cutgeom;
 use crate::cutlog;
 use crate::gate::{self, GateDecision};
+use crate::report::{self, BuildFacts, Issue};
 use crate::session::{CommandError, JobSummary, Origin, Session};
 
 /// Join tolerance of the pipeline: path ends closer than this are joined.
@@ -53,6 +54,9 @@ pub struct JobResult {
     /// path outside the area, a mat that is not there, paths that are not
     /// cut). The window's state dot counts only those.
     pub choice_warnings: usize,
+    /// Problems of a job that does cut (filled shapes the cut mode cuts
+    /// nothing of), with their fixes. See `report`.
+    pub issues: Vec<Issue>,
     pub sent: Option<SendReport>,
 }
 
@@ -226,6 +230,10 @@ pub struct BuildFailure {
     pub error: CommandError,
     /// No visible object has cut paths.
     pub nothing_to_cut: bool,
+    /// Every reason the job cannot be cut that a person or an agent can
+    /// fix, with the fixes: the reasons there is nothing to cut, or the
+    /// objects outside the cutting area. Empty for other refusals.
+    pub issues: Vec<Issue>,
 }
 
 impl From<CommandError> for BuildFailure {
@@ -233,6 +241,7 @@ impl From<CommandError> for BuildFailure {
         Self {
             error,
             nothing_to_cut: false,
+            issues: Vec::new(),
         }
     }
 }
@@ -261,10 +270,16 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
 
     let mut warnings: Vec<String> = mat_warning.into_iter().collect();
     let mut choice_warnings = 0;
+    let mut facts = BuildFacts {
+        objects: objects.len(),
+        ..BuildFacts::default()
+    };
+    let mut issues = Vec::new();
     let mut placed = Vec::new();
     let mut labels = std::collections::BTreeMap::new();
     for o in objects {
         if !o.visible {
+            facts.hidden.push(o.id);
             choice_warnings += 1;
             warnings.push(format!(
                 "'{}' is hidden and will not be cut.",
@@ -273,6 +288,7 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
             continue;
         }
         if !o.cut_enabled {
+            facts.skipped.push(o.id);
             choice_warnings += 1;
             warnings.push(format!(
                 "'{}' is skipped and will not be cut.",
@@ -294,6 +310,18 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
                 one_line(&o.name),
                 plotter.flatten_tolerance_mm
             ));
+        }
+        if placed.len() == before {
+            facts.nothing_placed.push((o.id, no_area));
+        } else {
+            facts.placed.push(o.id);
+            if no_area > 0 {
+                issues.extend(report::fill_ignored_issue(
+                    o,
+                    no_area,
+                    plotter.flatten_tolerance_mm,
+                ));
+            }
         }
         if placed.len() == before {
             warnings.push(format!(
@@ -341,6 +369,7 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
             BuildFailure {
                 error: CommandError::Refused(text),
                 nothing_to_cut,
+                issues: report::nothing_to_cut(input, &facts, false),
             }
         }
         PlanError::TooShort {
@@ -358,6 +387,7 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
             BuildFailure {
                 error: CommandError::Refused(text),
                 nothing_to_cut: true,
+                issues: report::nothing_to_cut(input, &facts, true),
             }
         }
         PlanError::OutOfArea { objects } => {
@@ -369,11 +399,14 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
                         .map_or_else(|| format!("object {}", id.0), |n| one_line(n))
                 })
                 .collect();
-            CommandError::Refused(format!(
-                "These objects are outside the cutting area: {}. Move or scale them, or pick a bigger mat.",
-                names.join(", ")
-            ))
-            .into()
+            BuildFailure {
+                error: CommandError::Refused(format!(
+                    "These objects are outside the cutting area: {}. Move or scale them, or pick a bigger mat.",
+                    names.join(", ")
+                )),
+                nothing_to_cut: false,
+                issues: report::out_of_area(input, &objects),
+            }
         }
         other @ PlanError::InvalidSettings { .. } => {
             CommandError::Refused(other.to_string()).into()
@@ -418,6 +451,7 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         settings,
         warnings,
         choice_warnings,
+        issues,
         sent: None,
     })
 }
@@ -441,7 +475,7 @@ pub(crate) fn place_object(
             labels.insert((o.id, i), label.clone());
         }
         let cut = cutgeom::cut_path(p, &o.cut, affine, tolerance_mm);
-        if cut.is_empty() && p.paint.stroke.is_none() && !p.path.elements().is_empty() {
+        if report::fill_without_area(p, &cut) {
             // A stroke-less fill without area, or thinner than the
             // tolerance, is not visible and gives nothing to cut.
             no_area += 1;

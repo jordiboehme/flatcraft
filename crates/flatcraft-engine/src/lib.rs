@@ -12,6 +12,7 @@ pub mod placement;
 pub mod prefs;
 pub mod preview;
 pub mod registry;
+pub mod report;
 pub mod session;
 pub mod simulate;
 pub mod thumbnails;

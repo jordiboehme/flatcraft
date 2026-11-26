@@ -10,7 +10,26 @@ use crate::session::{CommandError, Origin, Session};
 const PREVIEW_LINES: usize = 200;
 
 fn run_preview(s: &mut Session, _: NoParams, _: Origin) -> Result<Value, CommandError> {
-    let result = crate::job::build(s)?;
+    let input = crate::job::JobInput::of(s)?;
+    let result = match crate::job::build_classified(&input) {
+        Ok(r) => r,
+        // A job that cannot be cut for reasons the report explains: the
+        // reasons as data, so an agent can run their fixes.
+        Err(f) if !f.issues.is_empty() => {
+            let reason = match &f.error {
+                CommandError::Refused(text) | CommandError::Failed(text) => text.clone(),
+                other => other.to_string(),
+            };
+            return Ok(json!({
+                "ready": false,
+                "nothing_to_cut": f.nothing_to_cut,
+                "reason": reason,
+                "toolpaths": 0,
+                "issues": crate::report::issues_json(&f.issues),
+            }));
+        }
+        Err(f) => return Err(f.error),
+    };
     let passes = crate::job::summary(&result).passes;
     let listing: Vec<Value> = result
         .job
@@ -20,6 +39,9 @@ fn run_preview(s: &mut Session, _: NoParams, _: Origin) -> Result<Value, Command
         .map(|l| json!({ "command": l.command, "note": l.note }))
         .collect();
     let value = json!({
+        "ready": true,
+        "nothing_to_cut": false,
+        "issues": crate::report::issues_json(&result.issues),
         "toolpaths": result.plan.toolpaths.len(),
         "cut_mm": result.plan.cut_mm,
         "travel_mm": result.plan.travel_mm,
@@ -45,7 +67,7 @@ command!(
     mutates: false,
     params: NoParams,
     run: run_preview,
-    description: "Plans the cut of the active document and builds the GPGL bytes without sending anything. Read the project notes (document.notes or document.state) before a cut. Only visible objects are cut; they must lie inside the cutting area. Speed, force and passes come from the material for this plotter, then the job overrides. Returns {toolpaths (count), cut_mm (blade-down length incl. overcut and passes), travel_mm, warnings: [text], settings: {speed, force, passes, track_enhancing}, bytes (job size), listing_total, listing: [{command, note}] (the first 200 commands; notes read \"object <id> '<name>', path <i> [<label>], pass <p>\", or \"..., passes 1-<n>\" for a closed path cut <n> times in a row without lifting the blade)}.",
+    description: "Plans the cut of the active document and builds the GPGL bytes without sending anything. Read the project notes (document.notes or document.state) before a cut. Only visible objects are cut; they must lie inside the cutting area. Speed, force and passes come from the material for this plotter, then the job overrides. When the job cannot be cut for a reason you can fix (nothing to cut, or objects outside the cutting area) it does not fail: it returns {ready: false, nothing_to_cut (true when no object gives anything to cut), reason (the refusal job.send would give), toolpaths: 0, issues: [issue]} with every reason that applies, each with fixes to run (codes empty_document, hidden, skipped, fill_ignored, no_paths, too_small, outside_area, larger_than_area; see document.check for the issue format and the codes). Other problems (a broken profile, passes out of range) are still errors. A job that can be cut returns {ready: true, nothing_to_cut: false, issues (problems that do not stop the cut, like fill_ignored), toolpaths (count), cut_mm (blade-down length incl. overcut and passes), travel_mm, warnings: [text], settings: {speed, force, passes, track_enhancing}, bytes (job size), listing_total, listing: [{command, note}] (the first 200 commands; notes read \"object <id> '<name>', path <i> [<label>], pass <p>\", or \"..., passes 1-<n>\" for a closed path cut <n> times in a row without lifting the blade)}.",
 );
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]

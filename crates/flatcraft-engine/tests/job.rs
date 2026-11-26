@@ -310,7 +310,7 @@ fn a_job_of_only_too_short_lines_says_why_nothing_is_cut() {
         json!({ "ids": [id], "mode": "all_lines", "strokes": "centre_line", "auto_threshold_mm": 1.5 }),
     );
     let err = s
-        .execute("job.preview", json!({}), Origin::User)
+        .execute("job.send", json!({}), Origin::User)
         .unwrap_err()
         .to_string();
     assert!(
@@ -320,6 +320,15 @@ fn a_job_of_only_too_short_lines_says_why_nothing_is_cut() {
         "{err}"
     );
     assert!(!err.contains('\u{2014}'));
+    // job.preview gives the same words as data, with the reasons.
+    let p = run(&mut s, "job.preview", json!({}));
+    assert_eq!(p["ready"], false);
+    assert_eq!(p["nothing_to_cut"], true);
+    assert_eq!(
+        p["reason"],
+        "Nothing to cut: the only cut path is shorter than half a plotter step (0.025 mm)."
+    );
+    assert_eq!(p["issues"][0]["code"], "too_small");
 }
 
 #[test]
