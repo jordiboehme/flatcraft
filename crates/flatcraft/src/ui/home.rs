@@ -1018,7 +1018,7 @@ pub const SAMPLES: [Sample; 6] = [
         id: "stencil",
         title: "Stencil",
         sentence: "The letters CUT fall out of a sheet you paint through.",
-        hint: "Opens a copy of a stencil: the letters C, U and T cut out of the sheet on the mat. Its Keep mode is Stencil: you keep the sheet with the holes, and the letters fall out as waste. So the blade starts its cuts inside the letters and never nicks your stencil. Cut and Prepare show the kept sheet as plain paper and the waste hatched. The letters have no closed inner parts, so nothing falls out that you need.",
+        hint: "Opens a copy of a stencil: the letters C, U and T cut out of the sheet on the mat. Its Keep mode is Stencil: you keep the sheet with the holes, and the letters fall out as waste. So the blade starts its cuts inside the letters and never nicks your stencil. The Cut workspace shows the kept sheet as plain paper and the waste hatched; in Prepare, turn on Show kept and waste in View. The letters have no closed inner parts, so nothing falls out that you need.",
         bytes: sample_bytes!("stencil"),
     },
     Sample {

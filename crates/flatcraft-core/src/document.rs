@@ -181,9 +181,11 @@ pub enum KeepMode {
     /// an odd number of the object's rings is waste, the rest of the
     /// cutting area is kept.
     Stencil,
-    /// Both sides are kept: the pieces, and everything within the
-    /// clearance of the object's rings, so no lead-in or overshoot lands
-    /// next to its cuts; the blade only swivels in place there.
+    /// Both sides of its cuts are kept: its own cuts get no lead-in and
+    /// no corner overshoot, the blade only swivels in place on them. As
+    /// kept material it counts the pieces plus a thin band (the planner's
+    /// waste clearance) around its rings, so a neighbour's waste moves
+    /// keep only that usual clearance from it.
     Both,
 }
 
