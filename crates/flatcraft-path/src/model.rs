@@ -1,4 +1,7 @@
-//! The drag knife model along one straight axis segment.
+//! The drag knife model along one straight axis segment. The simulator
+//! (`flatcraft-sim`) runs it over a whole job; the knife stage uses it to
+//! round host-compensated axis runs without pushing the blade
+//! ([`crate::quantize`]).
 //!
 //! The tip trails the axis at distance `d` and moves only along the
 //! tip-to-axis direction (spec 8.6). Along a straight axis move the tip
@@ -9,6 +12,10 @@
 //! hide an error.
 
 use kurbo::{Point, Vec2};
+
+/// A blade-down move whose push angle ([`push_angle_deg`]) is above this
+/// pushes the blade from behind.
+pub const PUSHED_DEG: f64 = 150.0;
 
 /// Below this the move or the offset has no length.
 const TINY: f64 = 1e-12;

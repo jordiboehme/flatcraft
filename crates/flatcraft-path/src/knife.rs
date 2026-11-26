@@ -9,6 +9,7 @@ use crate::plan::{
     ASSUMED_START_HEADING, AlignmentStroke, AppliedCompensation, AxisRun, CORNER_DEG, KeepSide,
     PathRef, PipelineSettings, Toolpath, ToolpathKind, WASTE_SEG,
 };
+use crate::quantize::{self, DeviceGrid};
 use crate::rings;
 
 /// The largest start turn swivelled in place at a waste-side corner. A
@@ -16,13 +17,18 @@ use crate::rings;
 /// model cannot rate it, and the M3 test cuts decide it.
 pub const SWIVEL_MAX_DEG: f64 = 90.0;
 
-/// The first radius tried for the arc lead-in (pinned by Task 10).
-pub const HOLE_LEAD_IN_RADIUS_MM: f64 = 2.0;
+/// The tip radius of the arc lead-in. Pinned by Task 10's
+/// `hole_lead_in_choice`: the smallest of 0.5, 1, 2 and 3 mm whose starts
+/// stay within `ALGORITHM_LIMIT_MM`, push nothing and touch no kept
+/// material. Every radius passed, so the smallest wins: it fits the
+/// smallest holes and wastes the least (0.8 mm against 3.2 mm at 2 mm).
+pub const HOLE_LEAD_IN_RADIUS_MM: f64 = 0.5;
 
-/// The angle between two axis points of an arc. Provisional: Task 10's
-/// `arc_step_choice` sweep must include 180 deg turns and may only pick a
-/// step that keeps every turn up to 180 deg within `ALGORITHM_LIMIT_MM`.
-/// At 10 deg a 180 deg pivot measures 0.0026 mm (15 deg measured 0.0058).
+/// The angle between two axis points of an arc. Pinned by Task 10's
+/// `arc_step_choice`: the largest of 30, 20, 15, 10 and 5 deg whose corner
+/// deviation and pivot drift stay within `ALGORITHM_LIMIT_MM` on every
+/// star tip and on 178 and 180 deg turns. 10 deg measures 0.0026 mm at
+/// 180 deg; 15 deg measures 0.0058.
 pub const ARC_STEP_DEG: f64 = 10.0;
 
 /// The start error a lead-in aims for: the same value as
@@ -47,6 +53,11 @@ pub struct HostSettings {
     pub swivel_max_deg: f64,
     pub hole_lead_in_radius_mm: f64,
     pub arc_step_deg: f64,
+    /// The device units, when the plan is for a known device: the runs are
+    /// then rounded to them without pushing the blade
+    /// ([`crate::quantize::round_runs`]). `None` keeps the exact (float)
+    /// axis runs.
+    pub device_grid: Option<DeviceGrid>,
 }
 
 impl HostSettings {
@@ -57,6 +68,7 @@ impl HostSettings {
             swivel_max_deg: SWIVEL_MAX_DEG,
             hole_lead_in_radius_mm: HOLE_LEAD_IN_RADIUS_MM,
             arc_step_deg: ARC_STEP_DEG,
+            device_grid: None,
         }
     }
 }
@@ -71,9 +83,6 @@ pub enum Compensation {
 /// The turn below which a start needs no swivel arc: the blade drops on
 /// P0 and moves on.
 pub const ALIGNED_DEG: f64 = 1.0;
-
-/// The smallest radius the arc lead-in halves down to.
-pub const MIN_HOLE_LEAD_IN_RADIUS_MM: f64 = 0.5;
 
 /// Axis points closer than this are one point.
 const SAME_POINT_MM: f64 = 1e-9;
@@ -108,7 +117,8 @@ const CHECK_STEP_MM: f64 = 0.02;
 /// `exit_state` heading after its overcut. It is `start_heading` for the
 /// first toolpath, or the stroke direction after an alignment stroke.
 /// `kept` is the job's kept material: every waste move is checked against
-/// it.
+/// it. With [`HostSettings::device_grid`] the runs are then rounded to the
+/// device units ([`quantize::round_runs`]).
 pub fn apply(
     paths: &mut Vec<Toolpath>,
     s: &PipelineSettings,
@@ -146,6 +156,9 @@ pub fn apply(
         };
         t.axis = Some(runs);
         heading = heading_after(t, heading);
+    }
+    if let Some(grid) = hs.device_grid {
+        quantize::round_runs(paths, &grid, hs.offset_mm, start_heading);
     }
     AppliedCompensation::Host {
         offset_mm: hs.offset_mm,
@@ -237,7 +250,8 @@ fn halfway(pts: &[Point]) -> Point {
 
 /// The first knife value of `s` that is out of range, for `plan`'s
 /// validation: offsets, radii and the overshoot must be finite and at least
-/// 0, the angles from 0 to 180 degrees and the arc step above 0.
+/// 0, the angles from 0 to 180 degrees, the arc step above 0 and a device
+/// grid with positive, finite units and a finite origin.
 pub(crate) fn invalid_value(s: &PipelineSettings) -> Option<f64> {
     let mut bad = Vec::new();
     if let Compensation::Host(h) = s.compensation {
@@ -252,6 +266,10 @@ pub(crate) fn invalid_value(s: &PipelineSettings) -> Option<f64> {
                 (
                     h.arc_step_deg,
                     angle(h.arc_step_deg) || h.arc_step_deg == 0.0,
+                ),
+                (
+                    h.device_grid.map_or(0.0, |g| g.units_per_mm),
+                    h.device_grid.is_some_and(|g| !g.is_valid()),
                 ),
             ]
             .into_iter()
@@ -561,49 +579,46 @@ impl Knife<'_> {
         true
     }
 
-    /// The arc lead-in: a 90 deg tip arc of radius rho that ends tangent to
-    /// `t0` at P0, on the waste side. rho starts at
-    /// `hole_lead_in_radius_mm` and halves down to
-    /// [`MIN_HOLE_LEAD_IN_RADIUS_MM`] until the waste check passes; the
-    /// waste side is the one the check accepts. The drop point needs the
-    /// clearance; the rest of the arc only needs to be waste. Its axis
-    /// points are [`hole_arc_step_deg`] apart.
+    /// The arc lead-in: a 90 deg tip arc of radius rho =
+    /// `hole_lead_in_radius_mm` that ends tangent to `t0` at P0, on the
+    /// waste side: the side the waste check accepts. The drop point needs
+    /// the clearance; the rest of the arc only needs to be waste. Its axis
+    /// points are [`hole_arc_step_deg`] apart. There is no smaller radius
+    /// to fall back to: the default is already the smallest the Task 10
+    /// sweep tried, so a hole too small for it swivels in place.
     fn hole_arc(&self, run: &mut Run, p0: Point, h: Vec2, t0: Vec2) -> bool {
         let d = self.d;
         let quarter = std::f64::consts::FRAC_PI_2;
         let normal = t0.turn_90();
-        let mut rho = self.hs.hole_lead_in_radius_mm;
-        while rho >= MIN_HOLE_LEAD_IN_RADIUS_MM - 1e-12 {
-            for n in [normal, -normal] {
-                // The tip at angle a before P0, and its direction of motion.
-                let tip = |a: f64| p0 + rho * (1.0 - a.cos()) * n - rho * a.sin() * t0;
-                let dir = |a: f64| a.cos() * t0 - a.sin() * n;
-                let td = tip(quarter);
-                if !self.drop_ok(td) {
-                    continue;
-                }
-                let samples = (rho * quarter / CHECK_STEP_MM).ceil().max(1.0) as usize;
-                let ok = (1..samples).all(|k| {
-                    let a = quarter * (1.0 - k as f64 / samples as f64);
-                    self.path_ok(tip(a), p0, false)
-                });
-                if !ok {
-                    continue;
-                }
-                let mut moves = Run::default();
-                moves.push(td + d * h, WASTE_SEG);
-                self.arc(&mut moves, td, h, dir(quarter), WASTE_SEG);
-                let step = hole_arc_step_deg(rho, self.hs.arc_step_deg);
-                let m = (90.0 / step).ceil().max(1.0) as usize;
-                for k in 1..m {
-                    let a = quarter * (1.0 - k as f64 / m as f64);
-                    moves.push(tip(a) + d * dir(a), WASTE_SEG);
-                }
-                if self.take(run, moves, p0, t0) {
-                    return true;
-                }
+        let rho = self.hs.hole_lead_in_radius_mm;
+        for n in [normal, -normal] {
+            // The tip at angle a before P0, and its direction of motion.
+            let tip = |a: f64| p0 + rho * (1.0 - a.cos()) * n - rho * a.sin() * t0;
+            let dir = |a: f64| a.cos() * t0 - a.sin() * n;
+            let td = tip(quarter);
+            if !self.drop_ok(td) {
+                continue;
             }
-            rho /= 2.0;
+            let samples = (rho * quarter / CHECK_STEP_MM).ceil().max(1.0) as usize;
+            let ok = (1..samples).all(|k| {
+                let a = quarter * (1.0 - k as f64 / samples as f64);
+                self.path_ok(tip(a), p0, false)
+            });
+            if !ok {
+                continue;
+            }
+            let mut moves = Run::default();
+            moves.push(td + d * h, WASTE_SEG);
+            self.arc(&mut moves, td, h, dir(quarter), WASTE_SEG);
+            let step = hole_arc_step_deg(rho, self.hs.arc_step_deg);
+            let m = (90.0 / step).ceil().max(1.0) as usize;
+            for k in 1..m {
+                let a = quarter * (1.0 - k as f64 / m as f64);
+                moves.push(tip(a) + d * dir(a), WASTE_SEG);
+            }
+            if self.take(run, moves, p0, t0) {
+                return true;
+            }
         }
         false
     }

@@ -108,9 +108,12 @@ fn uncompensated_square_is_not_good() {
     // into-kept 0.1427 at three corners, uncut 1.125, stray 1.535. The
     // corner rounding cuts 0.14 mm into the piece, beyond the 0.05 mm path
     // tolerance, so H1 makes it Poor although the score is above 98.
+    // Task 10 coarsened the sample step from d / 20 to d / 10, and the
+    // sampled into-kept depth reads 0.1395 (the swing round a corner is
+    // the fastest tip motion there is).
     assert!(m.score >= 98.0, "{}", m.score);
     assert!(
-        (m.max_into_kept_mm - 0.1427).abs() < 0.001,
+        (m.max_into_kept_mm - 0.1395).abs() < 0.001,
         "{}",
         m.max_into_kept_mm
     );
@@ -712,9 +715,13 @@ fn a_misaligned_start_deviates_about_d() {
     let s = SimSettings::float(0.3);
     let t = open(pts(&[(0.0, 0.0), (0.0, 20.0)]));
     let (_, m, _) = sim(&[t], Point::ZERO, &s);
+    // The largest path sample is the first, one sample step in: the tip
+    // has swung from 90 deg to 2 * atan(exp(-step / d)) off the line.
+    let step = 1.0 / flatcraft_sim::SAMPLE_STEP_FACTOR;
+    let want = 0.3 * (2.0 * (-step).exp().atan()).sin();
     assert!(
-        (m.max_start_deviation_mm - 0.2996).abs() < 0.001,
-        "{}",
+        (m.max_start_deviation_mm - want).abs() < 1e-4,
+        "{} vs {want}",
         m.max_start_deviation_mm
     );
     assert_eq!(

@@ -8,31 +8,50 @@
 
 mod grid;
 pub mod metrics;
-pub mod model;
 pub mod report;
 pub mod trace;
 
 use flatcraft_path::ASSUMED_START_HEADING;
-use kurbo::{Point, Vec2};
+use kurbo::Vec2;
 
 pub use metrics::{Grade, JobMetrics, PathMetrics, Spot, SpotKind, measure, measure_kept};
 pub use report::{SimResult, TimeModel, estimate_seconds, run, run_plan};
 pub use trace::{Sample, SimTrace, simulate};
 
+/// The drag knife model. It lives in `flatcraft-path`, whose knife stage
+/// uses it too ([`flatcraft_path::quantize`]); one model for both.
+pub mod model {
+    pub use flatcraft_path::model::{PUSHED_DEG, drag, push_angle_deg};
+}
+pub use flatcraft_path::DeviceGrid;
+pub use model::PUSHED_DEG;
+
 /// The quality limit of the float simulation against the intended path (R7).
 pub const ALGORITHM_LIMIT_MM: f64 = 0.005;
-/// The quality limit of the quantized device output (R7).
-pub const DEVICE_LIMIT_MM: f64 = 0.03;
+/// The quality limit of the quantized device output (R7): one device unit
+/// of the Cameo 2 (20 units per mm). It was 0.03 mm, but rounding to whole
+/// 0.05 mm units alone moves a point up to `0.025 * (|sin a| + |cos a|)`
+/// off a line at angle `a`, 0.0354 mm at 45 deg, so no planner could meet
+/// it (Task 10, `docs/quality/knife-compensation.md`). Whether `D` takes
+/// decimals or half units is an open capture question
+/// (`docs/protocol/gpgl.md`).
+pub const DEVICE_LIMIT_MM: f64 = 0.05;
 /// The spec target: device deviation plus the upstream error (R7).
 pub const END_TO_END_LIMIT_MM: f64 = 0.05;
 /// Intended length with no trace within this is not severed: uncut
 /// (Ruling M2-P14, twice `END_TO_END_LIMIT_MM`). Device quantization alone
 /// stays well below it.
 pub const UNCUT_LIMIT_MM: f64 = 2.0 * END_TO_END_LIMIT_MM;
-/// A blade-down move whose push angle is above this is pushed from behind.
-pub const PUSHED_DEG: f64 = 150.0;
-/// The sample step is the blade offset divided by this (pinned in Task 10).
-pub const SAMPLE_STEP_FACTOR: f64 = 20.0;
+/// The sample step is the blade offset divided by this. Pinned by Task
+/// 10's `sample_step_converges`: the smallest of 10, 20, 40 and 80 whose
+/// float metrics, as planned, stay within 0.0005 mm of those at 80 (10
+/// differs by 0.0002 mm at most; the model's step is exact, so a coarser
+/// step only thins the samples). A first start entered at 90 deg to the
+/// assumed heading resolves less well: its errors of 0.1 to 0.3 mm read up
+/// to 0.012 mm (about 8 %) low. At d 0.25 and 0.3 the step is 0.025 and
+/// 0.03 mm, far above [`MIN_SAMPLE_STEP_MM`], which only clamps factors
+/// above 50 to 60.
+pub const SAMPLE_STEP_FACTOR: f64 = 10.0;
 
 /// The smallest sample step. A step below it (or one that is not a
 /// positive number) is raised to it, so a bad setting can not hang the loop.
@@ -94,28 +113,6 @@ fn sample_step_mm(d: f64) -> f64 {
         0.01
     } else {
         (d / SAMPLE_STEP_FACTOR).max(MIN_SAMPLE_STEP_MM)
-    }
-}
-
-/// The device rounding: absolute coordinates on a grid of `1 / units_per_mm`
-/// that starts at minus `origin` in app millimetres.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DeviceGrid {
-    pub units_per_mm: f64,
-    /// The grid origin of the mat (app 0,0 lies at `origin` in device millimetres).
-    pub origin: Point,
-}
-
-impl DeviceGrid {
-    /// The emitter's rounding without mirror and scale (they only correct
-    /// the machine's own error): `round((p + origin) * upm) / upm - origin`
-    /// per axis.
-    pub fn snap(&self, p: Point) -> Point {
-        let upm = self.units_per_mm;
-        Point::new(
-            ((p.x + self.origin.x) * upm).round() / upm - self.origin.x,
-            ((p.y + self.origin.y) * upm).round() / upm - self.origin.y,
-        )
     }
 }
 

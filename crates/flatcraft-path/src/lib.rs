@@ -14,10 +14,12 @@ pub mod containment;
 pub mod feed;
 pub mod flatten;
 pub mod knife;
+pub mod model;
 pub mod order;
 pub mod overcut;
 pub mod passes;
 pub mod plan;
+pub mod quantize;
 pub mod rings;
 pub mod strategy;
 pub mod weed;
@@ -30,4 +32,5 @@ pub use plan::{
     KeepSide, PathRef, PipelineSettings, PlacedPath, PlanError, SettingsField, Toolpath,
     ToolpathKind, WASTE_SEG, plan, shape_lines,
 };
+pub use quantize::DeviceGrid;
 pub use strategy::StrategySettings;

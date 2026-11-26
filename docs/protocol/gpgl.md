@@ -250,6 +250,7 @@ normalized to (direction, endpoint, hex) lines for replay tests. [1] U
 | 11 | Do bidirectional reads work through `usbprint.sys` on a Cameo 2? | Windows transport | [1] | R |
 | 12 | Is the status `4` real on a Cameo 2? | Status decoding | [1] | R |
 | 13 | What does `FE` mean exactly? The research says lift between paths, the knife note says lift at sharp corners. | Decoder text, cut quality | [1] | R, K |
+| 14 | Does `D` accept decimals or half units on the Cameo 2 (capture question for M3)? | Whole 0.05 mm units alone put a point up to 0.035 mm off a line; the simulator measured 0.042 mm at 20 units per mm and 0.020 mm at 40 (FlatCraft measurement, Task 10) | FlatCraft measurement | - |
 
 ## 9. M1 job sequence, exact bytes
 
