@@ -200,18 +200,20 @@ fn short(text: &str) -> String {
 /// `-=`, `*=` or `/=` applies the rest to `current`. The result is in the
 /// field's unit; it is always finite.
 pub fn eval(text: &str, kind: Kind, current: Option<f64>) -> Result<f64, Error> {
-    let chars: Vec<char> = text.chars().collect();
     let shown = short(text.trim());
     let syntax = |pos: usize, what: String| Error {
         pos: Some(pos),
         message: format!("Can't read '{shown}': {what}."),
     };
-    if chars.len() > MAX_CHARS {
+    // Checked before the text is copied, so a huge paste costs nothing.
+    if text.chars().nth(MAX_CHARS).is_some() {
         return Err(syntax(
             MAX_CHARS,
             format!("the text is too long (at most {MAX_CHARS} characters)"),
         ));
     }
+    let typed: Vec<char> = text.chars().collect();
+    let chars = typed.clone();
     if chars.iter().all(|c| c.is_whitespace()) {
         return Err(Error {
             pos: Some(0),
@@ -242,7 +244,7 @@ pub fn eval(text: &str, kind: Kind, current: Option<f64>) -> Result<f64, Error> 
         _ => None,
     };
     let from = relative.map_or(0, |(_, at)| at);
-    let tokens = lex(&chars, from, kind).map_err(|(pos, what)| syntax(pos, what))?;
+    let tokens = lex(&chars, &typed, from, kind).map_err(|(pos, what)| syntax(pos, what))?;
     let math = |what: &str| Error {
         pos: None,
         message: format!("Can't use '{shown}': {what}."),
@@ -331,7 +333,13 @@ fn units(kind: Kind) -> (&'static [(&'static str, f64)], &'static str) {
 }
 
 /// Splits `chars[from..]` into tokens; an error is (position, problem).
-fn lex(chars: &[char], from: usize, kind: Kind) -> Result<Vec<Token>, (usize, String)> {
+/// `typed` is the text as typed (commas not yet dots), for messages.
+fn lex(
+    chars: &[char],
+    typed: &[char],
+    from: usize,
+    kind: Kind,
+) -> Result<Vec<Token>, (usize, String)> {
     let mut out = Vec::new();
     let mut i = from;
     let is_word = |c: char| c.is_alphabetic();
@@ -388,13 +396,14 @@ fn lex(chars: &[char], from: usize, kind: Kind) -> Result<Vec<Token>, (usize, St
             } else {
                 None
             };
+            let as_typed: String = typed[start..i].iter().collect();
             let Some(v) = v else {
-                return Err((start, format!("'{text}' is not a number")));
+                return Err((start, format!("'{as_typed}' is not a number")));
             };
             out.push(Token {
                 tok: Tok::Num(v),
                 pos: start,
-                text,
+                text: as_typed,
             });
             continue;
         }
@@ -466,7 +475,12 @@ impl Parser<'_> {
     }
 
     fn expr(&mut self) -> Result<f64, Fail> {
-        let mut v = self.term()?;
+        self.expr_unit().map(|(v, _)| v)
+    }
+
+    /// A sum, and whether a unit was typed in it.
+    fn expr_unit(&mut self) -> Result<(f64, bool), Fail> {
+        let (mut v, mut unit) = self.term()?;
         while let Some(t) = self.peek() {
             let plus = match t.tok {
                 Tok::Plus => true,
@@ -474,44 +488,56 @@ impl Parser<'_> {
                 _ => break,
             };
             self.at += 1;
-            let r = self.term()?;
+            let (r, ru) = self.term()?;
             v = Self::finite(if plus { v + r } else { v - r })?;
+            unit |= ru;
         }
-        Ok(v)
+        Ok((v, unit))
     }
 
     /// Products and quotients; a unit counts for the product before it
-    /// (`3/4in` is three quarters of an inch).
-    fn term(&mut self) -> Result<f64, Fail> {
-        let mut v = self.unary()?;
-        let mut unit_last = false;
+    /// (`3/4in` is three quarters of an inch). Two values with units are
+    /// not multiplied, and nothing is divided by a value with a unit.
+    fn term(&mut self) -> Result<(f64, bool), Fail> {
+        let (mut v, mut unit) = self.unary()?;
         while let Some(t) = self.peek() {
+            let pos = t.pos;
             match t.tok {
                 Tok::Times | Tok::Divide => {
                     let times = t.tok == Tok::Times;
                     self.at += 1;
-                    let r = self.unary()?;
+                    let (r, ru) = self.unary()?;
+                    if ru && (unit || !times) {
+                        return Err(Self::units(pos));
+                    }
                     if !times && r == 0.0 {
                         return Err(Fail::Math("you can't divide by 0"));
                     }
                     v = Self::finite(if times { v * r } else { v / r })?;
-                    unit_last = false;
+                    unit |= ru;
                 }
                 Tok::Unit(f) => {
-                    if unit_last {
-                        return Err(Fail::Syntax(t.pos, "there are two units in a row".into()));
+                    if unit {
+                        return Err(Self::units(pos));
                     }
                     self.at += 1;
                     v = Self::finite(v * f)?;
-                    unit_last = true;
+                    unit = true;
                 }
                 _ => break,
             }
         }
-        Ok(v)
+        Ok((v, unit))
     }
 
-    fn unary(&mut self) -> Result<f64, Fail> {
+    fn units(pos: usize) -> Fail {
+        Fail::Syntax(
+            pos,
+            "units can't be multiplied or divided by each other".into(),
+        )
+    }
+
+    fn unary(&mut self) -> Result<(f64, bool), Fail> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
             let pos = self.peek().map_or(self.end, |t| t.pos);
@@ -523,7 +549,8 @@ impl Parser<'_> {
         let v = match self.peek().map(|t| t.tok) {
             Some(Tok::Minus) => {
                 self.at += 1;
-                -self.unary()?
+                let (v, u) = self.unary()?;
+                (-v, u)
             }
             Some(Tok::Plus) => {
                 self.at += 1;
@@ -535,7 +562,7 @@ impl Parser<'_> {
         Ok(v)
     }
 
-    fn primary(&mut self) -> Result<f64, Fail> {
+    fn primary(&mut self) -> Result<(f64, bool), Fail> {
         let Some(t) = self.peek().cloned() else {
             let what = match self.before() {
                 Some(b) => format!("something is missing after {b}"),
@@ -546,11 +573,11 @@ impl Parser<'_> {
         match t.tok {
             Tok::Num(v) => {
                 self.at += 1;
-                Self::finite(v)
+                Ok((Self::finite(v)?, false))
             }
             Tok::Open => {
                 self.at += 1;
-                let v = self.expr()?;
+                let v = self.expr_unit()?;
                 match self.peek() {
                     Some(c) if c.tok == Tok::Close => {
                         self.at += 1;
@@ -690,6 +717,47 @@ mod tests {
     }
 
     #[test]
+    fn units_are_not_multiplied_or_divided_by_each_other() {
+        for (t, pos) in [
+            ("2in*3cm", 5),
+            ("1in/2cm", 5),
+            ("2in mm", 4),
+            ("(1in)*(2cm)", 5),
+            ("10/(2in)", 2),
+            ("(1in+1)in", 7),
+        ] {
+            let e = err(t, Kind::Length);
+            assert!(
+                e.message
+                    .contains("units can't be multiplied or divided by each other"),
+                "{t}: {e}"
+            );
+            assert_eq!(e.pos, Some(pos), "{t}");
+        }
+        // A unit after a product still counts for all of it.
+        assert!(near(len("3/4in"), 19.05));
+        assert!(near(len("1in*2 + 3cm/2"), 65.8));
+    }
+
+    #[test]
+    fn a_comma_error_quotes_what_was_typed() {
+        let e = err("1,2,3", Kind::Plain);
+        assert!(e.message.contains("'1,2,3' is not a number"), "{e}");
+        let e = err("1,5 3", Kind::Plain);
+        assert!(e.message.contains("before '3'"), "{e}");
+        let e = err("2 3,5", Kind::Plain);
+        assert!(e.message.contains("before '3,5'"), "{e}");
+    }
+
+    #[test]
+    fn a_very_long_text_is_refused_at_once() {
+        let huge = "1".repeat(5_000_000);
+        let e = eval(&huge, Kind::Plain, None).unwrap_err();
+        assert!(e.message.contains("too long"), "{e}");
+        assert!(e.message.contains("..."), "the message cuts it");
+    }
+
+    #[test]
     fn mixed_units() {
         assert!(near(len("10mm + 1in"), 35.4));
         assert!(near(len("1in - 1cm"), 15.4));
@@ -715,8 +783,6 @@ mod tests {
         assert!(e.message.contains("no unit"), "{e}");
         let e = err("2ft", Kind::Length);
         assert!(e.message.contains("'ft'"), "{e}");
-        let e = err("2in mm", Kind::Length);
-        assert_eq!(e.pos, Some(4));
         let e = err("in", Kind::Length);
         assert_eq!(e.pos, Some(0));
     }
