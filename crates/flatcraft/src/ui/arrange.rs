@@ -642,21 +642,28 @@ pub fn panel_ui(
     };
     let mut close = false;
     let mut ok = None;
-    ui.horizontal(|ui| {
-        let tex = icons::texture(ui.ctx(), p.kind.tool().icon, ICON_SIZE);
-        ui.image(egui::load::SizedTexture::new(
-            tex.id(),
-            egui::Vec2::splat(ICON_SIZE),
-        ));
-        let title = panel_title(snap, p);
-        let r = ui.label(RichText::new(&title).font(super::fonts::semibold(15.0)));
-        if p.kind == PanelKind::AutoArrange {
-            super::groups::card(&r, &title, AUTO_ARRANGE_CARD, None, false);
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    ui.horizontal_top(|ui| {
+        // The close button first, from the right, so a long title
+        // ("Auto arrange 12 selected objects") wraps before it.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
             if super::icon_button(ui, Icon::Close, "Close panel", true).clicked() {
                 close = true;
             }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                let tex = icons::texture(ui.ctx(), p.kind.tool().icon, ICON_SIZE);
+                ui.image(egui::load::SizedTexture::new(
+                    tex.id(),
+                    egui::Vec2::splat(ICON_SIZE),
+                ));
+                let title = panel_title(snap, p);
+                let r = ui.add(
+                    egui::Label::new(RichText::new(&title).font(super::fonts::semibold(15.0)))
+                        .wrap(),
+                );
+                if p.kind == PanelKind::AutoArrange {
+                    super::groups::card(&r, &title, AUTO_ARRANGE_CARD, None, false);
+                }
+            });
         });
     });
     ui.separator();
