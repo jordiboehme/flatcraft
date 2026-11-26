@@ -1253,3 +1253,40 @@ fn hidden_and_skipped_objects_form_no_pairs() {
     );
     assert_eq!(pair_codes(&check(&mut t.s)), Vec::<String>::new());
 }
+
+/// A stroke wide enough to show as a band, but under the Auto threshold,
+/// is cut once along its middle: the report says so, as a hint.
+#[test]
+fn strokes_cut_once_lose_their_width_out_loud() {
+    let frame = |w: f64| {
+        format!(
+            r#"<rect x="20" y="20" width="30" height="30" fill="none" stroke="black" stroke-width="{w}"/>"#
+        )
+    };
+    let mut t = self::t();
+    let (id, r) = import(&mut t.s, "frame", &frame(1.0));
+    well_formed(&r["report"]);
+    let i = issue(&r["report"], "strokes_cut_once");
+    assert_eq!(i["severity"], "info");
+    assert_eq!(i["object_ids"], json!([id]));
+    assert_eq!(
+        i["message"],
+        "'frame': 1 stroke is thinner than 1.5 mm, so it is cut once along its middle. Outline it if you want the stroke width as vinyl."
+    );
+    assert_eq!(i["fixes"], json!([]));
+    run(
+        &mut t.s,
+        "object.set_cut_options",
+        json!({ "ids": [id], "strokes": "outline" }),
+    );
+    let c = check(&mut t.s);
+    assert!(!codes(&c).contains(&"strokes_cut_once".to_string()), "{c}");
+    for w in [0.3, 2.0] {
+        let mut t = self::t();
+        let (_, r) = import(&mut t.s, "frame", &frame(w));
+        assert!(
+            !codes(&r["report"]).contains(&"strokes_cut_once".to_string()),
+            "{w}: {r}"
+        );
+    }
+}

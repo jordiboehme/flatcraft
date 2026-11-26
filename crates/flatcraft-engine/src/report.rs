@@ -74,6 +74,9 @@ pub enum Code {
     /// cardstock) has closed inner parts (the middle of an O) that fall
     /// out. Information only: it never blocks the cut.
     StencilIsland,
+    /// Strokes the stroke mode Auto cuts once, along their middle, though
+    /// they are wide enough to show as a band. A hint (info).
+    StrokesCutOnce,
     /// Two objects closer than the minimum feature size, not overlapping:
     /// the strip between them is too thin to cut cleanly or to weed. A
     /// hint only (info): close objects can be the design.
@@ -85,7 +88,7 @@ pub enum Code {
 
 impl Code {
     /// Every code, in the order the tool description lists them.
-    pub const ALL: [Code; 23] = [
+    pub const ALL: [Code; 24] = [
         Code::OpenPaths,
         Code::Hairline,
         Code::BelowMinFeature,
@@ -107,6 +110,7 @@ impl Code {
         Code::Skipped,
         Code::TooSmall,
         Code::StencilIsland,
+        Code::StrokesCutOnce,
         Code::ObjectsClose,
         Code::ObjectsOverlap,
     ];
@@ -135,6 +139,7 @@ impl Code {
             Code::Skipped => "skipped",
             Code::TooSmall => "too_small",
             Code::StencilIsland => "stencil_island",
+            Code::StrokesCutOnce => "strokes_cut_once",
             Code::ObjectsClose => "objects_close",
             Code::ObjectsOverlap => "objects_overlap",
         }
@@ -164,6 +169,7 @@ impl Code {
             Code::Skipped => "Skipped objects",
             Code::TooSmall => "Too tiny to cut",
             Code::StencilIsland => "Stencil middles fall out",
+            Code::StrokesCutOnce => "Strokes cut once",
             Code::ObjectsClose => "Objects nearly touching",
             Code::ObjectsOverlap => "Objects overlap",
         }
@@ -291,6 +297,12 @@ fn blade_offset(blade_offset_mm: f64) -> f64 {
 pub fn gap_limit_mm(min_feature: f64) -> f64 {
     min_feature
 }
+
+/// A stroke at least this wide shows as a band of colour, mm: the stroke
+/// mode Auto outlined strokes from here until its default threshold rose
+/// to the minimum feature size. One cut once along its middle loses its
+/// width, so the report says so (`strokes_cut_once`).
+pub const WIDE_STROKE_MM: f64 = 0.5;
 
 /// Margin a "Scale to fit" leaves inside the cutting area, mm, so the
 /// stroke outlines (measured to 0.01 mm) never touch over its edge.
@@ -473,6 +485,8 @@ struct Shapes {
     no_area: usize,
     /// Filled shapes dropped as slivers.
     slivers: usize,
+    /// Strokes at least [`WIDE_STROKE_MM`] wide that Auto cuts once.
+    cut_once: usize,
 }
 
 /// One subpath of a cut path: whether it is closed, the distance of its
@@ -615,6 +629,11 @@ fn measure(input: &JobInput, o: &JobObject, options: &CutOptions, min_feature: f
                     m.small += 1;
                 }
             }
+        }
+        if cutgeom::auto_centre_line_width(p.paint, options, affine)
+            .is_some_and(|w| w >= WIDE_STROKE_MM)
+        {
+            m.cut_once += 1;
         }
         if let Some(w) = cutgeom::outline_width(p.paint, options, affine)
             && w < min_feature
@@ -851,6 +870,40 @@ fn check_object(input: &JobInput, o: &JobObject, limits: &Limits) -> Report {
     }
     if m.slivers > 0 {
         issues.push(thin_slivers(o, m.slivers, limits, Severity::Warning));
+    }
+    if m.cut_once > 0 {
+        let threshold = mm(o.cut.auto_threshold_mm);
+        let (what, them) = if m.cut_once == 1 {
+            (
+                "1 stroke is thinner than".to_string(),
+                ("it", "its", "Outline it"),
+            )
+        } else {
+            (
+                format!("{} strokes are thinner than", m.cut_once),
+                ("they", "their", "Outline them"),
+            )
+        };
+        issues.push(Issue {
+            code: Code::StrokesCutOnce,
+            severity: Severity::Info,
+            object_ids: shared.clone(),
+            paths: m.cut_once,
+            message: format!(
+                "{name}: {what} {threshold}, so {} {} cut once along {} middle. {} if you want the stroke width as vinyl.",
+                them.0,
+                if m.cut_once == 1 { "is" } else { "are" },
+                them.1,
+                them.2
+            ),
+            hint: format!(
+                "To cut around the stroke instead, set Strokes to Outline in the Cut panel. A band thinner than {} may tear; the report then says so.",
+                mm(limits.min_feature_mm)
+            ),
+            // No fix: Outline makes a band under the minimum feature
+            // size, whose own fix (cut as single lines) would undo it.
+            fixes: Vec::new(),
+        });
     }
     if m.no_area > 0 {
         issues.push(fill_ignored(

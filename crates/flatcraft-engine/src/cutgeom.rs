@@ -326,6 +326,19 @@ fn may_have_slivers(placed: &BezPath, min_width: f64) -> bool {
     })
 }
 
+/// The placed width of the stroke of `paint` when the stroke mode Auto
+/// cuts it once, along its middle, because it is thinner than the
+/// object's threshold, else `None`.
+pub fn auto_centre_line_width(paint: Paint, options: &CutOptions, affine: Affine) -> Option<f64> {
+    let s = paint.stroke?;
+    let width = placed_width(s.width_mm, affine);
+    (options.mode == CutMode::ObjectOutlines
+        && options.strokes == StrokeMode::Auto
+        && width.is_finite()
+        && width < options.auto_threshold_mm)
+        .then_some(width)
+}
+
 /// The placed width of the stroke of `paint` when it is cut around its
 /// outline (both edges), else `None`.
 pub fn outline_width(paint: Paint, options: &CutOptions, affine: Affine) -> Option<f64> {
