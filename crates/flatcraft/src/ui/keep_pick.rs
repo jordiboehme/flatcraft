@@ -102,7 +102,7 @@ pub fn hover_text(hit: Option<RegionHit>, marked: bool) -> String {
     };
     let what = match (hit.region, hit.hole) {
         (Region::Shape, _) => "the shape",
-        (Region::Sheet, true) => "the middle of a letter, part of the sheet",
+        (Region::Sheet, true) => "the middle of a letter, which counts as sheet",
         (Region::Sheet, false) => "the sheet around it",
     };
     let verb = if marked { "let it go" } else { "keep it" };
@@ -365,7 +365,7 @@ impl KeepPick {
         })
     }
 
-    /// The floating bar at the bottom of the canvas `rect`: what the marks
+    /// The floating bar at the bottom right of the canvas `rect`: what the marks
     /// give in plain words, what lies under the pointer, the middle of a
     /// letter once one was hovered, and Done and Cancel.
     pub fn bar(
@@ -380,12 +380,14 @@ impl KeepPick {
         let width = BAR_WIDTH.min(rect.width() - 2.0 * t.spacing).max(160.0);
         let backing = snap.material.as_ref().is_some_and(|m| m.backing);
         let mode = self.result();
-        // At the bottom: designs mostly sit at the top left of the mat.
-        // Laid out from the bottom up, so the buttons stay where they are
-        // when a line above them changes.
+        // At the bottom right: designs mostly sit at the top left of the
+        // mat, the pills at the bottom left. Laid out from the bottom up,
+        // so the buttons stay where they are when a line above them
+        // changes.
+        let right = rect.right() - t.spacing;
         let max = egui::Rect::from_min_max(
-            egui::pos2(rect.center().x - width / 2.0, rect.top()),
-            egui::pos2(rect.center().x + width / 2.0, rect.bottom() - t.spacing),
+            egui::pos2(right - width, rect.top()),
+            egui::pos2(right, rect.bottom() - t.spacing),
         );
         let shown = ui.scope_builder(
             egui::UiBuilder::new()
@@ -462,5 +464,5 @@ pub const BAR_WIDTH: f32 = 420.0;
 
 /// The colour of the highlighted region.
 pub fn highlight(t: &Tokens) -> Color32 {
-    t.accent_prepare.gamma_multiply(0.35)
+    t.accent_prepare.gamma_multiply(0.2)
 }
