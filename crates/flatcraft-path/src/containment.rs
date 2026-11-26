@@ -682,6 +682,16 @@ impl KeptMaterial {
         self.sheet
     }
 
+    /// True when an object other than `of` keeps the shared sheet (it is
+    /// Stencil or Both): the sheet around `of` is kept whatever their own
+    /// mode says.
+    pub fn sheet_kept_besides(&self, of: impl Fn(ObjectId) -> bool) -> bool {
+        self.ids
+            .iter()
+            .zip(&self.modes)
+            .any(|(id, m)| !of(*id) && keeps_sheet(*m))
+    }
+
     /// The keep mode of object `id`, `None` when it has no closed cut.
     pub fn mode_of(&self, id: ObjectId) -> Option<KeepMode> {
         let o = self.ids.iter().position(|i| *i == id)?;
@@ -2054,6 +2064,17 @@ mod tests {
             assert_eq!(fresh.mode_of(ObjectId(1)), Some(mode));
         }
         assert_eq!(base.mode_of(ObjectId(9)), None);
+        // The square keeps the sheet for the O, not for itself.
+        let square_stencil = base.with_modes_of(|o, m| {
+            if o == ObjectId(2) {
+                KeepMode::Stencil
+            } else {
+                m
+            }
+        });
+        assert!(square_stencil.sheet_kept_besides(|o| o == ObjectId(1)));
+        assert!(!square_stencil.sheet_kept_besides(|o| o == ObjectId(2)));
+        assert!(!base.sheet_kept_besides(|o| o == ObjectId(1)));
         assert_eq!(base.sheet(), mat());
         // The shapes alone: Pieces of those rings only.
         let shapes = base.shapes_of(|o| o == ObjectId(1));

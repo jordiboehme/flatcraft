@@ -12,8 +12,8 @@
 //! mode, so a click only switches between finished masks and the frame
 //! never builds one.
 
-use std::collections::{BTreeSet, HashMap};
-use std::sync::Arc;
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
 
 use egui::{Color32, RichText, Ui};
 use flatcraft_core::document::{KeepMode, ObjectId};
@@ -49,6 +49,10 @@ pub const NO_PLAN: &str =
     "Picking needs a job that can be planned. The Cut workspace says what to fix.";
 /// The card of Cancel.
 pub const CANCEL_HINT: &str = "Leave Keep as it was. Esc does the same.";
+/// The bar after "the sheet is waste" when another object on the mat
+/// keeps the shared sheet (Stencil or Both).
+pub const SHEET_KEPT_ELSEWHERE: &str =
+    "Another object keeps the sheet on this mat, so the sheet stays anyway.";
 /// The pointer is on a cut line or off the cutting area.
 pub const POINT_AT: &str = "Point at the shape or at the sheet around it.";
 
@@ -83,8 +87,11 @@ pub fn hole_text(mode: Option<KeepMode>, backing: bool) -> &'static str {
             "The middle of a letter like O stays on the backing sheet, and the transfer tape lifts it with the stencil."
         }
         (Some(KeepMode::Stencil), false) => flatcraft_engine::report::STENCIL_ISLAND_HINT,
-        (Some(KeepMode::Both), _) => {
+        (Some(KeepMode::Both), true) => {
             "The middle of a letter like O stays too, like everything around these cuts."
+        }
+        (Some(KeepMode::Both), false) => {
+            "The middle of a letter like O stays too, as a loose piece: on paper it falls out of the letter, so pick it up."
         }
         (None, true) => {
             "A letter like O has a middle. Keep the shape and the middle is waste. Keep the sheet and the middle stays on the backing sheet with the stencil."
@@ -131,9 +138,9 @@ pub struct KeepPick {
     pub doc_id: u64,
     /// The selection when picking started: what Done sets.
     pub ids: BTreeSet<u64>,
-    /// The selected objects: their shape is "the shape".
-    picked: Arc<BTreeSet<ObjectId>>,
     /// The objects Done changes: the selection and its linked copies.
+    /// Their shape is "the shape", so a click on a linked copy of the
+    /// selection means its shape too.
     reach: Arc<BTreeSet<ObjectId>>,
     /// The shape is marked as staying.
     pub shape: bool,
@@ -143,8 +150,9 @@ pub struct KeepPick {
     pub hover: Option<RegionHit>,
     /// A letter with a hole was hovered: the bar explains its middle.
     pub hole_seen: bool,
-    /// Which objects have a hole, for the plan they were asked of.
-    holes: Option<(Arc<JobResult>, HashMap<ObjectId, bool>)>,
+    /// Which objects of `reach` have a hole, found on a worker once per
+    /// plan.
+    holes: HoleCache,
     /// The overlay of each mode Done can give: Pieces, Stencil, Both.
     pub previews: [KeptCache; 3],
     /// The shape of the selection, for the highlight.
@@ -182,26 +190,16 @@ impl KeepPick {
             return None;
         }
         let ids: BTreeSet<u64> = ids.iter().copied().collect();
-        let groups: BTreeSet<u64> = ids
-            .iter()
-            .filter_map(|id| snap.object(*id)?.link_group)
-            .collect();
-        let reach = snap
-            .objects
-            .iter()
-            .filter(|o| ids.contains(&o.id) || o.link_group.is_some_and(|g| groups.contains(&g)))
-            .map(|o| ObjectId(o.id))
-            .collect();
+        let reach = reach_of(snap, &ids);
         Some(Self {
             doc_id: snap.doc_id,
-            picked: Arc::new(ids.iter().map(|i| ObjectId(*i)).collect()),
             ids,
             reach: Arc::new(reach),
             shape: false,
             sheet: false,
             hover: None,
             hole_seen: false,
-            holes: None,
+            holes: HoleCache::default(),
             previews: Default::default(),
             shapes: KeptCache::default(),
             bar_rect: None,
@@ -217,6 +215,29 @@ impl KeepPick {
     /// document and the same selection. Anything else cancels it.
     pub fn still_on(&self, snap: &Snapshot) -> bool {
         snap.doc_id == self.doc_id && snap.selection == self.ids
+    }
+
+    /// Takes the linked copies of the selection again (an undo or an agent
+    /// may have linked or unlinked them while picking): the previews, the
+    /// hit test and Done follow.
+    pub fn refresh(&mut self, snap: &Snapshot) {
+        let reach = reach_of(snap, &self.ids);
+        if *self.reach != reach {
+            self.reach = Arc::new(reach);
+        }
+    }
+
+    /// The objects Done changes: the selection and its linked copies.
+    pub fn reach(&self) -> &BTreeSet<ObjectId> {
+        &self.reach
+    }
+
+    /// True when an object outside the picker keeps the sheet (Stencil or
+    /// Both): the sheet around the shape stays whatever the marks say.
+    pub fn sheet_kept_elsewhere(&self, job: &JobResult) -> bool {
+        job.plan
+            .kept
+            .sheet_kept_besides(|o| self.reach.contains(&o))
     }
 
     /// Marks `region` as staying, or unmarks it.
@@ -240,14 +261,15 @@ impl KeepPick {
         Variant::Modes(self.reach.clone(), mode)
     }
 
-    /// The highlight's variant: the selection's shape alone.
+    /// The highlight's variant: the shape of the selection and its linked
+    /// copies alone.
     pub fn shapes_variant(&self) -> Variant {
-        Variant::Shapes(self.picked.clone())
+        Variant::Shapes(self.reach.clone())
     }
 
-    /// True while a worker builds a mask of the picker.
+    /// True while a worker builds a mask or the hole flags of the picker.
     pub fn pending(&self) -> bool {
-        self.shapes.pending() || self.previews.iter().any(KeptCache::pending)
+        self.shapes.pending() || self.previews.iter().any(KeptCache::pending) || self.holes.pending
     }
 
     /// The preview cache of `mode`.
@@ -255,29 +277,21 @@ impl KeepPick {
         &self.previews[slot(mode)]
     }
 
-    /// The region of the selection at `p` (mat mm) in `kept`.
+    /// The region of the selection and its linked copies at `p` (mat mm)
+    /// in `kept`.
     pub fn region_at(&self, kept: &KeptMaterial, p: kurbo::Point) -> Option<RegionHit> {
-        kept.region_at(p, |o| self.picked.contains(&o))
+        kept.region_at(p, |o| self.reach.contains(&o))
     }
 
-    /// True when the object of `hit` has a hole (the middle of an O),
-    /// asked once per object and plan.
-    fn has_hole(&mut self, job: &Arc<JobResult>, hit: RegionHit) -> bool {
+    /// True when the object of `hit` has a hole (the middle of an O). The
+    /// flags come from the worker; until they are there only a point in
+    /// the hole itself counts.
+    fn has_hole(&mut self, ctx: &egui::Context, job: &Arc<JobResult>, hit: RegionHit) -> bool {
         if hit.hole {
             return true;
         }
-        let Some(o) = hit.object else {
-            return false;
-        };
-        if !self
-            .holes
-            .as_ref()
-            .is_some_and(|(j, _)| Arc::ptr_eq(j, job))
-        {
-            self.holes = Some((job.clone(), HashMap::new()));
-        }
-        let (_, holes) = self.holes.as_mut().expect("set just above");
-        *holes.entry(o).or_insert_with(|| job.plan.kept.has_holes(o))
+        let holes = self.holes.of(ctx, job, &self.reach);
+        hit.object.is_some_and(|o| holes.contains(&o))
     }
 
     /// The pointer on the canvas: what lies under it, and a click marks or
@@ -285,6 +299,7 @@ impl KeepPick {
     /// over the canvas.
     pub fn pointer(
         &mut self,
+        ctx: &egui::Context,
         job: Option<&Arc<JobResult>>,
         view: &CanvasView,
         hover: Option<egui::Pos2>,
@@ -296,7 +311,7 @@ impl KeepPick {
             _ => None,
         };
         if let (Some(job), Some(hit)) = (job, self.hover)
-            && self.has_hole(job, hit)
+            && self.has_hole(ctx, job, hit)
         {
             self.hole_seen = true;
         }
@@ -325,6 +340,7 @@ impl KeepPick {
             let v = self.variant(mode);
             self.previews[slot(mode)].mask_of(ctx, job, area, &v);
         }
+        self.holes.of(ctx, job, &self.reach);
         match self.result() {
             Some(mode) => {
                 let v = self.variant(mode);
@@ -374,6 +390,7 @@ impl KeepPick {
         rect: egui::Rect,
         snap: &Snapshot,
         planned: bool,
+        sheet_kept_elsewhere: bool,
         t: &Tokens,
     ) -> Option<Outcome> {
         let mut outcome = None;
@@ -440,6 +457,9 @@ impl KeepPick {
                             ui.label(
                                 RichText::new(hover_text(self.hover, marked)).color(t.text_dim),
                             );
+                            if sheet_kept_elsewhere && mode == Some(KeepMode::Pieces) {
+                                ui.label(SHEET_KEPT_ELSEWHERE);
+                            }
                             ui.label(result_text(mode));
                         }
                         ui.label(RichText::new(TITLE).font(fonts::semibold(14.0)));
@@ -456,6 +476,80 @@ impl KeepPick {
     /// the canvas below it neither highlights nor marks there.
     pub fn on_bar(&self, at: egui::Pos2) -> bool {
         self.bar_rect.is_some_and(|r| r.contains(at))
+    }
+}
+
+/// The selection `ids` and the linked copies of its objects.
+fn reach_of(snap: &Snapshot, ids: &BTreeSet<u64>) -> BTreeSet<ObjectId> {
+    let groups: BTreeSet<u64> = ids
+        .iter()
+        .filter_map(|id| snap.object(*id)?.link_group)
+        .collect();
+    snap.objects
+        .iter()
+        .filter(|o| ids.contains(&o.id) || o.link_group.is_some_and(|g| groups.contains(&g)))
+        .map(|o| ObjectId(o.id))
+        .collect()
+}
+
+/// The objects with a hole, found on the kept and waste worker once per
+/// plan and set of objects: the scan reads every ring, too slow for a
+/// frame with a traced picture.
+#[derive(Clone, Default)]
+struct HoleCache {
+    key: Option<(Arc<JobResult>, Arc<BTreeSet<ObjectId>>)>,
+    slot: Arc<Mutex<Option<BTreeSet<ObjectId>>>>,
+    pending: bool,
+    holes: BTreeSet<ObjectId>,
+}
+
+impl HoleCache {
+    /// The objects of `reach` with a hole in `job`'s plan, as far as known.
+    fn of(
+        &mut self,
+        ctx: &egui::Context,
+        job: &Arc<JobResult>,
+        reach: &Arc<BTreeSet<ObjectId>>,
+    ) -> &BTreeSet<ObjectId> {
+        let same = self
+            .key
+            .as_ref()
+            .is_some_and(|(j, r)| Arc::ptr_eq(j, job) && r == reach);
+        if !same {
+            self.key = Some((job.clone(), reach.clone()));
+            self.holes.clear();
+            self.pending = true;
+            let slot: Arc<Mutex<Option<BTreeSet<ObjectId>>>> = Arc::default();
+            self.slot = slot.clone();
+            let kept = job.plan.kept.clone();
+            let reach = reach.clone();
+            let repaint = ctx.clone();
+            let find = move || {
+                let holes = reach
+                    .iter()
+                    .copied()
+                    .filter(|o| kept.has_holes(*o))
+                    .collect();
+                if let Ok(mut s) = slot.lock() {
+                    *s = Some(holes);
+                }
+                repaint.request_repaint();
+            };
+            if let Err(e) = std::thread::Builder::new()
+                .name(super::kept::WORKER.into())
+                .spawn(find)
+            {
+                eprintln!("flatcraft: cannot start the hole finder: {e}");
+                self.pending = false;
+            }
+        }
+        if self.pending
+            && let Some(holes) = self.slot.lock().ok().and_then(|mut s| s.take())
+        {
+            self.holes = holes;
+            self.pending = false;
+        }
+        &self.holes
     }
 }
 

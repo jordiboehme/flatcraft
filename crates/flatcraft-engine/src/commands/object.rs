@@ -2285,7 +2285,13 @@ fn run_keep_at(s: &mut Session, p: KeepAtParams, _: Origin) -> Result<Value, Com
         ))
     })?;
     let kept = &job.plan.kept;
-    if ids.iter().all(|id| kept.mode_of(*id).is_none()) {
+    // The shape is that of every object the mode reaches: the ids and
+    // their linked copies, as set_keep changes them.
+    let reach: std::collections::BTreeSet<ObjectId> = {
+        let doc = &s.doc().document;
+        ids.iter().flat_map(|id| doc.members(*id)).collect()
+    };
+    if reach.iter().all(|id| kept.mode_of(*id).is_none()) {
         return Err(CommandError::Failed(
             "these objects have no closed cut to keep a side of, only open lines".into(),
         ));
@@ -2294,7 +2300,7 @@ fn run_keep_at(s: &mut Session, p: KeepAtParams, _: Origin) -> Result<Value, Com
     let mut regions = Vec::new();
     for (k, q) in p.points.iter().enumerate() {
         let at = Point::new(q.x_mm, q.y_mm);
-        let Some(hit) = kept.region_at(at, |o| ids.contains(&o)) else {
+        let Some(hit) = kept.region_at(at, |o| reach.contains(&o)) else {
             return Err(CommandError::InvalidParams(format!(
                 "point {k} ({}, {}) lies on a cut line or outside the cutting area; give a point clearly inside the shape or on the sheet around it",
                 q.x_mm, q.y_mm
@@ -2319,7 +2325,7 @@ command!(
     mutates: true,
     params: KeepAtParams,
     run: run_keep_at,
-    description: "Sets the keep mode of objects by the points on the mat that must stay, as the window's \"Pick on the mat\" helper does (\"keep the letters\" is a point inside a letter). Each point lies in the objects' shape (inside their cut outline, by the even-odd rule of the plan: the middle of an O is not in the shape) or on the sheet around them. Shape only gives pieces, sheet only stencil, shape and sheet both; see object.set_keep for what each keeps. Points are mm, origin the 0,0 of the grid printed on the mat, x right, y down. A point on a cut line or outside the cutting area is refused, and so are objects that are all hidden, skipped or open lines only. It needs a job that can be planned (see job.preview). One undo step; nothing changes when the mode is already set. A group id sets every object in the group, and linked copies (see object.copies) share the keep mode. An empty ids list means the current selection. Returns {ids: [every changed object, linked copies included], keep, regions: [shape|sheet, one per point], report: {shapes, issues}} where issues holds only the stencil_island hints of these objects.",
+    description: "Sets the keep mode of objects by the points on the mat that must stay, as the window's \"Pick on the mat\" helper does (\"keep the letters\" is a point inside a letter). Each point lies in the objects' shape (inside the cut outline of an object or of one of its linked copies, by the even-odd rule of the plan: the middle of an O is not in the shape) or on the sheet around them. Shape only gives pieces, sheet only stencil, shape and sheet both; see object.set_keep for what each keeps. Points are mm, origin the 0,0 of the grid printed on the mat, x right, y down. A point on a cut line or outside the cutting area is refused, and so are objects that are all hidden, skipped or open lines only. It needs a job that can be planned (see job.preview). One undo step; nothing changes when the mode is already set. A group id sets every object in the group, and linked copies (see object.copies) share the keep mode. An empty ids list means the current selection. Returns {ids: [every changed object, linked copies included], keep, regions: [shape|sheet, one per point], report: {shapes, issues}} where issues holds only the stencil_island hints of these objects.",
 );
 
 #[cfg(test)]

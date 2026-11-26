@@ -118,9 +118,15 @@ impl Mask {
     }
 }
 
-/// The worker's answer: the mask (`None` for a broken area) and the name
-/// of the thread that built it.
-type Built = (Option<Arc<Mask>>, Option<String>);
+/// The worker's answer: the mask (`None` for a broken area), its images
+/// (kept, and for the picker's highlight the waste too) and the name of
+/// the thread that built it. The frame only uploads the images.
+type Built = (
+    Option<Arc<Mask>>,
+    Option<ColorImage>,
+    Option<ColorImage>,
+    Option<String>,
+);
 
 /// Which kept material a [`KeptCache`] shows of a plan.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -166,6 +172,8 @@ pub struct KeptCache {
     /// The texture of the waste of the newest mask (coverage inverted),
     /// made when it is first drawn.
     inverted: Option<TextureHandle>,
+    /// The images the worker made of the newest mask, until uploaded.
+    images: (Option<ColorImage>, Option<ColorImage>),
     /// How many masks were asked for, for tests.
     pub made: usize,
     /// The thread that built the newest mask, for tests.
@@ -229,9 +237,14 @@ impl KeptCache {
             let build = move || {
                 let kept = variant.of(&plan);
                 let mask = Mask::of(&kept, area, MAX_TEXELS).map(Arc::new);
+                let image = mask.as_ref().map(|m| m.image());
+                // Only the picker's highlight shows the waste side.
+                let waste = matches!(variant, Variant::Shapes(_))
+                    .then(|| mask.as_ref().map(|m| m.inverted().image()))
+                    .flatten();
                 let name = std::thread::current().name().map(str::to_string);
                 if let Ok(mut s) = slot.lock() {
-                    *s = Some((mask, name));
+                    *s = Some((mask, image, waste, name));
                 }
                 repaint.request_repaint();
             };
@@ -241,10 +254,12 @@ impl KeptCache {
             }
         }
         if self.pending
-            && let Some((mask, name)) = self.slot.lock().ok().and_then(|mut s| s.take())
+            && let Some((mask, image, waste, name)) =
+                self.slot.lock().ok().and_then(|mut s| s.take())
         {
             self.pending = false;
             self.mask = mask;
+            self.images = (image, waste);
             self.built_on = name;
             self.texture = None;
             self.inverted = None;
@@ -306,8 +321,10 @@ impl KeptCache {
         let Some(mask) = self.mask_of(ctx, job, area, variant) else {
             return;
         };
+        let image = &mut self.images.0;
         let texture = self.texture.get_or_insert_with(|| {
-            ctx.load_texture("flatcraft-kept", mask.image(), TextureOptions::LINEAR)
+            let image = image.take().unwrap_or_else(|| mask.image());
+            ctx.load_texture("flatcraft-kept", image, TextureOptions::LINEAR)
         });
         let r = view.rect_to_screen(mask.area);
         hatch(painter, r, hatch_colour(mat, t));
@@ -339,17 +356,21 @@ impl KeptCache {
         let Some(mask) = self.mask_of(ctx, job, area, variant) else {
             return;
         };
-        let slot = if waste {
-            &mut self.inverted
+        let (slot, image) = if waste {
+            (&mut self.inverted, &mut self.images.1)
         } else {
-            &mut self.texture
+            (&mut self.texture, &mut self.images.0)
         };
         let texture = slot.get_or_insert_with(|| {
-            let image = if waste {
-                mask.inverted().image()
-            } else {
-                mask.image()
-            };
+            // The worker made the image; a mask of another variant has
+            // none and is made here.
+            let image = image.take().unwrap_or_else(|| {
+                if waste {
+                    mask.inverted().image()
+                } else {
+                    mask.image()
+                }
+            });
             ctx.load_texture("flatcraft-kept", image, TextureOptions::LINEAR)
         });
         painter.image(

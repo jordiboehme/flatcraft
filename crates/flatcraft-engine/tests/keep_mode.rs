@@ -417,12 +417,15 @@ fn keep_at_is_one_undo_step_and_reaches_groups_and_linked_copies() {
     let g = run(&mut s, "object.group", json!({ "ids": [a, b] }))["group_id"]
         .as_u64()
         .unwrap();
-    let [x0, y0, x1, y1] = bounds(&mut s, b);
+    let [_, y0, x1, y1] = bounds(&mut s, b);
     let before = s.doc().undo.undo_len();
-    let r = keep_at(&mut s, &[g], &[((x0 + x1) / 2.0, (y0 + y1) / 2.0)]).unwrap();
+    // Inside b, right of the linked copy of a that overlaps its left half.
+    let r = keep_at(&mut s, &[g], &[(x1 - 5.0, (y0 + y1) / 2.0)]).unwrap();
     assert_eq!(r["keep"], "pieces", "inside b: the shape of the group");
     assert_eq!(s.doc().undo.undo_len(), before, "Pieces already: no step");
-    keep_at(&mut s, &[g], &[(x1 + 5.0, y0 + 5.0)]).unwrap();
+    // Below everything: the sheet (the linked copy of a sits between a
+    // and b and counts as the shape too).
+    keep_at(&mut s, &[g], &[(x1 + 5.0, y1 + 10.0)]).unwrap();
     assert_eq!(s.doc().undo.undo_len(), before + 1);
     for id in [a, b, copy] {
         assert_eq!(keep(&s, id), KeepMode::Stencil, "object {id}");
@@ -431,4 +434,34 @@ fn keep_at_is_one_undo_step_and_reaches_groups_and_linked_copies() {
     for id in [a, b, copy] {
         assert_eq!(keep(&s, id), KeepMode::Pieces, "object {id} after undo");
     }
+}
+
+#[test]
+fn keep_at_a_linked_copy_counts_as_the_shape() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = square(&mut s, 20.0, "a");
+    let copy = run(
+        &mut s,
+        "object.copies",
+        json!({ "id": a, "count": 1, "linked": true }),
+    )["ids"][0]
+        .as_u64()
+        .unwrap();
+    run(
+        &mut s,
+        "object.set_keep",
+        json!({ "ids": [a], "keep": "stencil" }),
+    );
+    // Only a is given, the point lies in its linked copy: the shape.
+    let [x0, y0, x1, y1] = bounds(&mut s, copy);
+    let r = keep_at(&mut s, &[a], &[((x0 + x1) / 2.0, (y0 + y1) / 2.0)]).unwrap();
+    assert_eq!(
+        (r["keep"].as_str(), &r["regions"]),
+        (Some("pieces"), &json!(["shape"]))
+    );
+    assert_eq!(
+        (keep(&s, a), keep(&s, copy)),
+        (KeepMode::Pieces, KeepMode::Pieces)
+    );
 }

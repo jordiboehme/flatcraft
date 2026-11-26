@@ -86,7 +86,8 @@ fn o_points(b: kurbo::Rect) -> OPoints {
     OPoints {
         stroke: kurbo::Point::new(b.x0 + 5.0, b.center().y),
         middle: b.center(),
-        sheet: kurbo::Point::new(b.x1 + 15.0, b.center().y),
+        // Below the O: copies of it go to its right.
+        sheet: kurbo::Point::new(b.center().x, b.y1 + 15.0),
     }
 }
 
@@ -616,4 +617,151 @@ fn the_menu_bar_offers_the_picker_with_the_same_rules() {
     wait_for_masks(&mut h);
     let ids: Vec<u64> = pick(&h).ids.iter().copied().collect();
     assert_eq!(ids, vec![o]);
+}
+
+#[test]
+fn the_bar_says_when_another_object_keeps_the_sheet() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let o = letter_o(&s, 20.0);
+    let p = o_points(bounds(&s, o));
+    // Without a stencil on the mat: no note.
+    let mut h = picking(&dir, &s, &[o]);
+    click(&mut h, p.stroke);
+    assert_eq!(pick(&h).result(), Some(KeepMode::Pieces));
+    assert!(!drawn(&h, keep_pick::SHEET_KEPT_ELSEWHERE));
+    drop(h);
+    // A stencil square elsewhere keeps the sheet: the bar says so.
+    let frame = square(&s, 140.0);
+    run(
+        &s,
+        "object.set_keep",
+        json!({ "ids": [frame], "keep": "stencil" }),
+    );
+    let mut h = picking(&dir, &s, &[o]);
+    click(&mut h, p.stroke);
+    assert_eq!(pick(&h).result(), Some(KeepMode::Pieces));
+    assert!(drawn(&h, keep_pick::result_text(Some(KeepMode::Pieces))));
+    assert!(drawn(&h, keep_pick::SHEET_KEPT_ELSEWHERE));
+    // The overlay agrees: the sheet next to the O is kept.
+    let job = app(&h).ui.cut.job().unwrap();
+    assert!(job.plan.kept.is_kept(p.sheet));
+}
+
+#[test]
+fn a_linked_copy_of_the_selection_is_the_shape_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let o = letter_o(&s, 20.0);
+    let copy = run(
+        &s,
+        "object.copies",
+        json!({ "id": o, "count": 1, "linked": true }),
+    )["ids"][0]
+        .as_u64()
+        .unwrap();
+    run(
+        &s,
+        "object.set_keep",
+        json!({ "ids": [o], "keep": "stencil" }),
+    );
+    let c = o_points(bounds(&s, copy));
+    let mut h = picking(&dir, &s, &[o]);
+    // The copy's stroke is the shape, its middle a hole.
+    hover(&mut h, c.middle);
+    let hit = pick(&h).hover.expect("the copy's middle");
+    assert_eq!(
+        (hit.region, hit.hole),
+        (flatcraft_path::Region::Sheet, true)
+    );
+    hover(&mut h, c.stroke);
+    let hit = pick(&h).hover.expect("the copy's stroke");
+    assert_eq!(hit.region, flatcraft_path::Region::Shape);
+    assert_eq!(hit.object, Some(ObjectId(copy)));
+    click(&mut h, c.stroke);
+    assert_eq!(pick(&h).result(), Some(KeepMode::Pieces));
+    h.get_by_label("Done").click();
+    h.run();
+    wait_for_workers(&mut h);
+    assert_eq!(
+        (keep(&s, o), keep(&s, copy)),
+        (KeepMode::Pieces, KeepMode::Pieces)
+    );
+}
+
+#[test]
+fn an_undo_while_picking_refreshes_the_linked_copies() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = letter_o(&s, 20.0);
+    let b = run(&s, "object.copies", json!({ "id": a, "count": 1 }))["ids"][0]
+        .as_u64()
+        .unwrap();
+    run(&s, "object.link", json!({ "ids": [a, b] }));
+    let mut h = picking(&dir, &s, &[a]);
+    let both: Vec<ObjectId> = vec![ObjectId(a), ObjectId(b)];
+    assert_eq!(pick(&h).reach().iter().copied().collect::<Vec<_>>(), both);
+    // Undo "Link copies": the selection stays, the picker stays and only
+    // a is reached now.
+    run(&s, "edit.undo", json!({}));
+    h.step();
+    wait_for_masks(&mut h);
+    assert!(app(&h).ui.prepare.keep_pick.is_some(), "still picking");
+    assert_eq!(
+        pick(&h).reach().iter().copied().collect::<Vec<_>>(),
+        vec![ObjectId(a)]
+    );
+    // b is no longer the shape: a click on it is the sheet.
+    click(&mut h, o_points(bounds(&s, b)).stroke);
+    assert_eq!(pick(&h).result(), Some(KeepMode::Stencil));
+}
+
+#[test]
+fn weeding_says_why_it_cuts_nothing_while_another_object_keeps_the_sheet() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let o = letter_o(&s, 20.0);
+    run(
+        &s,
+        "job.set_weeding",
+        json!({ "box": true, "lines": "both" }),
+    );
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    wait_for_workers(&mut h);
+    let text = flatcraft::ui::settings::SHEET_KEPT_NO_WEEDING;
+    assert!(!drawn(&h, text), "Pieces only: weeding cuts");
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    assert_eq!(flatcraft::ui::cut::weed_why(&snap), None);
+    run(
+        &s,
+        "object.set_keep",
+        json!({ "ids": [o], "keep": "stencil" }),
+    );
+    h.run();
+    assert!(drawn(&h, text), "the Weeding section says why");
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    assert_eq!(flatcraft::ui::cut::weed_why(&snap), Some(text));
+    // The settings stay usable.
+    assert!(!h.get_by_label("Weed box").accesskit_node().is_disabled());
+    // And the plan has no weed path.
+    app_mut(&mut h).ui.workspace = Workspace::Cut;
+    h.run();
+    assert_eq!(
+        flatcraft::ui::cut::weed_count(&app(&h).ui.cut.job().unwrap()),
+        0
+    );
+    // Weeding off says that first.
+    run(
+        &s,
+        "job.set_weeding",
+        json!({ "box": false, "lines": "off" }),
+    );
+    h.run();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    assert_eq!(
+        flatcraft::ui::cut::weed_why(&snap),
+        Some(flatcraft::ui::cut::WEEDING_OFF)
+    );
 }

@@ -613,7 +613,9 @@ fn problem(
 ///
 /// "Weed paths" always shows; dimmed, with the reason, while weeding is
 /// off.
-fn stats(ui: &mut Ui, job: &JobResult, weeding: bool, t: &Tokens) {
+fn stats(ui: &mut Ui, job: &JobResult, snap: &Snapshot, t: &Tokens) {
+    let why = weed_why(snap);
+    let weeding = why.is_none();
     egui::Grid::new("flatcraft-cut-stats")
         .num_columns(2)
         .spacing([t.spacing * 2.0, t.spacing * 0.5])
@@ -621,7 +623,6 @@ fn stats(ui: &mut Ui, job: &JobResult, weeding: bool, t: &Tokens) {
             ui.label("Paths");
             ui.label(job.plan.toolpaths.len().to_string());
             ui.end_row();
-            let why = (!weeding).then_some(WEEDING_OFF);
             let r = ui.add_enabled(weeding, egui::Label::new("Weed paths"));
             super::groups::card(
                 &r,
@@ -703,7 +704,7 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
         }
         Stage::Path => match &st.plan {
             Some(Ok(job)) => {
-                stats(ui, job, snap.job.weed.any(), &t);
+                stats(ui, job, snap, &t);
                 warnings(ui, job, snap.doc_id, &t, actions);
                 ui.add_space(t.spacing);
                 legend(ui, snap, &t);
@@ -729,7 +730,7 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
             }
             match &st.plan {
                 Some(Ok(job)) => {
-                    stats(ui, job, snap.job.weed.any(), &t);
+                    stats(ui, job, snap, &t);
                     ui.label(format!(
                         "Speed {}, force {}, {}",
                         job.settings.speed,
@@ -808,6 +809,19 @@ pub const LEGEND_WASTE: (&str, &str) = (
 /// Why the weed row of the legend and the weed path count are dimmed.
 pub const WEEDING_OFF: &str = "Weeding is off. Turn it on in Device & Material, under Weeding.";
 
+/// Why the weed row and the weed path count are dimmed, if they are:
+/// weeding is off, or an object keeps the sheet so nothing is waste to
+/// weed.
+pub fn weed_why(snap: &Snapshot) -> Option<&'static str> {
+    if !snap.job.weed.any() {
+        Some(WEEDING_OFF)
+    } else if settings::sheet_kept(snap) {
+        Some(settings::SHEET_KEPT_NO_WEEDING)
+    } else {
+        None
+    }
+}
+
 /// How a legend sample is drawn.
 #[derive(Clone, Copy)]
 enum Sample {
@@ -826,7 +840,8 @@ enum Sample {
 fn legend(ui: &mut Ui, snap: &Snapshot, t: &Tokens) {
     let mat = canvas::mat_rgb(snap);
     let contrast = canvas::rgb(canvas::contrast_colour(mat));
-    let weeding = snap.job.weed.any();
+    let weed_why = weed_why(snap);
+    let weeding = weed_why.is_none();
     let rows = [
         (
             LEGEND_CUT,
@@ -855,7 +870,7 @@ fn legend(ui: &mut Ui, snap: &Snapshot, t: &Tokens) {
         ),
     ];
     for ((name, hint), sample, colour, on) in rows {
-        let why = (!on).then_some(WEEDING_OFF);
+        let why = if on { None } else { weed_why };
         // A dimmed row fades its sample like egui fades a disabled label.
         let fade = if on { 1.0 } else { 0.4 };
         let colour = colour.gamma_multiply(fade);

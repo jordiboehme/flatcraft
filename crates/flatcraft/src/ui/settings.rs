@@ -155,10 +155,13 @@ fn combo_hinted<T: Clone + PartialEq>(
             &mut picked,
         ),
         Some(beside) => {
-            // The icon button: the icon and the button's padding.
-            let button = super::ICON_SIZE + 2.0 * ui.spacing().button_padding.x;
-            let width = width - button - ui.spacing().item_spacing.x;
-            ui.horizontal(|ui| {
+            // The button first, from the right; the combo takes what the
+            // button leaves, so the row is exactly as wide as the column.
+            let size = egui::vec2(width, ui.spacing().interact_size.y);
+            let layout = egui::Layout::right_to_left(egui::Align::Center);
+            ui.allocate_ui_with_layout(size, layout, |ui| {
+                beside(ui);
+                let width = ui.available_width();
                 combo_box(
                     ui,
                     label,
@@ -172,7 +175,6 @@ fn combo_hinted<T: Clone + PartialEq>(
                     width,
                     &mut picked,
                 );
-                beside(ui);
             });
         }
     }
@@ -703,6 +705,11 @@ fn weeding(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec<Action>) 
     ui.add_space(t.spacing / 2.0);
     let r = ui.label(RichText::new("Weeding").font(fonts::semibold(13.0)));
     super::groups::card(&r, "Weeding", WEEDING_HINT, None, false);
+    // The settings stay usable: they apply again once no object keeps
+    // the sheet.
+    if sheet_kept(snap) {
+        ui.label(RichText::new(SHEET_KEPT_NO_WEEDING).color(t.text_dim));
+    }
     egui::Grid::new("flatcraft-weeding")
         .num_columns(2)
         .spacing([t.spacing, t.spacing * 0.75])
@@ -762,6 +769,20 @@ fn weeding(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec<Action>) 
                 set(json!({ "spacing_mm": v }));
             }
         });
+}
+
+/// Why weeding cuts nothing while an object keeps the shared sheet: the
+/// Weeding section, the Path legend's weed row and its weed path count.
+pub const SHEET_KEPT_NO_WEEDING: &str =
+    "Another object keeps the sheet on this mat, so there is nothing to weed.";
+
+/// True when an object that is cut keeps the shared sheet (Keep is
+/// Stencil or Both): then the sheet is kept material and weeding has
+/// nothing to cut, as the planner's kept material says.
+pub fn sheet_kept(snap: &Snapshot) -> bool {
+    snap.objects
+        .iter()
+        .any(|o| o.visible && o.cut_enabled && o.keep != KeepMode::Pieces)
 }
 
 /// The card of the Weeding heading.

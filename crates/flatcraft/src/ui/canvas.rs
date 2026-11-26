@@ -786,7 +786,7 @@ pub fn show(
         let clicked = resp.clicked_by(egui::PointerButton::Primary);
         let job = cut.job();
         if let Some(pick) = &mut st.keep_pick {
-            pick.pointer(job.as_ref(), &st.view, hover, clicked);
+            pick.pointer(ui.ctx(), job.as_ref(), &st.view, hover, clicked);
             if pick.hover.is_some() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }

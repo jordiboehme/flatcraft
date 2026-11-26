@@ -1359,6 +1359,9 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
     {
         app.ui.prepare.keep_pick = None;
     }
+    if let Some(pick) = &mut app.ui.prepare.keep_pick {
+        pick.refresh(snap);
+    }
     app.ui.prepare.panels.arrange_open = app.ui.prepare.panel.is_some();
     if app.ui.prepare.panels.collapsed(SidePanel::Objects) {
         let summary = rails::objects_summary(snap);
@@ -1423,10 +1426,11 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
                 actions,
             );
             pills(ui, rect, snap, &mut app.ui.prepare, &t, actions);
-            let planned = app.ui.cut.job().is_some();
+            let job = app.ui.cut.job();
             let p = &mut app.ui.prepare;
             if let Some(pick) = &mut p.keep_pick {
-                match pick.bar(ui, rect, snap, planned, &t) {
+                let elsewhere = job.as_ref().is_some_and(|j| pick.sheet_kept_elsewhere(j));
+                match pick.bar(ui, rect, snap, job.is_some(), elsewhere, &t) {
                     Some(super::keep_pick::Outcome::Done) => {
                         actions.extend(pick.done_action(snap));
                         p.keep_pick = None;
