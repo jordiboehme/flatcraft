@@ -200,3 +200,28 @@ fn notes_survive_save_and_open() {
     assert_eq!(s.doc().document.notes, "Weed slowly.");
     assert!(!s.doc().dirty);
 }
+
+#[test]
+fn agents_read_preset_notes_but_no_command_writes_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    s.profiles
+        .set_material_notes("vinyl", "Oracal 651: force 10 works.")
+        .unwrap();
+    let r = s
+        .execute("profiles.get", json!({ "id": "vinyl" }), Origin::Agent)
+        .unwrap();
+    assert_eq!(r["notes"], "Oracal 651: force 10 works.");
+    let r = s
+        .execute("profiles.get", json!({ "id": "cardstock" }), Origin::Agent)
+        .unwrap();
+    assert!(r.get("notes").is_none(), "{r}");
+    // Every command that changes something is a document command: none
+    // takes a preset's notes.
+    for c in flatcraft_engine::registry::all() {
+        let schema = serde_json::to_value(c.params_schema()).unwrap().to_string();
+        if c.id().starts_with("profiles.") || c.id().starts_with("job.set_") {
+            assert!(!schema.contains("notes"), "{} takes notes", c.id());
+        }
+    }
+}

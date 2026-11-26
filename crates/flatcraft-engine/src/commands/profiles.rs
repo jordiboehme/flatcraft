@@ -60,7 +60,7 @@ command!(
     mutates: false,
     params: IdParams,
     run: run_get,
-    description: "Returns one plotter or material preset with inheritance resolved, as JSON with an extra field kind (plotter or material). Plotters list their media (mm; each with kind, physical size, printed grid origin and size, calibrated), speed_range, force_range and passes_range; materials list speed, force, passes, overcut_mm and per-plotter overrides.",
+    description: "Returns one plotter or material preset with inheritance resolved, as JSON with an extra field kind (plotter or material). Plotters list their media (mm; each with kind, physical size, printed grid origin and size, calibrated), speed_range, force_range and passes_range; materials list speed, force, passes, overcut_mm and per-plotter overrides. Both have notes when the person wrote some on that preset (left out when none): read them before a cut, they are the person's own experience. Agents cannot change notes or presets.",
 );
 
 fn run_set_plotter(s: &mut Session, p: IdParams, _: Origin) -> Result<Value, CommandError> {

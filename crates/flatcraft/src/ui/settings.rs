@@ -447,4 +447,40 @@ pub fn job(
         ui.add_space(t.spacing / 2.0);
         ui.label(RichText::new(format!("Blade depth: {hint}")).color(t.text_dim));
     }
+    preset_notes(
+        ui,
+        "Plotter notes",
+        &plotter.name,
+        plotter.notes.as_deref(),
+        t,
+    );
+    preset_notes(
+        ui,
+        "Material notes",
+        &material.name,
+        material.notes.as_deref(),
+        t,
+    );
+}
+
+/// The person's notes on the picked plotter or material, under a small
+/// heading. Nothing shows when the preset has none.
+fn preset_notes(ui: &mut Ui, heading: &str, preset: &str, notes: Option<&str>, t: &Tokens) {
+    let Some(notes) = notes.map(str::trim_end).filter(|n| !n.trim().is_empty()) else {
+        return;
+    };
+    ui.add_space(t.spacing / 2.0);
+    let r = ui.label(
+        RichText::new(heading)
+            .font(fonts::semibold(12.0))
+            .color(t.text_dim),
+    );
+    super::groups::card(
+        &r,
+        heading,
+        &format!("Your notes on {preset}. Change them in Settings, in the presets of {preset}."),
+        None,
+        false,
+    );
+    ui.add(egui::Label::new(notes).wrap());
 }

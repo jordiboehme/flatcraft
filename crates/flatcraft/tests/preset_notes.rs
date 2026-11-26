@@ -1,0 +1,140 @@
+//! Notes on presets: edited in the Profiles window, shown in the Job card
+//! when the preset is picked.
+
+mod common;
+
+use common::{AppHarness, harness_sized, session, to_prepare};
+use egui::accesskit::Role;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
+use flatcraft_engine::session::Origin;
+use flatcraft_mcp::SharedSession;
+use serde_json::json;
+
+fn harness(dir: &tempfile::TempDir, s: &SharedSession) -> AppHarness {
+    harness_sized(dir, s.clone(), [1400.0, 900.0], 8, |app| app)
+}
+
+fn open(h: &mut AppHarness, tab: &str) {
+    h.get_by_role_and_label(Role::Button, "Settings").click();
+    h.run();
+    h.get_by_role_and_label(Role::Tab, tab).click();
+    h.run();
+}
+
+/// Scrolls `label` into view and clicks it.
+fn click(h: &mut AppHarness, label: &str) {
+    h.get_by_label(label).scroll_to_me();
+    h.run();
+    h.get_by_label(label).click();
+    h.run();
+}
+
+/// Clicks into the field and types `text` without leaving it.
+fn type_into(h: &mut AppHarness, label: &str, text: &str) {
+    h.get_by_label(label).scroll_to_me();
+    h.run();
+    h.get_by_label(label).click();
+    h.run();
+    h.get_by_label(label).type_text(text);
+    h.run();
+}
+
+fn disabled(h: &AppHarness, label: &str) -> bool {
+    h.get_by_label(label).accesskit_node().is_disabled()
+}
+
+#[test]
+fn notes_on_a_system_preset_are_kept_beside_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    open(&mut h, "Materials");
+    click(&mut h, "Vinyl");
+    assert!(disabled(&h, "Speed"), "the preset stays read-only");
+    assert!(
+        !disabled(&h, "Preset notes"),
+        "but its notes are the person's"
+    );
+    assert!(disabled(&h, "Save notes"), "nothing to save yet");
+    type_into(&mut h, "Preset notes", "Oracal 651: force 10 works.");
+    assert!(!disabled(&h, "Save notes"));
+    click(&mut h, "Save notes");
+    let st = s.lock().unwrap();
+    assert_eq!(
+        st.profiles.material("vinyl").unwrap().notes.as_deref(),
+        Some("Oracal 651: force 10 works.")
+    );
+    let profiles = dir.path().join("profiles");
+    assert!(profiles.join(flatcraft_device::PRESET_NOTES_FILE).exists());
+    assert!(
+        !profiles.join("materials").exists(),
+        "no user preset was made"
+    );
+}
+
+#[test]
+fn notes_on_a_user_preset_save_with_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    open(&mut h, "Materials");
+    click(&mut h, "Copy Paper");
+    click(&mut h, "Save as user preset...");
+    h.get_by_label("Preset name").click();
+    h.run();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run();
+    h.get_by_label("Preset name").type_text("My Paper");
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    h.run();
+    assert!(
+        h.query_by_label("Save notes").is_none(),
+        "Save preset does it"
+    );
+    type_into(&mut h, "Preset notes", "Grain runs down.");
+    click(&mut h, "Save preset");
+    let text =
+        std::fs::read_to_string(dir.path().join("profiles/materials/my-paper.toml")).unwrap();
+    assert!(text.contains("Grain runs down."), "{text}");
+}
+
+#[test]
+fn the_job_card_shows_the_notes_of_the_picked_presets() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    {
+        let mut st = s.lock().unwrap();
+        st.profiles
+            .set_material_notes("vinyl", "Weed within a day.")
+            .unwrap();
+        st.profiles
+            .set_plotter_notes("file-output-gpgl-cameo2", "Check the output folder.")
+            .unwrap();
+        st.execute("job.set_material", json!({ "id": "vinyl" }), Origin::User)
+            .unwrap();
+        st.execute(
+            "job.set_plotter",
+            json!({ "id": "file-output-gpgl-cameo2" }),
+            Origin::User,
+        )
+        .unwrap();
+    }
+    let mut h = harness(&dir, &s);
+    to_prepare(&mut h);
+    h.run();
+    h.get_by_label("Weed within a day.");
+    h.get_by_label("Check the output folder.");
+    s.lock()
+        .unwrap()
+        .execute(
+            "job.set_material",
+            json!({ "id": "cardstock" }),
+            Origin::User,
+        )
+        .unwrap();
+    h.run();
+    assert!(h.query_by_label("Weed within a day.").is_none());
+    h.get_by_label("Check the output folder.");
+}

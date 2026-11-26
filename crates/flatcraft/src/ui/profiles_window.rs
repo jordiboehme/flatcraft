@@ -124,6 +124,9 @@ pub struct ProfilesState {
     pub(crate) highlight: Highlight,
     /// A message for a toast, from a widget that cannot reach the app.
     notice: Option<String>,
+    /// "Save notes" of a system preset was clicked in a form, which has no
+    /// way to the actions; the page sends it.
+    notes_request: Option<Request>,
     /// The text of the hex colour field while it has the keyboard.
     hex: String,
     hex_editing: bool,
@@ -164,6 +167,14 @@ pub enum Request {
         new: bool,
     },
     Delete(Kind, String),
+    /// Store the notes of a system preset beside it (the preset itself
+    /// stays as it ships). `name` is for the toast.
+    SaveNotes {
+        kind: Kind,
+        id: String,
+        name: String,
+        notes: String,
+    },
     /// Ask for the File Output folder; the answer goes into the Settings
     /// window's staged preferences.
     ChooseOutputFolder,
@@ -940,11 +951,18 @@ pub(crate) fn plotters_page(
     plotter_page(ui, st, view, t, actions, |ui, st, _, t| {
         let Some(d) = st.plotter.as_mut() else { return };
         let hl = &st.highlight;
+        let out = &mut st.notes_request;
         egui::ScrollArea::vertical()
             .id_salt("flatcraft-profiles-plotter-form")
             .max_height(ui.available_height())
-            .show(ui, |ui| plotter_form(ui, d, hl, t));
+            .show(ui, |ui| {
+                plotter_form(ui, d, hl, t);
+                *out = notes_field(ui, Kind::Plotter, d, t).or(out.take());
+            });
     });
+    if let Some(req) = st.notes_request.take() {
+        actions.push(Action::Profiles(req));
+    }
 }
 
 /// The Mats page: the preset list and the mats of the selected plotter
@@ -1772,12 +1790,94 @@ pub(crate) fn materials_page(
             egui::ScrollArea::vertical()
                 .id_salt("flatcraft-profiles-material-form")
                 .max_height(ui.available_height())
-                .show(ui, |ui| material_form(ui, d, &st.highlight, view, t));
+                .show(ui, |ui| {
+                    material_form(ui, d, &st.highlight, view, t);
+                    if let Some(req) = notes_field(ui, Kind::Material, d, t) {
+                        actions.push(Action::Profiles(req));
+                    }
+                });
         });
         if revert {
             d.edit = d.saved.clone();
         }
     });
+}
+
+/// Why "Save notes" is dimmed when the notes did not change.
+pub const NOTES_UNCHANGED: &str = "The notes did not change, so there is nothing to save.";
+
+/// The notes of a preset, under its form. They are always the person's
+/// own, so the field is open on a system preset too: there "Save notes"
+/// stores them beside the preset, which stays as it ships. On a user
+/// preset "Save preset" stores them with the rest.
+fn notes_field<T: PresetNotes + PartialEq>(
+    ui: &mut Ui,
+    kind: Kind,
+    d: &mut Draft<T>,
+    t: &Tokens,
+) -> Option<Request> {
+    ui.add_space(t.spacing);
+    ui.label(RichText::new("Notes").font(fonts::semibold(14.0)));
+    let mut text = d.edit.notes().cloned().unwrap_or_default();
+    let r = ui.add(
+        egui::TextEdit::multiline(&mut text)
+            .hint_text("What worked, what to watch out for...")
+            .desired_rows(4)
+            .desired_width(f32::INFINITY),
+    );
+    set_name(ui, &r, "Preset notes");
+    super::groups::card(&r, "Notes", Setting::PresetNotes.card(), None, false);
+    if r.changed() {
+        *d.edit.notes_mut() = (!text.is_empty()).then_some(text);
+    }
+    if !d.system {
+        return None;
+    }
+    let changed = d.edit.notes() != d.saved.notes();
+    let b = ui.add_enabled(changed, egui::Button::new("Save notes"));
+    action_card(
+        &b,
+        "Save notes",
+        "Stores your notes on this system preset in your own settings folder. The preset itself stays as it ships.",
+        (!changed).then_some(NOTES_UNCHANGED),
+    );
+    b.clicked().then(|| Request::SaveNotes {
+        kind,
+        id: d.id.clone(),
+        name: d.saved.name().to_string(),
+        notes: d.edit.notes().cloned().unwrap_or_default(),
+    })
+}
+
+/// The notes of a plotter or material preset.
+trait PresetNotes {
+    fn notes(&self) -> Option<&String>;
+    fn notes_mut(&mut self) -> &mut Option<String>;
+    fn name(&self) -> &str;
+}
+
+impl PresetNotes for PlotterProfile {
+    fn notes(&self) -> Option<&String> {
+        self.notes.as_ref()
+    }
+    fn notes_mut(&mut self) -> &mut Option<String> {
+        &mut self.notes
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl PresetNotes for MaterialProfile {
+    fn notes(&self) -> Option<&String> {
+        self.notes.as_ref()
+    }
+    fn notes_mut(&mut self) -> &mut Option<String> {
+        &mut self.notes
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 fn material_form(
@@ -2219,6 +2319,33 @@ pub fn apply(app: &mut FlatCraftApp, req: Request) {
             saved(app, Kind::Material, &profile.id, &profile.name, result);
         }
         Request::Delete(kind, id) => delete(app, kind, &id),
+        Request::SaveNotes {
+            kind,
+            id,
+            name,
+            notes,
+        } => {
+            let result = {
+                let mut s = lock(&app.session);
+                match kind {
+                    Kind::Plotter => s.profiles.set_plotter_notes(&id, &notes),
+                    Kind::Material => s.profiles.set_material_notes(&id, &notes),
+                }
+            };
+            match result {
+                Ok(()) => {
+                    let st = &mut app.ui.profiles;
+                    match kind {
+                        Kind::Plotter => st.want_plotter = Some(id),
+                        Kind::Material => st.want_material = Some(id),
+                    }
+                    app.toast(Toast::info(format!("Saved the notes of {name}.")));
+                }
+                Err(e) => app.toast(Toast::error(format!(
+                    "Cannot save the notes of {name}: {e}"
+                ))),
+            }
+        }
         Request::ReloadPresets => {
             let result = lock(&app.session).profiles.reload();
             match result {

@@ -303,6 +303,11 @@ pub struct PlotterProfile {
     pub passes_range: [u32; 2],
     pub capabilities: Capabilities,
     pub flatten_tolerance_mm: f64,
+    /// The person's notes on this plotter. Never inherited. A system
+    /// preset gets them from the user-side annotation file
+    /// ([`crate::store::PRESET_NOTES_FILE`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 /// Pass counts of a plotter preset that does not set `passes_range`.
@@ -436,6 +441,11 @@ pub struct MaterialProfile {
     pub blade_depth_hint: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub overrides: BTreeMap<String, MaterialOverride>,
+    /// The person's notes on this material. Never inherited. A system
+    /// preset gets them from the user-side annotation file
+    /// ([`crate::store::PRESET_NOTES_FILE`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 impl MaterialProfile {

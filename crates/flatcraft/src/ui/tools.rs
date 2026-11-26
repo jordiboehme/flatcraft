@@ -1103,10 +1103,11 @@ pub enum Setting {
     MatColourHex,
     BladeDepthHint,
     AddOverride,
+    PresetNotes,
 }
 
 impl Setting {
-    pub const ALL: [Setting; 72] = [
+    pub const ALL: [Setting; 73] = [
         Setting::PositionX,
         Setting::PositionY,
         Setting::Width,
@@ -1179,6 +1180,7 @@ impl Setting {
         Setting::MatColourHex,
         Setting::BladeDepthHint,
         Setting::AddOverride,
+        Setting::PresetNotes,
     ];
 
     /// The kind of number a field of this setting holds, for the
@@ -1401,6 +1403,9 @@ impl Setting {
             }
             Setting::BladeDepthHint => {
                 "A note on how far to set a manual blade for this material, for example 3. The job settings show it as a reminder; FlatCraft does not send it to the plotter."
+            }
+            Setting::PresetNotes => {
+                "Your own notes on this preset: what worked, what to watch out for. The job settings show them whenever this preset is picked. On a system preset they are kept in your own settings folder, so the preset itself stays as it ships. Agents can read them but never change them."
             }
             Setting::AddOverride => {
                 "Pick a plotter to give this material its own speed, force, passes or overcut on that plotter only. Everything you leave alone keeps the material's value."

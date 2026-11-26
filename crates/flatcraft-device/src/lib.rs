@@ -17,5 +17,5 @@ pub use profile::{
     KnifeCompensation, MaterialOverride, MaterialProfile, Media, MediaError, MediaField, MediaKind,
     PAPER_COLOR, PlotterProfile, Protocol, TransportSpec, UNCALIBRATED_MARGIN_MM,
 };
-pub use store::{PresetDiagnostic, PresetInfo, ProfileError, ProfileStore};
+pub use store::{PRESET_NOTES_FILE, PresetDiagnostic, PresetInfo, ProfileError, ProfileStore};
 pub use transport::{FileTransport, SendReport, Transport, TransportError};

@@ -23,7 +23,16 @@ const PLOTTER_REPLACE_KEYS: &[&str] = &[
 /// Keys of older versions that no longer exist; dropped when a user preset is loaded.
 const LEGACY_PLOTTER_KEYS: &[&str] = &["margins"];
 const MATERIAL_REPLACE_KEYS: &[&str] = &[];
-const META_KEYS: &[&str] = &["id", "name", "inherits"];
+/// Keys a preset sets for itself, never inherited or compared with its
+/// parent. Notes belong to one preset: a child starts without them.
+const META_KEYS: &[&str] = &["id", "name", "inherits", NOTES_KEY];
+
+const NOTES_KEY: &str = "notes";
+
+/// The file in the user preset folder that holds the person's notes on
+/// system presets, so the system presets stay as they ship:
+/// `[plotters]` and `[materials]` tables of id = "notes".
+pub const PRESET_NOTES_FILE: &str = "preset-notes.toml";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProfileError {
@@ -303,6 +312,8 @@ pub struct ProfileStore {
     materials: BTreeMap<String, Entry>,
     /// User preset files that could not be loaded.
     diagnostics: Vec<PresetDiagnostic>,
+    /// The person's notes on system presets ([`PRESET_NOTES_FILE`]).
+    system_notes: SystemNotes,
     /// Counts saves and deletes.
     revision: u64,
     /// Resolved profiles of this revision, so a GUI can ask every frame.
@@ -324,10 +335,83 @@ impl Clone for ProfileStore {
             plotters: self.plotters.clone(),
             materials: self.materials.clone(),
             diagnostics: self.diagnostics.clone(),
+            system_notes: self.system_notes.clone(),
             revision: self.revision,
             cache: Mutex::new(self.resolved().clone()),
         }
     }
+}
+
+/// The person's notes on system presets, by kind and id.
+#[derive(Debug, Clone, Default)]
+struct SystemNotes {
+    plotters: BTreeMap<String, String>,
+    materials: BTreeMap<String, String>,
+    /// The file could not be read: it is never written over.
+    broken: bool,
+}
+
+impl SystemNotes {
+    fn map(&self, kind: Kind) -> &BTreeMap<String, String> {
+        match kind {
+            Kind::Plotter => &self.plotters,
+            Kind::Material => &self.materials,
+        }
+    }
+
+    fn map_mut(&mut self, kind: Kind) -> &mut BTreeMap<String, String> {
+        match kind {
+            Kind::Plotter => &mut self.plotters,
+            Kind::Material => &mut self.materials,
+        }
+    }
+
+    /// Reads [`PRESET_NOTES_FILE`]; a missing file is no notes.
+    fn read(path: &Path) -> Result<Self, String> {
+        let text = match fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(e) => return Err(e.to_string()),
+        };
+        let table = text.parse::<Table>().map_err(|e| e.to_string())?;
+        let mut out = Self::default();
+        for kind in [Kind::Plotter, Kind::Material] {
+            let Some(t) = table.get(kind.dir()) else {
+                continue;
+            };
+            let t = t
+                .as_table()
+                .ok_or_else(|| format!("[{}] must be a table", kind.dir()))?;
+            for (id, v) in t {
+                let v = v
+                    .as_str()
+                    .ok_or_else(|| format!("the notes of '{id}' must be text"))?;
+                out.map_mut(kind).insert(id.clone(), v.to_string());
+            }
+        }
+        Ok(out)
+    }
+
+    fn to_toml(&self) -> Result<String, toml::ser::Error> {
+        let mut table = Table::new();
+        for kind in [Kind::Plotter, Kind::Material] {
+            let t: Table = self
+                .map(kind)
+                .iter()
+                .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+                .collect();
+            if !t.is_empty() {
+                table.insert(kind.dir().into(), Value::Table(t));
+            }
+        }
+        toml::to_string_pretty(&table)
+    }
+}
+
+/// Notes as stored: trimmed at the end, `None` when nothing is left.
+fn clean_notes(text: &str) -> Option<String> {
+    let t = text.trim_end();
+    (!t.trim().is_empty()).then(|| t.to_string())
 }
 
 /// A preset compiled into the app. A broken one is an error, never a panic.
@@ -358,9 +442,21 @@ impl ProfileStore {
             plotters: BTreeMap::new(),
             materials: BTreeMap::new(),
             diagnostics: Vec::new(),
+            system_notes: SystemNotes::default(),
             revision: 0,
             cache: Mutex::default(),
         };
+        let notes_path = user_dir.join(PRESET_NOTES_FILE);
+        match SystemNotes::read(&notes_path) {
+            Ok(n) => store.system_notes = n,
+            Err(reason) => {
+                store.system_notes.broken = true;
+                store.diagnostics.push(PresetDiagnostic {
+                    path: notes_path,
+                    reason,
+                });
+            }
+        }
         for (id, src) in presets::PLOTTERS {
             store.plotters.insert(
                 id.to_string(),
@@ -648,13 +744,23 @@ impl ProfileStore {
             .unwrap_or_else(|| Value::String(id.to_string()));
         merged.insert("name".into(), name);
         merged.insert("inherits".into(), Value::String(parent_id.to_string()));
+        match own.get(NOTES_KEY) {
+            Some(n) => merged.insert(NOTES_KEY.into(), n.clone()),
+            None => merged.remove(NOTES_KEY),
+        };
         Ok(merged)
     }
 
     fn resolve<T: DeserializeOwned>(&self, kind: Kind, id: &str) -> Result<T, ProfileError> {
         #[cfg(test)]
         tests::RESOLVES.with(|n| n.set(n.get() + 1));
-        let table = self.resolve_table(kind, id, &mut Vec::new())?;
+        let mut table = self.resolve_table(kind, id, &mut Vec::new())?;
+        if self.map(kind).get(id).is_some_and(|e| e.system) {
+            match self.system_notes.map(kind).get(id) {
+                Some(n) => table.insert(NOTES_KEY.into(), Value::String(n.clone())),
+                None => table.remove(NOTES_KEY),
+            };
+        }
         table
             .try_into()
             .map_err(|e: toml::de::Error| ProfileError::Invalid {
@@ -811,6 +917,13 @@ impl ProfileStore {
         for (k, v) in diff {
             table.insert(k, v);
         }
+        if let Some(n) = own_ser
+            .get(NOTES_KEY)
+            .and_then(Value::as_str)
+            .and_then(clean_notes)
+        {
+            table.insert(NOTES_KEY.into(), Value::String(n));
+        }
         let text = toml::to_string_pretty(&table)?;
         let dir = self.user_dir.join(kind.dir());
         let io = |path: &Path, source| ProfileError::Io {
@@ -855,6 +968,75 @@ impl ProfileStore {
             .validate_values()
             .map_err(|reason| invalid(&profile.id, reason))?;
         self.save(Kind::Material, profile, &profile.id, &profile.name, parent)
+    }
+
+    /// Sets the notes of preset `id` (empty text removes them). A system
+    /// preset keeps them in [`PRESET_NOTES_FILE`], so its own values stay
+    /// as they ship; a user preset keeps them in its own file. Refused for
+    /// an unknown id, and while the file to write cannot be read.
+    fn set_notes(&mut self, kind: Kind, id: &str, text: &str) -> Result<(), ProfileError> {
+        let notes = clean_notes(text);
+        let entry = self
+            .map(kind)
+            .get(id)
+            .ok_or_else(|| ProfileError::UnknownPreset { id: id.to_string() })?;
+        let io = |path: &Path, source| ProfileError::Io {
+            path: path.to_path_buf(),
+            source,
+        };
+        if entry.system {
+            let path = self.user_dir.join(PRESET_NOTES_FILE);
+            if self.system_notes.broken {
+                return Err(invalid(
+                    id,
+                    format!(
+                        "{} can't be read, so it is not written over. Fix or remove it first, then press Reload presets in the Profiles window.",
+                        path.display()
+                    ),
+                ));
+            }
+            let mut next = self.system_notes.clone();
+            match &notes {
+                Some(n) => next.map_mut(kind).insert(id.to_string(), n.clone()),
+                None => next.map_mut(kind).remove(id),
+            };
+            let text = next.to_toml()?;
+            fs::create_dir_all(&self.user_dir).map_err(|e| io(&self.user_dir, e))?;
+            crate::fsio::write_atomic(&path, text.as_bytes()).map_err(|e| io(&path, e))?;
+            self.system_notes = next;
+        } else {
+            let mut table = entry.table.clone();
+            match &notes {
+                Some(n) => table.insert(NOTES_KEY.into(), Value::String(n.clone())),
+                None => table.remove(NOTES_KEY),
+            };
+            let text = toml::to_string_pretty(&table)?;
+            let dir = self.user_dir.join(kind.dir());
+            fs::create_dir_all(&dir).map_err(|e| io(&dir, e))?;
+            let path = dir.join(format!("{id}.toml"));
+            crate::fsio::write_atomic(&path, text.as_bytes()).map_err(|e| io(&path, e))?;
+            self.map_mut(kind).insert(
+                id.to_string(),
+                Entry {
+                    table,
+                    system: false,
+                },
+            );
+        }
+        self.changed();
+        Ok(())
+    }
+
+    /// Sets the notes of plotter preset `id` (see `set_notes`).
+    pub fn set_plotter_notes(&mut self, id: &str, text: &str) -> Result<(), ProfileError> {
+        self.set_notes(Kind::Plotter, id, text)
+    }
+
+    /// Sets the notes of material preset `id`, system or user: a system
+    /// preset keeps them in [`PRESET_NOTES_FILE`], a user preset in its own
+    /// file. Empty text removes them.
+    pub fn set_material_notes(&mut self, id: &str, text: &str) -> Result<(), ProfileError> {
+        self.set_notes(Kind::Material, id, text)
     }
 
     fn delete(&mut self, kind: Kind, id: &str) -> Result<(), ProfileError> {
