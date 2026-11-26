@@ -22,7 +22,7 @@ use super::object::{
     Found, blade_offset_mm, report_of, trace_findings, trace_report, warning_text,
 };
 use super::project::lexical;
-use super::{NoParams, check_exists, command, ids_json, resolve_ids};
+use super::{NoParams, check_exists, command, expand_ids, ids_json, resolve_ids};
 use crate::report::Issue;
 use crate::session::{CommandError, Origin, Session};
 
@@ -586,15 +586,8 @@ fn run_reload(s: &mut Session, p: ReloadParams, _: Origin) -> Result<Value, Comm
             .map(|o| o.id)
             .collect()
     } else {
-        let mut out = Vec::new();
-        for &raw in &p.ids {
-            let id = ObjectId(raw);
-            check_exists(&s.doc().document, id)?;
-            if !out.contains(&id) {
-                out.push(id);
-            }
-        }
-        out
+        // A group id reloads every object of the group.
+        expand_ids(&s.doc().document, &p.ids)?
     };
     let (mut reloaded, mut unchanged, mut missing, mut failed) = (vec![], vec![], vec![], vec![]);
     let mut warnings = Vec::new();

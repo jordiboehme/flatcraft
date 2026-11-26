@@ -4,7 +4,7 @@ use flatcraft_core::document::ObjectId;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{check_exists, command};
+use super::{command, expand_ids};
 use crate::job::JobInput;
 use crate::report;
 use crate::session::{CommandError, Origin, Session};
@@ -12,16 +12,14 @@ use crate::session::{CommandError, Origin, Session};
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CheckParams {
-    /// The objects to check. Omitted or empty: every object of the document (not the selection).
+    /// The objects (or groups) to check. Omitted or empty: every object of the document (not the selection).
     #[serde(default)]
     pub ids: Vec<u64>,
 }
 
 fn run_check(s: &mut Session, p: CheckParams, _: Origin) -> Result<Value, CommandError> {
-    let ids: Vec<ObjectId> = p.ids.iter().map(|i| ObjectId(*i)).collect();
-    for id in &ids {
-        check_exists(&s.doc().document, *id)?;
-    }
+    // A group id checks every object of the group, each on its own.
+    let ids: Vec<ObjectId> = expand_ids(&s.doc().document, &p.ids)?;
     let input = JobInput::of(s)?;
     let only = (!ids.is_empty()).then_some(ids.as_slice());
     Ok(report::check(&input, only).to_json())

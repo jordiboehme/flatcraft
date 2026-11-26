@@ -243,6 +243,13 @@ fn top_level_drop(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec<Ac
         egui::TextStyle::Small.resolve(ui.style()),
         t.text_dim,
     );
+    super::groups::card(
+        &resp,
+        DROP_OUT,
+        "Let go here to take the row out of its group, to the top of the list. It stays where it is on the mat and acts on its own again.",
+        None,
+        false,
+    );
     if let Some(p) = resp.dnd_release_payload::<RowDrag>() {
         actions.push(Action::run(
             snap.doc_id,
@@ -264,11 +271,22 @@ fn drag_and_drop(
 ) -> bool {
     let me = ids.clone();
     row.dnd_set_drag_payload(RowDrag { ids });
-    let hover = row
-        .dnd_hover_payload::<RowDrag>()
-        .is_some_and(|p| p.ids != me);
+    // A row never drops onto itself or onto a row inside it (a group onto
+    // one of its own members): the panel does not offer what the engine
+    // would refuse.
+    let fits = |p: &RowDrag| {
+        !p.ids.iter().any(|d| {
+            me.iter().any(|m| {
+                snap.tree.within(
+                    flatcraft_core::document::ObjectId(*m),
+                    flatcraft_core::document::ObjectId(*d),
+                )
+            })
+        })
+    };
+    let hover = row.dnd_hover_payload::<RowDrag>().is_some_and(|p| fits(&p));
     if let Some(p) = row.dnd_release_payload::<RowDrag>()
-        && p.ids != me
+        && fits(&p)
     {
         actions.push(Action::run(
             snap.doc_id,
@@ -348,11 +366,17 @@ fn group_row(
     fold.widget_info(|| {
         egui::WidgetInfo::labeled(egui::accesskit::Role::Button, true, fold_name.clone())
     });
-    let fold = fold.on_hover_text(if open {
-        "Hide the members of this group."
-    } else {
-        "Show the members of this group."
-    });
+    super::groups::card(
+        &fold,
+        &fold_name,
+        if open {
+            "Folds the group away, so the list shows it as one row. Its members stay as they are."
+        } else {
+            "Shows the members of this group under it, so you can pick, hide or rename one alone."
+        },
+        None,
+        false,
+    );
     if fold.clicked() {
         if open {
             st.open_groups.remove(&(doc_id, id));

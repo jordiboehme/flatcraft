@@ -539,6 +539,7 @@ fn run_retrace(s: &mut Session, p: RetraceParams, _: Origin) -> Result<Value, Co
     let id = ObjectId(p.id);
     let settings = p.settings.into_trace()?;
     let blade = blade_offset_mm(s);
+    check_exists(&s.doc().document, id)?;
     let o = s
         .doc()
         .document
@@ -1486,8 +1487,13 @@ fn run_scale(s: &mut Session, p: ScaleParams, _: Origin) -> Result<Value, Comman
             "give either factor, or width_mm and/or height_mm".into(),
         ));
     }
+    // Objects whose shared scale is set already in this command, through
+    // a linked copy scaled earlier: one list for the whole command, so a
+    // set of linked copies scales once, whether its members sit in groups
+    // or not.
+    let mut scaled: Vec<ObjectId> = Vec::new();
     if p.group {
-        scale_group(s, &ids, factor, width, height, &p)?;
+        scale_group(s, &ids, factor, width, height, &p, &mut scaled)?;
         return Ok(json!({ "ids": ids_json(&ids) }));
     }
     // Each unit on its own: a whole group scales as one piece about its
@@ -1496,21 +1502,20 @@ fn run_scale(s: &mut Session, p: ScaleParams, _: Origin) -> Result<Value, Comman
     let (groups, objects): (Vec<ObjectId>, Vec<ObjectId>) = units
         .iter()
         .partition(|u| s.doc().document.group_node(**u).is_some());
-    for g in &groups {
-        let leaves = unit_leaves(&s.doc().document, *g);
-        scale_group(s, &leaves, factor, width, height, &p)?;
-    }
-    let doc = &mut s.doc_mut().document;
-    // Measured first: a linked copy may scale before its turn comes.
+    // Measured first: a linked copy may scale before its turn comes (in a
+    // group, or as an object earlier in `ids`).
     let mut olds = Vec::with_capacity(objects.len());
     for id in &objects {
+        let doc = &mut s.doc_mut().document;
         olds.push(placed_bounds(object_mut(doc, *id)?).ok_or_else(|| {
             CommandError::InvalidParams(format!("object {} has no geometry to scale", id.0))
         })?);
     }
-    // Objects whose scale is set already, through a linked copy earlier in
-    // `ids`: a group scales once, by its first member in `ids`.
-    let mut scaled: Vec<ObjectId> = Vec::new();
+    for g in &groups {
+        let leaves = unit_leaves(&s.doc().document, *g);
+        scale_group(s, &leaves, factor, width, height, &p, &mut scaled)?;
+    }
+    let doc = &mut s.doc_mut().document;
     for (id, &old) in objects.iter().zip(&olds) {
         if !scaled.contains(id) {
             scale_one(doc, *id, old, factor, width, height, p.keep_aspect)?;
@@ -1606,6 +1611,7 @@ fn scale_group(
     width: Option<f64>,
     height: Option<f64>,
     p: &ScaleParams,
+    scaled: &mut Vec<ObjectId>,
 ) -> Result<(), CommandError> {
     let doc = &mut s.doc_mut().document;
     let group_box = |doc: &Document| -> Result<Rect, CommandError> {
@@ -1677,17 +1683,31 @@ fn scale_group(
     }
     let anchor = p.anchor.point(old);
     for (id, q) in ids.iter().zip(&odd) {
+        let already = scaled.contains(id);
         let o = object_mut(doc, *id)?;
-        let (sx, sy) = if *q == Some(true) { (fy, fx) } else { (fx, fy) };
-        o.transform.scale_x *= sx;
-        o.transform.scale_y *= sy;
+        // A linked copy scaled earlier in this command keeps that scale
+        // and only moves with the group.
+        if !already {
+            let (sx, sy) = if *q == Some(true) { (fy, fx) } else { (fx, fy) };
+            o.transform.scale_x *= sx;
+            o.transform.scale_y *= sy;
+        }
         let c = o.transform.center_mm - anchor;
         o.transform.center_mm = anchor + Vec2::new(c.x * fx, c.y * fy);
     }
     // Linked copies outside `ids` take the scale and keep their centre.
     // Members inside scaled once each from the same scale, so they agree.
     for id in ids {
-        doc.spread_shared(*id);
+        if !scaled.contains(id) {
+            doc.spread_shared(*id);
+        }
+    }
+    for id in ids {
+        for m in doc.members(*id) {
+            if !scaled.contains(&m) {
+                scaled.push(m);
+            }
+        }
     }
     // Cut outlines may not scale exactly (a stroke crossing the auto
     // threshold): put the anchor back where it was.
@@ -1884,12 +1904,25 @@ fn run_mirror(s: &mut Session, p: MirrorParams, _: Origin) -> Result<Value, Comm
         ));
     }
     // follow is checked like ids, whatever happens next.
-    for raw in &p.follow {
-        check_exists(&s.doc().document, ObjectId(*raw))?;
-    }
+    super::expand_ids(&s.doc().document, &p.follow)?;
     if let Some(want) = p.mirrored {
         let doc = &s.doc().document;
-        ids.retain(|id| doc.get(*id).is_some_and(|o| o.transform.mirror != want));
+        // A whole group flips as one when any member needs to, so its
+        // layout stays; loose objects and members picked inside a group
+        // flip on their own.
+        let flips = |id: &ObjectId| doc.get(*id).is_some_and(|o| o.transform.mirror != want);
+        let mut keep = Vec::new();
+        for unit in units_of(doc, &ids) {
+            let leaves = unit_leaves(doc, unit);
+            if leaves.iter().any(flips) {
+                keep.extend(if doc.group_node(unit).is_some() {
+                    leaves
+                } else {
+                    leaves.into_iter().filter(flips).collect()
+                });
+            }
+        }
+        ids = keep;
         // An empty follow list means none (not the selection).
         if !ids.is_empty() && !p.follow.is_empty() {
             for id in resolve_ids(s, &p.follow)? {
@@ -1977,7 +2010,7 @@ command!(
     mutates: true,
     params: MirrorParams,
     run: run_mirror,
-    description: "Mirrors objects along a screen axis, in one undo step. horizontal flips left and right, vertical flips top and bottom. about: group | each, default group. With group, the objects mirror as one group across the middle of their combined box (of what is cut), and that box stays where it was: the layout flips with them and the design keeps its place on the mat (the window does this for a selection). With each, every object mirrors across its own centre and the centres stay; a whole group counts as one object and mirrors across the middle of its own box, which stays where it was. Positions in mm, origin the 0,0 of the grid printed on the mat, y down. Linked copies (see object.copies) keep their own mirror: only the objects in ids flip. Use horizontal for iron-on vinyl, which is cut from the back. mirrored: true or false makes it absolute: only objects whose mirror state differs flip (as one group with about group), so a second run changes nothing; leave it out to flip every object. follow (only with mirrored) lists objects that flip with the group whenever any of ids flips, whatever their own state. An empty ids list means the current selection. Returns {ids} (the objects that flipped).",
+    description: "Mirrors objects along a screen axis, in one undo step. horizontal flips left and right, vertical flips top and bottom. about: group | each, default group. With group, the objects mirror as one group across the middle of their combined box (of what is cut), and that box stays where it was: the layout flips with them and the design keeps its place on the mat (the window does this for a selection). With each, every object mirrors across its own centre and the centres stay; a whole group counts as one object and mirrors across the middle of its own box, which stays where it was. Positions in mm, origin the 0,0 of the grid printed on the mat, y down. Linked copies (see object.copies) keep their own mirror: only the objects in ids flip. Use horizontal for iron-on vinyl, which is cut from the back. mirrored: true or false makes it absolute: only objects whose mirror state differs flip (a whole group flips as one piece when any of its members differs) (as one group with about group), so a second run changes nothing; leave it out to flip every object. follow (only with mirrored) lists objects that flip with the group whenever any of ids flips, whatever their own state. An empty ids list means the current selection. Returns {ids} (the objects that flipped).",
 );
 
 // ---------------------------------------------------------------- cut options

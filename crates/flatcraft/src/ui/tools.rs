@@ -1355,7 +1355,7 @@ impl Setting {
             Setting::RotateZone => ROTATE_CARD.as_str(),
             Setting::Angle => ANGLE_CARD.as_str(),
             Setting::EachObject => {
-                "Separate shapes (on): the Rotate and Mirror buttons and the % field work on each selected object about its own centre. One dashed frame (off): the selection moves as one piece, like Voltron. A group always counts as one object and turns about its own centre. The Angle field always sets the angle of each object on its own, and turning by hand on the mat always turns the selection as one piece."
+                "Separate shapes (on): the Rotate and Mirror buttons and the % field work on each selected object about its own centre. One dashed frame (off): the selection moves as one piece, like Voltron. A group always counts as one object and turns about its own centre. The Angle field sets the angle of each object on its own, and a group turns as one piece to its own angle. Turning by hand on the mat always turns the selection as one piece."
             }
             Setting::Search => {
                 "Type a few letters of what you want to do, then pick it from the list or press Enter."

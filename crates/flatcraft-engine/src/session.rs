@@ -920,6 +920,7 @@ impl Session {
             self.docs[index].document.dissolve_lonely_groups();
             // The same for groups of objects: a group of one dissolves.
             self.docs[index].document.normalize_groups();
+            debug_assert!(self.docs[index].document.groups_valid());
             if !self.links_agree() {
                 for d in &mut self.docs {
                     if d.id() == doc_id {

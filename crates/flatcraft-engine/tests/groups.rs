@@ -618,3 +618,284 @@ fn a_hidden_member_is_not_part_of_the_group_box() {
     assert!(close(after.center().x, before.center().x));
     assert!(close(after.center().y, before.center().y));
 }
+
+fn scale_of(s: &Session, id: u64) -> f64 {
+    s.doc()
+        .document
+        .get(ObjectId(id))
+        .unwrap()
+        .transform
+        .scale_x
+}
+
+#[test]
+fn linked_copies_in_groups_scale_once() {
+    let d = dirs();
+    let mut s = session(&d);
+    // G = {A, B}, L a linked copy of A outside G.
+    let a = rect(&mut s, "a", 10.0, 10.0, 10.0, 10.0);
+    let b = rect(&mut s, "b", 30.0, 10.0, 10.0, 10.0);
+    let l = run(
+        &mut s,
+        "object.copies",
+        json!({ "id": a, "count": 1, "linked": true }),
+    )["ids"][0]
+        .as_u64()
+        .unwrap();
+    let g = group(&mut s, &[a, b]);
+    let l_centre = s
+        .doc()
+        .document
+        .get(ObjectId(l))
+        .unwrap()
+        .transform
+        .center_mm;
+    run(
+        &mut s,
+        "object.scale",
+        json!({ "ids": [g, l], "factor": 2.0 }),
+    );
+    assert_eq!(scale_of(&s, a), 2.0);
+    assert_eq!(scale_of(&s, l), 2.0);
+    assert_eq!(scale_of(&s, b), 2.0);
+    assert!(s.doc().document.link_groups_agree());
+    let lc = s
+        .doc()
+        .document
+        .get(ObjectId(l))
+        .unwrap()
+        .transform
+        .center_mm;
+    assert!(
+        close(lc.x, l_centre.x) && close(lc.y, l_centre.y),
+        "L keeps its centre"
+    );
+    run(&mut s, "edit.undo", json!({}));
+
+    // Two groups that share a linked design: G1 = {A, B}, G2 = {L, C}.
+    let c = rect(&mut s, "c", 120.0, 10.0, 10.0, 10.0);
+    run(&mut s, "object.ungroup", json!({ "ids": [g] }));
+    let g1 = group(&mut s, &[a, b]);
+    let g2 = group(&mut s, &[l, c]);
+    run(
+        &mut s,
+        "object.scale",
+        json!({ "ids": [g1, g2], "factor": 2.0 }),
+    );
+    for id in [a, b, l, c] {
+        assert_eq!(scale_of(&s, id), 2.0, "object {id}");
+    }
+    assert!(s.doc().document.link_groups_agree());
+    // As one piece (the canvas handles) too.
+    run(&mut s, "edit.undo", json!({}));
+    run(
+        &mut s,
+        "object.scale",
+        json!({ "ids": [g1, g2], "factor": 2.0, "group": true }),
+    );
+    for id in [a, b, l, c] {
+        assert_eq!(scale_of(&s, id), 2.0, "object {id}");
+    }
+}
+
+#[test]
+fn rotate_and_mirror_apply_once_to_linked_copies_in_groups() {
+    // Rotation and mirror are each copy's own (not shared), so a turn of
+    // two groups with a shared design turns every object once.
+    let d = dirs();
+    let mut s = session(&d);
+    let a = rect(&mut s, "a", 10.0, 10.0, 10.0, 10.0);
+    let b = rect(&mut s, "b", 30.0, 10.0, 10.0, 10.0);
+    let l = run(
+        &mut s,
+        "object.copies",
+        json!({ "id": a, "count": 1, "linked": true }),
+    )["ids"][0]
+        .as_u64()
+        .unwrap();
+    let c = rect(&mut s, "c", 120.0, 10.0, 10.0, 10.0);
+    let g1 = group(&mut s, &[a, b]);
+    let g2 = group(&mut s, &[l, c]);
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [g1, g2], "degrees": 30.0, "about": "each" }),
+    );
+    run(
+        &mut s,
+        "object.mirror",
+        json!({ "ids": [g1, g2], "axis": "horizontal", "about": "each" }),
+    );
+    for id in [a, b, l, c] {
+        let t = s.doc().document.get(ObjectId(id)).unwrap().transform;
+        assert!(
+            close(t.rotation_deg, 330.0),
+            "object {id}: {}",
+            t.rotation_deg
+        );
+        assert!(t.mirror, "object {id}");
+    }
+}
+
+/// A minimal call of each registry command that takes object ids, for
+/// `id`. Every command with an `ids`, `id` or `follow` parameter must be
+/// listed (the test fails for one that is not).
+fn id_call(cmd: &str, id: u64) -> Option<Value> {
+    Some(match cmd {
+        "object.select"
+        | "object.delete"
+        | "object.duplicate"
+        | "object.link"
+        | "object.unlink_copies"
+        | "object.group"
+        | "object.ungroup"
+        | "object.move_to_group"
+        | "document.check"
+        | "object.reload"
+        | "object.unlink"
+        | "arrange.auto" => json!({ "ids": [id] }),
+        "object.set_visible" => json!({ "ids": [id], "visible": true }),
+        "object.set_cut" => json!({ "ids": [id], "cut": true }),
+        "object.rename" => json!({ "id": id, "name": "x" }),
+        "object.copies" => json!({ "id": id, "count": 1 }),
+        "object.circular_copies" => json!({ "ids": [id], "count": 2 }),
+        "object.move" => json!({ "ids": [id], "dx_mm": 1.0 }),
+        "object.scale" => json!({ "ids": [id], "factor": 1.5 }),
+        "object.rotate" => json!({ "ids": [id], "degrees": 10.0 }),
+        "object.mirror" => {
+            json!({ "ids": [id], "axis": "horizontal", "mirrored": true, "follow": [id] })
+        }
+        "object.set_cut_options" => json!({ "ids": [id], "mode": "all_lines" }),
+        "arrange.align" => json!({ "ids": [id], "mode": "left" }),
+        "arrange.distribute" => json!({ "ids": [id], "axis": "horizontal" }),
+        "document.export" => return None,
+        // One object by nature (see `one_object_commands`).
+        "object.retrace" | "object.relink" => return None,
+        _ => return None,
+    })
+}
+
+#[test]
+fn every_command_that_takes_object_ids_takes_a_group_id() {
+    let one_object = ["object.retrace", "object.relink"];
+    let d = dirs();
+    for c in flatcraft_engine::registry::all() {
+        let schema = serde_json::to_value(c.params_schema()).unwrap();
+        let props = &schema["properties"];
+        // Object ids are integers (profile ids are text).
+        let int = |v: &Value| {
+            v.get("type") == Some(&json!("integer"))
+                || v.pointer("/items/type") == Some(&json!("integer"))
+        };
+        let takes = ["ids", "id", "follow"]
+            .iter()
+            .any(|k| props.get(*k).is_some_and(int));
+        if !takes || one_object.contains(&c.id()) {
+            continue;
+        }
+        let mut s = session(&d);
+        let a = rect(&mut s, "a", 10.0, 10.0, 10.0, 10.0);
+        let b = rect(&mut s, "b", 30.0, 10.0, 10.0, 10.0);
+        let c3 = rect(&mut s, "c", 50.0, 10.0, 10.0, 10.0);
+        let g = group(&mut s, &[a, b]);
+        let params =
+            id_call(c.id(), g).unwrap_or_else(|| panic!("{} takes ids: add it to id_call", c.id()));
+        let params = if c.id() == "arrange.distribute" {
+            json!({ "ids": [g, c3, rect(&mut s, "e", 90.0, 10.0, 10.0, 10.0)], "axis": "horizontal" })
+        } else if c.id() == "object.group" {
+            json!({ "ids": [g, c3] })
+        } else {
+            params
+        };
+        match s.execute(c.id(), params, Origin::User) {
+            Ok(_) => {}
+            Err(e) => {
+                let text = e.to_string();
+                assert!(
+                    !text.contains(&format!("{g}")) && !matches!(e, CommandError::NotFound(_)),
+                    "{} refuses a group id: {text}",
+                    c.id()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn one_object_commands_say_a_group_is_a_group() {
+    let d = dirs();
+    let mut s = session(&d);
+    let a = rect(&mut s, "a", 10.0, 10.0, 10.0, 10.0);
+    let b = rect(&mut s, "b", 30.0, 10.0, 10.0, 10.0);
+    let g = group(&mut s, &[a, b]);
+    let e = fails(&mut s, "object.retrace", json!({ "id": g, "settings": {} }));
+    assert!(e.to_string().contains("is a group"), "{e}");
+}
+
+#[test]
+fn mirrored_flips_a_whole_group_when_any_member_differs() {
+    let d = dirs();
+    let mut s = session(&d);
+    let a = rect(&mut s, "a", 10.0, 10.0, 20.0, 10.0);
+    let b = rect(&mut s, "b", 40.0, 10.0, 10.0, 10.0);
+    run(
+        &mut s,
+        "object.mirror",
+        json!({ "ids": [a], "axis": "horizontal", "about": "each" }),
+    );
+    let g = group(&mut s, &[a, b]);
+    let before = bounds(&mut s, a).union(bounds(&mut s, b));
+    let ra = bounds(&mut s, a);
+    run(
+        &mut s,
+        "object.mirror",
+        json!({ "ids": [g], "axis": "horizontal", "mirrored": true }),
+    );
+    // Both flipped across the group's box: a was left, is now right.
+    let doc = &s.doc().document;
+    assert!(!doc.get(ObjectId(a)).unwrap().transform.mirror);
+    assert!(doc.get(ObjectId(b)).unwrap().transform.mirror);
+    let after = bounds(&mut s, a).union(bounds(&mut s, b));
+    assert!(close_rect(after, before));
+    assert!(close(bounds(&mut s, a).x1, before.x1 - (ra.x0 - before.x0)));
+}
+
+#[test]
+fn a_hand_edited_group_tree_is_mended_on_open() {
+    use flatcraft_core::project::Archive;
+    let d = dirs();
+    let mut s = session(&d);
+    let a = rect(&mut s, "a", 10.0, 10.0, 10.0, 10.0);
+    let b = rect(&mut s, "b", 30.0, 10.0, 10.0, 10.0);
+    let c = rect(&mut s, "c", 50.0, 10.0, 10.0, 10.0);
+    group(&mut s, &[a, b]);
+    let path = d.out.path().join("p.flatcraft");
+    run(&mut s, "project.save", json!({ "path": path }));
+    let mut archive = Archive::read(&path).unwrap();
+    let v = &mut archive.project;
+    // A loop, a dangling parent, a group whose id is an object's, and a
+    // group without members.
+    v["groups"] = json!([
+        { "id": 90, "name": "loop a", "parent": 91 },
+        { "id": 91, "name": "loop b", "parent": 90 },
+        { "id": a, "name": "clash" },
+        { "id": 92, "name": "empty" },
+    ]);
+    v["objects"][0]["group"] = json!(90);
+    v["objects"][0]["parent"] = json!(90);
+    v["objects"][1]["parent"] = json!(77);
+    v["objects"][2]["parent"] = json!(90);
+    let p2 = d.out.path().join("edited.flatcraft");
+    archive.write(&p2).unwrap();
+    let mut s2 = session(&d);
+    run(&mut s2, "project.open", json!({ "path": p2 }));
+    let doc = &s2.doc().document;
+    assert!(doc.groups_valid());
+    // 90 keeps a and c (its loop broken); the rest is gone.
+    assert_eq!(doc.groups.len(), 1, "{:?}", doc.groups);
+    assert_eq!(doc.groups[0].id, ObjectId(90));
+    assert_eq!(doc.get(ObjectId(a)).unwrap().parent, Some(ObjectId(90)));
+    assert_eq!(doc.get(ObjectId(c)).unwrap().parent, Some(ObjectId(90)));
+    assert_eq!(doc.get(ObjectId(b)).unwrap().parent, None);
+    assert!(doc.next_id > 92);
+}

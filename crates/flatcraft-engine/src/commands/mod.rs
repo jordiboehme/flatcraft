@@ -90,34 +90,46 @@ pub(crate) fn parse<P: DeserializeOwned>(params: serde_json::Value) -> Result<P,
 /// order given (a group's in document order), each once.
 pub(crate) fn resolve_ids(s: &Session, ids: &[u64]) -> Result<Vec<ObjectId>, CommandError> {
     let doc = s.doc();
-    let given: Vec<ObjectId> = if ids.is_empty() {
-        doc.selection.iter().copied().collect()
+    let given: Vec<u64> = if ids.is_empty() {
+        doc.selection.iter().map(|i| i.0).collect()
     } else {
-        ids.iter().map(|raw| ObjectId(*raw)).collect()
+        ids.to_vec()
     };
     if given.is_empty() {
         return Err(CommandError::InvalidParams(
             "no object ids given and nothing is selected".into(),
         ));
     }
-    let tree = (!doc.document.groups.is_empty()).then(|| doc.document.tree());
+    let out = expand_ids(&doc.document, &given)?;
+    if out.is_empty() {
+        return Err(CommandError::InvalidParams(
+            "the given groups hold no objects".into(),
+        ));
+    }
+    Ok(out)
+}
+
+/// The objects of `ids` as given (no selection fallback): an object id
+/// stands for itself, a group id for every object in the group, at any
+/// depth. Every id must exist. Objects come in the order given (a group's
+/// in document order), each once. Every command that takes object ids
+/// goes through here, so each one takes a group id too.
+pub(crate) fn expand_ids(doc: &Document, ids: &[u64]) -> Result<Vec<ObjectId>, CommandError> {
+    let tree = (!doc.groups.is_empty()).then(|| doc.tree());
     let mut out = Vec::new();
-    for id in given {
-        check_node(&doc.document, id)?;
+    let mut seen = std::collections::BTreeSet::new();
+    for raw in ids {
+        let id = ObjectId(*raw);
+        check_node(doc, id)?;
         let leaves = match &tree {
             Some(t) if t.is_group(id) => t.leaves_of(id),
             _ => vec![id],
         };
         for leaf in leaves {
-            if !out.contains(&leaf) {
+            if seen.insert(leaf) {
                 out.push(leaf);
             }
         }
-    }
-    if out.is_empty() {
-        return Err(CommandError::InvalidParams(
-            "the given groups hold no objects".into(),
-        ));
     }
     Ok(out)
 }
@@ -185,10 +197,22 @@ pub(crate) fn check_node(doc: &Document, id: ObjectId) -> Result<(), CommandErro
     }
 }
 
+/// Fails unless `id` names an object. For commands that work on one
+/// object by nature (retrace, relink); a group id gets a hint.
 pub(crate) fn check_exists(doc: &Document, id: ObjectId) -> Result<(), CommandError> {
-    doc.get(id)
-        .map(|_| ())
-        .ok_or_else(|| CommandError::NotFound(format!("no object with id {}", id.0)))
+    if doc.get(id).is_some() {
+        return Ok(());
+    }
+    if doc.group_node(id).is_some() {
+        return Err(CommandError::InvalidParams(format!(
+            "{} is a group; give one of its objects (document.state lists them)",
+            id.0
+        )));
+    }
+    Err(CommandError::NotFound(format!(
+        "no object with id {}",
+        id.0
+    )))
 }
 
 pub(crate) fn object_mut(doc: &mut Document, id: ObjectId) -> Result<&mut Object, CommandError> {

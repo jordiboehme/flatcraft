@@ -892,7 +892,8 @@ impl Document {
 
     /// True if the group tree is sound: every parent exists, no loops,
     /// every group has 2 or more members, no id is used twice. The engine
-    /// checks this after every command.
+    /// mends the tree after every command and asserts this in debug
+    /// builds.
     pub fn groups_valid(&self) -> bool {
         let mut copy = self.clone();
         copy.normalize_groups();
