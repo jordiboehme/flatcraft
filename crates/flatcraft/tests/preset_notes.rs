@@ -96,7 +96,7 @@ fn notes_on_a_user_preset_save_with_it() {
     type_into(&mut h, "Preset notes", "Grain runs down.");
     click(&mut h, "Save preset");
     let text =
-        std::fs::read_to_string(dir.path().join("profiles/materials/my-paper.toml")).unwrap();
+        std::fs::read_to_string(dir.path().join("profiles/materials/user-my-paper.toml")).unwrap();
     assert!(text.contains("Grain runs down."), "{text}");
 }
 

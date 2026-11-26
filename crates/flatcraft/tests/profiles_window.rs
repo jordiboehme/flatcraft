@@ -102,15 +102,15 @@ fn save_as_user_preset_inherits() {
     let info = st
         .plotters()
         .into_iter()
-        .find(|p| p.id == "my-cameo")
+        .find(|p| p.id == "user-my-cameo")
         .unwrap();
     assert!(!info.system);
     assert_eq!(info.name, "My Cameo");
     assert_eq!(info.inherits.as_deref(), Some("silhouette-cameo-2"));
-    assert_eq!(st.modified_plotter_fields("my-cameo"), ["scale_x"]);
-    assert_eq!(st.plotter("my-cameo").unwrap().scale_x, 1.01);
+    assert_eq!(st.modified_plotter_fields("user-my-cameo"), ["scale_x"]);
+    assert_eq!(st.plotter("user-my-cameo").unwrap().scale_x, 1.01);
 
-    let t = plotter_toml(&dir, "my-cameo");
+    let t = plotter_toml(&dir, "user-my-cameo");
     assert_eq!(keys(&t), ["id", "inherits", "name", "scale_x"]);
     assert_eq!(t["inherits"].as_str(), Some("silhouette-cameo-2"));
     assert_eq!(t["scale_x"].as_float(), Some(1.01));
@@ -204,16 +204,16 @@ fn edit_one_mat_keeps_the_others() {
     type_into(&mut h, "Grid origin y (mm)", "12.7");
     click(&mut h, "Save preset");
 
-    let p = store(&s).plotter("my-cameo").unwrap();
+    let p = store(&s).plotter("user-my-cameo").unwrap();
     let ids: Vec<&str> = p.media.iter().map(|m| m.id.as_str()).collect();
     assert_eq!(ids, ["mat-12x12", "mat-12x24", "no-mat"]);
     assert_eq!(p.media[0].grid.origin_y_mm, 12.7);
     assert_eq!(
-        store(&s).modified_plotter_fields("my-cameo"),
+        store(&s).modified_plotter_fields("user-my-cameo"),
         ["media.mat-12x12"]
     );
 
-    let t = plotter_toml(&dir, "my-cameo");
+    let t = plotter_toml(&dir, "user-my-cameo");
     let media = t["media"].as_array().unwrap();
     assert_eq!(media.len(), 1);
     let mat = media[0].as_table().unwrap();
@@ -239,7 +239,7 @@ fn hide_builtin_mat() {
     click(&mut h, "Hidden");
     click(&mut h, "Save preset");
 
-    let t = plotter_toml(&dir, "my-cameo");
+    let t = plotter_toml(&dir, "user-my-cameo");
     let media = t["media"].as_array().unwrap();
     assert_eq!(media.len(), 1);
     let mat = media[0].as_table().unwrap();
@@ -251,7 +251,7 @@ fn hide_builtin_mat() {
             .is_none_or(|n| n.accesskit_node().is_disabled())
     );
 
-    use_plotter(&mut h, &s, "my-cameo");
+    use_plotter(&mut h, &s, "user-my-cameo");
     h.get_by_role_and_label(Role::ComboBox, "Mat").click();
     h.run();
     // The popup is open: "No mat" is only listed there.
@@ -268,7 +268,7 @@ fn invalid_mat_disables_save() {
     page(&mut h, "Mats");
     click(&mut h, "Mat 12x12");
     let before =
-        std::fs::read_to_string(dir.path().join("profiles/plotters/my-cameo.toml")).unwrap();
+        std::fs::read_to_string(dir.path().join("profiles/plotters/user-my-cameo.toml")).unwrap();
     // 50 + 304.8 is more than the 330.2 mm of the mat.
     type_into(&mut h, "Grid origin y (mm)", "50");
     h.get_by_label("The grid (origin plus size) must lie inside the physical mat.");
@@ -276,10 +276,10 @@ fn invalid_mat_disables_save() {
     h.get_by_label("Save preset").click();
     h.run();
     let after =
-        std::fs::read_to_string(dir.path().join("profiles/plotters/my-cameo.toml")).unwrap();
+        std::fs::read_to_string(dir.path().join("profiles/plotters/user-my-cameo.toml")).unwrap();
     assert_eq!(before, after);
     assert_eq!(
-        store(&s).plotter("my-cameo").unwrap().media[0]
+        store(&s).plotter("user-my-cameo").unwrap().media[0]
             .grid
             .origin_y_mm,
         0.0
@@ -301,16 +301,16 @@ fn mat_colour_roundtrip() {
     type_into(&mut h, "Mat colour (hex)", "#336699");
     click(&mut h, "Save preset");
 
-    let t = plotter_toml(&dir, "my-cameo");
+    let t = plotter_toml(&dir, "user-my-cameo");
     let mat = t["media"].as_array().unwrap()[0].as_table().unwrap();
     assert_eq!(mat["color"].as_str(), Some("#336699"));
     let reloaded = ProfileStore::load(&dir.path().join("profiles")).unwrap();
     assert_eq!(
-        reloaded.plotter("my-cameo").unwrap().media[0].color,
+        reloaded.plotter("user-my-cameo").unwrap().media[0].color,
         [0x33, 0x66, 0x99]
     );
 
-    use_plotter(&mut h, &s, "my-cameo");
+    use_plotter(&mut h, &s, "user-my-cameo");
     let colour = Color32::from_rgb(0x33, 0x66, 0x99);
     let hit = painted(&h).iter().any(|shape| match shape {
         Shape::Rect(r) => r.fill == colour,
@@ -325,12 +325,12 @@ fn delete_user_preset() {
     let s = session(&dir);
     let mut h = harness(&dir, &s);
     save_as_my_cameo(&mut h);
-    let file = dir.path().join("profiles/plotters/my-cameo.toml");
+    let file = dir.path().join("profiles/plotters/user-my-cameo.toml");
     assert!(file.exists());
     click(&mut h, "Delete preset");
     click(&mut h, "Yes, delete");
     assert!(!file.exists());
-    assert!(store(&s).plotter("my-cameo").is_err());
+    assert!(store(&s).plotter("user-my-cameo").is_err());
     assert!(h.query_by_label("My Cameo").is_none());
 }
 
@@ -342,12 +342,20 @@ fn preset_in_use_is_not_deleted() {
     save_as_my_cameo(&mut h);
     s.lock()
         .unwrap()
-        .execute("job.set_plotter", json!({ "id": "my-cameo" }), Origin::User)
+        .execute(
+            "job.set_plotter",
+            json!({ "id": "user-my-cameo" }),
+            Origin::User,
+        )
         .unwrap();
     click(&mut h, "Delete preset");
     click(&mut h, "Yes, delete");
-    assert!(dir.path().join("profiles/plotters/my-cameo.toml").exists());
-    assert!(store(&s).plotter("my-cameo").is_ok());
+    assert!(
+        dir.path()
+            .join("profiles/plotters/user-my-cameo.toml")
+            .exists()
+    );
+    assert!(store(&s).plotter("user-my-cameo").is_ok());
     assert!(app(&h).ui.toasts.iter().any(|t| t.text.contains("in use")));
 }
 
@@ -375,10 +383,10 @@ fn material_override_saves_only_the_override() {
 
     let st = store(&s);
     assert_eq!(
-        st.modified_material_fields("my-paper"),
+        st.modified_material_fields("user-my-paper"),
         ["overrides.silhouette-cameo-2.speed"]
     );
-    let m = st.material("my-paper").unwrap();
+    let m = st.material("user-my-paper").unwrap();
     assert_eq!(m.for_plotter("silhouette-cameo-2").speed, 3);
 }
 
@@ -453,16 +461,17 @@ fn save_as_treats_an_unreadable_file_as_taken() {
     let dir = tempfile::tempdir().unwrap();
     let plotters = dir.path().join("profiles/plotters");
     std::fs::create_dir_all(&plotters).unwrap();
-    let file = plotters.join("my-cameo.toml");
+    let file = plotters.join("user-my-cameo.toml");
     std::fs::write(&file, "id = [").unwrap();
     let s = session(&dir);
     let mut h = harness(&dir, &s);
     save_as_my_cameo(&mut h);
-    h.get_by_label("A preset with the id 'my-cameo' already exists. Pick another name.");
+    // The unreadable file keeps its id: the new preset takes the next one.
+    assert!(store(&s).plotter("user-my-cameo-2").is_ok());
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "id = [");
     // The window's own request is refused by the store too.
     let mut p = store(&s).plotter("silhouette-cameo-2").unwrap();
-    p.id = "my-cameo".into();
+    p.id = "user-my-cameo".into();
     p.name = "My Cameo".into();
     flatcraft::ui::profiles_window::apply(
         app_mut(&mut h),
@@ -577,15 +586,15 @@ fn output_folder_choose_persists() {
 }
 
 #[test]
-fn save_as_refuses_a_taken_name() {
+fn save_as_a_taken_name_gets_the_next_id() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let mut h = harness(&dir, &s);
     save_as_my_cameo(&mut h);
     click(&mut h, "Save as user preset...");
     type_into(&mut h, "Preset name", "My Cameo");
-    h.get_by_label("A preset with the id 'my-cameo' already exists. Pick another name.");
-    assert_eq!(store(&s).plotters().len(), 3);
+    assert!(store(&s).plotter("user-my-cameo-2").is_ok());
+    assert_eq!(store(&s).plotters().len(), 4);
 }
 
 #[test]
@@ -604,10 +613,10 @@ fn add_copy_rename_and_delete_own_mats() {
     assert!(h.query_by_label("Scrap mat copy").is_none());
     click(&mut h, "Save preset");
 
-    let p = store(&s).plotter("my-cameo").unwrap();
+    let p = store(&s).plotter("user-my-cameo").unwrap();
     let names: Vec<&str> = p.media.iter().map(|m| m.name.as_str()).collect();
     assert_eq!(names, ["Mat 12x12", "Mat 12x24", "No mat", "Scrap mat"]);
-    let t = plotter_toml(&dir, "my-cameo");
+    let t = plotter_toml(&dir, "user-my-cameo");
     let media = t["media"].as_array().unwrap();
     assert_eq!(media.len(), 1);
     assert_eq!(media[0]["id"].as_str(), Some("my-mat"));
@@ -619,7 +628,7 @@ fn invalid_field_blocks_save_and_save_as() {
     let s = session(&dir);
     let mut h = harness(&dir, &s);
     save_as_my_cameo(&mut h);
-    let file = dir.path().join("profiles/plotters/my-cameo.toml");
+    let file = dir.path().join("profiles/plotters/user-my-cameo.toml");
     let before = std::fs::read_to_string(&file).unwrap();
     type_into(&mut h, "Scale x", "0");
     h.get_by_label("The scale must be above 0.");
@@ -666,7 +675,7 @@ fn hiding_a_mat_in_use_is_refused() {
     save_as_my_cameo(&mut h);
     page(&mut h, "Mats");
     for (cmd, p) in [
-        ("job.set_plotter", json!({ "id": "my-cameo" })),
+        ("job.set_plotter", json!({ "id": "user-my-cameo" })),
         ("job.set_media", json!({ "id": "mat-12x24" })),
     ] {
         s.lock().unwrap().execute(cmd, p, Origin::User).unwrap();
@@ -685,11 +694,11 @@ fn saving_without_a_mat_in_use_is_refused() {
     let s = session(&dir);
     let mut h = harness(&dir, &s);
     save_as_my_cameo(&mut h);
-    let file = dir.path().join("profiles/plotters/my-cameo.toml");
+    let file = dir.path().join("profiles/plotters/user-my-cameo.toml");
     let before = std::fs::read_to_string(&file).unwrap();
     // The default device starts new documents on its default mat, mat-12x12.
-    s.lock().unwrap().prefs.default_plotter = "my-cameo".into();
-    let mut p = store(&s).plotter("my-cameo").unwrap();
+    s.lock().unwrap().prefs.default_plotter = "user-my-cameo".into();
+    let mut p = store(&s).plotter("user-my-cameo").unwrap();
     p.media.retain(|m| m.id != "mat-12x12");
     let req = flatcraft::ui::profiles_window::Request::SavePlotter {
         profile: Box::new(p),
@@ -786,12 +795,12 @@ fn switching_presets_asks_before_dropping_edits() {
     click(&mut h, "Keep editing");
     assert!(h.query_by_label("Discard your changes?").is_none());
     let d = app(&h).ui.profiles.plotter.as_ref().unwrap();
-    assert_eq!((d.id.as_str(), d.edit.scale_x), ("my-cameo", 1.5));
+    assert_eq!((d.id.as_str(), d.edit.scale_x), ("user-my-cameo", 1.5));
     click(&mut h, "Silhouette Cameo 2");
     click(&mut h, "Discard");
     let d = app(&h).ui.profiles.plotter.as_ref().unwrap();
     assert_eq!(d.id, "silhouette-cameo-2");
-    assert_eq!(store(&s).plotter("my-cameo").unwrap().scale_x, 1.0);
+    assert_eq!(store(&s).plotter("user-my-cameo").unwrap().scale_x, 1.0);
 }
 
 #[test]
@@ -824,10 +833,10 @@ fn save_as_names_clash_only_within_a_kind() {
     click(&mut h, "Adhesive vinyl (permanent)");
     click(&mut h, "Save as user preset...");
     type_into(&mut h, "Preset name", "My Cameo");
-    assert!(store(&s).material("my-cameo").is_ok());
-    assert!(store(&s).plotter("my-cameo").is_ok());
+    assert!(store(&s).material("user-my-cameo").is_ok());
+    assert!(store(&s).plotter("user-my-cameo").is_ok());
     assert_eq!(
-        store(&s).modified_material_fields("my-cameo"),
+        store(&s).modified_material_fields("user-my-cameo"),
         Vec::<String>::new()
     );
 }
@@ -1172,7 +1181,7 @@ fn a_mat_field_takes_a_calculation_with_units() {
     save_as_my_cameo(&mut h);
     page(&mut h, "Mats");
     click(&mut h, "Mat 12x12");
-    let x = store(&s).plotter("my-cameo").unwrap().media[0]
+    let x = store(&s).plotter("user-my-cameo").unwrap().media[0]
         .grid
         .origin_x_mm;
     // One it cannot read, kept by Enter: it says why.
@@ -1190,7 +1199,7 @@ fn a_mat_field_takes_a_calculation_with_units() {
     for _ in 0..3 {
         h.run();
     }
-    let p = store(&s).plotter("my-cameo").unwrap();
+    let p = store(&s).plotter("user-my-cameo").unwrap();
     assert!((p.media[0].grid.origin_y_mm - 12.7).abs() < 1e-9);
     assert_eq!(p.media[0].grid.origin_x_mm, x);
 }
@@ -1201,7 +1210,7 @@ fn a_usb_id_field_reads_hex_and_follows_the_click_rules() {
     let s = session(&dir);
     let mut h = harness(&dir, &s);
     save_as_my_cameo(&mut h);
-    let vid = |s: &SharedSession| match store(s).plotter("my-cameo").unwrap().transport {
+    let vid = |s: &SharedSession| match store(s).plotter("user-my-cameo").unwrap().transport {
         flatcraft_device::profile::TransportSpec::Usb { vid, .. } => vid,
         _ => panic!("no USB"),
     };
@@ -1220,4 +1229,25 @@ fn a_usb_id_field_reads_hex_and_follows_the_click_rules() {
     }
     assert_ne!(before, 0x1a2b);
     assert_eq!(vid(&s), 0x1a2b);
+}
+
+#[test]
+fn save_as_never_takes_a_built_in_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    open(&mut h, "Materials");
+    click(&mut h, "Copy paper");
+    click(&mut h, "Save as user preset...");
+    type_into(&mut h, "Preset name", "My vellum");
+    click(&mut h, "Save as user preset...");
+    // A name that slugs to a built-in id gets the user prefix.
+    type_into(&mut h, "Preset name", "Vellum");
+    let st = store(&s);
+    let mine = st.material("user-vellum").unwrap();
+    assert_eq!(mine.inherits.as_deref(), Some("user-my-vellum"));
+    let built_in = st.material("vellum").unwrap();
+    assert!(built_in.inherits.is_none());
+    assert!(st.materials().iter().any(|p| p.id == "vellum" && p.system));
+    assert!(st.diagnostics().is_empty());
 }

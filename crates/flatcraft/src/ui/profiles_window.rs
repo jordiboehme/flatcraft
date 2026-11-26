@@ -230,6 +230,22 @@ fn mats_in_use(s: &flatcraft_engine::session::Session) -> Vec<(String, String)> 
     out
 }
 
+/// The prefix of every id "Save as user preset" makes. No built-in preset
+/// id starts with it, so a user preset never collides with one that ships
+/// later.
+pub const USER_ID_PREFIX: &str = "user-";
+
+/// The id of a new user preset named `name`: [`USER_ID_PREFIX`] plus
+/// [`slug`], with "-2", "-3" and so on when an id in `taken` has it.
+/// Empty when the name has no letter or digit.
+pub fn new_preset_id(name: &str, taken: &[&str]) -> String {
+    let s = slug(name);
+    if s.is_empty() {
+        return s;
+    }
+    fresh_mat_id(&format!("{USER_ID_PREFIX}{s}"), taken)
+}
+
 /// A preset id from a name: lowercase letters and digits, words joined by
 /// single hyphens ("My Cameo 2" -> "my-cameo-2").
 pub fn slug(name: &str) -> String {
@@ -2166,28 +2182,27 @@ fn save_as_dialog(
             action_card(
                 &c,
                 "Create",
-                "Saves the new user preset under this name. The name needs at least one letter or digit, and no other preset of this kind may use it.",
+                "Saves the new user preset under this name. The name needs at least one letter or digit. Its file is named after it, starting with user-, so it never clashes with a built-in preset.",
                 None,
             );
             if c.clicked() || enter {
                 let name = dialog.name.trim().to_string();
-                let id = slug(&name);
                 // Plotters and materials live in their own folders, so an
                 // id only has to be free within its kind.
                 let same_kind = match kind {
                     Kind::Plotter => &view.plotters,
                     Kind::Material => &view.materials,
                 };
-                // A file that can't be read keeps its name taken.
-                let taken =
-                    same_kind.iter().any(|p| p.id == id) || view.broken_ids(kind).any(|b| b == id);
+                // A file that can't be read keeps its id taken.
+                let taken: Vec<&str> = same_kind
+                    .iter()
+                    .map(|p| p.id.as_str())
+                    .chain(view.broken_ids(kind))
+                    .collect();
+                let id = new_preset_id(&name, &taken);
                 if id.is_empty() {
                     dialog.error =
                         Some("Give the preset a name with at least one letter or digit.".into());
-                } else if taken {
-                    dialog.error = Some(format!(
-                        "A preset with the id '{id}' already exists. Pick another name."
-                    ));
                 } else if let Some(r) =
                     save_as_request(st_draft(kind, &st.plotter, &st.material), id, name)
                 {
@@ -2504,6 +2519,12 @@ mod tests {
         assert_eq!(slug("My Cameo"), "my-cameo");
         assert_eq!(slug("  Cameo 2 -- fast!! "), "cameo-2-fast");
         assert_eq!(slug("!!!"), "");
+        assert_eq!(new_preset_id("Vellum", &["vellum"]), "user-vellum");
+        assert_eq!(
+            new_preset_id("Vellum", &["user-vellum", "user-vellum-2"]),
+            "user-vellum-3"
+        );
+        assert_eq!(new_preset_id("!!!", &[]), "");
     }
 
     #[test]
