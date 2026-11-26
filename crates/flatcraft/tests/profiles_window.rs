@@ -148,7 +148,7 @@ fn system_preset_fields_are_read_only() {
         page(&mut h, "Plotters");
     }
     open(&mut h, "Materials");
-    click(&mut h, "Vinyl");
+    click(&mut h, "Adhesive vinyl (permanent)");
     assert!(disabled(&h, "Speed"));
     assert!(h.query_by_label("Save preset").is_none());
     // Nothing was written.
@@ -357,7 +357,7 @@ fn material_override_saves_only_the_override() {
     let s = session(&dir);
     let mut h = harness(&dir, &s);
     open(&mut h, "Materials");
-    click(&mut h, "Copy Paper");
+    click(&mut h, "Copy paper");
     click(&mut h, "Save as user preset...");
     h.get_by_label("Preset name").click();
     h.run();
@@ -405,7 +405,10 @@ fn default_material_persists_and_new_documents_use_it() {
     open(&mut h, "Cutting");
     h.get_by_label("Default material").click();
     h.run();
-    click(&mut h, "Vinyl");
+    // The list is longer than the popup: scroll the entry into view.
+    h.get_by_label("Adhesive vinyl (permanent)").scroll_to_me();
+    h.run();
+    click(&mut h, "Adhesive vinyl (permanent)");
     click(&mut h, "OK");
     assert_eq!(Preferences::load(dir.path()).default_material, "vinyl");
     let mut session = s.lock().unwrap();
@@ -818,7 +821,7 @@ fn save_as_names_clash_only_within_a_kind() {
     let mut h = harness(&dir, &s);
     save_as_my_cameo(&mut h);
     open(&mut h, "Materials");
-    click(&mut h, "Vinyl");
+    click(&mut h, "Adhesive vinyl (permanent)");
     click(&mut h, "Save as user preset...");
     type_into(&mut h, "Preset name", "My Cameo");
     assert!(store(&s).material("my-cameo").is_ok());
@@ -986,7 +989,7 @@ fn every_control_in_the_preset_pages_has_a_hover_card() {
     // A user material with one plotter override: Save preset is dimmed
     // (nothing changed), the override boxes and values show.
     open(&mut h, "Materials");
-    click(&mut h, "Copy Paper");
+    click(&mut h, "Copy paper");
     click(&mut h, "Save as user preset...");
     type_into(&mut h, "Preset name", "My Paper");
     h.get_by_label("Add override for").click();
@@ -1057,7 +1060,7 @@ fn dimmed_fields_say_why_on_their_card() {
     assert!(h.query_by_label(SYSTEM_READ_ONLY).is_some());
     // An override value counts only while its box is ticked.
     open(&mut h, "Materials");
-    click(&mut h, "Copy Paper");
+    click(&mut h, "Copy paper");
     click(&mut h, "Save as user preset...");
     type_into(&mut h, "Preset name", "My Paper");
     h.get_by_label("Add override for").click();

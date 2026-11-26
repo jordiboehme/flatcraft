@@ -206,7 +206,7 @@ fn status_lines_say_what_is_set_or_missing() {
     assert_eq!(
         status_lines(&mut h),
         [
-            "File Output · Copy Paper",
+            "File Output · Copy paper",
             "Nothing to cut",
             "Not ready yet",
             "Nothing to cut"
@@ -218,7 +218,7 @@ fn status_lines_say_what_is_set_or_missing() {
     assert_eq!(
         status_lines(&mut h),
         [
-            "File Output · Copy Paper",
+            "File Output · Copy paper",
             "Quality · 1 pass",
             "Not ready yet",
             "File · ready"
@@ -231,7 +231,7 @@ fn status_lines_say_what_is_set_or_missing() {
     assert_eq!(
         status_lines(&mut h),
         [
-            "Cameo 2 · Copy Paper",
+            "Cameo 2 · Copy paper",
             "Quality · 2 passes · weed",
             "Not ready yet",
             "USB · ready"

@@ -20,7 +20,10 @@ fn store() -> (tempfile::TempDir, ProfileStore) {
 fn system_presets_load() {
     let (_d, s) = store();
     assert_eq!(s.plotters().len(), 2);
-    assert_eq!(s.materials().len(), 4);
+    assert_eq!(
+        s.materials().len(),
+        flatcraft_device::presets::MATERIALS.len()
+    );
     assert!(s.plotters().iter().all(|p| p.system));
 }
 
@@ -273,11 +276,12 @@ fn material_override_applies_per_plotter() {
          [overrides.silhouette-cameo-2]\nforce = 25\n",
     );
     let s = ProfileStore::load(d.path()).unwrap();
+    let card = s.material("cardstock").unwrap();
     let m = s.material("my-card").unwrap();
-    assert_eq!(m.force, 20);
+    assert_eq!(m.force, card.force);
     assert_eq!(m.for_plotter("silhouette-cameo-2").force, 25);
-    assert_eq!(m.for_plotter("other").force, 20);
-    assert_eq!(m.speed, 3);
+    assert_eq!(m.for_plotter("other").force, card.force);
+    assert_eq!(m.speed, card.speed);
 }
 
 #[test]
@@ -320,7 +324,10 @@ fn save_material_and_reject_system_id() {
     assert_eq!(s.modified_material_fields("my-vinyl"), vec!["force"]);
     let s2 = ProfileStore::load(d.path()).unwrap();
     assert_eq!(s2.material("my-vinyl").unwrap().force, 12);
-    assert_eq!(s2.materials().len(), 5);
+    assert_eq!(
+        s2.materials().len(),
+        flatcraft_device::presets::MATERIALS.len() + 1
+    );
 }
 
 #[test]

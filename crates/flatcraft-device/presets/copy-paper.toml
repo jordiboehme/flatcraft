@@ -1,6 +1,8 @@
-# Starting values in our own words. Check with a test cut.
+# Starting values in our own words, from several public sources (see
+# docs/materials.md). Always check them with a test cut first.
 id = "copy-paper"
-name = "Copy Paper"
+name = "Copy paper"
+group = "paper_and_card"
 speed = 5
 force = 10
 passes = 1
@@ -9,4 +11,6 @@ overcut_mm = 0.5
 track_enhancing = false
 # No backing sheet: small loose parts fall out.
 backing = false
-blade_depth_hint = "blade 1"
+mat_tack = "light"
+blade_depth_hint = "blade 2"
+tips = "Smooth the sheet flat on the mat. To take it off, turn the mat over and peel the mat away from the paper, so the paper does not curl."

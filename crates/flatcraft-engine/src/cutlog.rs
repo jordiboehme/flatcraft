@@ -162,6 +162,12 @@ impl CutLog {
         })
     }
 
+    /// True when the log has a cut with this material: the material
+    /// picker suggests a test cut for one that was never cut.
+    pub fn has_cut(&self, material_id: &str) -> bool {
+        self.entries.iter().any(|e| e.material_id == material_id)
+    }
+
     /// The cut the Job card recalls for this material: the newest with an
     /// outcome, else the newest.
     pub fn last_time(&self, material_id: &str) -> Option<&CutEntry> {

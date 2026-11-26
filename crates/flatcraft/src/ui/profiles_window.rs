@@ -14,8 +14,9 @@ use egui::{Color32, Response, RichText, Sense, Ui, vec2};
 use flatcraft_core::numexpr::{Field, Kind as NumKind};
 use flatcraft_device::profile::MAX_SIZE_MM;
 use flatcraft_device::{
-    DEFAULT_MAT_COLOR, GpglDialect, Grid, KnifeCompensation, MaterialOverride, MaterialProfile,
-    Media, MediaField, MediaKind, PlotterProfile, PresetInfo, Protocol, TransportSpec,
+    DEFAULT_MAT_COLOR, GpglDialect, Grid, KnifeCompensation, MatTack, MaterialGroup,
+    MaterialOverride, MaterialProfile, Media, MediaField, MediaKind, PlotterProfile, PresetInfo,
+    Protocol, TransportSpec,
 };
 
 use super::calc::{self, Number};
@@ -1966,6 +1967,19 @@ fn material_form(
                         r
                     },
                 );
+                f.row(ui, "Mat tack", "mat_tack", Setting::MatTack, |ui| {
+                    let choices = MatTack::ALL.map(|v| (v, v.label()));
+                    combo(ui, "mat-tack", &mut m.mat_tack, &choices)
+                });
+                f.row(ui, "Picker group", "group", Setting::MaterialGroup, |ui| {
+                    let choices = MaterialGroup::ALL.map(|v| (v, v.label()));
+                    combo(ui, "material-group", &mut m.group, &choices)
+                });
+                if let Some(tips) = m.tips.as_deref().filter(|s| !s.trim().is_empty()) {
+                    f.row(ui, "Tips", "tips", Setting::PresetTips, |ui| {
+                        ui.add(egui::Label::new(tips.trim()).wrap())
+                    });
+                }
             });
         ui.add_space(t.spacing);
         ui.label(RichText::new("Per-plotter overrides").font(fonts::semibold(14.0)));

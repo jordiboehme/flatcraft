@@ -426,25 +426,7 @@ pub fn job(
             ) {
                 run(actions, "job.set_media", json!({ "id": id }));
             }
-            let materials: Vec<(String, String)> = snap
-                .materials
-                .iter()
-                .map(|m| (m.id.clone(), m.name.clone()))
-                .collect();
-            let name = snap
-                .material
-                .as_ref()
-                .map_or(snap.job.material_id.as_str(), |m| m.name.as_str());
-            if let Some(id) = combo(
-                ui,
-                "Material",
-                None,
-                name,
-                &materials,
-                Some(&snap.job.material_id),
-                Some(&snap.job.material_id),
-                true,
-            ) {
+            if let Some(id) = super::materials::picker_row(ui, snap, t) {
                 run(actions, "job.set_material", json!({ "id": id }));
             }
             // The strategy shows here; the Settings window sets the one
@@ -462,6 +444,7 @@ pub fn job(
             ui.end_row();
         });
 
+    super::materials::test_cut_hint(ui, snap, t, actions);
     let (Some(plotter), Some(material)) = (&snap.plotter, &snap.material) else {
         return;
     };
@@ -602,6 +585,7 @@ pub fn job(
         ui.add_space(t.spacing / 2.0);
         ui.label(RichText::new(format!("Blade depth: {hint}")).color(t.text_dim));
     }
+    material_tips(ui, material, t);
     preset_notes(
         ui,
         "Plotter notes",
@@ -823,6 +807,39 @@ fn last_time(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec<Action>
             actions.push(Action::AskOutcome(e.id.clone()));
         }
     }
+}
+
+/// The heading of a material's built-in tips in the Job card.
+pub const TIPS_HEADING: &str = "Material tips";
+
+/// The built-in tips of the picked material, under a small heading.
+/// Nothing shows when it has none.
+fn material_tips(ui: &mut Ui, material: &flatcraft_device::MaterialProfile, t: &Tokens) {
+    let Some(tips) = material
+        .tips
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return;
+    };
+    ui.add_space(t.spacing / 2.0);
+    let r = ui.label(
+        RichText::new(TIPS_HEADING)
+            .font(fonts::semibold(12.0))
+            .color(t.text_dim),
+    );
+    super::groups::card(
+        &r,
+        TIPS_HEADING,
+        &format!(
+            "Tips that come with {}: which side goes up and how to weed. Your own notes go in Settings, in the presets.",
+            material.name
+        ),
+        None,
+        false,
+    );
+    ui.add(egui::Label::new(tips).wrap());
 }
 
 /// The person's notes on the picked plotter or material, under a small

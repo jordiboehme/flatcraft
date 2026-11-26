@@ -1287,6 +1287,9 @@ pub enum Setting {
     MatColour,
     MatColourHex,
     BladeDepthHint,
+    MaterialGroup,
+    MatTack,
+    PresetTips,
     AddOverride,
     PresetNotes,
     WeedBox,
@@ -1297,7 +1300,7 @@ pub enum Setting {
 }
 
 impl Setting {
-    pub const ALL: [Setting; 79] = [
+    pub const ALL: [Setting; 82] = [
         Setting::PositionX,
         Setting::PositionY,
         Setting::Width,
@@ -1370,6 +1373,9 @@ impl Setting {
         Setting::MatColour,
         Setting::MatColourHex,
         Setting::BladeDepthHint,
+        Setting::MaterialGroup,
+        Setting::MatTack,
+        Setting::PresetTips,
         Setting::AddOverride,
         Setting::PresetNotes,
         Setting::WeedBox,
@@ -1619,6 +1625,15 @@ impl Setting {
             }
             Setting::WeedSpacing => {
                 "The distance between weed lines, in millimetres. Smaller gives smaller strips that are easier to peel, but more cutting. 20 mm suits most vinyl."
+            }
+            Setting::MaterialGroup => {
+                "Where this material shows in the material picker: Vinyl, Iron-on, Paper and card, or Film and other. Iron-on materials are cut mirrored, so the Cut stage reminds you to mirror the design when nothing is mirrored."
+            }
+            Setting::MatTack => {
+                "The mat this material likes. Tack is how sticky the cutting mat is: light for thin paper and vellum, so it comes off without tearing; standard for vinyl and most card; strong for heavy card and stiff sheets that would shift. Only a recommendation: FlatCraft shows it and never sends it."
+            }
+            Setting::PresetTips => {
+                "Tips that come with this built-in material: which side goes up, and how to weed. A preset made from it keeps them. Write your own experience in the notes below."
             }
             Setting::PresetNotes => {
                 "Your own notes on this preset: what worked, what to watch out for. The job settings show them whenever this preset is picked. On a system preset they are kept in your own settings folder, so the preset itself stays as it ships. Agents can read them but never change them."

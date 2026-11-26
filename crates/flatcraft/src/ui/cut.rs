@@ -696,6 +696,7 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
                 ui.add_space(t.spacing);
             }
             settings::job(ui, &mut app.ui.prepare, snap, &t, actions);
+            super::materials::iron_on_reminder(ui, snap, &t, actions);
             if let Some(tr) = &app.ui.cut.transport {
                 ui.separator();
                 ui.label(RichText::new("Transport").font(fonts::semibold(13.0)));
@@ -742,6 +743,7 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
                 Some(Err(e)) => problem(ui, st, e, snap.doc_id, &t, actions),
                 None => {}
             }
+            super::materials::iron_on_reminder(ui, snap, &t, actions);
             ui.add_space(t.spacing);
             send_notes(ui, &mut app.ui.cut, snap, &t);
             let label = send_label(snap);

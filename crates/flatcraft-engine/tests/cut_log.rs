@@ -63,7 +63,7 @@ fn a_completed_send_appends_an_entry() {
     assert_eq!(e.plotter_id, "file-output-gpgl-cameo2");
     assert_eq!(e.plotter, "File Output (GPGL Cameo 2)");
     assert_eq!(e.material_id, "vinyl");
-    assert_eq!(e.material, "Vinyl");
+    assert_eq!(e.material, "Adhesive vinyl (permanent)");
     assert!(!e.mat_id.is_empty() && !e.mat.is_empty());
     assert_eq!(e.force, 12);
     assert!(e.speed >= 1 && e.passes >= 1);

@@ -440,14 +440,26 @@ pub struct MaterialProfile {
     /// The material sits on a backing sheet, like vinyl: small loose
     /// parts (the middle of a stencil's O) stay on it until transfer tape
     /// lifts them. Paper and cardstock have none, so such parts fall out.
-    /// Files without the key get true; true is not written.
-    #[serde(
-        default = "backing_default",
-        skip_serializing_if = "is_backing_default"
-    )]
+    /// Files without the key get true. It is always written, so a child
+    /// of a preset without a backing sheet can set it back to true.
+    #[serde(default = "backing_default")]
     pub backing: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blade_depth_hint: Option<String>,
+    /// Where the material picker lists it. Files without the key get
+    /// [`MaterialGroup::Other`].
+    #[serde(default)]
+    pub group: MaterialGroup,
+    /// How sticky a mat this material wants: a recommendation shown to
+    /// the person, never sent to the plotter. Files without the key get
+    /// [`MatTack::Standard`].
+    #[serde(default)]
+    pub mat_tack: MatTack,
+    /// Tips that ship with a built-in preset (which side up, how to weed).
+    /// Unlike [`MaterialProfile::notes`] they are inherited, and the
+    /// person does not edit them in the window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tips: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub overrides: BTreeMap<String, MaterialOverride>,
     /// The person's notes on this material. Never inherited. A system
@@ -461,8 +473,64 @@ fn backing_default() -> bool {
     true
 }
 
-fn is_backing_default(b: &bool) -> bool {
-    *b
+/// The groups of the material picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MaterialGroup {
+    /// Adhesive vinyl on a backing sheet.
+    Vinyl,
+    /// Heat transfer vinyl: cut from the back, so the design is mirrored.
+    IronOn,
+    /// Paper, cardstock, kraft, vellum and sticker paper.
+    PaperAndCard,
+    /// Films, clings, magnet sheets and every material without a group.
+    #[default]
+    Other,
+}
+
+impl MaterialGroup {
+    /// The picker order.
+    pub const ALL: [MaterialGroup; 4] = [
+        MaterialGroup::Vinyl,
+        MaterialGroup::IronOn,
+        MaterialGroup::PaperAndCard,
+        MaterialGroup::Other,
+    ];
+
+    /// The heading in the material picker.
+    pub fn label(self) -> &'static str {
+        match self {
+            MaterialGroup::Vinyl => "Vinyl",
+            MaterialGroup::IronOn => "Iron-on",
+            MaterialGroup::PaperAndCard => "Paper and card",
+            MaterialGroup::Other => "Film and other",
+        }
+    }
+}
+
+/// How sticky a cutting mat a material wants. A recommendation only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatTack {
+    /// A light grip: thin paper and vellum come off without tearing.
+    Light,
+    /// The everyday grip for vinyl, iron-on and most card.
+    #[default]
+    Standard,
+    /// A strong grip for heavy card and stiff sheets that would shift.
+    Strong,
+}
+
+impl MatTack {
+    pub const ALL: [MatTack; 3] = [MatTack::Light, MatTack::Standard, MatTack::Strong];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MatTack::Light => "Light",
+            MatTack::Standard => "Standard",
+            MatTack::Strong => "Strong",
+        }
+    }
 }
 
 impl MaterialProfile {

@@ -21,7 +21,9 @@ fn sent_once() -> (tempfile::TempDir, flatcraft_mcp::SharedSession, AppHarness) 
         .unwrap()
         .execute("job.set_material", json!({ "id": "vinyl" }), Origin::User)
         .unwrap();
-    let mut h = harness_with(&dir, s.clone(), |a| a);
+    // Tall enough that the Job card's rate button, under the material's
+    // tips, is clear of the bottom edge.
+    let mut h = harness_sized(&dir, s.clone(), [1400.0, 1200.0], 4, |a| a);
     app_mut(&mut h).ui.workspace = Workspace::Cut;
     h.run();
     h.get_by_role_and_label(Role::Tab, "Send").click();
@@ -139,7 +141,7 @@ fn only_a_cut_on_a_plotter_asks_right_after_the_send() {
     e.target = Target::Usb;
     let d = outcome::after_send(&e).unwrap();
     assert_eq!(d, OutcomeDialog::about(&e));
-    assert!(d.about.contains("Vinyl"), "{}", d.about);
+    assert!(d.about.contains("Adhesive vinyl"), "{}", d.about);
 }
 
 #[test]

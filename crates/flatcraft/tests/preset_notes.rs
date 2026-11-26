@@ -49,7 +49,7 @@ fn notes_on_a_system_preset_are_kept_beside_it() {
     let s = session(&dir);
     let mut h = harness(&dir, &s);
     open(&mut h, "Materials");
-    click(&mut h, "Vinyl");
+    click(&mut h, "Adhesive vinyl (permanent)");
     assert!(disabled(&h, "Speed"), "the preset stays read-only");
     assert!(
         !disabled(&h, "Preset notes"),
@@ -78,7 +78,7 @@ fn notes_on_a_user_preset_save_with_it() {
     let s = session(&dir);
     let mut h = harness(&dir, &s);
     open(&mut h, "Materials");
-    click(&mut h, "Copy Paper");
+    click(&mut h, "Copy paper");
     click(&mut h, "Save as user preset...");
     h.get_by_label("Preset name").click();
     h.run();

@@ -16,7 +16,7 @@
 //! `job.troubleshoot` returns the same checklist to agents.
 
 use flatcraft_core::document::CutStrategy;
-use flatcraft_device::{MaterialProfile, MediaKind};
+use flatcraft_device::{MaterialGroup, MaterialProfile, MediaKind};
 use kurbo::{Rect, Vec2};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -344,16 +344,27 @@ pub fn settings(input: &JobInput) -> Settings {
 }
 
 /// True for heat transfer (iron-on) vinyl, which is cut from the back and
-/// so mirrored: the built-in preset, a preset made from it, or a name that
-/// says so.
+/// so mirrored: a preset in the Iron-on group (the built-in ones and every
+/// preset made from them inherit it), or a name that says so.
 pub fn iron_on(m: &MaterialProfile) -> bool {
-    const ID: &str = "heat-transfer-vinyl";
     let name = m.name.to_lowercase();
-    m.id == ID
-        || m.inherits.as_deref() == Some(ID)
+    m.group == MaterialGroup::IronOn
         || ["heat transfer", "iron-on", "iron on", "htv"]
             .iter()
             .any(|w| name.contains(w))
+}
+
+/// The Cut stage's reminder for iron-on material: the checklist's mirror
+/// item when the material is iron-on and some object that is cut is not
+/// mirrored (nothing mirrored, or a mixed layout). `None` otherwise. It
+/// never blocks a cut: heat transfer vinyl cut the right way round is a
+/// mistake only on the shirt.
+pub fn iron_on_reminder(input: &JobInput) -> Option<Item> {
+    if !iron_on(&input.material) {
+        return None;
+    }
+    let it = mirror(input);
+    it.likely.then_some(it)
 }
 
 /// Where the test shape would go now: the top-left of a free spot in the
@@ -1003,7 +1014,7 @@ fn mirror(input: &JobInput) -> Item {
         it.blocked.push(blocked(
             label,
             format!(
-                "{} is not iron-on vinyl, so it is cut the right way round. Pick Heat Transfer Vinyl as the material if you cut iron-on.",
+                "{} is not iron-on vinyl, so it is cut the right way round. If you cut iron-on, pick a material from the Iron-on group.",
                 input.material.name
             ),
         ));

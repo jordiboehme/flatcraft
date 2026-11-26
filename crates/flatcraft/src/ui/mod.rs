@@ -21,6 +21,7 @@ pub mod icons;
 pub mod import_dialog;
 pub mod keep_pick;
 pub mod kept;
+pub mod materials;
 #[cfg(target_os = "macos")]
 pub mod menu;
 pub mod menu_model;

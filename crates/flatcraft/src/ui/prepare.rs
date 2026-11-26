@@ -875,6 +875,11 @@ pub struct Snapshot {
     pub material: Option<MaterialProfile>,
     pub plotters: Vec<PresetInfo>,
     pub materials: Vec<PresetInfo>,
+    /// The material picker's entries, in picker order.
+    pub material_cards: Vec<super::materials::MaterialCard>,
+    /// Set when the document's material was never cut on this computer:
+    /// the Job card suggests a test cut.
+    pub test_cut: Option<super::materials::TestCut>,
     pub mat: Option<Media>,
     /// The cutting area, in mm.
     pub area: Option<kurbo::Rect>,
@@ -1105,6 +1110,7 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
             .zip(effective.as_ref())
             .and_then(|(p, (m, _))| p.cutting_area(&m.id));
         let (mat, mat_warning) = effective.unzip();
+        let cut_log = s.cut_log();
         let mat_warning = mat_warning.flatten();
         let trace_source_changed = trace.as_mut().is_some_and(|d| {
             d.doc_id == st.id()
@@ -1159,6 +1165,17 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
             material: material.clone(),
             plotters: s.profiles.plotters(),
             materials: s.profiles.materials(),
+            material_cards: super::materials::cards(&s.profiles, &cut_log),
+            test_cut: (!cut_log.has_cut(&st.document.job.material_id))
+                .then(|| match (&plotter, &material) {
+                    (Some(p), Some(m)) => {
+                        let input = JobInput::from_parts(&st.document, p.clone(), m);
+                        flatcraft_engine::troubleshoot::test_shape_spot(&input).is_some()
+                    }
+                    // Without a job the button says why when it runs.
+                    _ => true,
+                })
+                .map(|room| super::materials::TestCut { room }),
             mat,
             area,
             mat_warning,
@@ -1176,9 +1193,9 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
             project: st.path.clone(),
             description: st.document.description.clone(),
             notes: st.document.notes.clone(),
-            last_time: s.cut_log().last_time(&st.document.job.material_id).cloned(),
-            to_rate: s.cut_log().to_rate(&st.document.job.material_id).cloned(),
-            last_good: s.cut_log().last_good(&st.document.job.material_id).cloned(),
+            last_time: cut_log.last_time(&st.document.job.material_id).cloned(),
+            to_rate: cut_log.to_rate(&st.document.job.material_id).cloned(),
+            last_good: cut_log.last_good(&st.document.job.material_id).cloned(),
         }
     };
     let doc_id = snap.doc_id;

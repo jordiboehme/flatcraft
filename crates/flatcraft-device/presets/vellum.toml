@@ -1,0 +1,16 @@
+# Starting values in our own words, from several public sources (see
+# docs/materials.md). Always check them with a test cut first.
+id = "vellum"
+name = "Vellum"
+group = "paper_and_card"
+speed = 3
+force = 19
+passes = 1
+reverse_alternate_passes = false
+overcut_mm = 0.5
+track_enhancing = false
+# No backing sheet: small loose parts fall out.
+backing = false
+mat_tack = "light"
+blade_depth_hint = "blade 1"
+tips = "Vellum cracks when it bends, so cut slowly and keep thin parts wide. Peel the mat away from the sheet, not the sheet from the mat."

@@ -205,7 +205,7 @@ fn notes_and_the_last_good_cut_come_first() {
     assert!(
         item(&c, Check::Notes)
             .message
-            .contains("Your notes on Copy Paper: Use the blue mat."),
+            .contains("Your notes on Copy paper: Use the blue mat."),
         "{c:?}"
     );
     // The brief's own words.
@@ -339,7 +339,11 @@ fn the_blade_depth_is_only_a_hint() {
     run(&mut s, "job.set_material", json!({ "id": "cardstock" }));
     let c = list(&mut s, Symptom::NotThrough);
     let it = item(&c, Check::BladeDepth);
-    assert!(it.message.starts_with("Cardstock says blade 3."), "{it:?}");
+    assert!(
+        it.message
+            .starts_with("Cardstock (light, about 160-200 g/m2) says blade 3."),
+        "{it:?}"
+    );
     assert!(it.fixes.is_empty() && it.blocked.is_empty());
     assert!(it.hint.contains("sends nothing about it"), "{it:?}");
 }
@@ -1325,4 +1329,111 @@ fn the_mirror_fix_card_names_only_what_is_there() {
         both.contains("(3 objects, skipped ones and the test shape too)"),
         "{both}"
     );
+}
+
+// ------------------------------------------------ Task 60: material presets
+
+#[test]
+fn every_iron_on_preset_and_its_children_count_as_iron_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    for id in [
+        "heat-transfer-vinyl",
+        "heat-transfer-vinyl-glitter",
+        "heat-transfer-vinyl-flock",
+    ] {
+        assert!(
+            troubleshoot::iron_on(&s.profiles.material(id).unwrap()),
+            "{id}"
+        );
+    }
+    for id in ["vinyl", "stencil-film", "copy-paper", "window-cling"] {
+        assert!(
+            !troubleshoot::iron_on(&s.profiles.material(id).unwrap()),
+            "{id}"
+        );
+    }
+    // A child with a name that says nothing about iron-on still is.
+    let mut m = s.profiles.material("heat-transfer-vinyl-glitter").unwrap();
+    m.id = "sparkle".into();
+    m.name = "My sparkle".into();
+    s.profiles
+        .save_user_material(&m, "heat-transfer-vinyl-glitter")
+        .unwrap();
+    assert!(troubleshoot::iron_on(
+        &s.profiles.material("sparkle").unwrap()
+    ));
+}
+
+#[test]
+fn the_iron_on_reminder_shows_until_everything_is_mirrored() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = square_at(&mut s, "a", 20.0, 10.0, 10.0);
+    // Vinyl: never a reminder.
+    run(&mut s, "job.set_material", json!({ "id": "vinyl" }));
+    assert!(troubleshoot::iron_on_reminder(&JobInput::of(&s).unwrap()).is_none());
+    // Glitter iron-on, nothing mirrored: the reminder with its fix.
+    run(
+        &mut s,
+        "job.set_material",
+        json!({ "id": "heat-transfer-vinyl-glitter" }),
+    );
+    let it = troubleshoot::iron_on_reminder(&JobInput::of(&s).unwrap()).unwrap();
+    assert_eq!(it.check, Check::Mirror);
+    assert_eq!(it.fixes.len(), 1);
+    assert_eq!(it.fixes[0].command, "object.mirror");
+    assert_eq!(it.fixes[0].args["ids"], json!([a]));
+    // It never blocks: the job still goes out.
+    run(&mut s, "job.send", json!({}));
+    run(&mut s, "object.mirror", it.fixes[0].args.clone());
+    assert!(troubleshoot::iron_on_reminder(&JobInput::of(&s).unwrap()).is_none());
+}
+
+#[test]
+fn agents_see_groups_tips_and_mat_tack() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let list = s
+        .execute("profiles.list", json!({}), Origin::Agent)
+        .unwrap();
+    let materials = list["materials"].as_array().unwrap();
+    assert_eq!(materials.len(), flatcraft_device::presets::MATERIALS.len());
+    let group = |id: &str| materials.iter().find(|m| m["id"] == id).unwrap()["group"].clone();
+    assert_eq!(group("heat-transfer-vinyl-flock"), "iron_on");
+    assert_eq!(group("vinyl-removable"), "vinyl");
+    assert_eq!(group("vellum"), "paper_and_card");
+    assert_eq!(group("window-cling"), "other");
+    let m = s
+        .execute(
+            "profiles.get",
+            json!({ "id": "heat-transfer-vinyl" }),
+            Origin::Agent,
+        )
+        .unwrap();
+    assert_eq!(m["group"], "iron_on");
+    assert_eq!(m["mat_tack"], "standard");
+    assert_eq!(m["backing"], true);
+    assert!(
+        m["tips"]
+            .as_str()
+            .unwrap()
+            .starts_with("Mirror the design and cut with the shiny carrier side down")
+    );
+    let paper = s
+        .execute("profiles.get", json!({ "id": "copy-paper" }), Origin::Agent)
+        .unwrap();
+    assert_eq!(paper["mat_tack"], "light");
+    assert_eq!(paper["backing"], false);
+}
+
+#[test]
+fn the_cut_log_knows_a_material_was_cut() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    square_at(&mut s, "sq", 20.0, 40.0, 40.0);
+    assert!(!s.cut_log().has_cut("copy-paper"));
+    cut_and_rate(&mut s, &dir, None, "");
+    assert!(s.cut_log().has_cut("copy-paper"));
+    assert!(!s.cut_log().has_cut("vellum"));
 }

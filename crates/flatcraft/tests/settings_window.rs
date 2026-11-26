@@ -99,7 +99,7 @@ const REACHABLE: [(&str, &[&str]); 24] = [
     ),
     ("plotter.blade_offset", &["Blade offset (mm)"]),
     ("plotter.units", &["Units per mm", "Save as user preset..."]),
-    ("material.speed", &["Vinyl", "Speed"]),
+    ("material.speed", &["Adhesive vinyl (permanent)", "Speed"]),
     ("material.force", &["Force"]),
     ("material.passes", &["Passes"]),
     ("material.overcut", &["Overcut (mm)"]),

@@ -54,7 +54,9 @@ pub enum ProfileError {
     Inheritance { id: String, reason: String },
     #[error("preset '{id}' is invalid: {reason}")]
     Invalid { id: String, reason: String },
-    #[error("user preset '{id}' would shadow a system preset")]
+    #[error(
+        "user preset '{id}' would shadow a system preset: a built-in preset uses this id now, so this file is not loaded. It is left as it is: give it a new id and file name to use it again"
+    )]
     ShadowsSystem { id: String },
     #[error("preset file {path} has no id")]
     MissingId { path: PathBuf },

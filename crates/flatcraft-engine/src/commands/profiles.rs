@@ -15,7 +15,19 @@ fn info_json(i: &PresetInfo) -> Value {
 fn run_list(s: &mut Session, _: NoParams, _: Origin) -> Result<Value, CommandError> {
     Ok(json!({
         "plotters": s.profiles.plotters().iter().map(info_json).collect::<Vec<_>>(),
-        "materials": s.profiles.materials().iter().map(info_json).collect::<Vec<_>>(),
+        "materials": s
+            .profiles
+            .materials()
+            .iter()
+            .map(|i| {
+                let mut v = info_json(i);
+                // A preset that cannot be read has no group; profiles.get
+                // says why.
+                let group = s.profiles.material_unchecked(&i.id).ok().map(|m| m.group);
+                v["group"] = json!(group);
+                v
+            })
+            .collect::<Vec<_>>(),
     }))
 }
 
@@ -26,7 +38,7 @@ command!(
     mutates: false,
     params: NoParams,
     run: run_list,
-    description: "Lists the plotter and material presets, built-in (system) and user-made. Returns {plotters: [{id, name, system, inherits}], materials: [{id, name, system, inherits}]}. Use profiles.get for the details.",
+    description: "Lists the plotter and material presets, built-in (system) and user-made. Returns {plotters: [{id, name, system, inherits}], materials: [{id, name, system, inherits, group}]}. group is vinyl, iron_on, paper_and_card or other (null when the preset cannot be read): the groups of the window's material picker. Use profiles.get for the values and the tips.",
 );
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -61,7 +73,7 @@ command!(
     mutates: false,
     params: IdParams,
     run: run_get,
-    description: "Returns one plotter or material preset with inheritance resolved, as JSON with an extra field kind (plotter or material). Plotters list their media (mm; each with kind, physical size, printed grid origin and size, calibrated), speed_range, force_range and passes_range; materials list speed, force, passes, overcut_mm and per-plotter overrides. Both have notes when the person wrote some on that preset (left out when none): read them before a cut, they are the person's own experience. Agents cannot change notes or presets.",
+    description: "Returns one plotter or material preset with inheritance resolved, as JSON with an extra field kind (plotter or material). Plotters list their media (mm; each with kind, physical size, printed grid origin and size, calibrated), speed_range, force_range and passes_range; materials list speed, force, passes, overcut_mm, backing (true when it sits on a backing sheet), blade_depth_hint, group (vinyl, iron_on, paper_and_card or other), mat_tack (light, standard or strong: the mat grip to recommend, never sent), tips (built-in advice on which side goes up and how to weed; iron_on materials are cut mirrored) and per-plotter overrides. Both have notes when the person wrote some on that preset (left out when none): read them before a cut, they are the person's own experience. Agents cannot change notes or presets.",
 );
 
 fn run_set_plotter(s: &mut Session, p: IdParams, _: Origin) -> Result<Value, CommandError> {

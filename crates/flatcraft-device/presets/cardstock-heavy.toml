@@ -1,0 +1,16 @@
+# Starting values in our own words, from several public sources (see
+# docs/materials.md). Always check them with a test cut first.
+id = "cardstock-heavy"
+name = "Cardstock (heavy, about 250-300 g/m2)"
+group = "paper_and_card"
+speed = 2
+force = 33
+passes = 2
+reverse_alternate_passes = false
+overcut_mm = 0.5
+track_enhancing = false
+# No backing sheet: small loose parts fall out.
+backing = false
+mat_tack = "strong"
+blade_depth_hint = "blade 7"
+tips = "Tape the edges down if the mat lets go. The second pass finishes what the first one starts, so check a corner before you unload."
