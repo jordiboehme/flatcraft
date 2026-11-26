@@ -1426,7 +1426,7 @@ impl Setting {
                 "One weed box around each object instead of one around everything. Handy when the objects lie far apart: each one is weeded on its own and less waste is lifted. Boxes that would overlap or touch another object become one box."
             }
             Setting::WeedLines => {
-                "Weed lines are straight cuts through the waste, so a big area of waste comes off in strips instead of one sheet that tears and sticks to itself. They stop more than 1 mm before every cut of the design and never cut inside a shape or the hole of a letter. Horizontal lines run across the mat, vertical lines along it, and Both makes a grid."
+                "Weed lines are straight cuts through the waste, so a big area of waste comes off in strips instead of one sheet that tears and sticks to itself. Lines run across the waste around your design, up to the weed box margin. They stop more than 1 mm before every cut of the design and never cut inside a shape: letters keep their insides, weed those by hand. Horizontal lines run across the mat, vertical lines along it, and Both makes a grid."
             }
             Setting::WeedSpacing => {
                 "The distance between weed lines, in millimetres. Smaller gives smaller strips that are easier to peel, but more cutting. 20 mm suits most vinyl."

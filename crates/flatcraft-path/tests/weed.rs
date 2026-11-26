@@ -2,7 +2,7 @@
 
 use flatcraft_core::document::{ObjectId, WeedLines, WeedSettings};
 use flatcraft_path::feed::{BAND_MM, band_of};
-use flatcraft_path::weed::{WEED_CLEARANCE_MM, WEED_OBJECT};
+use flatcraft_path::weed::{WEED_BOX_OBJECT, WEED_CLEARANCE_MM};
 use flatcraft_path::{
     CutPlan, PathRef, PipelineSettings, PlacedPath, PlanError, SettingsField, Toolpath,
     ToolpathKind, plan,
@@ -89,7 +89,7 @@ fn the_box_keeps_the_margin_around_the_design() {
     assert_eq!(w.len(), 1, "{w:?}");
     let b = w[0];
     assert!(b.closed);
-    assert_eq!(b.source.object, WEED_OBJECT);
+    assert_eq!(b.source.object, WEED_BOX_OBJECT);
     // A closed ring: four corners and the start again, then the overcut.
     assert_eq!(b.lap().len(), 5);
     assert!(close(bounds(b.lap()), Rect::new(47.0, 37.0, 108.0, 73.0)));
@@ -289,8 +289,104 @@ fn without_a_mat_weed_lines_follow_their_feed_band() {
         }
     }
     assert!(seen_lines > 0);
-    // The box is still last.
-    assert!(paths.last().unwrap().kind == ToolpathKind::Weed && paths.last().unwrap().closed);
+}
+
+#[test]
+fn without_a_mat_the_box_is_cut_band_by_band() {
+    let input = [
+        placed(1, rect_path(20.0, 10.0, 30.0, 20.0)),
+        placed(2, rect_path(60.0, 70.0, 30.0, 20.0)),
+        placed(3, rect_path(20.0, 120.0, 70.0, 20.0)),
+    ];
+    let s = PipelineSettings {
+        monotonic_feed: true,
+        ..settings(WeedSettings {
+            weed_box: true,
+            margin_mm: 3.0,
+            lines: WeedLines::Both,
+            spacing_mm: 15.0,
+            ..WeedSettings::default()
+        })
+    };
+    let out = plan(&input, &s).unwrap();
+    let paths = &out.toolpaths;
+    let band = |y: f64| (y.max(0.0) / BAND_MM).floor() as usize;
+    let top = |t: &Toolpath| t.points.iter().map(|p| p.y).fold(f64::INFINITY, f64::min);
+    // No closed weed path: the box comes in open band pieces.
+    assert!(
+        !paths
+            .iter()
+            .any(|t| t.kind == ToolpathKind::Weed && t.closed)
+    );
+    let pieces: Vec<&Toolpath> = paths
+        .iter()
+        .filter(|t| t.source.object == WEED_BOX_OBJECT)
+        .collect();
+    assert!(pieces.len() >= 4, "{pieces:?}");
+    // The roll never goes back for a weed path: after a weed path of band
+    // b, nothing of an earlier band is cut.
+    for (i, t) in paths.iter().enumerate() {
+        if t.kind != ToolpathKind::Weed {
+            continue;
+        }
+        let b = band(top(t));
+        for later in &paths[i + 1..] {
+            let lb = if later.kind == ToolpathKind::Weed {
+                band(top(later))
+            } else {
+                band_of(later)
+            };
+            assert!(lb >= b, "toolpath {i} of band {b} is followed by band {lb}");
+        }
+    }
+    // The pieces join to the full rectangle: every end meets another end
+    // exactly, and together they are the box's four sides.
+    let expected = Rect::new(17.0, 7.0, 93.0, 143.0);
+    let mut ends: Vec<Point> = pieces
+        .iter()
+        .flat_map(|t| [t.points[0], t.points[1]])
+        .collect();
+    ends.sort_by(|a, b| (a.x, a.y).partial_cmp(&(b.x, b.y)).unwrap());
+    for pair in ends.chunks(2) {
+        assert_eq!(pair[0], pair[1], "ends that do not meet: {pair:?}");
+    }
+    let length: f64 = pieces
+        .iter()
+        .map(|t| t.points[0].distance(t.points[1]))
+        .sum();
+    let perimeter = 2.0 * (expected.width() + expected.height());
+    assert!((length - perimeter).abs() < 1e-9, "{length} vs {perimeter}");
+    for t in &pieces {
+        let (a, b) = (t.points[0], t.points[1]);
+        let on_side = |p: Point| {
+            (p.x == expected.x0 || p.x == expected.x1) && (expected.y0..=expected.y1).contains(&p.y)
+                || (p.y == expected.y0 || p.y == expected.y1)
+                    && (expected.x0..=expected.x1).contains(&p.x)
+        };
+        assert!(
+            on_side(a) && on_side(b) && (a.x == b.x || a.y == b.y),
+            "{t:?}"
+        );
+    }
+    // The top edge is cut in the box's first band, before anything of a
+    // later band; the bottom edge in its last band, after all the design.
+    let at = |y: f64| {
+        paths
+            .iter()
+            .position(|t| t.source.object == WEED_BOX_OBJECT && t.points.iter().all(|p| p.y == y))
+            .unwrap()
+    };
+    let (top_edge, bottom_edge) = (at(expected.y0), at(expected.y1));
+    assert!(
+        paths[..top_edge]
+            .iter()
+            .all(|t| band(top(t)) == 0 || t.kind == ToolpathKind::Cut && band_of(t) == 0)
+    );
+    let last_design = paths
+        .iter()
+        .rposition(|t| t.kind == ToolpathKind::Cut)
+        .unwrap();
+    assert!(bottom_edge > last_design);
 }
 
 // ------------------------------------------------------------ property

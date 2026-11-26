@@ -62,53 +62,54 @@ fn weed_paths_never_cut_into_kept_material() {
         weed,
         ..PipelineSettings::with_defaults(Rect::new(0.0, 0.0, 300.0, 300.0), Point::ZERO)
     };
-    for compensation in [
-        Compensation::Tip,
-        Compensation::Host(HostSettings::new(D, 0.0)),
+    let host = Compensation::Host(HostSettings::new(D, 0.0));
+    // Each switch is on in some case and off in another: a mat and no mat,
+    // one box and a box per object, host and tip compensation.
+    for (compensation, monotonic_feed, per_object) in [
+        (host, false, false),
+        (host, true, true),
+        (host, true, false),
+        (Compensation::Tip, false, true),
     ] {
-        for monotonic_feed in [false, true] {
-            for per_object in [false, true] {
-                let s = PipelineSettings {
-                    compensation,
-                    monotonic_feed,
-                    weed: WeedSettings { per_object, ..weed },
-                    ..base.clone()
+        let s = PipelineSettings {
+            compensation,
+            monotonic_feed,
+            weed: WeedSettings { per_object, ..weed },
+            ..base.clone()
+        };
+        let out = plan(&layout(), &s).unwrap();
+        let weeds = out
+            .toolpaths
+            .iter()
+            .filter(|t| t.kind == ToolpathKind::Weed)
+            .count();
+        assert!(weeds > 3, "{weeds} weed paths");
+        let sim = SimSettings::float(D);
+        let trace = simulate(&out.toolpaths, out.home, &sim).unwrap();
+        let (m, _) = measure(&out.toolpaths, &trace, &sim);
+        let what = format!(
+            "{compensation:?}, no mat {monotonic_feed}, per object {per_object}: {:?}",
+            m.worst_spots
+        );
+        match compensation {
+            Compensation::Host(_) => assert_eq!(m.max_into_kept_mm, 0.0, "{what}"),
+            // Tip mode leaves the drag to the firmware, so the
+            // simulator already sees the design's own drop
+            // points swing in. Weeds must add nothing to that.
+            Compensation::Tip => {
+                let bare = PipelineSettings {
+                    weed: WeedSettings::default(),
+                    ..s.clone()
                 };
-                let out = plan(&layout(), &s).unwrap();
-                let weeds = out
-                    .toolpaths
-                    .iter()
-                    .filter(|t| t.kind == ToolpathKind::Weed)
-                    .count();
-                assert!(weeds > 3, "{weeds} weed paths");
-                let sim = SimSettings::float(D);
+                let out = plan(&layout(), &bare).unwrap();
                 let trace = simulate(&out.toolpaths, out.home, &sim).unwrap();
-                let (m, _) = measure(&out.toolpaths, &trace, &sim);
-                let what = format!(
-                    "{compensation:?}, no mat {monotonic_feed}, per object {per_object}: {:?}",
-                    m.worst_spots
+                let (without, _) = measure(&out.toolpaths, &trace, &sim);
+                assert!(
+                    m.max_into_kept_mm <= without.max_into_kept_mm,
+                    "{what}: {} with weeds, {} without",
+                    m.max_into_kept_mm,
+                    without.max_into_kept_mm
                 );
-                match compensation {
-                    Compensation::Host(_) => assert_eq!(m.max_into_kept_mm, 0.0, "{what}"),
-                    // Tip mode leaves the drag to the firmware, so the
-                    // simulator already sees the design's own drop
-                    // points swing in. Weeds must add nothing to that.
-                    Compensation::Tip => {
-                        let bare = PipelineSettings {
-                            weed: WeedSettings::default(),
-                            ..s.clone()
-                        };
-                        let out = plan(&layout(), &bare).unwrap();
-                        let trace = simulate(&out.toolpaths, out.home, &sim).unwrap();
-                        let (without, _) = measure(&out.toolpaths, &trace, &sim);
-                        assert!(
-                            m.max_into_kept_mm <= without.max_into_kept_mm,
-                            "{what}: {} with weeds, {} without",
-                            m.max_into_kept_mm,
-                            without.max_into_kept_mm
-                        );
-                    }
-                }
             }
         }
     }

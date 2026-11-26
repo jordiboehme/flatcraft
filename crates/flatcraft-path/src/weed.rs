@@ -24,8 +24,8 @@
 //! depend on the order of the design (export and plan share it);
 //! [`sequence`] puts it into the cut order after the design: the weed
 //! lines, then the box last (it is the outermost outline). With feed
-//! bands (no mat) each band's weed lines follow that band's design, so
-//! the head still never goes back more than a band; the box stays last.
+//! bands (no mat) the weed lines and the box edges are cut band by band
+//! after each band's design, so the roll never goes back for them.
 
 use flatcraft_core::document::{ObjectId, WeedSettings};
 use kurbo::{Point, Rect};
@@ -46,9 +46,14 @@ const SLACK_MM: f64 = 0.01;
 /// worth splitting.
 pub const MIN_PIECE_MM: f64 = 2.0;
 
-/// The object a weed toolpath names in its [`PathRef`]. Documents number
+/// The object a weed line names in its [`PathRef`]. Documents number
 /// their objects from 1, so 0 is never a real object.
 pub const WEED_OBJECT: ObjectId = ObjectId(0);
+
+/// The object a weed box (or a band piece of one) names in its
+/// [`PathRef`], with the box's index as path index. Documents count their
+/// objects up from 1 and never reach it.
+pub const WEED_BOX_OBJECT: ObjectId = ObjectId(u64::MAX);
 
 /// The weed geometry of a job.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -300,9 +305,9 @@ fn lines(
     out
 }
 
-/// A weed line or box as a toolpath: `Weed` kind, [`WEED_OBJECT`], its
-/// index among the lines (renumbered in cut order by [`sequence`]) or the
-/// boxes as path index.
+/// A weed line or box as a toolpath: `Weed` kind, [`WEED_OBJECT`] (the
+/// caller sets [`WEED_BOX_OBJECT`] for a box), its index among the lines
+/// (renumbered in cut order by [`sequence`]) or the boxes as path index.
 fn weed_toolpath(points: Vec<Point>, closed: bool, index: usize) -> Toolpath {
     let mut t = Toolpath::new(
         points,
@@ -355,13 +360,18 @@ fn split_at_bands(line: [Point; 2]) -> Vec<[Point; 2]> {
     cuts.windows(2).map(|w| [w[0], w[1]]).collect()
 }
 
+/// A weed piece to order: (object, index, segment).
+type Piece = (ObjectId, usize, [Point; 2]);
+
 /// Orders `pieces` greedily from `head`: always the nearest end next,
-/// cut from that end. Returns the toolpaths and the head after them.
-fn greedy(mut pieces: Vec<(usize, [Point; 2])>, mut head: Point) -> (Vec<Toolpath>, Point) {
+/// cut from that end. Each piece is (object, index, segment): a weed line
+/// ([`WEED_OBJECT`]) or a band piece of a weed box ([`WEED_BOX_OBJECT`]).
+/// Returns the toolpaths and the head after them.
+fn greedy(mut pieces: Vec<Piece>, mut head: Point) -> (Vec<Toolpath>, Point) {
     let mut out = Vec::with_capacity(pieces.len());
     while !pieces.is_empty() {
         let mut best = (f64::INFINITY, 0, false);
-        for (i, (_, [a, b])) in pieces.iter().enumerate() {
+        for (i, (_, _, [a, b])) in pieces.iter().enumerate() {
             for (rev, p) in [(false, a), (true, b)] {
                 let d = head.distance(*p);
                 if d < best.0 {
@@ -369,46 +379,83 @@ fn greedy(mut pieces: Vec<(usize, [Point; 2])>, mut head: Point) -> (Vec<Toolpat
                 }
             }
         }
-        let (index, [a, b]) = pieces.swap_remove(best.1);
+        let (object, index, [a, b]) = pieces.swap_remove(best.1);
         let (a, b) = if best.2 { (b, a) } else { (a, b) };
-        out.push(weed_toolpath(vec![a, b], false, index));
+        let mut t = weed_toolpath(vec![a, b], false, index);
+        t.source.object = object;
+        out.push(t);
         head = b;
     }
     (out, head)
 }
 
+/// The edges of box `r` as open pieces for feed bands: the top edge, the
+/// side edges cut at the band edges, the bottom edge. Neighbouring pieces
+/// share their end points exactly, so together they are the rectangle.
+fn box_pieces(r: Rect) -> Vec<[Point; 2]> {
+    let (tl, tr) = (Point::new(r.x0, r.y0), Point::new(r.x1, r.y0));
+    let (bl, br) = (Point::new(r.x0, r.y1), Point::new(r.x1, r.y1));
+    let mut out = vec![[tl, tr]];
+    out.extend(split_at_bands([tr, br]));
+    out.extend(split_at_bands([tl, bl]));
+    out.push([bl, br]);
+    out
+}
+
 /// The cut order with the weeds: the ordered `design` (before passes),
 /// then the weed lines (greedy from the end of the design), then the
-/// boxes. With feed bands (`s.monotonic_feed`) the weed lines are split
-/// at the band edges and each band's pieces follow that band's design.
-/// Each box is cut in `s.direction` from its corner nearest the head.
+/// boxes, each a closed ring cut in `s.direction` from its corner nearest
+/// the head.
+///
+/// With feed bands (`s.monotonic_feed`, no mat) the roll never goes back
+/// for a weed path: the weed lines and the box edges are cut into band
+/// pieces, and each band's pieces follow that band's design, weed lines
+/// first, then the box pieces (the top edge in the first band of the box,
+/// the bottom edge in its last). Box pieces are open paths that meet
+/// exactly at their ends.
 pub fn sequence(design: Vec<Toolpath>, weeds: &Weeds, s: &PipelineSettings) -> Vec<Toolpath> {
     if weeds.is_empty() {
         return design;
     }
     let end_of = |t: &Toolpath| t.points.last().copied();
     let mut out: Vec<Toolpath> = Vec::with_capacity(design.len() + weeds.lines.len());
-    let indexed: Vec<(usize, [Point; 2])> = weeds.lines.iter().copied().enumerate().collect();
+    let lines: Vec<Piece> = weeds
+        .lines
+        .iter()
+        .enumerate()
+        .map(|(i, l)| (WEED_OBJECT, i, *l))
+        .collect();
     if s.monotonic_feed {
-        let mut pieces: Vec<(usize, usize, [Point; 2])> = indexed
+        // (band, 0 for a line or 1 for a box piece, piece)
+        let mut pieces: Vec<(usize, u8, Piece)> = lines
             .iter()
-            .flat_map(|&(i, l)| split_at_bands(l).into_iter().map(move |p| (i, p)))
-            .map(|(i, p)| (piece_band(p[0], p[1]), i, p))
+            .flat_map(|&(o, i, l)| split_at_bands(l).into_iter().map(move |p| (0, (o, i, p))))
+            .chain(weeds.boxes.iter().enumerate().flat_map(|(i, r)| {
+                box_pieces(*r)
+                    .into_iter()
+                    .map(move |p| (1, (WEED_BOX_OBJECT, i, p)))
+            }))
+            .map(|(class, piece)| (piece_band(piece.2[0], piece.2[1]), class, piece))
             .collect();
-        pieces.sort_by_key(|p| p.0);
+        pieces.sort_by_key(|p| (p.0, p.1));
         let mut running = 0;
         let mut next = 0;
         let mut head = s.home;
         let flush = |band: usize, next: &mut usize, head: &mut Point, out: &mut Vec<Toolpath>| {
-            let start = *next;
             while *next < pieces.len() && pieces[*next].0 <= band {
-                *next += 1;
+                // One band at a time: its lines, then its box pieces.
+                let b = pieces[*next].0;
+                for class in [0, 1] {
+                    let start = *next;
+                    while *next < pieces.len() && pieces[*next].0 == b && pieces[*next].1 == class {
+                        *next += 1;
+                    }
+                    let chunk = pieces[start..*next].iter().map(|p| p.2).collect();
+                    let (paths, h) = greedy(chunk, *head);
+                    *head = h;
+                    out.extend(paths);
+                }
             }
-            let chunk: Vec<(usize, [Point; 2])> =
-                pieces[start..*next].iter().map(|p| (p.1, p.2)).collect();
-            let (paths, h) = greedy(chunk, *head);
-            *head = h;
-            out.extend(paths);
         };
         for t in design {
             running = running.max(band_of(&t));
@@ -424,32 +471,34 @@ pub fn sequence(design: Vec<Toolpath>, weeds: &Weeds, s: &PipelineSettings) -> V
     } else {
         let head = design.last().and_then(end_of).unwrap_or(s.home);
         out.extend(design);
-        out.extend(greedy(indexed, head).0);
+        out.extend(greedy(lines, head).0);
+        for (i, r) in weeds.boxes.iter().enumerate() {
+            let head = out.last().and_then(end_of).unwrap_or(s.home);
+            let corners = [
+                Point::new(r.x0, r.y0),
+                Point::new(r.x1, r.y0),
+                Point::new(r.x1, r.y1),
+                Point::new(r.x0, r.y1),
+            ];
+            let ring = rings::orient(&corners, s.direction);
+            let start = (0..ring.len())
+                .min_by(|&a, &b| head.distance(ring[a]).total_cmp(&head.distance(ring[b])))
+                .unwrap_or(0);
+            let mut points = rings::rotate_start(&ring, start);
+            points.push(points[0]);
+            let mut t = weed_toolpath(points, true, i);
+            t.source.object = WEED_BOX_OBJECT;
+            out.push(t);
+        }
     }
     // Number the weed lines in cut order, so the listing names each piece
     // once (band pieces of one line get their own numbers).
     for (n, t) in out
         .iter_mut()
-        .filter(|t| t.kind == ToolpathKind::Weed)
+        .filter(|t| t.kind == ToolpathKind::Weed && t.source.object == WEED_OBJECT)
         .enumerate()
     {
         t.source.path_index = n;
-    }
-    for (i, r) in weeds.boxes.iter().enumerate() {
-        let head = out.last().and_then(end_of).unwrap_or(s.home);
-        let corners = [
-            Point::new(r.x0, r.y0),
-            Point::new(r.x1, r.y0),
-            Point::new(r.x1, r.y1),
-            Point::new(r.x0, r.y1),
-        ];
-        let ring = rings::orient(&corners, s.direction);
-        let start = (0..ring.len())
-            .min_by(|&a, &b| head.distance(ring[a]).total_cmp(&head.distance(ring[b])))
-            .unwrap_or(0);
-        let mut points = rings::rotate_start(&ring, start);
-        points.push(points[0]);
-        out.push(weed_toolpath(points, true, i));
     }
     out
 }

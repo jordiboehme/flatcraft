@@ -98,16 +98,28 @@ fn note(
     )
 }
 
-/// Listing note of a weed toolpath: `weed line {n}, pass {p}` or
-/// `weed box {n}, passes {p}-{q}`, numbered from 1.
-fn weed_note(closed: bool, index: usize, pass: u32, laps: u32) -> String {
-    let what = if closed { "weed box" } else { "weed line" };
-    let passes = if laps > 1 {
+/// Listing note of a weed toolpath, numbered from 1: `weed line {n},
+/// pass {p}`, `weed box {n}, passes {p}-{q}`, or `weed box {n} piece, pass
+/// {p}` for a band piece of a box (no mat).
+fn weed_note(t: &flatcraft_path::Toolpath, pass: u32, laps: u32) -> String {
+    let n = t.source.path_index + 1;
+    let what = match (
+        t.source.object == flatcraft_path::weed::WEED_BOX_OBJECT,
+        t.closed,
+    ) {
+        (true, true) => format!("weed box {n}"),
+        (true, false) => format!("weed box {n} piece"),
+        _ => format!("weed line {n}"),
+    };
+    format!("{what}, {}", passes_text(pass, laps))
+}
+
+fn passes_text(pass: u32, laps: u32) -> String {
+    if laps > 1 {
         format!("passes {pass}-{}", last_pass(pass, laps))
     } else {
         format!("pass {pass}")
-    };
-    format!("{what} {}, {passes}", index + 1)
+    }
 }
 
 /// The warning when weed boxes do not fit inside the cutting area.
@@ -487,7 +499,7 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
             if t.kind == ToolpathKind::Weed {
                 return EmitPath {
                     points: t.points.clone(),
-                    note: weed_note(t.closed, t.source.path_index, t.pass, t.laps),
+                    note: weed_note(t, t.pass, t.laps),
                 };
             }
             let id = t.source.object;
