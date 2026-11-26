@@ -272,10 +272,7 @@ fn the_menu_bar_has_file_export() {
     let doc = doc_id(&s);
     assert_eq!(
         Cmd::Export.action(doc, &[]),
-        Some(Action::ExportDialog {
-            doc_id: doc,
-            selected: false
-        })
+        Some(Action::ExportDialog { doc_id: doc })
     );
     assert!(export_enabled(&model(&mut h, Workspace::Cut)));
     assert!(!export_enabled(&model(&mut h, Workspace::Home)));
@@ -327,13 +324,7 @@ fn the_app_bar_export_is_dimmed_without_objects_and_on_home() {
     app_mut(&mut h).ui.workspace = Workspace::Home;
     let doc = doc_id(&s);
     let ctx = h.ctx.clone();
-    app_mut(&mut h).apply(
-        &ctx,
-        vec![Action::ExportDialog {
-            doc_id: doc,
-            selected: false,
-        }],
-    );
+    app_mut(&mut h).apply(&ctx, vec![Action::ExportDialog { doc_id: doc }]);
     assert!(app(&h).ui.export.is_none());
     assert_eq!(
         last_toast(&h).unwrap().text,
@@ -348,17 +339,51 @@ fn export_selected_opens_on_the_selection() {
     h.run();
     let doc = doc_id(&s);
     let ctx = h.ctx.clone();
-    app_mut(&mut h).apply(
-        &ctx,
-        vec![Action::ExportDialog {
-            doc_id: doc,
-            selected: true,
-        }],
-    );
+    app_mut(&mut h).apply(&ctx, vec![Action::ExportDialog { doc_id: doc }]);
     h.run();
     assert_eq!(
         app(&h).ui.export.as_ref().unwrap().scope,
         ExportScope::Selected
     );
     assert!(!disabled(&h, export_dialog::SELECTED));
+}
+
+// ---------------------------------------------------------------- cards
+
+fn hover_button(h: &mut AppHarness, label: &str) {
+    h.hover_at(egui::pos2(1.0, 1.0));
+    h.run();
+    let at = h.get_by_role_and_label(Role::Button, label).rect().center();
+    h.hover_at(at);
+    for _ in 0..6 {
+        h.run();
+    }
+}
+
+#[test]
+fn a_dimmed_export_says_why_on_hover() {
+    let (_d, s, mut h, _p, ids) = rig(1, vec![]);
+    exec(
+        &s,
+        "object.set_cut",
+        json!({ "ids": [ids[0]], "cut": false }),
+    );
+    h.run();
+    open_from_app_bar(&mut h);
+    assert!(disabled(&h, export_dialog::EXPORT));
+    // The warning line under the controls says it once; the card again.
+    assert_eq!(h.query_all_by_label(export_dialog::ALL_SKIPPED).count(), 1);
+    assert!(h.query_by_label(export_dialog::EXPORT_HINT).is_none());
+    hover_button(&mut h, export_dialog::EXPORT);
+    assert_eq!(h.query_all_by_label(export_dialog::ALL_SKIPPED).count(), 2);
+    assert!(h.query_by_label(export_dialog::EXPORT_HINT).is_some());
+}
+
+#[test]
+fn cancel_has_a_card() {
+    let (_d, _s, mut h, _p, _) = rig(1, vec![]);
+    open_from_app_bar(&mut h);
+    hover_button(&mut h, "Cancel");
+    assert!(h.query_by_label(export_dialog::CANCEL_HINT).is_some());
+    assert!(dialog_open(&h));
 }

@@ -241,10 +241,7 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                             true,
                         );
                         if export.clicked() {
-                            actions.push(Action::ExportDialog {
-                                doc_id: active,
-                                selected: false,
-                            });
+                            actions.push(Action::ExportDialog { doc_id: active });
                         }
                     });
                     card(&file.0, "File", FILE_HINT, None, false);

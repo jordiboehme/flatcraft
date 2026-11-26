@@ -218,10 +218,7 @@ impl Cmd {
             Cmd::NoRecent => return None,
             Cmd::Save => Action::Save { doc_id: active },
             Cmd::SaveAs => Action::SaveAs { doc_id: active },
-            Cmd::Export => Action::ExportDialog {
-                doc_id: active,
-                selected: false,
-            },
+            Cmd::Export => Action::ExportDialog { doc_id: active },
             Cmd::Close => Action::Close(active),
             Cmd::SendToFile => Action::Send { doc_id: active },
             Cmd::Workspace(w) => Action::SetWorkspace(*w),

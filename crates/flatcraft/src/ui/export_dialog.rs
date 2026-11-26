@@ -31,6 +31,11 @@ pub const ALL: &str = "All objects";
 /// What the dialog says under its title.
 pub const BODY: &str = "Saves the shapes the blade will cut, placed as on the mat, in millimetres. No overcut, passes or blade moves, just the shapes.";
 
+/// The card of the Export button.
+pub const EXPORT_HINT: &str = "Pick where to save the file, then write the shapes into it.";
+/// The card of Cancel.
+pub const CANCEL_HINT: &str = "Close this dialog without exporting anything.";
+
 /// The hover card of File > Export... and the menu items.
 pub const MENU_HINT: &str = "Save the shapes that will be cut as SVG, DXF or PDF, placed as on the mat, to use them in other apps or to print them 1:1.";
 
@@ -90,18 +95,13 @@ pub struct ExportDialog {
 }
 
 impl ExportDialog {
-    /// The dialog for the document `doc_id`: on the selection when
-    /// `selected` and there is one, else the default scope (the selection
-    /// when there is one).
-    pub fn new(doc_id: u64, has_selection: bool, selected: bool) -> Self {
+    /// The dialog for the document `doc_id`: on the selection when there
+    /// is one, else on all objects.
+    pub fn new(doc_id: u64, has_selection: bool) -> Self {
         Self {
             doc_id,
             format: ExportFormat::Svg,
-            scope: if selected && has_selection {
-                ExportScope::Selected
-            } else {
-                ExportScope::default_for(has_selection)
-            },
+            scope: ExportScope::default_for(has_selection),
             include_skipped: false,
         }
     }
@@ -178,10 +178,12 @@ pub fn show(
     let dialog = Dialog::new("export", Kind::Info, TITLE)
         .about(d.doc_id)
         .body(BODY)
-        .primary(EXPORT);
+        .primary(EXPORT)
+        .primary_hint(EXPORT_HINT)
+        .cancel_hint(CANCEL_HINT);
     let answer = dialog.show_with(ctx, t, |ui| {
         ui.add_space(t.spacing);
-        controls(ui, d, snap, has_selection, t)
+        controls(ui, d, snap, has_selection, t).map(String::from)
     });
     match answer {
         Some(Answer::Primary) => {
@@ -193,14 +195,15 @@ pub fn show(
     }
 }
 
-/// The format, scope and checkbox; returns whether Export can run.
+/// The format, scope and checkbox; returns why Export cannot run, or
+/// `None` when it can.
 fn controls(
     ui: &mut Ui,
     d: &mut ExportDialog,
     snap: &Snapshot,
     has_selection: bool,
     t: &Tokens,
-) -> bool {
+) -> Option<&'static str> {
     ui.label(RichText::new("Format").strong());
     ui.horizontal(|ui| {
         for f in ExportFormat::ALL {
@@ -238,7 +241,7 @@ fn controls(
         ui.add_space(t.spacing / 2.0);
         ui.add(egui::Label::new(RichText::new(why).color(t.warn)).wrap());
     }
-    blocked.is_none()
+    blocked
 }
 
 #[cfg(test)]
@@ -265,6 +268,8 @@ mod tests {
             BODY,
             MENU_HINT,
             SELECTED_HINT,
+            EXPORT_HINT,
+            CANCEL_HINT,
             NO_DOCUMENT,
             NO_OBJECTS,
             ALL_HIDDEN,

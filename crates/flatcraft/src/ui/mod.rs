@@ -255,11 +255,10 @@ pub enum Action {
         doc_id: u64,
         path: PathBuf,
     },
-    /// Open the Export dialog for this document; `selected` starts it on
-    /// the selection ("Export selected...").
+    /// Open the Export dialog for this document, on the selection when
+    /// there is one.
     ExportDialog {
         doc_id: u64,
-        selected: bool,
     },
     /// Ask where to save, then export as the dialog says
     /// (`document.export`, as the person).
@@ -1022,7 +1021,7 @@ impl FlatCraftApp {
                     self.saved(&v);
                 }
             }
-            Action::ExportDialog { doc_id, selected } => {
+            Action::ExportDialog { doc_id } => {
                 let has_selection = {
                     let s = lock(&self.session);
                     s.doc_index(doc_id)
@@ -1034,8 +1033,7 @@ impl FlatCraftApp {
                         self.toast(Toast::info(export_dialog::NO_DOCUMENT));
                     }
                     Some(has) => {
-                        self.ui.export =
-                            Some(export_dialog::ExportDialog::new(doc_id, has, selected));
+                        self.ui.export = Some(export_dialog::ExportDialog::new(doc_id, has));
                     }
                     None => {}
                 }
@@ -2141,6 +2139,19 @@ pub fn guard_close(ctx: &egui::Context, app: &mut FlatCraftApp) {
     }
 }
 
+/// The cards of the unsaved-changes dialog's buttons.
+pub const SAVE_HINT: &str = "Save the changes to the project file, then go on.";
+pub const DONT_SAVE_HINT: &str =
+    "Throw away the changes since the last save and go on. This cannot be undone.";
+pub const KEEP_OPEN_HINT: &str = "Stop here and keep the document open with its changes.";
+/// The cards of "Quit while an agent waits?".
+pub const QUIT_ANYWAY_HINT: &str =
+    "Quit FlatCraft and drop the agent's cut request. Nothing is sent.";
+pub const STAY_WAITING_HINT: &str = "Stay in FlatCraft. The agent's request keeps waiting for you.";
+/// The cards of the agent's cut request.
+pub const ALLOW_HINT: &str = "Send this cut to the plotter now. Check the mat and the blade first.";
+pub const DENY_HINT: &str = "Say no. Nothing is sent, and the agent hears that you denied it.";
+
 /// The unsaved-changes dialog: "Save changes to <name>?" with Don't
 /// Save, Cancel and Save, for closing a document and, one document after
 /// the other, for quitting. Quitting while an agent waits for a send asks
@@ -2169,7 +2180,9 @@ pub fn unsaved_dialog(app: &FlatCraftApp, asked: &Unsaved) -> dialog::Dialog {
             return Dialog::new("unsaved", Kind::Warning, "Quit while an agent waits?")
                 .body("An agent is waiting for your OK to send a cut.")
                 .body("If you quit, the request is dropped and nothing is sent.")
-                .secondary("Quit anyway", false);
+                .secondary("Quit anyway", false)
+                .secondary_hint(QUIT_ANYWAY_HINT)
+                .cancel_hint(STAY_WAITING_HINT);
         }
         Unsaved::Close(doc_id) => *doc_id,
         Unsaved::Quit { asking, .. } => *asking,
@@ -2181,7 +2194,10 @@ pub fn unsaved_dialog(app: &FlatCraftApp, asked: &Unsaved) -> dialog::Dialog {
             "{name} has unsaved changes. If you don't save, they are lost."
         ))
         .secondary("Don't Save", true)
-        .primary("Save");
+        .secondary_hint(DONT_SAVE_HINT)
+        .primary("Save")
+        .primary_hint(SAVE_HINT)
+        .cancel_hint(KEEP_OPEN_HINT);
     if let Unsaved::Quit { asking, answered } = asked {
         // One more line at most: how many follow, and the waiting agent.
         let more = app
@@ -2439,7 +2455,9 @@ pub fn pending_dialog(p: &PendingView) -> dialog::Dialog {
     ))
     .body("Check the mat and the blade first. The request expires after 5 minutes.")
     .secondary("Allow", false)
+    .secondary_hint(ALLOW_HINT)
     .cancel("Deny")
+    .cancel_hint(DENY_HINT)
 }
 
 impl eframe::App for FlatCraftApp {

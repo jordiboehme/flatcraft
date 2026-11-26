@@ -326,10 +326,7 @@ pub fn search_target(id: &str, doc_id: u64) -> Option<SearchTarget> {
         "document.new" => Action(super::Action::NewDocument),
         "project.open" => Action(super::Action::OpenDialog),
         "project.save" => Action(super::Action::Save { doc_id }),
-        "document.export" => Action(super::Action::ExportDialog {
-            doc_id,
-            selected: false,
-        }),
+        "document.export" => Action(super::Action::ExportDialog { doc_id }),
         "document.check_sources" => Action(super::Action::CheckSources),
         "object.import" => Action(super::Action::Import { doc_id }),
         "object.reload"

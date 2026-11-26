@@ -644,3 +644,93 @@ fn quit_asks_again_when_an_agent_changes_the_document_during_its_save() {
     );
     assert!(closing(&h));
 }
+
+// ---------------------------------------------------------------- footer cards
+
+/// Moves the pointer onto the button `label` and lets its card show.
+fn hover_button(h: &mut AppHarness, label: &str) {
+    h.hover_at(egui::pos2(1.0, 1.0));
+    h.run();
+    let at = h
+        .get_all_by_role_and_label(Role::Button, label)
+        .last()
+        .unwrap()
+        .rect()
+        .center();
+    h.hover_at(at);
+    for _ in 0..6 {
+        h.run();
+    }
+}
+
+fn shows(h: &AppHarness, text: &str) -> bool {
+    h.query_by_label(text).is_some()
+}
+
+#[test]
+fn the_save_changes_buttons_have_cards() {
+    use flatcraft::ui::{DONT_SAVE_HINT, KEEP_OPEN_HINT, SAVE_HINT};
+    let (dir, s) = dirty_docs(1);
+    let mut h = harness(&dir, s.clone(), false);
+    ask_close(&mut h, &s);
+    for (button, card) in [
+        ("Don't Save", DONT_SAVE_HINT),
+        ("Cancel", KEEP_OPEN_HINT),
+        ("Save", SAVE_HINT),
+    ] {
+        assert!(!shows(&h, card), "{card}");
+        hover_button(&mut h, button);
+        assert!(shows(&h, card), "no card on {button}");
+    }
+}
+
+#[test]
+fn the_rename_buttons_have_cards_and_a_dimmed_rename_says_why() {
+    use flatcraft::ui::prepare::{
+        RENAME_CANCEL_HINT, RENAME_HINT, RENAME_NEEDS_NAME, RenameDialog,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let id = import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    app_mut(&mut h).ui.prepare.rename = Some(RenameDialog {
+        doc_id: s.lock().unwrap().doc().id(),
+        id,
+        name: String::new(),
+    });
+    h.run();
+    hover_button(&mut h, "Rename");
+    assert!(shows(&h, RENAME_NEEDS_NAME));
+    assert!(shows(&h, RENAME_HINT));
+    hover_button(&mut h, "Cancel");
+    assert!(shows(&h, RENAME_CANCEL_HINT));
+}
+
+#[test]
+fn the_agent_cut_buttons_have_cards() {
+    use flatcraft::ui::{ALLOW_HINT, DENY_HINT};
+    let (dir, s) = waiting_send();
+    let mut h = harness(&dir, s.clone(), true);
+    h.get_by_label(SEND_QUESTION);
+    hover_button(&mut h, "Allow");
+    assert!(shows(&h, ALLOW_HINT));
+    hover_button(&mut h, "Deny");
+    assert!(shows(&h, DENY_HINT));
+    // Hovering answers nothing.
+    assert!(s.lock().unwrap().pending_send().is_some());
+}
+
+#[test]
+fn quit_while_an_agent_waits_has_cards() {
+    use flatcraft::ui::{QUIT_ANYWAY_HINT, STAY_WAITING_HINT};
+    let (dir, s) = waiting_send();
+    let mut h = harness(&dir, s.clone(), true);
+    app_mut(&mut h).ui.unsaved = Some(Unsaved::PendingSend);
+    h.run();
+    h.get_by_label("Quit while an agent waits?");
+    hover_button(&mut h, "Quit anyway");
+    assert!(shows(&h, QUIT_ANYWAY_HINT));
+    hover_button(&mut h, "Cancel");
+    assert!(shows(&h, STAY_WAITING_HINT));
+}

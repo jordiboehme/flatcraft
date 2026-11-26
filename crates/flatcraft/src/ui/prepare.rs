@@ -1256,6 +1256,13 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
     rename_window(ui.ctx(), &mut p.rename, snap, &t, actions);
 }
 
+/// The card of the Rename dialog's Rename button.
+pub const RENAME_HINT: &str = "Give the object the name in the field.";
+/// The card of its Cancel button.
+pub const RENAME_CANCEL_HINT: &str = "Keep the old name.";
+/// Why Rename is dimmed with an empty field.
+pub const RENAME_NEEDS_NAME: &str = "Type a name first. An object needs a name you can find again.";
+
 /// The Rename dialog (the shared [`super::dialog`]). It closes when its
 /// document is no longer shown or its object is gone. Enter or Rename
 /// sends `object.rename`; Escape, × and Cancel close it.
@@ -1275,7 +1282,9 @@ fn rename_window(
     }
     let dialog = super::dialog::Dialog::new("rename", super::dialog::Kind::Info, "Rename")
         .body("A name you will find again in the Objects panel.")
-        .primary("Rename");
+        .primary("Rename")
+        .primary_hint(RENAME_HINT)
+        .cancel_hint(RENAME_CANCEL_HINT);
     // Whether Rename can run is decided after the field took this frame's
     // typing, so the button and Enter see the name as it is now.
     let answer = dialog.show_with(ctx, t, |ui| {
@@ -1285,7 +1294,10 @@ fn rename_window(
         if !field.has_focus() && !field.lost_focus() {
             field.request_focus();
         }
-        !d.name.trim().is_empty()
+        d.name
+            .trim()
+            .is_empty()
+            .then(|| RENAME_NEEDS_NAME.to_string())
     });
     match answer {
         Some(super::dialog::Answer::Primary) => {

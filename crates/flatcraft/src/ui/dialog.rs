@@ -18,6 +18,7 @@
 use egui::{Color32, Key, Modifiers, RichText, Ui};
 
 use super::fonts;
+use super::groups::card;
 use super::icons::{self, Icon};
 use super::settings::set_name;
 use super::theme::Tokens;
@@ -93,10 +94,20 @@ pub struct Dialog {
     pub secondary_key: bool,
     /// The action on the right, in the accent colour.
     pub primary: Option<String>,
-    /// The primary action can run now (a Rename needs a name).
-    pub primary_enabled: bool,
+    /// Why the primary action cannot run now (a Rename needs a name):
+    /// the button is dimmed and its card says this. `None`: it can run.
+    pub primary_blocked: Option<String>,
     pub cancel: String,
+    /// What the primary button does, for its hover card.
+    pub primary_hint: String,
+    /// What the secondary button does, for its hover card.
+    pub secondary_hint: String,
+    /// What Cancel does, for its hover card.
+    pub cancel_hint: String,
 }
+
+/// The card of Cancel when the dialog says nothing else.
+pub const CANCEL_HINT: &str = "Close this question without doing anything.";
 
 impl Dialog {
     /// A dialog with a title and its body, a Cancel button and nothing
@@ -112,8 +123,11 @@ impl Dialog {
             secondary: None,
             secondary_key: false,
             primary: None,
-            primary_enabled: true,
+            primary_blocked: None,
             cancel: "Cancel".into(),
+            primary_hint: String::new(),
+            secondary_hint: String::new(),
+            cancel_hint: CANCEL_HINT.into(),
         }
     }
 
@@ -143,8 +157,27 @@ impl Dialog {
         self
     }
 
-    pub fn primary_enabled(mut self, on: bool) -> Self {
-        self.primary_enabled = on;
+    /// Dims the primary action with this reason (`None` lets it run).
+    pub fn primary_blocked(mut self, why: Option<impl Into<String>>) -> Self {
+        self.primary_blocked = why.map(Into::into);
+        self
+    }
+
+    /// What the primary button does, for its hover card.
+    pub fn primary_hint(mut self, hint: impl Into<String>) -> Self {
+        self.primary_hint = hint.into();
+        self
+    }
+
+    /// What the secondary button does, for its hover card.
+    pub fn secondary_hint(mut self, hint: impl Into<String>) -> Self {
+        self.secondary_hint = hint.into();
+        self
+    }
+
+    /// What Cancel does, for its hover card.
+    pub fn cancel_hint(mut self, hint: impl Into<String>) -> Self {
+        self.cancel_hint = hint.into();
         self
     }
 
@@ -170,17 +203,18 @@ impl Dialog {
     ) -> Option<Answer> {
         self.show_with(ctx, t, |ui| {
             content(ui);
-            self.primary_enabled
+            self.primary_blocked.clone()
         })
     }
 
-    /// Like [`Self::show`], with `content` returning whether the primary
-    /// action can run, read after it drew (a name field typed this frame).
+    /// Like [`Self::show`], with `content` returning why the primary
+    /// action cannot run (`None` when it can), read after it drew (a name
+    /// field typed this frame). The dimmed button's card gives the reason.
     pub fn show_with(
         &self,
         ctx: &egui::Context,
         t: &Tokens,
-        content: impl FnOnce(&mut Ui) -> bool,
+        content: impl FnOnce(&mut Ui) -> Option<String>,
     ) -> Option<Answer> {
         // Keys count only once every key that was down when this question
         // appeared is up again: a key still held (or repeating) from the
@@ -201,7 +235,7 @@ impl Dialog {
             }
             ctx.data_mut(|d| d.insert_temp(last_id, armed_id));
         }
-        let mut primary_enabled = self.primary_enabled;
+        let mut primary_blocked = self.primary_blocked.clone();
         let mut clicked: Option<Answer> = None;
         let frame = egui::Frame::new()
             .fill(t.panel)
@@ -239,7 +273,7 @@ impl Dialog {
                                             .wrap(),
                                     );
                                 }
-                                primary_enabled = content(ui);
+                                primary_blocked = content(ui);
                             });
                         });
                     });
@@ -277,7 +311,9 @@ impl Dialog {
                                     t.danger
                                 };
                                 let b = egui::Button::new(RichText::new(label).color(color));
-                                ui.add(b).clicked().then_some(Answer::Secondary)
+                                let r = ui.add(b);
+                                card(&r, label, &self.secondary_hint, None, false);
+                                r.clicked().then_some(Answer::Secondary)
                             },
                             |ui| {
                                 let mut out = None;
@@ -294,7 +330,15 @@ impl Dialog {
                                     let b =
                                         egui::Button::new(RichText::new(label).color(ink).strong())
                                             .fill(fill);
-                                    if ui.add_enabled(primary_enabled, b).clicked() {
+                                    let r = ui.add_enabled(primary_blocked.is_none(), b);
+                                    card(
+                                        &r,
+                                        label,
+                                        &self.primary_hint,
+                                        primary_blocked.as_deref(),
+                                        false,
+                                    );
+                                    if r.clicked() {
                                         out = Some(Answer::Primary);
                                     }
                                 }
@@ -307,7 +351,9 @@ impl Dialog {
                                 } else {
                                     egui::Button::new(&self.cancel)
                                 };
-                                if ui.add(cancel).clicked() {
+                                let r = ui.add(cancel);
+                                card(&r, &self.cancel, &self.cancel_hint, None, false);
+                                if r.clicked() {
                                     out = Some(Answer::Cancel);
                                 }
                                 out
@@ -365,7 +411,7 @@ impl Dialog {
         let enter = ctx.input(|i| i.key_pressed(Key::Enter));
         if enter {
             return match &self.primary {
-                Some(_) if primary_enabled => Some(Answer::Primary),
+                Some(_) if primary_blocked.is_none() => Some(Answer::Primary),
                 Some(_) => None,
                 None => Some(Answer::Cancel),
             };

@@ -483,10 +483,7 @@ pub fn run_item(
                 Action::CopyPath(path)
             });
         }
-        Item::ExportSelected => actions.push(Action::ExportDialog {
-            doc_id,
-            selected: true,
-        }),
+        Item::ExportSelected => actions.push(Action::ExportDialog { doc_id }),
         Item::Delete => actions.push(ribbon::delete_action(doc_id, ids)),
         Item::Import => actions.push(Action::Import { doc_id }),
         Item::SelectAll => actions.push(select_all_action(snap)),
