@@ -183,3 +183,32 @@ fn the_day_follows_the_time_zone_offset() {
     assert_eq!(cutlog::day_at("2026-12-31T23:30:00Z", 3600), "2027-01-01");
     assert_eq!(cutlog::day_at("not a date", 0), "not a date");
 }
+
+#[test]
+fn the_local_day_uses_the_offset_of_that_instant() {
+    use jiff::tz::{Offset, TimeZone};
+    let plus_1 = TimeZone::fixed(Offset::from_hours(1).unwrap());
+    assert_eq!(
+        outcome::day_in("2026-11-26T23:30:00.000000000Z", &plus_1),
+        "2026-11-27"
+    );
+    assert_eq!(
+        outcome::day_in("2026-11-26T23:30:00.000000000Z", &TimeZone::UTC),
+        "2026-11-26"
+    );
+    // A zone with summer time: +1 in winter, +2 in summer.
+    let berlin = TimeZone::get("Europe/Berlin").unwrap();
+    assert_eq!(
+        outcome::day_in("2026-11-26T22:30:00Z", &berlin),
+        "2026-11-26"
+    );
+    assert_eq!(
+        outcome::day_in("2026-11-26T23:30:00Z", &berlin),
+        "2026-11-27"
+    );
+    assert_eq!(
+        outcome::day_in("2026-07-01T22:30:00Z", &berlin),
+        "2026-07-02"
+    );
+    assert_eq!(outcome::day_in("not a date", &berlin), "not a date");
+}

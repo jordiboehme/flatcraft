@@ -12,6 +12,7 @@ flatcraft-engine = { path = "../flatcraft-engine" }
 flatcraft-device = { path = "../flatcraft-device" }
 flatcraft-mcp = { path = "../flatcraft-mcp" }
 flatcraft-core = { path = "../flatcraft-core" }
+jiff.workspace = true
 flatcraft-import = { path = "../flatcraft-import" }
 flatcraft-path = { path = "../flatcraft-path" }
 flatcraft-sim = { path = "../flatcraft-sim" }

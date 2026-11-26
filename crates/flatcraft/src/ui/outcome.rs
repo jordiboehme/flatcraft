@@ -55,12 +55,21 @@ impl OutcomeDialog {
     }
 }
 
-/// The day of a cut log time, like "2026-11-26". It is the UTC day for
-/// now: the local time zone needs a time zone library, which is still to
-/// be chosen (chrono fails `cargo deny` as unmaintained).
-/// [`cutlog::day_at`] does the shift once the offset is known.
+/// The local day of a cut log time, like "2026-11-26": the system time
+/// zone's offset at the cut's own instant, so summer time is right for
+/// that day.
 pub fn day(date: &str) -> String {
-    cutlog::day_at(date, 0)
+    day_in(date, &jiff::tz::TimeZone::system())
+}
+
+/// The day of a cut log time in time zone `tz`, with the zone's offset at
+/// that instant ([`cutlog::day_at`]). A text that is not a time shows its
+/// first ten characters.
+pub fn day_in(date: &str, tz: &jiff::tz::TimeZone) -> String {
+    let offset = date
+        .parse::<jiff::Timestamp>()
+        .map_or(0, |ts| tz.to_offset(ts).seconds());
+    cutlog::day_at(date, offset)
 }
 
 fn passes(n: u32) -> String {
