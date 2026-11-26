@@ -369,6 +369,17 @@ pub fn thumbnail_from_bytes(bytes: &[u8]) -> Result<Option<Vec<u8>>, ProjectErro
 }
 
 fn thumbnail_from(reader: impl Read + Seek) -> Result<Option<Vec<u8>>, ProjectError> {
+    let limits = ArchiveLimits::default();
+    entry_from(reader, THUMBNAIL_ENTRY, limits.max_thumbnail_bytes)
+}
+
+/// One entry of a project file, at most `limit` bytes, without reading the
+/// others. `None` when the file has no such entry.
+fn entry_from(
+    reader: impl Read + Seek,
+    name: &str,
+    limit: u64,
+) -> Result<Option<Vec<u8>>, ProjectError> {
     let mut z = zip::ZipArchive::new(reader).map_err(|_| ProjectError::NotAProject)?;
     let limits = ArchiveLimits::default();
     match z.by_name(MIMETYPE_ENTRY) {
@@ -384,20 +395,28 @@ fn thumbnail_from(reader: impl Read + Seek) -> Result<Option<Vec<u8>>, ProjectEr
         }
         Err(_) => return Err(ProjectError::NotAProject),
     }
-    let mut f = match z.by_name(THUMBNAIL_ENTRY) {
+    let mut f = match z.by_name(name) {
         Ok(f) => f,
         Err(zip::result::ZipError::FileNotFound) => return Ok(None),
         Err(e) => return Err(e.into()),
     };
     let mut total = 0;
-    read_bounded(
-        &mut f,
-        THUMBNAIL_ENTRY,
-        limits.max_thumbnail_bytes,
-        &limits,
-        &mut total,
-    )
-    .map(Some)
+    read_bounded(&mut f, name, limit, &limits, &mut total).map(Some)
+}
+
+/// The one-line description of a project file (empty when it has none),
+/// without reading its sources or its thumbnail. For the Start page.
+pub fn read_description(path: &Path) -> Result<String, ProjectError> {
+    #[derive(serde::Deserialize)]
+    struct Head {
+        #[serde(default)]
+        description: String,
+    }
+    let file = std::fs::File::open(path)?;
+    let json = entry_from(file, PROJECT_ENTRY, limits::MAX_PROJECT_JSON_BYTES)?
+        .ok_or_else(|| ProjectError::Damaged("it has no project.json".into()))?;
+    let head: Head = serde_json::from_slice(&json)?;
+    Ok(head.description)
 }
 
 // ---------------------------------------------------------------- sources

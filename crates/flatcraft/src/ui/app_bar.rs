@@ -105,6 +105,8 @@ struct Tab {
     name: String,
     /// The file, for the hover card.
     path: Option<std::path::PathBuf>,
+    /// The project's one-line description, for the hover card.
+    description: String,
     dirty: bool,
 }
 
@@ -158,6 +160,7 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                     format!("Untitled {n}")
                 }),
                 path: d.path.clone(),
+                description: d.document.description.clone(),
                 dirty: d.dirty,
             })
             .collect();
@@ -600,11 +603,13 @@ fn doc_tab(
             );
         }
     }
-    let hint = if tab.dirty { TAB_DIRTY_HINT } else { TAB_HINT };
-    let hint = match &tab.path {
-        Some(path) => format!("{hint}\n{}", path.display()),
-        None => hint.to_string(),
-    };
+    let mut hint = if tab.dirty { TAB_DIRTY_HINT } else { TAB_HINT }.to_string();
+    if !tab.description.is_empty() {
+        hint = format!("{}\n{hint}", tab.description);
+    }
+    if let Some(path) = &tab.path {
+        hint = format!("{hint}\n{}", path.display());
+    }
     card(&resp, &label, &hint, None, false);
     card(&close, &close_name, CLOSE_HINT, None, false);
     (resp, close)

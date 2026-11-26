@@ -305,6 +305,11 @@ pub struct PrepareState {
     /// Where the ribbon drew its tab row, its panel and its tools row,
     /// last frame (see `ribbon::show`).
     pub ribbon_layout: Option<super::ribbon::Layout>,
+    /// The Notes section under Objects is open.
+    pub notes_open: bool,
+    /// Counts the times a notes field got the keyboard: the typing of one
+    /// visit to a field is one undo step (see `objects::notes`).
+    pub notes_burst: u64,
 }
 
 /// The Rename dialog: its object and the name typed so far.
@@ -375,6 +380,8 @@ impl Default for PrepareState {
             rotate_cursor: None,
             rename: None,
             ribbon_layout: None,
+            notes_open: true,
+            notes_burst: 0,
         }
     }
 }
@@ -830,6 +837,10 @@ pub struct Snapshot {
     pub config_dir: PathBuf,
     /// The document's project file, if it has one.
     pub project: Option<PathBuf>,
+    /// The project's one-line description (empty when none).
+    pub description: String,
+    /// The project's notes (empty when none).
+    pub notes: String,
 }
 
 impl Snapshot {
@@ -1025,6 +1036,8 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
             output_pref: s.prefs.output_dir.clone(),
             config_dir: s.config_dir.clone(),
             project: st.path.clone(),
+            description: st.document.description.clone(),
+            notes: st.document.notes.clone(),
         }
     };
     let doc_id = snap.doc_id;

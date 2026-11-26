@@ -401,6 +401,16 @@ pub struct JobSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Document {
     pub format_version: u32,
+    /// One line that says what the project is, for the Start page and the
+    /// tab's hover card. Not written when empty; builds from before notes
+    /// ignore it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// Plain-text notes the person keeps with the project (what mat, which
+    /// side up). Not written when empty; builds from before notes ignore
+    /// it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub notes: String,
     pub objects: Vec<Object>,
     pub job: JobSettings,
     pub next_id: u64,
@@ -410,6 +420,8 @@ impl Document {
     pub fn new(job: JobSettings) -> Self {
         Self {
             format_version: FORMAT_VERSION,
+            description: String::new(),
+            notes: String::new(),
             objects: Vec::new(),
             job,
             next_id: 1,

@@ -429,3 +429,76 @@ fn old_project_loads_as_cut_and_saves_without_the_flag() {
     assert!(text.contains("\"format_version\": 1"), "{text}");
     assert!(!project::load(&path).unwrap().objects[0].cut_enabled);
 }
+
+#[test]
+fn description_and_notes_round_trip_in_the_project_file() {
+    let mut doc = Document::new(job());
+    doc.description = "Birthday card for Oma".into();
+    doc.notes = "Use the blue mat.\nCardstock face down.".into();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("p.flatcraft");
+    project::save(&doc, &path).unwrap();
+    let json = Archive::read(&path).unwrap().project;
+    assert_eq!(json["description"], "Birthday card for Oma");
+    assert_eq!(json["notes"], "Use the blue mat.\nCardstock face down.");
+    let loaded = project::load(&path).unwrap();
+    assert_eq!(loaded.description, doc.description);
+    assert_eq!(loaded.notes, doc.notes);
+    assert_eq!(loaded.format_version, project::FORMAT_VERSION);
+}
+
+#[test]
+fn empty_notes_are_not_written_and_old_files_load_without_them() {
+    let doc = Document::new(job());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("p.flatcraft");
+    project::save(&doc, &path).unwrap();
+    let text = project_text(&path);
+    assert!(!text.contains("description"), "{text}");
+    assert!(!text.contains("notes"), "{text}");
+
+    write_project(
+        &path,
+        r#"{"format_version":1,"objects":[],"job":{"plotter_id":"cameo2","material_id":"cardstock","media_id":"a4","speed":null,"force":null,"passes":null},"next_id":1}"#,
+    );
+    let loaded = project::load(&path).unwrap();
+    assert_eq!(loaded.description, "");
+    assert_eq!(loaded.notes, "");
+}
+
+#[test]
+fn an_older_build_ignores_the_notes() {
+    /// The shape of project.json before notes, as an older build reads it.
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct OldDocument {
+        format_version: u32,
+        objects: Vec<serde_json::Value>,
+        job: JobSettings,
+        next_id: u64,
+    }
+    let mut doc = Document::new(job());
+    doc.description = "Labels".into();
+    doc.notes = "Weed slowly.".into();
+    let value = project::to_value(&doc).unwrap();
+    let old: OldDocument = serde_json::from_value(value).unwrap();
+    assert_eq!(old.format_version, 1);
+    assert_eq!(old.job, doc.job);
+}
+
+#[test]
+fn the_description_is_read_without_the_sources() {
+    let mut doc = Document::new(job());
+    doc.description = "Window star for the kitchen".into();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("p.flatcraft");
+    project::save(&doc, &path).unwrap();
+    assert_eq!(
+        project::read_description(&path).unwrap(),
+        "Window star for the kitchen"
+    );
+    project::save(&Document::new(job()), &path).unwrap();
+    assert_eq!(project::read_description(&path).unwrap(), "");
+    std::fs::write(&path, b"not a zip").unwrap();
+    assert!(project::read_description(&path).is_err());
+}

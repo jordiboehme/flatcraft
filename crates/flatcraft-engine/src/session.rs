@@ -329,6 +329,8 @@ fn same_source(a: &flatcraft_core::document::Source, b: &flatcraft_core::documen
 fn same_except_links(a: &Document, b: &Document) -> bool {
     let pairs = || a.objects.iter().zip(&b.objects);
     a.job == b.job
+        && a.description == b.description
+        && a.notes == b.notes
         && a.next_id == b.next_id
         && a.format_version == b.format_version
         && a.objects.len() == b.objects.len()
@@ -1245,6 +1247,7 @@ mod tests {
             read_only,
             [
                 "document.state",
+                "document.notes",
                 "document.check_sources",
                 "profiles.list",
                 "profiles.get",

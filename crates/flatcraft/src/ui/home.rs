@@ -368,6 +368,9 @@ pub struct HomeState {
     pub versions: std::collections::HashMap<PathBuf, Option<String>>,
     /// How often Home looked at a recent file on disk (tests).
     pub file_checks: usize,
+    /// Each recent file's description, with the version it was read from:
+    /// read again only when the file changed.
+    pub descriptions: std::collections::HashMap<PathBuf, (String, String)>,
 }
 
 impl HomeState {
@@ -387,6 +390,20 @@ impl HomeState {
         let v = flatcraft_engine::thumbnails::project_version(path);
         self.versions.insert(path.to_path_buf(), v.clone());
         v
+    }
+
+    /// The description of a recent file at `version`, read from the file
+    /// once per version. A file that cannot be read has none.
+    fn description(&mut self, path: &Path, version: &str) -> String {
+        if let Some((v, d)) = self.descriptions.get(path)
+            && v == version
+        {
+            return d.clone();
+        }
+        let d = flatcraft_core::project::read_description(path).unwrap_or_default();
+        self.descriptions
+            .insert(path.to_path_buf(), (version.to_string(), d.clone()));
+        d
     }
 
     /// The worker still draws pictures.
@@ -593,6 +610,8 @@ struct Row {
     open: Option<u64>,
     opened: u64,
     workspace: Option<super::Workspace>,
+    /// The project's one-line description (empty when none).
+    description: String,
 }
 
 /// The recent projects, newest first.
@@ -632,6 +651,7 @@ fn recent(
                         _ => None,
                     }),
                     path: path.clone(),
+                    description: String::new(),
                 }
             })
             .collect()
@@ -668,6 +688,9 @@ fn recent(
                     ui.painter().hline(x, y, egui::Stroke::new(1.0, t.border));
                 }
                 row.version = app.ui.home.version(&row.path);
+                if let Some(v) = &row.version {
+                    row.description = app.ui.home.description(&row.path, v);
+                }
                 let thumb = row.version.clone().map(|v| {
                     let id = flatcraft_engine::thumbnails::project_id(&row.path);
                     let source = Source::File(row.path.clone());
@@ -794,13 +817,25 @@ fn recent_row(
         second_colour,
         text_w,
     ));
-    let top = rect.center().y - (name_g.size().y + 2.0 + second_g.size().y) / 2.0;
+    // The description, when there is one, sits between the name and the
+    // folder.
+    let desc_g = (!gone && !row.description.is_empty()).then(|| {
+        painter.layout_job(trunc(
+            &row.description,
+            egui::FontId::proportional(12.0),
+            t.text,
+            text_w,
+        ))
+    });
+    let desc_h = desc_g.as_ref().map_or(0.0, |g| g.size().y + 1.0);
+    let top = rect.center().y - (name_g.size().y + 2.0 + desc_h + second_g.size().y) / 2.0;
     painter.galley(egui::pos2(x, top), name_g.clone(), t.text);
-    painter.galley(
-        egui::pos2(x, top + name_g.size().y + 2.0),
-        second_g,
-        second_colour,
-    );
+    let mut y = top + name_g.size().y + 2.0;
+    if let Some(g) = desc_g {
+        painter.galley(egui::pos2(x, y), g, t.text);
+        y += desc_h;
+    }
+    painter.galley(egui::pos2(x, y), second_g, second_colour);
 
     if gone {
         let h = 24.0;
@@ -903,6 +938,11 @@ fn recent_row(
             "Opens {name} in a new tab. Right-click to take it off the list.\n{}",
             row.path.display()
         )
+    };
+    let hint = if gone || row.description.is_empty() {
+        hint
+    } else {
+        format!("{}\n{hint}", row.description)
     };
     groups::card(&resp, &name, &hint, None, false);
     resp.context_menu(|ui| {

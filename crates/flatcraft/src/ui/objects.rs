@@ -2,7 +2,7 @@
 //! linked copies, file status, an eye to show or hide it and scissors to
 //! skip its cut. The two toggles are quiet until the row is hovered, and
 //! clear when the object is hidden or skipped. Below the list, the details of a single selected object with its linked copies
-//! and its linked file.
+//! and its linked file, then the project's notes.
 
 use egui::{Rect, RichText, Ui};
 use serde_json::json;
@@ -56,6 +56,108 @@ pub fn show(
     if let (Some(o), None) = (selected.next(), selected.next()) {
         ui.separator();
         details(ui, o, st, snap, t, actions);
+    }
+    ui.separator();
+    notes(ui, st, snap, t, actions);
+}
+
+/// The card of the Notes heading in the Objects panel.
+pub const NOTES_HINT: &str = "Shows or hides the notes of this project: a one-line description and what to remember the next time you cut it.";
+/// The card of the description field.
+pub const DESCRIPTION_HINT: &str = "One line that says what this project is. The Start page shows it under the name, and so does the tab's card. It is saved in the project file.";
+/// The card of the notes field.
+pub const NOTES_FIELD_HINT: &str = "Things to remember the next time you cut this: the mat, which side goes up, a force that worked. They are saved in the project file and show again in the Cut workspace, right above the send button. Undo takes back what you typed.";
+
+/// A heading that opens and closes a section: a chevron and the title. Its
+/// accessible name is `title`. Returns true when clicked.
+pub fn section_toggle(ui: &mut Ui, title: &str, open: bool, hint: &str) -> bool {
+    let icon = if open {
+        Icon::ChevronDown
+    } else {
+        Icon::ChevronRight
+    };
+    let tex = icons::texture(ui.ctx(), icon, ICON_SIZE * 0.8);
+    let image = egui::Image::from_texture(egui::load::SizedTexture::new(
+        tex.id(),
+        egui::Vec2::splat(ICON_SIZE * 0.8),
+    ));
+    let resp = ui.add(
+        egui::Button::image_and_text(image, RichText::new(title).font(fonts::semibold(14.0)))
+            .frame(false),
+    );
+    super::settings::set_name(ui, &resp, title);
+    let state = if open {
+        "Click to fold it away."
+    } else {
+        "Click to open it."
+    };
+    super::groups::card(&resp, title, &format!("{hint} {state}"), None, false);
+    resp.clicked()
+}
+
+/// The Notes section: the project's one-line description and its notes.
+/// Each visit to a field is one undo step: the typing goes in as it
+/// happens (`document.set_notes` with a coalesce key per visit), so the
+/// document is unsaved at once and Undo takes the whole visit back.
+fn notes(
+    ui: &mut Ui,
+    st: &mut PrepareState,
+    snap: &Snapshot,
+    t: &Tokens,
+    actions: &mut Vec<Action>,
+) {
+    if section_toggle(ui, "Notes", st.notes_open, NOTES_HINT) {
+        st.notes_open = !st.notes_open;
+    }
+    if !st.notes_open {
+        return;
+    }
+    let doc_id = snap.doc_id;
+    super::settings::painted_label(ui, "Description");
+    let mut description = snap.description.clone();
+    let r = ui.add(
+        egui::TextEdit::singleline(&mut description)
+            .hint_text("What is this project?")
+            .desired_width(f32::INFINITY),
+    );
+    super::settings::set_name(ui, &r, "Project description");
+    super::groups::card(&r, "Description", DESCRIPTION_HINT, None, false);
+    if r.gained_focus() {
+        st.notes_burst += 1;
+    }
+    if r.changed() {
+        actions.push(Action::run(
+            doc_id,
+            "document.set_notes",
+            json!({
+                "description": description,
+                "coalesce_key": format!("description-{}", st.notes_burst),
+            }),
+        ));
+    }
+    ui.add_space(t.spacing / 2.0);
+    super::settings::painted_label(ui, "Notes");
+    let mut notes = snap.notes.clone();
+    let r = ui.add(
+        egui::TextEdit::multiline(&mut notes)
+            .hint_text("Which mat, which side up, a force that worked...")
+            .desired_rows(4)
+            .desired_width(f32::INFINITY),
+    );
+    super::settings::set_name(ui, &r, "Project notes");
+    super::groups::card(&r, "Notes", NOTES_FIELD_HINT, None, false);
+    if r.gained_focus() {
+        st.notes_burst += 1;
+    }
+    if r.changed() {
+        actions.push(Action::run(
+            doc_id,
+            "document.set_notes",
+            json!({
+                "notes": notes,
+                "coalesce_key": format!("notes-{}", st.notes_burst),
+            }),
+        ));
     }
 }
 

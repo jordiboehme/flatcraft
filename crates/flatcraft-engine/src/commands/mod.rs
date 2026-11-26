@@ -4,6 +4,7 @@ pub mod arrange;
 pub mod edit;
 pub mod export;
 pub mod job;
+pub mod notes;
 pub mod object;
 pub mod profiles;
 pub mod project;

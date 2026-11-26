@@ -69,7 +69,7 @@ impl SidePanel {
 
     fn what(self) -> &'static str {
         match self {
-            SidePanel::Objects => "the list of everything on the mat",
+            SidePanel::Objects => "the list of everything on the mat and the project's notes",
             SidePanel::Settings => {
                 "what is cut and how: cut mode, plotter, mat, material, speed and force"
             }
@@ -183,12 +183,15 @@ impl Panels {
 
 // ---------------------------------------------------------------- state dot
 
-/// How the job stands, for the dot of a right rail.
+/// How the job stands, for the dot of a right rail; on the left rail,
+/// that the project has notes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dot {
     Ready,
     Warning,
     Nothing,
+    /// The project has notes (the Objects rail).
+    Notes,
 }
 
 impl Dot {
@@ -198,6 +201,7 @@ impl Dot {
             Dot::Ready => "Ready to cut",
             Dot::Warning => "The job has warnings",
             Dot::Nothing => "Nothing to cut",
+            Dot::Notes => "Has notes",
         }
     }
 
@@ -206,6 +210,7 @@ impl Dot {
             Dot::Ready => t.ok,
             Dot::Warning => t.warn,
             Dot::Nothing => t.text_dim,
+            Dot::Notes => t.accent_prepare,
         }
     }
 }
@@ -277,7 +282,8 @@ fn count(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
-/// The Objects rail: "<n> objects", then the counts that are not zero.
+/// The Objects rail: "<n> objects", then the counts that are not zero,
+/// and a dot when the project has notes (a description alone is none).
 pub fn objects_summary(snap: &Snapshot) -> Summary {
     let mut parts = vec![count(snap.objects.len(), "object", "objects")];
     let selected = snap.selection.len();
@@ -292,7 +298,8 @@ pub fn objects_summary(snap: &Snapshot) -> Summary {
             parts.push(format!("{n} {what}"));
         }
     }
-    Summary { parts, dot: None }
+    let dot = (!snap.notes.trim().is_empty()).then_some(Dot::Notes);
+    Summary { parts, dot }
 }
 
 fn mode_word(m: CutMode) -> &'static str {

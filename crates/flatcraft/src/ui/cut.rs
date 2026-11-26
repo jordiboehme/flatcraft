@@ -97,6 +97,8 @@ pub struct CutState {
     /// The active plotter's transport.
     pub transport: Option<TransportSpec>,
     pub labels: LabelCache,
+    /// The project's notes above the send button are open.
+    pub notes_open: bool,
 }
 
 impl Default for CutState {
@@ -113,6 +115,7 @@ impl Default for CutState {
             nothing_to_cut: false,
             transport: None,
             labels: LabelCache::default(),
+            notes_open: true,
         }
     }
 }
@@ -420,6 +423,7 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
                 None => {}
             }
             ui.add_space(t.spacing);
+            send_notes(ui, &mut app.ui.cut, snap, &t);
             let label = send_label(snap);
             let hint = if ok {
                 "Punch it, Chewie."
@@ -443,6 +447,31 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
             }
         }
     }
+}
+
+/// The card of the Notes heading above the send button.
+pub const SEND_NOTES_HINT: &str = "The notes you keep with this project, right before you cut, so nothing is forgotten. Edit them in Prepare, under Objects.";
+
+/// The project's notes above the send button, under a "Notes" heading
+/// that folds them away. Nothing shows when the project has no notes.
+fn send_notes(ui: &mut Ui, st: &mut CutState, snap: &Snapshot, t: &Tokens) {
+    if snap.notes.trim().is_empty() {
+        return;
+    }
+    if super::objects::section_toggle(ui, "Notes", st.notes_open, SEND_NOTES_HINT) {
+        st.notes_open = !st.notes_open;
+    }
+    if st.notes_open {
+        egui::Frame::new()
+            .fill(t.accent_prepare.gamma_multiply(0.10))
+            .corner_radius(t.radius)
+            .inner_margin(t.spacing)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.add(egui::Label::new(snap.notes.trim_end()).wrap());
+            });
+    }
+    ui.add_space(t.spacing);
 }
 
 fn passes_text(job: &JobResult) -> String {
