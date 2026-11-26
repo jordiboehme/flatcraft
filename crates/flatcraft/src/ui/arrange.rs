@@ -9,6 +9,7 @@
 //! undo step); Cancel, the close button and Escape change nothing.
 
 use egui::{RichText, Ui};
+use flatcraft_core::document::ObjectId;
 use flatcraft_core::numexpr::{Field, Kind};
 use flatcraft_engine::commands::object::MAX_COPIES;
 use flatcraft_engine::placement;
@@ -302,31 +303,24 @@ struct PlanKey {
 
 impl PlanKey {
     fn of(snap: &Snapshot, spacing_mm: f64) -> Option<Self> {
-        // A top-level group packs as one item, as `arrange.auto` has it.
-        let tops = snap.tree.top_of_each();
-        let top = |id: u64| {
-            tops.get(&flatcraft_core::document::ObjectId(id))
-                .map_or(id, |t| t.0)
-        };
+        // What packs as one item, as `arrange.auto` has it.
+        let order: Vec<ObjectId> = snap.objects.iter().map(|o| ObjectId(o.id)).collect();
+        let picked: Vec<ObjectId> = snap.selection.iter().map(|i| ObjectId(*i)).collect();
+        let (keys, units) = placement::auto_keys(&snap.tree, &order, &picked);
         let leaves: Vec<(u64, placement::AutoObject<u64>)> = snap
             .objects
             .iter()
-            .map(|o| {
+            .zip(keys)
+            .map(|(o, key)| {
                 let item = placement::AutoObject {
                     key: o.id,
                     visible: o.visible,
                     bounds: o.arrange_bounds(),
                 };
-                (top(o.id), item)
+                (key.0, item)
             })
             .collect();
-        let mut chosen: Vec<u64> = Vec::new();
-        for id in &snap.selection {
-            let t = top(*id);
-            if !chosen.contains(&t) {
-                chosen.push(t);
-            }
-        }
+        let chosen: Vec<u64> = units.into_iter().map(|u| u.0).collect();
         Some(Self {
             objects: placement::auto_units(&leaves),
             chosen,
@@ -372,7 +366,17 @@ pub fn auto_arrange_what(snap: &Snapshot) -> String {
     if snap.selection.is_empty() {
         return "all objects".into();
     }
-    match snap.selected().filter(|o| o.visible).count() {
+    // A whole group counts as one object, as it packs as one.
+    let shown = snap
+        .units()
+        .into_iter()
+        .filter(|u| {
+            snap.leaves_of(*u)
+                .iter()
+                .any(|l| snap.object(*l).is_some_and(|o| o.visible))
+        })
+        .count();
+    match shown {
         1 => "1 selected object".into(),
         n => format!("{n} selected objects"),
     }

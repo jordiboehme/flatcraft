@@ -401,17 +401,19 @@ fn auto_arrange_packs_a_group_as_one_item() {
         "the group keeps its layout"
     );
     assert!(close(bb.y0, ba.y0));
-    // Picking one member packs its whole group.
+    // A member picked inside the group packs alone; the rest of the group
+    // stays exactly where it is.
+    let b_before = bounds(&mut s, b);
     let reply = run(
         &mut s,
         "arrange.auto",
         json!({ "ids": [a], "spacing_mm": 5.0 }),
     );
     assert!(
-        reply["placed"].as_array().unwrap().contains(&json!(g))
-            || reply["did_not_fit"].as_array().unwrap().contains(&json!(g)),
+        !reply["placed"].as_array().unwrap().contains(&json!(g)),
         "{reply}"
     );
+    assert_eq!(bounds(&mut s, b), b_before, "the rest of the group stays");
 }
 
 #[test]

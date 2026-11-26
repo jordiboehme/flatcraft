@@ -249,3 +249,111 @@ fn the_objects_panel_folds_a_group_open() {
     assert_eq!(hidden, 2);
     assert!(doc.group_node(ObjectId(g)).is_some());
 }
+
+/// Presses at `from`, moves to `to` in steps and lets go.
+fn drag(h: &mut AppHarness, from: Pos2, to: Pos2) {
+    h.hover_at(from);
+    h.run();
+    h.drag_at(from);
+    h.run();
+    for t in [0.25, 0.5, 0.75, 1.0] {
+        h.hover_at(from + (to - from) * t);
+        h.run();
+    }
+    h.drop_at(to);
+    h.run();
+    h.run();
+}
+
+#[test]
+fn a_frame_around_one_member_selects_its_whole_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, [a, b, _], _) = grouped(&dir);
+    let (mut h, v) = rig(&dir, s.clone());
+    // From empty mat below the first square, up over part of it.
+    drag(&mut h, at(&v, 10.0, 90.0), at(&v, 40.0, 40.0));
+    assert_eq!(selection(&s), vec![a, b]);
+}
+
+#[test]
+fn a_group_is_renamed_from_its_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _, g) = grouped(&dir);
+    let (mut h, _) = rig(&dir, s.clone());
+    let doc_id = s.lock().unwrap().doc().id();
+    app_mut(&mut h).ui.prepare.rename = Some(flatcraft::ui::prepare::RenameDialog {
+        doc_id,
+        id: g,
+        name: "Badge".into(),
+    });
+    h.run();
+    h.get_by_role_and_label(Role::Button, "Rename").click();
+    h.run();
+    let name = s
+        .lock()
+        .unwrap()
+        .doc()
+        .document
+        .group_node(ObjectId(g))
+        .unwrap()
+        .name
+        .clone();
+    assert_eq!(name, "Badge");
+}
+
+fn parent(s: &SharedSession, id: u64) -> Option<u64> {
+    s.lock()
+        .unwrap()
+        .doc()
+        .document
+        .get(ObjectId(id))
+        .and_then(|o| o.parent)
+        .map(|p| p.0)
+}
+
+#[test]
+fn rows_drag_into_and_out_of_a_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, [a, _, c], g) = grouped(&dir);
+    let (mut h, _) = rig(&dir, s.clone());
+    let row = |h: &AppHarness, label: &str| h.get_by_label(label).rect().center();
+    // The loose square onto the group's row: it joins the group.
+    let rows: Vec<Pos2> = h
+        .query_all_by_label("Hide square")
+        .map(|n| n.rect().center())
+        .collect();
+    assert_eq!(rows.len(), 1, "only the loose square has a row");
+    let loose = Pos2::new(rows[0].x - 120.0, rows[0].y);
+    let target = row(&h, "Group 1, group of 2 objects");
+    drag(&mut h, loose, target);
+    assert_eq!(parent(&s, c), Some(g));
+    // Open the group and drag a member below the list: it leaves.
+    h.get_by_role_and_label(Role::Button, "Open Group 1")
+        .click();
+    h.run();
+    let member = h
+        .query_all_by_label("Hide square")
+        .map(|n| n.rect().center())
+        .next()
+        .unwrap();
+    let from = Pos2::new(member.x - 120.0, member.y);
+    // The drop zone shows while dragging, under the last row.
+    h.hover_at(from);
+    h.run();
+    h.drag_at(from);
+    h.run();
+    h.hover_at(from + Vec2::new(0.0, 20.0));
+    h.run();
+    let zone = h
+        .get_by_label("Drop here to take it out of its group")
+        .rect()
+        .center();
+    for t in [0.5, 1.0] {
+        h.hover_at(from + (zone - from) * t);
+        h.run();
+    }
+    h.drop_at(zone);
+    h.run();
+    h.run();
+    assert_eq!(parent(&s, a), None);
+}

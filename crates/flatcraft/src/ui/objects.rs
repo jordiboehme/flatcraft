@@ -214,6 +214,9 @@ fn tree_rows(
     }
 }
 
+/// What the drop zone under the list says.
+const DROP_OUT: &str = "Drop here to take it out of its group";
+
 /// The room under the list: a row dropped there leaves its groups for
 /// the top level.
 fn top_level_drop(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec<Action>) {
@@ -224,6 +227,7 @@ fn top_level_drop(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec<Ac
         egui::vec2(ui.available_width(), ROW_HEIGHT),
         egui::Sense::hover(),
     );
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::accesskit::Role::Label, true, DROP_OUT));
     if resp.dnd_hover_payload::<RowDrag>().is_some() {
         ui.painter().rect_stroke(
             rect,
@@ -235,7 +239,7 @@ fn top_level_drop(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec<Ac
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
-        "Drop here to take it out of its group",
+        DROP_OUT,
         egui::TextStyle::Small.resolve(ui.style()),
         t.text_dim,
     );

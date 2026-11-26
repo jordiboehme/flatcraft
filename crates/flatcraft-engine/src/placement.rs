@@ -283,6 +283,34 @@ pub fn auto_arrange<K: Copy + Ord>(
     }
 }
 
+/// What each object packs as in Auto arrange, and the chosen items. With
+/// a choice, what is chosen packs as the selection has it (a whole group as
+/// one, a member picked inside a group alone, see `Tree::units`); every
+/// other object packs or stays with its top-level group. With no choice,
+/// each top-level group is one item. Returns the key of each of `leaves`
+/// and the chosen keys. The command and the window both use it.
+pub fn auto_keys(
+    tree: &flatcraft_core::nodes::Tree,
+    leaves: &[flatcraft_core::document::ObjectId],
+    chosen: &[flatcraft_core::document::ObjectId],
+) -> (
+    Vec<flatcraft_core::document::ObjectId>,
+    Vec<flatcraft_core::document::ObjectId>,
+) {
+    let units = tree.units(chosen);
+    let keys = leaves
+        .iter()
+        .map(|l| {
+            units
+                .iter()
+                .copied()
+                .find(|u| tree.within(*l, *u))
+                .unwrap_or_else(|| tree.top(*l))
+        })
+        .collect();
+    (keys, units)
+}
+
 /// The Auto arrange items of objects that may sit in groups: `leaves`
 /// are the objects in document order with the key of what they pack as
 /// (their top-level group, or themselves). A group packs as one item:

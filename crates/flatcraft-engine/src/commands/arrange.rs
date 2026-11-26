@@ -255,12 +255,15 @@ fn run_auto(s: &mut Session, p: AutoParams, _: Origin) -> Result<Value, CommandE
         resolve_ids(s, &p.ids)?
     };
     let doc = &mut s.doc_mut().document;
-    // A top-level group packs as one item (see `placement::auto_units`).
-    let tops = doc.tree().top_of_each();
+    // A whole group packs as one item, a member picked inside a group
+    // alone (see `placement::auto_keys` and `placement::auto_units`).
+    let order: Vec<ObjectId> = doc.objects.iter().map(|o| o.id).collect();
+    let (keys, chosen_units) = placement::auto_keys(&doc.tree(), &order, &chosen);
     let leaves: Vec<(ObjectId, placement::AutoObject<ObjectId>)> = doc
         .objects
         .iter()
-        .map(|o| {
+        .zip(keys)
+        .map(|(o, key)| {
             let item = placement::AutoObject {
                 key: o.id,
                 visible: o.visible,
@@ -268,17 +271,10 @@ fn run_auto(s: &mut Session, p: AutoParams, _: Origin) -> Result<Value, CommandE
                 // empty object without a frame) cannot be placed.
                 bounds: arrange_bounds(o),
             };
-            (tops.get(&o.id).copied().unwrap_or(o.id), item)
+            (key, item)
         })
         .collect();
     let objects = placement::auto_units(&leaves);
-    let mut chosen_units: Vec<ObjectId> = Vec::new();
-    for id in &chosen {
-        let top = tops.get(id).copied().unwrap_or(*id);
-        if !chosen_units.contains(&top) {
-            chosen_units.push(top);
-        }
-    }
     let plan = placement::auto_arrange(&objects, &chosen_units, area, p.spacing_mm);
     let mut did_not_fit = plan.did_not_fit;
     let mut placed = Vec::new();
@@ -305,7 +301,7 @@ command!(
     mutates: true,
     params: AutoParams,
     run: run_auto,
-    description: "Packs objects into the cutting area, keeping rotation and size, in one undo step. ids are the objects to pack; an empty list means the current selection, and with nothing selected every visible object. Hidden objects are never packed and never obstacles; hidden objects among the ones to pack stay where they are and are listed in hidden. A picture that is not traced yet counts by its image. A top-level group packs as one item with the common box of its visible members, and its members keep their places in it; picking one member packs its whole group, and the group's id is listed in the results. Every other visible object stays exactly where it is and is an obstacle: the packed objects fit around it, spacing_mm (default 5) away from it, and never overlap it. Packing works on bounding boxes: tallest first (equal heights in id order), each one at the free spot nearest the top of the cutting area, then nearest its left, with spacing_mm between packed objects. The same input always gives the same result. Objects that do not fit, or have nothing to place at all, keep their position and are listed in did_not_fit; they may overlap other objects. Origin the 0,0 of the grid printed on the mat, y down, units mm. Returns {placed: [id], did_not_fit: [id], fixed: [id] (the obstacles), hidden: [id]}.",
+    description: "Packs objects into the cutting area, keeping rotation and size, in one undo step. ids are the objects to pack; an empty list means the current selection, and with nothing selected every visible object. Hidden objects are never packed and never obstacles; hidden objects among the ones to pack stay where they are and are listed in hidden. A picture that is not traced yet counts by its image. A whole group packs as one item with the common box of its visible members, and its members keep their places in it; the group's id is listed in the results. Members picked inside a group (some, not all of it) pack on their own, and the rest of their group stays where it is as one obstacle. Groups that are not chosen are obstacles as a whole. Every other visible object stays exactly where it is and is an obstacle: the packed objects fit around it, spacing_mm (default 5) away from it, and never overlap it. Packing works on bounding boxes: tallest first (equal heights in id order), each one at the free spot nearest the top of the cutting area, then nearest its left, with spacing_mm between packed objects. The same input always gives the same result. Objects that do not fit, or have nothing to place at all, keep their position and are listed in did_not_fit; they may overlap other objects. Origin the 0,0 of the grid printed on the mat, y down, units mm. Returns {placed: [id], did_not_fit: [id], fixed: [id] (the obstacles), hidden: [id]}.",
 );
 
 #[cfg(test)]

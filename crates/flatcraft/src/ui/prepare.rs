@@ -1405,7 +1405,7 @@ pub const RENAME_CANCEL_HINT: &str = "Keep the old name.";
 pub const RENAME_NEEDS_NAME: &str = "Type a name first. An object needs a name you can find again.";
 
 /// The Rename dialog (the shared [`super::dialog`]). It closes when its
-/// document is no longer shown or its object is gone. Enter or Rename
+/// document is no longer shown or its object (or group) is gone. Enter or Rename
 /// sends `object.rename`; Escape, × and Cancel close it.
 fn rename_window(
     ctx: &egui::Context,
@@ -1417,7 +1417,8 @@ fn rename_window(
     let Some(d) = slot else {
         return;
     };
-    if d.doc_id != snap.doc_id || !snap.objects.iter().any(|o| o.id == d.id) {
+    // An object or a group.
+    if d.doc_id != snap.doc_id || snap.name_of(d.id).is_none() {
         *slot = None;
         return;
     }

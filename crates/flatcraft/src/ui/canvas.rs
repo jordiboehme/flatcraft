@@ -1676,9 +1676,12 @@ fn pointer(
                 } else {
                     Vec::new()
                 };
+                // A framed member brings its whole group, as a click does.
                 for id in framed(snap, kurbo::Rect::from_points(start, current)) {
-                    if !ids.contains(&id) {
-                        ids.push(id);
+                    for i in pick(snap, st, id, false).0 {
+                        if !ids.contains(&i) {
+                            ids.push(i);
+                        }
                     }
                 }
                 actions.push(Action::run(doc_id, "object.select", json!({ "ids": ids })));
