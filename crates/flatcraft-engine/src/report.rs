@@ -12,13 +12,14 @@
 //! a later tuning of the minimum feature size changes every check at once.
 
 use flatcraft_core::document::{CutMode, CutOptions, KeepMode, ObjectId};
-use flatcraft_core::geometry::CutPath;
 use flatcraft_import::ImportWarning;
-use kurbo::{Affine, BezPath, PathEl, Point, Rect, Shape};
+use kurbo::{BezPath, PathEl, Point, Rect, Shape};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::cutgeom::{self, CLOSE_TOLERANCE_MM};
+use std::sync::Arc;
+
+use crate::cutgeom::{self, CLOSE_TOLERANCE_MM, CutPiece, PieceFacts};
 use crate::job::{JobInput, JobObject};
 
 /// What an issue is about. The names are stable: agents match on them.
@@ -242,12 +243,28 @@ pub fn issues_json(issues: &[Issue]) -> Value {
 /// minimum feature size for this blade offset. Every size check of the
 /// report uses it.
 pub fn min_feature_mm(blade_offset_mm: f64) -> f64 {
-    let offset = if blade_offset_mm.is_finite() && blade_offset_mm > 0.0 {
+    flatcraft_import::trace::MIN_FEATURE_BLADE_OFFSETS * blade_offset(blade_offset_mm)
+}
+
+/// The narrowest filled shape the knife cuts, mm: half the blade offset.
+/// Both edges of a thinner strip lie inside the blade's own swing, so the
+/// cut cannot follow them; the cut geometry drops such slivers. Every
+/// width limit follows from the blade offset like this one and
+/// [`min_feature_mm`].
+pub fn min_width_mm(blade_offset_mm: f64) -> f64 {
+    MIN_WIDTH_BLADE_OFFSETS * blade_offset(blade_offset_mm)
+}
+
+/// [`min_width_mm`] in blade offsets.
+pub const MIN_WIDTH_BLADE_OFFSETS: f64 = 0.5;
+
+/// The blade offset, or the default 0.25 mm for a broken value.
+fn blade_offset(blade_offset_mm: f64) -> f64 {
+    if blade_offset_mm.is_finite() && blade_offset_mm > 0.0 {
         blade_offset_mm
     } else {
         0.25
-    };
-    flatcraft_import::trace::MIN_FEATURE_BLADE_OFFSETS * offset
+    }
 }
 
 /// An open outline whose ends are closer than this (and farther apart than
@@ -487,20 +504,17 @@ fn subs(path: &BezPath) -> Vec<Sub> {
     out
 }
 
-/// True if a source path gives nothing to cut although it has a shape: a
-/// fill without stroke whose area is empty or thinner than the tolerance.
-/// The job build counts the same paths for its warning.
-pub(crate) fn fill_without_area(p: &CutPath, cut: &[BezPath]) -> bool {
-    cut.is_empty() && p.paint.stroke.is_none() && !p.path.elements().is_empty()
-}
-
 /// Counts the open shapes that should be closed: open cut lines of a
 /// filled path with area (`filled`: all lines cuts it as drawn, object
 /// outlines would cut the edge of its fill), and open lines with a small
 /// gap between their ends. Returns (filled, gaps).
-fn open_count(cut: &[BezPath], filled: bool, gap_limit: f64) -> (usize, usize) {
+fn open_count<'a>(
+    cut: impl IntoIterator<Item = &'a BezPath>,
+    filled: bool,
+    gap_limit: f64,
+) -> (usize, usize) {
     let mut out = (0, 0);
-    for s in cut.iter().flat_map(subs).filter(|s| !s.closed) {
+    for s in cut.into_iter().flat_map(subs).filter(|s| !s.closed) {
         if filled {
             out.0 += 1;
         } else if s.gap < gap_limit && s.bounds.width().max(s.bounds.height()) > gap_limit {
@@ -510,36 +524,66 @@ fn open_count(cut: &[BezPath], filled: bool, gap_limit: f64) -> (usize, usize) {
     out
 }
 
-fn measure(
+/// The cut pieces of `o` cut with `options`, and what that cut left out:
+/// the input's shared cut geometry for the object's own options, a fresh
+/// cut for any other (what a fix would change it to).
+fn pieces_as(
+    input: &JobInput,
     o: &JobObject,
     options: &CutOptions,
-    affine: Affine,
-    tolerance: f64,
-    min_feature: f64,
-) -> Shapes {
+) -> (Arc<Vec<CutPiece>>, PieceFacts) {
+    if *options == o.cut {
+        let g = input.cut_geometry();
+        if let Some(p) = g.per_object.get(&o.id) {
+            return (p.clone(), g.facts(o.id));
+        }
+    }
+    let affine = o.transform.affine(o.local_bounds);
+    let (pieces, facts) = cutgeom::object_pieces(
+        &o.geometry,
+        options,
+        affine,
+        input.tolerance_mm(),
+        input.min_width_mm(),
+    );
+    (Arc::new(pieces), facts)
+}
+
+fn measure(input: &JobInput, o: &JobObject, options: &CutOptions, min_feature: f64) -> Shapes {
+    let affine = o.transform.affine(o.local_bounds);
+    let (pieces, facts) = pieces_as(input, o, options);
     let mut m = Shapes {
         hairline_widths: (f64::INFINITY, 0.0),
+        no_area: facts.no_area,
         ..Shapes::default()
     };
     let gap_limit = gap_limit_mm(min_feature);
-    let outlines = CutOptions {
-        mode: CutMode::ObjectOutlines,
-        ..*options
+    // In all lines, the source paths whose fill object outlines would cut.
+    let with_area: std::collections::BTreeSet<usize> = if options.mode == CutMode::AllLines {
+        let outlines = CutOptions {
+            mode: CutMode::ObjectOutlines,
+            ..*options
+        };
+        pieces_as(input, o, &outlines)
+            .0
+            .iter()
+            .filter_map(|p| p.source)
+            .collect()
+    } else {
+        Default::default()
     };
-    for p in o.geometry.iter() {
-        let cut = cutgeom::cut_path(p, options, affine, tolerance);
-        if fill_without_area(p, &cut) {
-            m.no_area += 1;
-        }
+    for (i, p) in o.geometry.iter().enumerate() {
+        let cut = pieces
+            .iter()
+            .filter(|c| c.source == Some(i))
+            .map(|c| &c.path);
         // A filled path cut as drawn should be closed only if its fill
         // has area: a filled straight line is a line.
-        let filled = options.mode == CutMode::AllLines
-            && p.paint.fill.is_some()
-            && !cutgeom::cut_path(p, &outlines, affine, tolerance).is_empty();
-        let (open, gaps) = open_count(&cut, filled, gap_limit);
+        let filled = p.paint.fill.is_some() && with_area.contains(&i);
+        let (open, gaps) = open_count(cut.clone(), filled, gap_limit);
         m.open += open + gaps;
         m.gaps += gaps;
-        for s in cut.iter().flat_map(subs) {
+        for s in cut.flat_map(subs) {
             m.total += 1;
             if s.closed {
                 let side = s.bounds.width().max(s.bounds.height());
@@ -556,6 +600,22 @@ fn measure(
             m.hairline += 1;
             m.hairline_widths.0 = m.hairline_widths.0.min(w);
             m.hairline_widths.1 = m.hairline_widths.1.max(w);
+        }
+    }
+    // Pieces of several source paths (welded outlines) count too.
+    for s in pieces
+        .iter()
+        .filter(|c| c.source.is_none())
+        .flat_map(|c| subs(&c.path))
+    {
+        m.total += 1;
+        if s.closed {
+            let side = s.bounds.width().max(s.bounds.height());
+            m.closed += 1;
+            m.smallest = Some(m.smallest.map_or(side, |a: f64| a.min(side)));
+            if side < min_feature {
+                m.small += 1;
+            }
         }
     }
     m
@@ -647,16 +707,7 @@ fn with_mode(o: &JobObject, mode: CutMode) -> CutOptions {
 }
 
 fn check_object(input: &JobInput, o: &JobObject, limits: &Limits) -> Report {
-    let affine = o.transform.affine(o.local_bounds);
-    let measure_as = |options: &CutOptions| {
-        measure(
-            o,
-            options,
-            affine,
-            limits.tolerance_mm,
-            limits.min_feature_mm,
-        )
-    };
+    let measure_as = |options: &CutOptions| measure(input, o, options, limits.min_feature_mm);
     let m = measure_as(&o.cut);
     let shared = members(input, o);
     let mut issues = Vec::new();
@@ -785,7 +836,7 @@ fn check_object(input: &JobInput, o: &JobObject, limits: &Limits) -> Report {
         issues.extend(area_issue(o, b, area, &shared));
     }
     if o.keep == KeepMode::Stencil && !input.material.backing {
-        let n = islands(o, affine, limits.tolerance_mm);
+        let n = islands(input.cut_geometry().pieces(o.id), limits.tolerance_mm);
         if n > 0 {
             issues.push(Issue {
                 code: Code::StencilIsland,
@@ -816,10 +867,10 @@ pub const STENCIL_ISLAND_HINT: &str = "The middle of letters like O, A and B fal
 /// rings: the counter of an O (inside the letter's outline), whose middle
 /// is an island in a stencil. Each ring is flattened and tested by one of
 /// its points against the rings whose box holds that point.
-fn islands(o: &JobObject, affine: Affine, tolerance: f64) -> usize {
+fn islands(pieces: &[CutPiece], tolerance: f64) -> usize {
     let mut rings: Vec<(Vec<Point>, Rect)> = Vec::new();
-    for p in o.geometry.iter() {
-        for cut in cutgeom::cut_path(p, &o.cut, affine, tolerance) {
+    {
+        for cut in pieces.iter().map(|p| &p.path) {
             let mut ring: Vec<Point> = Vec::new();
             let mut finish = |ring: &mut Vec<Point>, closed: bool| {
                 if closed && ring.len() > 2 {
@@ -924,12 +975,10 @@ fn fill_ignored(
     );
     let them = if n == 1 { "it" } else { "them" };
     let limits = Limits::of(input);
-    let affine = o.transform.affine(o.local_bounds);
     let as_lines = measure(
+        input,
         o,
         &with_mode(o, CutMode::AllLines),
-        affine,
-        tolerance,
         limits.min_feature_mm,
     );
     let lines_ok = as_lines.open == as_lines.gaps;
@@ -1222,7 +1271,6 @@ pub fn nothing_to_cut(input: &JobInput, facts: &BuildFacts, too_short: bool) -> 
             let Some(o) = input.objects.iter().find(|o| o.id == *id) else {
                 continue;
             };
-            let affine = o.transform.affine(o.local_bounds);
             let fix = object_bounds(o).and_then(|b| {
                 let side = b.width().max(b.height());
                 (side > 0.0)
@@ -1237,14 +1285,7 @@ pub fn nothing_to_cut(input: &JobInput, facts: &BuildFacts, too_short: bool) -> 
                     })
                     .flatten()
             });
-            let n = measure(
-                o,
-                &o.cut,
-                affine,
-                limits.tolerance_mm,
-                limits.min_feature_mm,
-            )
-            .total;
+            let n = measure(input, o, &o.cut, limits.min_feature_mm).total;
             out.push(Issue {
                 code: Code::TooSmall,
                 severity: Severity::Error,

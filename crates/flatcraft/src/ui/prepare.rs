@@ -1222,7 +1222,10 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
             auto_spacing_mm: s.prefs.auto_arrange_spacing_mm,
             trace_source_changed,
             job_input: want_job.then(|| match (&plotter, &material) {
-                (Some(p), Some(m)) => Ok(JobInput::from_parts(&st.document, p.clone(), m)),
+                // The document's cached cut geometry seeds the build,
+                // which runs outside the lock (`CutState::update`).
+                (Some(p), Some(m)) => Ok(JobInput::from_parts(&st.document, p.clone(), m)
+                    .with_seed(st.cached_cut_geometry())),
                 _ => JobInput::of(&s),
             }),
             output_pref: s.prefs.output_dir.clone(),

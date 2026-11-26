@@ -25,13 +25,20 @@
 //! the fill boolean too; for their simple outlines this only normalises
 //! direction and start point.
 
-use flatcraft_core::document::{CutMode, CutOptions, Object, StrokeMode};
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use flatcraft_core::document::{CutMode, CutOptions, Object, ObjectId, StrokeMode};
 use flatcraft_core::geometry::{Cap, CutPath, FillRule, Join, Paint};
+use flatcraft_core::transform::Transform;
 use i_overlay::core::fill_rule::FillRule as OverlayFill;
 use i_overlay::core::overlay_rule::OverlayRule;
 use i_overlay::core::solver::Solver;
 use i_overlay::float::overlay::{FloatOverlay, OverlayOptions};
 use kurbo::{Affine, BezPath, PathEl, Point, Rect, Shape, Stroke, StrokeOpts};
+
+use crate::job::{JobInput, JobObject};
+use flatcraft_core::document::Document;
 
 /// Smallest tolerance used for stroking and flattening, mm. Guards the
 /// stroker against a zero or broken profile value; the pipeline refuses
@@ -54,12 +61,226 @@ pub const BOUNDS_TOLERANCE_MM: f64 = 0.01;
 
 type Contour = Vec<[f64; 2]>;
 
+/// One cut path of an object, in mat mm: what the job, the export, the
+/// report and the window read. `source` is the index of the object's
+/// source path it came from (`None` for a path made of several source
+/// paths, such as a welded outline), `label` that path's label. Listing
+/// notes and labels come from here, never from a piece's index.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CutPiece {
+    pub source: Option<usize>,
+    pub label: Option<String>,
+    pub path: BezPath,
+}
+
+/// What an object's cut left out.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PieceFacts {
+    /// Filled source paths without stroke that give nothing to cut: no
+    /// area, or thinner than the cut tolerance. Paths left out only as
+    /// slivers are counted in `slivers` instead.
+    pub no_area: usize,
+    /// Filled shapes dropped as slivers (see [`fill_edges`]).
+    pub slivers: usize,
+}
+
+/// Everything an object's pieces depend on. The geometry `Arc` is held, so
+/// its address cannot be reused by other geometry while the key names it.
+#[derive(Debug, Clone)]
+struct PieceKey {
+    geometry: Arc<Vec<CutPath>>,
+    transform: Transform,
+    local_bounds: Rect,
+    cut: CutOptions,
+    name: String,
+}
+
+impl PieceKey {
+    fn of(o: &JobObject) -> Self {
+        Self {
+            geometry: o.geometry.clone(),
+            transform: o.transform,
+            local_bounds: o.local_bounds,
+            cut: o.cut,
+            name: o.name.clone(),
+        }
+    }
+
+    fn fits(&self, o: &JobObject) -> bool {
+        Arc::ptr_eq(&self.geometry, &o.geometry)
+            && self.transform == o.transform
+            && self.local_bounds == o.local_bounds
+            && self.cut == o.cut
+            && self.name == o.name
+    }
+}
+
+/// The cut geometry of a whole document: the pieces of every object
+/// (hidden and skipped ones too, which the report checks), what each cut
+/// left out, and the warnings about it in document order. Built by
+/// [`document_cut_geometry`] and cached per document
+/// (`DocState::cut_geometry`); the job, the export, the report and the
+/// window all read this one copy.
+#[derive(Debug, Clone, Default)]
+pub struct CutGeometry {
+    pub per_object: BTreeMap<ObjectId, Arc<Vec<CutPiece>>>,
+    pub facts: BTreeMap<ObjectId, PieceFacts>,
+    pub warnings: Vec<String>,
+    /// The flatten tolerance it was built with, mm.
+    pub tolerance_mm: f64,
+    /// The minimum feature width it was built with, mm.
+    pub min_width_mm: f64,
+    keys: BTreeMap<ObjectId, PieceKey>,
+    /// Object ids in document order.
+    order: Vec<ObjectId>,
+}
+
+impl CutGeometry {
+    /// The pieces of object `id` (empty for an unknown id).
+    pub fn pieces(&self, id: ObjectId) -> &[CutPiece] {
+        self.per_object.get(&id).map_or(&[], |p| p.as_slice())
+    }
+
+    /// What the cut of object `id` left out.
+    pub fn facts(&self, id: ObjectId) -> PieceFacts {
+        self.facts.get(&id).copied().unwrap_or_default()
+    }
+
+    /// True if this is the geometry of exactly `objects` (same ids in the
+    /// same order, each with the same geometry `Arc`, placement, cut
+    /// options and name) at this tolerance and width. Cheap: nothing is
+    /// walked but the list.
+    pub fn is_for(&self, objects: &[JobObject], tolerance_mm: f64, min_width_mm: f64) -> bool {
+        same_f64(self.tolerance_mm, tolerance_mm)
+            && same_f64(self.min_width_mm, min_width_mm)
+            && self.order.len() == objects.len()
+            && self
+                .order
+                .iter()
+                .zip(objects)
+                .all(|(id, o)| *id == o.id && self.keys.get(id).is_some_and(|k| k.fits(o)))
+    }
+}
+
+fn same_f64(a: f64, b: f64) -> bool {
+    a.to_bits() == b.to_bits()
+}
+
+/// The cut geometry of `doc` at the flatten tolerance `tol` and the
+/// minimum feature width `min_width_mm`: the document-level entry.
+pub fn document_cut_geometry(doc: &Document, tol: f64, min_width_mm: f64) -> CutGeometry {
+    let objects = JobInput::objects_of(doc);
+    (*objects_cut_geometry(&objects, tol, min_width_mm, None)).clone()
+}
+
+/// The cut geometry of `objects`. `previous` is an earlier build: when it
+/// is for exactly these objects it is returned as it is, else the pieces
+/// of every object it holds unchanged are taken over and only the others
+/// are cut again. So a stale `previous` costs nothing but time and can
+/// never give a wrong piece.
+pub fn objects_cut_geometry(
+    objects: &[JobObject],
+    tol: f64,
+    min_width_mm: f64,
+    previous: Option<&Arc<CutGeometry>>,
+) -> Arc<CutGeometry> {
+    if let Some(p) = previous
+        && p.is_for(objects, tol, min_width_mm)
+    {
+        return p.clone();
+    }
+    let reuse = previous
+        .filter(|p| same_f64(p.tolerance_mm, tol) && same_f64(p.min_width_mm, min_width_mm));
+    let mut out = CutGeometry {
+        tolerance_mm: tol,
+        min_width_mm,
+        ..CutGeometry::default()
+    };
+    for o in objects {
+        let kept = reuse.and_then(|p| {
+            let k = p.keys.get(&o.id).filter(|k| k.fits(o))?;
+            Some((k.clone(), p.per_object.get(&o.id)?.clone(), p.facts(o.id)))
+        });
+        let (key, pieces, facts) = match kept {
+            Some(k) => k,
+            None => {
+                #[cfg(test)]
+                tests::OBJECT_CUTS.with(|n| n.set(n.get() + 1));
+                let affine = o.transform.affine(o.local_bounds);
+                let (pieces, facts) = object_pieces(&o.geometry, &o.cut, affine, tol, min_width_mm);
+                (PieceKey::of(o), Arc::new(pieces), facts)
+            }
+        };
+        if facts.slivers > 0 {
+            out.warnings
+                .push(sliver_warning(&o.name, facts.slivers, min_width_mm));
+        }
+        out.order.push(o.id);
+        out.keys.insert(o.id, key);
+        out.per_object.insert(o.id, pieces);
+        out.facts.insert(o.id, facts);
+    }
+    Arc::new(out)
+}
+
+/// The warning about `n` filled slivers of the object `name` that are
+/// thinner than `width_mm` and not cut.
+pub fn sliver_warning(name: &str, n: usize, width_mm: f64) -> String {
+    let name: String = name
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let (what, verb) = if n == 1 {
+        ("1 filled sliver is".to_string(), "is")
+    } else {
+        (format!("{n} filled slivers are"), "are")
+    };
+    format!("'{name}': {what} thinner than {width_mm} mm and {verb} not cut.")
+}
+
+/// The pieces of one object's source paths placed with `affine`, and what
+/// the cut left out.
+pub fn object_pieces(
+    geometry: &[CutPath],
+    options: &CutOptions,
+    affine: Affine,
+    tol: f64,
+    min_width_mm: f64,
+) -> (Vec<CutPiece>, PieceFacts) {
+    let mut pieces = Vec::new();
+    let mut facts = PieceFacts::default();
+    for (i, p) in geometry.iter().enumerate() {
+        let (cut, slivers) = cut_path_counted(p, options, affine, tol, min_width_mm);
+        facts.slivers += slivers;
+        // A stroke-less fill that gives nothing, not even a sliver: no
+        // area, or thinner than the tolerance. It is not visible.
+        if cut.is_empty()
+            && slivers == 0
+            && p.paint.stroke.is_none()
+            && !p.path.elements().is_empty()
+        {
+            facts.no_area += 1;
+        }
+        pieces.extend(cut.into_iter().map(|path| CutPiece {
+            source: Some(i),
+            label: p.label.clone(),
+            path,
+        }));
+    }
+    (pieces, facts)
+}
+
 /// The cut paths of `object` placed with `placed_affine`, in mat mm.
-pub fn cut_paths(object: &Object, placed_affine: Affine, tolerance_mm: f64) -> Vec<BezPath> {
+pub fn cut_paths(
+    object: &Object,
+    placed_affine: Affine,
+    tolerance_mm: f64,
+    min_width_mm: f64,
+) -> Vec<BezPath> {
     object
         .geometry
         .iter()
-        .flat_map(|p| cut_path(p, &object.cut, placed_affine, tolerance_mm))
+        .flat_map(|p| cut_path(p, &object.cut, placed_affine, tolerance_mm, min_width_mm))
         .collect()
 }
 
@@ -127,17 +348,41 @@ pub fn cut_path(
     options: &CutOptions,
     placed_affine: Affine,
     tolerance_mm: f64,
+    min_width_mm: f64,
 ) -> Vec<BezPath> {
+    cut_path_counted(path, options, placed_affine, tolerance_mm, min_width_mm).0
+}
+
+/// [`cut_path`], and how many filled slivers it dropped.
+pub fn cut_path_counted(
+    path: &CutPath,
+    options: &CutOptions,
+    placed_affine: Affine,
+    tolerance_mm: f64,
+    min_width_mm: f64,
+) -> (Vec<BezPath>, usize) {
     let placed = placed_affine * &path.path;
     match options.mode {
-        CutMode::AllLines => vec![placed],
+        CutMode::AllLines => (vec![placed], 0),
         CutMode::ObjectOutlines => {
             let tolerance = if tolerance_mm.is_finite() {
                 tolerance_mm.max(MIN_TOLERANCE_MM)
             } else {
                 MIN_TOLERANCE_MM
             };
-            object_outlines(placed, path.paint, options, placed_affine, tolerance)
+            let min_width = if min_width_mm.is_finite() {
+                min_width_mm.max(0.0)
+            } else {
+                0.0
+            };
+            object_outlines(
+                placed,
+                path.paint,
+                options,
+                placed_affine,
+                tolerance,
+                min_width,
+            )
         }
     }
 }
@@ -178,23 +423,24 @@ fn object_outlines(
     options: &CutOptions,
     affine: Affine,
     tolerance: f64,
-) -> Vec<BezPath> {
+    min_width: f64,
+) -> (Vec<BezPath>, usize) {
     if !is_finite(&placed) {
         // Booleans need finite coordinates; the pipeline refuses the rest.
-        return vec![placed];
+        return (vec![placed], 0);
     }
     let style = outline_style(paint, options, affine);
     let shapes = match (paint.fill, style) {
         // Stroke-only paths with a centre-line stroke and unpainted paths:
         // the path itself.
-        (None, None) => return vec![placed],
+        (None, None) => return (vec![placed], 0),
         // A fill with no stroke or a centre-line stroke.
         (Some(rule), None) => {
             let stroke_width = paint
                 .stroke
                 .map(|s| placed_width(s.width_mm, affine))
                 .filter(|w| w.is_finite());
-            return fill_edges(&placed, fill_rule(rule), stroke_width, tolerance);
+            return fill_edges(&placed, fill_rule(rule), stroke_width, tolerance, min_width);
         }
         (fill, Some(style)) => {
             let closed = close_meeting_ends(&placed);
@@ -222,12 +468,13 @@ fn object_outlines(
             }
         }
     };
-    shapes
+    let rings = shapes
         .iter()
         .flatten()
         .filter(|c| c.len() >= 3)
         .map(|c| ring(c))
-        .collect()
+        .collect();
+    (rings, 0)
 }
 
 /// The cut paths of a fill with no stroke (`stroke_width` is `None`) or
@@ -268,7 +515,9 @@ fn fill_edges(
     rule: OverlayFill,
     stroke_width: Option<f64>,
     tolerance: f64,
-) -> Vec<BezPath> {
+    min_width: f64,
+) -> (Vec<BezPath>, usize) {
+    let _ = min_width;
     let mut fill: Vec<Contour> = Vec::new();
     let mut lines: Vec<BezPath> = Vec::new();
     // The fill of the last subpath that is not a line: the result if it
@@ -314,7 +563,7 @@ fn fill_edges(
         .map(|c| ring(c))
         .collect();
     out.extend(lines);
-    out
+    (out, 0)
 }
 
 /// One rectangle per flattened segment of `path`, `half` to each side, all
@@ -855,6 +1104,8 @@ pub(crate) mod tests {
     thread_local! {
         /// How often `cut_bounds` ran on this thread.
         pub(crate) static CUT_BOUNDS_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        /// How often an object was cut (not taken over) on this thread.
+        pub(crate) static OBJECT_CUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
 
     use super::*;

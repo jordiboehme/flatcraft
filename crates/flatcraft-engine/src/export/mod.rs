@@ -3,7 +3,7 @@
 //! DXF or PDF.
 //!
 //! The geometry is the cut's own (one source of truth): the objects'
-//! cut paths placed by [`crate::job::place_object`] (tracing, scale,
+//! cut pieces placed by [`crate::job::place_pieces`] (tracing, scale,
 //! rotation, mirror and the cut options applied), then flattened, joined
 //! and cleaned by [`flatcraft_path::shape_lines`] with the plotter's
 //! flatten tolerance, exactly as the cut plan reads them. The weed box and
@@ -173,6 +173,7 @@ pub fn collect(
     // The cut leaves out what is shorter than half a plotter step.
     let min_cut = 0.5 / input.plotter.units_per_mm;
     let wanted = |o: &&JobObject| ids.is_none_or(|ids| ids.contains(&o.id));
+    let cut = input.cut_geometry();
     let mut objects = Vec::new();
     let mut design = Vec::new();
     let (mut hidden, mut skipped) = (0, 0);
@@ -186,7 +187,7 @@ pub fn collect(
             continue;
         }
         let mut placed = Vec::new();
-        crate::job::place_object(o, tolerance, &mut placed);
+        crate::job::place_pieces(o.id, cut.pieces(o.id), &mut placed);
         let shapes: Vec<ExportShape> = placed
             .iter()
             .flat_map(|p| {

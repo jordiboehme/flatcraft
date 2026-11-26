@@ -69,7 +69,12 @@ fn object(path: BezPath, paint: Paint, cut: CutOptions) -> Object {
 }
 
 fn cut(o: &Object) -> Vec<BezPath> {
-    cut_paths(o, o.transform.affine(o.local_bounds), TOL)
+    cut_paths(
+        o,
+        o.transform.affine(o.local_bounds),
+        TOL,
+        flatcraft_engine::report::min_width_mm(0.25),
+    )
 }
 
 /// Every subpath of `paths` as its own path, with whether it is closed.

@@ -2135,6 +2135,11 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
                 app.ui.prepare.report = None;
             }
         }
+        // The cut geometry built above (outside the lock) goes back into
+        // the document's cache, so the engine and the window share it.
+        if let Some(Ok(input)) = &snap.job_input {
+            lock(&app.session).offer_cut_geometry(snap.doc_id, snap.doc_rev, input);
+        }
     }
     // The speed joke ends once its clamped value is no longer the speed
     // (reset, undo, an agent, another plotter, material or document). This

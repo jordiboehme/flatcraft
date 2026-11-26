@@ -227,6 +227,7 @@ fn forged_plan_with_axis_under_firmware_is_refused() {
     let e = job::emit_plan(
         &plan,
         &input.objects,
+        &input.cut_geometry(),
         &input.plotter,
         &media_id(&s),
         &settings(&result),
@@ -237,6 +238,7 @@ fn forged_plan_with_axis_under_firmware_is_refused() {
     job::emit_plan(
         &result.plan,
         &input.objects,
+        &input.cut_geometry(),
         &input.plotter,
         &media_id(&s),
         &settings(&result),
@@ -256,6 +258,7 @@ fn host_plan_missing_axis_is_refused() {
     let e = job::emit_plan(
         &plan,
         &input.objects,
+        &input.cut_geometry(),
         &input.plotter,
         &media_id(&s),
         &settings(&result),

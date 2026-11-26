@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 
 use crate::commands::profile_error;
 use crate::commands::project::{in_config, lexical, resolve_strict, resolved};
-use crate::cutgeom;
+use crate::cutgeom::{self, CutGeometry, CutPiece, PieceFacts};
 use crate::cutlog;
 use crate::gate::{self, GateDecision};
 use crate::report::{self, BuildFacts, Issue};
@@ -294,26 +294,22 @@ fn emit_error(e: EmitError) -> CommandError {
 /// The refusal of a plan whose axis runs do not fit its own compensation.
 pub const PLAN_MISMATCH: &str = "internal: compensation mismatch in the plan";
 
-/// The names of a job's objects and the labels of their paths, for the
-/// listing notes.
+/// The names of a job's objects and the source index and label of every
+/// cut piece, for the listing notes. A toolpath's `path_index` is the index
+/// of its piece in the object's [`CutPiece`] list; the note names the
+/// piece's source path.
 struct NoteNames<'a> {
     names: std::collections::BTreeMap<ObjectId, &'a str>,
-    labels: std::collections::BTreeMap<(ObjectId, usize), &'a str>,
+    pieces: std::collections::BTreeMap<ObjectId, Arc<Vec<CutPiece>>>,
 }
 
 impl<'a> NoteNames<'a> {
-    fn of(objects: &'a [JobObject]) -> Self {
-        let mut names = std::collections::BTreeMap::new();
-        let mut labels = std::collections::BTreeMap::new();
-        for o in objects {
-            names.insert(o.id, o.name.as_str());
-            for (i, p) in o.geometry.iter().enumerate() {
-                if let Some(label) = &p.label {
-                    labels.insert((o.id, i), label.as_str());
-                }
-            }
+    fn of(objects: &'a [JobObject], cut: &CutGeometry) -> Self {
+        let names = objects.iter().map(|o| (o.id, o.name.as_str())).collect();
+        Self {
+            names,
+            pieces: cut.per_object.clone(),
         }
-        Self { names, labels }
     }
 
     /// The listing note of toolpath `t`, without a run number.
@@ -324,8 +320,15 @@ impl<'a> NoteNames<'a> {
             ToolpathKind::Cut => {
                 let id = t.source.object;
                 let name = self.names.get(&id).copied().unwrap_or("");
-                let label = self.labels.get(&(id, t.source.path_index)).copied();
-                note(id, name, t.source.path_index, label, t.pass, t.laps)
+                let piece = self
+                    .pieces
+                    .get(&id)
+                    .and_then(|p| p.get(t.source.path_index));
+                // A piece of several source paths has no one index: it is
+                // named by its own.
+                let path = piece.and_then(|p| p.source).unwrap_or(t.source.path_index);
+                let label = piece.and_then(|p| p.label.as_deref());
+                note(id, name, path, label, t.pass, t.laps)
             }
         }
     }
@@ -339,8 +342,8 @@ fn run_count(t: &Toolpath) -> usize {
 /// The paths a plan sends: one per blade-down run, the alignment stroke
 /// included, each with its listing note. A toolpath of several runs gets
 /// ` run {k}` (from 1) on each note.
-fn emit_paths(plan: &CutPlan, objects: &[JobObject]) -> Vec<EmitPath> {
-    let names = NoteNames::of(objects);
+fn emit_paths(plan: &CutPlan, objects: &[JobObject], cut: &CutGeometry) -> Vec<EmitPath> {
+    let names = NoteNames::of(objects, cut);
     plan.toolpaths
         .iter()
         .flat_map(|t| {
@@ -366,11 +369,12 @@ fn emit_paths(plan: &CutPlan, objects: &[JobObject]) -> Vec<EmitPath> {
 /// claim of the caller, and every toolpath must carry axis runs exactly
 /// when that compensation is host compensation: a plan that does not is
 /// refused before anything is emitted. The emitter then refuses geometry
-/// that does not fit the plotter's knife compensation. `objects` name the
-/// toolpaths in the listing.
+/// that does not fit the plotter's knife compensation. `objects` and the
+/// pieces of `cut` name the toolpaths in the listing.
 pub fn emit_plan(
     plan: &CutPlan,
     objects: &[JobObject],
+    cut: &CutGeometry,
     plotter: &PlotterProfile,
     media_id: &str,
     settings: &CutSettings,
@@ -386,7 +390,7 @@ pub fn emit_plan(
         return Err(CommandError::Failed(PLAN_MISMATCH.into()));
     }
     emit_job(
-        &emit_paths(plan, objects),
+        &emit_paths(plan, objects, cut),
         geometry_kind(plan.compensation),
         plotter,
         media_id,
@@ -472,11 +476,74 @@ pub struct JobInput {
     pub plotter: PlotterProfile,
     /// The material with the plotter's overrides applied.
     pub material: MaterialProfile,
+    /// The cut geometry of `objects` (see [`JobInput::cut_geometry`]).
+    pub cut: CutSeed,
+}
+
+/// The cut geometry of a [`JobInput`]: a cached build to start from (the
+/// document's, see `DocState::cut_geometry`), and the geometry once it was
+/// asked for. Two seeds are always equal: the geometry follows from the
+/// input's objects and profiles, and a seed only saves time (a stale seed
+/// is checked object by object and never gives a wrong piece). So a new
+/// seed never makes a window build its plan again.
+#[derive(Debug, Clone, Default)]
+pub struct CutSeed {
+    seed: Option<Arc<CutGeometry>>,
+    resolved: std::sync::OnceLock<Arc<CutGeometry>>,
+}
+
+impl CutSeed {
+    /// A seed that starts from `seed`.
+    pub fn new(seed: Option<Arc<CutGeometry>>) -> Self {
+        Self {
+            seed,
+            resolved: std::sync::OnceLock::new(),
+        }
+    }
+}
+
+impl PartialEq for CutSeed {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 impl JobInput {
+    /// The flatten tolerance of the cut geometry, mm.
+    pub fn tolerance_mm(&self) -> f64 {
+        self.plotter.flatten_tolerance_mm
+    }
+
+    /// The minimum feature width of the cut geometry, mm (see
+    /// [`report::min_width_mm`]).
+    pub fn min_width_mm(&self) -> f64 {
+        report::min_width_mm(self.plotter.blade_offset_mm)
+    }
+
+    /// The cut geometry of the objects: built once per input, from the
+    /// seed where it still fits. Every reader of the input (the build, the
+    /// export, the report) shares it.
+    pub fn cut_geometry(&self) -> Arc<CutGeometry> {
+        self.cut
+            .resolved
+            .get_or_init(|| {
+                cutgeom::objects_cut_geometry(
+                    &self.objects,
+                    self.tolerance_mm(),
+                    self.min_width_mm(),
+                    self.cut.seed.as_ref(),
+                )
+            })
+            .clone()
+    }
+
+    /// The cut geometry if it was built (or taken from the seed) already.
+    pub fn built_cut_geometry(&self) -> Option<Arc<CutGeometry>> {
+        self.cut.resolved.get().cloned()
+    }
+
     /// The objects of `doc` as the build reads them.
-    fn objects_of(doc: &Document) -> Vec<JobObject> {
+    pub(crate) fn objects_of(doc: &Document) -> Vec<JobObject> {
         let tops = doc.tree().top_of_each();
         doc.objects
             .iter()
@@ -516,7 +583,8 @@ impl JobInput {
             .collect()
     }
 
-    /// The active document's objects, job settings and profiles.
+    /// The active document's objects, job settings and profiles, with
+    /// the document's cut geometry (`Session::cut_geometry`).
     pub fn of(session: &Session) -> Result<Self, CommandError> {
         let doc = &session.doc().document;
         let job = &doc.job;
@@ -528,7 +596,10 @@ impl JobInput {
             .profiles
             .material(&job.material_id)
             .map_err(profile_error)?;
-        Ok(Self::from_parts(doc, plotter, &material))
+        let input = Self::from_parts(doc, plotter, &material);
+        let cut = session.cut_geometry_of(&input);
+        let _ = input.cut.resolved.set(cut);
+        Ok(input)
     }
 
     /// The input of `doc` with profiles the caller already resolved: the
@@ -544,7 +615,15 @@ impl JobInput {
             job: doc.job.clone(),
             plotter,
             material,
+            cut: CutSeed::default(),
         }
+    }
+
+    /// The input with the cut geometry `seed` to start from (a window
+    /// passes the document's cached one, see `DocState::cached_cut_geometry`).
+    pub fn with_seed(mut self, seed: Option<Arc<CutGeometry>>) -> Self {
+        self.cut = CutSeed::new(seed);
+        self
     }
 }
 
@@ -621,7 +700,9 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         job,
         plotter,
         material,
+        ..
     } = input;
+    let cut = input.cut_geometry();
     let (media, mat_warning) = crate::commands::effective_media(plotter, job)?;
     let media_id = media.id.clone();
     let area = plotter
@@ -659,7 +740,11 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
             continue;
         }
         let before = placed.len();
-        let no_area = place_object(o, plotter.flatten_tolerance_mm, &mut placed);
+        place_pieces(o.id, cut.pieces(o.id), &mut placed);
+        let PieceFacts { no_area, slivers } = cut.facts(o.id);
+        if slivers > 0 {
+            warnings.push(cutgeom::sliver_warning(&o.name, slivers, cut.min_width_mm));
+        }
         if no_area > 0 {
             let what = if no_area == 1 {
                 "1 filled path has no area or is thinner than the cut tolerance".to_string()
@@ -808,7 +893,7 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         force: job.force.unwrap_or(material.force),
         track_enhancing: material.track_enhancing && plotter.capabilities.track_enhancing,
     };
-    let emitted = emit_plan(&cut_plan, objects, plotter, &media_id, &settings)?;
+    let emitted = emit_plan(&cut_plan, objects, &cut, plotter, &media_id, &settings)?;
     let not_cut = paths_not_cut(&cut_plan, &emitted.collapsed);
     if not_cut > 0 {
         warnings.push(collapsed_warning(not_cut));
@@ -841,37 +926,19 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
     })
 }
 
-/// The cut paths of one object, placed on the mat in app millimetres (the
-/// grid's 0,0, y down), per its cut options: what the cut and the export
-/// both start from. One source path may give several cut paths (stroke
-/// outline rings); they all keep the source path's index. Labels of source
-/// paths are read by the listing notes from the geometry itself. Returns
-/// how many filled paths have no area (they give nothing to cut).
-pub(crate) fn place_object(
-    o: &JobObject,
-    tolerance_mm: f64,
-    placed: &mut Vec<PlacedPath>,
-) -> usize {
-    let affine = o.transform.affine(o.local_bounds);
-    let mut no_area = 0;
-    for (i, p) in o.geometry.iter().enumerate() {
-        let cut = cutgeom::cut_path(p, &o.cut, affine, tolerance_mm);
-        if report::fill_without_area(p, &cut) {
-            // A stroke-less fill without area, or thinner than the
-            // tolerance, is not visible and gives nothing to cut.
-            no_area += 1;
-        }
-        for path in cut {
-            placed.push(PlacedPath {
-                path,
-                source: PathRef {
-                    object: o.id,
-                    path_index: i,
-                },
-            });
-        }
+/// Places the cut pieces of object `id` (in mat millimetres, the grid's
+/// 0,0, y down; see [`CutGeometry`]): what the cut and the export both
+/// start from. A placed path's `path_index` is the index of its piece.
+pub(crate) fn place_pieces(id: ObjectId, pieces: &[CutPiece], placed: &mut Vec<PlacedPath>) {
+    for (i, p) in pieces.iter().enumerate() {
+        placed.push(PlacedPath {
+            path: p.path.clone(),
+            source: PathRef {
+                object: id,
+                path_index: i,
+            },
+        });
     }
-    no_area
 }
 
 /// "the only cut path is" or "all {n} cut paths are".

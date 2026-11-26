@@ -21,6 +21,7 @@ use flatcraft_device::{ByteLog, ProfileStore, TransportSpec};
 use kurbo::Rect;
 use thiserror::Error;
 
+use crate::cutgeom::CutGeometry;
 use crate::prefs::Preferences;
 use crate::registry;
 
@@ -129,6 +130,23 @@ pub struct DocState {
     bounds_cache: HashMap<ObjectId, BoundsEntry>,
     /// The burst of coalescing moves whose undo step is the newest one.
     burst: Option<Burst>,
+    /// The cut geometry last built for this document, with its key (see
+    /// [`DocState::cut_geometry`]). Behind a lock so a reader that holds
+    /// the session only for reading can fill it.
+    cut_cache: Mutex<Option<(CacheKey, Arc<CutGeometry>)>>,
+}
+
+/// What a document's cached cut geometry was built for: the document's
+/// revision, the profiles' revision, the plotter and material, and the
+/// flatten tolerance and minimum feature width taken from them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CacheKey {
+    pub doc_revision: u64,
+    pub profiles_revision: u64,
+    pub plotter_id: String,
+    pub material_id: String,
+    pub tol: f64,
+    pub min_width_mm: f64,
 }
 
 /// A run of `object.move` calls with one `coalesce_key` that share one
@@ -200,6 +218,7 @@ impl Clone for DocState {
             revision: self.revision,
             bounds_cache: self.bounds_cache.clone(),
             burst: self.burst.clone(),
+            cut_cache: Mutex::new(self.cut_cache_entry()),
         }
     }
 }
@@ -224,7 +243,82 @@ impl DocState {
             revision: 0,
             bounds_cache: HashMap::new(),
             burst: None,
+            cut_cache: Mutex::default(),
         }
+    }
+
+    /// Replaces the document (undo, redo, a restored state) and notes the
+    /// change, so everything keyed on the revision is built again.
+    pub fn set_document(&mut self, document: Document) {
+        self.document = document;
+        self.touch();
+    }
+
+    /// Puts back the document a failed command started from. The revision
+    /// stays: the document is the one it names again. The cut geometry
+    /// cache cannot go stale by this, since it is checked object by object
+    /// (see [`DocState::cut_geometry`]).
+    pub(crate) fn restore_document(&mut self, document: Document) {
+        self.document = document;
+    }
+
+    fn cut_cache_entry(&self) -> Option<(CacheKey, Arc<CutGeometry>)> {
+        self.cut_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The cut geometry for `key`: the cached one when it was built for
+    /// this key and still fits the document's objects, else `build`, which
+    /// gets the cached one to take unchanged objects from (C2: the cache is
+    /// keyed, never cleared by a flag, so undo, redo and profile edits
+    /// cannot leave it stale). The object check also covers a command that
+    /// reads the geometry half way, before its change raised the revision.
+    pub fn cut_geometry(
+        &self,
+        key: CacheKey,
+        build: impl FnOnce(Option<&Arc<CutGeometry>>) -> Arc<CutGeometry>,
+    ) -> Arc<CutGeometry> {
+        let objects = crate::job::JobInput::objects_of(&self.document);
+        let mut cache = self
+            .cut_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((k, g)) = cache.as_ref()
+            && *k == key
+            && g.is_for(&objects, key.tol, key.min_width_mm)
+        {
+            return g.clone();
+        }
+        let built = build(cache.as_ref().map(|(_, g)| g));
+        *cache = Some((key, built.clone()));
+        built
+    }
+
+    /// The cached cut geometry, whatever it was built for: a seed for a
+    /// build outside the session lock (see `JobInput::with_seed`).
+    pub fn cached_cut_geometry(&self) -> Option<Arc<CutGeometry>> {
+        self.cut_cache_entry().map(|(_, g)| g)
+    }
+
+    /// The key of the cached cut geometry, if any.
+    pub fn cut_cache_key(&self) -> Option<CacheKey> {
+        self.cut_cache_entry().map(|(k, _)| k)
+    }
+
+    /// Stores cut geometry built outside the session lock, but only if the
+    /// document is still at the revision of `key`: work done on an older
+    /// state is never stored.
+    pub fn store_cut_geometry(&self, key: CacheKey, geometry: Arc<CutGeometry>) -> bool {
+        if key.doc_revision != self.revision {
+            return false;
+        }
+        *self
+            .cut_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((key, geometry));
+        true
     }
 
     /// Counts changes of the document. Commands that change it, undo, redo
@@ -540,6 +634,63 @@ impl Session {
 
     pub fn doc_mut(&mut self) -> &mut DocState {
         &mut self.docs[self.active]
+    }
+
+    /// The cut geometry of the active document for its plotter and
+    /// material, from the document's cache when it still fits. The job
+    /// build, the preview, the export, the report and the window all read
+    /// this one copy.
+    pub fn cut_geometry(&self) -> Result<Arc<CutGeometry>, CommandError> {
+        Ok(crate::job::JobInput::of(self)?.cut_geometry())
+    }
+
+    /// The key of the cut geometry of `input`, taken from the open
+    /// document `st`.
+    fn cut_key(&self, st: &DocState, input: &crate::job::JobInput) -> CacheKey {
+        CacheKey {
+            doc_revision: st.revision(),
+            profiles_revision: self.profiles.revision(),
+            plotter_id: input.plotter.id.clone(),
+            material_id: input.material.id.clone(),
+            tol: input.tolerance_mm(),
+            min_width_mm: input.min_width_mm(),
+        }
+    }
+
+    /// The cut geometry of `input`, an input of the active document, from
+    /// and into the document's cache.
+    pub(crate) fn cut_geometry_of(&self, input: &crate::job::JobInput) -> Arc<CutGeometry> {
+        let st = self.doc();
+        let key = self.cut_key(st, input);
+        let (tol, min_width) = (key.tol, key.min_width_mm);
+        st.cut_geometry(key, |prev| {
+            crate::cutgeom::objects_cut_geometry(&input.objects, tol, min_width, prev)
+        })
+    }
+
+    /// Stores the cut geometry a window built outside the session lock
+    /// from `input`, an input of the open document `doc_id` taken at
+    /// `doc_revision`. Nothing is stored when the document changed since,
+    /// is closed, or the geometry was not built. Returns true if stored.
+    pub fn offer_cut_geometry(
+        &self,
+        doc_id: u64,
+        doc_revision: u64,
+        input: &crate::job::JobInput,
+    ) -> bool {
+        let (Ok(index), Some(geometry)) = (self.doc_index(doc_id), input.built_cut_geometry())
+        else {
+            return false;
+        };
+        let st = &self.docs[index];
+        if st.revision() != doc_revision
+            || st
+                .cached_cut_geometry()
+                .is_some_and(|g| Arc::ptr_eq(&g, &geometry))
+        {
+            return false;
+        }
+        st.store_cut_geometry(self.cut_key(st, input), geometry)
     }
 
     /// Index of the open document with this stable id.
@@ -909,7 +1060,7 @@ impl Session {
             // A panic: the command may have stopped half way. Put the
             // document back, if it is still open.
             if let Some(state) = self.docs.iter_mut().find(|d| d.id() == doc_id) {
-                state.document = before;
+                state.restore_document(before);
                 state.prune_selection();
             }
             return Err(internal_error(command.id()));
@@ -925,9 +1076,9 @@ impl Session {
             if !self.links_agree() {
                 for d in &mut self.docs {
                     if d.id() == doc_id {
-                        d.document = before.clone();
+                        d.restore_document(before.clone());
                     } else if let Some((_, doc)) = others.iter().find(|(id, _)| *id == d.id()) {
-                        d.document = doc.clone();
+                        d.restore_document(doc.clone());
                     }
                     d.prune_selection();
                 }
@@ -959,7 +1110,7 @@ impl Session {
             {
                 // project.open would refuse this placement, so it could
                 // never be saved and reopened.
-                state.document = before;
+                state.restore_document(before);
                 state.prune_selection();
                 Err(CommandError::Refused(TOO_LARGE.into()))
             }
@@ -1019,7 +1170,7 @@ impl Session {
                 Ok(value)
             }
             Err(e) => {
-                state.document = before;
+                state.restore_document(before);
                 state.prune_selection();
                 Err(e)
             }
@@ -1072,12 +1223,11 @@ impl Session {
             let st = match current.iter().position(|c| c.id == d.id) {
                 Some(i) => {
                     let mut st = current.swap_remove(i);
-                    st.document = d.document;
+                    st.set_document(d.document);
                     st.selection = d.selection;
                     st.undo = d.undo;
                     st.path = d.path;
                     st.dirty = d.dirty;
-                    st.touch();
                     st
                 }
                 None => DocState {
@@ -1093,6 +1243,7 @@ impl Session {
                     revision: d.revision + 1,
                     bounds_cache: HashMap::new(),
                     burst: None,
+                    cut_cache: Mutex::default(),
                 },
             };
             self.docs.push(st);
