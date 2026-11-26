@@ -99,6 +99,8 @@ pub enum Cmd {
     ToggleCut,
     /// Hide, or Show.
     ToggleHide,
+    /// "Pick what stays...": the keep picker on the selection.
+    PickKeep,
     Rename,
     Reconnect,
     RevealSource,
@@ -132,6 +134,7 @@ impl Cmd {
             Cmd::Unlink => "unlink",
             Cmd::ToggleCut => "toggle-cut",
             Cmd::ToggleHide => "toggle-hide",
+            Cmd::PickKeep => "pick-keep",
             Cmd::Rename => "rename",
             Cmd::Reconnect => "reconnect",
             Cmd::RevealSource => "reveal-source",
@@ -187,6 +190,7 @@ impl Cmd {
             Cmd::Unlink,
             Cmd::ToggleCut,
             Cmd::ToggleHide,
+            Cmd::PickKeep,
             Cmd::Rename,
             Cmd::Reconnect,
             Cmd::RevealSource,
@@ -354,6 +358,7 @@ pub fn object_item(cmd: &Cmd, snap: &Snapshot, st: &PrepareState, ids: &[u64]) -
         Cmd::CopySourcePath => Obj::CopySourcePath,
         Cmd::ToggleHide => hide_item(snap, ids),
         Cmd::ToggleCut => cut_item(snap, ids),
+        Cmd::PickKeep => Obj::PickKeep,
         _ => return None,
     };
     let offered = context_menu::items(snap, st, ids)
@@ -755,6 +760,12 @@ fn object_menu(inp: &MenuInput) -> Sub {
         Entry::Separator,
         item(Cmd::ToggleCut, skip.label(), on(Cmd::ToggleCut), None),
         item(Cmd::ToggleHide, hide.label(), on(Cmd::ToggleHide), None),
+        item(
+            Cmd::PickKeep,
+            Obj::PickKeep.label(),
+            on(Cmd::PickKeep),
+            None,
+        ),
         item(Cmd::Rename, Obj::Rename.label(), on(Cmd::Rename), None),
         Entry::Separator,
         tool_item("trace", inp),

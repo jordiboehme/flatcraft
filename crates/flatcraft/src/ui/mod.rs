@@ -694,6 +694,7 @@ impl FlatCraftApp {
             | Cmd::Unlink
             | Cmd::ToggleCut
             | Cmd::ToggleHide
+            | Cmd::PickKeep
             | Cmd::Rename
             | Cmd::Reconnect
             | Cmd::RevealSource

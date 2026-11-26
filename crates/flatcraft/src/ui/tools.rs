@@ -742,7 +742,7 @@ pub const TOOLS: [Tool; 41] = [
 /// the one accent part that tells what happens, in the accent colour.
 /// Every other child is ink. Every icon of an action, a group or a
 /// switch has an entry; the framed Align icons use their base icon's.
-pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 48] = [
+pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 49] = [
     (Icon::Import, &[2], &[0, 1]),
     (Icon::Trace, &[], &[2]),
     (Icon::TestPatterns, &[0], &[1]),
@@ -795,6 +795,9 @@ pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 48] = [
     // The Cut bar's stages: the blade, and the two cuts around the travel.
     (Icon::Plotter, &[], &[2]),
     (Icon::RouteTravel, &[], &[0, 2]),
+    // The keep picker: the glass tube is paper, the drop at its tip the
+    // accent (the part you pick).
+    (Icon::Pipette, &[0], &[2]),
 ];
 
 /// The paper and accent children of `icon` (see [`ICON_ROLES`]); `None`
@@ -1454,7 +1457,7 @@ impl Setting {
                 "Blade offset: the tip of a drag blade trails behind the centre of the holder by this much. FlatCraft steers around corners to make up for it."
             }
             Setting::Keep => {
-                "What you keep after cutting, so the blade starts and turns only in the waste, the part you throw away. Pieces keeps the cut shapes, like stickers you peel off the sheet. Stencil keeps the sheet with the holes, like a stencil you paint through: the shapes fall out. Both keeps both sides: the blade never starts or overshoots next to these cuts, it only turns on the spot. A stencil with a cut frame around it uses Pieces: Stencil is for shapes cut out of a sheet that stays. Where objects meet, kept wins. Turn on Show kept and waste in View to see it on the mat. Not sure? The pipette button next to it lets you click the part that stays, right on the mat."
+                "What you keep after cutting, so the blade starts and turns only in the waste, the part you throw away. Pieces keeps the cut shapes, like stickers you peel off the sheet. Stencil keeps the sheet with the holes, like a stencil you paint through: the shapes fall out. Both keeps both sides: the shapes and the sheet around them, like a puzzle you cut but take apart later. The blade never starts or overshoots there, it only turns on the spot. The sheet is shared, so other objects on it keep both sides too. A stencil with a cut frame around it uses Pieces: Stencil is for shapes cut out of a sheet that stays. Where objects meet, kept wins. Turn on Show kept and waste in View to see it on the mat. Not sure? The pipette button next to it lets you click the part that stays, right on the mat."
             }
             Setting::Threshold => {
                 "Tracing turns the picture into black and white first. Pixels darker than this become cut shapes."

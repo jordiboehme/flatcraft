@@ -585,3 +585,35 @@ fn the_button_is_dimmed_with_a_reason_and_the_cards_say_what_it_does() {
     assert!(card.contains("pipette") && card.contains("click the part that stays"));
     assert_eq!(Item::PickKeep.description(), keep_pick::HINT);
 }
+
+#[test]
+fn the_menu_bar_offers_the_picker_with_the_same_rules() {
+    use flatcraft::ui::menu_model::{Cmd, object_item};
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let o = letter_o(&s, 20.0);
+    run(&s, "object.select", json!({ "ids": [] }));
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    wait_for_workers(&mut h);
+    let ctx = h.ctx.clone();
+    let offered = |h: &mut AppHarness, ids: &[u64]| {
+        let snap = flatcraft::ui::prepare::snapshot(app_mut(h), &ctx);
+        object_item(&Cmd::PickKeep, &snap, &app(h).ui.prepare, ids)
+    };
+    assert_eq!(offered(&mut h, &[]), None, "nothing selected");
+    assert_eq!(offered(&mut h, &[o]), Some(Item::PickKeep));
+    run(&s, "object.set_cut", json!({ "ids": [o], "cut": false }));
+    h.run();
+    assert_eq!(offered(&mut h, &[o]), None, "skipped");
+    // A click on the menu item starts picking on the selection.
+    run(&s, "object.set_cut", json!({ "ids": [o], "cut": true }));
+    run(&s, "object.select", json!({ "ids": [o] }));
+    h.run();
+    let doc = s.lock().unwrap().doc().id();
+    let action = Cmd::PickKeep.action(doc, &[]).unwrap();
+    app_mut(&mut h).apply(&ctx, vec![action]);
+    wait_for_masks(&mut h);
+    let ids: Vec<u64> = pick(&h).ids.iter().copied().collect();
+    assert_eq!(ids, vec![o]);
+}

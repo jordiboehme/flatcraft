@@ -151,6 +151,7 @@ fn the_menus_and_their_items_come_in_order() {
             "-",
             "Skip cutting",
             "Hide",
+            "Pick what stays...",
             "Rename",
             "-",
             "Trace...",
@@ -1041,7 +1042,12 @@ fn effects(f: &Fixture) -> String {
     format!(
         "{doc} {docs} {requests} {revealed} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {commands}",
         a.ui.workspace,
-        (p.rename.is_some(), p.panel.is_some(), p.fit_pending),
+        (
+            p.rename.is_some(),
+            p.panel.is_some(),
+            p.fit_pending,
+            p.keep_pick.is_some()
+        ),
         (
             p.show_grid,
             p.show_rulers,
