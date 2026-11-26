@@ -496,3 +496,22 @@ fn the_sheet_shows_calculations_and_its_examples_are_right() {
         assert!((v - want).abs() < 0.01, "{typed}: {v} vs {what}");
     }
 }
+
+/// Every item of the app bar's Help menu has a hover card that says what
+/// it does (the native macOS menu cannot show cards).
+#[test]
+fn every_help_item_has_a_hover_card() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(&dir, session(&dir), false);
+    for item in HelpItem::ALL {
+        assert!(!item.hint().is_empty(), "{item:?}");
+        assert!(!item.hint().contains('\u{2014}'), "{item:?}");
+        h.get_by_role_and_label(Role::Button, "Help").click();
+        h.run();
+        h.get_by_label(item.label()).hover();
+        h.run();
+        h.get_by_label(item.hint());
+        h.key_press(Key::Escape);
+        h.run();
+    }
+}

@@ -293,3 +293,81 @@ fn no_em_dash_in_the_helper_texts() {
         assert!(!text.contains('\u{2014}'), "{text}");
     }
 }
+
+#[test]
+fn mirror_for_iron_on_comes_first_and_a_second_click_does_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    s.lock()
+        .unwrap()
+        .execute(
+            "job.set_material",
+            json!({ "id": "heat-transfer-vinyl" }),
+            Origin::User,
+        )
+        .unwrap();
+    let mut h = harness_sized(&dir, s.clone(), [1400.0, 1200.0], 8, |a| a);
+    open_from_send(&mut h);
+    pick(&mut h, Symptom::WrongPlaceOrSize);
+    h.get_by_label("1. Mirror for iron-on");
+    let before = undo_len(&s);
+    h.get_by_role_and_label(Role::Button, "Mirror for iron-on")
+        .click();
+    h.run();
+    assert_eq!(undo_len(&s), before + 1);
+    assert!(
+        s.lock()
+            .unwrap()
+            .doc()
+            .document
+            .objects
+            .iter()
+            .all(|o| o.transform.mirror)
+    );
+    // Now it is dimmed and says why; the list order is back to normal.
+    let b = h.get_by_role_and_label(Role::Button, "Mirror for iron-on");
+    assert!(b.accesskit_node().is_disabled());
+    h.get_by_label("1. Size");
+    assert_eq!(undo_len(&s), before + 1);
+}
+
+#[test]
+fn cut_only_the_test_shape_from_the_helper() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let square = import_square(&s);
+    s.lock()
+        .unwrap()
+        .execute("tools.test_shape", json!({}), Origin::User)
+        .unwrap();
+    let mut h = harness_sized(&dir, s.clone(), [1400.0, 1200.0], 8, |a| a);
+    open_from_send(&mut h);
+    pick(&mut h, Symptom::NotThrough);
+    let before = undo_len(&s);
+    h.get_by_role_and_label(Role::Button, "Cut only the test shape")
+        .scroll_to_me();
+    h.run();
+    h.get_by_role_and_label(Role::Button, "Cut only the test shape")
+        .click();
+    h.run();
+    assert_eq!(undo_len(&s), before + 1);
+    let doc = s.lock().unwrap().doc().document.clone();
+    for o in &doc.objects {
+        assert_eq!(o.cut_enabled, o.id.0 != square, "{}", o.name);
+    }
+    // Undo turns the design back on.
+    h.get_by_role_and_label(Role::Button, "Close").click();
+    h.run();
+    h.get_by_role_and_label(Role::Button, "Undo").click();
+    h.run();
+    assert!(
+        s.lock()
+            .unwrap()
+            .doc()
+            .document
+            .objects
+            .iter()
+            .all(|o| o.cut_enabled)
+    );
+}

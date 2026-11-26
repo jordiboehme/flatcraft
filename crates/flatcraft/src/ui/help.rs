@@ -46,6 +46,28 @@ impl HelpItem {
         }
     }
 
+    /// What the item does, for its hover card in the app bar's Help menu.
+    pub fn hint(self) -> &'static str {
+        match self {
+            HelpItem::UserGuide => {
+                "Opens the FlatCraft guide (the read-me on GitHub) in your browser."
+            }
+            HelpItem::Shortcuts => {
+                "Shows every keyboard shortcut and mouse trick, with the keys of this computer."
+            }
+            HelpItem::Troubleshoot => super::troubleshoot::OPEN_HINT,
+            HelpItem::ReportProblem => {
+                "Opens the bug form on GitHub in your browser, with the FlatCraft version and your system filled in. Say what you did and what went wrong."
+            }
+            HelpItem::AskPlotter => {
+                "Opens a form on GitHub in your browser to ask for support of your cutting plotter. Name the maker and model."
+            }
+            HelpItem::About => {
+                "Shows the FlatCraft version and build, the credits and the licences of the parts it is built from."
+            }
+        }
+    }
+
     pub fn action(self) -> Action {
         match self {
             HelpItem::UserGuide => Action::OpenUrl(GUIDE_URL.to_string()),
@@ -101,15 +123,7 @@ pub fn bug_url() -> String {
 pub fn menu(ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     for item in HelpItem::ALL {
         let r = ui.button(item.label());
-        if item == HelpItem::Troubleshoot {
-            super::groups::card(
-                &r,
-                super::troubleshoot::TITLE,
-                super::troubleshoot::OPEN_HINT,
-                None,
-                true,
-            );
-        }
+        super::groups::card(&r, item.label(), item.hint(), None, true);
         if r.clicked() {
             actions.push(item.action());
         }

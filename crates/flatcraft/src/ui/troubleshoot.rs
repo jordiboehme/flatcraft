@@ -230,7 +230,13 @@ fn item_row(
 /// What a dimmed button would do, under the reason it cannot.
 fn blocked_card(check: Check) -> String {
     match check {
-        Check::TestShape => "Adds a small test shape on a free spot of the mat.".into(),
+        Check::TestShape => {
+            "Adds a small test shape on a free spot of the mat, or sets everything else to Skip cutting so only the test shape is cut.".into()
+        }
+        Check::Mirror => "Mirrors the design left and right for iron-on vinyl.".into(),
+        Check::CutOrder => {
+            "Sets this document's strategy to Keep sheet, so every outline is cut last.".into()
+        }
         Check::LastGood => {
             "Sets this job's speed, force and passes to those of your last good cut.".into()
         }
