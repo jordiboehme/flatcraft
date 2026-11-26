@@ -1739,6 +1739,10 @@ fn run_mirror(s: &mut Session, p: MirrorParams, _: Origin) -> Result<Value, Comm
             "follow needs mirrored (true or false)".into(),
         ));
     }
+    // follow is checked like ids, whatever happens next.
+    for raw in &p.follow {
+        check_exists(&s.doc().document, ObjectId(*raw))?;
+    }
     if let Some(want) = p.mirrored {
         let doc = &s.doc().document;
         ids.retain(|id| doc.get(*id).is_some_and(|o| o.transform.mirror != want));

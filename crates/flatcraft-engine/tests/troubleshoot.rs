@@ -1220,3 +1220,109 @@ fn only_the_test_shape_cut_reads_the_same_either_way() {
     assert_eq!(it.message, troubleshoot::ONLY_TEST_SHAPE);
     assert!(!it.likely && it.fixes.is_empty(), "{it:?}");
 }
+
+#[test]
+fn a_skipped_object_off_the_mat_blocks_the_flip_and_show_me_finds_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = square_at(&mut s, "a", 20.0, 10.0, 10.0);
+    let off = square_at(&mut s, "off", 20.0, 50.0, 10.0);
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [off], "x_mm": -15.0, "y_mm": 10.0 }),
+    );
+    run(
+        &mut s,
+        "object.set_cut",
+        json!({ "ids": [off], "cut": false }),
+    );
+    run(
+        &mut s,
+        "job.set_material",
+        json!({ "id": "heat-transfer-vinyl" }),
+    );
+    let c = list(&mut s, Symptom::WrongPlaceOrSize);
+    let it = item(&c, Check::Mirror);
+    assert!(it.likely && it.fixes.is_empty(), "{it:?}");
+    assert_eq!(
+        blocked_reason(&c, Check::Mirror, "Mirror for iron-on"),
+        troubleshoot::OFF_MAT_MIRROR
+    );
+    assert_eq!(it.object_ids, [off], "Show me points at the object to move");
+    let _ = a;
+}
+
+#[test]
+fn follow_ids_must_exist_whatever_the_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = square_at(&mut s, "a", 20.0, 10.0, 10.0);
+    run(
+        &mut s,
+        "object.mirror",
+        json!({ "ids": [a], "axis": "horizontal" }),
+    );
+    // Nothing would flip (a is mirrored already), yet an unknown follow id
+    // is refused.
+    for params in [
+        json!({ "ids": [a], "follow": [999], "axis": "horizontal", "mirrored": true }),
+        json!({ "ids": [a], "follow": [999], "axis": "horizontal", "mirrored": false }),
+    ] {
+        assert!(
+            matches!(
+                s.execute("object.mirror", params.clone(), Origin::Agent),
+                Err(CommandError::NotFound(_)) | Err(CommandError::InvalidParams(_))
+            ),
+            "{params}"
+        );
+    }
+    assert!(
+        s.doc().document.objects[0].transform.mirror,
+        "nothing changed"
+    );
+}
+
+#[test]
+fn the_mirror_fix_card_names_only_what_is_there() {
+    let card = |skip: bool, shape: bool| {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = session(&dir);
+        square_at(&mut s, "a", 20.0, 10.0, 10.0);
+        let b = square_at(&mut s, "b", 20.0, 50.0, 10.0);
+        if skip {
+            run(
+                &mut s,
+                "object.set_cut",
+                json!({ "ids": [b], "cut": false }),
+            );
+        }
+        if shape {
+            run(&mut s, "tools.test_shape", json!({}));
+        }
+        run(
+            &mut s,
+            "job.set_material",
+            json!({ "id": "heat-transfer-vinyl" }),
+        );
+        let c = list(&mut s, Symptom::WrongPlaceOrSize);
+        item(&c, Check::Mirror).fixes[0].description.clone()
+    };
+    let plain = card(false, false);
+    assert!(
+        plain.starts_with("Mirrors the whole layout (2 objects) left"),
+        "{plain}"
+    );
+    let skipped = card(true, false);
+    assert!(
+        skipped.contains("(2 objects, skipped ones too)"),
+        "{skipped}"
+    );
+    let shape = card(false, true);
+    assert!(shape.contains("(3 objects, the test shape too)"), "{shape}");
+    let both = card(true, true);
+    assert!(
+        both.contains("(3 objects, skipped ones and the test shape too)"),
+        "{both}"
+    );
+}

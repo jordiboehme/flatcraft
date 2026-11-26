@@ -266,6 +266,10 @@ pub const MIXED_MIRROR_PLAIN: &str = "Some objects are mirrored and some are not
 pub const ONLY_TEST_SHAPE: &str =
     "Only the test shape is set to cut, and it reads the same either way.";
 
+/// Why the mirror fix waits while part of the layout is off the mat.
+pub const OFF_MAT_MIRROR: &str =
+    "Part of the design is outside the cutting area. Move it onto the mat in Prepare first.";
+
 /// The lead line of every checklist.
 pub const LEAD: &str = "Work from the top: the first things are the most likely. Change one thing at a time, then cut a test shape.";
 
@@ -928,14 +932,28 @@ fn mirror(input: &JobInput) -> Item {
     let sheet = design_ids.len() + follow.len();
     // The group mirrors in place (its box stays), so the result is inside
     // the cutting area exactly when the objects are now.
-    let off_area = cutting_area(input).is_some_and(|area| {
-        design
-            .iter()
-            .chain(&shapes)
-            .filter_map(|o| report::object_bounds(o))
-            .reduce(|a, b| a.union(b))
-            .is_some_and(|b| !crate::commands::inside(b, area))
-    });
+    let off_ids: Vec<u64> = cutting_area(input)
+        .map(|area| {
+            design
+                .iter()
+                .chain(&shapes)
+                .filter(|o| {
+                    report::object_bounds(o).is_some_and(|b| !crate::commands::inside(b, area))
+                })
+                .map(|o| o.id.0)
+                .collect()
+        })
+        .unwrap_or_default();
+    let off_area = !off_ids.is_empty();
+    // What the whole layout holds besides the cut design, for the fix's
+    // card: only what is there.
+    let skipped = design.iter().filter(|o| !o.cut_enabled).count();
+    let extra = match (skipped > 0, !follow.is_empty()) {
+        (true, true) => ", skipped ones and the test shape too",
+        (true, false) => ", skipped ones too",
+        (false, true) => ", the test shape too",
+        (false, false) => "",
+    };
     let mixed = !none_mirrored && !all_mirrored;
     let only_shape = n == 0 && shapes.iter().any(|o| o.cut_enabled);
     if only_shape {
@@ -951,15 +969,12 @@ fn mirror(input: &JobInput) -> Item {
         it.message.push_str(hint);
         it.blocked.push(blocked(shown, hint.into()));
     } else if likely && off_area {
-        it.blocked.push(blocked(
-            shown,
-            "Part of the design is outside the cutting area. Move it onto the mat first (the Cut workspace shows a Move onto the mat button).".into(),
-        ));
+        it.blocked.push(blocked(shown, OFF_MAT_MIRROR.into()));
     } else if likely && hot {
         it.fixes.push(Fix {
             label: label.into(),
             description: format!(
-                "Mirrors the whole layout ({}, skipped ones and the test shape too) left and right as one group, in place, so the design reads right once it is ironed on. A second click changes nothing. Undo takes it back.",
+                "Mirrors the whole layout ({}{extra}) left and right as one group, in place, so the design reads right once it is ironed on. A second click changes nothing. Undo takes it back.",
                 objects(sheet)
             ),
             command: "object.mirror".into(),
@@ -969,7 +984,7 @@ fn mirror(input: &JobInput) -> Item {
         it.fixes.push(Fix {
             label: back.into(),
             description: format!(
-                "Mirrors the whole layout ({}, skipped ones and the test shape too) back as one group, in place, so the design reads right on {}. A second click changes nothing. Undo takes it back.",
+                "Mirrors the whole layout ({}{extra}) back as one group, in place, so the design reads right on {}. A second click changes nothing. Undo takes it back.",
                 objects(sheet),
                 input.material.name
             ),
@@ -993,7 +1008,12 @@ fn mirror(input: &JobInput) -> Item {
             ),
         ));
     }
-    it.object_ids = ids;
+    // Off the mat: Show me points at what has to move.
+    it.object_ids = if likely && off_area && !mixed {
+        off_ids
+    } else {
+        ids
+    };
     it
 }
 
