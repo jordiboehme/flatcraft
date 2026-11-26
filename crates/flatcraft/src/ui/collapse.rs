@@ -31,12 +31,13 @@
 //! | 5    | Transform | Icons |
 //! | 6    | Position and size | Icons |
 //! | 7, 8 | Edit, Add | Icons |
-//! | 9..11 | Transform, Edit, Add | Tile |
+//! | 9..11 | Edit, Transform, Add | Tile |
 //!
 //! So the group that is the least used folds first (Arrange's one-click
-//! helpers are also on the context menu and the keys), Transform with its
-//! Each object switch stays on the bar longest, and a group at the left
-//! keeps its labels longest. The View tab folds like [`steps`].
+//! helpers are also on the context menu and the keys, Edit's Duplicate
+//! and Delete have keys), Transform with its Each object switch stays on
+//! the bar longest, and a group at the left keeps its labels longest. The
+//! View tab folds like [`steps`].
 //!
 //! The widths are measured from what was drawn, never guessed, and a
 //! tile's width comes from the function that sizes the tile: a level that

@@ -387,12 +387,14 @@ pub fn compact_switch(
 
 /// Size of the icons of small buttons; two rows of them fit [`BIG_HEIGHT`].
 const SMALL_ICON: f32 = 16.0;
+/// The padding of a small button around its icon.
+const SMALL_PADDING: egui::Vec2 = egui::vec2(3.0, 2.0);
 
 /// A small icon button for a pinned direction. Its accessible name is
 /// `name`.
 fn small_button(ui: &mut Ui, icon: Icon, name: &str, enabled: bool) -> Response {
     ui.scope(|ui| {
-        ui.spacing_mut().button_padding = egui::vec2(3.0, 2.0);
+        ui.spacing_mut().button_padding = SMALL_PADDING;
         ui.add_enabled(
             enabled,
             egui::Button::image(image(ui, icon, SMALL_ICON).alt_text(name)),
@@ -632,8 +634,13 @@ fn pinned_buttons(ui: &mut Ui, mode: Mode, pins: &[&'static Tool], cx: &mut Cx) 
     }
     let rows = if small.len() > 3 { 2 } else { 1 };
     let per_row = small.len().div_ceil(rows);
+    // The rows sit in the middle of the row of pins, like the big buttons.
+    const GAP: f32 = 4.0;
+    let row_height = SMALL_ICON + 2.0 * SMALL_PADDING.y;
+    let height = rows as f32 * row_height + (rows - 1) as f32 * GAP;
     ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = 4.0;
+        ui.spacing_mut().item_spacing.y = GAP;
+        ui.add_space(((BIG_HEIGHT - height) / 2.0).max(0.0));
         for chunk in small.chunks(per_row) {
             ui.horizontal(|ui| {
                 for t in chunk {
@@ -670,9 +677,9 @@ fn heading(ui: &mut Ui, section: Section, st: &mut PrepareState) {
 const COLUMN: f32 = 270.0;
 
 /// The rows of a group's list. Each row runs its action; hovering it shows
-/// its card beside the list and its pin toggle. Align and Distribute go
-/// into a second column, so a long list fits a small window; a list taller
-/// than the window scrolls.
+/// its card beside the list and its pin toggle. Align and Distribute get a
+/// column of their own and the other rows a second one, so a long list
+/// fits a small window; a list taller than the window scrolls.
 pub fn list(ui: &mut Ui, group: GroupId, cx: &mut Cx) {
     let to = AlignTo::of(cx.st.fields.align_to_area);
     // Rows with an option show the ones of the option picked above.
@@ -680,9 +687,14 @@ pub fn list(ui: &mut Ui, group: GroupId, cx: &mut Cx) {
         .tools()
         .filter(|t| t.option().is_none_or(|o| o == to))
         .collect();
-    let second = |t: &Tool| matches!(t.section, Some(Section::Align | Section::Distribute));
-    let left: Vec<&'static Tool> = rows.iter().copied().filter(|t| !second(t)).collect();
-    let right: Vec<&'static Tool> = rows.iter().copied().filter(|t| second(t)).collect();
+    // Align and Distribute, the longest sections, take a column of their
+    // own, first as in the table; the other rows go into the second.
+    let lines_up = |t: &Tool| matches!(t.section, Some(Section::Align | Section::Distribute));
+    let (mut left, mut right): (Vec<&'static Tool>, Vec<&'static Tool>) =
+        rows.iter().copied().partition(|t| lines_up(t));
+    if left.is_empty() {
+        std::mem::swap(&mut left, &mut right);
+    }
     let room = ui.ctx().content_rect().bottom() - ui.next_widget_position().y - 48.0;
     egui::ScrollArea::vertical()
         .max_height(room.max(120.0))

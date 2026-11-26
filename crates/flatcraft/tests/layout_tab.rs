@@ -144,7 +144,8 @@ fn each_action_is_in_its_group_in_order() {
 fn the_layout_fold_order_is_the_table() {
     // Linked files goes first, then Arrange (one-click helpers, also on
     // the context menu and the keys), so Transform, the fields and the
-    // labels of Edit and Add stay longest.
+    // labels of Edit and Add stay longest. Edit (Duplicate and Delete
+    // have keys) becomes a tile before Transform.
     let names: Vec<&str> = tools::groups_of(RibbonTab::Layout)
         .map(|g| g.title)
         .collect();
@@ -163,8 +164,8 @@ fn the_layout_fold_order_is_the_table() {
             "Position and size Icons",
             "Edit Icons",
             "Add Icons",
-            "Transform Collapsed",
             "Edit Collapsed",
+            "Transform Collapsed",
             "Add Collapsed",
         ]
     );

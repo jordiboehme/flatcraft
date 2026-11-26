@@ -309,3 +309,24 @@ fn the_position_and_size_group_has_three_columns_and_a_lock() {
         }
     }
 }
+
+#[test]
+fn small_pins_sit_in_the_middle_of_the_row_of_pins() {
+    // One row (Arrange's Group pin, a new install) and two rows
+    // (Transform's quarter turns and mirrors): both are centred like the
+    // big buttons beside them.
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let b = import_square(&s);
+    select_all(&s, &[a, b]);
+    let h = rig(&dir, s, 1920.0);
+    let l = layout(&h);
+    let mid = l.tools.top() + BIG_HEIGHT / 2.0;
+    let group = node_rect(&h, Role::Button, "Group");
+    assert!((group.center().y - mid).abs() <= 1.0, "{group:?} vs {mid}");
+    let top = node_rect(&h, Role::Button, "Rotate -90");
+    let bottom = node_rect(&h, Role::Button, "Mirror horizontally");
+    let block = (top.top() + bottom.bottom()) / 2.0;
+    assert!((block - mid).abs() <= 1.0, "{top:?} {bottom:?} vs {mid}");
+}

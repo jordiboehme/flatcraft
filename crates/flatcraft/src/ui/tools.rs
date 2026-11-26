@@ -70,7 +70,7 @@ pub const GROUPS: [GroupDef; 9] = [
         title: "Edit",
         icon: Icon::Pencil,
         description: "Copy or remove what you selected: one copy, many copies, or copies in rows or around a centre. Undo takes back any step.",
-        fold: fold(7, Some(10)),
+        fold: fold(7, Some(9)),
     },
     GroupDef {
         id: GroupId::Size,
@@ -86,7 +86,7 @@ pub const GROUPS: [GroupDef; 9] = [
         title: "Transform",
         icon: Icon::Transform,
         description: "Move, turn and flip the selection by exact amounts. Each object decides whether every object turns and flips about its own centre or the selection moves as one piece. Pin the ones you use most to the ribbon.",
-        fold: fold(5, Some(9)),
+        fold: fold(5, Some(10)),
     },
     GroupDef {
         id: GroupId::Arrange,
