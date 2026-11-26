@@ -174,7 +174,7 @@ pub fn check_safe(bytes: &[u8]) -> Result<(), SafetyError> {
 ///
 /// ```compile_fail
 /// use flatcraft_device::gpgl::{CheckedJob, EmittedJob};
-/// let job = EmittedJob { bytes: b"FB1\x03H\x03".to_vec(), listing: vec![], collapsed: 0 };
+/// let job = EmittedJob { bytes: b"FB1\x03H\x03".to_vec(), listing: vec![], collapsed: vec![] };
 /// let _ = CheckedJob(job);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]

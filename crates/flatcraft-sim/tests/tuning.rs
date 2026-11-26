@@ -1631,7 +1631,7 @@ fn emitted_host_job_is_the_planned_device_grid() {
                 want.push(units);
             }
             assert_eq!(want.len(), runs.len());
-            assert_eq!(job.collapsed, 0, "mirror {mirror} d {d}");
+            assert!(job.collapsed.is_empty(), "mirror {mirror} d {d}");
             let sent: Vec<Vec<(i64, i64)>> = {
                 let mut paths: Vec<Vec<(i64, i64)>> = Vec::new();
                 for c in decode::decode(&job.bytes) {

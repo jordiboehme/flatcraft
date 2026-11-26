@@ -35,7 +35,7 @@ pub enum GeometryKind {
 
 impl GeometryKind {
     /// The words for an error message.
-    fn describe(self) -> &'static str {
+    pub fn describe(self) -> &'static str {
         match self {
             GeometryKind::Tip => "plain tip paths",
             GeometryKind::HostAxis { .. } => "host-compensated paths",
@@ -93,9 +93,10 @@ pub struct ListingLine {
 pub struct EmittedJob {
     pub bytes: Vec<u8>,
     pub listing: Vec<ListingLine>,
-    /// Paths with 2 or more points that were left out because all their
-    /// points round to one device point (gpgl.md section 9).
-    pub collapsed: usize,
+    /// The indexes into the given paths of the paths with 2 or more points
+    /// that were left out because all their points round to one device
+    /// point (gpgl.md section 9), in order.
+    pub collapsed: Vec<usize>,
 }
 
 /// Checks `value` against both the profile range and the protocol range. The profile can only
@@ -229,14 +230,18 @@ pub fn emit_job(
     // Paths with fewer than 2 points, also after merging points that round
     // to the same device point, are skipped (gpgl.md section 9).
     let mut cut: Vec<(Vec<DevPoint>, &str)> = Vec::new();
-    let mut collapsed = 0;
-    for path in paths.iter().filter(|p| p.points.len() >= 2) {
+    let mut collapsed = Vec::new();
+    for (i, path) in paths
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.points.len() >= 2)
+    {
         let mut points = quantize_path(path, plotter, media, height, width)?;
         points.dedup();
         if points.len() >= 2 {
             cut.push((points, &path.note));
         } else {
-            collapsed += 1;
+            collapsed.push(i);
         }
     }
     if cut.is_empty() {

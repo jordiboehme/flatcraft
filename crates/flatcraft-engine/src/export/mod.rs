@@ -186,8 +186,7 @@ pub fn collect(
             continue;
         }
         let mut placed = Vec::new();
-        let mut labels = std::collections::BTreeMap::new();
-        crate::job::place_object(o, tolerance, &mut placed, &mut labels);
+        crate::job::place_object(o, tolerance, &mut placed);
         let shapes: Vec<ExportShape> = placed
             .iter()
             .flat_map(|p| {

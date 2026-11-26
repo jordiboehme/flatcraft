@@ -188,9 +188,11 @@ pub fn end_state(paths: &[Toolpath], home: Point, start_heading: Vec2) -> (Point
 /// `min_radius_mm`. The local radius at a vertex is
 /// `((|seg_in| + |seg_out|) / 2) / turn`, with the turn in radians. A run of
 /// neighbouring vertices below the limit (a flattened arc) is one spot, at
-/// half its length. A path that ends where it starts is a ring: its start
-/// vertex is checked too, and a run across the start is one spot. Used for
-/// warnings in every mode.
+/// half its length. A single vertex that turns [`CORNER_DEG`] or more is a
+/// corner, not a curve: the blade swivels there, so it is not a spot. A
+/// path that ends where it starts is a ring: its start vertex is checked
+/// too, and a run across the start is one spot. Used for warnings in every
+/// mode.
 pub fn min_radius_spots(points: &[Point], min_radius_mm: f64) -> Vec<Point> {
     let n = points.len();
     if n < 3 {
@@ -202,15 +204,19 @@ pub fn min_radius_spots(points: &[Point], min_radius_mm: f64) -> Vec<Point> {
     let m = if ring { n - 1 } else { n - 2 };
     let vertex = |k: usize| if ring { k } else { k + 1 };
     let at = |k: usize| points[vertex(k)];
+    // The turn at vertex k, in radians, when it bends tighter than the
+    // limit.
     let tight = |k: usize| {
         let v = vertex(k);
         let prev = if v == 0 { points[n - 2] } else { points[v - 1] };
         let next = points[v + 1];
         let (a, b) = (points[v] - prev, next - points[v]);
         let turn = a.cross(b).atan2(a.dot(b)).abs();
-        turn > 0.0 && (a.hypot() + b.hypot()) / 2.0 / turn < min_radius_mm
+        (turn > 0.0 && (a.hypot() + b.hypot()) / 2.0 / turn < min_radius_mm).then_some(turn)
     };
-    let flags: Vec<bool> = (0..m).map(tight).collect();
+    let turns: Vec<Option<f64>> = (0..m).map(tight).collect();
+    let flags: Vec<bool> = turns.iter().map(Option::is_some).collect();
+    let corner = CORNER_DEG.to_radians();
     if ring && flags.iter().all(|&f| f) {
         return vec![halfway(points)];
     }
@@ -222,19 +228,24 @@ pub fn min_radius_spots(points: &[Point], min_radius_mm: f64) -> Vec<Point> {
         0
     };
     let mut spots = Vec::new();
-    let mut run: Vec<Point> = Vec::new();
+    let mut run: Vec<usize> = Vec::new();
+    let mut close = |run: &mut Vec<usize>| {
+        let lone_corner = run.len() == 1 && turns[run[0]].is_some_and(|t| t >= corner);
+        if !run.is_empty() && !lone_corner {
+            let pts: Vec<Point> = run.iter().map(|&k| at(k)).collect();
+            spots.push(halfway(&pts));
+        }
+        run.clear();
+    };
     for q in 0..m {
         let k = (first + q) % m;
         if flags[k] {
-            run.push(at(k));
-        } else if !run.is_empty() {
-            spots.push(halfway(&run));
-            run.clear();
+            run.push(k);
+        } else {
+            close(&mut run);
         }
     }
-    if !run.is_empty() {
-        spots.push(halfway(&run));
-    }
+    close(&mut run);
     spots
 }
 
@@ -1211,5 +1222,30 @@ mod tests {
         );
         let (pts, _) = rounded_corner(1.0);
         assert_eq!(min_radius_spots(&pts, 0.25), Vec::<Point>::new());
+    }
+
+    /// A sharp corner between short segments is a corner, not a tight
+    /// curve: the blade swivels there. A tiny circle is still a curve.
+    #[test]
+    fn a_lone_sharp_corner_is_not_a_tight_curve() {
+        // 98 deg between segments of about 0.4 mm (radius 0.24 mm by the
+        // formula), as in a glyph outline.
+        let pts = [
+            p(208.68, 91.85),
+            p(208.93, 92.15),
+            p(208.58, 92.37),
+            p(208.24, 92.59),
+        ];
+        assert_eq!(min_radius_spots(&pts, 0.25), Vec::<Point>::new());
+        // The same short segments turning 20 deg are a tight wiggle.
+        let wiggle = [p(0.0, 0.0), p(0.05, 0.0), p(0.097, 0.017), p(0.15, 0.017)];
+        assert_eq!(min_radius_spots(&wiggle, 0.25).len(), 1);
+        let ring: Vec<Point> = (0..=12)
+            .map(|k| {
+                let a = f64::from(k) / 12.0 * std::f64::consts::TAU;
+                p(10.0 + 0.1 * a.cos(), 10.0 + 0.1 * a.sin())
+            })
+            .collect();
+        assert_eq!(min_radius_spots(&ring, 0.25).len(), 1);
     }
 }

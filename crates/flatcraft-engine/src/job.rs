@@ -10,12 +10,12 @@ use flatcraft_device::gpgl::{
     CheckedJob, CutSettings, EmitError, EmitPath, EmittedJob, GeometryKind, emit_job,
 };
 use flatcraft_device::{
-    FileTransport, MaterialProfile, MediaKind, PlotterProfile, SendReport, Transport,
-    TransportError, TransportSpec,
+    CornerModeSpec, FileTransport, KnifeCompensation, MaterialProfile, MediaKind, PlotterProfile,
+    SendReport, Transport, TransportError, TransportSpec,
 };
 use flatcraft_path::{
-    AppliedCompensation, CutPlan, PathRef, PipelineSettings, PlacedPath, PlanError,
-    StrategySettings, ToolpathKind, plan,
+    AppliedCompensation, Compensation, CornerMode, CutPlan, HostSettings, PathRef,
+    PipelineSettings, PlacedPath, PlanError, StrategySettings, Toolpath, ToolpathKind, knife, plan,
 };
 use serde_json::{Value, json};
 
@@ -164,18 +164,103 @@ fn geometry_kind(c: AppliedCompensation) -> GeometryKind {
     }
 }
 
-/// The warning when the emitter left out paths whose points all round to
-/// one plotter step.
-pub(crate) fn collapsed_warning(n: usize) -> String {
+/// The warning when the plan left out paths shorter than half a device
+/// step. With [`collapsed_warning`] it counts every path that is not cut
+/// for being too small, each path once: the plan drops these before the
+/// emitter sees them.
+pub(crate) fn dropped_short_warning(n: usize) -> String {
     if n == 1 {
-        "1 cut path fits inside one plotter step, so it is not cut.".to_string()
+        "1 path is shorter than half a device step and is not cut.".to_string()
     } else {
-        format!("{n} cut paths fit inside one plotter step, so they are not cut.")
+        format!("{n} paths are shorter than half a device step and are not cut.")
     }
 }
 
-/// Problems the person can fix (settings, placement, media) are refusals;
-/// broken profiles and internal errors are failures.
+/// The warning when the emitter left out paths whose points all round to
+/// one device step.
+pub(crate) fn collapsed_warning(n: usize) -> String {
+    if n == 1 {
+        "1 path fits inside one device step and is not cut.".to_string()
+    } else {
+        format!("{n} paths fit inside one device step and are not cut.")
+    }
+}
+
+/// The warning for curves tighter than the material's minimum radius
+/// `r_mm`.
+pub(crate) fn tight_curves_warning(n: usize, r_mm: f64) -> String {
+    if n == 1 {
+        format!("1 curve is tighter than {r_mm} mm. It may come out rounded or torn.")
+    } else {
+        format!("{n} curves are tighter than {r_mm} mm. They may come out rounded or torn.")
+    }
+}
+
+/// The warning when host compensation steers with another offset than the
+/// plotter's blade offset.
+pub(crate) fn offset_mismatch_warning(host_mm: f64, blade_mm: f64) -> String {
+    format!(
+        "Host compensation uses {host_mm} mm, the blade offset is {blade_mm} mm. The simulator uses the blade offset."
+    )
+}
+
+/// How far apart the host offset and the blade offset may be before the
+/// job warns: closer is the same number typed twice.
+const OFFSET_SAME_MM: f64 = 1e-9;
+
+/// The places where the first pass of a `Cut` toolpath bends tighter than
+/// `min_radius_mm`, over the first lap only, so passes, chained laps and
+/// the overcut never count a curve twice. The same in every compensation
+/// mode: it reads the intended tip path.
+fn tight_curves(plan: &CutPlan, min_radius_mm: f64) -> usize {
+    plan.toolpaths
+        .iter()
+        .filter(|t| t.kind == ToolpathKind::Cut && t.pass == 1)
+        .map(|t| knife::min_radius_spots(t.lap(), min_radius_mm).len())
+        .sum()
+}
+
+/// Where the knife is steered for `plotter` on `media` with `strategy`:
+/// the tip path for firmware and no compensation; host compensation with
+/// the profile's offset, rounded to the plotter's device grid (so plan,
+/// preview, simulation and send share the points the plotter gets). The
+/// pivot threshold is the larger of the profile's and the strategy's, so
+/// a profile can only make it coarser.
+fn compensation(
+    plotter: &PlotterProfile,
+    media: &flatcraft_device::Media,
+    strategy: &StrategySettings,
+) -> Compensation {
+    match plotter.knife_compensation {
+        KnifeCompensation::Host {
+            offset_mm,
+            pivot_threshold_deg,
+        } => Compensation::Host(HostSettings {
+            device_grid: Some(flatcraft_device::gpgl::quantize::device_grid(
+                plotter, media,
+            )),
+            ..HostSettings::new(
+                offset_mm,
+                pivot_threshold_deg.max(strategy.host_pivot_threshold_deg),
+            )
+        }),
+        KnifeCompensation::Firmware { .. } | KnifeCompensation::None => Compensation::Tip,
+    }
+}
+
+/// The corner mode of a material, for the knife stage.
+fn corner_mode(spec: CornerModeSpec) -> CornerMode {
+    match spec {
+        CornerModeSpec::Arc => CornerMode::Arc,
+        CornerModeSpec::LiftOvershoot { overshoot_mm } => {
+            CornerMode::LiftOvershoot { overshoot_mm }
+        }
+    }
+}
+
+/// Problems the person can fix (settings, placement, media, a plan made
+/// for another knife compensation) are refusals; broken profiles and
+/// internal errors are failures.
 fn emit_error(e: EmitError) -> CommandError {
     let text = format!("cannot build the GPGL job: {e}");
     match e {
@@ -183,11 +268,145 @@ fn emit_error(e: EmitError) -> CommandError {
         | EmitError::CoordinateOutOfRange { .. }
         | EmitError::UnknownMedia { .. }
         | EmitError::EmptyJob => CommandError::Refused(text),
-        EmitError::CompensationMismatch { .. }
-        | EmitError::DialectNotSupported
+        EmitError::CompensationMismatch { profile, geometry } => {
+            let fix = if geometry == GeometryKind::HostCalibration.describe() {
+                "An offset test series needs Host knife compensation: set it in the plotter preset in the Profiles window."
+            } else if profile == "host" {
+                "Build the job again, so it is planned for this plotter preset."
+            } else {
+                "Build the job again, so it is planned for this plotter preset, or set Host knife compensation in the Profiles window."
+            };
+            CommandError::Refused(format!("{text}. {fix}"))
+        }
+        EmitError::DialectNotSupported
         | EmitError::EmptyDraw
         | EmitError::InvalidProfile { .. } => CommandError::Failed(text),
     }
+}
+
+/// The refusal of a plan whose axis runs do not fit its own compensation.
+pub const PLAN_MISMATCH: &str = "internal: compensation mismatch in the plan";
+
+/// The names of a job's objects and the labels of their paths, for the
+/// listing notes.
+struct NoteNames<'a> {
+    names: std::collections::BTreeMap<ObjectId, &'a str>,
+    labels: std::collections::BTreeMap<(ObjectId, usize), &'a str>,
+}
+
+impl<'a> NoteNames<'a> {
+    fn of(objects: &'a [JobObject]) -> Self {
+        let mut names = std::collections::BTreeMap::new();
+        let mut labels = std::collections::BTreeMap::new();
+        for o in objects {
+            names.insert(o.id, o.name.as_str());
+            for (i, p) in o.geometry.iter().enumerate() {
+                if let Some(label) = &p.label {
+                    labels.insert((o.id, i), label.as_str());
+                }
+            }
+        }
+        Self { names, labels }
+    }
+
+    /// The listing note of toolpath `t`, without a run number.
+    fn note(&self, t: &Toolpath) -> String {
+        match t.kind {
+            ToolpathKind::Weed => weed_note(t, t.pass, t.laps),
+            ToolpathKind::Alignment => "alignment stroke".to_string(),
+            ToolpathKind::Cut => {
+                let id = t.source.object;
+                let name = self.names.get(&id).copied().unwrap_or("");
+                let label = self.labels.get(&(id, t.source.path_index)).copied();
+                note(id, name, t.source.path_index, label, t.pass, t.laps)
+            }
+        }
+    }
+}
+
+/// How many blade-down runs toolpath `t` is emitted as.
+fn run_count(t: &Toolpath) -> usize {
+    t.axis.as_ref().map_or(1, Vec::len)
+}
+
+/// The paths a plan sends: one per blade-down run, the alignment stroke
+/// included, each with its listing note. A toolpath of several runs gets
+/// ` run {k}` (from 1) on each note.
+fn emit_paths(plan: &CutPlan, objects: &[JobObject]) -> Vec<EmitPath> {
+    let names = NoteNames::of(objects);
+    plan.toolpaths
+        .iter()
+        .flat_map(|t| {
+            let text = names.note(t);
+            let several = run_count(t) > 1;
+            t.runs()
+                .into_iter()
+                .enumerate()
+                .map(move |(k, r)| EmitPath {
+                    points: r.points,
+                    note: if several {
+                        format!("{text} run {}", k + 1)
+                    } else {
+                        text.clone()
+                    },
+                })
+        })
+        .collect()
+}
+
+/// Emits a plan for `plotter`: the one way from a [`CutPlan`] to GPGL
+/// bytes. The geometry kind is what the plan says it applied, never a
+/// claim of the caller, and every toolpath must carry axis runs exactly
+/// when that compensation is host compensation: a plan that does not is
+/// refused before anything is emitted. The emitter then refuses geometry
+/// that does not fit the plotter's knife compensation. `objects` name the
+/// toolpaths in the listing.
+pub fn emit_plan(
+    plan: &CutPlan,
+    objects: &[JobObject],
+    plotter: &PlotterProfile,
+    media_id: &str,
+    settings: &CutSettings,
+) -> Result<EmittedJob, CommandError> {
+    let host = matches!(
+        plan.compensation,
+        AppliedCompensation::Host { .. } | AppliedCompensation::HostCalibration
+    );
+    // Every kind, not only cuts: under host compensation the knife stage
+    // gives weed lines and the alignment stroke axis runs too, and an axis
+    // run sent as a tip path would cut off the intended line.
+    if plan.toolpaths.iter().any(|t| t.axis.is_some() != host) {
+        return Err(CommandError::Failed(PLAN_MISMATCH.into()));
+    }
+    emit_job(
+        &emit_paths(plan, objects),
+        geometry_kind(plan.compensation),
+        plotter,
+        media_id,
+        settings,
+    )
+    .map_err(emit_error)
+}
+
+/// How many paths of `plan` the emitter left out because each of their
+/// runs rounds to one device point (`collapsed`, indexes of the emitted
+/// runs). A path counts once: only its first pass is looked at, the
+/// alignment stroke never.
+fn paths_not_cut(plan: &CutPlan, collapsed: &[usize]) -> usize {
+    let mut first = 0;
+    let mut count = 0;
+    for t in &plan.toolpaths {
+        let runs = first..first + run_count(t);
+        first = runs.end;
+        let left_out = runs
+            .clone()
+            .filter(|i| collapsed.binary_search(i).is_ok())
+            .count();
+        if t.pass == 1 && t.kind != ToolpathKind::Alignment && left_out == runs.len() {
+            count += 1;
+        }
+    }
+    count
 }
 
 /// One object as the job build reads it. The geometry `Arc` is shared with
@@ -390,7 +609,6 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
     let mut issues = Vec::new();
     let mut covered_warnings = Vec::new();
     let mut placed = Vec::new();
-    let mut labels = std::collections::BTreeMap::new();
     for o in objects {
         if !o.visible {
             facts.hidden.push(o.id);
@@ -411,7 +629,7 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
             continue;
         }
         let before = placed.len();
-        let no_area = place_object(o, plotter.flatten_tolerance_mm, &mut placed, &mut labels);
+        let no_area = place_object(o, plotter.flatten_tolerance_mm, &mut placed);
         if no_area > 0 {
             let what = if no_area == 1 {
                 "1 filled path has no area or is thinner than the cut tolerance".to_string()
@@ -462,13 +680,19 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         ))
         .into());
     }
+    let strategy = StrategySettings::for_strategy(job.strategy);
     let pipeline = PipelineSettings {
         flatten_tolerance_mm: plotter.flatten_tolerance_mm,
         join_tolerance_mm: JOIN_TOLERANCE_MM,
         overcut_mm: material.overcut_mm,
         passes,
         reverse_alternate_passes: material.reverse_alternate_passes,
-        strategy: StrategySettings::for_strategy(job.strategy),
+        strategy,
+        direction: plotter.ring_direction,
+        compensation: compensation(plotter, media, &strategy),
+        corner_mode: corner_mode(material.corner_mode),
+        // M3 sets the alignment stroke.
+        alignment_stroke: None,
         // Without a mat the feed motor moves the sheet: cut it in bands.
         monotonic_feed: media.kind == MediaKind::NoMat,
         // Half a device step: anything shorter moves no motor at all.
@@ -536,17 +760,7 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         }
     })?;
     if cut_plan.dropped_short > 0 {
-        let n = cut_plan.dropped_short;
-        let what = if n == 1 {
-            "1 cut path is".to_string()
-        } else {
-            format!("{n} cut paths are")
-        };
-        let end = if n == 1 { "it is" } else { "they are" };
-        warnings.push(format!(
-            "{what} shorter than half a plotter step ({} mm), so {end} not cut.",
-            pipeline.min_cut_mm
-        ));
+        warnings.push(dropped_short_warning(cut_plan.dropped_short));
     }
 
     if cut_plan.dropped_weed_boxes > 0 {
@@ -559,43 +773,30 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         warnings.push(weed_box_blocked_warning(cut_plan.blocked_weed_boxes));
     }
 
-    // One emit path per blade-down run: a toolpath without host
-    // compensation is one run along its points.
-    let paths: Vec<EmitPath> = cut_plan
-        .toolpaths
-        .iter()
-        .flat_map(|t| {
-            let text = if t.kind == ToolpathKind::Weed {
-                weed_note(t, t.pass, t.laps)
-            } else {
-                let id = t.source.object;
-                let name = names.get(&id).copied().unwrap_or("");
-                let label = labels.get(&(id, t.source.path_index)).map(String::as_str);
-                note(id, name, t.source.path_index, label, t.pass, t.laps)
-            };
-            t.runs().into_iter().map(move |r| EmitPath {
-                points: r.points,
-                note: text.clone(),
-            })
-        })
-        .collect();
     let settings = CutSettings {
         speed: job.speed.unwrap_or(material.speed),
         force: job.force.unwrap_or(material.force),
         track_enhancing: material.track_enhancing && plotter.capabilities.track_enhancing,
     };
-    // The geometry is what the plan says it applied, never a claim of this
-    // caller: the emitter refuses it when it does not fit the plotter.
-    let emitted = emit_job(
-        &paths,
-        geometry_kind(cut_plan.compensation),
-        plotter,
-        &media_id,
-        &settings,
-    )
-    .map_err(emit_error)?;
-    if emitted.collapsed > 0 {
-        warnings.push(collapsed_warning(emitted.collapsed));
+    let emitted = emit_plan(&cut_plan, objects, plotter, &media_id, &settings)?;
+    let not_cut = paths_not_cut(&cut_plan, &emitted.collapsed);
+    if not_cut > 0 {
+        warnings.push(collapsed_warning(not_cut));
+    }
+    // Every mode: the blade rounds tight curves with or without host
+    // compensation.
+    let min_radius_mm = material.min_radius_mm.unwrap_or(plotter.blade_offset_mm);
+    let tight = tight_curves(&cut_plan, min_radius_mm);
+    if tight > 0 {
+        warnings.push(tight_curves_warning(tight, min_radius_mm));
+    }
+    // Plan decision (spec 8.5 vs 9): host compensation steers with the
+    // profile's offset, the value the offset series tunes; the simulator
+    // and the radius warning use the physical blade offset.
+    if let KnifeCompensation::Host { offset_mm, .. } = plotter.knife_compensation
+        && (offset_mm - plotter.blade_offset_mm).abs() > OFFSET_SAME_MM
+    {
+        warnings.push(offset_mismatch_warning(offset_mm, plotter.blade_offset_mm));
     }
     Ok(JobResult {
         plan: cut_plan,
@@ -613,20 +814,16 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
 /// grid's 0,0, y down), per its cut options: what the cut and the export
 /// both start from. One source path may give several cut paths (stroke
 /// outline rings); they all keep the source path's index. Labels of source
-/// paths go to `labels`. Returns how many filled paths have no area (they
-/// give nothing to cut).
+/// paths are read by the listing notes from the geometry itself. Returns
+/// how many filled paths have no area (they give nothing to cut).
 pub(crate) fn place_object(
     o: &JobObject,
     tolerance_mm: f64,
     placed: &mut Vec<PlacedPath>,
-    labels: &mut std::collections::BTreeMap<(ObjectId, usize), String>,
 ) -> usize {
     let affine = o.transform.affine(o.local_bounds);
     let mut no_area = 0;
     for (i, p) in o.geometry.iter().enumerate() {
-        if let Some(label) = &p.label {
-            labels.insert((o.id, i), label.clone());
-        }
         let cut = cutgeom::cut_path(p, &o.cut, affine, tolerance_mm);
         if report::fill_without_area(p, &cut) {
             // A stroke-less fill without area, or thinner than the
@@ -780,9 +977,7 @@ pub(crate) fn sent_json(report: &SendReport, summary: &JobSummary) -> Value {
     })
 }
 
-/// Runs the gate, builds the active document's job and sends it. When the
-/// person has to confirm, the built job is stored as the pending send and
-/// nothing is sent; build errors come back right away.
+/// Builds the active document's job and sends it ([`send_built`]).
 pub(crate) fn send(
     s: &mut Session,
     name: Option<String>,
@@ -790,36 +985,55 @@ pub(crate) fn send(
 ) -> Result<Value, CommandError> {
     let plotter = plotter(s)?;
     let name = job_name(s, name);
-    match gate::check_send(origin, &plotter.transport, &s.prefs, s.has_ui) {
-        GateDecision::Refuse(reason) => Err(CommandError::Refused(reason)),
-        GateDecision::NeedsConfirmation => {
-            let result = build(s)?;
-            let summary = summary(&result);
-            let log = log_entry(s, &summary, result.job.bytes.len(), &plotter, &name);
-            let job = checked(result.job)?;
-            s.request_confirmation(
-                name,
-                plotter.id.clone(),
-                plotter.transport.clone(),
-                job,
-                summary,
-                log,
-            );
-            Err(CommandError::Refused(WAITING.into()))
-        }
-        GateDecision::Allow => {
-            let mut result = build(s)?;
-            let job = checked(result.job.clone())?;
-            let sum = summary(&result);
-            let log = log_entry(s, &sum, result.job.bytes.len(), &plotter, &name);
-            let report = deliver_built(s, &plotter.transport, &job, &name, origin)?;
-            let mut value = sent_json(&report, &sum);
-            log_sent(s, log, &plotter.transport, &report, &mut value);
-            result.sent = Some(report);
-            s.doc_mut().set_last_sent(result);
-            Ok(value)
-        }
+    // A send the gate refuses says so before any build error.
+    if let GateDecision::Refuse(reason) =
+        gate::check_send(origin, &plotter.transport, &s.prefs, s.has_ui)
+    {
+        return Err(CommandError::Refused(reason));
     }
+    let result = build(s)?;
+    send_built(s, &plotter, result, name, origin)
+}
+
+/// Sends a built job of the active document: the one way a job leaves
+/// FlatCraft. It runs the send gate, then the safety check before anything
+/// waits or goes out. When the person has to confirm, the checked job is
+/// stored as the pending send (a snapshot: confirming sends exactly these
+/// bytes) and nothing is sent. Otherwise it is delivered through the
+/// plotter's transport, logged and kept as the document's last sent job.
+/// `result` must be built with `plotter`.
+pub fn send_built(
+    s: &mut Session,
+    plotter: &PlotterProfile,
+    mut result: JobResult,
+    name: String,
+    origin: Origin,
+) -> Result<Value, CommandError> {
+    let decision = gate::check_send(origin, &plotter.transport, &s.prefs, s.has_ui);
+    if let GateDecision::Refuse(reason) = decision {
+        return Err(CommandError::Refused(reason));
+    }
+    // Only a checked job can be sent or wait for confirmation.
+    let job = checked(result.job.clone())?;
+    let sum = summary(&result);
+    let log = log_entry(s, &sum, result.job.bytes.len(), plotter, &name);
+    if decision == GateDecision::NeedsConfirmation {
+        s.request_confirmation(
+            name,
+            plotter.id.clone(),
+            plotter.transport.clone(),
+            job,
+            sum,
+            log,
+        );
+        return Err(CommandError::Refused(WAITING.into()));
+    }
+    let report = deliver_built(s, &plotter.transport, &job, &name, origin)?;
+    let mut value = sent_json(&report, &sum);
+    log_sent(s, log, &plotter.transport, &report, &mut value);
+    result.sent = Some(report);
+    s.doc_mut().set_last_sent(result);
+    Ok(value)
 }
 
 /// The cut log entry of the active document's job, without its id, time
@@ -1146,15 +1360,15 @@ mod tests {
             },
             EmitError::UnknownMedia { id: "m".into() },
             EmitError::EmptyJob,
+            EmitError::CompensationMismatch {
+                profile: "host",
+                geometry: "plain tip paths",
+            },
         ];
         for e in refused {
             assert!(matches!(emit_error(e), CommandError::Refused(_)));
         }
         let failed = [
-            EmitError::CompensationMismatch {
-                profile: "host",
-                geometry: "plain tip paths",
-            },
             EmitError::DialectNotSupported,
             EmitError::EmptyDraw,
             EmitError::InvalidProfile { reason: "r".into() },
@@ -1178,12 +1392,55 @@ mod tests {
         assert!(!collapsed_warning(2).contains('\u{2014}'));
     }
 
+    /// A mismatch the person can fix says how, in plain words.
+    #[test]
+    fn compensation_mismatches_say_the_fix() {
+        let series = emit_error(EmitError::CompensationMismatch {
+            profile: "firmware",
+            geometry: GeometryKind::HostCalibration.describe(),
+        });
+        let CommandError::Refused(text) = series else {
+            panic!("{series}")
+        };
+        assert!(text.contains("needs Host knife compensation"), "{text}");
+        let stale = emit_error(EmitError::CompensationMismatch {
+            profile: "host",
+            geometry: GeometryKind::Tip.describe(),
+        });
+        let CommandError::Refused(text) = stale else {
+            panic!("{stale}")
+        };
+        assert!(text.ends_with("Build the job again, so it is planned for this plotter preset."));
+        for t in [
+            dropped_short_warning(1),
+            dropped_short_warning(3),
+            collapsed_warning(1),
+            collapsed_warning(3),
+            tight_curves_warning(2, 0.25),
+            offset_mismatch_warning(0.3, 0.25),
+        ] {
+            assert!(!t.contains('\u{2014}'), "{t}");
+        }
+        assert_eq!(
+            dropped_short_warning(2),
+            "2 paths are shorter than half a device step and are not cut."
+        );
+        assert_eq!(
+            tight_curves_warning(3, 0.25),
+            "3 curves are tighter than 0.25 mm. They may come out rounded or torn."
+        );
+        assert_eq!(
+            offset_mismatch_warning(0.3, 0.25),
+            "Host compensation uses 0.3 mm, the blade offset is 0.25 mm. The simulator uses the blade offset."
+        );
+    }
+
     #[test]
     fn unsafe_bytes_never_wait_for_confirmation() {
         let bad = EmittedJob {
             bytes: b"FB1\x03H\x03".to_vec(),
             listing: vec![],
-            collapsed: 0,
+            collapsed: vec![],
         };
         let e = checked(bad).unwrap_err();
         assert!(matches!(e, CommandError::Failed(_)), "{e}");
@@ -1191,13 +1448,13 @@ mod tests {
         let unterminated = EmittedJob {
             bytes: b"\x1b\x04".to_vec(),
             listing: vec![],
-            collapsed: 0,
+            collapsed: vec![],
         };
         assert!(checked(unterminated).is_err());
         let good = EmittedJob {
             bytes: b"\x1b\x04H\x03".to_vec(),
             listing: vec![],
-            collapsed: 0,
+            collapsed: vec![],
         };
         checked(good).unwrap();
     }

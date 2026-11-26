@@ -154,7 +154,7 @@ The rule we follow is the one from our research: thick or dense material, about 
 
 Every preset sets its corner mode in the file, so you can see it. A preset you make from one of them can switch it in the Profiles window (Corner mode, and Corner overshoot for the length). None of this was checked on a real cut yet; the test sheet of milestone 3 decides.
 
-The minimum radius (`min_radius_mm`) is not set in any preset: it then equals the plotter's blade offset. Curves tighter than it will get a warning before the cut; that warning arrives together with host jobs.
+The minimum radius (`min_radius_mm`) is not set in any preset: it then equals the plotter's blade offset. Curves tighter than it get a warning before the cut, with every knife compensation.
 
 ## Sources
 
