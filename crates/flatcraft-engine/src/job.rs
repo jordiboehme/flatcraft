@@ -137,6 +137,15 @@ pub(crate) fn weed_box_warning(dropped: usize, per_object: bool) -> String {
     )
 }
 
+/// The warning when weed boxes would cut material that is kept.
+pub(crate) fn weed_box_blocked_warning(blocked: usize) -> String {
+    if blocked == 1 {
+        "A weed box would cut through material you keep, so it is not cut.".to_string()
+    } else {
+        format!("{blocked} weed boxes would cut through material you keep, so they are not cut.")
+    }
+}
+
 /// The number of the last pass in a toolpath of `laps` chained laps that
 /// starts with pass `pass`.
 fn last_pass(pass: u32, laps: u32) -> u32 {
@@ -490,6 +499,9 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
             cut_plan.dropped_weed_boxes,
             job.weed.per_object,
         ));
+    }
+    if cut_plan.blocked_weed_boxes > 0 {
+        warnings.push(weed_box_blocked_warning(cut_plan.blocked_weed_boxes));
     }
 
     let paths: Vec<EmitPath> = cut_plan
@@ -905,6 +917,17 @@ fn transport_error(e: TransportError) -> CommandError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn weed_box_warnings_read_right() {
+        assert_eq!(
+            weed_box_blocked_warning(1),
+            "A weed box would cut through material you keep, so it is not cut."
+        );
+        assert!(weed_box_blocked_warning(2).starts_with("2 weed boxes would cut"));
+        assert!(weed_box_warning(1, false).starts_with("The weed box does not fit"));
+        assert!(weed_box_warning(3, true).starts_with("3 weed boxes do not fit"));
+    }
 
     const SQUARE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><rect x="20" y="20" width="30" height="30"/></svg>"#;
 

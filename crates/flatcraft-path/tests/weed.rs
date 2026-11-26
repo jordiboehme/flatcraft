@@ -2,9 +2,9 @@
 
 use flatcraft_core::document::{ObjectId, WeedLines, WeedSettings};
 use flatcraft_path::feed::{BAND_MM, band_of};
-use flatcraft_path::weed::{WEED_BOX_OBJECT, WEED_CLEARANCE_MM};
+use flatcraft_path::weed::{self, BOX_OVERLAP_MM, WEED_BOX_OBJECT, WEED_CLEARANCE_MM};
 use flatcraft_path::{
-    CutPlan, PathRef, PipelineSettings, PlacedPath, PlanError, SettingsField, Toolpath,
+    CutPlan, KeepMode, PathRef, PipelineSettings, PlacedPath, PlanError, SettingsField, Toolpath,
     ToolpathKind, plan,
 };
 use kurbo::{BezPath, Circle, Point, Rect, Shape};
@@ -322,71 +322,245 @@ fn without_a_mat_the_box_is_cut_band_by_band() {
         .iter()
         .filter(|t| t.source.object == WEED_BOX_OBJECT)
         .collect();
-    assert!(pieces.len() >= 4, "{pieces:?}");
+    // Cuts at 50 and 100 on both sides: four pieces.
+    assert_eq!(pieces.len(), 4, "{pieces:?}");
     // The roll never goes back for a weed path: after a weed path of band
-    // b, nothing of an earlier band is cut.
+    // b, nothing of an earlier band is cut. A box piece may run on
+    // BOX_OVERLAP_MM past its band edge (the join overlap), so its band is
+    // read that far below its top.
+    let weed_band = |t: &Toolpath| {
+        if t.source.object == WEED_BOX_OBJECT {
+            band(top(t) + BOX_OVERLAP_MM)
+        } else {
+            band(top(t))
+        }
+    };
     for (i, t) in paths.iter().enumerate() {
         if t.kind != ToolpathKind::Weed {
             continue;
         }
-        let b = band(top(t));
+        let b = weed_band(t);
         for later in &paths[i + 1..] {
             let lb = if later.kind == ToolpathKind::Weed {
-                band(top(later))
+                weed_band(later)
             } else {
                 band_of(later)
             };
             assert!(lb >= b, "toolpath {i} of band {b} is followed by band {lb}");
         }
     }
-    // The pieces join to the full rectangle: every end meets another end
-    // exactly, and together they are the box's four sides.
+    // The pieces cover the whole rectangle and overlap at every join: each
+    // piece runs BOX_OVERLAP_MM past its join into the next piece.
     let expected = Rect::new(17.0, 7.0, 93.0, 143.0);
-    let mut ends: Vec<Point> = pieces
-        .iter()
-        .flat_map(|t| [t.points[0], t.points[1]])
-        .collect();
-    ends.sort_by(|a, b| (a.x, a.y).partial_cmp(&(b.x, b.y)).unwrap());
-    for pair in ends.chunks(2) {
-        assert_eq!(pair[0], pair[1], "ends that do not meet: {pair:?}");
-    }
+    let on_side = |p: Point| {
+        ((p.x - expected.x0).abs() < 1e-9 || (p.x - expected.x1).abs() < 1e-9)
+            && (expected.y0 - 1e-9..=expected.y1 + 1e-9).contains(&p.y)
+            || ((p.y - expected.y0).abs() < 1e-9 || (p.y - expected.y1).abs() < 1e-9)
+                && (expected.x0 - 1e-9..=expected.x1 + 1e-9).contains(&p.x)
+    };
+    assert!(pieces.iter().all(|t| t.points.iter().all(|p| on_side(*p))));
     let length: f64 = pieces
         .iter()
-        .map(|t| t.points[0].distance(t.points[1]))
+        .map(|t| {
+            t.points
+                .windows(2)
+                .map(|w| w[0].distance(w[1]))
+                .sum::<f64>()
+        })
         .sum();
     let perimeter = 2.0 * (expected.width() + expected.height());
-    assert!((length - perimeter).abs() < 1e-9, "{length} vs {perimeter}");
-    for t in &pieces {
-        let (a, b) = (t.points[0], t.points[1]);
-        let on_side = |p: Point| {
-            (p.x == expected.x0 || p.x == expected.x1) && (expected.y0..=expected.y1).contains(&p.y)
-                || (p.y == expected.y0 || p.y == expected.y1)
-                    && (expected.x0..=expected.x1).contains(&p.x)
-        };
-        assert!(
-            on_side(a) && on_side(b) && (a.x == b.x || a.y == b.y),
-            "{t:?}"
-        );
+    let overlap = pieces.len() as f64 * BOX_OVERLAP_MM;
+    assert!((length - perimeter - overlap).abs() < 1e-9, "{length}");
+    let near = |p: Point, t: &Toolpath| {
+        t.points.windows(2).any(|w| {
+            let v = w[1] - w[0];
+            let u = ((p - w[0]).dot(v) / v.hypot2()).clamp(0.0, 1.0);
+            p.distance(w[0] + v * u) < 1e-9
+        })
+    };
+    // Every point of the outline lies on a piece.
+    let corners = [
+        Point::new(expected.x0, expected.y0),
+        Point::new(expected.x1, expected.y0),
+        Point::new(expected.x1, expected.y1),
+        Point::new(expected.x0, expected.y1),
+    ];
+    for i in 0..4 {
+        let (a, b) = (corners[i], corners[(i + 1) % 4]);
+        for k in 0..=400 {
+            let p = a.lerp(b, f64::from(k) / 400.0);
+            assert!(pieces.iter().any(|t| near(p, t)), "{p:?} is not cut");
+        }
     }
-    // The top edge is cut in the box's first band, before anything of a
-    // later band; the bottom edge in its last band, after all the design.
-    let at = |y: f64| {
+    // Every piece end lies on another piece.
+    for t in &pieces {
+        for end in [t.points[0], *t.points.last().unwrap()] {
+            let n = pieces.iter().filter(|u| near(end, u)).count();
+            assert!(n >= 2, "end {end:?} is cut by {n} piece(s)");
+        }
+    }
+    // The joins are where the outline crosses a band edge (50 and 100 on
+    // both sides). One piece runs on past the join into the next, so the
+    // join and 0.4 mm on one side of it are cut by two pieces.
+    let cuts = |p: Point| pieces.iter().filter(|u| near(p, u)).count();
+    for x in [expected.x0, expected.x1] {
+        for y in [50.0, 100.0] {
+            let j = Point::new(x, y);
+            assert_eq!(cuts(j), 2, "join {j:?}");
+            let (up, down) = (Point::new(x, y - 0.4), Point::new(x, y + 0.4));
+            assert!(
+                cuts(up) == 2 || cuts(down) == 2,
+                "no overlap at the join {j:?}: {} above, {} below",
+                cuts(up),
+                cuts(down)
+            );
+        }
+    }
+    // The top edge is in the box's first band and the bottom edge after
+    // all the design.
+    let with = |y: f64| {
         paths
             .iter()
-            .position(|t| t.source.object == WEED_BOX_OBJECT && t.points.iter().all(|p| p.y == y))
+            .position(|t| {
+                t.source.object == WEED_BOX_OBJECT
+                    && t.points.windows(2).any(|w| w[0].y == y && w[1].y == y)
+            })
             .unwrap()
     };
-    let (top_edge, bottom_edge) = (at(expected.y0), at(expected.y1));
-    assert!(
-        paths[..top_edge]
-            .iter()
-            .all(|t| band(top(t)) == 0 || t.kind == ToolpathKind::Cut && band_of(t) == 0)
-    );
+    let (top_edge, bottom_edge) = (with(expected.y0), with(expected.y1));
+    assert_eq!(band(top(&paths[top_edge])), 0);
     let last_design = paths
         .iter()
         .rposition(|t| t.kind == ToolpathKind::Cut)
         .unwrap();
-    assert!(bottom_edge > last_design);
+    assert!(bottom_edge > last_design, "{bottom_edge} {last_design}");
+}
+
+#[test]
+fn per_object_lines_stay_inside_the_boxes() {
+    // Two stickers 200 mm apart: the vinyl between the boxes stays whole.
+    let input = [
+        placed(1, rect_path(10.0, 20.0, 40.0, 40.0)),
+        placed(2, rect_path(250.0, 20.0, 40.0, 40.0)),
+    ];
+    let s = settings(WeedSettings {
+        weed_box: true,
+        margin_mm: 8.0,
+        per_object: true,
+        lines: WeedLines::Both,
+        spacing_mm: 5.0,
+    });
+    let out = plan(&input, &s).unwrap();
+    let boxes: Vec<Rect> = weeds(&out)
+        .iter()
+        .filter(|t| t.closed)
+        .map(|t| bounds(t.lap()))
+        .collect();
+    assert_eq!(boxes.len(), 2);
+    let lines: Vec<&Toolpath> = weeds(&out).into_iter().filter(|t| !t.closed).collect();
+    assert!(!lines.is_empty());
+    for t in lines {
+        let inside = boxes.iter().any(|b| {
+            t.points.iter().all(|p| {
+                (b.x0 - 1e-9..=b.x1 + 1e-9).contains(&p.x)
+                    && (b.y0 - 1e-9..=b.y1 + 1e-9).contains(&p.y)
+            })
+        });
+        assert!(inside, "weed line {:?} runs outside every box", t.points);
+    }
+}
+
+#[test]
+fn boxes_closer_than_a_short_piece_merge() {
+    // Margin 3: box one ends at x 43. Box two starts 0.5 mm after it (one
+    // box, no sliver), then 6 mm after it (two boxes).
+    let count = |gap: f64| {
+        let input = [
+            placed(1, rect_path(20.0, 20.0, 20.0, 20.0)),
+            placed(2, rect_path(43.0 + gap + 3.0, 20.0, 20.0, 20.0)),
+        ];
+        let out = plan(&input, &settings(box_only(3.0, true))).unwrap();
+        weeds(&out).len()
+    };
+    assert_eq!(count(0.5), 1);
+    assert_eq!(count(6.0), 2);
+}
+
+#[test]
+fn no_weed_line_between_shapes_1_5_mm_apart() {
+    let input = [
+        placed(1, rect_path(20.0, 20.0, 40.0, 60.0)),
+        placed(2, rect_path(61.5, 20.0, 40.0, 60.0)),
+    ];
+    let s = settings(WeedSettings {
+        margin_mm: 10.0,
+        lines: WeedLines::Both,
+        spacing_mm: 5.0,
+        ..WeedSettings::default()
+    });
+    let out = plan(&input, &s).unwrap();
+    let design: Vec<(Point, Point)> = out
+        .toolpaths
+        .iter()
+        .filter(|t| t.kind == ToolpathKind::Cut)
+        .flat_map(|t| {
+            t.points
+                .windows(2)
+                .map(|w| (w[0], w[1]))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let w = weeds(&out);
+    assert!(!w.is_empty());
+    for t in w {
+        let (a, b) = (t.points[0], t.points[1]);
+        // Nothing in the 1.5 mm gap between the shapes.
+        let mid = a.midpoint(b);
+        assert!(
+            !((60.0..=61.5).contains(&mid.x) && (20.0..=80.0).contains(&mid.y)),
+            "a weed line in the gap: {a:?} {b:?}"
+        );
+        for &(c, d) in &design {
+            assert!(seg_distance(a, b, c, d) >= WEED_CLEARANCE_MM - 1e-9);
+        }
+    }
+}
+
+#[test]
+fn a_kept_sheet_drops_the_box_and_the_lines() {
+    // A stub keep rule for Task 29: the sheet is kept (Stencil). The box
+    // asks the same question as the lines, so both are left out and the
+    // box is counted.
+    let ring = Toolpath::new(
+        vec![
+            Point::new(50.0, 50.0),
+            Point::new(90.0, 50.0),
+            Point::new(90.0, 90.0),
+            Point::new(50.0, 90.0),
+            Point::new(50.0, 50.0),
+        ],
+        true,
+        PathRef {
+            object: ObjectId(1),
+            path_index: 0,
+        },
+    );
+    let s = WeedSettings {
+        weed_box: true,
+        lines: WeedLines::Both,
+        spacing_mm: 5.0,
+        margin_mm: 10.0,
+        ..WeedSettings::default()
+    };
+    let area = Rect::new(0.0, 0.0, 300.0, 300.0);
+    let w = weed::generate(std::slice::from_ref(&ring), |_| KeepMode::Stencil, area, &s);
+    assert!(w.lines.is_empty() && w.boxes.is_empty(), "{w:?}");
+    assert_eq!(w.blocked_boxes, 1);
+    // The same with the pieces kept: a box and lines.
+    let w = weed::generate(&[ring], |_| KeepMode::Pieces, area, &s);
+    assert_eq!(w.boxes.len(), 1);
+    assert!(!w.lines.is_empty());
+    assert_eq!(w.blocked_boxes, 0);
 }
 
 // ------------------------------------------------------------ property

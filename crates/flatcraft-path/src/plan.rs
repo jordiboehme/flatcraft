@@ -273,6 +273,8 @@ pub struct CutPlan {
     /// Weed boxes left out because they do not fit inside the cutting
     /// area with the weed clearance to the design.
     pub dropped_weed_boxes: usize,
+    /// Weed boxes left out because their outline would cut kept material.
+    pub blocked_weed_boxes: usize,
 }
 
 /// The pipeline setting an [`PlanError::InvalidSettings`] is about.
@@ -611,6 +613,7 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
         compensation,
         dropped_short,
         dropped_weed_boxes: weeds.dropped_boxes,
+        blocked_weed_boxes: weeds.blocked_boxes,
     })
 }
 
