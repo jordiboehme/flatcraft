@@ -210,9 +210,6 @@ fn not_ready(snap: &Snapshot, p: &ArrangePanel) -> Option<String> {
             Some("A total angle of 0 stacks every copy on the original. Pick another angle.".into())
         }
         PanelKind::CircularPattern => too_many(u64::from(v.circular.count.saturating_sub(1))),
-        PanelKind::AutoArrange if n > 0 && snap.selected().all(|o| !o.visible) => Some(
-            "The selected objects are hidden, so there is nothing to pack. Show them, or select nothing to pack every visible object.".into(),
-        ),
         _ => None,
     }
 }
@@ -288,18 +285,65 @@ pub fn ok_action(snap: &Snapshot, p: &ArrangePanel) -> Option<Action> {
 /// with every visible object), as `arrange.auto` does it: the same
 /// `placement::auto_arrange` on the same boxes.
 pub fn auto_arrange_plan(snap: &Snapshot, spacing_mm: f64) -> Option<placement::AutoPlan<u64>> {
-    let area = snap.area?;
-    let objects: Vec<placement::AutoObject<u64>> = snap
-        .objects
-        .iter()
-        .map(|o| placement::AutoObject {
-            key: o.id,
-            visible: o.visible,
-            bounds: o.arrange_bounds(),
+    let key = PlanKey::of(snap, spacing_mm)?;
+    Some(key.plan())
+}
+
+/// Everything an Auto arrange plan depends on.
+#[derive(Debug, Clone, PartialEq)]
+struct PlanKey {
+    objects: Vec<placement::AutoObject<u64>>,
+    chosen: Vec<u64>,
+    area: Rect,
+    spacing_mm: f64,
+}
+
+impl PlanKey {
+    fn of(snap: &Snapshot, spacing_mm: f64) -> Option<Self> {
+        Some(Self {
+            objects: snap
+                .objects
+                .iter()
+                .map(|o| placement::AutoObject {
+                    key: o.id,
+                    visible: o.visible,
+                    bounds: o.arrange_bounds(),
+                })
+                .collect(),
+            chosen: snap.selection.iter().copied().collect(),
+            area: snap.area?,
+            spacing_mm,
         })
-        .collect();
-    let chosen: Vec<u64> = snap.selection.iter().copied().collect();
-    Some(placement::auto_arrange(&objects, &chosen, area, spacing_mm))
+    }
+
+    fn plan(&self) -> placement::AutoPlan<u64> {
+        placement::auto_arrange(&self.objects, &self.chosen, self.area, self.spacing_mm)
+    }
+}
+
+/// The last Auto arrange plan and what it was made from, so the canvas
+/// and the panel pack once, and again only when something changed (an
+/// object, the selection, the area or the spacing), not every frame.
+#[derive(Debug, Clone, Default)]
+pub struct AutoPlanCache {
+    key: Option<PlanKey>,
+    plan: Option<placement::AutoPlan<u64>>,
+}
+
+impl AutoPlanCache {
+    /// The plan of the open panel `p`, `None` when it is not Auto
+    /// arrange or cannot run.
+    pub fn get(&mut self, snap: &Snapshot, p: &ArrangePanel) -> Option<&placement::AutoPlan<u64>> {
+        if p.kind != PanelKind::AutoArrange || not_ready(snap, p).is_some() {
+            return None;
+        }
+        let key = PlanKey::of(snap, p.values.spacing_mm)?;
+        if self.key.as_ref() != Some(&key) || self.plan.is_none() {
+            self.plan = Some(key.plan());
+            self.key = Some(key);
+        }
+        self.plan.as_ref()
+    }
 }
 
 /// What the Auto arrange panel packs, for its title: "3 selected
@@ -324,22 +368,40 @@ pub fn panel_title(snap: &Snapshot, p: &ArrangePanel) -> String {
     }
 }
 
+/// What the Auto arrange panel says when some objects do not fit.
+pub fn did_not_fit_note(n: usize) -> String {
+    if n == 1 {
+        "1 object does not fit. It stays where it is, marked in red.".into()
+    } else {
+        format!("{n} objects do not fit. They stay where they are, marked in red.")
+    }
+}
+
 /// The hover card of the Auto arrange panel's title.
 pub const AUTO_ARRANGE_CARD: &str = "Select the objects you want packed. Everything else stays where you put it, and the packed objects fit around it.";
 
 /// The objects the open panel's preview draws as fixed: for Auto arrange,
 /// the visible objects it packs around. Empty for the other panels.
 pub fn fixed(snap: &Snapshot, p: &ArrangePanel) -> Vec<u64> {
-    if p.kind != PanelKind::AutoArrange || not_ready(snap, p).is_some() {
-        return Vec::new();
-    }
-    auto_arrange_plan(snap, p.values.spacing_mm).map_or_else(Vec::new, |plan| plan.fixed)
+    AutoPlanCache::default()
+        .get(snap, p)
+        .map_or_else(Vec::new, |plan| plan.fixed.clone())
 }
 
 /// The would-be objects of the open panel: for each, the object it shows
 /// and the affine from its centre-relative shape to mat mm. Built with the
 /// same `placement` functions as the commands.
 pub fn ghosts(snap: &Snapshot, p: &ArrangePanel) -> Vec<(u64, Affine)> {
+    ghosts_with(snap, p, AutoPlanCache::default().get(snap, p))
+}
+
+/// [`ghosts`] with the Auto arrange plan already made (see
+/// [`AutoPlanCache`]); the other panels ignore it.
+pub fn ghosts_with(
+    snap: &Snapshot,
+    p: &ArrangePanel,
+    auto: Option<&placement::AutoPlan<u64>>,
+) -> Vec<(u64, Affine)> {
     if not_ready(snap, p).is_some() {
         return Vec::new();
     }
@@ -405,8 +467,7 @@ pub fn ghosts(snap: &Snapshot, p: &ArrangePanel) -> Vec<(u64, Affine)> {
             }
         }
         PanelKind::AutoArrange => {
-            let moves = auto_arrange_plan(snap, v.spacing_mm).map_or_else(Vec::new, |p| p.moves);
-            for (id, d) in moves {
+            for (id, d) in auto.map_or(&[][..], |p| &p.moves[..]).iter().copied() {
                 if let Some(o) = snap.object(id) {
                     out.push((id, at(o.transform.center_mm + d)));
                 }
@@ -678,6 +739,13 @@ pub fn panel_ui(
     let why = not_ready(snap, p);
     if let Some(why) = &why {
         ui.label(RichText::new(why.as_str()).color(t.text_dim));
+    } else if let Some(n) = st
+        .auto_plan
+        .get(snap, p)
+        .map(|plan| plan.did_not_fit.len())
+        .filter(|n| *n > 0)
+    {
+        ui.label(RichText::new(did_not_fit_note(n)).color(t.text_dim));
     } else if matches!(
         p.kind,
         PanelKind::RectangularPattern | PanelKind::CircularPattern

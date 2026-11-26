@@ -285,6 +285,8 @@ pub struct PrepareState {
     pub panel: Option<ArrangePanel>,
     /// The values of the last panel that ran, for the next one.
     pub panel_last: PanelValues,
+    /// The Auto arrange panel's last plan (see `arrange::AutoPlanCache`).
+    pub auto_plan: super::arrange::AutoPlanCache,
     /// Open this group's list on the next frame (search asked for it).
     pub open_group: Option<super::tools::GroupId>,
     /// The screen area of the open Arrange panel, last frame.
@@ -375,6 +377,7 @@ impl Default for PrepareState {
             cache: ShapeCache::default(),
             panel: None,
             panel_last: PanelValues::default(),
+            auto_plan: arrange::AutoPlanCache::default(),
             open_group: None,
             panel_rect: None,
             text_focus_elsewhere: false,
@@ -406,6 +409,10 @@ pub struct Shape {
     pub lines: Vec<Line>,
     /// What `document.state` reports as `bounds_mm`, minus the centre.
     pub bounds: Option<kurbo::Rect>,
+    /// The box Auto arrange packs or packs around, minus the centre (for
+    /// an untraced picture its image): the engine's
+    /// `centred_arrange_bounds`, so the preview matches the command.
+    pub arrange: Option<kurbo::Rect>,
 }
 
 /// Everything a cached shape depends on, except the centre.
@@ -417,6 +424,7 @@ struct ShapeKey {
     rotation_deg: f64,
     mirror: bool,
     local_bounds: kurbo::Rect,
+    frame: kurbo::Rect,
     cut: CutOptions,
 }
 
@@ -436,6 +444,8 @@ pub struct ShapeInput {
     pub geometry: Arc<Vec<CutPath>>,
     pub transform: Transform,
     pub local_bounds: kurbo::Rect,
+    /// The source's page frame in local mm (`Object::frame`).
+    pub frame: kurbo::Rect,
     pub cut: CutOptions,
 }
 
@@ -445,6 +455,7 @@ impl ShapeInput {
             geometry: o.geometry.clone(),
             transform: o.transform,
             local_bounds: o.local_bounds,
+            frame: o.frame,
             cut: o.cut,
         }
     }
@@ -458,6 +469,7 @@ impl ShapeInput {
             rotation_deg: t.rotation_deg,
             mirror: t.mirror,
             local_bounds: self.local_bounds,
+            frame: self.frame,
             cut: self.cut,
         }
     }
@@ -468,12 +480,14 @@ impl ShapeInput {
 
     /// An object with only what drawing and bounds read.
     fn object(&self) -> Object {
-        Object::shape_only(
+        let mut o = Object::shape_only(
             self.geometry.clone(),
             self.local_bounds,
             self.transform,
             self.cut,
-        )
+        );
+        o.frame = self.frame;
+        o
     }
 }
 
@@ -763,6 +777,7 @@ pub fn build_shape(input: &ShapeInput) -> Shape {
     Shape {
         lines,
         bounds: placed_bounds(&o),
+        arrange: flatcraft_engine::commands::centred_arrange_bounds(&o),
     }
 }
 
@@ -787,9 +802,6 @@ pub struct ObjView {
     /// The source bytes, shared with the document. See [`ObjView::same_source`].
     pub source: Arc<[u8]>,
     pub shape: Arc<Shape>,
-    /// The source's page frame placed on the mat, in mm (for a picture,
-    /// the image), `None` when unknown.
-    pub frame: Option<kurbo::Rect>,
 }
 
 impl ObjView {
@@ -806,11 +818,14 @@ impl ObjView {
             .map(|b| b + self.transform.center_mm.to_vec2())
     }
 
-    /// The box Auto arrange packs or packs around, as the engine's
-    /// `arrange_bounds`: [`Self::bounds`], or the placed frame while the
-    /// object has no geometry (an untraced picture).
+    /// The box Auto arrange packs or packs around, built as the engine's
+    /// `arrange_bounds` (the cut geometry's box, or for an untraced
+    /// picture its image), so both agree to the last bit. `None` while the
+    /// shape is still being built.
     pub fn arrange_bounds(&self) -> Option<kurbo::Rect> {
-        self.bounds().or(self.frame)
+        self.shape
+            .arrange
+            .map(|b| b + self.transform.center_mm.to_vec2())
     }
 }
 
@@ -1035,7 +1050,6 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
                     Source::Svg { bytes, .. } | Source::Raster { bytes, .. } => bytes.clone(),
                 },
                 shape,
-                frame: flatcraft_engine::commands::placed_frame(o),
             });
         }
         Snapshot {
@@ -1539,6 +1553,7 @@ mod tests {
             local_bounds: flatcraft_core::geometry::bounds(&geometry).unwrap(),
             geometry: Arc::new(geometry),
             transform: Transform::default(),
+            frame: kurbo::Rect::ZERO,
             cut: CutOptions::default(),
         };
         let shape = build_shape(&input);

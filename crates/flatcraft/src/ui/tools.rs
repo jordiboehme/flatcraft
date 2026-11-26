@@ -888,10 +888,15 @@ impl Tool {
             Act::DistributeHorizontal | Act::DistributeVertical => {
                 (n < 3).then_some("Select 3 or more objects first.")
             }
-            Act::AutoArrangePanel | Act::AutoArrange => snap
-                .objects
-                .is_empty()
-                .then_some("Import something first. There is nothing to arrange yet."),
+            Act::AutoArrangePanel | Act::AutoArrange => {
+                if snap.objects.is_empty() {
+                    Some("Import something first. There is nothing to arrange yet.")
+                } else if !snap.selection.is_empty() && snap.selected().all(|o| !o.visible) {
+                    Some(ONLY_HIDDEN_SELECTED)
+                } else {
+                    None
+                }
+            }
             Act::Duplicate
             | Act::Delete
             | Act::MoveCopy
@@ -999,6 +1004,9 @@ impl Tool {
         }
     }
 }
+
+/// Why Auto arrange cannot run when every selected object is hidden.
+pub const ONLY_HIDDEN_SELECTED: &str = "The selected objects are hidden, so there is nothing to pack. Show them, or select nothing to pack every visible object.";
 
 /// Why an action that needs the cutting area cannot run.
 pub const NO_AREA: &str =

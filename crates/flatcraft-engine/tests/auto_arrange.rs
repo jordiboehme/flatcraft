@@ -433,6 +433,65 @@ fn hidden_selected_objects_stay_and_are_listed() {
 }
 
 #[test]
+fn heights_equal_but_for_float_noise_go_in_id_order() {
+    // Key 2 is taller by 1e-12 mm: noise, not a real difference.
+    let items = [
+        (2u32, Rect::new(0.0, 0.0, 30.0, 20.0 + 1e-12)),
+        (1u32, Rect::new(100.0, 100.0, 50.0 + 100.0, 120.0)),
+    ];
+    let (moves, missed) = placement::pack_around(&items, &[], AREA, 5.0);
+    assert!(missed.is_empty());
+    assert_eq!(moves[0].0, 1, "id order, not the noise");
+    assert_eq!(moves[0].1, Point::new(5.0, 5.0) - Point::new(100.0, 100.0));
+    assert_eq!(moves[1].0, 2);
+    // The second sits right of the first, on the same row.
+    assert!((items[0].1 + moves[1].1).x0 - 60.0 < 1e-9);
+    // In the other order the result is the same.
+    let swapped = [items[1], items[0]];
+    assert_eq!(placement::pack_around(&swapped, &[], AREA, 5.0).0, moves);
+}
+
+#[test]
+fn rotated_objects_are_packed_and_packed_around_by_their_box() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let fixed = rect_at(&mut s, 80.0, 30.0, Point::new(20.0, 20.0));
+    let packed = rect_at(&mut s, 60.0, 20.0, Point::new(150.0, 200.0));
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [fixed, packed], "degrees": 30.0, "about": "each" }),
+    );
+    let fixed_box = boxed(&s, fixed);
+    let size = boxed(&s, packed).size();
+    let angle = s
+        .doc()
+        .document
+        .get(ObjectId(packed))
+        .unwrap()
+        .transform
+        .rotation_deg;
+    run(&mut s, "object.select", json!({ "ids": [packed] }));
+    let r = run(&mut s, "arrange.auto", json!({ "spacing_mm": 5.0 }));
+    assert_eq!(ids(&r["placed"]), vec![packed], "{r}");
+    let b = boxed(&s, packed);
+    assert_eq!(boxed(&s, fixed), fixed_box, "the obstacle did not move");
+    assert!((b.width() - size.width).abs() < TOL && (b.height() - size.height).abs() < TOL);
+    assert_eq!(
+        s.doc()
+            .document
+            .get(ObjectId(packed))
+            .unwrap()
+            .transform
+            .rotation_deg,
+        angle,
+        "still turned"
+    );
+    assert!(within(b, AREA), "{b:?}");
+    assert!(gap(b, fixed_box) >= 5.0 - TOL, "{b:?} near {fixed_box:?}");
+}
+
+#[test]
 fn a_chosen_object_without_a_box_does_not_fit() {
     let objects = [
         AutoObject {

@@ -142,7 +142,21 @@ pub fn placed_frame(o: &Object) -> Option<Rect> {
 /// The box Auto arrange packs or packs around: the cut geometry's box
 /// ([`placed_bounds`]), or for an object without geometry (an untraced
 /// picture) its placed frame ([`placed_frame`]).
+///
+/// It is [`centred_arrange_bounds`] moved by the centre, exactly as the
+/// window's preview builds it from its cached shape, so both get the
+/// same numbers to the last bit.
 pub fn arrange_bounds(o: &Object) -> Option<Rect> {
+    let mut at_origin = Object::shape_only(o.geometry.clone(), o.local_bounds, o.transform, o.cut);
+    at_origin.frame = o.frame;
+    at_origin.transform.center_mm = Point::ORIGIN;
+    centred_arrange_bounds(&at_origin).map(|b| b + o.transform.center_mm.to_vec2())
+}
+
+/// The Auto arrange box of `o` as placed with its centre at 0,0 (the
+/// caller sets it). [`arrange_bounds`] and the window's shape cache both
+/// use it.
+pub fn centred_arrange_bounds(o: &Object) -> Option<Rect> {
     placed_bounds(o).or_else(|| placed_frame(o))
 }
 

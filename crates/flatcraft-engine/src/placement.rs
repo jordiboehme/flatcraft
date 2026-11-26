@@ -196,7 +196,7 @@ pub struct AutoPlan<K> {
 /// object without a box cannot be placed and is listed in `did_not_fit`.
 ///
 /// This is the one place that decides what is packed as one item.
-pub fn auto_arrange<K: Copy + PartialEq>(
+pub fn auto_arrange<K: Copy + Ord>(
     objects: &[AutoObject<K>],
     chosen: &[K],
     area: Rect,
@@ -292,10 +292,21 @@ fn take(free: &mut Vec<Rect>, used: Rect) {
     *free = kept;
 }
 
+/// The grid heights and spots are compared on, mm: float noise below it
+/// (the same box built two ways differs by a few ulps) never changes the
+/// order or the spot.
+const SNAP_MM: f64 = 1e-6;
+
+/// `v` on the [`SNAP_MM`] grid, as a whole number to compare.
+fn snapped(v: f64) -> i64 {
+    (v / SNAP_MM).round() as i64
+}
+
 /// Packs `items` into `area` around the fixed `obstacles`: a max-rects
-/// packer on bounding boxes, tallest first (equal heights keep their
-/// order), each one at the free spot nearest the top of the area, then
-/// nearest its left. Packed boxes keep `spacing` mm from each other and
+/// packer on bounding boxes, tallest first (heights equal on the
+/// [`SNAP_MM`] grid go in key order), each one at the free spot nearest
+/// the top of the area, then nearest its left (compared on the same
+/// grid; of equal spots the first free rect wins). Packed boxes keep `spacing` mm from each other and
 /// from every obstacle; rotation and size never change. Returns the move
 /// of each box that is placed, and the keys of those that do not fit, in
 /// that order.
@@ -303,7 +314,7 @@ fn take(free: &mut Vec<Rect>, used: Rect) {
 /// The spacing is added to the right and bottom of every box (packed or
 /// obstacle) and of the area, so two boxes that touch after that are
 /// exactly `spacing` apart, and a box may still touch the area's edge.
-pub fn pack_around<K: Copy>(
+pub fn pack_around<K: Copy + Ord>(
     items: &[(K, Rect)],
     obstacles: &[Rect],
     area: Rect,
@@ -326,8 +337,11 @@ pub fn pack_around<K: Copy>(
         }
     }
     let mut items: Vec<(K, Rect)> = items.to_vec();
-    // Stable: equal heights keep their order.
-    items.sort_by(|a, b| b.1.height().total_cmp(&a.1.height()));
+    items.sort_by(|a, b| {
+        snapped(b.1.height())
+            .cmp(&snapped(a.1.height()))
+            .then(a.0.cmp(&b.0))
+    });
     let mut placed = Vec::new();
     let mut did_not_fit = Vec::new();
     for (key, b) in items {
@@ -337,7 +351,7 @@ pub fn pack_around<K: Copy>(
             .iter()
             .filter(|f| f.width() + FIT_EPS >= w && f.height() + FIT_EPS >= h)
             .map(|f| Point::new(f.x0, f.y0))
-            .min_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)));
+            .min_by_key(|p| (snapped(p.y), snapped(p.x)));
         match spot {
             Some(p) => {
                 take(&mut free, Rect::new(p.x, p.y, p.x + w, p.y + h));

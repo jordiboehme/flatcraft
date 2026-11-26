@@ -650,3 +650,241 @@ const BLANK_PNG: &[u8] = &[
     0x94, 0x31, 0x00, 0xf7, 0xc0, 0x3f, 0xc1, 0xb2, 0x34, 0x41, 0xbb, 0x00, 0x00, 0x00, 0x00, 0x49,
     0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
 ];
+
+#[test]
+fn one_click_auto_arrange_is_dimmed_when_only_hidden_objects_are_selected() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let _b = import_square(&s);
+    s.lock()
+        .unwrap()
+        .execute(
+            "object.set_visible",
+            json!({ "ids": [a], "visible": false }),
+            Origin::User,
+        )
+        .unwrap();
+    select(&s, &[a]);
+    pin(&s, &["auto_arrange", "auto_arrange.panel"]);
+    let mut h = rig(&dir, s.clone());
+    show_tab(&mut h, "Layout");
+    for name in ["Auto arrange", "Auto arrange..."] {
+        assert!(disabled(&h, name), "{name}");
+    }
+    hover_button(&mut h, "Auto arrange");
+    h.get_by_label(tools::ONLY_HIDDEN_SELECTED);
+    let undo = undo_len(&s);
+    h.get_by_role_and_label(Role::Button, "Auto arrange")
+        .click();
+    h.run();
+    wait_for_workers(&mut h);
+    assert_eq!(undo_len(&s), undo);
+    // In the list too.
+    h.get_by_role_and_label(Role::Button, "Arrange").click();
+    h.run();
+    assert!(disabled(&h, "Auto arrange (Arrange)"));
+    assert!(disabled(&h, "Auto arrange... (Arrange)"));
+    // A visible one selected again: it runs.
+    let ctx = h.ctx.clone();
+    select(&s, &[_b]);
+    h.run();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    assert_eq!(tools::by_act(Act::AutoArrange).blocked(&snap), None);
+}
+
+/// The centre of every object, by id.
+fn centres(s: &SharedSession) -> Vec<(u64, kurbo::Point)> {
+    let g = s.lock().unwrap();
+    g.doc()
+        .document
+        .objects
+        .iter()
+        .map(|o| (o.id.0, o.transform.center_mm))
+        .collect()
+}
+
+/// An imported `w` x `h` mm rectangle.
+fn import_rect(s: &SharedSession, w: f64, h: f64) -> u64 {
+    let svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="400mm" height="400mm" viewBox="0 0 400 400"><rect x="10" y="10" width="{w}" height="{h}"/></svg>"#
+    );
+    s.lock()
+        .unwrap()
+        .execute(
+            "object.import_svg",
+            json!({ "svg": svg, "name": "rect" }),
+            Origin::User,
+        )
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap()
+}
+
+#[test]
+fn the_auto_arrange_preview_matches_the_command_in_many_scenes() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = rig(&dir, s.clone());
+    let ctx = h.ctx.clone();
+    // A small fixed random generator: the same scenes every run.
+    let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+    let mut next = move |n: u64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed % n
+    };
+    for scene in 0..40 {
+        let all: Vec<u64> = centres(&s).into_iter().map(|(id, _)| id).collect();
+        if !all.is_empty() {
+            s.lock()
+                .unwrap()
+                .execute("object.delete", json!({ "ids": all }), Origin::User)
+                .unwrap();
+        }
+        // Equal nominal heights, different widths, odd scales and places.
+        let mut ids = Vec::new();
+        for _ in 0..3 + next(6) {
+            let w = 10.0 + next(60) as f64 * 1.7;
+            let id = import_rect(&s, w, 20.0);
+            let factor = [1.0, 0.352777, 1.3][next(3) as usize];
+            let mut g = s.lock().unwrap();
+            if factor != 1.0 {
+                g.execute(
+                    "object.scale",
+                    json!({ "ids": [id], "factor": factor }),
+                    Origin::User,
+                )
+                .unwrap();
+            }
+            g.execute(
+                "object.move",
+                json!({
+                    "ids": [id],
+                    "dx_mm": next(25_000) as f64 / 97.0,
+                    "dy_mm": next(25_000) as f64 / 89.0,
+                }),
+                Origin::User,
+            )
+            .unwrap();
+            ids.push(id);
+        }
+        let chosen: Vec<u64> = ids.iter().copied().filter(|_| next(4) != 0).collect();
+        select(&s, &chosen);
+        h.run();
+        let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+        let plan = flatcraft::ui::arrange::auto_arrange_plan(&snap, 5.0).unwrap();
+        let ghosts: Vec<(u64, kurbo::Point)> = plan
+            .moves
+            .iter()
+            .map(|(id, d)| (*id, snap.object(*id).unwrap().transform.center_mm + *d))
+            .collect();
+        let r = s
+            .lock()
+            .unwrap()
+            .execute(
+                "arrange.auto",
+                json!({ "ids": chosen, "spacing_mm": 5.0 }),
+                Origin::User,
+            )
+            .unwrap();
+        let after = centres(&s);
+        for (id, ghost) in &ghosts {
+            let at = after.iter().find(|(i, _)| i == id).unwrap().1;
+            // To the last bit.
+            assert_eq!(at, *ghost, "scene {scene}, object {id}: {r}");
+        }
+    }
+}
+
+#[test]
+fn the_auto_arrange_preview_is_exactly_where_ok_puts_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    // Equal-height objects at odd places, some scaled by a px-to-mm like
+    // factor and one rotated, so float noise differs per object.
+    let mut ids = Vec::new();
+    for k in 0..7u32 {
+        let id = import_square(&s);
+        let mut g = s.lock().unwrap();
+        if k % 2 == 1 {
+            g.execute(
+                "object.scale",
+                json!({ "ids": [id], "factor": 0.352777 }),
+                Origin::User,
+            )
+            .unwrap();
+        }
+        if k == 5 {
+            g.execute(
+                "object.rotate",
+                json!({ "ids": [id], "degrees": 90.0 }),
+                Origin::User,
+            )
+            .unwrap();
+        }
+        g.execute(
+            "object.move",
+            json!({ "ids": [id], "dx_mm": 13.37 * f64::from(k) + 0.1, "dy_mm": 271.828 / f64::from(k + 3) }),
+            Origin::User,
+        )
+        .unwrap();
+        ids.push(id);
+    }
+    // Two stay where they are.
+    select(&s, &ids[..5]);
+    let mut h = rig(&dir, s.clone());
+    show_tab(&mut h, "Layout");
+    h.get_by_role_and_label(Role::Button, "Arrange").click();
+    h.run();
+    h.get_by_label("Auto arrange... (Arrange)").click();
+    h.run();
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    let panel = app(&h).ui.prepare.panel.clone().unwrap();
+    let ghosts: Vec<(u64, kurbo::Point)> = flatcraft::ui::arrange::ghosts(&snap, &panel)
+        .into_iter()
+        .map(|(id, aff)| (id, aff * kurbo::Point::ZERO))
+        .collect();
+    assert_eq!(ghosts.len(), 5);
+    let before = centres(&s);
+    h.get_by_role_and_label(Role::Button, "OK").click();
+    h.run();
+    wait_for_workers(&mut h);
+    let after = centres(&s);
+    for (id, at) in &after {
+        match ghosts.iter().find(|(g, _)| g == id) {
+            // To the last bit.
+            Some((_, ghost)) => assert_eq!(at, ghost, "object {id}"),
+            None => assert!(before.contains(&(*id, *at)), "object {id} moved"),
+        }
+    }
+}
+
+#[test]
+fn the_panel_says_which_objects_do_not_fit() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    // A big object placed by hand leaves no room for the tall one.
+    let _wall = import_rect(&s, 280.0, 260.0);
+    let tall = import_rect(&s, 50.0, 60.0);
+    select(&s, &[tall]);
+    let mut h = rig(&dir, s.clone());
+    show_tab(&mut h, "Layout");
+    h.get_by_role_and_label(Role::Button, "Arrange").click();
+    h.run();
+    h.get_by_label("Auto arrange... (Arrange)").click();
+    h.run();
+    h.get_by_label(&flatcraft::ui::arrange::did_not_fit_note(1));
+    assert_eq!(
+        flatcraft::ui::arrange::did_not_fit_note(2),
+        "2 objects do not fit. They stay where they are, marked in red."
+    );
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    let panel = app(&h).ui.prepare.panel.clone().unwrap();
+    assert!(flatcraft::ui::arrange::ghosts(&snap, &panel).is_empty());
+    let plan = flatcraft::ui::arrange::auto_arrange_plan(&snap, panel.values.spacing_mm).unwrap();
+    assert_eq!(plan.did_not_fit, vec![tall]);
+}

@@ -745,21 +745,27 @@ pub fn show(
     draw_objects(&painter, snap, &view, mat_rgb, 1.0, false, |id| {
         drag_preview(st.drag.as_ref(), snap, id)
     });
-    if let Some(p) = &st.panel {
-        draw_fixed(
-            &painter,
-            snap,
-            &view,
-            contrast,
-            &super::arrange::fixed(snap, p),
-            p.values.spacing_mm,
-        );
+    if let Some(p) = st.panel.clone() {
+        // Packed once per change, for the ghosts, the fixed objects and
+        // the ones that do not fit alike.
+        let plan = st.auto_plan.get(snap, &p);
+        if let Some(plan) = plan {
+            draw_fixed(
+                &painter,
+                snap,
+                &view,
+                contrast,
+                &plan.fixed,
+                p.values.spacing_mm,
+            );
+            draw_did_not_fit(&painter, snap, &view, t.danger, &plan.did_not_fit);
+        }
         draw_ghosts(
             &painter,
             snap,
             &view,
             mat_rgb,
-            &super::arrange::ghosts(snap, p),
+            &super::arrange::ghosts_with(snap, &p, plan),
         );
     }
     draw_area(&painter, snap, &view, t, contrast);
@@ -918,6 +924,27 @@ pub(crate) fn draw_fixed(
     }
 }
 
+/// Marks the chosen objects an open Auto arrange panel cannot place (see
+/// [`super::arrange::did_not_fit_note`]): a red outline of their box.
+pub(crate) fn draw_did_not_fit(
+    painter: &egui::Painter,
+    snap: &Snapshot,
+    view: &CanvasView,
+    danger: Color32,
+    ids: &[u64],
+) {
+    for id in ids {
+        if let Some(b) = snap.object(*id).and_then(|o| o.arrange_bounds()) {
+            painter.rect_stroke(
+                view.rect_to_screen(b),
+                0.0,
+                Stroke::new(2.0, danger),
+                egui::StrokeKind::Outside,
+            );
+        }
+    }
+}
+
 /// Draws the would-be objects of an open Arrange panel faintly: each
 /// ghost is an object's shape placed by its affine (see
 /// [`super::arrange::ghosts`]). Nothing in the document changes.
@@ -948,9 +975,8 @@ pub(crate) fn draw_ghosts(
         }
         // A picture that is not traced yet has no lines: its image box.
         if o.shape.lines.is_empty()
-            && let Some(f) = o.frame
+            && let Some(f) = o.shape.arrange
         {
-            let f = f - o.transform.center_mm.to_vec2();
             let pts: Vec<Pos2> = [
                 (f.x0, f.y0),
                 (f.x1, f.y0),
