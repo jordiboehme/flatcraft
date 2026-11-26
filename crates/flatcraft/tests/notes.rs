@@ -265,3 +265,51 @@ fn the_cut_workspace_shows_the_notes_above_the_send_button() {
     h.run();
     assert!(h.query_by_role_and_label(Role::Button, "Notes").is_none());
 }
+
+#[test]
+fn typing_over_many_frames_is_still_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let steps = undo_len(&s);
+    let mut h = in_prepare(&dir, s.clone());
+    h.get_by_label("Project notes").click();
+    h.run();
+    for c in ["a", "b", "c", "d"] {
+        h.get_by_label("Project notes").type_text(c);
+        h.run();
+        h.run();
+    }
+    assert_eq!(s.lock().unwrap().doc().document.notes, "abcd");
+    assert_eq!(undo_len(&s), steps + 1, "one visit, one undo step");
+    // Leaving the field and coming back is a new step.
+    h.key_press(egui::Key::Escape);
+    h.run();
+    h.get_by_label("Project notes").click();
+    h.run();
+    h.get_by_label("Project notes").type_text("e");
+    h.run();
+    h.run();
+    assert_eq!(undo_len(&s), steps + 2);
+}
+
+#[test]
+fn the_notes_stay_reachable_in_a_short_window_with_many_objects() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let ids: Vec<u64> = (0..12).map(|_| import_square(&s)).collect();
+    run(&s, "object.select", json!({ "ids": [ids[0]] }));
+    let mut h = harness_sized(&dir, s.clone(), [1400.0, 700.0], 8, |a| a);
+    to_prepare(&mut h);
+    h.run();
+    h.get_by_label("Project notes").scroll_to_me();
+    h.run();
+    h.run();
+    let field = h.get_by_label("Project notes").rect();
+    assert!(
+        field.bottom() <= 700.0 && field.top() >= 0.0,
+        "the field can be seen: {field:?}"
+    );
+    type_into(&mut h, "Project notes", "short window");
+    assert_eq!(s.lock().unwrap().doc().document.notes, "short window");
+}

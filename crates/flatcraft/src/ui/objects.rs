@@ -38,27 +38,38 @@ pub fn show(
         st.panels.set_collapsed(SidePanel::Objects, true);
     }
     ui.add_space(t.spacing / 2.0);
-    if snap.objects.is_empty() {
-        ui.label(
-            RichText::new("Nothing here yet. Import a design to get started.").color(t.text_dim),
-        );
-    }
+    // One scroll area for the whole panel, so the Notes below the list stay
+    // reachable in a short window. The list keeps its own, at most 60 % of
+    // the panel's height.
+    let list_h = ui.available_height() * 0.6;
     egui::ScrollArea::vertical()
-        .auto_shrink([false, true])
-        .max_height(ui.available_height() * 0.6)
+        .id_salt("flatcraft-objects-panel")
+        .auto_shrink([false, false])
         .show(ui, |ui| {
-            for o in &snap.objects {
-                object_row(ui, st, snap, o, t, actions);
+            if snap.objects.is_empty() {
+                ui.label(
+                    RichText::new("Nothing here yet. Import a design to get started.")
+                        .color(t.text_dim),
+                );
             }
-        });
+            egui::ScrollArea::vertical()
+                .id_salt("flatcraft-objects-list")
+                .auto_shrink([false, true])
+                .max_height(list_h)
+                .show(ui, |ui| {
+                    for o in &snap.objects {
+                        object_row(ui, st, snap, o, t, actions);
+                    }
+                });
 
-    let mut selected = snap.selected();
-    if let (Some(o), None) = (selected.next(), selected.next()) {
-        ui.separator();
-        details(ui, o, st, snap, t, actions);
-    }
-    ui.separator();
-    notes(ui, st, snap, t, actions);
+            let mut selected = snap.selected();
+            if let (Some(o), None) = (selected.next(), selected.next()) {
+                ui.separator();
+                details(ui, o, st, snap, t, actions);
+            }
+            ui.separator();
+            notes(ui, st, snap, t, actions);
+        });
 }
 
 /// The card of the Notes heading in the Objects panel.
