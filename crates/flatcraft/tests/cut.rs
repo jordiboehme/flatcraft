@@ -10,11 +10,12 @@ use common::{
     AppHarness, FakePicker, app, app_mut, harness, harness_with, import_square, session,
     wait_for_source_check,
 };
-use egui::accesskit::Role;
+use egui::accesskit::{Role, Toggled};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use flatcraft::ui::Workspace;
-use flatcraft::ui::cut::{Stage, mm_text};
+use flatcraft::ui::cut::{SIMULATE_HINT, Stage, mm_text, stage_status};
 use flatcraft::ui::files::Revealer;
+use flatcraft::ui::icons::Icon;
 use flatcraft_engine::session::Origin;
 use flatcraft_mcp::SharedSession;
 use serde_json::{Value, json};
@@ -130,12 +131,131 @@ fn sent_bytes_show_in_the_debug_byte_log() {
     );
 }
 
+/// Every text painted last frame.
+fn painted_texts(h: &AppHarness) -> Vec<String> {
+    common::painted(h)
+        .into_iter()
+        .filter_map(|s| match s {
+            egui::Shape::Text(t) => Some(t.galley.job.text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The status line under each stage, as painted on the bar.
+fn status_lines(h: &mut AppHarness) -> Vec<String> {
+    let texts = painted_texts(h);
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(h), &ctx);
+    let want: Vec<String> = Stage::ALL
+        .iter()
+        .map(|s| stage_status(*s, &app(h).ui.cut, &snap))
+        .collect();
+    for w in &want {
+        assert!(texts.contains(w), "{w:?} not painted in {texts:?}");
+    }
+    want
+}
+
 #[test]
-fn simulate_stage_is_disabled() {
+fn every_stage_shows_its_icon_and_title() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     import_square(&s);
     let mut h = harness(&dir, s, false);
+    to_cut(&mut h);
+    assert_eq!(
+        Stage::ALL.map(Stage::icon),
+        [Icon::Plotter, Icon::RouteTravel, Icon::Play, Icon::Send]
+    );
+    let textures: Vec<egui::TextureId> = common::painted(&h)
+        .into_iter()
+        .filter_map(|s| match s {
+            egui::Shape::Mesh(m) => Some(m.texture_id),
+            egui::Shape::Rect(r) => Some(r.fill_texture_id()),
+            _ => None,
+        })
+        .collect();
+    let texts = painted_texts(&h);
+    for stage in Stage::ALL {
+        let icon = flatcraft::ui::icons::texture(&h.ctx, stage.icon(), 24.0).id();
+        assert!(textures.contains(&icon), "{stage:?}: no 24 pt icon");
+        let title = format!("{}  {}", stage.number(), stage.name());
+        assert!(texts.contains(&title), "{title:?} not in {texts:?}");
+        // The accessible name stays the stage's name, a tab.
+        let node = h.get_by_role_and_label(Role::Tab, stage.name());
+        let want = if stage == Stage::Device {
+            Toggled::True
+        } else {
+            Toggled::False
+        };
+        assert_eq!(node.accesskit_node().toggled(), Some(want), "{stage:?}");
+    }
+}
+
+#[test]
+fn status_lines_say_what_is_set_or_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, s.clone(), false);
+    // A fresh document: nothing to cut yet.
+    to_cut(&mut h);
+    assert_eq!(
+        status_lines(&mut h),
+        [
+            "File Output · Copy Paper",
+            "Nothing to cut",
+            "Not ready yet",
+            "Nothing to cut"
+        ]
+    );
+    // A planned job, on file and then on USB, with two passes.
+    import_square(&s);
+    h.run();
+    assert_eq!(
+        status_lines(&mut h),
+        [
+            "File Output · Copy Paper",
+            "Quality · 1 pass",
+            "Not ready yet",
+            "File · ready"
+        ]
+    );
+    run(&s, "job.set_plotter", json!({ "id": "silhouette-cameo-2" }));
+    run(&s, "job.set_overrides", json!({ "passes": 2 }));
+    run(&s, "job.set_weeding", json!({ "box": true }));
+    h.run();
+    assert_eq!(
+        status_lines(&mut h),
+        [
+            "Cameo 2 · Copy Paper",
+            "Quality · 2 passes · weed",
+            "Not ready yet",
+            "USB · ready"
+        ]
+    );
+    // The plotter preset is gone.
+    s.lock().unwrap().doc_mut().document.job.plotter_id = "gone".into();
+    h.run();
+    assert_eq!(
+        status_lines(&mut h),
+        [
+            "Pick a plotter",
+            "Pick a plotter",
+            "Not ready yet",
+            "Pick a plotter"
+        ]
+    );
+}
+
+#[test]
+fn simulate_stage_is_dimmed_with_its_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let mut h = harness(&dir, s, false);
+    h.ctx
+        .global_style_mut(|st| st.interaction.tooltip_delay = 0.0);
     to_cut(&mut h);
     let node = h.get_by_role_and_label(Role::Tab, "Simulate");
     assert!(node.accesskit_node().is_disabled());
@@ -143,6 +263,42 @@ fn simulate_stage_is_disabled() {
     h.run();
     assert_eq!(app(&h).ui.cut.stage, Stage::Device);
     assert!(h.query_by_role_and_label(Role::Tab, "Path").is_some());
+    assert!(!SIMULATE_HINT.contains("milestone"), "{SIMULATE_HINT}");
+    assert!(SIMULATE_HINT.starts_with("Not ready yet"));
+    let at = h
+        .get_by_role_and_label(Role::Tab, "Simulate")
+        .rect()
+        .center();
+    h.hover_at(at);
+    h.run();
+    h.run();
+    h.get_by_label(SIMULATE_HINT);
+    h.get_by_label(Stage::Simulate.hint());
+    // An enabled stage shows what it does.
+    let at = h.get_by_role_and_label(Role::Tab, "Send").rect().center();
+    h.hover_at(at);
+    h.run();
+    h.run();
+    h.get_by_label(Stage::Send.hint());
+}
+
+#[test]
+fn stage_texts_have_no_em_dash() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut texts: Vec<String> = vec![SIMULATE_HINT.into()];
+    for stage in Stage::ALL {
+        texts.extend([stage.name().into(), stage.title(), stage.hint().into()]);
+    }
+    let mut h = harness(&dir, s.clone(), false);
+    to_cut(&mut h);
+    texts.extend(status_lines(&mut h));
+    import_square(&s);
+    h.run();
+    texts.extend(status_lines(&mut h));
+    for t in texts {
+        assert!(!t.contains('\u{2014}'), "{t}");
+    }
 }
 
 #[test]

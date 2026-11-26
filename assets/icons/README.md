@@ -4,7 +4,17 @@ Lucide icons (https://github.com/lucide-icons/lucide), tag 1.79.0.
 Licensed under the ISC License, see LICENSE (copied from the same tag).
 
 Each file is icons/<name>.svg from
-https://raw.githubusercontent.com/lucide-icons/lucide/1.79.0/icons/<name>.svg, unchanged.
+https://raw.githubusercontent.com/lucide-icons/lucide/1.79.0/icons/<name>.svg, unchanged,
+except the two files below.
+
+- `plotter.svg` is FlatCraft's own icon, not a Lucide icon: a cutting plotter (a carriage
+  on a rail over a sheet, with a small blade tip), drawn in the Lucide style (24 grid,
+  2 px round strokes). Lucide has no plotter. It is under the project licence (MPL-2.0).
+- `route-travel.svg` is derived from Lucide "route" (ISC, lucide-static v1.81.0). Its
+  middle segment is dotted (cut, travel, cut, like the Cut canvas): three round dots
+  in place of the solid line. The dots are drawn as round-capped zero-length segments,
+  because the renderer leaves out the last dot of a `stroke-dasharray` and the app's
+  crisp style would turn round dash caps square.
 
 | App icon | Lucide name |
 | --- | --- |
@@ -83,6 +93,10 @@ https://raw.githubusercontent.com/lucide-icons/lucide/1.79.0/icons/<name>.svg, u
 | Open (Home) | folder-open |
 | Thumbs up (How did it go?) | thumbs-up |
 | Thumbs down (How did it go?) | thumbs-down |
+| Device & Material (Cut stage) | plotter (FlatCraft's own, MPL-2.0) |
+| Path (Cut stage) | route-travel (derived from route) |
+| Simulate (Cut stage) | play |
+| Send (Cut stage) | send |
 
 The Align directions "to the cutting area" use the Align icons above. The app draws
 them smaller inside a dashed frame at render time; the files are not changed.

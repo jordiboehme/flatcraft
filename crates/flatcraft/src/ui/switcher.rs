@@ -73,7 +73,7 @@ pub fn ribbon(
                             actions,
                         );
                     }
-                    (Some(_), Workspace::Cut) => {
+                    (Some(snap), Workspace::Cut) => {
                         // The same panel as the ribbon's, without tabs, in
                         // the place of the ribbon panel.
                         ui.vertical(|ui| {
@@ -87,11 +87,12 @@ pub fn ribbon(
                                     ui.set_min_height(TILE_HEIGHT - 10.0);
                                     // The stage bar sits in the middle of the
                                     // panel's height.
-                                    let room = TILE_HEIGHT - 10.0 - ui.spacing().interact_size.y;
+                                    let room = TILE_HEIGHT - 10.0 - cut::BAR_HEIGHT;
                                     ui.add_space(room / 2.0);
                                     super::cut::stage_bar(
                                         ui,
                                         &mut app.ui.cut,
+                                        snap,
                                         &mut app.ui.show_debug,
                                         &t,
                                     );

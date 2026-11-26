@@ -1,5 +1,6 @@
-//! Lucide icons (ISC licence, see `assets/icons/LICENSE`), rasterised with
-//! resvg in the theme's text colour and cached per size and colour.
+//! Lucide icons (ISC licence, see `assets/icons/LICENSE`), plus FlatCraft's
+//! own plotter icon in the Lucide style (MPL-2.0), rasterised with resvg in
+//! the theme's text colour and cached per size and colour.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -103,6 +104,12 @@ pub enum Icon {
     ThumbsUp,
     /// "How did it go?": it did not.
     ThumbsDown,
+    /// The Cut bar's Device & Material stage: FlatCraft's own cutting
+    /// plotter icon in the Lucide style (MPL-2.0, not Lucide).
+    Plotter,
+    /// The Cut bar's Path stage: Lucide "route" with a dotted middle
+    /// (cut, travel, cut).
+    RouteTravel,
 }
 
 macro_rules! svg {
@@ -112,7 +119,7 @@ macro_rules! svg {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 81] = [
+    pub const ALL: [Icon; 83] = [
         Icon::Import,
         Icon::Trace,
         Icon::Duplicate,
@@ -194,6 +201,8 @@ impl Icon {
         Icon::FolderOpen,
         Icon::ThumbsUp,
         Icon::ThumbsDown,
+        Icon::Plotter,
+        Icon::RouteTravel,
     ];
 
     /// The plain icon a framed "to the cutting area" icon is made from.
@@ -292,6 +301,8 @@ impl Icon {
             Icon::FolderOpen => svg!("folder-open"),
             Icon::ThumbsUp => svg!("thumbs-up"),
             Icon::ThumbsDown => svg!("thumbs-down"),
+            Icon::Plotter => svg!("plotter"),
+            Icon::RouteTravel => svg!("route-travel"),
             Icon::AlignLeftArea
             | Icon::AlignCentreArea
             | Icon::AlignRightArea

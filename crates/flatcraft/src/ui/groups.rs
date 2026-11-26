@@ -135,7 +135,7 @@ pub fn tool_card(resp: &Response, tool: &Tool, snap: &Snapshot, beside: bool) {
 
 // ---------------------------------------------------------------- buttons
 
-fn image(ui: &Ui, icon: Icon, size: f32) -> egui::Image<'static> {
+pub(crate) fn image(ui: &Ui, icon: Icon, size: f32) -> egui::Image<'static> {
     let tex = icons::texture(ui.ctx(), icon, size);
     egui::Image::from_texture(egui::load::SizedTexture::new(
         tex.id(),
@@ -233,6 +233,75 @@ fn paint_state(ui: &Ui, rect: egui::Rect, resp: &Response, selected: Option<bool
             egui::StrokeKind::Inside,
         );
     }
+}
+
+/// A step of the Cut bar, as tall as the ribbon's tools row
+/// ([`ROW_HEIGHT`]) and drawn like a big ribbon button: the 24 pt icon,
+/// under it `title`, and under that `detail` in the dim text colour (left
+/// out when `None`). It is a tab named `name`; `selected` gets the
+/// selection fill. A dimmed one (`enabled` off) does nothing when clicked.
+pub fn step_button(
+    ui: &mut Ui,
+    icon: Icon,
+    title: &str,
+    detail: Option<&str>,
+    name: &str,
+    enabled: bool,
+    selected: bool,
+) -> Response {
+    const ICON: f32 = 24.0;
+    ui.add_enabled_ui(enabled, |ui| {
+        let font = egui::TextStyle::Small.resolve(ui.style());
+        let layout = |text: &str| {
+            ui.painter()
+                .layout_no_wrap(text.to_string(), font.clone(), egui::Color32::PLACEHOLDER)
+        };
+        let title_g = layout(title);
+        let detail_g = detail.map(layout);
+        let text_w = detail_g
+            .as_ref()
+            .map_or(title_g.size().x, |d| d.size().x.max(title_g.size().x));
+        let width = (text_w + 16.0).max(BIG_HEIGHT);
+        let (rect, resp) =
+            ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), egui::Sense::click());
+        let on = ui.is_enabled();
+        resp.widget_info(|| {
+            egui::WidgetInfo::selected(egui::accesskit::Role::Tab, on, selected, name)
+        });
+        if ui.is_rect_visible(rect) {
+            let visuals = ui.style().interact(&resp);
+            paint_state(ui, rect, &resp, Some(selected), on);
+            let gap = 3.0;
+            let block =
+                ICON + gap + title_g.size().y + detail_g.as_ref().map_or(0.0, |d| d.size().y);
+            let top = rect.center().y - block / 2.0;
+            let icon_rect = egui::Rect::from_center_size(
+                egui::pos2(rect.center().x, top + ICON / 2.0),
+                egui::Vec2::splat(ICON),
+            );
+            // A disabled Ui fades what its painter draws.
+            image(ui, icon, ICON).paint_at(ui, icon_rect);
+            let mut y = icon_rect.bottom() + gap;
+            let p = ui.painter();
+            let h = title_g.size().y;
+            p.galley(
+                egui::pos2(rect.center().x - title_g.size().x / 2.0, y),
+                title_g,
+                visuals.text_color(),
+            );
+            y += h;
+            if let Some(d) = detail_g {
+                let dim = if on {
+                    ui.visuals().weak_text_color()
+                } else {
+                    visuals.text_color()
+                };
+                p.galley(egui::pos2(rect.center().x - d.size().x / 2.0, y), d, dim);
+            }
+        }
+        resp
+    })
+    .inner
 }
 
 /// Height of a compact button: two of them, or a row of small buttons,

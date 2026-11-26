@@ -593,6 +593,44 @@ fn the_cut_bar_fits_at_every_width() {
                 "{width}: {name} cut off at {r:?}"
             );
         }
+        // From 900 pt up every step shows its title and status line, and
+        // the bar stays as it is.
+        let level = collapse::level(&h.ctx, ui::cut::bar_id());
+        assert_eq!(level, Some(Level::Full), "{width}");
+        h.step();
+        assert_eq!(collapse::level(&h.ctx, ui::cut::bar_id()), level, "{width}");
+        shown_whole(&h, "2  Path", width);
+        shown_whole(&h, "File · ready", width);
+    }
+}
+
+#[test]
+fn the_cut_bar_folds_to_numbers_then_to_a_list() {
+    // Narrower than a window can be, to walk the whole fold ladder.
+    for (width, want) in [(600.0, Level::Folded(1)), (480.0, Level::Folded(2))] {
+        let dir = tempfile::tempdir().unwrap();
+        let s = session(&dir);
+        import_square(&s);
+        let mut h = harness_sized(&dir, s, [width, 600.0], 8, |app| app);
+        app_mut(&mut h).ui.workspace = ui::Workspace::Cut;
+        h.run();
+        let level = collapse::level(&h.ctx, ui::cut::bar_id());
+        assert_eq!(level, Some(want), "{width}");
+        h.step();
+        assert_eq!(collapse::level(&h.ctx, ui::cut::bar_id()), level, "{width}");
+        if want == Level::Folded(1) {
+            // Icon and number only.
+            shown_whole(&h, "4", width);
+            assert!(texts(&h).iter().all(|t| t.0 != "File · ready"));
+        } else {
+            assert!(find(&h, Role::Tab, "Send").is_empty(), "{width}");
+            h.get_by_label(collapse::MORE).click();
+            h.run();
+        }
+        // Every stage is reachable and works.
+        h.get_by_role_and_label(Role::Tab, "Send").click();
+        h.run();
+        assert_eq!(app(&h).ui.cut.stage, ui::cut::Stage::Send, "{width}");
     }
 }
 

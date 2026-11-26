@@ -18,11 +18,12 @@ use flatcraft_engine::job::{JobInput, JobResult, build_classified, file_output_d
 
 use super::canvas::{self, CanvasView};
 use super::collapse::{self, Group, Mode};
+use super::icons::Icon;
 use super::prepare::Snapshot;
 use super::rails::{self, Side, SidePanel};
 use super::theme::Tokens;
 use super::timeline::{self, Timeline};
-use super::{Action, FlatCraftApp, fonts, person_text, settings};
+use super::{Action, FlatCraftApp, fonts, person_text, settings, settings_window};
 
 /// Where a label sits from its start point, in points.
 const LABEL_OFFSET: Vec2 = Vec2::new(5.0, -4.0);
@@ -40,7 +41,7 @@ pub const ZOOM_HINT: &str = "Zoom in to see the order numbers";
 pub const WEED_DASH: f32 = 6.0;
 pub const WEED_GAP: f32 = 4.0;
 /// Text of the disabled Simulate stage.
-pub const SIMULATE_HINT: &str = "The knife simulator arrives in milestone 2.";
+pub const SIMULATE_HINT: &str = "Not ready yet in this build: the knife simulator is still on the workbench. Path shows the cut order in the meantime.";
 
 /// The four steps of the stage bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -208,28 +209,136 @@ pub fn send_label(snap: &Snapshot) -> String {
 
 // ---------------------------------------------------------------- stage bar
 
-/// The stage bar replaces the ribbon in Cut: steps 1 to 4 in the Cut
-/// accent, and the Debug panel toggle at the right. The toggle is drawn
-/// first, so the steps get the room that is left; when they do not fit,
-/// they show only their numbers (the name is their accessible name and
-/// their tooltip).
-pub fn stage_bar(ui: &mut Ui, st: &mut CutState, show_debug: &mut bool, t: &Tokens) {
+/// Height of the stage bar: the ribbon's tools row, so Cut's bar is as
+/// tall as Prepare's groups.
+pub const BAR_HEIGHT: f32 = super::groups::ROW_HEIGHT;
+/// Size of the chevron between two steps, in points.
+const CHEVRON: f32 = 14.0;
+
+impl Stage {
+    /// The stage's icon on the bar.
+    pub fn icon(self) -> Icon {
+        match self {
+            Stage::Device => Icon::Plotter,
+            Stage::Path => Icon::RouteTravel,
+            Stage::Simulate => Icon::Play,
+            Stage::Send => Icon::Send,
+        }
+    }
+
+    /// The title of its hover card and of the stage panel: "1. Path".
+    pub fn title(self) -> String {
+        format!("{}. {}", self.number(), self.name())
+    }
+
+    /// What happens in the step and when to go there, for its hover card.
+    pub fn hint(self) -> &'static str {
+        match self {
+            Stage::Device => {
+                "Pick the plotter, the material and the mat, and check speed, force and passes. Start here with every new job: good blade settings make or break the cut."
+            }
+            Stage::Path => {
+                "Shows the plan on the mat: the cut order, where each cut starts and which way it runs, and any weed lines. Go here before you cut, to see that the knife does what you expect."
+            }
+            Stage::Simulate => {
+                "Plays the cut with the real knife on screen, so you spot a torn corner before your vinyl does."
+            }
+            Stage::Send => {
+                "Sends the job to the plotter over USB, or writes it to a file with File Output. Go here last, when the path looks right and the mat is loaded."
+            }
+        }
+    }
+
+    /// Why the stage is dimmed, when it is.
+    pub fn blocked(self) -> Option<&'static str> {
+        (!self.enabled()).then_some(SIMULATE_HINT)
+    }
+}
+
+/// What a stage bar step shows under its title: what is set now, or what
+/// is missing. Short, so the steps stay narrow.
+pub fn stage_status(stage: Stage, st: &CutState, snap: &Snapshot) -> String {
+    let missing = if snap.plotter.is_none() {
+        Some("Pick a plotter")
+    } else if snap.material.is_none() {
+        Some("Pick a material")
+    } else {
+        None
+    };
+    let unplanned = |st: &CutState| match &st.plan {
+        Some(Err(_)) if st.nothing_to_cut => "Nothing to cut",
+        Some(Err(_)) => "Needs a fix",
+        _ => "Not planned yet",
+    };
+    match stage {
+        Stage::Device => match (&snap.plotter, &snap.material, missing) {
+            (Some(p), Some(m), None) => {
+                let device = match p.transport {
+                    TransportSpec::File { .. } => "File Output",
+                    TransportSpec::Usb { .. } => p.model.as_str(),
+                };
+                format!("{device} · {}", m.name)
+            }
+            (_, _, why) => why.unwrap_or("Pick a plotter").to_string(),
+        },
+        Stage::Path => match (&st.plan, missing) {
+            (Some(Ok(job)), _) => {
+                let mut text = format!(
+                    "{} · {}",
+                    settings_window::strategy_name(snap.job.strategy),
+                    passes_text(job)
+                );
+                if weed_count(job) > 0 {
+                    text.push_str(" · weed");
+                }
+                text
+            }
+            (_, Some(why)) => why.to_string(),
+            _ => unplanned(st).to_string(),
+        },
+        Stage::Simulate => "Not ready yet".to_string(),
+        Stage::Send => match (&st.plan, missing, &snap.plotter) {
+            (_, Some(why), _) => why.to_string(),
+            (Some(Ok(_)), None, Some(p)) => match p.transport {
+                TransportSpec::File { .. } => "File · ready".to_string(),
+                TransportSpec::Usb { .. } => "USB · ready".to_string(),
+            },
+            _ => unplanned(st).to_string(),
+        },
+    }
+}
+
+/// What the stage bar's steps draw with.
+struct Bar<'a> {
+    st: &'a mut CutState,
+    /// The status line of each stage, in [`Stage::ALL`] order.
+    status: [String; 4],
+    /// The Cut accent, the fill of the selected stage.
+    accent: Color32,
+}
+
+/// The stage bar replaces the ribbon in Cut: steps 1 to 4 drawn like the
+/// ribbon's big buttons (icon, title, status line), with a chevron between
+/// them, the selected one in the Cut accent, and the Debug panel toggle at
+/// the right. The toggle is drawn first, so the steps get the room that is
+/// left. They fold like the ribbon's groups ([`collapse`]): icon and title
+/// with the status line, then icon and number, then a "»" list.
+pub fn stage_bar(
+    ui: &mut Ui,
+    st: &mut CutState,
+    snap: &Snapshot,
+    show_debug: &mut bool,
+    t: &Tokens,
+) {
     let mut full = ui.available_rect_before_wrap();
-    // One row tall, so the panel around it can be taller.
-    full.set_height(ui.spacing().interact_size.y);
+    full.set_height(BAR_HEIGHT);
     let debug = ui
         .scope_builder(
             egui::UiBuilder::new()
                 .max_rect(full)
                 .layout(egui::Layout::right_to_left(egui::Align::Center)),
             |ui| {
-                super::ribbon::toggle(
-                    ui,
-                    Mode::Full,
-                    super::icons::Icon::Debug,
-                    "Debug panel",
-                    show_debug,
-                )
+                super::ribbon::toggle(ui, Mode::Full, Icon::Debug, "Debug panel", show_debug);
             },
         )
         .response
@@ -237,22 +346,31 @@ pub fn stage_bar(ui: &mut Ui, st: &mut CutState, show_debug: &mut bool, t: &Toke
     let gap = ui.spacing().item_spacing.x;
     let mut rest = full;
     rest.set_right((debug.left() - gap).max(full.left()));
-    let height = ui.spacing().interact_size.y;
+    let status = Stage::ALL.map(|s| stage_status(s, st, snap));
+    // The status lines set the widths: a new text measures again.
+    let sig = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        status.hash(&mut h);
+        h.finish()
+    };
+    let mut bar = Bar {
+        st,
+        status,
+        accent: t.accent_cut,
+    };
     ui.scope_builder(
         egui::UiBuilder::new()
             .max_rect(rest)
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
         |ui| {
-            let v = ui.visuals_mut();
-            v.selection.bg_fill = t.accent_cut.gamma_multiply(0.35);
-            v.selection.stroke = Stroke::new(1.0, t.accent_cut);
             let groups = [Group {
                 title: "Stages",
                 keep: false,
                 tile: None,
                 draw: stages,
             }];
-            collapse::show(ui, bar_id(), 0, height, &groups, st);
+            collapse::show(ui, bar_id(), sig, BAR_HEIGHT, &groups, &mut bar);
         },
     );
 }
@@ -262,30 +380,82 @@ pub fn bar_id() -> egui::Id {
     egui::Id::unique("flatcraft-stage-bar")
 }
 
-fn stages(ui: &mut Ui, mode: Mode, st: &mut CutState) {
-    for stage in Stage::ALL {
-        let on = st.stage == stage;
-        let text = match mode {
-            Mode::Icons | Mode::Collapsed => format!("{}", stage.number()),
-            Mode::Full | Mode::List => format!("{}  {}", stage.number(), stage.name()),
+/// A small chevron between two steps: they are done in this order. Only
+/// painted, it is no widget of its own.
+fn chevron(ui: &mut Ui) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(CHEVRON, BAR_HEIGHT), Sense::hover());
+    let colour = ui.visuals().weak_text_color();
+    let tex = super::icons::texture_colored(ui.ctx(), Icon::ChevronRight, CHEVRON, colour);
+    egui::Image::from_texture(egui::load::SizedTexture::new(
+        tex.id(),
+        Vec2::splat(CHEVRON),
+    ))
+    .paint_at(
+        ui,
+        Rect::from_center_size(rect.center(), Vec2::splat(CHEVRON)),
+    );
+}
+
+fn stages(ui: &mut Ui, mode: Mode, bar: &mut Bar) {
+    // The selected stage in the Cut accent, on the bar and in the "»"
+    // list (a popup does not inherit the bar's visuals).
+    let v = ui.visuals_mut();
+    v.selection.bg_fill = bar.accent.gamma_multiply(0.35);
+    v.selection.stroke = Stroke::new(1.0, bar.accent);
+    for (i, stage) in Stage::ALL.into_iter().enumerate() {
+        let on = bar.st.stage == stage;
+        let status = bar.status[i].as_str();
+        let r = match mode {
+            Mode::Full | Mode::Icons | Mode::Collapsed => {
+                if i > 0 {
+                    chevron(ui);
+                }
+                let (title, detail) = if mode == Mode::Full {
+                    (
+                        format!("{}  {}", stage.number(), stage.name()),
+                        Some(status),
+                    )
+                } else {
+                    (stage.number().to_string(), None)
+                };
+                super::groups::step_button(
+                    ui,
+                    stage.icon(),
+                    &title,
+                    detail,
+                    stage.name(),
+                    stage.enabled(),
+                    on,
+                )
+            }
+            Mode::List => {
+                let img = super::groups::image(ui, stage.icon(), super::ICON_SIZE);
+                let text = format!("{}  {}", stage.number(), stage.name());
+                let b = egui::Button::image_and_text(img, text)
+                    .selected(on)
+                    .right_text(RichText::new(status).color(ui.visuals().weak_text_color()));
+                let r = ui.add_enabled(stage.enabled(), b);
+                r.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::accesskit::Role::Tab,
+                        stage.enabled(),
+                        on,
+                        stage.name(),
+                    )
+                });
+                r
+            }
         };
-        let text = RichText::new(text).font(fonts::medium(13.0));
-        let mut r = ui
-            .add_enabled(stage.enabled(), egui::Button::selectable(on, text))
-            .on_disabled_hover_text(SIMULATE_HINT);
-        if mode == Mode::Icons && stage.enabled() {
-            r = r.on_hover_text(stage.name());
-        }
-        r.widget_info(|| {
-            egui::WidgetInfo::selected(
-                egui::accesskit::Role::Tab,
-                stage.enabled(),
-                on,
-                stage.name(),
-            )
-        });
+        // The status line is in the card too, where the bar has no room
+        // for it.
+        let what = if mode == Mode::Full {
+            stage.hint().to_string()
+        } else {
+            format!("{} Now: {status}.", stage.hint())
+        };
+        super::groups::card(&r, &stage.title(), &what, stage.blocked(), false);
         if r.clicked() && stage.enabled() {
-            st.stage = stage;
+            bar.st.stage = stage;
             if mode == Mode::List {
                 ui.close();
             }
@@ -431,7 +601,7 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
     let t = app.tokens;
     let st = &app.ui.cut;
     let stage = st.stage;
-    let title = format!("{}. {}", stage.number(), stage.name());
+    let title = stage.title();
     if rails::header(ui, SidePanel::Stage, Side::Right, &title) {
         app.ui.prepare.panels.set_collapsed(SidePanel::Stage, true);
     }
