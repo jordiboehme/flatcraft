@@ -54,9 +54,7 @@ pub enum ProfileError {
     Inheritance { id: String, reason: String },
     #[error("preset '{id}' is invalid: {reason}")]
     Invalid { id: String, reason: String },
-    #[error(
-        "user preset '{id}' would shadow a system preset: a built-in preset uses this id now, so this file is not loaded. It is left as it is: give it a new id and file name to use it again"
-    )]
+    #[error("user preset '{id}' would shadow a system preset: a built-in preset has this id")]
     ShadowsSystem { id: String },
     #[error("preset file {path} has no id")]
     MissingId { path: PathBuf },
@@ -556,6 +554,9 @@ impl ProfileStore {
                 }
                 Err(e) => {
                     let mut reason = e.to_string();
+                    if matches!(e, ProfileError::ShadowsSystem { .. }) {
+                        reason.push_str(". The file is not loaded and is left as it is: give it a new id and file name to use it again");
+                    }
                     if let Some((cut, _)) = reason.char_indices().nth(MAX_REASON_CHARS) {
                         reason.truncate(cut);
                         reason.push_str("...");
