@@ -6,7 +6,7 @@ use flatcraft_core::document::{CutMode, StrokeMode};
 use flatcraft_core::numexpr::{Field, Kind};
 use serde_json::{Value, json};
 
-use super::calc;
+use super::calc::{self, Number};
 use super::icons::Icon;
 use super::prepare::{Eleven, Override, PrepareState, Snapshot};
 use super::rails::{Side, SidePanel};
@@ -358,28 +358,27 @@ pub fn job(
                             .circle_filled(r.center(), 3.5, t.accent_prepare);
                     }
                 });
-                let mut v = match st.live_override {
-                    Some((w, x)) if w == which => x,
-                    _ => f64::from(value),
-                };
-                // A typed value (a number or a calculation) above the
-                // maximum is clamped, like a drag; for the speed the
-                // reader notes the attempt.
+                let mut v = f64::from(value);
+                // A typed speed (a number or a calculation) above the
+                // maximum is clamped, and the reader notes the attempt.
+                // Force and passes refuse a value outside their range.
                 let typed_over = std::cell::Cell::new(None::<bool>);
                 let max = f64::from(range[1]);
-                let resp = calc::drag_seen(
+                let field = Field::plain().integer().range(f64::from(range[0]), max);
+                let spec = if which == Override::Speed {
+                    Number::new(field).clamp()
+                } else {
+                    Number::new(field)
+                };
+                let (resp, typed) = calc::number_seen(
                     ui,
+                    ("flatcraft-job", override_key(which)),
                     true,
                     &mut v,
-                    Field::plain().integer(),
-                    |d| {
-                        d.range(f64::from(range[0])..=max)
-                            .speed(0.1)
-                            .max_decimals(0)
-                    },
+                    &spec,
                     |n| {
                         if which == Override::Speed {
-                            typed_over.set(Some(n > max));
+                            typed_over.set(Some(n.round() > max));
                         }
                     },
                 );
@@ -390,9 +389,6 @@ pub fn job(
                         material_id: snap.job.material_id.clone(),
                         speed: range[1],
                     });
-                }
-                if which == Override::Speed && resp.dragged() {
-                    st.speed_eleven = None;
                 }
                 let eleven = which == Override::Speed && eleven_shown(st, snap);
                 let name = if modified {
@@ -418,16 +414,7 @@ pub fn job(
                 } else {
                     super::groups::card(&resp, label, &what, None, false);
                 }
-                // One command when a drag ends or a typed value lands,
-                // never one per frame of a drag.
-                if resp.dragged() {
-                    st.live_override = Some((which, v));
-                }
-                let done = resp.drag_stopped() || (resp.changed() && !resp.dragged());
-                if done {
-                    if matches!(st.live_override, Some((w, _)) if w == which) {
-                        st.live_override = None;
-                    }
+                if typed {
                     let n = v.round() as u32;
                     if n != value {
                         run(

@@ -15,7 +15,7 @@ use flatcraft_engine::placement;
 use kurbo::{Affine, Point, Rect, Vec2};
 use serde_json::json;
 
-use super::calc;
+use super::calc::{self, Number};
 use super::help::{self, PrepareKey};
 use super::icons::{self, Icon};
 use super::prepare::{ObjView, PrepareState, Snapshot};
@@ -393,13 +393,10 @@ fn number(
         _ => Kind::Plain,
     };
     let (lo, hi) = (*range.start(), *range.end());
-    let r = calc::drag(ui, enabled, value, Field::new(kind).range(lo, hi), |d| {
-        d.range(range)
-            .speed(0.1)
-            .min_decimals(2)
-            .max_decimals(3)
-            .suffix(suffix)
-    });
+    let spec = Number::new(Field::new(kind).range(lo, hi))
+        .decimals(2, 3)
+        .unit(suffix.trim_start());
+    let (r, _) = calc::number(ui, ("flatcraft-arrange", name), enabled, value, &spec);
     set_name(ui, &r, name);
     let text = format!("From {lo}{suffix} to {hi}{suffix}. {}", calc::hint(kind));
     // Only the centre fields are ever dimmed.
@@ -418,13 +415,8 @@ fn count(
 ) {
     painted_label(ui, name);
     let (lo, hi) = (*range.start(), *range.end());
-    let r = calc::drag(
-        ui,
-        enabled,
-        value,
-        Field::plain().range(f64::from(lo), f64::from(hi)),
-        |d| d.range(range).speed(0.1),
-    );
+    let spec = Number::new(Field::plain().range(f64::from(lo), f64::from(hi)));
+    let (r, _) = calc::number(ui, ("flatcraft-arrange", name), enabled, value, &spec);
     set_name(ui, &r, name);
     let text = format!(
         "A whole number from {lo} to {hi}. {}",
@@ -647,7 +639,7 @@ pub fn panel_ui(
     ui.add_space(t.spacing / 2.0);
     ui.horizontal(|ui| {
         let r = ui.add_enabled(why.is_none(), egui::Button::new("OK"));
-        if r.clicked() {
+        if calc::click(ui, &r) {
             ok = ok_action(snap, p);
         }
         let cancel =

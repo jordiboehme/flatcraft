@@ -179,9 +179,7 @@ fn settings_override_marks_modified() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     assert!(h.query_by_label("Speed (modified)").is_none());
-    h.get_by_role_and_label(Role::SpinButton, "Speed")
-        .set_value_accesskit(3.0);
-    h.run();
+    type_into(&mut h, "Speed", "3");
     assert_eq!(s.lock().unwrap().doc().document.job.speed, Some(3));
     h.get_by_label("Speed (modified)");
     s.lock()
@@ -625,7 +623,7 @@ fn typed_speed_is_one_command() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     let before = undo_len(&s);
-    h.get_by_role_and_label(Role::SpinButton, "Speed").click();
+    h.get_by_label("Speed").click();
     h.run();
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
     h.run();
@@ -1554,7 +1552,7 @@ fn copies_opens_the_rectangular_pattern_panel_and_ok_is_one_step() {
         "a docked panel is no dialog"
     );
     h.get_by_label("Linked copies");
-    h.get_by_role_and_label(Role::SpinButton, "Columns").click();
+    h.get_by_label("Columns").click();
     h.run();
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
     h.run();
@@ -1686,8 +1684,7 @@ fn escape_in_a_panel_field_closes_the_panel_at_once() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     open_panel(&mut h, "Move / Copy...");
-    h.get_by_role_and_label(Role::SpinButton, "X offset")
-        .click();
+    h.get_by_label("X offset").click();
     h.run();
     assert!(h.ctx.egui_wants_keyboard_input(), "the field has the keys");
     let before = document_bytes(&s);
@@ -1791,8 +1788,7 @@ fn keys_typed_into_a_panel_field_leave_the_document_alone() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     open_panel(&mut h, "Move / Copy...");
-    h.get_by_role_and_label(Role::SpinButton, "X offset")
-        .click();
+    h.get_by_label("X offset").click();
     h.run();
     assert!(h.ctx.egui_wants_keyboard_input(), "the field has the keys");
     let (rev, centre) = (revision(&s), object_centre(&s, a));
@@ -2879,8 +2875,7 @@ fn a_field_message_does_not_come_back_when_the_panel_opens_again() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     open_panel(&mut h, "Move / Copy...");
-    h.get_by_role_and_label(Role::SpinButton, "X offset")
-        .click();
+    h.get_by_label("X offset").click();
     h.run();
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
     h.run();
@@ -2888,7 +2883,7 @@ fn a_field_message_does_not_come_back_when_the_panel_opens_again() {
     h.run();
     h.key_press(egui::Key::Enter);
     h.run();
-    let msg = "Can't read '5+': something is missing after +.";
+    let msg = "Can't read '5+': something is missing after +. Press Esc to go back.";
     h.get_by_label(msg);
     h.get_by_role_and_label(Role::Button, &cancel_name())
         .click();

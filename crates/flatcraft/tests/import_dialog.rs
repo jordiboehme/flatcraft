@@ -631,3 +631,68 @@ fn trace_dialog_says_it_retraces_every_linked_copy() {
     assert!(stored_settings(&s, id).invert);
     assert!(stored_settings(&s, copy).invert, "the linked copy follows");
 }
+
+#[test]
+fn a_slider_value_field_follows_the_click_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_ring(&dir, &s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    open_trace(&mut h);
+    common::check_click_rules(&mut h, "Smoothing value");
+    assert!(
+        app(&h).ui.trace.is_some(),
+        "Esc in the field keeps the dialog"
+    );
+}
+
+/// Types `text` into the Smoothing value field and clicks Apply without
+/// leaving the field first.
+fn apply_with_smoothing(h: &mut AppHarness, text: &str) {
+    use egui::Modifiers;
+    h.get_by_label("Smoothing value").click();
+    h.run();
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+    h.run();
+    h.event(egui::Event::Text(text.into()));
+    h.run();
+    h.get_by_role_and_label(Role::Button, "Apply").click();
+    for _ in 0..4 {
+        h.run();
+    }
+}
+
+#[test]
+fn apply_counts_a_typed_value_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let id = import_ring(&dir, &s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    open_trace(&mut h);
+    apply_with_smoothing(&mut h, "2*2");
+    assert!(app(&h).ui.trace.is_none(), "Apply closes the dialog");
+    assert_eq!(stored_settings(&s, id).smoothing, 4);
+}
+
+#[test]
+fn apply_with_a_text_it_cannot_read_keeps_the_old_value_and_says_why() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let id = import_ring(&dir, &s);
+    let before = stored_settings(&s, id).smoothing;
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    open_trace(&mut h);
+    apply_with_smoothing(&mut h, "2*");
+    assert!(app(&h).ui.trace.is_none());
+    assert_eq!(stored_settings(&s, id).smoothing, before);
+    let toasts: Vec<String> = app(&h).ui.toasts.iter().map(|t| t.text.clone()).collect();
+    assert!(
+        toasts.contains(
+            &"Can't read '2*': something is missing after *. Nothing changed.".to_string()
+        ),
+        "{toasts:?}"
+    );
+}

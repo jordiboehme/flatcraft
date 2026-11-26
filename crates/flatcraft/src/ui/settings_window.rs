@@ -29,7 +29,7 @@ use flatcraft_core::document::CutStrategy;
 use flatcraft_core::numexpr::{Field, Kind};
 use flatcraft_engine::prefs::{PanelUser, Preferences, Theme, default_ribbon_pins};
 
-use super::calc;
+use super::calc::{self, Number};
 use super::icons::{self, Icon};
 use super::profiles_window::{self, Leave, Request};
 use super::settings::set_name;
@@ -632,7 +632,11 @@ pub fn show(ctx: &egui::Context, app: &mut FlatCraftApp, actions: &mut Vec<Actio
     if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F)) {
         app.ui.settings.focus_search = true;
     }
-    let idle = ctx.memory(|m| m.focused().is_none()) && !egui::Popup::is_any_open(ctx);
+    // Esc in a number field only puts its value back (egui has already
+    // dropped the focus, so ask whether one was being typed into).
+    let idle = ctx.memory(|m| m.focused().is_none())
+        && !egui::Popup::is_any_open(ctx)
+        && calc::editing(ctx).is_none();
     let st = &mut app.ui.settings;
     let active = st
         .highlight
@@ -1019,7 +1023,7 @@ fn footer_ui(
                         .min_size(vec2(64.0, 0.0)),
                 );
                 super::groups::card(&ok, "OK", "Store your changes and close Settings.", None, false);
-                if ok.clicked() {
+                if calc::click(ui, &ok) {
                     out = Some(Footer::Ok);
                 }
                 let apply = ui.add_enabled(dirty, egui::Button::new("Apply"));
@@ -1031,7 +1035,7 @@ fn footer_ui(
                     (!dirty).then_some(apply_why),
                     false,
                 );
-                if apply.clicked() {
+                if calc::click(ui, &apply) {
                     out = Some(Footer::Apply);
                 }
                 let cancel = ui.button("Cancel");
@@ -1213,7 +1217,15 @@ fn row_ui(
         .inner
     });
     if let Some(resp) = inner.inner {
-        super::groups::card(&resp, r.label, r.card.text(), None, false);
+        // A number field says once that it takes a calculation.
+        let text = match r.card {
+            Card::Setting(s) => match s.number_kind() {
+                Some(kind) => calc::with_hint(s.card(), kind),
+                None => s.card().to_string(),
+            },
+            Card::Text(t) => t.to_string(),
+        };
+        super::groups::card(&resp, r.label, &text, None, false);
     }
     let rect = inner.response.rect;
     if cx.lit == Some(id) {
@@ -1365,13 +1377,11 @@ fn stepper(
         };
         // A stored value outside the range stays as it is: opening
         // Settings never changes a preference. A typed one is refused.
-        let r = calc::drag(ui, true, v, Field::new(kind).range(lo, hi), |d| {
-            d.range(range.clone())
-                .clamp_existing_to_range(false)
-                .speed(0.1)
-                .max_decimals(1)
-                .suffix(unit)
-        });
+        let spec = Number::new(Field::new(kind).range(lo, hi))
+            .decimals(1, 1)
+            .unit(unit.trim_start())
+            .width(48.0);
+        let (r, _) = calc::number(ui, ("flatcraft-stepper", name), true, v, &spec);
         set_name(ui, &r, name);
         let more = ui.add_enabled(*v < hi, egui::Button::new("+").min_size(vec2(24.0, 22.0)));
         set_name(ui, &more, &format!("More {name}"));

@@ -39,29 +39,6 @@ pub(crate) fn field_width(ui: &Ui, text: &str) -> f32 {
     galley.size().x + 2.0 * FIELD_MARGIN.x + 4.0
 }
 
-/// How a number field selects: a double-click selects the whole value
-/// (not only the digits under the pointer) and so does Tab or Shift-Tab
-/// into it, so typing replaces it. A single click only places the text
-/// cursor. Call it with the field's response and text, right after adding
-/// it.
-pub(crate) fn select_whole_value(ui: &Ui, resp: &egui::Response, text: &str) {
-    let by_pointer = ui.input(|i| i.pointer.any_pressed() || i.pointer.any_released());
-    let keyboard_focus = resp.gained_focus() && !by_pointer && !resp.clicked();
-    if !(resp.double_clicked() || keyboard_focus) {
-        return;
-    }
-    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), resp.id) {
-        let len = text.chars().count();
-        state
-            .cursor
-            .set_char_range(Some(egui::text::CCursorRange::two(
-                egui::text::CCursor::new(0),
-                egui::text::CCursor::new(len),
-            )));
-        state.store(ui.ctx(), resp.id);
-    }
-}
-
 /// The largest position or size a field takes, mm: 10 m, more than any
 /// plotter cuts.
 const MAX_MM: f64 = 10_000.0;
@@ -162,7 +139,34 @@ fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) -> egui::Rect {
         // It also follows the selection, so a Tab out of it never moves
         // what was selected before.
         let shown = fields.editing.as_ref().map(|e| e.shown.clone());
-        if shown.as_deref() == Some(nf.field.buf(fields).as_str()) {
+        let now: Vec<u64> = cx.snap.selection.iter().copied().collect();
+        if shown.as_deref() != Some(nf.field.buf(fields).as_str())
+            && fields.editing.as_ref().is_some_and(|e| e.ids != now)
+        {
+            // Typed, and then the selection changed: the text counts for
+            // the selection of now, or (if it cannot be read, or nothing
+            // is selected) the edit ends with the old value.
+            let typed = nf.field.buf(fields).trim().to_string();
+            let read = nf.field.spec().eval(&typed, nf.value);
+            match (read, now.is_empty()) {
+                (Ok(_), false) => {
+                    if let Some(e) = fields.editing.as_mut() {
+                        e.value = nf.value;
+                        e.free = canvas::free_aspect(cx.snap, &now);
+                        e.ids = now;
+                    }
+                }
+                (read, _) => {
+                    if let (Err(e), false) = (read, now.is_empty()) {
+                        cx.actions.push(Action::Error(calc::dropped(&e.message)));
+                    }
+                    *nf.field.buf(fields) = nf.current.clone();
+                    fields.editing = None;
+                    fields.error = None;
+                    ui.memory_mut(|m| m.surrender_focus(id));
+                }
+            }
+        } else if shown.as_deref() == Some(nf.field.buf(fields).as_str()) {
             *nf.field.buf(fields) = nf.current.clone();
             if let Some(e) = fields.editing.as_mut() {
                 e.shown = nf.current.clone();
@@ -208,16 +212,21 @@ fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) -> egui::Rect {
             .min_size(egui::vec2(width, 0.0)),
     );
     set_name(ui, &resp, nf.name);
-    select_whole_value(ui, &resp, nf.field.buf(&mut cx.st.fields));
+    calc::select_whole_value(ui, &resp, nf.field.buf(&mut cx.st.fields));
     groups::card(&resp, nf.name, &card, why, false);
     if let Some((_, msg)) = cx.st.fields.error.as_ref().filter(|(f, _)| *f == nf.field) {
         calc::show_message(ui, id, resp.rect, msg);
     }
+    let editing = cx
+        .st
+        .fields
+        .editing
+        .as_ref()
+        .is_some_and(|e| e.field == nf.field);
     if resp.has_focus() {
         if !editing {
             // Another field still editing lost the focus in this pass.
-            finish_edit(ui.ctx(), cx.st, cx.actions, true);
-            // Unless it could not read its text: then it keeps the focus.
+            finish_edit(ui.ctx(), cx.st, cx.actions, false);
             if cx.st.fields.editing.is_none() {
                 let ids: Vec<u64> = cx.snap.selection.iter().copied().collect();
                 cx.st.fields.editing = Some(FieldEdit {
@@ -231,7 +240,9 @@ fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) -> egui::Rect {
             }
         }
     } else if editing {
-        finish_edit(ui.ctx(), cx.st, cx.actions, nf.enabled);
+        // Enter with a text it cannot read stays in the field.
+        let enter = calc::keys(ui.ctx()).0;
+        finish_edit(ui.ctx(), cx.st, cx.actions, enter && nf.enabled);
     }
     resp.rect
 }
@@ -251,12 +262,7 @@ pub fn finish_pending(
     let Some(e) = &st.fields.editing else { return };
     let here = on_screen && e.doc_id == snap.doc_id;
     if !here || !ctx.memory(|m| m.has_focus(e.field.id())) {
-        // A text it cannot read keeps the field (and its focus) while the
-        // field is there to fix it: drawn last frame (not in a closed
-        // list of a collapsed group), with something selected.
-        let drawn = ctx.read_response(e.field.id()).is_some();
-        let keep = here && drawn && !snap.selection.is_empty();
-        finish_edit(ctx, st, actions, keep);
+        finish_edit(ctx, st, actions, false);
     }
 }
 
@@ -269,17 +275,17 @@ pub fn finish_now(ctx: &egui::Context, st: &mut PrepareState, actions: &mut Vec<
 /// Ends the editing of the field that lost the focus: Escape puts its
 /// shown text back, a changed value (a number or a calculation, see
 /// [`flatcraft_core::numexpr`]) is applied as one command. A text it
-/// cannot read applies nothing: with `keep` the field keeps the text and
-/// the focus and says why under it; without (the field is gone: another
-/// tab, document or a save) the old value comes back and a toast says
-/// why.
+/// cannot read applies nothing: with `keep` (Enter) the field keeps the
+/// text and the focus and says why under it; otherwise (Tab, a click
+/// elsewhere, another tab or document, a save) the old value comes back
+/// and a toast says why. The focus is never taken back.
 fn finish_edit(ctx: &egui::Context, st: &mut PrepareState, actions: &mut Vec<Action>, keep: bool) {
     let Some(edit) = st.fields.editing.take() else {
         return;
     };
     let buf = edit.field.buf(&mut st.fields);
     let typed = buf.trim().to_string();
-    let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    let escape = calc::keys(ctx).1;
     if escape || typed == edit.shown.trim() || edit.ids.is_empty() {
         *buf = edit.shown.clone();
         st.fields.error = None;
@@ -294,13 +300,13 @@ fn finish_edit(ctx: &egui::Context, st: &mut PrepareState, actions: &mut Vec<Act
         }
         Err(e) if keep => {
             ctx.memory_mut(|m| m.request_focus(edit.field.id()));
-            st.fields.error = Some((edit.field, e.message));
+            st.fields.error = Some((edit.field, calc::kept(&e.message)));
             st.fields.editing = Some(edit);
         }
         Err(e) => {
             *buf = edit.shown.clone();
             st.fields.error = None;
-            actions.push(Action::Error(format!("{} Nothing changed.", e.message)));
+            actions.push(Action::Error(calc::dropped(&e.message)));
         }
     }
 }

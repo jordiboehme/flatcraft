@@ -1895,6 +1895,7 @@ fn shortcuts(ctx: &egui::Context, active: u64, actions: &mut Vec<Action>) {
 /// Draws the whole window into `ui` and runs what the person asked for.
 pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     let ctx = ui.ctx().clone();
+    calc::note_keys(&ctx);
     let mut actions = Vec::new();
     let (active, open) = {
         let s = lock(&app.session);
@@ -2035,6 +2036,10 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     }
     if let Some(users) = app.ui.prepare.panels.take_changed() {
         actions.push(Action::RememberPanels(users));
+    }
+    // Number fields left with a text they could not read say so.
+    for text in calc::take_toasts(&ctx) {
+        actions.push(Action::Error(text));
     }
     // What a click changed shows in the menu bar next frame.
     if !actions.is_empty() {

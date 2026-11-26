@@ -679,7 +679,61 @@ fn a_number_field_refuses_a_value_outside_its_range_and_says_why() {
     h.key_press(egui::Key::Enter);
     h.run();
     let (_, hi) = flatcraft_engine::prefs::AUTO_SPACING_RANGE_MM.into_inner();
-    h.get_by_label(&format!("127 is too large: give at most {hi} mm."));
+    h.get_by_label(&format!(
+        "127 is too large: give at most {hi} mm. Press Esc to go back."
+    ));
     click(&mut h, "OK");
     assert_eq!(stored(&dir).auto_arrange_spacing_mm, 5.0);
+}
+
+#[test]
+fn ok_counts_a_typed_value_and_restores_one_it_cannot_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    let type_without_leaving = |h: &mut AppHarness, text: &str| {
+        h.get_by_label("Auto arrange spacing").click();
+        h.run();
+        h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+        h.run();
+        h.event(egui::Event::Text(text.into()));
+        h.run();
+    };
+    // Typed, still in the field: OK counts it first.
+    open(&mut h, "Cutting");
+    type_without_leaving(&mut h, "2*3");
+    click(&mut h, "OK");
+    for _ in 0..3 {
+        h.run();
+    }
+    assert!(!is_open(&h));
+    assert_eq!(stored(&dir).auto_arrange_spacing_mm, 6.0);
+    // A text it cannot read: the old value stays, a toast says why.
+    open(&mut h, "Cutting");
+    type_without_leaving(&mut h, "2*");
+    click(&mut h, "OK");
+    for _ in 0..3 {
+        h.run();
+    }
+    assert!(!is_open(&h));
+    assert_eq!(stored(&dir).auto_arrange_spacing_mm, 6.0);
+    let toast = app(&h).ui.toasts.last().cloned().unwrap();
+    assert_eq!(
+        toast.text,
+        "Can't read '2*': something is missing after *. Nothing changed."
+    );
+}
+
+#[test]
+fn the_stepper_field_follows_the_click_rules_and_esc_keeps_the_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    open(&mut h, "Cutting");
+    common::check_click_rules(&mut h, "Auto arrange spacing");
+    assert!(is_open(&h), "Esc in the field only puts the value back");
+    // Esc with no field being typed into closes the window as before.
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(!is_open(&h));
 }

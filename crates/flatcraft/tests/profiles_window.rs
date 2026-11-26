@@ -1172,12 +1172,49 @@ fn a_mat_field_takes_a_calculation_with_units() {
     let x = store(&s).plotter("my-cameo").unwrap().media[0]
         .grid
         .origin_x_mm;
-    type_into(&mut h, "Grid origin y (mm)", "1/2in");
-    // One it cannot read: nothing changes, and it says why.
+    // One it cannot read, kept by Enter: it says why.
     type_into(&mut h, "Grid origin x (mm)", "5+");
-    h.get_by_label("Can't read '5+': something is missing after +.");
+    h.get_by_label("Can't read '5+': something is missing after +. Press Esc to go back.");
+    // Typed and not left: Save preset counts it first. (The click into
+    // the next field gives up the bad text with a toast.)
+    h.get_by_label("Grid origin y (mm)").click();
+    h.run();
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+    h.run();
+    h.get_by_label("Grid origin y (mm)").type_text("1/2in");
+    h.run();
     click(&mut h, "Save preset");
+    for _ in 0..3 {
+        h.run();
+    }
     let p = store(&s).plotter("my-cameo").unwrap();
     assert!((p.media[0].grid.origin_y_mm - 12.7).abs() < 1e-9);
     assert_eq!(p.media[0].grid.origin_x_mm, x);
+}
+
+#[test]
+fn a_usb_id_field_reads_hex_and_follows_the_click_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = harness(&dir, &s);
+    save_as_my_cameo(&mut h);
+    let vid = |s: &SharedSession| match store(s).plotter("my-cameo").unwrap().transport {
+        flatcraft_device::profile::TransportSpec::Usb { vid, .. } => vid,
+        _ => panic!("no USB"),
+    };
+    let before = vid(&s);
+    common::check_click_rules(&mut h, "USB vendor id");
+    // Hex digits count; a calculation is no hex id.
+    type_into(&mut h, "USB vendor id", "1+1");
+    h.get_by_label("Can't read '1+1': type up to 4 hex digits, 0-9 and A-F. Press Esc to go back.");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    type_into(&mut h, "USB vendor id", "0x1a2b");
+    assert_eq!(common::field_text(&h, "USB vendor id"), "1A2B");
+    click(&mut h, "Save preset");
+    for _ in 0..3 {
+        h.run();
+    }
+    assert_ne!(before, 0x1a2b);
+    assert_eq!(vid(&s), 0x1a2b);
 }

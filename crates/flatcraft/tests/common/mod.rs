@@ -270,3 +270,81 @@ pub fn copied(h: &AppHarness) -> Option<String> {
             _ => None,
         })
 }
+
+/// The text a field shows (its accessible value).
+pub fn field_text(h: &AppHarness, label: &str) -> String {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    h.get_by_label(label)
+        .accesskit_node()
+        .value()
+        .unwrap_or_default()
+}
+
+fn press_at(h: &mut AppHarness, at: egui::Pos2) {
+    h.drag_at(at);
+    h.run();
+    h.drop_at(at);
+    h.run();
+}
+
+/// Checks the click rules of the number field `label` (see
+/// `ui::calc`): a single click places the cursor, a double-click and Tab
+/// (here Tab out and Shift-Tab back) select the whole value, so typing
+/// replaces it. Each step ends with Esc, so nothing changes.
+pub fn check_click_rules(h: &mut AppHarness, label: &str) {
+    use egui_kittest::kittest::Queryable as _;
+    let shown = field_text(h, label);
+    let esc = |h: &mut AppHarness| {
+        h.key_press(egui::Key::Escape);
+        h.run();
+        h.run();
+    };
+    // A single click past the end: the digit is added.
+    let r = h.get_by_label(label).rect();
+    let end = egui::pos2(r.right() - 2.0, r.center().y);
+    h.hover_at(end);
+    h.run();
+    press_at(h, end);
+    h.event(egui::Event::Text("5".into()));
+    h.run();
+    assert_eq!(
+        field_text(h, label),
+        format!("{shown}5"),
+        "{label}: single click"
+    );
+    esc(h);
+    assert_eq!(field_text(h, label), shown, "{label}: Esc");
+    // A double-click on the first digit: all of it is replaced.
+    let r = h.get_by_label(label).rect();
+    let start = egui::pos2(r.left() + 6.0, r.center().y);
+    h.hover_at(start);
+    h.ctx
+        .options_mut(|o| o.input_options.max_double_click_delay = 2.0);
+    for _ in 0..8 {
+        h.step();
+    }
+    press_at(h, start);
+    press_at(h, start);
+    h.run();
+    h.event(egui::Event::Text("7".into()));
+    h.run();
+    assert_eq!(field_text(h, label), "7", "{label}: double-click");
+    esc(h);
+    h.ctx
+        .options_mut(|o| o.input_options.max_double_click_delay = 0.3);
+    for _ in 0..8 {
+        h.step();
+    }
+    // Tab out and Shift-Tab back in: all of it is replaced.
+    h.get_by_label(label).click();
+    h.run();
+    h.key_press(egui::Key::Tab);
+    h.run();
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Tab);
+    h.run();
+    h.event(egui::Event::Text("7".into()));
+    h.run();
+    assert_eq!(field_text(h, label), "7", "{label}: Tab");
+    esc(h);
+    assert_eq!(field_text(h, label), shown, "{label}: Esc");
+}

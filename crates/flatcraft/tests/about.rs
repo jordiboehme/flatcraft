@@ -332,7 +332,7 @@ fn a_new_apps_first_send_is_the_usual_toast() {
 }
 
 fn type_speed(h: &mut AppHarness, label: &str, text: &str) {
-    h.get_by_role_and_label(Role::SpinButton, label).click();
+    h.get_by_label(label).click();
     h.run();
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
     h.run();
@@ -356,10 +356,13 @@ fn speed_above_the_maximum_goes_to_eleven() {
     type_speed(&mut h, "Speed", "10");
     assert_eq!(s.lock().unwrap().doc().document.job.speed, Some(10));
     assert!(h.query_by_label(eleven).is_none());
-    // Force and passes above their maximum: clamped, no joke.
+    // Force above its maximum: refused, it says why, no joke.
     type_speed(&mut h, "Force", "99");
-    assert_eq!(s.lock().unwrap().doc().document.job.force, Some(33));
+    assert_eq!(s.lock().unwrap().doc().document.job.force, None);
+    h.get_by_label("99 is too large: give at most 33. Press Esc to go back.");
     assert!(h.query_by_label(eleven).is_none());
+    h.key_press(egui::Key::Escape);
+    h.run();
     // Above the maximum: clamped, and the joke.
     type_speed(&mut h, "Speed (modified)", "11");
     assert_eq!(s.lock().unwrap().doc().document.job.speed, Some(10));
@@ -481,31 +484,6 @@ fn a_document_switch_ends_eleven() {
     assert!(h.query_by_label(flatcraft::ui::settings::ELEVEN).is_none());
     act(&mut h, Action::Switch(first));
     common::wait_for_source_check(&mut h);
-    assert_eq!(speed(&s), Some(10));
-    assert!(h.query_by_label(flatcraft::ui::settings::ELEVEN).is_none());
-}
-
-#[test]
-fn dragging_the_speed_past_the_maximum_is_no_joke() {
-    let dir = tempfile::tempdir().unwrap();
-    let s = session(&dir);
-    import_square(&s);
-    let mut h = harness(&dir, s.clone(), false);
-    to_prepare(&mut h);
-    let from = h
-        .get_by_role_and_label(Role::SpinButton, "Speed")
-        .rect()
-        .center();
-    h.hover_at(from);
-    h.run();
-    h.drag_at(from);
-    h.run();
-    for dx in [50.0, 150.0, 300.0, 400.0] {
-        h.hover_at(from + egui::vec2(dx, 0.0));
-        h.run();
-    }
-    h.drop_at(from + egui::vec2(400.0, 0.0));
-    h.run();
     assert_eq!(speed(&s), Some(10));
     assert!(h.query_by_label(flatcraft::ui::settings::ELEVEN).is_none());
 }

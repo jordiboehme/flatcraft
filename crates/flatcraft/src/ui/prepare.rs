@@ -239,7 +239,7 @@ impl Default for Fields {
     }
 }
 
-/// Speed, force or passes while its drag value is being dragged.
+/// Speed, force or passes, the job settings a document can override.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Override {
     Speed,
@@ -268,8 +268,6 @@ pub struct PrepareState {
     pub drag: Option<Drag>,
     /// The burst of arrow-key nudges going on, if any.
     pub nudge: Option<Nudge>,
-    /// A drag value being dragged, and its value so far.
-    pub live_override: Option<(Override, f64)>,
     /// A speed typed above the plotter's maximum (and clamped): the speed
     /// field says "These go to eleven." while that clamped value is still
     /// the document's speed override (see [`Eleven`]).
@@ -362,7 +360,6 @@ impl Default for PrepareState {
             search_open: false,
             drag: None,
             nudge: None,
-            live_override: None,
             speed_eleven: None,
             notices: Vec::new(),
             sources: SourceStatus::default(),

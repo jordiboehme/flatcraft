@@ -21,7 +21,7 @@ use flatcraft_import::ImportError;
 use flatcraft_import::trace::TraceResult;
 use serde_json::json;
 
-use super::calc;
+use super::calc::{self, Number};
 use super::files::{FileRequest, filter};
 use super::prepare::Snapshot;
 use super::settings::set_name;
@@ -534,7 +534,9 @@ pub fn show(
     let now = ctx.input(|i| i.time);
     d.poll(ctx, now);
     let mut outcome = Outcome::Open;
+    // Esc in a number field only puts its value back.
     if !ctx.egui_wants_keyboard_input()
+        && calc::editing(ctx).is_none()
         && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
     {
         outcome = Outcome::Close;
@@ -579,11 +581,10 @@ pub fn show(
             }
             ui.add_space(t.spacing);
             ui.horizontal(|ui| {
-                if ui
+                let apply = ui
                     .button("Apply")
-                    .on_hover_text("Trace the image with these settings")
-                    .clicked()
-                {
+                    .on_hover_text("Trace the image with these settings");
+                if calc::click(ui, &apply) {
                     outcome = Outcome::Apply;
                 }
                 if ui.button("Cancel").clicked() {
@@ -605,6 +606,32 @@ pub fn show(
     None
 }
 
+/// A slider, a number field for its value (a calculation works, a value
+/// outside `range` is refused) and its label, with hover cards. The slider
+/// is named `label`, the field "`label` value". True when the value
+/// changed.
+fn slider_row<T: egui::emath::Numeric>(
+    ui: &mut Ui,
+    enabled: bool,
+    value: &mut T,
+    range: std::ops::RangeInclusive<T>,
+    spec: Number,
+    label: &str,
+    setting: Setting,
+) -> bool {
+    let kind = spec.field.kind;
+    let (track, field, changed) =
+        calc::slider(ui, ("flatcraft-trace", label), enabled, value, range, &spec);
+    set_name(ui, &track, label);
+    set_name(ui, &field, &format!("{label} value"));
+    let card = calc::with_hint(setting.card(), kind);
+    super::groups::card(&track, label, setting.card(), None, false);
+    super::groups::card(&field, label, &card, None, false);
+    let l = ui.label(label);
+    super::groups::card(&l, label, setting.card(), None, false);
+    changed
+}
+
 /// The settings. Returns true when one changed.
 fn controls(ui: &mut Ui, d: &mut TraceDialog) -> bool {
     let mut changed = false;
@@ -612,18 +639,16 @@ fn controls(ui: &mut Ui, d: &mut TraceDialog) -> bool {
 
     ui.horizontal(|ui| {
         let mut auto = s.threshold.is_none();
-        let r = calc::slider(
+        let threshold = slider_row(
             ui,
             !auto,
             &mut d.manual_threshold,
             0..=255,
-            Field::plain(),
-            |s| s.text("Threshold"),
+            Number::new(Field::plain()),
+            "Threshold",
+            Setting::Threshold,
         );
-        let card = calc::with_hint(Setting::Threshold.card(), Kind::Plain);
-        super::groups::card(&r, "Threshold", &card, None, false);
-        set_name(ui, &r, "Threshold");
-        if r.changed() {
+        if threshold {
             s.threshold = Some(d.manual_threshold);
             changed = true;
         }
@@ -639,60 +664,57 @@ fn controls(ui: &mut Ui, d: &mut TraceDialog) -> bool {
     super::groups::card(&r, "Invert", Setting::Invert.card(), None, false);
     changed |= r.changed();
     ui.horizontal(|ui| {
-        let r = calc::drag(
+        let (r, typed) = calc::number(
             ui,
+            "flatcraft-trace-despeckle",
             true,
             &mut s.despeckle_mm2,
-            Field::plain().range(0.0, 100.0),
-            |d| {
-                d.range(0.0..=100.0)
-                    .speed(0.05)
-                    .max_decimals(2)
-                    .suffix(" mm²")
-            },
+            &Number::new(Field::plain().range(0.0, 100.0)).unit("mm²"),
         );
         set_name(ui, &r, "Despeckle (mm²)");
         let card = calc::with_hint(Setting::Despeckle.card(), Kind::Plain);
         super::groups::card(&r, "Despeckle", &card, None, false);
-        changed |= r.changed();
+        changed |= typed;
         let l = ui.label("Despeckle");
         super::groups::card(&l, "Despeckle", Setting::Despeckle.card(), None, false);
     });
-    let r = calc::slider(
-        ui,
-        true,
-        &mut s.corner_threshold_deg,
-        0.0..=180.0,
-        Field::new(Kind::Angle),
-        |s| s.text("Corner threshold"),
-    );
-    let card = calc::with_hint(Setting::CornerThreshold.card(), Kind::Angle);
-    super::groups::card(&r, "Corner threshold", &card, None, false);
-    set_name(ui, &r, "Corner threshold (deg)");
-    changed |= r.changed();
-    let r = calc::slider(ui, true, &mut s.smoothing, 0..=10, Field::plain(), |s| {
-        s.text("Smoothing")
-    });
-    let card = calc::with_hint(Setting::Smoothing.card(), Kind::Plain);
-    super::groups::card(&r, "Smoothing", &card, None, false);
-    set_name(ui, &r, "Smoothing");
-    changed |= r.changed();
+    changed |= ui
+        .horizontal(|ui| {
+            slider_row(
+                ui,
+                true,
+                &mut s.corner_threshold_deg,
+                0.0..=180.0,
+                Number::new(Field::new(Kind::Angle)).unit("deg"),
+                "Corner threshold",
+                Setting::CornerThreshold,
+            )
+        })
+        .inner;
+    changed |= ui
+        .horizontal(|ui| {
+            slider_row(
+                ui,
+                true,
+                &mut s.smoothing,
+                0..=10,
+                Number::new(Field::plain()),
+                "Smoothing",
+                Setting::Smoothing,
+            )
+        })
+        .inner;
     ui.horizontal(|ui| {
         let mut auto = s.min_feature_mm.is_none();
-        let r = calc::drag(
+        let (r, typed) = calc::number(
             ui,
+            "flatcraft-trace-min-feature",
             !auto,
             &mut d.manual_min_feature,
-            Field::length().range(0.0, 50.0),
-            |d| {
-                d.range(0.0..=50.0)
-                    .speed(0.05)
-                    .max_decimals(2)
-                    .suffix(" mm")
-            },
+            &Number::new(Field::length().range(0.0, 50.0)).unit("mm"),
         );
         set_name(ui, &r, "Minimum feature (mm)");
-        if r.changed() {
+        if typed {
             s.min_feature_mm = Some(d.manual_min_feature);
             changed = true;
         }

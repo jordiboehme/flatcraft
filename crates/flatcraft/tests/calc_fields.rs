@@ -95,14 +95,14 @@ fn a_length_field_takes_a_calculation_with_units() {
 }
 
 #[test]
-fn a_length_field_it_cannot_read_says_why_and_escape_restores() {
+fn enter_with_a_text_it_cannot_read_keeps_it_and_escape_restores() {
     let dir = tempfile::tempdir().unwrap();
     let (s, id, mut h) = square(&dir);
     let before = undo_len(&s);
-    enter(&mut h, "Width (mm)", "2in+", Key::Tab);
+    enter(&mut h, "Width (mm)", "2in+", Key::Enter);
     assert_eq!(undo_len(&s), before, "nothing applied");
     assert!(near(bounds(&s, id).width(), 50.0));
-    let msg = "Can't read '2in+': something is missing after +.";
+    let msg = "Can't read '2in+': something is missing after +. Press Esc to go back.";
     h.get_by_label(msg);
     assert_eq!(fields(&h).width, "2in+", "the text stays to fix it");
     assert!(has_focus(&h, "Width (mm)"), "the field keeps the keys");
@@ -113,6 +113,118 @@ fn a_length_field_it_cannot_read_says_why_and_escape_restores() {
     assert_eq!(fields(&h).width, "50.00");
     assert!(h.query_by_label(msg).is_none());
     assert_eq!(undo_len(&s), before);
+    assert!(app(&h).ui.toasts.is_empty(), "Esc is no error");
+}
+
+#[test]
+fn tab_with_a_text_it_cannot_read_restores_and_says_so_in_a_toast() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, id, mut h) = square(&dir);
+    let before = undo_len(&s);
+    enter(&mut h, "Width (mm)", "2in+", Key::Tab);
+    assert_eq!(undo_len(&s), before, "nothing applied");
+    assert!(near(bounds(&s, id).width(), 50.0));
+    assert_eq!(fields(&h).width, "50.00", "the old value is back");
+    assert!(fields(&h).error.is_none());
+    let toast = app(&h).ui.toasts.last().cloned().unwrap();
+    assert_eq!(
+        toast.text,
+        "Can't read '2in+': something is missing after +. Nothing changed."
+    );
+    // The focus went on with Tab and stays there.
+    for _ in 0..3 {
+        h.run();
+    }
+    assert!(!has_focus(&h, "Width (mm)"));
+    assert!(has_focus(&h, "Height (mm)"));
+}
+
+#[test]
+fn a_click_on_another_field_after_a_bad_width_moves_the_focus_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _id, mut h) = square(&dir);
+    let passes = |s: &SharedSession| s.lock().unwrap().doc().document.job.passes;
+    // Typed, not left yet.
+    h.get_by_label("Width (mm)").click();
+    h.run();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.run();
+    h.event(Event::Text("2in+".into()));
+    h.run();
+    h.get_by_label("Passes").click();
+    h.run();
+    for _ in 0..3 {
+        h.run();
+    }
+    assert!(has_focus(&h, "Passes"), "no focus is taken back");
+    assert!(!has_focus(&h, "Width (mm)"));
+    assert_eq!(fields(&h).width, "50.00");
+    let toast = app(&h).ui.toasts.last().cloned().unwrap();
+    assert!(toast.text.ends_with("Nothing changed."), "{}", toast.text);
+    // And Passes works as usual.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.run();
+    h.event(Event::Text("2".into()));
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+    assert_eq!(passes(&s), Some(2));
+}
+
+#[test]
+fn a_selection_change_drops_a_bad_text_and_moves_a_good_one_along() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let b = import_square(&s);
+    s.lock()
+        .unwrap()
+        .execute(
+            "object.move",
+            json!({ "ids": [b], "x_mm": 100.0 }),
+            Origin::User,
+        )
+        .unwrap();
+    let select = |id: u64| {
+        s.lock()
+            .unwrap()
+            .execute("object.select", json!({ "ids": [id] }), Origin::Agent)
+            .unwrap();
+    };
+    select(a);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    h.get_by_role_and_label(Role::Tab, "Layout").click();
+    h.run();
+    // A text it cannot read, kept by Enter; then another selection.
+    enter(&mut h, "X (mm)", "abc", Key::Enter);
+    assert!(fields(&h).error.is_some());
+    let before = undo_len(&s);
+    select(b);
+    h.run();
+    h.run();
+    assert!(fields(&h).editing.is_none() && fields(&h).error.is_none());
+    assert_eq!(fields(&h).x, "100.00", "it shows the new selection");
+    assert!(!has_focus(&h, "X (mm)"));
+    let toast = app(&h).ui.toasts.last().cloned().unwrap();
+    assert!(toast.text.ends_with("Nothing changed."), "{}", toast.text);
+    assert_eq!(undo_len(&s), before);
+    // A good text typed for a, then b is selected: it counts for b only.
+    select(a);
+    h.run();
+    h.get_by_label("X (mm)").click();
+    h.run();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.run();
+    h.event(Event::Text("+=5".into()));
+    h.run();
+    select(b);
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+    h.run();
+    assert!(near(bounds(&s, a).x0, 20.0), "{:?}", bounds(&s, a));
+    assert!(near(bounds(&s, b).x0, 105.0), "{:?}", bounds(&s, b));
 }
 
 #[test]
@@ -120,7 +232,7 @@ fn a_fixed_text_applies_and_the_message_goes() {
     let dir = tempfile::tempdir().unwrap();
     let (s, id, mut h) = square(&dir);
     enter(&mut h, "Height (mm)", "10/0", Key::Enter);
-    h.get_by_label("Can't use '10/0': you can't divide by 0.");
+    h.get_by_label("Can't use '10/0': you can't divide by 0. Press Esc to go back.");
     assert!(near(bounds(&s, id).height(), 50.0));
     // Still in the field: fix the text and leave it.
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
@@ -147,7 +259,9 @@ fn an_angle_field_takes_degrees_and_a_turn_counts_once() {
     let before = undo_len(&s);
     enter(&mut h, "Angle (degrees)", "2in", Key::Enter);
     assert_eq!(undo_len(&s), before);
-    h.get_by_label("Can't read '2in': in does not fit here: use deg or \u{00b0}.");
+    h.get_by_label(
+        "Can't read '2in': in does not fit here: use deg or \u{00b0}. Press Esc to go back.",
+    );
 }
 
 #[test]
@@ -160,7 +274,7 @@ fn a_percent_field_scales_by_a_calculation() {
     let before = undo_len(&s);
     enter(&mut h, "Scale (%)", "100-100", Key::Enter);
     assert_eq!(undo_len(&s), before);
-    h.get_by_label("0 is too small: give a value above 0 %.");
+    h.get_by_label("0 is too small: give a value above 0 %. Press Esc to go back.");
 }
 
 #[test]
@@ -171,7 +285,7 @@ fn a_whole_number_field_rounds_and_says_what_it_cannot_read() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     let passes = |s: &SharedSession| s.lock().unwrap().doc().document.job.passes;
-    h.get_by_role_and_label(Role::SpinButton, "Passes").click();
+    h.get_by_label("Passes").click();
     h.run();
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
     h.run();
@@ -181,8 +295,7 @@ fn a_whole_number_field_rounds_and_says_what_it_cannot_read() {
     h.run();
     h.run();
     assert_eq!(passes(&s), Some(3), "2.5 rounds to 3");
-    h.get_by_role_and_label(Role::SpinButton, "Passes (modified)")
-        .click();
+    h.get_by_label("Passes (modified)").click();
     h.run();
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
     h.run();
@@ -192,7 +305,25 @@ fn a_whole_number_field_rounds_and_says_what_it_cannot_read() {
     h.run();
     h.run();
     assert_eq!(passes(&s), Some(3), "nothing applied");
-    h.get_by_label("Can't read '2*': something is missing after *.");
+    h.get_by_label("Can't read '2*': something is missing after *. Press Esc to go back.");
+    // Force refuses a value above its range (only Speed clamps).
+    h.key_press(Key::Escape);
+    h.run();
+    h.get_by_label("Force").click();
+    h.run();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.run();
+    h.event(Event::Text("40".into()));
+    h.run();
+    h.key_press(Key::Tab);
+    h.run();
+    let force = s.lock().unwrap().doc().document.job.force;
+    assert_eq!(force, None, "refused");
+    let toast = app(&h).ui.toasts.last().cloned().unwrap();
+    assert_eq!(
+        toast.text,
+        "40 is too large: give at most 33. Nothing changed."
+    );
 }
 
 #[test]
@@ -214,7 +345,7 @@ fn a_text_it_cannot_read_left_behind_by_a_tab_switch_says_so_in_a_toast() {
     let dir = tempfile::tempdir().unwrap();
     let (s, id, mut h) = square(&dir);
     let before = undo_len(&s);
-    enter(&mut h, "Width (mm)", "(50", Key::Tab);
+    enter(&mut h, "Width (mm)", "(50", Key::Enter);
     assert!(fields(&h).error.is_some());
     h.get_by_role_and_label(Role::Tab, "View").click();
     h.run();
@@ -231,4 +362,13 @@ fn a_text_it_cannot_read_left_behind_by_a_tab_switch_says_so_in_a_toast() {
         !h.ctx.egui_wants_keyboard_input(),
         "no field keeps the keys"
     );
+}
+
+#[test]
+fn a_job_field_follows_the_click_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _id, mut h) = square(&dir);
+    let before = undo_len(&s);
+    common::check_click_rules(&mut h, "Passes");
+    assert_eq!(undo_len(&s), before);
 }
