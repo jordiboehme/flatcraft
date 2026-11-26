@@ -15,7 +15,7 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use flatcraft::ui::Workspace;
 use flatcraft::ui::cut::{SIMULATE_HINT, Stage, mm_text, stage_status};
 use flatcraft::ui::files::Revealer;
-use flatcraft::ui::icons::Icon;
+use flatcraft::ui::icons::{Icon, Palette};
 use flatcraft_engine::session::Origin;
 use flatcraft_mcp::SharedSession;
 use serde_json::{Value, json};
@@ -177,8 +177,11 @@ fn every_stage_shows_its_icon_and_title() {
         })
         .collect();
     let texts = painted_texts(&h);
+    let tokens = app(&h).tokens;
     for stage in Stage::ALL {
-        let icon = flatcraft::ui::icons::texture(&h.ctx, stage.icon(), 24.0).id();
+        // In the Cut colours: ink accent on the selected stage.
+        let pal = Palette::cut(&tokens, stage == Stage::Device);
+        let icon = flatcraft::ui::icons::texture_with(&h.ctx, stage.icon(), 24.0, &pal).id();
         assert!(textures.contains(&icon), "{stage:?}: no 24 pt icon");
         let title = format!("{}  {}", stage.number(), stage.name());
         assert!(texts.contains(&title), "{title:?} not in {texts:?}");
@@ -270,16 +273,70 @@ fn simulate_stage_is_dimmed_with_its_reason() {
         .rect()
         .center();
     h.hover_at(at);
-    h.run();
-    h.run();
-    h.get_by_label(SIMULATE_HINT);
+    wait_for_label(&mut h, SIMULATE_HINT);
     h.get_by_label(Stage::Simulate.hint());
     // An enabled stage shows what it does.
     let at = h.get_by_role_and_label(Role::Tab, "Send").rect().center();
     h.hover_at(at);
-    h.run();
-    h.run();
-    h.get_by_label(Stage::Send.hint());
+    wait_for_label(&mut h, Stage::Send.hint());
+}
+
+/// Steps frames until `label` shows; fails after a few seconds, never
+/// after a count of frames.
+fn wait_for_label(h: &mut AppHarness, label: &str) {
+    let start = Instant::now();
+    while h.query_by_label(label).is_none() {
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "{label:?} did not show"
+        );
+        h.step();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Where the stage tabs are, left to right.
+fn tab_rects(h: &AppHarness) -> Vec<egui::Rect> {
+    Stage::ALL
+        .iter()
+        .map(|s| h.get_by_role_and_label(Role::Tab, s.name()).rect())
+        .collect()
+}
+
+#[test]
+fn the_bar_does_not_flicker_while_the_job_is_planned_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let id = import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_cut(&mut h);
+    let before = tab_rects(&h);
+    // A replan that keeps the status lines: the bar does not move in any
+    // frame.
+    run(
+        &s,
+        "object.move",
+        json!({ "ids": [id], "dx_mm": 5.0, "dy_mm": 0.0 }),
+    );
+    for _ in 0..4 {
+        h.step();
+        assert_eq!(tab_rects(&h), before);
+    }
+    // A replan with a longer status line: the first frame already has the
+    // new layout, and the frames after it keep it.
+    run(&s, "job.set_overrides", json!({ "passes": 2 }));
+    h.step();
+    assert!(painted_texts(&h).contains(&"Quality · 2 passes".to_string()));
+    let after = tab_rects(&h);
+    assert_ne!(after, before, "the Path step grew");
+    let debug = h.get_by_role_and_label(Role::Button, "Debug panel").rect();
+    for r in &after {
+        assert!(r.max.x <= debug.min.x, "{r:?}");
+    }
+    for _ in 0..4 {
+        h.step();
+        assert_eq!(tab_rects(&h), after);
+    }
 }
 
 #[test]

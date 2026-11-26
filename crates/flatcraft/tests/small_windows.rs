@@ -627,6 +627,23 @@ fn the_cut_bar_folds_to_numbers_then_to_a_list() {
             h.get_by_label(collapse::MORE).click();
             h.run();
         }
+        // A folded step says its status in its card, in plain words.
+        if want == Level::Folded(1) {
+            h.ctx
+                .global_style_mut(|st| st.interaction.tooltip_delay = 0.0);
+            let at = h
+                .get_by_role_and_label(Role::Tab, "Simulate")
+                .rect()
+                .center();
+            h.hover_at(at);
+            let start = std::time::Instant::now();
+            let said = "Simulate is not ready yet in this build.";
+            while h.query_by_label_contains(said).is_none() {
+                assert!(start.elapsed() < std::time::Duration::from_secs(10));
+                h.step();
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
         // Every stage is reachable and works.
         h.get_by_role_and_label(Role::Tab, "Send").click();
         h.run();

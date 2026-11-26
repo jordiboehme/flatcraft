@@ -238,13 +238,13 @@ impl Stage {
                 "Pick the plotter, the material and the mat, and check speed, force and passes. Start here with every new job: good blade settings make or break the cut."
             }
             Stage::Path => {
-                "Shows the plan on the mat: the cut order, where each cut starts and which way it runs, and any weed lines. Go here before you cut, to see that the knife does what you expect."
+                "Shows the plan on the mat: the cut order, where each cut starts and which way it runs. Weed lines are extra cuts through the leftover vinyl, so it peels off easily. Go here before you cut, to see that the knife does what you expect."
             }
             Stage::Simulate => {
                 "Plays the cut with the real knife on screen, so you spot a torn corner before your vinyl does."
             }
             Stage::Send => {
-                "Sends the job to the plotter over USB, or writes it to a file with File Output. Go here last, when the path looks right and the mat is loaded."
+                "Sends the job to the plotter over USB. With File Output it saves the job as a file instead, and nothing is cut. Go here last, when the path looks right and the mat is loaded."
             }
         }
     }
@@ -255,57 +255,120 @@ impl Stage {
     }
 }
 
+/// What is set for a stage now, or what is missing.
+#[derive(Debug, Clone, PartialEq)]
+enum Status {
+    /// The plotter (its model, or "File Output") and the material.
+    Device(String, String),
+    /// The plotter or the material preset is missing: "plotter".
+    Missing(&'static str),
+    /// The planned job: strategy, passes ("2 passes"), weed paths.
+    Plan(&'static str, String, bool),
+    NothingToCut,
+    NeedsFix,
+    NotPlanned,
+    NotReady,
+    /// Ready to send; over USB when true, else to a file.
+    Ready(bool),
+}
+
+impl Status {
+    fn of(stage: Stage, st: &CutState, snap: &Snapshot) -> Status {
+        let missing = if snap.plotter.is_none() {
+            Some(Status::Missing("plotter"))
+        } else if snap.material.is_none() {
+            Some(Status::Missing("material"))
+        } else {
+            None
+        };
+        let unplanned = match &st.plan {
+            Some(Err(_)) if st.nothing_to_cut => Status::NothingToCut,
+            Some(Err(_)) => Status::NeedsFix,
+            _ => Status::NotPlanned,
+        };
+        match stage {
+            Stage::Device => match (&snap.plotter, &snap.material, missing) {
+                (Some(p), Some(m), None) => {
+                    let device = match p.transport {
+                        TransportSpec::File { .. } => "File Output",
+                        TransportSpec::Usb { .. } => p.model.as_str(),
+                    };
+                    Status::Device(device.to_string(), m.name.clone())
+                }
+                (_, _, why) => why.unwrap_or(Status::Missing("plotter")),
+            },
+            Stage::Path => match (&st.plan, missing) {
+                (Some(Ok(job)), _) => Status::Plan(
+                    settings_window::strategy_name(snap.job.strategy),
+                    passes_text(job),
+                    weed_count(job) > 0,
+                ),
+                (_, Some(why)) => why,
+                _ => unplanned,
+            },
+            Stage::Simulate => Status::NotReady,
+            Stage::Send => match (&st.plan, missing, &snap.plotter) {
+                (_, Some(why), _) => why,
+                (Some(Ok(_)), None, Some(p)) => {
+                    Status::Ready(matches!(p.transport, TransportSpec::Usb { .. }))
+                }
+                _ => unplanned,
+            },
+        }
+    }
+
+    /// The short line under the step's title: "Quality · 2 passes".
+    fn short(&self) -> String {
+        match self {
+            Status::Device(device, material) => format!("{device} · {material}"),
+            Status::Missing(what) => format!("Pick a {what}"),
+            Status::Plan(strategy, passes, weed) => {
+                let weed = if *weed { " · weed" } else { "" };
+                format!("{strategy} · {passes}{weed}")
+            }
+            Status::NothingToCut => "Nothing to cut".into(),
+            Status::NeedsFix => "Needs a fix".into(),
+            Status::NotPlanned => "Not planned yet".into(),
+            Status::NotReady => "Not ready yet".into(),
+            Status::Ready(true) => "USB · ready".into(),
+            Status::Ready(false) => "File · ready".into(),
+        }
+    }
+
+    /// The same in a plain sentence, for the card of a folded step.
+    fn sentence(&self, stage: Stage) -> String {
+        match self {
+            Status::Device(device, material) => {
+                format!("Set to {device} with {material}.")
+            }
+            Status::Missing(what) => {
+                format!("No {what} is picked yet. Pick one in Device & Material.")
+            }
+            Status::Plan(strategy, passes, weed) => {
+                let weed = if *weed { ", with weed lines" } else { "" };
+                format!("Cuts in the {strategy} order, {passes}{weed}.")
+            }
+            Status::NothingToCut => "There is nothing to cut yet.".into(),
+            Status::NeedsFix => "The job needs a fix first. Path says what.".into(),
+            Status::NotPlanned => "The job is not planned yet.".into(),
+            Status::NotReady => format!("{} is not ready yet in this build.", stage.name()),
+            Status::Ready(true) => "Ready to send to the plotter over USB.".into(),
+            Status::Ready(false) => "Ready to write the job to a file.".into(),
+        }
+    }
+}
+
 /// What a stage bar step shows under its title: what is set now, or what
 /// is missing. Short, so the steps stay narrow.
 pub fn stage_status(stage: Stage, st: &CutState, snap: &Snapshot) -> String {
-    let missing = if snap.plotter.is_none() {
-        Some("Pick a plotter")
-    } else if snap.material.is_none() {
-        Some("Pick a material")
-    } else {
-        None
-    };
-    let unplanned = |st: &CutState| match &st.plan {
-        Some(Err(_)) if st.nothing_to_cut => "Nothing to cut",
-        Some(Err(_)) => "Needs a fix",
-        _ => "Not planned yet",
-    };
-    match stage {
-        Stage::Device => match (&snap.plotter, &snap.material, missing) {
-            (Some(p), Some(m), None) => {
-                let device = match p.transport {
-                    TransportSpec::File { .. } => "File Output",
-                    TransportSpec::Usb { .. } => p.model.as_str(),
-                };
-                format!("{device} · {}", m.name)
-            }
-            (_, _, why) => why.unwrap_or("Pick a plotter").to_string(),
-        },
-        Stage::Path => match (&st.plan, missing) {
-            (Some(Ok(job)), _) => {
-                let mut text = format!(
-                    "{} · {}",
-                    settings_window::strategy_name(snap.job.strategy),
-                    passes_text(job)
-                );
-                if weed_count(job) > 0 {
-                    text.push_str(" · weed");
-                }
-                text
-            }
-            (_, Some(why)) => why.to_string(),
-            _ => unplanned(st).to_string(),
-        },
-        Stage::Simulate => "Not ready yet".to_string(),
-        Stage::Send => match (&st.plan, missing, &snap.plotter) {
-            (_, Some(why), _) => why.to_string(),
-            (Some(Ok(_)), None, Some(p)) => match p.transport {
-                TransportSpec::File { .. } => "File · ready".to_string(),
-                TransportSpec::Usb { .. } => "USB · ready".to_string(),
-            },
-            _ => unplanned(st).to_string(),
-        },
-    }
+    Status::of(stage, st, snap).short()
+}
+
+/// The status of a stage in a plain sentence, for the card of a folded
+/// step, where the status line is not shown: "Simulate is not ready yet
+/// in this build."
+pub fn stage_status_sentence(stage: Stage, st: &CutState, snap: &Snapshot) -> String {
+    Status::of(stage, st, snap).sentence(stage)
 }
 
 /// What the stage bar's steps draw with.
@@ -313,8 +376,9 @@ struct Bar<'a> {
     st: &'a mut CutState,
     /// The status line of each stage, in [`Stage::ALL`] order.
     status: [String; 4],
-    /// The Cut accent, the fill of the selected stage.
-    accent: Color32,
+    /// The same as sentences, for the cards of folded steps.
+    sentences: [String; 4],
+    t: Tokens,
 }
 
 /// The stage bar replaces the ribbon in Cut: steps 1 to 4 drawn like the
@@ -354,10 +418,12 @@ pub fn stage_bar(
         status.hash(&mut h);
         h.finish()
     };
+    let sentences = Stage::ALL.map(|s| stage_status_sentence(s, st, snap));
     let mut bar = Bar {
         st,
         status,
-        accent: t.accent_cut,
+        sentences,
+        t: *t,
     };
     ui.scope_builder(
         egui::UiBuilder::new()
@@ -400,11 +466,13 @@ fn stages(ui: &mut Ui, mode: Mode, bar: &mut Bar) {
     // The selected stage in the Cut accent, on the bar and in the "»"
     // list (a popup does not inherit the bar's visuals).
     let v = ui.visuals_mut();
-    v.selection.bg_fill = bar.accent.gamma_multiply(0.35);
-    v.selection.stroke = Stroke::new(1.0, bar.accent);
+    v.selection.bg_fill = bar.t.accent_cut.gamma_multiply(0.35);
+    v.selection.stroke = Stroke::new(1.0, bar.t.accent_cut);
     for (i, stage) in Stage::ALL.into_iter().enumerate() {
         let on = bar.st.stage == stage;
         let status = bar.status[i].as_str();
+        // The icons' accent in the Cut colour (ink on the selected fill).
+        let pal = super::icons::Palette::cut(&bar.t, on);
         let r = match mode {
             Mode::Full | Mode::Icons | Mode::Collapsed => {
                 if i > 0 {
@@ -421,6 +489,7 @@ fn stages(ui: &mut Ui, mode: Mode, bar: &mut Bar) {
                 super::groups::step_button(
                     ui,
                     stage.icon(),
+                    &pal,
                     &title,
                     detail,
                     stage.name(),
@@ -429,7 +498,7 @@ fn stages(ui: &mut Ui, mode: Mode, bar: &mut Bar) {
                 )
             }
             Mode::List => {
-                let img = super::groups::image(ui, stage.icon(), super::ICON_SIZE);
+                let img = super::groups::image_with(ui, stage.icon(), super::ICON_SIZE, &pal);
                 let text = format!("{}  {}", stage.number(), stage.name());
                 let b = egui::Button::image_and_text(img, text)
                     .selected(on)
@@ -451,7 +520,7 @@ fn stages(ui: &mut Ui, mode: Mode, bar: &mut Bar) {
         let what = if mode == Mode::Full {
             stage.hint().to_string()
         } else {
-            format!("{} Now: {status}.", stage.hint())
+            format!("{} {}", stage.hint(), bar.sentences[i])
         };
         super::groups::card(&r, &stage.title(), &what, stage.blocked(), false);
         if r.clicked() && stage.enabled() {

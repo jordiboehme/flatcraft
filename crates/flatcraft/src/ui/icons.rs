@@ -90,11 +90,11 @@ pub enum Icon {
     AlignTopArea,
     AlignMiddleArea,
     AlignBottomArea,
-    /// Settings pages: Appearance, Agents, Shortcuts, Plotters, Materials.
+    /// Settings pages: Appearance, Agents, Shortcuts, Materials (Plotters
+    /// uses [`Icon::Plotter`]).
     Palette,
     Bot,
     Keyboard,
-    Printer,
     Layers,
     /// Home's New project card.
     NewFile,
@@ -104,8 +104,9 @@ pub enum Icon {
     ThumbsUp,
     /// "How did it go?": it did not.
     ThumbsDown,
-    /// The Cut bar's Device & Material stage: FlatCraft's own cutting
-    /// plotter icon in the Lucide style (MPL-2.0, not Lucide).
+    /// The cutting plotter: the Cut bar's Device & Material stage and the
+    /// Plotters page of Settings. FlatCraft's own icon in the Lucide style
+    /// (MPL-2.0, not Lucide).
     Plotter,
     /// The Cut bar's Path stage: Lucide "route" with a dotted middle
     /// (cut, travel, cut).
@@ -119,7 +120,7 @@ macro_rules! svg {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 83] = [
+    pub const ALL: [Icon; 82] = [
         Icon::Import,
         Icon::Trace,
         Icon::Duplicate,
@@ -195,7 +196,6 @@ impl Icon {
         Icon::Palette,
         Icon::Bot,
         Icon::Keyboard,
-        Icon::Printer,
         Icon::Layers,
         Icon::NewFile,
         Icon::FolderOpen,
@@ -295,7 +295,6 @@ impl Icon {
             Icon::Palette => svg!("palette"),
             Icon::Bot => svg!("bot"),
             Icon::Keyboard => svg!("keyboard"),
-            Icon::Printer => svg!("printer"),
             Icon::Layers => svg!("layers"),
             Icon::NewFile => svg!("file-plus"),
             Icon::FolderOpen => svg!("folder-open"),
@@ -330,6 +329,16 @@ impl Palette {
             accent: t.icon_accent,
             paper: t.icon_paper,
             cut: t.icon_cut,
+        }
+    }
+
+    /// The Cut bar's colours: the part that tells what happens is in the
+    /// Cut colour, not the Prepare teal. On the selected stage's orange
+    /// fill the Cut colour reads poorly (under 3:1), so there it is ink.
+    pub fn cut(t: &super::theme::Tokens, selected: bool) -> Self {
+        Self {
+            accent: if selected { t.icon_ink } else { t.icon_cut },
+            ..Self::of(t)
         }
     }
 
@@ -485,7 +494,8 @@ pub fn texture_colored(
     texture_with(ctx, icon, size, &Palette::mono(color))
 }
 
-fn texture_with(ctx: &egui::Context, icon: Icon, size: f32, pal: &Palette) -> TextureHandle {
+/// Like [`texture`], in the colours of `pal`.
+pub fn texture_with(ctx: &egui::Context, icon: Icon, size: f32, pal: &Palette) -> TextureHandle {
     let px = (size * ctx.pixels_per_point()).round().max(1.0) as u32;
     let key = (icon, px, pal.key());
     let cache = ctx.data_mut(|d| {
@@ -579,6 +589,45 @@ mod tests {
         // 12 px: already 1 px.
         assert!(snap_strokes(&svg, 12).contains("stroke-width=\"2\""));
         assert_eq!(snap_strokes(&svg, 36), svg, "large sizes stay");
+    }
+
+    /// WCAG contrast of two colours.
+    fn contrast(a: Color32, b: Color32) -> f32 {
+        fn lum(c: Color32) -> f32 {
+            let lin = |v: u8| {
+                let v = v as f32 / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+        }
+        let (a, b) = (lum(a), lum(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn cut_bar_accents_read_on_their_background() {
+        for t in [
+            super::super::theme::Tokens::dark(),
+            super::super::theme::Tokens::light(),
+        ] {
+            // The selected stage's fill: the Cut accent at 35 % on the panel.
+            let a = t.accent_cut;
+            let mix = |c: u8, p: u8| (c as f32 * 0.35 + p as f32 * 0.65).round() as u8;
+            let fill = Color32::from_rgb(
+                mix(a.r(), t.panel.r()),
+                mix(a.g(), t.panel.g()),
+                mix(a.b(), t.panel.b()),
+            );
+            let on = Palette::cut(&t, true);
+            let off = Palette::cut(&t, false);
+            assert_eq!(off.accent, t.icon_cut, "the Cut colour, not the teal");
+            assert!(contrast(on.accent, fill) >= 3.0);
+            assert!(contrast(off.accent, t.panel) >= 3.0);
+        }
     }
 
     #[test]

@@ -87,13 +87,12 @@ except the two files below.
 | Appearance (Settings) | palette |
 | Agents (Settings) | bot |
 | Shortcuts (Settings) | keyboard |
-| Plotters (Settings) | printer |
 | Materials (Settings) | layers |
 | New project (Home) | file-plus |
 | Open (Home) | folder-open |
 | Thumbs up (How did it go?) | thumbs-up |
 | Thumbs down (How did it go?) | thumbs-down |
-| Device & Material (Cut stage) | plotter (FlatCraft's own, MPL-2.0) |
+| Device & Material (Cut stage), Plotters (Settings) | plotter (FlatCraft's own, MPL-2.0) |
 | Path (Cut stage) | route-travel (derived from route) |
 | Simulate (Cut stage) | play |
 | Send (Cut stage) | send |

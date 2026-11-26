@@ -135,6 +135,20 @@ pub fn tool_card(resp: &Response, tool: &Tool, snap: &Snapshot, beside: bool) {
 
 // ---------------------------------------------------------------- buttons
 
+/// The icon in the colours of `pal`, `size` points.
+pub(crate) fn image_with(
+    ui: &Ui,
+    icon: Icon,
+    size: f32,
+    pal: &icons::Palette,
+) -> egui::Image<'static> {
+    let tex = icons::texture_with(ui.ctx(), icon, size, pal);
+    egui::Image::from_texture(egui::load::SizedTexture::new(
+        tex.id(),
+        egui::Vec2::splat(size),
+    ))
+}
+
 pub(crate) fn image(ui: &Ui, icon: Icon, size: f32) -> egui::Image<'static> {
     let tex = icons::texture(ui.ctx(), icon, size);
     egui::Image::from_texture(egui::load::SizedTexture::new(
@@ -236,13 +250,16 @@ fn paint_state(ui: &Ui, rect: egui::Rect, resp: &Response, selected: Option<bool
 }
 
 /// A step of the Cut bar, as tall as the ribbon's tools row
-/// ([`ROW_HEIGHT`]) and drawn like a big ribbon button: the 24 pt icon,
-/// under it `title`, and under that `detail` in the dim text colour (left
-/// out when `None`). It is a tab named `name`; `selected` gets the
+/// ([`ROW_HEIGHT`]) and drawn like a big ribbon button: the 24 pt icon in
+/// the colours of `pal`, under it `title` in the ribbon tabs' font, and
+/// under that `detail` in the small dim font (left out when `None`), so
+/// the title reads first. It is a tab named `name`; `selected` gets the
 /// selection fill. A dimmed one (`enabled` off) does nothing when clicked.
+#[allow(clippy::too_many_arguments)]
 pub fn step_button(
     ui: &mut Ui,
     icon: Icon,
+    pal: &icons::Palette,
     title: &str,
     detail: Option<&str>,
     name: &str,
@@ -251,13 +268,15 @@ pub fn step_button(
 ) -> Response {
     const ICON: f32 = 24.0;
     ui.add_enabled_ui(enabled, |ui| {
-        let font = egui::TextStyle::Small.resolve(ui.style());
-        let layout = |text: &str| {
-            ui.painter()
-                .layout_no_wrap(text.to_string(), font.clone(), egui::Color32::PLACEHOLDER)
+        let layout = |text: &str, style: egui::TextStyle| {
+            ui.painter().layout_no_wrap(
+                text.to_string(),
+                style.resolve(ui.style()),
+                egui::Color32::PLACEHOLDER,
+            )
         };
-        let title_g = layout(title);
-        let detail_g = detail.map(layout);
+        let title_g = layout(title, egui::TextStyle::Body);
+        let detail_g = detail.map(|d| layout(d, egui::TextStyle::Small));
         let text_w = detail_g
             .as_ref()
             .map_or(title_g.size().x, |d| d.size().x.max(title_g.size().x));
@@ -280,7 +299,7 @@ pub fn step_button(
                 egui::Vec2::splat(ICON),
             );
             // A disabled Ui fades what its painter draws.
-            image(ui, icon, ICON).paint_at(ui, icon_rect);
+            image_with(ui, icon, ICON, pal).paint_at(ui, icon_rect);
             let mut y = icon_rect.bottom() + gap;
             let p = ui.painter();
             let h = title_g.size().y;

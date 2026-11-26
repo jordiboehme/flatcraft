@@ -106,7 +106,7 @@ impl Page {
             Page::Cutting => Icon::Cut,
             Page::Agents => Icon::Bot,
             Page::Shortcuts => Icon::Keyboard,
-            Page::Plotters => Icon::Printer,
+            Page::Plotters => Icon::Plotter,
             Page::Materials => Icon::Layers,
             Page::Mats => Icon::Grid,
         }
