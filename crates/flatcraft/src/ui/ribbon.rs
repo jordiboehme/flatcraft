@@ -143,19 +143,16 @@ fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) -> egui::Rect {
         if shown.as_deref() != Some(nf.field.buf(fields).as_str())
             && fields.editing.as_ref().is_some_and(|e| e.ids != now)
         {
-            // Typed, and then the selection changed: the text counts for
-            // the selection of now, or (if it cannot be read, or nothing
-            // is selected) the edit ends with the old value.
+            // Typed, and then the selection changed (an agent, a menu
+            // command): a text it can read stays with the objects, the
+            // document and the value it was typed for. A text it cannot
+            // read, or an empty selection, ends the edit with the old
+            // value.
             let typed = nf.field.buf(fields).trim().to_string();
-            let read = nf.field.spec().eval(&typed, nf.value);
+            let start = fields.editing.as_ref().and_then(|e| e.value);
+            let read = nf.field.spec().eval(&typed, start);
             match (read, now.is_empty()) {
-                (Ok(_), false) => {
-                    if let Some(e) = fields.editing.as_mut() {
-                        e.value = nf.value;
-                        e.free = canvas::free_aspect(cx.snap, &now);
-                        e.ids = now;
-                    }
-                }
+                (Ok(_), false) => {}
                 (read, _) => {
                     if let (Err(e), false) = (read, now.is_empty()) {
                         cx.actions.push(Action::Error(calc::dropped(&e.message)));

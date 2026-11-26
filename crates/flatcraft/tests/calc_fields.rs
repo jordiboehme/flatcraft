@@ -172,7 +172,7 @@ fn a_click_on_another_field_after_a_bad_width_moves_the_focus_there() {
 }
 
 #[test]
-fn a_selection_change_drops_a_bad_text_and_moves_a_good_one_along() {
+fn a_selection_change_drops_a_bad_text_and_a_good_one_stays_with_its_objects() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let a = import_square(&s);
@@ -209,22 +209,29 @@ fn a_selection_change_drops_a_bad_text_and_moves_a_good_one_along() {
     let toast = app(&h).ui.toasts.last().cloned().unwrap();
     assert!(toast.text.ends_with("Nothing changed."), "{}", toast.text);
     assert_eq!(undo_len(&s), before);
-    // A good text typed for a, then b is selected: it counts for b only.
-    select(a);
-    h.run();
-    h.get_by_label("X (mm)").click();
-    h.run();
-    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
-    h.run();
-    h.event(Event::Text("+=5".into()));
-    h.run();
-    select(b);
-    h.run();
-    h.key_press(Key::Enter);
-    h.run();
-    h.run();
-    assert!(near(bounds(&s, a).x0, 20.0), "{:?}", bounds(&s, a));
-    assert!(near(bounds(&s, b).x0, 105.0), "{:?}", bounds(&s, b));
+    // A good text typed for a, then b is selected: it stays with a, and
+    // a relative edit counts from a's value.
+    let typed_for_a_then_b = |h: &mut AppHarness, text: &str| {
+        select(a);
+        h.run();
+        h.get_by_label("X (mm)").click();
+        h.run();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        h.run();
+        h.event(Event::Text(text.into()));
+        h.run();
+        select(b);
+        h.run();
+        h.key_press(Key::Enter);
+        h.run();
+        h.run();
+    };
+    typed_for_a_then_b(&mut h, "+=5");
+    assert!(near(bounds(&s, a).x0, 25.0), "{:?}", bounds(&s, a));
+    assert!(near(bounds(&s, b).x0, 100.0), "{:?}", bounds(&s, b));
+    typed_for_a_then_b(&mut h, "40");
+    assert!(near(bounds(&s, a).x0, 40.0), "{:?}", bounds(&s, a));
+    assert!(near(bounds(&s, b).x0, 100.0), "{:?}", bounds(&s, b));
 }
 
 #[test]
