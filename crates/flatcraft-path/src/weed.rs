@@ -36,7 +36,7 @@ use flatcraft_core::document::{ObjectId, WeedSettings};
 use flatcraft_core::geometry::RingDirection;
 use kurbo::{Point, Rect};
 
-use crate::containment::{self, KeepMode, KeptMaterial};
+use crate::containment::{self, BOTH_KEPT_BAND_MM, KeepMode, KeptMaterial};
 use crate::feed::{self, BAND_MM};
 use crate::plan::{KeepSide, PathRef, PipelineSettings, Toolpath, ToolpathKind};
 use crate::rings;
@@ -135,7 +135,7 @@ pub fn generate(
         return out;
     };
     let owned: Vec<Toolpath> = design.iter().map(|t| (*t).clone()).collect();
-    let kept = KeptMaterial::from_toolpaths(&owned, mode_of, area, 0.0);
+    let kept = KeptMaterial::from_toolpaths(&owned, mode_of, area);
     let m = s.margin_mm;
     // (design bounds, region) per group: the region is the box (clamped
     // to the cutting area) whether or not the box is cut.
@@ -347,7 +347,8 @@ fn lines(
     } else {
         (region.x0, region.x1, region.y0, region.y1)
     };
-    let r = WEED_CLEARANCE_MM + SLACK_MM;
+    // Never into the kept band of a `Both` object either.
+    let r = WEED_CLEARANCE_MM.max(BOTH_KEPT_BAND_MM) + SLACK_MM;
     let mut out = Vec::new();
     let mut k = 1;
     loop {

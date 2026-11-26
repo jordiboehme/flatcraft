@@ -23,7 +23,7 @@ pub mod strategy;
 pub mod weed;
 
 pub use clean::Polyline;
-pub use containment::{KeepMode, KeptMaterial};
+pub use containment::{BOTH_KEPT_BAND_MM, KeepMode, KeptMaterial};
 pub use knife::{Compensation, CornerMode, HostSettings};
 pub use plan::{
     ASSUMED_START_HEADING, AlignmentStroke, AppliedCompensation, AxisRun, CORNER_DEG, CutPlan,

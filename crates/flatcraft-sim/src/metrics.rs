@@ -359,7 +359,7 @@ pub fn measure(
         })
         .unwrap_or(Rect::ZERO)
         .inflate(1.0, 1.0);
-    let kept = KeptMaterial::from_toolpaths(toolpaths, |_| KeepMode::Pieces, area, 0.0);
+    let kept = KeptMaterial::from_toolpaths(toolpaths, |_| KeepMode::Pieces, area);
     measure_kept(toolpaths, trace, s, &kept)
 }
 

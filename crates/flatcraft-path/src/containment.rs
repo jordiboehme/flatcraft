@@ -404,6 +404,11 @@ struct KeptObject<'a> {
     mode: KeepMode,
 }
 
+/// How far around the cuts of a [`KeepMode::Both`] object everything is
+/// kept material, in millimetres: "nothing near the object is waste", so
+/// no lead-in, overshoot or weed line of a neighbour comes closer.
+pub const BOTH_KEPT_BAND_MM: f64 = 1.0;
+
 /// The edge of a grid cell of [`KeptMaterial`], in millimetres.
 const CELL_MM: f64 = 1.0;
 
@@ -450,15 +455,15 @@ impl KeptMaterial {
     /// The kept material of a job: the closed `Cut` toolpaths grouped by
     /// source object, one lap each (Ruling F3) from pass 1 only, so passes
     /// and overcut never cancel a ring. Open paths and the alignment stroke
-    /// add no rings. `mode_of` gives each object's [`KeepMode`],
-    /// `cutting_area` is the sheet a [`KeepMode::Stencil`] keeps, and
-    /// `clearance_mm` how far from a [`KeepMode::Both`] object's rings
-    /// everything is kept.
+    /// add no rings. `mode_of` gives each object's [`KeepMode`] and
+    /// `cutting_area` is the sheet a [`KeepMode::Stencil`] keeps. Around
+    /// a [`KeepMode::Both`] object's rings everything within
+    /// [`BOTH_KEPT_BAND_MM`] is kept, for every caller alike (the planner,
+    /// the simulator, weeding and the canvas).
     pub fn from_toolpaths(
         toolpaths: &[Toolpath],
         mode_of: impl Fn(ObjectId) -> KeepMode,
         cutting_area: Rect,
-        clearance_mm: f64,
     ) -> Self {
         let mut index: HashMap<ObjectId, usize> = HashMap::new();
         let mut objects: Vec<KeptObject> = Vec::new();
@@ -476,7 +481,7 @@ impl KeptMaterial {
             });
             objects[k].rings.push(t.lap());
         }
-        Self::with_modes(&objects, cutting_area, clearance_mm)
+        Self::with_modes(&objects, cutting_area, BOTH_KEPT_BAND_MM)
     }
 
     /// One object of `rings` in `mode`, for tests.
@@ -1589,7 +1594,7 @@ mod tests {
     fn from_toolpaths_groups_rings_by_object() {
         // Two overlapping pieces of two objects: the overlap stays kept.
         let paths = [sqo(1, 0.0, 0.0, 20.0, 20.0), sqo(2, 10.0, 0.0, 30.0, 20.0)];
-        let kept = KeptMaterial::from_toolpaths(&paths, |_| KeepMode::Pieces, mat(), 1.0);
+        let kept = KeptMaterial::from_toolpaths(&paths, |_| KeepMode::Pieces, mat());
         assert!(kept.is_kept(Point::new(15.0, 10.0)));
         assert!(kept.is_kept(Point::new(5.0, 10.0)));
         assert!(!kept.is_kept(Point::new(50.0, 10.0)));
@@ -1608,7 +1613,7 @@ mod tests {
                 KeepMode::Pieces
             }
         };
-        let kept = KeptMaterial::from_toolpaths(&paths, mode, mat(), 1.0);
+        let kept = KeptMaterial::from_toolpaths(&paths, mode, mat());
         assert!(kept.is_kept(Point::new(10.0, 10.0)), "piece of object 1");
         assert!(
             !kept.is_kept(Point::new(110.0, 110.0)),
@@ -1626,7 +1631,7 @@ mod tests {
         align.kind = ToolpathKind::Alignment;
         paths.push(align);
         paths.push(tp(&[(5.0, 10.0), (15.0, 10.0)], false));
-        let kept = KeptMaterial::from_toolpaths(&paths, |_| KeepMode::Pieces, mat(), 1.0);
+        let kept = KeptMaterial::from_toolpaths(&paths, |_| KeepMode::Pieces, mat());
         assert!(kept.is_kept(Point::new(10.0, 12.0)));
         assert!(kept.is_kept(Point::new(10.0, 10.0)), "on the open path");
         assert!(
@@ -1732,7 +1737,7 @@ mod tests {
                         2 => m2,
                         _ => m3,
                     };
-                    let kept = KeptMaterial::from_toolpaths(&paths, mode, area, 0.8);
+                    let kept = KeptMaterial::from_toolpaths(&paths, mode, area);
                     let n = spans_agree(&kept, area.inflate(2.0, 2.0));
                     assert!(n > 0, "{m1:?} {m2:?} {m3:?}");
                 }
@@ -1743,14 +1748,10 @@ mod tests {
     #[test]
     fn kept_spans_of_nothing_and_of_a_bad_row() {
         let area = Rect::new(0.0, 0.0, 10.0, 10.0);
-        let none = KeptMaterial::from_toolpaths(&[], |_| KeepMode::Pieces, area, 0.0);
+        let none = KeptMaterial::from_toolpaths(&[], |_| KeepMode::Pieces, area);
         assert!(none.kept_spans(5.0, 0.0, 10.0).is_empty());
-        let stencil = KeptMaterial::from_toolpaths(
-            &[sq(2.0, 2.0, 4.0, 4.0)],
-            |_| KeepMode::Stencil,
-            area,
-            0.0,
-        );
+        let stencil =
+            KeptMaterial::from_toolpaths(&[sq(2.0, 2.0, 4.0, 4.0)], |_| KeepMode::Stencil, area);
         assert_eq!(
             stencil.kept_spans(3.0, -5.0, 20.0),
             vec![(0.0, 2.0), (4.0, 10.0)],
@@ -1769,7 +1770,7 @@ mod tests {
             sqo(1, 10.0, 10.0, 20.0, 20.0),
             sqo(2, 40.0, 10.0, 50.0, 20.0),
         ];
-        let kept = KeptMaterial::from_toolpaths(&paths, |_| KeepMode::Stencil, area, 0.0);
+        let kept = KeptMaterial::from_toolpaths(&paths, |_| KeepMode::Stencil, area);
         assert!(!kept.is_kept(Point::new(15.0, 15.0)));
         assert!(!kept.is_kept(Point::new(45.0, 15.0)));
         assert!(kept.is_kept(Point::new(30.0, 15.0)), "the sheet between");
@@ -1780,7 +1781,7 @@ mod tests {
             sqo(2, 20.0, 20.0, 30.0, 30.0),
         ];
         let mode = |o: ObjectId| [KeepMode::Stencil, KeepMode::Pieces][o.0 as usize - 1];
-        let kept = KeptMaterial::from_toolpaths(&paths, mode, area, 0.0);
+        let kept = KeptMaterial::from_toolpaths(&paths, mode, area);
         assert!(kept.is_kept(Point::new(25.0, 25.0)));
         assert!(!kept.is_kept(Point::new(15.0, 15.0)));
     }

@@ -278,7 +278,7 @@ mod tests {
         let area = kurbo::Rect::new(0.0, 0.0, 100.0, 100.0);
         let paths = job();
         for mode in [KeepMode::Pieces, KeepMode::Stencil, KeepMode::Both] {
-            let kept = KeptMaterial::from_toolpaths(&paths, |_| mode, area, 0.6);
+            let kept = KeptMaterial::from_toolpaths(&paths, |_| mode, area);
             let mask = Mask::of(&kept, area, 400).unwrap();
             assert_eq!(mask.size, [400, 400]);
             let (k, w) = agrees(&kept, &mask);
@@ -301,7 +301,7 @@ mod tests {
                 KeepMode::Pieces
             }
         };
-        let kept = KeptMaterial::from_toolpaths(&paths, mode, area, 0.6);
+        let kept = KeptMaterial::from_toolpaths(&paths, mode, area);
         let mask = Mask::of(&kept, area, 500).unwrap();
         agrees(&kept, &mask);
         let at = |x: f64, y: f64| mask.at(Point::new(x, y)).unwrap();
@@ -318,7 +318,6 @@ mod tests {
             &job(),
             |_| KeepMode::Pieces,
             kurbo::Rect::new(0.0, 0.0, 300.0, 300.0),
-            0.0,
         );
         let big = Mask::of(&kept, kurbo::Rect::new(0.0, 0.0, 300.0, 150.0), MAX_TEXELS).unwrap();
         assert_eq!(big.size, [MAX_TEXELS, MAX_TEXELS / 2]);
@@ -330,5 +329,22 @@ mod tests {
         ] {
             assert!(Mask::of(&kept, bad, MAX_TEXELS).is_none());
         }
+    }
+
+    #[test]
+    fn the_overlay_shows_the_kept_band_of_a_both_object() {
+        use flatcraft_path::BOTH_KEPT_BAND_MM;
+        let area = kurbo::Rect::new(0.0, 0.0, 100.0, 100.0);
+        let paths = [square(1, 30.0, 30.0, 60.0, 60.0)];
+        let kept = KeptMaterial::from_toolpaths(&paths, |_| KeepMode::Both, area);
+        let mask = Mask::of(&kept, area, 1000).unwrap();
+        agrees(&kept, &mask);
+        let at = |x: f64, y: f64| mask.at(Point::new(x, y)).unwrap();
+        let b = BOTH_KEPT_BAND_MM;
+        assert_eq!(at(45.05, 45.05), 255, "inside");
+        assert_eq!(at(60.0 + b / 2.0 + 0.05, 45.05), 255, "in the band right");
+        assert_eq!(at(45.05, 30.0 - b / 2.0 - 0.05), 255, "in the band above");
+        assert_eq!(at(60.0 + b + 0.55, 45.05), 0, "past the band");
+        assert_eq!(at(5.05, 5.05), 0, "far away");
     }
 }

@@ -105,8 +105,7 @@ fn planned(input: &[PlacedPath], s: &PipelineSettings) -> (CutPlan, SimTrace, Jo
 
 /// `paths` through `knife::apply` with the job's kept material.
 fn applied(mut paths: Vec<Toolpath>, s: &PipelineSettings, h: Vec2) -> Vec<Toolpath> {
-    let kept =
-        KeptMaterial::from_toolpaths(&paths, |_| KeepMode::Pieces, area(), WASTE_CLEARANCE_MM);
+    let kept = KeptMaterial::from_toolpaths(&paths, |_| KeepMode::Pieces, area());
     knife::apply(&mut paths, s, &kept, h);
     paths
 }
@@ -975,5 +974,59 @@ fn kept_wins_a_piece_on_a_stencil_sheet_leads_in_from_inside() {
             assert!(near(piece) || near(stencil), "{start}: tip at {:?}", x.tip);
         }
         assert_eq!(m.max_into_kept_mm, 0.0, "{start}");
+    }
+}
+
+/// Nothing near a Both object is waste: a Pieces neighbour 1 or 2 mm away
+/// keeps its lead-ins and overshoots out of the Both object's kept band.
+/// Returns the closest blade-down waste tip (off the neighbour's own cut
+/// line) to the Both cut.
+fn neighbour_waste_distance(gap: f64) -> f64 {
+    let both = Rect::new(40.0, 40.0, 60.0, 55.0);
+    let piece = Rect::new(60.0 + gap, 40.0, 75.0 + gap, 55.0);
+    let on = |r: Rect, q: Point| {
+        use kurbo::ParamCurveNearest as _;
+        r.to_path(0.01)
+            .segments()
+            .map(|seg| seg.nearest(q, 1e-9).distance_sq.sqrt())
+            .fold(f64::INFINITY, f64::min)
+    };
+    let mut min = f64::INFINITY;
+    for corner in [CornerMode::Arc, LIFT] {
+        for start in [0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0] {
+            let input = [
+                placed(1, rect_path(both.x0, both.y0, both.width(), both.height())),
+                placed(
+                    2,
+                    rect_path(piece.x0, piece.y0, piece.width(), piece.height()),
+                ),
+            ];
+            let s = host_keeping(corner, &[(1, KeepMode::Both)], start);
+            let (out, trace, m) = planned_kept(&input, &s);
+            assert_eq!(m.max_into_kept_mm, 0.0, "{gap} {corner:?} {start}");
+            for x in trace
+                .samples
+                .iter()
+                .filter(|x| x.down && out.toolpaths[x.toolpath].source.object == ObjectId(2))
+            {
+                if on(piece, x.tip) > ALGORITHM_LIMIT_MM {
+                    min = min.min(on(both, x.tip));
+                }
+            }
+        }
+    }
+    min
+}
+
+#[test]
+fn both_keeps_a_neighbours_waste_moves_out_of_its_band() {
+    use flatcraft_path::BOTH_KEPT_BAND_MM;
+    for gap in [1.0, 2.0] {
+        let d = neighbour_waste_distance(gap);
+        assert!(d.is_finite(), "{gap}: the neighbour has waste moves");
+        assert!(
+            d >= BOTH_KEPT_BAND_MM - ALGORITHM_LIMIT_MM,
+            "{gap} mm gap: a waste tip {d} mm from the Both cut"
+        );
     }
 }

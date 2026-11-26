@@ -603,12 +603,7 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
 
     // Ruling F3: `from_toolpaths` reads `lap()` of pass 1, never `points`,
     // so chained laps and passes never cancel a ring.
-    let kept = KeptMaterial::from_toolpaths(
-        &toolpaths,
-        mode_of,
-        s.cutting_area,
-        knife::WASTE_CLEARANCE_MM,
-    );
+    let kept = KeptMaterial::from_toolpaths(&toolpaths, mode_of, s.cutting_area);
     let compensation = knife::apply(&mut toolpaths, s, &kept, s.start_heading);
     let (end, end_heading) = knife::end_state(&toolpaths, s.home, s.start_heading);
 

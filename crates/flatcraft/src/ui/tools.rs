@@ -1400,7 +1400,7 @@ impl Setting {
                 "Blade offset: the tip of a drag blade trails behind the centre of the holder by this much. FlatCraft steers around corners to make up for it."
             }
             Setting::Keep => {
-                "What you keep after cutting, so the blade starts and turns only in the waste, the part you throw away. Pieces keeps the cut shapes, like stickers you peel off the sheet. Stencil keeps the sheet with the holes, like a stencil you paint through: the shapes fall out. Both keeps both sides: the blade never starts or overshoots next to these cuts, it only turns on the spot. Where objects meet, kept wins. Turn on Show kept and waste in View to see it on the mat."
+                "What you keep after cutting, so the blade starts and turns only in the waste, the part you throw away. Pieces keeps the cut shapes, like stickers you peel off the sheet. Stencil keeps the sheet with the holes, like a stencil you paint through: the shapes fall out. Both keeps both sides: the blade never starts or overshoots next to these cuts, it only turns on the spot. A stencil with a cut frame around it uses Pieces: Stencil is for shapes cut out of a sheet that stays. Where objects meet, kept wins. Turn on Show kept and waste in View to see it on the mat."
             }
             Setting::Threshold => {
                 "Tracing turns the picture into black and white first. Pixels darker than this become cut shapes."

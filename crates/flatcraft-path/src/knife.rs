@@ -732,7 +732,7 @@ mod tests {
     }
 
     fn kept_of(paths: &[Toolpath]) -> KeptMaterial {
-        KeptMaterial::from_toolpaths(paths, |_| KeepMode::Pieces, area(), WASTE_CLEARANCE_MM)
+        KeptMaterial::from_toolpaths(paths, |_| KeepMode::Pieces, area())
     }
 
     /// `paths` through `apply` with `s`, starting with heading `h`.

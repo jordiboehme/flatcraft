@@ -770,3 +770,52 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn weed_lines_stay_out_of_the_kept_band_of_a_both_object() {
+    use flatcraft_path::BOTH_KEPT_BAND_MM;
+    let ring = |object: u64, x0: f64, y0: f64, x1: f64, y1: f64| {
+        Toolpath::new(
+            vec![
+                Point::new(x0, y0),
+                Point::new(x1, y0),
+                Point::new(x1, y1),
+                Point::new(x0, y1),
+                Point::new(x0, y0),
+            ],
+            true,
+            PathRef {
+                object: ObjectId(object),
+                path_index: 0,
+            },
+        )
+    };
+    let both = ring(1, 50.0, 50.0, 90.0, 90.0);
+    let design = [both.clone(), ring(2, 100.0, 50.0, 140.0, 90.0)];
+    let s = WeedSettings {
+        weed_box: true,
+        lines: WeedLines::Both,
+        spacing_mm: 3.0,
+        margin_mm: 10.0,
+        ..WeedSettings::default()
+    };
+    let area = Rect::new(0.0, 0.0, 300.0, 300.0);
+    let mode = |o: ObjectId| {
+        if o.0 == 1 {
+            KeepMode::Both
+        } else {
+            KeepMode::Pieces
+        }
+    };
+    let w = weed::generate(&design, mode, |o| o, area, &s);
+    assert!(!w.lines.is_empty() && w.boxes.len() == 1, "{w:?}");
+    let edges: Vec<(Point, Point)> = both.points.windows(2).map(|p| (p[0], p[1])).collect();
+    for l in &w.lines {
+        for &(c, d) in &edges {
+            assert!(
+                seg_distance(l[0], l[1], c, d) >= BOTH_KEPT_BAND_MM,
+                "a weed line {l:?} in the kept band"
+            );
+        }
+    }
+}
