@@ -844,6 +844,9 @@ pub struct Snapshot {
     /// The cut the Job card recalls for the document's material (see
     /// `CutLog::last_time`).
     pub last_time: Option<flatcraft_engine::cutlog::CutEntry>,
+    /// The newest cut with the document's material nobody rated yet (see
+    /// `CutLog::to_rate`).
+    pub to_rate: Option<flatcraft_engine::cutlog::CutEntry>,
 }
 
 impl Snapshot {
@@ -1042,6 +1045,7 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
             description: st.document.description.clone(),
             notes: st.document.notes.clone(),
             last_time: s.cut_log().last_time(&st.document.job.material_id).cloned(),
+            to_rate: s.cut_log().to_rate(&st.document.job.material_id).cloned(),
         }
     };
     let doc_id = snap.doc_id;

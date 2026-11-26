@@ -137,6 +137,15 @@ impl CutLog {
         self.entries.iter().find(|e| e.id == id)
     }
 
+    /// The cut "Rate the cut of ..." asks about for this material: the
+    /// newest one nobody rated yet.
+    pub fn to_rate(&self, material_id: &str) -> Option<&CutEntry> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|e| e.material_id == material_id && e.outcome.is_none())
+    }
+
     /// The cut the Job card recalls for this material: the newest with an
     /// outcome, else the newest.
     pub fn last_time(&self, material_id: &str) -> Option<&CutEntry> {
@@ -148,6 +157,44 @@ impl CutLog {
         let newest = with_material.clone().next();
         with_material.find(|e| e.outcome.is_some()).or(newest)
     }
+}
+
+/// The day of an RFC 3339 UTC time (as the log writes them) at
+/// `offset_secs` east of UTC, like "2026-11-27" for
+/// "2026-11-26T23:30:00Z" at UTC+1. A text that is not such a time shows
+/// its first ten characters.
+pub fn day_at(date: &str, offset_secs: i32) -> String {
+    let fallback = || date.get(..10).unwrap_or(date).to_string();
+    let num = |r: std::ops::Range<usize>| date.get(r).and_then(|t| t.parse::<i64>().ok());
+    let (Some(y), Some(m), Some(d), Some(h), Some(min), Some(sec)) = (
+        num(0..4),
+        num(5..7),
+        num(8..10),
+        num(11..13),
+        num(14..16),
+        num(17..19),
+    ) else {
+        return fallback();
+    };
+    if date.get(10..11) != Some("T") || !date.ends_with('Z') || !(1..=12).contains(&m) {
+        return fallback();
+    }
+    let secs = days_from_civil(y, m, d) * 86_400 + h * 3600 + min * 60 + sec;
+    let local = secs + i64::from(offset_secs);
+    let (y, m, d) = crate::commands::sources::civil_from_days(local.div_euclid(86_400));
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// Days since 1970-01-01 of a date (Howard Hinnant's days-from-civil
+/// algorithm, proleptic Gregorian calendar).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 /// The log file in `config_dir`.

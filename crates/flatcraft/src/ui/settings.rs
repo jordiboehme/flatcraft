@@ -461,38 +461,43 @@ pub fn job(
         material.notes.as_deref(),
         t,
     );
-    if let Some(e) = &snap.last_time {
-        last_time(ui, e, t, actions);
-    }
+    last_time(ui, snap, t, actions);
 }
 
-/// The Job card's "Last time with this material" line from the cut log,
-/// and the button that asks how that cut went.
-fn last_time(
-    ui: &mut Ui,
-    e: &flatcraft_engine::cutlog::CutEntry,
-    t: &Tokens,
-    actions: &mut Vec<Action>,
-) {
+/// The Job card's "Last time with this material" line from the cut log
+/// (the newest rated cut with this material, else the newest), and a
+/// button that asks how the newest cut nobody rated yet went.
+fn last_time(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec<Action>) {
     use super::outcome;
-    ui.add_space(t.spacing / 2.0);
-    let text = outcome::last_time_text(e);
-    let r = ui.add(egui::Label::new(RichText::new(&text).color(t.text_dim)).wrap());
-    super::groups::card(
-        &r,
-        "Last time",
-        &format!(
-            "The newest cut with {} in the cut log on this computer, and how it went when you said so. The cut: {}.",
-            e.material,
-            outcome::cut_text(e)
-        ),
-        None,
-        false,
-    );
-    let b = ui.button(outcome::TITLE);
-    super::groups::card(&b, outcome::TITLE, outcome::ASK_HINT, None, false);
-    if b.clicked() {
-        actions.push(Action::AskOutcome(e.id.clone()));
+    if let Some(e) = &snap.last_time {
+        ui.add_space(t.spacing / 2.0);
+        let text = outcome::last_time_text(e);
+        let r = ui.add(egui::Label::new(RichText::new(&text).color(t.text_dim)).wrap());
+        super::groups::card(
+            &r,
+            "Last time",
+            &format!(
+                "From the cut log on this computer: the newest cut with {} that you rated, else the newest cut with it. The cut: {}.",
+                e.material,
+                outcome::cut_text(e)
+            ),
+            None,
+            false,
+        );
+    }
+    if let Some(e) = &snap.to_rate {
+        let label = outcome::rate_label(e);
+        let b = ui.button(&label);
+        super::groups::card(
+            &b,
+            &label,
+            &format!("{} The cut: {}.", outcome::ASK_HINT, outcome::cut_text(e)),
+            None,
+            false,
+        );
+        if b.clicked() {
+            actions.push(Action::AskOutcome(e.id.clone()));
+        }
     }
 }
 

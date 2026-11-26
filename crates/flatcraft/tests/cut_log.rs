@@ -43,6 +43,12 @@ fn in_dialog<'a>(h: &'a AppHarness, label: &'a str) -> egui_kittest::Node<'a> {
         .get_by_role_and_label(Role::Button, label)
 }
 
+/// The label of the Job card's button for the newest unrated cut.
+fn rate_button(dir: &tempfile::TempDir) -> String {
+    let log = cutlog::read(dir.path());
+    outcome::rate_label(log.to_rate("vinyl").unwrap())
+}
+
 fn dialog_open(h: &AppHarness) -> bool {
     app(h).ui.outcome.is_some()
         && h.query_by_role_and_label(Role::Button, "It went well")
@@ -75,7 +81,7 @@ fn the_person_answers_from_the_job_card() {
     h.get_by_role_and_label(Role::Tab, "Device & Material")
         .click();
     h.run();
-    h.get_by_role_and_label(Role::Button, outcome::TITLE)
+    h.get_by_role_and_label(Role::Button, &rate_button(&dir))
         .click();
     h.run();
     assert!(dialog_open(&h));
@@ -110,7 +116,7 @@ fn not_now_records_nothing() {
     h.get_by_role_and_label(Role::Tab, "Device & Material")
         .click();
     h.run();
-    h.get_by_role_and_label(Role::Button, outcome::TITLE)
+    h.get_by_role_and_label(Role::Button, &rate_button(&dir))
         .click();
     h.run();
     h.get_by_role_and_label(Role::Button, "It did not go well")
@@ -134,4 +140,46 @@ fn only_a_cut_on_a_plotter_asks_right_after_the_send() {
     let d = outcome::after_send(&e).unwrap();
     assert_eq!(d, OutcomeDialog::about(&e));
     assert!(d.about.contains("Vinyl"), "{}", d.about);
+}
+
+#[test]
+fn rate_asks_about_the_newest_unrated_cut_while_the_line_shows_the_rated_one() {
+    let (dir, s, mut h) = sent_once();
+    // A second send, then rate the first one.
+    h.get_by_role_and_label(Role::Button, "Send to File Output")
+        .click();
+    h.run();
+    h.run();
+    let (older, newer) = {
+        let log = cutlog::read(dir.path());
+        assert_eq!(log.entries.len(), 2);
+        (log.entries[0].clone(), log.entries[1].clone())
+    };
+    s.lock()
+        .unwrap()
+        .record_outcome(&older.id, Verdict::Good, "clean")
+        .unwrap();
+    h.get_by_role_and_label(Role::Tab, "Device & Material")
+        .click();
+    h.run();
+    let log = s.lock().unwrap().cut_log();
+    // The line keeps the rule: the newest rated cut.
+    h.get_by_label(&outcome::last_time_text(log.get(&older.id).unwrap()));
+    // The button asks about the newer, unrated cut, and says which.
+    let label = outcome::rate_label(&newer);
+    assert!(label.starts_with("Rate the cut of 20"), "{label}");
+    h.get_by_role_and_label(Role::Button, &label).click();
+    h.run();
+    assert_eq!(app(&h).ui.outcome.as_ref().unwrap().entry, newer.id);
+}
+
+#[test]
+fn the_day_follows_the_time_zone_offset() {
+    let at = "2026-11-26T23:30:00.000000000Z";
+    assert_eq!(cutlog::day_at(at, 3600), "2026-11-27", "UTC+1");
+    assert_eq!(cutlog::day_at(at, 0), "2026-11-26");
+    assert_eq!(cutlog::day_at("2026-03-01T00:10:00Z", -3600), "2026-02-28");
+    assert_eq!(cutlog::day_at("2024-03-01T00:10:00Z", -3600), "2024-02-29");
+    assert_eq!(cutlog::day_at("2026-12-31T23:30:00Z", 3600), "2027-01-01");
+    assert_eq!(cutlog::day_at("not a date", 0), "not a date");
 }

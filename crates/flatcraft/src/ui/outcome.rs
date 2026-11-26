@@ -2,7 +2,8 @@
 //! a few words), and the cut log keeps it. The Job card recalls it the next
 //! time that material is picked ("Last time with this material: ...").
 //!
-//! The question opens from the Job card's "Last time" line. Right after a
+//! The question opens from the Job card's "Rate the cut of ..." button,
+//! for the newest cut with the material that nobody rated yet. Right after a
 //! send it opens only for a cut on a plotter (milestone 3), never after
 //! File Output, which cut nothing yet ([`cutlog::asks_after`]).
 
@@ -20,7 +21,13 @@ pub const TITLE: &str = "How did it go?";
 /// Why Save is dimmed before a thumb is picked.
 pub const PICK_FIRST: &str = "Pick thumbs up or thumbs down first.";
 /// The card of the Job card's button that opens the question.
-pub const ASK_HINT: &str = "Say how this cut went: thumbs up or down and a few words. Next time you pick this material, the job settings remind you. It stays on this computer.";
+pub const ASK_HINT: &str = "Say how this cut went: thumbs up or down and a few words. Next time you pick this material, the job settings remind you. It stays on this computer. Agents you connect to FlatCraft can read it.";
+
+/// The Job card's button for the newest cut nobody rated yet: "Rate the
+/// cut of 2026-11-26", in the local day.
+pub fn rate_label(e: &CutEntry) -> String {
+    format!("Rate the cut of {}", day(&e.date))
+}
 
 /// The open question: the cut it is about and the answer so far.
 #[derive(Debug, Clone, PartialEq)]
@@ -48,9 +55,12 @@ impl OutcomeDialog {
     }
 }
 
-/// The day of an RFC 3339 time, like "2026-11-26".
-pub fn day(date: &str) -> &str {
-    date.get(..10).unwrap_or(date)
+/// The day of a cut log time, like "2026-11-26". It is the UTC day for
+/// now: the local time zone needs a time zone library, which is still to
+/// be chosen (chrono fails `cargo deny` as unmaintained).
+/// [`cutlog::day_at`] does the shift once the offset is known.
+pub fn day(date: &str) -> String {
+    cutlog::day_at(date, 0)
 }
 
 fn passes(n: u32) -> String {
