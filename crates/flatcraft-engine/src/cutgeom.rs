@@ -502,9 +502,11 @@ fn object_outlines(
 /// is a sliver the blade cannot follow, so it is dropped and counted
 /// (the second value).
 ///
-/// Known gaps: a stroked spur inside a subpath that does enclose area (a
-/// closed shape with a tail drawn in the same subpath) is lost; only the
-/// fill edge is cut. A stroked subpath without area that lies inside a filled
+/// The stroked centre line of a subpath that makes the fill is cut too
+/// where it leaves the fill's edge ([`spurs`]): a closed shape with a tail
+/// drawn in the same subpath keeps its tail.
+///
+/// Known gaps: a stroked subpath without area that lies inside a filled
 /// area of the same path is cut into the piece. The ends of a closed
 /// hairline are looked
 /// for over a reach of 0.2 mm, which can pick the apex of a narrow "V"
@@ -519,7 +521,9 @@ fn fill_edges(
 ) -> (Vec<BezPath>, usize) {
     let mut fill: Vec<Contour> = Vec::new();
     let mut lines: Vec<BezPath> = Vec::new();
-
+    // The stroked centre lines of the subpaths that make the fill, for
+    // their spurs.
+    let mut centre: Vec<Contour> = Vec::new();
     // The fill of the last subpath that is not a line: the result if it
     // is the only one.
     let mut last = Vec::new();
@@ -548,6 +552,15 @@ fn fill_edges(
                 );
             }
         } else if let Some(c) = contour {
+            if stroke_width.is_some() {
+                let mut line = sub.points(tolerance / 2.0);
+                if sub.closed
+                    && let Some(first) = line.first().copied()
+                {
+                    line.push(first);
+                }
+                centre.push(line);
+            }
             fill.push(c);
             last = own;
         }
@@ -582,7 +595,154 @@ fn fill_edges(
         .map(|c| ring(c))
         .collect();
     out.extend(lines);
+    out.extend(spurs(&centre, &kept, tolerance));
     (out, slivers)
+}
+
+/// The parts of the stroked centre lines `centre` that do not lie on the
+/// edge of the fill `fill` (spurs and tails drawn in a subpath that also
+/// encloses area), cut as open pieces. The parts on the edge are cut by
+/// the fill's ring already, so they are left out.
+///
+/// Outside the fill every part is cut: there the stroke is all that shows.
+/// Inside it only a tail is cut, a part with an end inside the fill. A
+/// loop or a chord from edge to edge inside the fill is the edge of a
+/// subpath hidden under the fill (a square nested in a square of the same
+/// direction is one filled square); cutting it would cut the piece apart.
+///
+/// Rounding of the booleans can leave a part a hair off the edge; one
+/// whose every vertex and segment middle lies within `tolerance` of the
+/// edge is the edge too.
+fn spurs(centre: &[Contour], fill: &[Vec<Contour>], tolerance: f64) -> Vec<BezPath> {
+    use i_overlay::float::clip::FloatClip;
+    use i_overlay::string::clip::ClipRule;
+    if centre.is_empty() || fill.is_empty() {
+        return Vec::new();
+    }
+    let centre = centre.to_vec();
+    let shapes = fill.to_vec();
+    let edges: Vec<Contour> = fill
+        .iter()
+        .flatten()
+        .filter_map(|c| {
+            let mut c = c.clone();
+            c.push(*c.first()?);
+            Some(c)
+        })
+        .collect();
+    let edges: Vec<&[[f64; 2]]> = edges.iter().map(Vec::as_slice).collect();
+    let on_edge = |p: &Contour| {
+        let samples = p.iter().copied().chain(
+            p.windows(2)
+                .map(|w| [(w[0][0] + w[1][0]) / 2.0, (w[0][1] + w[1][1]) / 2.0]),
+        );
+        all_near_lines(samples, &edges, tolerance)
+    };
+    let clip = |invert: bool| {
+        let rule = ClipRule {
+            invert,
+            boundary_included: false,
+        };
+        let parts: Vec<Contour> = centre
+            .clip_by_as::<i64>(&shapes, OverlayFill::NonZero, rule)
+            .into_iter()
+            .filter(|p| p.len() >= 2 && !on_edge(p))
+            .collect();
+        chain_once(&parts)
+    };
+    let free_end = |p: &Contour| {
+        let (first, last) = (p[0], p[p.len() - 1]);
+        first != last
+            && (!all_near_lines([first], &edges, tolerance)
+                || !all_near_lines([last], &edges, tolerance))
+    };
+    let inside = clip(false).into_iter().filter(free_end);
+    clip(true)
+        .into_iter()
+        .chain(inside)
+        .filter(|p| {
+            let length: f64 = p
+                .windows(2)
+                .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+                .sum();
+            length >= tolerance
+        })
+        .map(|p| {
+            let mut path = BezPath::new();
+            path.move_to(Point::new(p[0][0], p[0][1]));
+            for q in &p[1..] {
+                path.line_to(Point::new(q[0], q[1]));
+            }
+            path
+        })
+        .collect()
+}
+
+/// The segments of `parts`, each cut once (a line drawn out and back
+/// along itself gives its segments twice), joined again into polylines:
+/// a polyline runs on through every point where exactly two segments
+/// meet. Points are matched to 1e-6 mm, far below the booleans' rounding
+/// that the clip kept apart anyway.
+fn chain_once(parts: &[Contour]) -> Vec<Contour> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let key = |p: [f64; 2]| ((p[0] * 1e6).round() as i64, (p[1] * 1e6).round() as i64);
+    let mut points: BTreeMap<(i64, i64), [f64; 2]> = BTreeMap::new();
+    let mut segments: BTreeSet<((i64, i64), (i64, i64))> = BTreeSet::new();
+    for part in parts {
+        for w in part.windows(2) {
+            let (a, b) = (key(w[0]), key(w[1]));
+            if a == b {
+                continue;
+            }
+            points.entry(a).or_insert(w[0]);
+            points.entry(b).or_insert(w[1]);
+            segments.insert((a.min(b), a.max(b)));
+        }
+    }
+    let mut ends: BTreeMap<(i64, i64), Vec<(i64, i64)>> = BTreeMap::new();
+    for &(a, b) in &segments {
+        ends.entry(a).or_default().push(b);
+        ends.entry(b).or_default().push(a);
+    }
+    let mut used: BTreeSet<((i64, i64), (i64, i64))> = BTreeSet::new();
+    let mut out = Vec::new();
+    // Start at the points where a polyline must end, then at what is left
+    // (closed loops).
+    let starts: Vec<(i64, i64)> = ends
+        .iter()
+        .filter(|(_, n)| n.len() != 2)
+        .map(|(k, _)| *k)
+        .chain(ends.keys().copied())
+        .collect();
+    for start in starts {
+        while let Some(&next) = ends[&start]
+            .iter()
+            .find(|n| !used.contains(&(start.min(**n), start.max(**n))))
+        {
+            let mut line = vec![points[&start]];
+            let (mut at, mut to) = (start, next);
+            loop {
+                used.insert((at.min(to), at.max(to)));
+                line.push(points[&to]);
+                let n = &ends[&to];
+                if n.len() != 2 {
+                    break;
+                }
+                match n
+                    .iter()
+                    .find(|m| !used.contains(&(to.min(**m), to.max(**m))))
+                {
+                    Some(&m) => {
+                        at = to;
+                        to = m;
+                    }
+                    None => break,
+                }
+            }
+            out.push(line);
+        }
+    }
+    out
 }
 
 /// A closed line whose fill is on average narrower than this is a
@@ -1149,6 +1309,7 @@ pub(crate) mod tests {
     }
 
     use super::*;
+    use kurbo::ParamCurveArclen as _;
 
     #[test]
     fn a_path_without_segments_has_no_cut_bounds() {
@@ -1332,6 +1493,45 @@ pub(crate) mod tests {
             [20.0, 0.02],
         ];
         assert!(spine(&ring).is_none(), "{:?}", spine(&ring));
+    }
+
+    /// Pins the clip rules: a line on the fill's edge gives nothing, a
+    /// line across it gives its part inside and its parts outside.
+    #[test]
+    fn spurs_keep_both_sides_and_leave_the_edge() {
+        let square = vec![vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]];
+        let on_edge = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]];
+        assert!(spurs(&[on_edge], std::slice::from_ref(&square), 0.01).is_empty());
+        // Across: the two parts outside are cut; the chord inside runs
+        // from edge to edge, so it is hidden under the fill.
+        let across = vec![[-5.0, 5.0], [15.0, 5.0]];
+        let parts = spurs(&[across], std::slice::from_ref(&square), 0.01);
+        let lengths: Vec<f64> = parts
+            .iter()
+            .map(|p| p.segments().map(|s| s.arclen(1e-9)).sum::<f64>())
+            .collect();
+        assert_eq!(lengths.len(), 2, "{parts:?}");
+        assert!(
+            lengths.iter().all(|l| (l - 5.0).abs() < 1e-6),
+            "{lengths:?}"
+        );
+        // A tail into the fill has a free end inside: it is cut.
+        let tail = vec![[0.0, 0.0], [4.0, 4.0]];
+        let parts = spurs(&[tail], std::slice::from_ref(&square), 0.01);
+        assert_eq!(parts.len(), 1, "{parts:?}");
+        // A loop inside is a hidden edge.
+        let inner = vec![[2.0, 2.0], [8.0, 2.0], [8.0, 8.0], [2.0, 8.0], [2.0, 2.0]];
+        assert!(spurs(&[inner], &[square], 0.01).is_empty());
+    }
+
+    #[test]
+    fn chain_once_cuts_a_there_and_back_line_once() {
+        let out = chain_once(&[
+            vec![[0.0, 0.0], [5.0, 5.0], [0.0, 0.0]],
+            vec![[5.0, 5.0], [9.0, 5.0]],
+        ]);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].len(), 3, "{out:?}");
     }
 
     #[test]

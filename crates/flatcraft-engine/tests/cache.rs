@@ -384,3 +384,68 @@ fn no_default_stroke_is_outlined_and_a_hairline() {
         min_feature
     );
 }
+
+// ---------------------------------------------------------------- stroked spurs
+
+/// The open pieces of the cut of a single filled path with a thin stroke,
+/// and the total length of each kind.
+fn spur_cut(d: &str) -> (Vec<kurbo::BezPath>, Vec<kurbo::BezPath>) {
+    let dirs = dirs();
+    let mut s = session(&dirs);
+    let id = import(
+        &mut s,
+        &svg(&format!(
+            r#"<path d="{d}" fill="black" stroke="black" stroke-width="0.2"/>"#
+        )),
+        "spur",
+    );
+    let g = s.cut_geometry().unwrap();
+    let pieces = g.pieces(flatcraft_core::document::ObjectId(id));
+    let (rings, open): (Vec<_>, Vec<_>) = pieces
+        .iter()
+        .map(|p| p.path.clone())
+        .partition(|p| p.elements().contains(&kurbo::PathEl::ClosePath));
+    (rings, open)
+}
+
+fn length(paths: &[kurbo::BezPath]) -> f64 {
+    use kurbo::ParamCurveArclen as _;
+    paths
+        .iter()
+        .flat_map(|p| p.segments())
+        .map(|s| s.arclen(1e-6))
+        .sum()
+}
+
+#[test]
+fn stroked_spur_in_closed_subpath_is_cut() {
+    // As the brief gives it: the tail is a subpath of its own.
+    let (rings, open) = spur_cut("M10 10 H30 V30 H10 Z M10 10 L0 0");
+    assert_eq!(rings.len(), 1);
+    assert!((length(&open) - 200f64.sqrt()).abs() < 0.05, "{open:?}");
+    // The tail drawn inside the subpath that encloses the area: out and
+    // back along the same line, cut once.
+    let (rings, open) = spur_cut("M10 10 L0 0 L10 10 H30 V30 H10 Z");
+    assert_eq!(rings.len(), 1);
+    assert!((length(&open) - 200f64.sqrt()).abs() < 0.05, "{open:?}");
+    // A tail that ends inside the fill is cut into it.
+    let (rings, open) = spur_cut("M10 10 L20 20 L10 10 H30 V30 H10 Z");
+    assert_eq!(rings.len(), 1);
+    assert!((length(&open) - 200f64.sqrt()).abs() < 0.05, "{open:?}");
+}
+
+#[test]
+fn spur_on_the_fill_edge_is_not_cut_twice() {
+    for d in [
+        "M10 10 H30 V30 H10 Z",
+        "M10 10 H30 V30 H10 V10",
+        // A circle: its flattened stroke runs along the flattened edge.
+        "M40 20 A20 20 0 1 1 0 20 A20 20 0 1 1 40 20 Z",
+        // An edge drawn twice in one subpath.
+        "M10 10 H30 H10 H30 V30 H10 Z",
+    ] {
+        let (rings, open) = spur_cut(d);
+        assert_eq!(rings.len(), 1, "{d}");
+        assert!(open.is_empty(), "{d}: {open:?}");
+    }
+}
