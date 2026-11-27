@@ -734,6 +734,15 @@ fn split_button(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
     }
     let on = more.blocked(cx.snap).is_none();
     let r = chevron_part(ui, &more.button_name(), on);
+    // A hairline between the two parts, so they read as one button with
+    // two halves.
+    let line = r.rect.shrink2(egui::vec2(0.0, metrics::SPACE_8));
+    let border = super::theme::Tokens::of(ui.visuals()).border;
+    ui.painter().vline(
+        line.left(),
+        line.y_range(),
+        egui::Stroke::new(metrics::HAIRLINE, border),
+    );
     tool_card(&r, more, cx.snap, false);
     if r.clicked() {
         more.run(cx.snap, cx.st, cx.show_debug, cx.actions);
