@@ -535,3 +535,51 @@ fn a_save_that_finishes_meanwhile_leaves_the_import_unsaved() {
     assert_eq!(g.doc().document.objects.len(), 2);
     assert!(g.doc().dirty, "the import is not in the saved file");
 }
+
+#[test]
+fn a_window_command_runs_only_in_the_document_it_was_meant_for() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = shared(dir.path());
+    let first = s.lock().unwrap().doc().id();
+    locked_run(&s, "document.new", json!({})).unwrap();
+    for id in ["object.import_svg", "object.move"] {
+        let params = match id {
+            "object.move" => json!({ "ids": [1], "dx_mm": 1.0 }),
+            _ => json!({ "svg": SVG, "name": "rect" }),
+        };
+        let r = unlocked::execute_in(&s, first, id, params, Origin::User);
+        assert_eq!(r, Err(unlocked::not_active()), "{id}");
+    }
+    let active = s.lock().unwrap().doc().id();
+    let r = unlocked::execute_in(
+        &s,
+        active,
+        "object.import_svg",
+        json!({ "svg": SVG, "name": "rect" }),
+        Origin::User,
+    );
+    assert!(r.is_ok(), "{r:?}");
+}
+
+#[test]
+fn a_sample_opens_off_the_lock_like_open_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = shared(dir.path());
+    add_svg(&s);
+    let file = dir.path().join("p.flatcraft");
+    locked_run(&s, "project.save", json!({ "path": file })).unwrap();
+    let bytes: Arc<[u8]> = std::fs::read(&file).unwrap().into();
+    let a = shared(dir.path());
+    let b = shared(dir.path());
+    let locked =
+        flatcraft_engine::commands::project::open_bytes(&mut a.lock().unwrap(), &bytes, "Sample");
+    set_hook(&b, |s, _| assert!(s.try_lock().is_ok(), "the lock is free"));
+    let unlocked = unlocked::open_bytes(&b, bytes, "Sample", Origin::User);
+    assert_eq!(locked, unlocked);
+    let (a, b) = (a.lock().unwrap(), b.lock().unwrap());
+    assert_eq!(b.doc().path, None);
+    assert_eq!(
+        doc_text(&a.doc().document, dir.path()),
+        doc_text(&b.doc().document, dir.path())
+    );
+}

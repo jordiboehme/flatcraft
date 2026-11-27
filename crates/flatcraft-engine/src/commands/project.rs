@@ -11,7 +11,7 @@ use kurbo::Rect;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::object::{blade_offset_for, blade_offset_in};
+use super::object::blade_offset_in;
 use super::sources::{project_dir, relink_for_save, restore_links};
 use super::{NoParams, command, cutting_area, ids_json, point_arr, rect_json};
 use crate::session::{CommandError, DocState, Origin, Session};
@@ -638,7 +638,7 @@ fn bounds_differ(a: Rect, b: Rect) -> bool {
 
 fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandError> {
     let (document, warnings) = load_open(&s.profiles, &p.path)?;
-    Ok(install_open(s, p.path, document, warnings))
+    Ok(install_open(s, Some(p.path), document, warnings))
 }
 
 /// The slow part of `project.open`, which needs no session: reads the
@@ -674,28 +674,32 @@ pub(crate) fn load_open(
 
 /// The quick part of `project.open`: the loaded document becomes the
 /// active one. It replaces the active document only if that one is
-/// pristine at this moment.
+/// pristine at this moment. A document from bytes ([`open_bytes`]) has
+/// no path, and its result names none.
 pub(crate) fn install_open(
     s: &mut Session,
-    path: PathBuf,
+    path: Option<PathBuf>,
     document: flatcraft_core::document::Document,
     warnings: Vec<String>,
 ) -> Value {
     let objects = document.objects.len();
     let mut st = DocState::new(document);
-    st.path = Some(path.clone());
+    st.path = path.clone();
     if s.doc().is_pristine() {
         *s.doc_mut() = st;
     } else {
         s.docs.push(st);
         s.active = s.docs.len() - 1;
     }
-    json!({
+    let mut out = json!({
         "index": s.active,
-        "path": path,
         "objects": objects,
         "warnings": warnings,
-    })
+    });
+    if let Some(path) = path {
+        out["path"] = json!(path);
+    }
+    out
 }
 
 /// Opens a project file's bytes that are not a file (a sample built into
@@ -706,23 +710,21 @@ pub(crate) fn install_open(
 /// registry command: only the window offers samples. Returns {index,
 /// objects, warnings} like `project.open`.
 pub fn open_bytes(s: &mut Session, bytes: &[u8], what: &str) -> Result<Value, CommandError> {
+    let (document, warnings) = load_open_bytes(&s.profiles, bytes, what)?;
+    Ok(install_open(s, None, document, warnings))
+}
+
+/// The slow part of [`open_bytes`], which needs no session.
+pub(crate) fn load_open_bytes(
+    profiles: &flatcraft_device::ProfileStore,
+    bytes: &[u8],
+    what: &str,
+) -> Result<(flatcraft_core::document::Document, Vec<String>), CommandError> {
     let (mut document, unlinked) =
         project::load_report_bytes(bytes).map_err(|e| CommandError::Failed(e.to_string()))?;
-    let blade = blade_offset_for(s, &document.job.plotter_id);
+    let blade = blade_offset_in(profiles, &document.job.plotter_id);
     let warnings = rebuild_loaded(&mut document, &unlinked, blade, what)?;
-    let objects = document.objects.len();
-    let st = DocState::new(document);
-    if s.doc().is_pristine() {
-        *s.doc_mut() = st;
-    } else {
-        s.docs.push(st);
-        s.active = s.docs.len() - 1;
-    }
-    Ok(json!({
-        "index": s.active,
-        "objects": objects,
-        "warnings": warnings,
-    }))
+    Ok((document, warnings))
 }
 
 /// Loads a project file and rebuilds its shapes without opening it, for

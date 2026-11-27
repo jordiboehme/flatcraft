@@ -29,7 +29,7 @@ use flatcraft_core::document::Document;
 use serde_json::Value;
 
 use crate::commands::export::{ExportParams, PreparedExport, prepare_export};
-use crate::commands::project::{OpenParams, install_open, load_open};
+use crate::commands::project::{OpenParams, install_open, load_open, load_open_bytes};
 use crate::registry::Command;
 use crate::session::{CommandError, Origin, Session, internal_error};
 
@@ -143,13 +143,57 @@ pub fn execute(
     params: Value,
     origin: Origin,
 ) -> Result<Value, CommandError> {
+    execute_on(session, None, id, params, origin)
+}
+
+/// What [`execute_in`] says when the document is no longer the active one.
+pub const NOT_ACTIVE: &str = "Another document became active, so nothing was changed.";
+
+/// The error of [`execute_in`] for a document that is not active.
+pub fn not_active() -> CommandError {
+    CommandError::Refused(NOT_ACTIVE.into())
+}
+
+/// [`execute`] in the open document `doc_id`, only while it is the
+/// active one: for a command the window started on the document the
+/// person saw. Fails with [`not_active`] when another document is active
+/// when the command begins (or, for a slow command, when a second try
+/// begins after the person switched).
+pub fn execute_in(
+    session: &Mutex<Session>,
+    doc_id: u64,
+    id: &str,
+    params: Value,
+    origin: Origin,
+) -> Result<Value, CommandError> {
+    execute_on(session, Some(doc_id), id, params, origin)
+}
+
+fn execute_on(
+    session: &Mutex<Session>,
+    doc: Option<u64>,
+    id: &str,
+    params: Value,
+    origin: Origin,
+) -> Result<Value, CommandError> {
     let Some(what) = stale_policy(id) else {
-        return lock(session).execute(id, params, origin);
+        let mut s = lock(session);
+        if doc.is_some_and(|d| s.doc().id() != d) {
+            return Err(not_active());
+        }
+        return s.execute(id, params, origin);
     };
     match id {
-        "project.open" => open(session, params, origin, what),
+        "project.open" => {
+            let p: Result<OpenParams, _> = crate::commands::parse(params);
+            open(session, origin, what, move || {
+                let p = p.as_ref().map_err(Clone::clone)?;
+                Ok(Load::File(p.path.clone()))
+            })
+        }
         "document.export" => split(
             session,
+            doc,
             id,
             origin,
             what,
@@ -161,6 +205,7 @@ pub fn execute(
         ),
         _ => split(
             session,
+            doc,
             id,
             origin,
             what,
@@ -170,11 +215,27 @@ pub fn execute(
     }
 }
 
+/// [`crate::commands::project::open_bytes`] with the rebuild off the
+/// session lock: a sample project the window opens. `what` names it in
+/// errors.
+pub fn open_bytes(
+    session: &Mutex<Session>,
+    bytes: std::sync::Arc<[u8]>,
+    what: &str,
+    origin: Origin,
+) -> Result<Value, CommandError> {
+    let what_text = what.to_string();
+    open(session, origin, "the project was opened", move || {
+        Ok(Load::Bytes(bytes.clone(), what_text.clone()))
+    })
+}
+
 /// The three steps of the module doc: `run` on a snapshot without the
 /// lock, the check and the store under it, then `finish` (a file write)
 /// without it again, only for a result that was stored.
 fn split<T>(
     session: &Mutex<Session>,
+    doc: Option<u64>,
     id: &str,
     origin: Origin,
     what: &str,
@@ -185,6 +246,9 @@ fn split<T>(
         let (mut scratch, key, base, hook) = {
             let mut s = lock(session);
             begin(&mut s, origin);
+            if doc.is_some_and(|d| s.doc().id() != d) {
+                return Err(not_active());
+            }
             (
                 s.scratch(),
                 Key::of(&s),
@@ -214,25 +278,35 @@ fn split<T>(
     Err(changed_error(what))
 }
 
+/// What `project.open` reads: a file, or a project's bytes and the name
+/// they go by in errors.
+enum Load {
+    File(PathBuf),
+    Bytes(std::sync::Arc<[u8]>, String),
+}
+
 /// `project.open` off the lock: the file is read and its shapes rebuilt
 /// without it, then the document is opened under it, with the bookkeeping
 /// of every command that changes the session (a panic rolls back, linked
-/// copies are checked).
+/// copies are checked). `what` parses the params under the lock, so a bad
+/// param fails as it does under [`Session::execute`].
 fn open(
     session: &Mutex<Session>,
-    params: Value,
     origin: Origin,
-    what: &str,
+    changed: &str,
+    what: impl Fn() -> Result<Load, CommandError>,
 ) -> Result<Value, CommandError> {
     let id = "project.open";
     for _ in 0..TRIES {
-        let (p, profiles, hook) = {
+        let (load, profiles, hook) = {
             let mut s = lock(session);
             begin(&mut s, origin);
-            let p: OpenParams = crate::commands::parse(params.clone())?;
-            (p, s.profiles.clone(), s.unlocked_hook.clone())
+            (what()?, s.profiles.clone(), s.unlocked_hook.clone())
         };
-        let loaded = compute(id, hook, || load_open(&profiles, &p.path));
+        let loaded = compute(id, hook, || match &load {
+            Load::File(path) => load_open(&profiles, path),
+            Load::Bytes(bytes, name) => load_open_bytes(&profiles, bytes, name),
+        });
         let mut s = lock(session);
         if s.profiles.revision() != profiles.revision() {
             s.prune_pending();
@@ -245,18 +319,26 @@ fn open(
                 return Err(e);
             }
         };
+        let path = match load {
+            Load::File(path) => Some(path),
+            Load::Bytes(..) => None,
+        };
         let install = Install {
-            opened: Mutex::new(Some((p.path, document, warnings))),
+            opened: Mutex::new(Some((path, document, warnings))),
         };
         return s.run_prepared(&install, origin);
     }
-    Err(changed_error(what))
+    Err(changed_error(changed))
 }
+
+/// A project read and rebuilt off the lock: its file (none for bytes),
+/// the document and the warnings.
+type Opened = (Option<PathBuf>, Document, Vec<String>);
 
 /// A project read and rebuilt off the lock, opened as the command
 /// `project.open` (its id, so its errors read the same).
 struct Install {
-    opened: Mutex<Option<(PathBuf, Document, Vec<String>)>>,
+    opened: Mutex<Option<Opened>>,
 }
 
 impl Command for Install {
