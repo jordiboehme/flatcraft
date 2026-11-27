@@ -363,6 +363,49 @@ A 10 % wrong offset costs ten times the algorithm limit, and a blade with a
 smaller real offset cuts into the kept piece at corners. That is why the
 offset calibration series exists: know your blade.
 
+## If the blade offset is wrong
+
+FlatCraft steers the blade with the offset in your plotter preset. If the
+real blade trails by a different amount, every corner and every start is a
+little off. The test sheet below was planned for 0.3 mm and cut (in the
+simulator, on the Cameo 2 device grid) by blades of 0.27, 0.3 and 0.33 mm:
+10 % too small, right, and 10 % too large. The numbers are the largest
+distance of the cut from the drawn line, in mm, per pattern of the sheet
+(`crates/flatcraft-engine/tests/quality_golden.rs`,
+`offset_sensitivity_table`).
+
+| pattern | blade 0.27 | blade 0.30 | blade 0.33 |
+|---|---|---|---|
+| square-50 | 0.0655 | 0.0214 | 0.0386 |
+| hole-in-square | 0.0655 | 0.0214 | 0.0386 |
+| f-glyph | 0.0655 | 0.0214 | 0.0386 |
+| circles | 0.0640 | 0.0352 | 0.0482 |
+| s-curve | 0.0631 | 0.0335 | 0.0409 |
+| open-line | 0.0586 | 0.0085 | 0.0307 |
+| ruler-x | 0.0655 | 0.0125 | 0.0385 |
+| ruler-y | 0.0655 | 0.0104 | 0.0425 |
+| star-15 | 0.0748 | 0.0275 | 0.1070 |
+| star-30 | 0.0638 | 0.0300 | 0.1059 |
+| star-45 | 0.0935 | 0.0339 | 0.0693 |
+| star-60 | 0.0830 | 0.0282 | 0.0867 |
+| star-90 | 0.0915 | 0.0359 | 0.0777 |
+| star-120 | 0.0987 | 0.0310 | 0.0730 |
+| star-150 | 0.0871 | 0.0341 | 0.0968 |
+| star-170 | 0.0889 | 0.0318 | 0.1177 |
+
+In plain words:
+
+- With the right offset every pattern stays within 0.036 mm.
+- 10 % off, squares and lines are about twice as far off, and sharp star
+  tips three to four times: up to 0.12 mm.
+- 10 % off, the blade can also get pushed from behind once in a while
+  (star-30 at 0.27, star-170 at 0.33), which can tear thin material.
+- A blade that trails more than you told FlatCraft (0.33 here) can swing
+  into the piece you keep at a start: 0.06 mm on this sheet.
+
+So the offset is not a number to guess. Cut the offset calibration series
+once per blade and set the winner in the plotter preset.
+
 ## Overcut and the closure gap
 
 The overcut stays 0.5 mm. In firmware mode FlatCraft sends the drawing as it
