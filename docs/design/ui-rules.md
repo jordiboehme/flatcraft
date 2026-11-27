@@ -29,7 +29,15 @@ shape of the lock or a caret) may keep a local constant next to its drawing.
 | `TEXT_SECONDARY` (`secondary()`) | 12 pt | Summaries, notes, the heading's note; always `text_dim`. |
 | `TEXT_SECONDARY` semibold (`subsection_title()`) | 12 pt | Titles of Advanced parts. |
 | `TEXT_SECTION` (`section_title()`) | 13 pt semibold | Section titles, hint card titles. |
-| `TEXT_HEADING` (`heading()`) | 14 pt semibold | Panel headings, the inspector title, the workspace tile. |
+| `TEXT_HEADING` (`heading()`) | 14 pt semibold | Panel headings, the inspector title, the workspace tile, card and toast titles. |
+| `TEXT_SMALL` (`small()`, `caption()`) | 11 pt, `caption()` semibold | Badges ("Current", "Open now"), eyebrow labels ("GENERAL", "NEW"), footnotes. |
+| `TEXT_TITLE` (`title()`) | 16 pt semibold | Titles of windows, dialogs and Settings pages. |
+| `TEXT_DISPLAY` (`display()`) | 24 pt semibold | The one big line of a page: Home's "Start", the About name. |
+| `ICON_BAR` (`ui::ICON_SIZE`) | 18 pt | Icons beside a text in the app bar, the ribbon's lists, the Cut steps and the timeline. |
+| `WINDOW_PAD` / `CARD_PAD` | 16 / 8 pt | Room inside a window or dialog / inside a card, a toast, a bar over the canvas, a legend. |
+| `WINDOW_BAR` | 48 pt | The header and the footer of the Settings window. |
+| `BUTTON_MIN_W` / `CLOSE_BUTTON` / `SMALL_DIALOG_W` | 64 / 22 / 360 pt | A window's main button / a window's close x / a one-field dialog. |
+| `ITEM_SPACING`, `BUTTON_PADDING`, `WINDOW_MARGIN`, `TIGHT_BUTTON_PADDING` | (8, 6), (8, 4), 8, (4, 2) pt | egui's base style (`theme::apply`, `theme::tight`). |
 | Ribbon (`TAB_ROW`, `RIBBON_PAD`, `BIG_HEIGHT`, `GROUP_FOOTER`, ...) | as tuned | The ribbon and the Cut bar; see below. |
 
 ### Off-grid values, on purpose
@@ -38,6 +46,18 @@ shape of the lock or a caret) may keep a local constant next to its drawing.
 - `TEXT_BODY` 12.5 pt: egui's Body size, which every widget uses.
 - The ribbon and the Cut bar: `TAB_ROW` 22, `RIBBON_PAD` (4, 3), `BIG_HEIGHT` 46, `BIG_PAD_Y` 3, `GROUP_FOOTER` 14, `COMPACT_HEIGHT` 22, `TILE_PAD` 14, `STEP_CHEVRON` 14, `LOCK_COLUMN` 14, and egui's Small style in the footers. They were tuned by eye and still come only from `metrics`.
 - The inspector's scroll bar: 6 pt wide, 2 pt from the content, 4 pt from the panel's edge, so it fits the 12 pt padding.
+- `ITEM_SPACING` 6 pt rows: egui's base style for popups, menus and windows. Every list outside the panels inherits it; panels and windows set their own spacing.
+- `ICON_BAR` 18 pt: the app bar's and the Cut steps' icons, tuned by eye with the app bar.
+- The guard's allow-list (`crates/flatcraft/tests/design_rules_allow.txt`), each with its reason there:
+  - `switcher.rs` `FontId::proportional(10.5)`: the workspace tile's width is still measured with its old 10.5 pt foot, so the ribbon does not move.
+  - `fonts.rs` `FontId::proportional(14.0)`: only a glyph probe, nothing is laid out.
+  - `canvas.rs` `medium(9.0)`: the ruler's numbers, drawing that fits the 18 pt ruler (`canvas::RULER`).
+  - `cut.rs` `medium(10.0)`: the cut order numbers on the mat, drawing next to a start dot.
+  - `inspector/blocks.rs` `2.0 * pad`: a second line of wrapped action buttons keeps the row's padding, so two lines sit a row apart.
+
+### Fixed sizes
+
+These widths and heights are local constants on purpose. They size one surface and are not spacing: `settings_window::SIZE` 1040 x 760, `SIDEBAR` 196, `LABEL_W` 200; `profiles_window::LIST_WIDTH` 168; `dialog::WIDTH` 440 and `BADGE` 36; `toasts::WIDTH` 340, `MIN_WIDTH` 160, `MIN_STACK_HEIGHT` 48; `keep_pick::BAR_WIDTH` 420; `report::CARD_WIDTH` 360; `about::WIDTH` 560; `help` shortcuts sheet 460; `home::MAX_WIDTH` 1080, `NEW_CARD_HEIGHT` 76, `ROW_HEIGHT` 60, `SAMPLE_PICTURE` 170; `switcher::LIST_WIDTH` 380, `ROW_HEIGHT` 76; `import_dialog::PREVIEW_SIZE` 280; `rails::ARRANGE_W` 270, `RAIL_W` 28; `app_bar::BAR_HEIGHT` 32 and its tab sizes; `canvas::RULER` 18. Drawing inside a hand-painted row or card (an icon's offset, a badge's padding) stays next to its drawing.
 
 ## Rules
 
@@ -48,7 +68,10 @@ Each rule names where it is enforced.
 - **Both panels alike.** Objects rows and inspector rows share the row height and the 12 pt padding. Enforced by `panels_share_row_height_and_padding`.
 - **Sections.** A 28 pt header with a 1 pt `border` line on top; no extra gap before or after the body. Enforced by `blocks::section` and `inspector_rows_share_one_height`.
 - **Columns.** The label column fits the section's longest label (64 to 112 pt, `blocks::labels`); the value widget fills the rest up to the reset slot. Enforced by `value_widgets_fill_the_value_column`.
-- **Type.** Panels use only the sizes of the scale, through `metrics::body`, `secondary`, `subsection_title`, `section_title` and `heading`; secondary text is `text_dim`. Checked in review.
+- **Layout numbers come from metrics.** Spacing, margins, grid gaps, button sizes and text sizes in `ui/` are `metrics` constants. A number typed into `add_space`, `Margin::same/symmetric`, `item_spacing`, `button_padding`, a grid's `.spacing`, `min_size`, `set_height`, `FontId::proportional/monospace`, `fonts::semibold/medium` or `RichText::size` fails the guard, unless it is 0, the `/ 2.0` of centring, or an allow-list entry with its reason. Enforced by `tests/design_rules.rs` `ui_layout_numbers_come_from_metrics`.
+- **Type.** The whole UI uses only the sizes of the scale, through `metrics::body`, `secondary`, `small`, `caption`, `subsection_title`, `section_title`, `heading`, `title` and `display`; secondary text is `text_dim`. The sizes are enforced by the guard above; their use is checked in review.
+- **Windows and dialogs.** Content sits `WINDOW_PAD` from the edge; a title is `title()`; the close x is `CLOSE_BUTTON` with a 16 pt icon at the top right. Settings rows follow the panel row: a 24 pt control, 28 pt apart, and the lines inside one control (a choice and its explanation) 2 pt apart. Preset forms use the same 28 pt row. Checked in review and by `settings_window` tests.
+- **Data lines.** A label and a value without a control (Cut stats, simulation metrics) stay one text line high, `ROW_GAP` apart. Checked in review.
 - **Colour.** Theme tokens only (`theme::Tokens`); colour means state (selection, change dot, warning, grade), never decoration. The tokens' contrast is enforced by `theme::tests` (`the_change_dot_reads_on_the_panel`, `warning_text_reads_on_every_surface`, `quality_colours_read_on_the_panel`); their use is checked in review.
 - **Icons.** Lucide; 16 pt in compact places, 24 pt in big ribbon buttons (`metrics::ICON_COMPACT`, `ICON_BIG`). Checked in review.
 - **Corners.** Fields and cards 6 pt (`Tokens::radius`), the ribbon 2 pt (`Tokens::ribbon_radius`). Enforced by `theme::tests::corner_radii`.
