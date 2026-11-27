@@ -560,6 +560,10 @@ pub struct Document {
     /// none; files from before load without any.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ignored_pairs: Vec<IgnoredPair>,
+    /// Top-level groups whose hint about close or overlapping members the
+    /// person turned off. Not written when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ignored_groups: Vec<ObjectId>,
 }
 
 /// One hint about a pair of objects that is turned off: the hint's code
@@ -592,11 +596,18 @@ impl Document {
             job,
             next_id: 1,
             ignored_pairs: Vec::new(),
+            ignored_groups: Vec::new(),
         }
     }
 
-    /// Forgets the ignored pairs with an object that is gone.
+    /// Forgets the ignored pairs with an object that is gone, and the
+    /// ignored groups that are gone.
     pub fn prune_ignored_pairs(&mut self) {
+        if !self.ignored_groups.is_empty() {
+            let groups: std::collections::BTreeSet<ObjectId> =
+                self.groups.iter().map(|g| g.id).collect();
+            self.ignored_groups.retain(|g| groups.contains(g));
+        }
         if self.ignored_pairs.is_empty() {
             return;
         }

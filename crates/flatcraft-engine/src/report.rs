@@ -84,11 +84,15 @@ pub enum Code {
     /// Two objects that overlap: the knife cuts through both. A hint only
     /// (info): overlapping objects can be the design.
     ObjectsOverlap,
+    /// Pairs of objects in one top-level group that are close or overlap
+    /// (letters as separate objects, tight kerning): one hint (info) for
+    /// the whole group instead of one per pair.
+    GroupObjectsClose,
 }
 
 impl Code {
     /// Every code, in the order the tool description lists them.
-    pub const ALL: [Code; 24] = [
+    pub const ALL: [Code; 25] = [
         Code::OpenPaths,
         Code::Hairline,
         Code::BelowMinFeature,
@@ -113,6 +117,7 @@ impl Code {
         Code::StrokesCutOnce,
         Code::ObjectsClose,
         Code::ObjectsOverlap,
+        Code::GroupObjectsClose,
     ];
 
     /// The code as agents see it, like `open_paths`.
@@ -142,6 +147,7 @@ impl Code {
             Code::StrokesCutOnce => "strokes_cut_once",
             Code::ObjectsClose => "objects_close",
             Code::ObjectsOverlap => "objects_overlap",
+            Code::GroupObjectsClose => "group_objects_close",
         }
     }
 
@@ -172,6 +178,7 @@ impl Code {
             Code::StrokesCutOnce => "Strokes cut once",
             Code::ObjectsClose => "Objects nearly touching",
             Code::ObjectsOverlap => "Objects overlap",
+            Code::GroupObjectsClose => "Close objects in a group",
         }
     }
 
@@ -1526,8 +1533,11 @@ fn touching_boxes(boxes: &[Rect]) -> Vec<(usize, usize)> {
 /// The hints about pairs of objects that nearly touch or overlap, for
 /// the pairs with at least one object of `ids` (every pair when `None`).
 /// Only objects that are cut count: a hidden or skipped object is not on
-/// the sheet. A pair inside one group is still a pair of objects. Pairs
-/// the person turned off (`Document::ignored_pairs`) are left out.
+/// the sheet. Pairs inside one top-level group (letters set as separate
+/// objects) come as one `group_objects_close` hint per group, so a tight
+/// word does not flood the report; pairs across groups or with a loose
+/// object stay one hint each. Pairs and groups the person turned off
+/// (`Document::ignored_pairs`, `Document::ignored_groups`) are left out.
 fn pair_issues(input: &JobInput, ids: Option<&[ObjectId]>, limits: &Limits) -> Vec<Issue> {
     let cut = input.cut_geometry();
     let tolerance = limits.tolerance_mm.max(0.01);
@@ -1573,6 +1583,9 @@ fn pair_issues(input: &JobInput, ids: Option<&[ObjectId]>, limits: &Limits) -> V
         near: &near,
     };
     let mut out = Vec::new();
+    // Pairs inside one top-level group, collected into one hint per group:
+    // the group and the objects of its pairs.
+    let mut in_groups: Vec<(ObjectId, usize, Vec<ObjectId>)> = Vec::new();
     for &(i, j) in &near {
         let (a, b) = (cuttable[i].0, cuttable[j].0);
         if !wanted(a) && !wanted(b) {
@@ -1581,7 +1594,33 @@ fn pair_issues(input: &JobInput, ids: Option<&[ObjectId]>, limits: &Limits) -> V
         let (Some(la), Some(lb)) = (lines_of(i), lines_of(j)) else {
             continue;
         };
-        match pair_of(la, lb, limit, tolerance) {
+        let pair = pair_of(la, lb, limit, tolerance);
+        let group = (a.unit == b.unit && a.unit != a.id && b.unit != b.id).then_some(a.unit);
+        if let (Some(g), Some(p)) = (group, &pair) {
+            let code = match p {
+                Pair::Overlap => Code::ObjectsOverlap,
+                Pair::Close { .. } => Code::ObjectsClose,
+            };
+            if input.ignored_groups.contains(&g) || ignored(code, a, b) {
+                continue;
+            }
+            let at = match in_groups.iter().position(|(x, _, _)| *x == g) {
+                Some(k) => k,
+                None => {
+                    in_groups.push((g, 0, Vec::new()));
+                    in_groups.len() - 1
+                }
+            };
+            let entry = &mut in_groups[at];
+            entry.1 += 1;
+            for id in [a.id, b.id] {
+                if !entry.2.contains(&id) {
+                    entry.2.push(id);
+                }
+            }
+            continue;
+        }
+        match pair {
             Some(Pair::Overlap) if !ignored(Code::ObjectsOverlap, a, b) => {
                 out.push(Issue {
                     code: Code::ObjectsOverlap,
@@ -1618,6 +1657,36 @@ fn pair_issues(input: &JobInput, ids: Option<&[ObjectId]>, limits: &Limits) -> V
             }
             _ => {}
         }
+    }
+    for (group, pairs, mut ids) in in_groups {
+        ids.sort_by_key(|id| input.objects.iter().position(|o| o.id == *id));
+        let name = input
+            .group_names
+            .get(&group)
+            .map_or_else(|| format!("group {}", group.0), |n| quoted(n));
+        let what = if pairs == 1 {
+            "1 pair of objects".to_string()
+        } else {
+            format!("{pairs} pairs of objects")
+        };
+        let verb = if pairs == 1 { "is" } else { "are" };
+        out.push(Issue {
+            code: Code::GroupObjectsClose,
+            severity: Severity::Info,
+            object_ids: ids.iter().map(|i| i.0).collect(),
+            paths: pairs,
+            message: format!("{what} in {name} {verb} very close or overlap."),
+            hint: format!(
+                "Parts of one design, like letters set as separate objects, often sit this close on purpose. If they do not, move them at least {} apart, the narrowest strip this blade cuts cleanly. If they do, ignore this hint for the group.",
+                mm(limit)
+            ),
+            fixes: vec![Fix {
+                label: "Ignore for this group".into(),
+                description: "Hides this hint for the whole group, for good: it is kept in the project. Nothing in the design changes. Undo brings it back.".into(),
+                command: "document.ignore_group_hint".into(),
+                args: json!({ "group_id": group.0 }),
+            }],
+        });
     }
     out
 }

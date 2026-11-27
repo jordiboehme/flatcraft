@@ -479,6 +479,11 @@ pub struct JobInput {
     /// The object pairs whose hints the person turned off
     /// (`Document::ignored_pairs`).
     pub ignored_pairs: Vec<flatcraft_core::document::IgnoredPair>,
+    /// The top-level groups whose close-members hint is turned off
+    /// (`Document::ignored_groups`).
+    pub ignored_groups: Vec<ObjectId>,
+    /// The name of every group, for the hints that name one.
+    pub group_names: std::collections::BTreeMap<ObjectId, String>,
     /// The cut geometry of `objects` (see [`JobInput::cut_geometry`]).
     pub cut: CutSeed,
 }
@@ -619,6 +624,8 @@ impl JobInput {
             plotter,
             material,
             ignored_pairs: doc.ignored_pairs.clone(),
+            ignored_groups: doc.ignored_groups.clone(),
+            group_names: doc.groups.iter().map(|g| (g.id, g.name.clone())).collect(),
             cut: CutSeed::default(),
         }
     }

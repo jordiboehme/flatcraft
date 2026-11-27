@@ -32,7 +32,7 @@ command!(
     mutates: false,
     params: CheckParams,
     run: run_check,
-    description: "Checks objects for what keeps them from cutting well: the geometry part of the import report, which object.import and object.import_svg return as report. Run it again after a fix to see what is left. Returns {shapes (cut shapes, closed or open), issues: [issue]}. The same issue format is used by the import commands (report.issues) and by job.preview (issues). An issue is {code, severity (info | warning | error), object_ids: [id], paths (how many paths or shapes, 0 when it does not count), message (plain text, the same the window shows), hint (what to do, in plain words), fixes: [{label, description, command, args}]}. A fix is a registry command with ready arguments: run it with execute {command, params: args}; the window's buttons run exactly these. Fixes use absolute sizes and positions, so running one twice does no harm. An empty fixes list means there is no automatic fix; follow the hint. A fix is never offered when running it would raise another issue whose fix undoes it (object outlines versus all lines, scale up versus scale to fit), so applying offered fixes always comes to an end. Cut options and scale are shared by linked copies: an issue whose fix changes them lists every member in object_ids (once for the group), and the fix description says so. object.reload, object.relink and object.retrace return the same report for the objects they read again. Codes found by document.check: open_paths (warning: filled paths cut as lines, or outlines with a small gap, so the piece stays on the sheet; fix object.set_cut_options mode object_outlines when that closes them), hairline (warning: strokes cut around both edges that are thinner than the minimum feature size, 6 times the blade offset, 1.5 mm by default; fix object.set_cut_options strokes centre_line; the default auto_threshold_mm, 1.5, is that size for the default 0.25 mm blade, so with a larger blade offset a stroke outlined by Auto can still be a hairline), below_min_feature (warning: closed shapes smaller than the minimum feature size; fix object.scale when every shape of the object is that small), fill_ignored (warning, error when nothing else is cut: filled paths without area that object_outlines cuts nothing of; fix object.set_cut_options mode all_lines), thin_slivers (warning, error when nothing else is cut: filled shapes thinner than half the blade offset, 0.125 mm by default, which the cut drops because the blade cannot follow both edges; no fix, make them wider or give them a stroke so they are cut once along their middle), outside_area (error: the object fits but is not inside the cutting area; fix object.move x_mm, y_mm), larger_than_area (error: the object is larger than the cutting area; fix object.scale to fit, about an anchor that keeps it inside when possible), stencil_island (info, never blocks the cut: a Stencil object on a material without a backing sheet, like paper or cardstock, has closed inner parts, the middle of an O, that fall out; no fix, a stencil font with bridges keeps them), strokes_cut_once (info: strokes 0.5 mm or wider that the stroke mode auto cuts once along their middle because they are thinner than the object's auto_threshold_mm, so their width is not cut; no fix, since outline would make a hairline whose fix undoes it: set strokes outline with object.set_cut_options if the width matters), objects_close (info, never blocks the cut, the send or an export: two cut objects, hidden and skipped ones left out, whose cut lines come closer than the minimum feature size without overlapping, so the strip between them is too thin to cut cleanly or to weed; object_ids names both; fixes object.move \"Move apart\", which moves the second one, with its group when the two are not in the same group, right, left, down or up, whichever is the smallest move that brings the gap to the minimum, keeps it in the cutting area and brings it close to (or over) no object it was not close to before, offered only when one direction does all that, and document.ignore_issue \"Ignore for this object pair\"), objects_overlap (info, never blocks: two cut objects whose cut lines cross or touch, or one lies in the other, so the knife cuts through both; fix document.ignore_issue). Close and overlapping objects can be the design: these hints are never fixed on their own, and an ignored pair stays ignored (stored in the project). Codes only the import commands report, from the file itself: missing_font (warning: text whose font is not installed was not drawn), clip_ignored, images_skipped, dashes_ignored (info), no_paths (warning), and for traced images nothing_traced (warning), trace_downscaled, dpi_ignored, shapes_dropped (info). Codes only job.preview reports, as reasons there is nothing to cut (all error): empty_document (no fix), hidden (fix object.set_visible visible true), skipped (fix object.set_cut cut true), fill_ignored, thin_slivers, no_paths, too_small (every cut is shorter than half a plotter step; fix object.scale). Unknown ids are refused.",
+    description: "Checks objects for what keeps them from cutting well: the geometry part of the import report, which object.import and object.import_svg return as report. Run it again after a fix to see what is left. Returns {shapes (cut shapes, closed or open), issues: [issue]}. The same issue format is used by the import commands (report.issues) and by job.preview (issues). An issue is {code, severity (info | warning | error), object_ids: [id], paths (how many paths or shapes, 0 when it does not count), message (plain text, the same the window shows), hint (what to do, in plain words), fixes: [{label, description, command, args}]}. A fix is a registry command with ready arguments: run it with execute {command, params: args}; the window's buttons run exactly these. Fixes use absolute sizes and positions, so running one twice does no harm. An empty fixes list means there is no automatic fix; follow the hint. A fix is never offered when running it would raise another issue whose fix undoes it (object outlines versus all lines, scale up versus scale to fit), so applying offered fixes always comes to an end. Cut options and scale are shared by linked copies: an issue whose fix changes them lists every member in object_ids (once for the group), and the fix description says so. object.reload, object.relink and object.retrace return the same report for the objects they read again. Codes found by document.check: open_paths (warning: filled paths cut as lines, or outlines with a small gap, so the piece stays on the sheet; fix object.set_cut_options mode object_outlines when that closes them), hairline (warning: strokes cut around both edges that are thinner than the minimum feature size, 6 times the blade offset, 1.5 mm by default; fix object.set_cut_options strokes centre_line; the default auto_threshold_mm, 1.5, is that size for the default 0.25 mm blade, so with a larger blade offset a stroke outlined by Auto can still be a hairline), below_min_feature (warning: closed shapes smaller than the minimum feature size; fix object.scale when every shape of the object is that small), fill_ignored (warning, error when nothing else is cut: filled paths without area that object_outlines cuts nothing of; fix object.set_cut_options mode all_lines), thin_slivers (warning, error when nothing else is cut: filled shapes thinner than half the blade offset, 0.125 mm by default, which the cut drops because the blade cannot follow both edges; no fix, make them wider or give them a stroke so they are cut once along their middle), outside_area (error: the object fits but is not inside the cutting area; fix object.move x_mm, y_mm), larger_than_area (error: the object is larger than the cutting area; fix object.scale to fit, about an anchor that keeps it inside when possible), stencil_island (info, never blocks the cut: a Stencil object on a material without a backing sheet, like paper or cardstock, has closed inner parts, the middle of an O, that fall out; no fix, a stencil font with bridges keeps them), strokes_cut_once (info: strokes 0.5 mm or wider that the stroke mode auto cuts once along their middle because they are thinner than the object's auto_threshold_mm, so their width is not cut; no fix, since outline would make a hairline whose fix undoes it: set strokes outline with object.set_cut_options if the width matters), objects_close (info, never blocks the cut, the send or an export: two cut objects, hidden and skipped ones left out, whose cut lines come closer than the minimum feature size without overlapping, so the strip between them is too thin to cut cleanly or to weed; object_ids names both; fixes object.move \"Move apart\", which moves the second one, with its group when the two are not in the same group, right, left, down or up, whichever is the smallest move that brings the gap to the minimum, keeps it in the cutting area and brings it close to (or over) no object it was not close to before, offered only when one direction does all that, and document.ignore_issue \"Ignore for this object pair\"), objects_overlap (info, never blocks: two cut objects whose cut lines cross or touch, or one lies in the other, so the knife cuts through both; fix document.ignore_issue). group_objects_close (info, never blocks: pairs of objects inside one top-level group that are close or overlap, like letters set as separate objects, come as one hint per group instead of one per pair; object_ids names the objects of those pairs, paths the number of pairs; fix document.ignore_group_hint \"Ignore for this group\"; pairs across groups or with a loose object stay objects_close and objects_overlap). Close and overlapping objects can be the design: these hints are never fixed on their own, and an ignored pair stays ignored (stored in the project). Codes only the import commands report, from the file itself: missing_font (warning: text whose font is not installed was not drawn), clip_ignored, images_skipped, dashes_ignored (info), no_paths (warning), and for traced images nothing_traced (warning), trace_downscaled, dpi_ignored, shapes_dropped (info). Codes only job.preview reports, as reasons there is nothing to cut (all error): empty_document (no fix), hidden (fix object.set_visible visible true), skipped (fix object.set_cut cut true), fill_ignored, thin_slivers, no_paths, too_small (every cut is shorter than half a plotter step; fix object.scale). Unknown ids are refused.",
 );
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -96,4 +96,57 @@ command!(
     params: IgnoreParams,
     run: run_ignore,
     description: "Turns a hint about two objects off for that pair (or on again with ignore false): objects_close or objects_overlap from document.check. Close and overlapping objects can be the design, so these hints never block the cut; once ignored, document.check and the import report leave that pair out. Stored in the project, one undo step; nothing in the design changes. object_ids are the hint's two objects (pass its object_ids); group ids are refused, since a hint is about two objects. Running it twice does no harm. Returns {code, object_ids, ignored}.",
+);
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IgnoreGroupParams {
+    /// The top-level group of the hint (its group_objects_close fix names it).
+    pub group_id: u64,
+    /// False shows the hint again. Default: true.
+    #[serde(default = "yes")]
+    pub ignore: bool,
+}
+
+fn run_ignore_group(
+    s: &mut Session,
+    p: IgnoreGroupParams,
+    _: Origin,
+) -> Result<Value, CommandError> {
+    let id = ObjectId(p.group_id);
+    let doc = &s.doc().document;
+    match doc.group_node(id) {
+        None => {
+            return Err(CommandError::NotFound(format!(
+                "no group with id {} (document.state lists the groups)",
+                p.group_id
+            )));
+        }
+        Some(g) if g.parent.is_some() => {
+            return Err(CommandError::InvalidParams(format!(
+                "group {} is inside another group; the hint is about the top-level group",
+                p.group_id
+            )));
+        }
+        Some(_) => {}
+    }
+    let doc = &mut s.doc_mut().document;
+    let listed = doc.ignored_groups.contains(&id);
+    if p.ignore && !listed {
+        doc.ignored_groups.push(id);
+        doc.ignored_groups.sort();
+    } else if !p.ignore && listed {
+        doc.ignored_groups.retain(|g| *g != id);
+    }
+    Ok(json!({ "group_id": p.group_id, "ignored": p.ignore }))
+}
+
+command!(
+    DocumentIgnoreGroupHint,
+    id: "document.ignore_group_hint",
+    title: "Ignore the close-objects hint of a group",
+    mutates: true,
+    params: IgnoreGroupParams,
+    run: run_ignore_group,
+    description: "Turns the group_objects_close hint of a top-level group off (or on again with ignore false): its members may sit close or overlap, like letters of one word. Stored in the project, one undo step, forgotten when the group is gone; nothing in the design changes. Running it twice does no harm. Returns {group_id, ignored}.",
 );

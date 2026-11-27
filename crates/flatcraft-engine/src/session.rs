@@ -442,6 +442,7 @@ fn same_except_links(a: &Document, b: &Document) -> bool {
         && a.objects.len() == b.objects.len()
         && a.groups == b.groups
         && a.ignored_pairs == b.ignored_pairs
+        && a.ignored_groups == b.ignored_groups
         && pairs().all(|(x, y)| {
             x.id == y.id
                 && x.parent == y.parent

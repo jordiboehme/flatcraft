@@ -1221,20 +1221,7 @@ fn overlapping_objects_plan_and_send_normally() {
 }
 
 #[test]
-fn a_pair_in_one_group_is_a_pair_and_moves_alone() {
-    let mut t = self::t();
-    let (a, b) = two_squares(&mut t.s, 0.3);
-    run(&mut t.s, "object.group", json!({ "ids": [a, b] }));
-    let c = check(&mut t.s);
-    let fix = issue(&c, "objects_close")["fixes"][0].clone();
-    assert_eq!(
-        fix["args"]["ids"],
-        json!([b]),
-        "only the second object moves"
-    );
-    apply(&mut t.s, &fix);
-    assert_eq!(pair_codes(&check(&mut t.s)), Vec::<String>::new());
-
+fn a_pair_in_different_groups_moves_with_its_group() {
     // In different groups, the second one's group moves with it.
     let mut t = self::t();
     let (a, b) = two_squares(&mut t.s, 0.3);
@@ -1365,4 +1352,80 @@ fn deleting_an_object_forgets_its_ignored_pairs() {
     assert!(t.s.doc().document.ignored_pairs.is_empty());
     run(&mut t.s, "edit.undo", json!({}));
     assert_eq!(t.s.doc().document.ignored_pairs.len(), 1);
+}
+
+/// Six letters set close in one group: one hint for the group, not
+/// fifteen; Ignore for this group clears it in one undo step; a loose
+/// object near the group still gets its own pair hint.
+#[test]
+fn close_objects_in_one_group_are_one_hint() {
+    let mut t = self::t();
+    let mut ids = Vec::new();
+    for k in 0..6 {
+        let x = 10.0 + f64::from(k) * 8.5;
+        let (id, _) = import(
+            &mut t.s,
+            &format!("letter {k}"),
+            &format!(r#"<rect x="{x}" y="20" width="8" height="12"/>"#),
+        );
+        ids.push(id);
+    }
+    let g = run(&mut t.s, "object.group", json!({ "ids": ids }))["group_id"]
+        .as_u64()
+        .unwrap();
+    run(
+        &mut t.s,
+        "object.rename",
+        json!({ "id": g, "name": "Word" }),
+    );
+    // A loose square 0.4 mm below the last letter.
+    let (loose, _) = import(
+        &mut t.s,
+        "loose",
+        r#"<rect x="54.5" y="32.4" width="6" height="8"/>"#,
+    );
+    let c = check(&mut t.s);
+    well_formed(&c);
+    let groups: Vec<Value> = issues(&c)
+        .into_iter()
+        .filter(|i| i["code"] == "group_objects_close")
+        .collect();
+    assert_eq!(groups.len(), 1, "{c}");
+    let i = &groups[0];
+    assert_eq!(i["severity"], "info");
+    assert_eq!(i["paths"], 5);
+    assert_eq!(
+        i["message"],
+        "5 pairs of objects in 'Word' are very close or overlap."
+    );
+    assert_eq!(i["object_ids"], json!(ids));
+    let fix = &i["fixes"][0];
+    assert_eq!(fix["label"], "Ignore for this group");
+    // The loose square and the last letter: a pair hint of their own.
+    let pairs: Vec<Value> = issues(&c)
+        .into_iter()
+        .filter(|i| i["code"] == "objects_close")
+        .collect();
+    assert_eq!(pairs.len(), 1, "{c}");
+    assert_eq!(pairs[0]["object_ids"], json!([ids[5], loose]));
+
+    let undo = t.s.doc().undo.undo_len();
+    apply(&mut t.s, fix);
+    assert_eq!(t.s.doc().undo.undo_len(), undo + 1);
+    let c = check(&mut t.s);
+    assert_eq!(pair_codes(&c), ["objects_close"], "{c}");
+    assert!(!codes(&c).contains(&"group_objects_close".to_string()));
+    run(&mut t.s, "edit.undo", json!({}));
+    let c = check(&mut t.s);
+    assert!(
+        codes(&c).contains(&"group_objects_close".to_string()),
+        "{c}"
+    );
+    // Redo, then ungroup: the ignored group is gone with the group.
+    run(&mut t.s, "edit.redo", json!({}));
+    assert_eq!(t.s.doc().document.ignored_groups.len(), 1);
+    run(&mut t.s, "object.ungroup", json!({ "ids": [g] }));
+    assert!(t.s.doc().document.ignored_groups.is_empty());
+    run(&mut t.s, "edit.undo", json!({}));
+    assert_eq!(t.s.doc().document.ignored_groups.len(), 1);
 }
