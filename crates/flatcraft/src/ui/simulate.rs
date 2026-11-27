@@ -357,9 +357,25 @@ impl SimState {
 
     /// Takes a run the worker finished (and starts a queued one) without a
     /// snapshot and without waiting: for frames that show no document
-    /// (Home), so a run never stays running there.
+    /// (Home), so a run never stays running there. A comparison asked for
+    /// is dropped, as when Simulate does not show; a finished one is kept
+    /// under its key, so Simulate shows it on return when the document did
+    /// not change meanwhile.
     pub fn poll(&mut self, ctx: &egui::Context, session: &SharedSession) {
         self.pump(ctx, session, std::time::Instant::now());
+        self.compare.requested = false;
+        let Some((_, rx)) = &self.compare.running else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(done) => {
+                self.compare.running = None;
+                self.compare.rows = Some(done);
+            }
+            Err(TryRecvError::Empty) => {}
+            // The worker died: nothing to show; Simulate can ask again.
+            Err(TryRecvError::Disconnected) => self.compare.running = None,
+        }
     }
 
     /// Starts the queued run when the worker is free, and takes a run it

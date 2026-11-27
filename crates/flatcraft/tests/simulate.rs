@@ -487,3 +487,44 @@ fn the_bar_keeps_its_layout_while_simulating() {
     assert_eq!(simulate_status(&mut h), good);
     assert_eq!(tab_rects(&h), before);
 }
+
+#[test]
+fn a_comparison_that_ends_on_home_frees_the_worker() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = plotter_session(&dir, "host", HOST);
+    common::import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_simulate(&mut h);
+    // The other strategies wait for the gate, like a slow machine.
+    let (release, gate) = mpsc::channel::<()>();
+    let (entered_tx, entered) = mpsc::channel::<()>();
+    let gate = Mutex::new(gate);
+    let entered_tx = Mutex::new(entered_tx);
+    app_mut(&mut h).ui.cut.sim.set_computer(move |input| {
+        let _ = entered_tx.lock().unwrap().send(());
+        let _ = gate.lock().unwrap().recv_timeout(Duration::from_secs(60));
+        flatcraft_engine::simulate::compute(input)
+    });
+    h.get_by_label(sim::COMPARE).click();
+    let mut frames = 0;
+    while entered.try_recv().is_err() {
+        h.step();
+        frames += 1;
+        assert!(frames < 100_000, "the comparison never started");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(app(&h).ui.cut.sim.busy());
+    // Home while it runs; it ends there.
+    h.get_by_role_and_label(Role::Button, "Home").click();
+    h.step();
+    assert_eq!(app(&h).ui.workspace, Workspace::Home);
+    release.send(()).unwrap();
+    release.send(()).unwrap();
+    common::wait_until(&mut h, |a| a.ui.cut.sim.busy());
+    assert_eq!(app(&h).ui.workspace, Workspace::Home);
+    // Back in Simulate, the comparison of the unchanged document shows.
+    app_mut(&mut h).ui.workspace = Workspace::Cut;
+    h.run_plan();
+    assert_eq!(app(&h).ui.cut.stage, Stage::Simulate);
+    assert!(h.query_by_label("Use Fast").is_some());
+}
