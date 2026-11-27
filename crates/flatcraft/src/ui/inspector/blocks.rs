@@ -179,8 +179,10 @@ fn line_parts(
     } else {
         (room / 2.0, room / 2.0)
     };
-    // Below a few letters a part says nothing: the whole line is cut short.
-    if pw < 24.0 || mw < 24.0 {
+    // Below a few letters a part says nothing: the whole line is cut short
+    // (a part that is short by itself, like "File", is fine).
+    let need = |w: f32, full: f32| w < full.min(24.0);
+    if need(pw, measure(plotter)) || need(mw, measure(&s.material)) {
         one_line(
             p,
             &[plotter, &s.material, &s.mat, &s.strategy].join(SEP),
@@ -711,6 +713,9 @@ pub fn take_hidden_tips(ctx: &egui::Context) -> Option<std::collections::BTreeSe
     })
 }
 
+/// The size of the X's hit target, in points.
+pub const HIDE_TIP_TARGET: f32 = 20.0;
+
 /// The name and the card of a hint card's X.
 pub const HIDE_TIP: &str = "Hide this tip";
 pub const HIDE_TIP_CARD: &str = "Hide this tip. You can show it again in Settings.";
@@ -760,7 +765,11 @@ pub fn hint_card(
                             ))
                             .tint(t.text_dim)
                             .alt_text(HIDE_TIP);
-                            let r = ui.add(egui::Button::image(image).frame(false));
+                            // A small icon, a target big enough to hit.
+                            let r = ui.add_sized(
+                                vec2(HIDE_TIP_TARGET, HIDE_TIP_TARGET),
+                                egui::Button::image(image).frame(false),
+                            );
                             set_name(ui, &r, HIDE_TIP);
                             groups::card(&r, HIDE_TIP, HIDE_TIP_CARD, None, false);
                             hide = r.clicked();

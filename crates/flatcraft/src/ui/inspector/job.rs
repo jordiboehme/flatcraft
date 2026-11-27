@@ -86,16 +86,21 @@ pub fn summary(snap: &Snapshot, dot: Dot, open: bool) -> JobSummary {
     }
 }
 
+/// The word the job line shows for a File Output plotter.
+pub const FILE_SHORT: &str = "File";
+
 /// The plotter's short name for the job line: the model of a USB plotter
-/// ("Cameo 2"). A File Output preset keeps its name, which says it writes
-/// a file.
+/// ("Cameo 2"), "File" for a File Output preset. The full name is in the
+/// line's hover card.
 pub fn plotter_short(p: &flatcraft_device::PlotterProfile) -> Option<String> {
     use flatcraft_device::TransportSpec;
     let model = p.model.trim();
-    (matches!(p.transport, TransportSpec::Usb { .. })
-        && !model.is_empty()
-        && model.len() < p.name.len())
-    .then(|| model.to_string())
+    match p.transport {
+        TransportSpec::File { .. } => Some(FILE_SHORT.to_string()),
+        TransportSpec::Usb { .. } => {
+            (!model.is_empty() && model.len() < p.name.len()).then(|| model.to_string())
+        }
+    }
 }
 
 /// The `job.set_overrides` field of an override.

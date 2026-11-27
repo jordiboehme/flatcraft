@@ -583,10 +583,13 @@ fn job_line_always_paints_the_mat_and_the_strategy() {
         let mat = sn.mat.as_ref().unwrap().name.clone();
         assert!(texts.contains(&mat), "{texts:?}");
         assert!(texts.contains(&"Quality".to_string()), "{texts:?}");
-        if plotter == "silhouette-cameo-2" {
-            // A USB plotter shows its model.
-            assert!(texts.contains(&"Cameo 2".to_string()), "{texts:?}");
-        }
+        // A USB plotter shows its model, File Output the word File.
+        let short = if plotter == "silhouette-cameo-2" {
+            "Cameo 2"
+        } else {
+            job::FILE_SHORT
+        };
+        assert!(texts.contains(&short.to_string()), "{texts:?}");
         // The plotter and the material are cut short, each on its own.
         assert!(
             texts.iter().any(|t| t.starts_with("Cardstock")),
@@ -618,6 +621,8 @@ fn job_line_always_paints_the_mat_and_the_strategy() {
             name.contains("Cardstock (heavy, about 250-300 g/m2)"),
             "{name}"
         );
+        let full = &sn.plotter.as_ref().unwrap().name;
+        assert!(name.contains(full.as_str()), "{name}");
     }
 }
 

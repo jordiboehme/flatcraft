@@ -766,6 +766,10 @@ fn a_hidden_tip_stays_hidden_until_settings_shows_it_again() {
     click(&mut h, "OK");
     // The X of the test cut tip, with its card.
     h.get_by_label(TEST_CUT_TITLE);
+    // A target big enough to hit, even with a small icon.
+    let x = h.get_by_role_and_label(Role::Button, HIDE_TIP).rect();
+    let min = flatcraft::ui::inspector::blocks::HIDE_TIP_TARGET;
+    assert!(x.width() >= min && x.height() >= min, "{x:?}");
     h.get_by_label(HIDE_TIP).hover();
     h.run_plan();
     assert!(h.query_by_label(HIDE_TIP_CARD).is_some());
@@ -789,6 +793,13 @@ fn a_hidden_tip_stays_hidden_until_settings_shows_it_again() {
     let mut h = harness(&dir, &s);
     to_prepare(&mut h);
     assert!(h.query_by_label(TEST_CUT_TITLE).is_none());
+    // An id of a tip that no longer exists counts for nothing.
+    s.lock()
+        .unwrap()
+        .update_prefs(|p| {
+            p.hidden_tips.insert("gone.tip".into());
+        })
+        .unwrap();
     // Settings shows it again: one hidden, the button clears, OK stores.
     open(&mut h, "General");
     h.get_by_label("1 tip is hidden.");
@@ -807,5 +818,14 @@ fn a_hidden_tip_stays_hidden_until_settings_shows_it_again() {
         settings_window::SHOW_TIPS,
     ] {
         assert!(!text.contains('\u{2014}'), "{text}");
+    }
+}
+
+#[test]
+fn restore_defaults_on_general_says_it_shows_hidden_tips_again() {
+    assert!(settings_window::RESTORE_GENERAL.contains("hidden tips"));
+    assert!(!settings_window::RESTORE.contains("tips"));
+    for t in [settings_window::RESTORE, settings_window::RESTORE_GENERAL] {
+        assert!(!t.contains('\u{2014}'));
     }
 }

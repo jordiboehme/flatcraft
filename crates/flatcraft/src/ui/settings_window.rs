@@ -37,6 +37,11 @@ use super::theme::{self, Tokens};
 use super::tools::Setting;
 use super::{Action, FlatCraftApp, Toast, fonts, help, lock};
 
+/// The card of Restore page defaults.
+pub const RESTORE: &str = "Puts the settings of this page back to how a new install has them. Other pages keep their values. Apply or OK stores it.";
+/// Its card on the General page, which holds the hidden tips.
+pub const RESTORE_GENERAL: &str = "Puts the settings of this page back to how a new install has them, and shows your hidden tips again. Other pages keep their values. Apply or OK stores it.";
+
 /// The button that shows the hidden tips again.
 pub const SHOW_TIPS: &str = "Show hidden tips again";
 /// Why it is dimmed.
@@ -1033,10 +1038,15 @@ fn footer_ui(
                 "This page already shows the defaults."
             };
             let r = ui.add_enabled(can_restore, egui::Button::new("Restore page defaults"));
+            let card = if page == Page::General {
+                RESTORE_GENERAL
+            } else {
+                RESTORE
+            };
             super::groups::card(
                 &r,
                 "Restore page defaults",
-                "Puts the settings of this page back to how a new install has them. Other pages keep their values. Apply or OK stores it.",
+                card,
                 (!can_restore).then_some(why),
                 false,
             );
@@ -1438,7 +1448,12 @@ fn general(ui: &mut Ui, cx: &mut Cx<'_>, d: &mut Preferences, actions: &mut Vec<
     section(ui, cx, "Tips", |ui, cx| {
         let t = *cx.t;
         row_ui(ui, cx, "hidden_tips", |ui| {
-            let n = d.hidden_tips.len();
+            // Only tips this version has count: an id of a tip that is
+            // gone hides nothing.
+            let n = super::inspector::KNOWN_TIPS
+                .iter()
+                .filter(|id| d.hidden_tips.contains(**id))
+                .count();
             let note = match n {
                 0 => "No tips are hidden.".to_string(),
                 1 => "1 tip is hidden.".to_string(),

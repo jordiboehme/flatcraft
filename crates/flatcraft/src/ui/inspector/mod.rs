@@ -29,6 +29,9 @@ pub enum InspectorView {
     Job,
 }
 
+/// The ids of every tip a person can hide (`Preferences.hidden_tips`).
+pub const KNOWN_TIPS: &[&str] = &[super::materials::TEST_CUT_TIP];
+
 /// The id of the interim Selection section.
 pub const SELECTION: &str = "object.cut";
 
