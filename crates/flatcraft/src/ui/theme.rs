@@ -302,13 +302,16 @@ mod tests {
         }
     }
 
-    /// The grade dot and the grade text of the comparison read at 3:1 on
-    /// the panel in both themes.
+    /// The grade dots read at 3:1 (graphics) on the panel and on the
+    /// card fill of the compare row in use, in both themes. Grade text is
+    /// drawn in the text colour.
     #[test]
     fn quality_colours_read_on_the_panel() {
         for t in [Tokens::dark(), Tokens::light()] {
             for c in [t.quality_good, t.quality_warn, t.quality_bad] {
-                assert!(contrast(c, t.panel) >= 3.0, "{c:?} on {:?}", t.panel);
+                for bg in [t.panel, t.surface] {
+                    assert!(contrast(c, bg) >= 3.0, "{c:?} on {bg:?}");
+                }
             }
         }
     }

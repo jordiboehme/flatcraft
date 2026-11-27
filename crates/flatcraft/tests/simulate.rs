@@ -332,3 +332,104 @@ fn compare_strategies_lists_all_three_and_uses_one() {
         flatcraft_core::document::CutStrategy::Fast
     );
 }
+
+#[test]
+fn the_stage_bar_never_shows_an_old_grade_while_simulating() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = plotter_session(&dir, "host", HOST);
+    let id = common::import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_simulate(&mut h);
+    assert!(simulate_status(&mut h).starts_with("Good"));
+    let release = gate(&s);
+    run(
+        &s,
+        "object.move",
+        json!({ "ids": [id], "dx_mm": 5.0, "dy_mm": 0.0 }),
+    );
+    h.step();
+    h.step();
+    assert!(app(&h).ui.cut.sim.simulating());
+    // The new state may grade differently: the bar says it is working.
+    assert_eq!(simulate_status(&mut h), sim::SIMULATING);
+    assert!(!painted_texts(&h).iter().any(|t| t.starts_with("Good")));
+    release.send(()).unwrap();
+    h.run_plan();
+    assert!(simulate_status(&mut h).starts_with("Good"));
+}
+
+#[test]
+fn a_run_of_another_document_is_never_drawn() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = plotter_session(&dir, "host", HOST);
+    common::import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_simulate(&mut h);
+    let release = gate(&s);
+    run(&s, "document.new", json!({}));
+    run(&s, "job.set_plotter", json!({ "id": "host" }));
+    common::import_square(&s);
+    h.step();
+    h.step();
+    assert!(app(&h).ui.cut.sim.simulating());
+    assert!(
+        app(&h).ui.cut.sim.previous.is_none(),
+        "the faded run belongs to the other document"
+    );
+    release.send(()).unwrap();
+    h.run_plan();
+}
+
+#[test]
+fn use_in_the_comparison_is_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = plotter_session(&dir, "host", HOST);
+    common::import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_simulate(&mut h);
+    let before = common::undo_len(&s);
+    h.get_by_label(sim::COMPARE).click();
+    h.run_plan();
+    h.get_by_label("Use Fast").click();
+    h.run_plan();
+    assert_eq!(common::undo_len(&s), before + 1);
+    run(&s, "edit.undo", json!({}));
+    h.run_plan();
+    assert_eq!(
+        s.lock().unwrap().doc().document.job.strategy,
+        flatcraft_core::document::CutStrategy::Quality
+    );
+}
+
+#[test]
+fn play_draws_the_cut_as_it_goes() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = plotter_session(&dir, "host", HOST);
+    common::import_square(&s);
+    let mut h = harness(&dir, s, false);
+    to_simulate(&mut h);
+    let total = app(&h).ui.cut.sim.drawn_down.1;
+    h.get_by_label("Play").click();
+    // The click lands, then playback starts from the start.
+    h.step();
+    h.step();
+    let clock = app(&h).ui.cut.sim.clock;
+    assert!(clock.playing.is_some());
+    let first = app(&h).ui.cut.sim.drawn_down.0;
+    assert!(first < total, "{first} of {total}");
+    // Frames advance the input time: the drawn part grows.
+    let start = Instant::now();
+    while app(&h).ui.cut.sim.drawn_down.0 <= first {
+        assert!(start.elapsed() < Duration::from_secs(10), "playback stuck");
+        h.step();
+    }
+    assert!(app(&h).ui.cut.sim.clock.t_mm > clock.t_mm);
+    // Stop keeps the place.
+    h.get_by_label("Stop").click();
+    h.step();
+    h.step();
+    let at = app(&h).ui.cut.sim.clock.t_mm;
+    h.step();
+    assert_eq!(app(&h).ui.cut.sim.clock.t_mm, at);
+    assert!(app(&h).ui.cut.sim.clock.playing.is_none());
+}

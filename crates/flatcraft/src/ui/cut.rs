@@ -610,8 +610,8 @@ impl Status {
 }
 
 /// The Simulate status: "Not simulated" in firmware mode, else the grade
-/// of the current state's simulation. While a newer one runs, the line of
-/// the one before stays, so the bar does not jump.
+/// of the current state's simulation, "Simulating..." while it runs (never
+/// the grade of the run before, which may be of another state).
 fn sim_status(st: &CutState, snap: &Snapshot) -> Status {
     use flatcraft_engine::simulate::SimMode;
     if super::simulate::mode_of(snap) == Some(SimMode::Firmware) {
@@ -630,12 +630,8 @@ fn sim_status(st: &CutState, snap: &Snapshot) -> Status {
     match st.sim.current(snap) {
         Some(Ok(c)) => graded(&c.run).unwrap_or(Status::NotSimulated),
         Some(Err(_)) => Status::SimFailed,
-        None if st.sim.simulating() => st
-            .sim
-            .previous
-            .as_deref()
-            .and_then(graded)
-            .unwrap_or(Status::Simulating),
+        // Never the grade of the run before: it may be of another state.
+        None if st.sim.simulating() => Status::Simulating,
         None => Status::NotRun,
     }
 }

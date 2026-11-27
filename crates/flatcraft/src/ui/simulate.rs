@@ -278,6 +278,10 @@ impl SimState {
             .and_then(|r| r.display.last())
             .map_or(0.0, |s| s.t_mm);
         self.clock.reset(total);
+        // A queued copy of the same state would only run again for nothing.
+        if self.queued.as_ref().is_some_and(|q| q.key == key) {
+            self.queued = None;
+        }
         self.current = Some((key, run.map(Current::new)));
         self.previous = None;
         self.wanted = None;
@@ -302,6 +306,14 @@ impl SimState {
                 self.previous = Some(c.run);
             }
             self.clock.playing = None;
+        }
+        // Another document: its runs are never drawn, not even faded.
+        if self
+            .previous
+            .as_ref()
+            .is_some_and(|r| r.key.doc_id != key.doc_id)
+        {
+            self.previous = None;
         }
         let ckey = compare_key(snap);
         if self.compare.rows.as_ref().is_some_and(|(k, _)| *k != ckey) {
@@ -329,7 +341,12 @@ impl SimState {
                 },
             }
         }
-        if active && self.compare.requested {
+        // A comparison waits for the run of the current state, so the own
+        // strategy is reused, never simulated twice. Closing Simulate
+        // drops a request.
+        if !active {
+            self.compare.requested = false;
+        } else if self.compare.requested && !self.simulating() {
             self.compare.requested = false;
             self.start_compare(ctx, session, snap);
         }
@@ -931,7 +948,7 @@ fn row(ui: &mut Ui, name: &str, card: &str, value: String) {
 }
 
 /// The card of the grade.
-pub const GRADE_CARD: &str = "How well the blade follows your lines, after a full simulation of the drag knife: its tip trails a little behind the head, so it can cut a corner short or start off the line. Good means every spot is within 0.06 mm of the line, nothing you keep is cut and the blade is never pushed. Fair means a few spots stray or the blade is pushed. Poor means the blade cuts into material you keep or misses much of the line. The reason after the grade says what counts most.";
+pub const GRADE_CARD: &str = "How well the blade follows your lines, after a full simulation of the drag knife: its tip trails a little behind the head, so it can cut a corner short or start off the line. Good means at least 98 % of the line is on target, every spot is within 0.06 mm of the line, nothing you keep is cut and the blade is never pushed. Fair means at least 90 % of the line is on target and nothing you keep is cut, but some spots stray, the blade is pushed or a little of the line is missed. Poor means the blade cuts into material you keep or less than 90 % of the line is on target. The reason after the grade says what counts most.";
 
 /// The card of the share of the line on target.
 pub const ON_TARGET_CARD: &str = "How much of your line the blade cuts within the limit, in percent. It only counts the line itself: a cut into material you keep or a pushed blade makes the grade worse even when this is high.";
@@ -1033,10 +1050,11 @@ pub fn running_panel(ui: &mut Ui, t: &Tokens) {
     super::groups::card(&note, SIMULATING, SIMULATING_CARD, None, false);
     ui.horizontal(|ui| {
         ui.spinner();
-        ui.add_enabled(
+        let r = ui.add_enabled(
             false,
             egui::Label::new(RichText::new("...").font(fonts::semibold(16.0))),
         );
+        super::groups::card(&r, "Grade", GRADE_CARD, Some(SIMULATING_CARD), false);
     });
     egui::Grid::new("flatcraft-sim-metrics")
         .num_columns(2)
@@ -1049,8 +1067,11 @@ pub fn running_panel(ui: &mut Ui, t: &Tokens) {
                 "Travel",
                 "Time (estimate)",
             ] {
-                ui.add_enabled(false, egui::Label::new(name));
-                ui.add_enabled(false, egui::Label::new("..."));
+                // Dimmed, and their cards say why.
+                for text in [name, "..."] {
+                    let r = ui.add_enabled(false, egui::Label::new(text));
+                    super::groups::card(&r, name, SIMULATING_CARD, Some(SIMULATING_CARD), false);
+                }
                 ui.end_row();
             }
         });
@@ -1196,8 +1217,13 @@ fn compare(ui: &mut Ui, st: &mut SimState, snap: &Snapshot, t: &Tokens, actions:
                     ui.label(RichText::new(name).strong());
                     if let Some(r) = &run.result {
                         let m = &r.metrics;
-                        let g = ui
-                            .label(RichText::new(grade_short(m)).color(grade_colour(m.grade, t)));
+                        // The colour on a dot (3:1 for graphics), the
+                        // text in the text colour (4.5:1 on any fill).
+                        let (dot, _) =
+                            ui.allocate_exact_size(Vec2::new(10.0, 14.0), Sense::hover());
+                        ui.painter()
+                            .circle_filled(dot.center(), 4.0, grade_colour(m.grade, t));
+                        let g = ui.label(grade_short(m));
                         super::groups::card(&g, "Grade", GRADE_CARD, None, false);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
