@@ -104,10 +104,14 @@ fn the_window_draws_while_an_agent_imports_traces_and_previews() {
 }
 
 #[test]
-fn an_import_built_before_the_window_changed_the_document_is_not_stored() {
+fn an_import_lands_once_while_the_person_moves_another_object_every_frame() {
+    use flatcraft::ui::Action;
     let dir = tempfile::tempdir().unwrap();
     let s = common::session(&dir);
-    let mut h = common::harness(&dir, s.clone(), true);
+    let png = dir.path().join("square.png");
+    write_square(&png);
+    let picker = common::FakePicker::answering([png.clone(), png]);
+    let mut h = common::harness_with(&dir, s.clone(), move |a| a.with_file_picker(picker));
     let mine = s
         .lock()
         .unwrap()
@@ -119,50 +123,61 @@ fn an_import_built_before_the_window_changed_the_document_is_not_stored() {
         .unwrap()["id"]
         .as_u64()
         .unwrap();
+    common::app_mut(&mut h).ui.workspace = flatcraft::ui::Workspace::Prepare;
     common::settle(&mut h);
-    let png = dir.path().join("square.png");
-    write_square(&png);
     let g = gate(&s);
-    let run = agent(&s, "object.import", json!({ "path": png }));
-    g.entered.recv_timeout(WORKER_TIMEOUT).unwrap();
-    // The person moves their object while the agent's first try traces.
-    s.lock()
-        .unwrap()
-        .execute(
-            "object.move",
-            json!({ "ids": [mine], "dx_mm": 5.0 }),
-            Origin::User,
-        )
-        .unwrap();
-    h.step();
-    g.release.send(()).unwrap();
-    // The first result is dropped and the import runs once more.
-    assert_eq!(
-        g.entered.recv_timeout(WORKER_TIMEOUT).unwrap(),
-        "object.import"
-    );
-    h.step();
-    g.release.send(()).unwrap();
-    let r = run.join().unwrap().unwrap();
-    common::settle(&mut h);
-    let st = s.lock().unwrap();
-    let doc = &st.doc().document;
-    assert_eq!(doc.objects.len(), 2);
-    // The move is kept: the store did not put back the older document.
-    let moved = doc.get(flatcraft_core::document::ObjectId(mine)).unwrap();
-    assert!(
-        (moved.transform.center_mm.x - 25.0).abs() < 1e-4,
-        "{:?}",
-        moved.transform
-    );
-    assert!(
-        doc.get(flatcraft_core::document::ObjectId(
-            r["id"].as_u64().unwrap()
-        ))
-        .is_some()
-    );
-    // The import, the move and the import.
-    assert_eq!(st.doc().undo.undo_len(), 3);
+    let ctx = h.ctx.clone();
+    for (who, start) in ["window", "agent"].into_iter().zip([0usize, 1]) {
+        let doc_id = s.lock().unwrap().doc().id();
+        let before = s.lock().unwrap().doc().undo.undo_len();
+        let run = (who == "agent").then(|| {
+            agent(
+                &s,
+                "object.import",
+                json!({ "path": dir.path().join("square.png") }),
+            )
+        });
+        if who == "window" {
+            common::app_mut(&mut h).apply(&ctx, vec![Action::Import { doc_id }]);
+        }
+        assert_eq!(
+            g.entered.recv_timeout(WORKER_TIMEOUT).unwrap(),
+            "object.import"
+        );
+        // The person nudges their object in every frame while it traces.
+        for _ in 0..4 {
+            s.lock()
+                .unwrap()
+                .execute(
+                    "object.move",
+                    json!({ "ids": [mine], "dx_mm": 1.0 }),
+                    Origin::User,
+                )
+                .unwrap();
+            h.step();
+        }
+        g.release.send(()).unwrap();
+        if let Some(run) = run {
+            assert!(run.join().unwrap().is_ok(), "{who}");
+        }
+        common::settle(&mut h);
+        // Traced once and applied to the document as it is now.
+        assert!(g.entered.try_recv().is_err(), "{who}: no second try");
+        let st = s.lock().unwrap();
+        let doc = &st.doc().document;
+        assert_eq!(doc.objects.len(), 2 + start, "{who}: the import landed");
+        let moved = doc.get(flatcraft_core::document::ObjectId(mine)).unwrap();
+        let x = 20.0 + 4.0 * (start as f64 + 1.0);
+        assert!(
+            (moved.transform.center_mm.x - x).abs() < 1e-4,
+            "{who}: the moves are kept"
+        );
+        assert_eq!(
+            st.doc().undo.undo_len(),
+            before + 5,
+            "{who}: 4 moves and one import step"
+        );
+    }
 }
 
 /// Holds every Cut plan the window builds until the test lets it go, and
@@ -298,6 +313,20 @@ fn the_window_draws_while_its_own_import_runs() {
         texts(&h).iter().any(|t| t == "Importing..."),
         "the busy note"
     );
+    // An Open asked for now (Cmd+O, the menu) waits its turn, and the note
+    // says so.
+    let project = dir.path().join("p.flatcraft");
+    s.lock()
+        .unwrap()
+        .execute("project.save", json!({ "path": project }), Origin::User)
+        .unwrap();
+    common::app_mut(&mut h).apply(&ctx, vec![Action::Open(project)]);
+    h.step();
+    assert!(
+        texts(&h).iter().any(|t| t == "Importing... (opening next)"),
+        "{:?}",
+        texts(&h)
+    );
     let snap = flatcraft::ui::prepare::snapshot(common::app_mut(&mut h), &ctx);
     assert_eq!(
         tools::by_id("import").unwrap().blocked(&snap),
@@ -305,12 +334,17 @@ fn the_window_draws_while_its_own_import_runs() {
         "Import is dimmed and says why"
     );
     assert_eq!(s.lock().unwrap().doc().document.objects.len(), 0);
+    // One release for the import, one for the open after it.
+    g.release.send(()).unwrap();
     g.release.send(()).unwrap();
     common::settle(&mut h);
     assert!(!common::app(&h).long.busy());
     let st = s.lock().unwrap();
-    assert_eq!(st.doc().document.objects.len(), 1);
-    assert_eq!(st.doc().undo.undo_len(), 1, "one undo step");
+    // The import landed in the first document, and the project opened
+    // next to it after it.
+    assert_eq!(st.docs.len(), 2);
+    assert_eq!(st.docs[0].document.objects.len(), 1);
+    assert_eq!(st.docs[0].undo.undo_len(), 1, "one undo step");
     drop(st);
-    assert!(!texts(&h).iter().any(|t| t == "Importing..."));
+    assert!(!texts(&h).iter().any(|t| t.starts_with("Importing...")));
 }

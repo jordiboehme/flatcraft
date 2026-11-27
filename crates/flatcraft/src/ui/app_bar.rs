@@ -318,11 +318,11 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                             .corner_radius(t.radius * 2)
                             .inner_margin(egui::Margin::symmetric(t.spacing as i8, 2))
                             .show(ui, |ui| {
-                                ui.label(RichText::new(note).color(t.text_dim));
+                                ui.label(RichText::new(note.as_str()).color(t.text_dim));
                             })
                             .response
                             .interact(egui::Sense::hover());
-                        card(&r, note, super::long::NOTE_CARD, None, false);
+                        card(&r, &note, super::long::NOTE_CARD, None, false);
                     }
                     if let Some(status) = agent {
                         let color = if status == "Agent connected" {

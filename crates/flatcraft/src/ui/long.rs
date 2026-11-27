@@ -29,7 +29,7 @@ pub const LONG_WAIT: Duration = Duration::from_millis(50);
 pub const BUSY_CARD: &str = "Wait a moment: FlatCraft is still busy with the last import, trace, file or export. The note at the top right says what it is doing. This one is ready again when that is done.";
 
 /// The hover card of the busy note.
-pub const NOTE_CARD: &str = "FlatCraft is working on this in the background. The window keeps working meanwhile: you can look around, zoom and change things. Imports, traces, opening and exporting wait until it is done.";
+pub const NOTE_CARD: &str = "FlatCraft is working on this in the background. The window keeps working meanwhile: you can look around, zoom and change things. Imports, traces, opening and exporting you ask for now wait their turn, and the note says what comes next.";
 
 /// What a long command works on and runs.
 #[derive(Debug, Clone)]
@@ -101,6 +101,19 @@ pub fn note(command: &str) -> &'static str {
     }
 }
 
+/// What the busy note says of a command that waits: "opening".
+pub fn next_text(command: &str) -> &'static str {
+    match command {
+        "object.import" | "object.import_svg" => "importing",
+        "object.retrace" => "tracing",
+        "object.reload" => "reading the files again",
+        "object.relink" => "reading the file",
+        "document.export" => "exporting",
+        "project.open" => "opening",
+        _ => "more work",
+    }
+}
+
 /// A finished long command: what it was and what it gave.
 pub type Done = (LongJob, Result<Value, CommandError>);
 
@@ -120,12 +133,23 @@ impl LongJobs {
         }
     }
 
-    /// The busy note while a long command runs or waits.
-    pub fn note(&self) -> Option<&'static str> {
-        self.running
-            .as_ref()
-            .map(|(j, _)| j.note())
-            .or_else(|| self.queue.front().map(LongJob::note))
+    /// The busy note while a long command runs or waits: what runs, and
+    /// what waits behind it ("Importing... (opening next)"), so a second
+    /// request (an Open by Cmd+O) shows that it was taken.
+    pub fn note(&self) -> Option<String> {
+        let mut jobs = self.running.iter().map(|(j, _)| j).chain(self.queue.iter());
+        let first = jobs.next()?;
+        let waiting: Vec<&LongJob> = jobs.collect();
+        Some(match waiting.as_slice() {
+            [] => first.note().to_string(),
+            [next] => format!("{} ({} next)", first.note(), next_text(next.command())),
+            [next, rest @ ..] => format!(
+                "{} ({} next, {} more waiting)",
+                first.note(),
+                next_text(next.command()),
+                rest.len()
+            ),
+        })
     }
 
     /// True while a long command runs or waits.
