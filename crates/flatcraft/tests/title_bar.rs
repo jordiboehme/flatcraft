@@ -39,6 +39,7 @@ fn rect(h: &AppHarness, role: Role, name: &str) -> Rect {
 
 /// The viewport commands of the last frame.
 fn commands(h: &AppHarness) -> Vec<egui::ViewportCommand> {
+    // output: read right after one step, never after a wait
     h.output()
         .viewport_output
         .get(&egui::ViewportId::ROOT)

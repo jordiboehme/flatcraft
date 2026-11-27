@@ -934,10 +934,9 @@ fn pending_send(dir: &tempfile::TempDir) -> SharedSession {
 }
 
 fn closes(h: &AppHarness) -> bool {
-    h.output()
-        .viewport_output
-        .get(&egui::ViewportId::ROOT)
-        .is_some_and(|v| v.commands.contains(&egui::ViewportCommand::Close))
+    common::OutputLog::of(&h.ctx)
+        .viewport()
+        .contains(&egui::ViewportCommand::Close)
 }
 
 #[test]
@@ -1019,8 +1018,7 @@ fn fixture() -> Fixture {
     h.run_plan();
     // Not fitted and not at 100%, so both zoom items have something to do.
     app_mut(&mut h).ui.prepare.view.px_per_mm = 5.0;
-    // From here on: the click's output commands survive extra frames.
-    let output = common::OutputLog::record(&h.ctx);
+    let output = common::OutputLog::of(&h.ctx);
     Fixture {
         _dir: dir,
         s,

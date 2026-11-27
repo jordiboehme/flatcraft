@@ -11,6 +11,14 @@
 //!   wait steps as many frames as a worker needs. Use `common::click_at`.
 //!   A press that is meant to be held says so in a `// held:` comment.
 //!
+//! - No read of a harness's last frame output (`.output()` and its
+//!   `platform_output`, `viewport_output` or `shapes`): the last frame is
+//!   whichever frame a busy machine ran last, so a command sent by a click
+//!   (open a URL, copy, close) is gone after one extra frame. Read
+//!   `common::OutputLog`, which records every frame. State that every
+//!   frame sets again (the cursor, the painted shapes, the repaint delay)
+//!   is fine, with a `// output:` comment on the line or just above.
+//!
 //! The scan works on the code with comments and string contents removed
 //! and all whitespace dropped, so split calls and arguments over several
 //! lines match too. It cannot see everything: a press and a release of the
@@ -156,6 +164,30 @@ fn bare_runs(src: &str) -> Vec<usize> {
         for (at, _) in c.code.match_indices(call) {
             let n = c.line_at(at);
             if !c.allowed(n, "run") {
+                found.push(n);
+            }
+        }
+    }
+    found.sort_unstable();
+    found.dedup();
+    found
+}
+
+/// Lines (1-based) of `src` that read the last frame's output without an
+/// `// output:` comment on the line or the line above.
+fn last_frame_reads(src: &str) -> Vec<usize> {
+    let c = Code::of(src);
+    let mut found = Vec::new();
+    for field in [
+        ".platform_output",
+        ".viewport_output",
+        ".shapes",
+        ".textures_delta",
+    ] {
+        let call = format!(".output(){field}");
+        for (at, _) in c.code.match_indices(&call) {
+            let n = c.line_at(at);
+            if !c.allowed(n, "output") {
                 found.push(n);
             }
         }
@@ -339,6 +371,19 @@ h.event(egui::Event::PointerButton {
 });
 "#;
     assert_eq!(held_clicks(src), vec![1, 16, 21, 31]);
+    let src = r#"h.output().platform_output.commands;
+h
+    .output()
+    .viewport_output;
+// output: state of the last frame
+h.output().platform_output.cursor_icon;
+h.output().shapes; // output: painted
+let out = cmd.output().expect("runs");
+let t = "h.output().shapes";
+// h.output().shapes
+for c in &h.output().shapes {}
+"#;
+    assert_eq!(last_frame_reads(src), vec![1, 3, 11]);
 }
 
 #[test]
@@ -365,6 +410,11 @@ fn window_tests_wait_by_event_and_click_in_fixed_frames() {
         for l in bare_runs(&src) {
             bad.push(format!(
                 "{name}:{l}: Harness::run (use run_plan or wait_until)"
+            ));
+        }
+        for l in last_frame_reads(&src) {
+            bad.push(format!(
+                "{name}:{l}: last frame output (read common::OutputLog)"
             ));
         }
         for l in held_clicks(&src) {

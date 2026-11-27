@@ -509,6 +509,7 @@ fn texts(h: &AppHarness) -> Vec<(String, Rect, Rect)> {
         }
     }
     let mut out = Vec::new();
+    // output: what the last frame painted is the state to read
     for c in &h.output().shapes {
         walk(&c.shape, c.clip_rect, &mut out);
     }

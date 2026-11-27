@@ -106,17 +106,11 @@ fn the_quotes_are_word_for_word() {
 
 /// Clicks a button and returns the URLs the next frame asked to open.
 fn opened_urls(h: &mut AppHarness, button: &str) -> Vec<String> {
+    let log = common::OutputLog::of(&h.ctx);
+    log.clear();
     h.get_by_role_and_label(Role::Button, button).click();
     h.step();
-    h.output()
-        .platform_output
-        .commands
-        .iter()
-        .filter_map(|c| match c {
-            egui::OutputCommand::OpenUrl(u) => Some(u.url.clone()),
-            _ => None,
-        })
-        .collect()
+    log.urls()
 }
 
 #[test]
@@ -159,6 +153,7 @@ fn the_version_label_opens_about() {
     h.hover_at(rect.center());
     h.run_plan();
     assert_eq!(
+        // output: the cursor is the last frame's state
         h.output().platform_output.cursor_icon,
         egui::CursorIcon::PointingHand
     );

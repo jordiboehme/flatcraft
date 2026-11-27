@@ -80,6 +80,7 @@ pub fn harness_sized(
         );
     let ctx = h.ctx.clone();
     fonts::install(&ctx);
+    OutputLog::of(&ctx);
     // Home's pictures are drawn within the frame: a worker that finishes
     // at a random frame would make every test that starts on Home racy.
     // The Home tests that check the worker turn this off.
@@ -220,6 +221,7 @@ pub fn painted(h: &AppHarness) -> Vec<egui::Shape> {
         }
     }
     let mut out = Vec::new();
+    // output: what the last frame painted is the state to read
     for c in &h.output().shapes {
         walk(&c.shape, &mut out);
     }
@@ -374,25 +376,60 @@ impl flatcraft::ui::files::Revealer for FakeRevealer {
 /// What the window asked of the platform over all frames: the output
 /// commands (open a URL, copy text) and the viewport commands (close). A
 /// harness keeps only the last frame's output, and a frame that a worker
-/// asks for in between would wipe a command the click sent.
+/// asks for in between would wipe a command the click sent. Every harness
+/// of [`harness_sized`] records from its first frame; read it with
+/// [`OutputLog::of`] and [`OutputLog::clear`] it before the click to check.
 #[derive(Clone, Default)]
-pub struct OutputLog(pub Arc<Mutex<Vec<String>>>);
+pub struct OutputLog(Arc<Mutex<(Vec<egui::OutputCommand>, Vec<egui::ViewportCommand>)>>);
 
 impl OutputLog {
-    /// Starts recording the output of every frame of `ctx`.
-    pub fn record(ctx: &egui::Context) -> Self {
+    /// The log of `ctx`; the first call starts recording.
+    pub fn of(ctx: &egui::Context) -> Self {
+        let id = egui::Id::NULL;
+        if let Some(log) = ctx.data(|d| d.get_temp::<Self>(id)) {
+            return log;
+        }
         let log = Self::default();
-        ctx.add_plugin(OutputPlugin(log.0.clone()));
+        ctx.add_plugin(OutputPlugin(log.clone()));
+        ctx.data_mut(|d| d.insert_temp(id, log.clone()));
         log
+    }
+
+    /// Forgets what was recorded so far.
+    pub fn clear(&self) {
+        let mut g = self.0.lock().unwrap();
+        g.0.clear();
+        g.1.clear();
+    }
+
+    /// The output commands recorded since the last [`clear`](Self::clear).
+    pub fn commands(&self) -> Vec<egui::OutputCommand> {
+        self.0.lock().unwrap().0.clone()
+    }
+
+    /// The viewport commands recorded since the last clear.
+    pub fn viewport(&self) -> Vec<egui::ViewportCommand> {
+        self.0.lock().unwrap().1.clone()
+    }
+
+    /// The URLs the window asked to open since the last clear.
+    pub fn urls(&self) -> Vec<String> {
+        self.commands()
+            .into_iter()
+            .filter_map(|c| match c {
+                egui::OutputCommand::OpenUrl(u) => Some(u.url),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Everything recorded so far, as one string.
     pub fn text(&self) -> String {
-        format!("{:?}", self.0.lock().unwrap())
+        format!("{:?} {:?}", self.commands(), self.viewport())
     }
 }
 
-struct OutputPlugin(Arc<Mutex<Vec<String>>>);
+struct OutputPlugin(OutputLog);
 
 impl egui::plugin::Plugin for OutputPlugin {
     fn debug_name(&self) -> &'static str {
@@ -400,28 +437,23 @@ impl egui::plugin::Plugin for OutputPlugin {
     }
 
     fn output_hook(&mut self, _ctx: &egui::Context, output: &mut egui::FullOutput) {
-        let mut log = self.0.lock().unwrap();
-        log.extend(
-            output
-                .platform_output
-                .commands
-                .iter()
-                .map(|c| format!("{c:?}")),
-        );
+        let mut g = (self.0).0.lock().unwrap();
+        g.0.extend(output.platform_output.commands.iter().cloned());
         for v in output.viewport_output.values() {
-            log.extend(v.commands.iter().map(|c| format!("{c:?}")));
+            g.1.extend(v.commands.iter().cloned());
         }
     }
 }
 
-/// The text the last frame put on the clipboard, if any.
+/// The text the window last put on the clipboard, if any (see
+/// [`OutputLog`]).
 pub fn copied(h: &AppHarness) -> Option<String> {
-    h.output()
-        .platform_output
-        .commands
-        .iter()
+    OutputLog::of(&h.ctx)
+        .commands()
+        .into_iter()
+        .rev()
         .find_map(|c| match c {
-            egui::OutputCommand::CopyText(t) => Some(t.clone()),
+            egui::OutputCommand::CopyText(t) => Some(t),
             _ => None,
         })
 }

@@ -76,6 +76,7 @@ impl Rig {
 
     fn repaint_delay(&self) -> Duration {
         self.h
+            // output: the repaint delay is the last frame's state
             .output()
             .viewport_output
             .get(&egui::ViewportId::ROOT)

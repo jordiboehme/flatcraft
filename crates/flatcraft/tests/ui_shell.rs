@@ -292,11 +292,7 @@ fn closing_a_dirty_tab_can_save_it_first() {
 }
 
 fn root_commands(h: &common::AppHarness) -> Vec<egui::ViewportCommand> {
-    h.output()
-        .viewport_output
-        .get(&egui::ViewportId::ROOT)
-        .map(|v| v.commands.clone())
-        .unwrap_or_default()
+    common::OutputLog::of(&h.ctx).viewport()
 }
 
 fn asks_to_close(h: &common::AppHarness) -> bool {

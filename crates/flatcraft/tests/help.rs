@@ -12,19 +12,11 @@ use flatcraft::ui::prepare::SelectTool;
 use flatcraft::ui::{Action, about};
 
 fn opened(h: &AppHarness) -> Vec<String> {
-    h.output()
-        .platform_output
-        .commands
-        .iter()
-        .filter_map(|c| match c {
-            egui::OutputCommand::OpenUrl(u) => Some(u.url.clone()),
-            _ => None,
-        })
-        .collect()
+    common::OutputLog::of(&h.ctx).urls()
 }
 
-/// Opens the Help popup and clicks an item; the next frame's output is
-/// what the click asked for.
+/// Opens the Help popup and clicks an item; the output log has
+/// what the click asked for (see `common::OutputLog`).
 fn pick(h: &mut AppHarness, item: HelpItem) {
     h.get_by_role_and_label(Role::Button, "Help").click();
     h.run_plan();

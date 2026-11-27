@@ -125,6 +125,7 @@ fn fields(h: &AppHarness) -> flatcraft::ui::prepare::Fields {
 }
 
 fn cursor(h: &AppHarness) -> CursorIcon {
+    // output: the cursor is the last frame's state
     h.output().platform_output.cursor_icon
 }
 
