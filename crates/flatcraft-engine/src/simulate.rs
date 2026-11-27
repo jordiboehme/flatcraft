@@ -170,6 +170,10 @@ pub struct Commanded {
     pub max_turn_per_vertex_deg: f64,
 }
 
+/// The note when the simulation picture's green, amber and red do not
+/// reach 3:1 on the mat colour.
+pub const MAT_COLOUR_NOTE: &str = "On this mat colour the green, amber and red of the simulation picture are hard to tell from the mat. Green is within the limit, amber within twice the limit and red beyond; the numbers of this report hold either way.";
+
 /// The note `job.simulate` gives in firmware mode.
 pub const FIRMWARE_NOTE: &str = "Firmware compensation cannot be simulated exactly yet. This shows the commanded path, travel, segment count and the largest heading change per vertex on curves.";
 
@@ -309,6 +313,9 @@ pub fn compute(input: SimInput) -> Result<SimRun, CommandError> {
     let notes = job::toolpath_notes(&job.plan, &input.objects, &input.cut_geometry());
     let mut warnings = job.warnings.clone();
     warnings.extend(sim_warnings(mode, plotter));
+    if mode != SimMode::Firmware && !flatcraft_core::colour::deviation_colours_read(media.color) {
+        warnings.push(MAT_COLOUR_NOTE.to_string());
+    }
     let (result, display) = match mode {
         SimMode::Firmware => (None, Vec::new()),
         SimMode::Host | SimMode::Pen => {

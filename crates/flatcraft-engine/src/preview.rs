@@ -324,7 +324,12 @@ fn draw(
             width: px(1.0) as f32,
             ..Stroke::default()
         };
-        let faint = paint(Color::from_rgba8(lr, lg, lb, 60));
+        let faint = paint(Color::from_rgba8(
+            lr,
+            lg,
+            lb,
+            flatcraft_core::colour::GRID_ALPHA,
+        ));
         pm.stroke_path(&p, &faint, &stroke, mat, None);
     }
     if let Some(p) = rect_path(area) {
@@ -496,6 +501,10 @@ pub const RING_RADIUS_PX: f32 = 9.0;
 /// The line width of a worst spot's ring, px.
 pub const RING_WIDTH_PX: f32 = 2.5;
 
+/// The line width of the commanded path in firmware mode, px: thicker
+/// than the grid lines (1 px).
+pub const COMMANDED_WIDTH_PX: f32 = 2.5;
+
 /// The colour of blade-down waste moves (swivels, lead-ins, overshoots).
 const WASTE_INK: [u8; 3] = [0x5a, 0x6b, 0x8c];
 
@@ -526,11 +535,13 @@ fn draw_simulation(c: Canvas<'_>, run: &crate::simulate::SimRun) {
     };
     let Some(result) = &run.result else {
         // Firmware mode: the commanded path, as the plotter gets it, in
-        // the mat's neutral contrast colour: nothing here is graded, so
-        // nothing may look like the green, amber or red of a grade.
-        let ink = paint(color(lr, lg, lb));
+        // an indigo that stands out from the mat and its grid, thicker
+        // than the grid: nothing here is graded, so nothing may look like
+        // the green, amber or red of a grade.
+        let [ir, ig, ib] = flatcraft_core::colour::commanded_colour(mat_colour);
+        let ink = paint(color(ir, ig, ib));
         let stroke = Stroke {
-            width: 1.5 * px_mm,
+            width: COMMANDED_WIDTH_PX * px_mm,
             line_join: LineJoin::Round,
             ..Stroke::default()
         };
@@ -563,7 +574,11 @@ fn draw_simulation(c: Canvas<'_>, run: &crate::simulate::SimRun) {
     let mut up = PathBuilder::new();
     for w in samples.windows(2) {
         let (a, b) = (w[0], w[1]);
-        let pb = if b.down { &mut axis } else { &mut up };
+        let pb = if flatcraft_sim::is_cut_move(&a, &b) {
+            &mut axis
+        } else {
+            &mut up
+        };
         pb.move_to(a.axis.x as f32, a.axis.y as f32);
         pb.line_to(b.axis.x as f32, b.axis.y as f32);
     }
@@ -601,7 +616,7 @@ fn draw_simulation(c: Canvas<'_>, run: &crate::simulate::SimRun) {
     let mut pb = PathBuilder::new();
     for w in samples.windows(2) {
         let (a, b) = (w[0], w[1]);
-        if !b.down {
+        if !flatcraft_sim::is_cut_move(&a, &b) {
             continue;
         }
         // A waste move lies in waste on purpose, away from the line, so

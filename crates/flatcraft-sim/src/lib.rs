@@ -15,7 +15,7 @@ pub mod trace;
 use flatcraft_path::ASSUMED_START_HEADING;
 use kurbo::Vec2;
 
-pub use display::{DisplaySample, decimate};
+pub use display::{DisplaySample, decimate, is_cut_move};
 pub use metrics::{Grade, JobMetrics, PathMetrics, Spot, SpotKind, measure, measure_kept};
 pub use report::{SimResult, TimeModel, estimate_seconds, run, run_plan};
 pub use trace::{Sample, SimTrace, simulate};

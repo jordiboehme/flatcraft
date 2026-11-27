@@ -21,11 +21,22 @@ pub struct DisplaySample {
     pub deviation_mm: f32,
     /// The index of the simulated toolpath.
     pub toolpath: usize,
+    /// The run of that toolpath.
+    pub run: usize,
     /// A blade-down waste move: a swivel, a lead-in, an overshoot or the
     /// drop point.
     pub waste: bool,
     /// The move into this sample pushes the blade from behind.
     pub pushed: bool,
+}
+
+/// True when the move from `a` to `b` (two samples in this order) is a
+/// cut: both blade down in the same run of the same toolpath. Anything
+/// else is travel, also when thinning left out the samples where the
+/// blade went up and down again in between, so a view never draws travel
+/// as a cut.
+pub fn is_cut_move(a: &DisplaySample, b: &DisplaySample) -> bool {
+    a.down && b.down && a.toolpath == b.toolpath && a.run == b.run
 }
 
 /// Directions closer than this (as the sine of the angle between them) are
@@ -121,6 +132,7 @@ pub fn decimate(r: &SimResult, max_points: usize) -> Vec<DisplaySample> {
                 t_mm: x.t_mm,
                 deviation_mm: deviation(i),
                 toolpath: x.toolpath,
+                run: x.run,
                 waste: waste(i),
                 pushed: x.pushed,
             }
@@ -216,6 +228,46 @@ mod tests {
         assert!(shown.windows(2).all(|w| w[0].t_mm <= w[1].t_mm));
         // a large budget keeps everything
         assert_eq!(decimate(&r, n + 10).len(), n);
+    }
+
+    /// More than 10 000 runs, thinned far below their boundaries: no move
+    /// a view draws as a cut spans a travel.
+    #[test]
+    fn thinned_runs_never_draw_travel_as_a_cut() {
+        let paths: Vec<Toolpath> = (0..10_500)
+            .map(|i| square(f64::from(i % 105) * 2.0, f64::from(i / 105) * 2.0, 1.0))
+            .collect();
+        // A pen (no problems to keep) and a coarse step keep the trace
+        // small; the run structure is what counts here.
+        let coarse = SimSettings {
+            sample_step_mm: 0.25,
+            ..SimSettings::float(0.0)
+        };
+        let r = run(&paths, Point::ZERO, &coarse, 5, &TimeModel::PROVISIONAL).unwrap();
+        let runs = paths.len();
+        let shown = decimate(&r, 5_000);
+        assert!(shown.len() < 2 * runs, "the run boundaries were thinned");
+        let travel_t: Vec<f64> = r
+            .trace
+            .samples
+            .iter()
+            .filter(|x| !x.down)
+            .map(|x| x.t_mm)
+            .collect();
+        let spans_travel = |a: &DisplaySample, b: &DisplaySample| {
+            let i = travel_t.partition_point(|&t| t <= a.t_mm);
+            travel_t.get(i).is_some_and(|&t| t < b.t_mm)
+        };
+        let mut old_rule_wrong = 0;
+        for w in shown.windows(2) {
+            if is_cut_move(&w[0], &w[1]) {
+                assert!(!spans_travel(&w[0], &w[1]), "{:?} -> {:?}", w[0], w[1]);
+            }
+            if w[1].down && spans_travel(&w[0], &w[1]) {
+                old_rule_wrong += 1;
+            }
+        }
+        assert!(old_rule_wrong > 0, "the case the rule is for happens here");
     }
 
     #[test]

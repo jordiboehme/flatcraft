@@ -723,7 +723,7 @@ fn big_host_job_display_stays_near_the_cap() {
 /// and on a dark mat.
 #[test]
 fn firmware_preview_draws_the_commanded_path_neutral() {
-    for mat in ["#FBF4E4", "#202226"] {
+    for mat in ["#FBF4E4", "#202226", "#808080"] {
         let d = dirs();
         let media = format!(
             "media = [{{ id = \"mat-12x12\", name = \"Mat 12x12\", kind = \"Mat\", color = \"{mat}\", width_mm = 304.8, height_mm = 330.2, calibrated = false, grid = {{ origin_x_mm = 0.0, origin_y_mm = 0.0, width_mm = 304.8, height_mm = 304.8 }} }}]\n"
@@ -743,12 +743,79 @@ fn firmware_preview_draws_the_commanded_path_neutral() {
             let plotter = s.profiles.plotter("fw").unwrap();
             plotter.media_or_first("mat-12x12").unwrap().0.color
         };
-        let neutral = flatcraft_core::colour::contrast_colour(colour);
+        let ink = flatcraft_core::colour::commanded_colour(colour);
         let has = |c: [u8; 3]| img.pixels().any(|p| [p[0], p[1], p[2]] == c);
-        assert!(has(neutral), "{mat}: the commanded path");
+        assert!(has(ink), "{mat}: the commanded path");
+        assert_ne!(ink, flatcraft_core::colour::grid_line_colour(colour));
+        // Thicker than a 1 px grid line: some row crosses the square's
+        // left edge with at least 2 solid pixels.
+        let widest = (0..img.height())
+            .map(|y| {
+                let mut run = 0u32;
+                let mut best = 0u32;
+                for x in 0..img.width() {
+                    let p = img.get_pixel(x, y);
+                    if [p[0], p[1], p[2]] == ink {
+                        run += 1;
+                        best = best.max(run);
+                    } else {
+                        run = 0;
+                    }
+                }
+                best
+            })
+            .filter(|&b| b > 0)
+            .min()
+            .unwrap();
+        assert!(widest >= 2, "{mat}: {widest} px");
         assert!(!has(flatcraft_core::colour::cut_colour(colour)), "{mat}");
         for c in flatcraft_core::colour::deviation_colours(colour) {
             assert!(!has(c), "{mat}: {c:?}");
         }
     }
+}
+
+/// A session on a host plotter whose mat has the colour `mat` (#rrggbb).
+fn mat_session(d: &Dirs, mat: &str) -> Session {
+    let media = format!(
+        "media = [{{ id = \"mat-12x12\", name = \"Mat 12x12\", kind = \"Mat\", color = \"{mat}\", width_mm = 304.8, height_mm = 330.2, calibrated = false, grid = {{ origin_x_mm = 0.0, origin_y_mm = 0.0, width_mm = 304.8, height_mm = 304.8 }} }}]\n"
+    );
+    user_plotter(
+        d.config.path(),
+        "host",
+        &format!("knife_compensation = {HOST}\nblade_offset_mm = 0.3\n{media}"),
+    );
+    let mut s = session(d);
+    run(&mut s, "job.set_plotter", json!({ "id": "host" }));
+    run(&mut s, "job.set_media", json!({ "id": "mat-12x12" }));
+    s
+}
+
+/// On a mid-grey mat the tip colours are measured against that grey: a
+/// set that reads 3:1 is drawn and no note is needed.
+#[test]
+fn tip_colours_follow_a_mid_grey_mat() {
+    let grey = [0x80, 0x80, 0x80];
+    let set = flatcraft_core::colour::deviation_colours(grey);
+    for c in set {
+        assert!(
+            flatcraft_core::colour::contrast_ratio(c, grey) >= 3.0,
+            "{c:?}"
+        );
+    }
+    let d = dirs();
+    let mut s = mat_session(&d, "#808080");
+    import(&mut s, SQUARE_50);
+    let r = run(&mut s, "job.simulate", json!({}));
+    assert!(
+        !r["warnings"].to_string().contains("hard to tell"),
+        "{}",
+        r["warnings"]
+    );
+    let png = render_png(&s, PreviewKind::Simulation, 2048).unwrap();
+    let img = image::load_from_memory(&png).unwrap().to_rgb8();
+    assert!(
+        img.pixels().any(|p| [p[0], p[1], p[2]] == set[0]),
+        "the green of the grey mat's set"
+    );
 }

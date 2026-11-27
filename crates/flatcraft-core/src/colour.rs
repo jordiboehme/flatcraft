@@ -56,22 +56,73 @@ pub fn cut_colour(mat: [u8; 3]) -> [u8; 3] {
     }
 }
 
+/// The candidate sets of the simulated blade tip's colours, as [within
+/// the limit, within twice the limit, beyond], in the order they are
+/// preferred: deep and bright ones tell their hues apart best, the very
+/// dark and very pale ones read on mid-tone mats.
+const DEVIATION_SETS: [[[u8; 3]; 3]; 4] = [
+    [[0x1A, 0x7F, 0x45], [0xA8, 0x6A, 0x00], [0xD6, 0x28, 0x28]],
+    [[0x4A, 0xDE, 0x80], [0xFB, 0xBF, 0x24], [0xFF, 0x6B, 0x6B]],
+    [[0x05, 0x3B, 0x1B], [0x4A, 0x2E, 0x00], [0x5E, 0x0A, 0x0A]],
+    [[0xC8, 0xF7, 0xD6], [0xFF, 0xE9, 0xA8], [0xFF, 0xD9, 0xD9]],
+];
+
+/// The weakest contrast of the three colours of `set` on `mat`.
+fn weakest(set: &[[u8; 3]; 3], mat: [u8; 3]) -> f64 {
+    set.iter()
+        .map(|&c| contrast_ratio(c, mat))
+        .fold(f64::INFINITY, f64::min)
+}
+
 /// The simulated blade tip's colours on `mat`, as [within the limit,
-/// within twice the limit, beyond]: green, amber and red, deep ones on
-/// light mats and bright ones on dark mats, whichever set reads better
-/// (each at least 3:1 on the light paper and the dark mat).
+/// within twice the limit, beyond]: green, amber and red. Measured
+/// against the mat itself: of the deep and the bright set the one that
+/// reads better, if it reaches 3:1 for all three; else of the very dark
+/// and the very pale set; else the set whose weakest colour reads best
+/// (see [`deviation_colours_read`]).
 pub fn deviation_colours(mat: [u8; 3]) -> [[u8; 3]; 3] {
-    const DEEP: [[u8; 3]; 3] = [[0x1A, 0x7F, 0x45], [0xA8, 0x6A, 0x00], [0xD6, 0x28, 0x28]];
-    const BRIGHT: [[u8; 3]; 3] = [[0x4A, 0xDE, 0x80], [0xFB, 0xBF, 0x24], [0xFF, 0x6B, 0x6B]];
-    let worst = |set: &[[u8; 3]; 3]| {
-        set.iter()
-            .map(|&c| contrast_ratio(c, mat))
-            .fold(f64::INFINITY, f64::min)
+    let best = |sets: &[[[u8; 3]; 3]]| {
+        sets.iter()
+            .copied()
+            .max_by(|a, b| weakest(a, mat).total_cmp(&weakest(b, mat)))
+            .unwrap_or(DEVIATION_SETS[0])
     };
-    if worst(&DEEP) >= worst(&BRIGHT) {
+    [&DEVIATION_SETS[..2], &DEVIATION_SETS[2..]]
+        .into_iter()
+        .map(best)
+        .find(|set| weakest(set, mat) >= 3.0)
+        .unwrap_or_else(|| best(&DEVIATION_SETS))
+}
+
+/// True when all three [`deviation_colours`] reach 3:1 on `mat`.
+pub fn deviation_colours_read(mat: [u8; 3]) -> bool {
+    weakest(&deviation_colours(mat), mat) >= 3.0
+}
+
+/// The opacity of the 10 mm grid lines over the mat, of 255.
+pub const GRID_ALPHA: u8 = 60;
+
+/// The colour a grid line shows on `mat`: the contrast colour at
+/// [`GRID_ALPHA`] over the mat.
+pub fn grid_line_colour(mat: [u8; 3]) -> [u8; 3] {
+    let line = contrast_colour(mat);
+    let a = f64::from(GRID_ALPHA) / 255.0;
+    std::array::from_fn(|i| (f64::from(mat[i]) * (1.0 - a) + f64::from(line[i]) * a).round() as u8)
+}
+
+/// The colour of a commanded path that is not graded (firmware mode in
+/// the simulation picture): an indigo, deep on light mats and pale on
+/// dark ones, whichever stands out better from both the mat and its grid
+/// lines. Never a grade colour, the cut orange or the grid's own colour.
+pub fn commanded_colour(mat: [u8; 3]) -> [u8; 3] {
+    const DEEP: [u8; 3] = [0x3B, 0x3F, 0xB6];
+    const PALE: [u8; 3] = [0xC7, 0xD2, 0xFE];
+    let grid = grid_line_colour(mat);
+    let reads = |c: [u8; 3]| contrast_ratio(c, mat).min(contrast_ratio(c, grid));
+    if reads(DEEP) >= reads(PALE) {
         DEEP
     } else {
-        BRIGHT
+        PALE
     }
 }
 
@@ -159,8 +210,20 @@ mod tests {
 
     #[test]
     fn deviation_colours_read_on_paper_and_dark() {
-        for mat in [[0xFB, 0xF4, 0xE4], [0x20, 0x22, 0x26]] {
+        // The presets' paper, a dark mat, mid greys and coloured mats.
+        let mats = [
+            [0xFB, 0xF4, 0xE4],
+            [0x20, 0x22, 0x26],
+            [0x80, 0x80, 0x80],
+            [0x66, 0x66, 0x66],
+            [0x9E, 0x9E, 0x9E],
+            [0x2E, 0x7D, 0x32],
+            [0x15, 0x65, 0xC0],
+            [0xF8, 0xBB, 0xD0],
+        ];
+        for mat in mats {
             let set = deviation_colours(mat);
+            assert!(deviation_colours_read(mat), "{mat:?}");
             for c in set {
                 assert!(contrast_ratio(c, mat) >= 3.0, "{c:?} on {mat:?}");
                 // Never the colours that mean something else on the mat.
@@ -169,10 +232,34 @@ mod tests {
             }
             assert!(set[0] != set[1] && set[1] != set[2] && set[0] != set[2]);
         }
-        assert_ne!(
-            deviation_colours([0xFB, 0xF4, 0xE4]),
-            deviation_colours([0x20, 0x22, 0x26])
-        );
+        // Deep on paper, bright on the dark mat: the preferred sets.
+        assert_eq!(deviation_colours([0xFB, 0xF4, 0xE4]), DEVIATION_SETS[0]);
+        assert_eq!(deviation_colours([0x20, 0x22, 0x26]), DEVIATION_SETS[1]);
+        // A mid grey gets a set that reads, not the best of two that fail.
+        assert!(!DEVIATION_SETS[..2].contains(&deviation_colours([0x80, 0x80, 0x80])));
+        // Every mat colour of a 17-step cube gets a set that reads 3:1;
+        // the fallback (the best set, and a note in the report) is a
+        // safety net for colours in between.
+        for r in (0..=255u8).step_by(17) {
+            for g in (0..=255u8).step_by(17) {
+                for b in (0..=255u8).step_by(17) {
+                    assert!(deviation_colours_read([r, g, b]), "{r} {g} {b}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn commanded_path_stands_out_from_the_mat_and_the_grid() {
+        for mat in [[0xFB, 0xF4, 0xE4], [0x20, 0x22, 0x26]] {
+            let c = commanded_colour(mat);
+            let grid = grid_line_colour(mat);
+            assert!(contrast_ratio(c, mat) >= 3.0, "{mat:?}");
+            assert!(contrast_ratio(c, grid) >= 3.0, "{mat:?} grid {grid:?}");
+            assert_ne!(c, contrast_colour(mat));
+            assert_ne!(c, cut_colour(mat));
+            assert!(!deviation_colours(mat).contains(&c));
+        }
     }
 
     #[test]
