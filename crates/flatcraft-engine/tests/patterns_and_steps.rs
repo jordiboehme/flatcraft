@@ -232,6 +232,8 @@ fn bad_circular_params_change_nothing() {
             .unwrap_err();
         assert!(matches!(e, CommandError::InvalidParams(_)), "{p}: {e:?}");
     }
+    // A centre past the schema's range is refused before the command
+    // runs.
     let e = s
         .execute(
             "object.circular_copies",
@@ -239,7 +241,7 @@ fn bad_circular_params_change_nothing() {
             Origin::User,
         )
         .unwrap_err();
-    assert!(matches!(e, CommandError::Refused(_)), "{e:?}");
+    assert!(matches!(e, CommandError::InvalidParams(_)), "{e:?}");
     assert_eq!(s.doc().revision(), revision);
     assert_eq!(s.doc().document.objects.len(), 1);
 }

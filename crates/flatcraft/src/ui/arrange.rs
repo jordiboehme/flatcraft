@@ -123,18 +123,49 @@ pub struct ArrangePanel {
     pub selection: BTreeSet<u64>,
     pub kind: PanelKind,
     pub card: CardState,
+    /// The last params made, with what they were made from.
+    pub cache: ParamsCache,
+}
+
+/// What [`ArrangePanel::params`] last made and from what: the card's
+/// values, the document's revision and the selection. The note, the OK
+/// button, the canvas preview and the plan all ask for the params each
+/// frame; they are made once and again only when one of these changed.
+#[derive(Debug, Clone, Default)]
+pub struct ParamsCache(std::cell::RefCell<Option<(ParamsKey, (&'static str, Value))>>);
+
+type ParamsKey = (Values, u64, u64, BTreeSet<u64>);
+
+/// A cache is no part of what makes two cards the same.
+impl PartialEq for ParamsCache {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 impl ArrangePanel {
     /// The command OK runs and its params, the specials filled in: what
     /// the preview shows and OK sends.
     pub fn params(&self, snap: &Snapshot) -> (&'static str, Value) {
+        let key: ParamsKey = (
+            self.card.values.clone(),
+            snap.doc_id,
+            snap.doc_rev,
+            snap.selection.clone(),
+        );
+        if let Some((k, out)) = self.cache.0.borrow().as_ref()
+            && *k == key
+        {
+            return out.clone();
+        }
         let mut card = self.card.clone();
         card.sync(snap);
         let ids: Vec<u64> = snap.selection.iter().copied().collect();
         // One object, or one whole group.
         let unit = snap.units().first().copied();
-        (card.command(), card.params(&ids, unit))
+        let out = (card.command(), card.params(&ids, unit));
+        *self.cache.0.borrow_mut() = Some((key, out.clone()));
+        out
     }
 
     /// The gap of Auto arrange.
@@ -155,6 +186,7 @@ pub fn open(st: &mut PrepareState, snap: &Snapshot, kind: PanelKind) {
         selection: snap.selection.clone(),
         kind,
         card,
+        cache: ParamsCache::default(),
     });
 }
 
@@ -561,6 +593,14 @@ pub const SPECIALS: &[Special] = &[
     },
 ];
 
+/// Whether the value `k` is one a special opens with a preference.
+pub fn loaded_by_a_special(k: &str) -> bool {
+    SPECIALS
+        .iter()
+        .filter(|sp| sp.load.is_some())
+        .any(|sp| sp.paths.iter().any(|p| tool_card::key(sp.command, p) == k))
+}
+
 /// "Turn about": the enum's combo, dimmed below two objects.
 fn draw_about(ui: &mut Ui, card: &mut CardState, snap: &Snapshot) {
     let Some(s) = tool_card::spec("object.rotate", "about") else {
@@ -714,11 +754,12 @@ pub fn card_ui(
     t: &Tokens,
     actions: &mut Vec<Action>,
 ) -> Option<egui::Rect> {
-    let p = st.panel.clone()?;
+    // Taken out while it is drawn and put back after, not copied: its
+    // params are made once per change (see `ParamsCache`).
+    let mut p = st.panel.take()?;
     let title = panel_title(snap, &p);
     let note = note(st, snap, &p);
     let why = not_ready(snap, &p);
-    let mut card = p.card.clone();
     let tc = ToolCard {
         icon: p.kind.tool().icon,
         title: &title,
@@ -727,25 +768,31 @@ pub fn card_ui(
         note: note.as_deref(),
         ok_why: why.as_deref(),
     };
-    let (outcome, rect) = tool_card::show(ui, &tc, &mut card, snap, t);
-    card.sync(snap);
-    let Some(open) = st.panel.as_mut() else {
-        return Some(rect);
-    };
-    open.card = card;
+    let (outcome, rect) = tool_card::show(ui, &tc, &mut p.card, snap, t);
+    p.card.sync(snap);
     match outcome {
         Some(Outcome::Ok) => {
-            let p = open.clone();
             if let Some(a) = ok_action(snap, &p) {
                 actions.push(a);
                 p.card.store_prefs(st, actions);
-                st.panel_last.extend(p.card.values.clone());
-                actions.push(Action::RememberCards(p.card.values.clone()));
-                st.panel = None;
+                // A field a special opens with a preference (Turn about:
+                // the Each object switch) is not remembered here: the
+                // preference is its one source.
+                let remembered: Values = p
+                    .card
+                    .values
+                    .iter()
+                    .filter(|(k, _)| !loaded_by_a_special(k))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                st.panel_last.extend(remembered.clone());
+                actions.push(Action::RememberCards(remembered));
+            } else {
+                st.panel = Some(p);
             }
         }
-        Some(Outcome::Cancel) => st.panel = None,
-        None => {}
+        Some(Outcome::Cancel) => {}
+        None => st.panel = Some(p),
     }
     Some(rect)
 }

@@ -455,6 +455,33 @@ fn the_window_fits_at_900_by_600() {
 }
 
 #[test]
+fn opening_settings_never_changes_a_stored_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    // Stored values other than the defaults, as a person left them.
+    s.lock()
+        .unwrap()
+        .update_prefs(|p| {
+            p.rotate_each = true;
+            p.default_strategy = CutStrategy::Fast;
+            p.auto_reload = true;
+        })
+        .unwrap();
+    let file = dir.path().join("preferences.toml");
+    let before = std::fs::read(&file).unwrap();
+    let mut h = harness(&dir, &s);
+    for page in ["Cutting", "General", "Layout"] {
+        open(&mut h, page);
+        let st = &app(&h).ui.settings;
+        assert!(!st.dirty(), "{page}");
+        assert!(disabled(&h, "Apply"), "{page}");
+        click(&mut h, "OK");
+        assert!(!is_open(&h), "{page}");
+        assert_eq!(std::fs::read(&file).unwrap(), before, "{page}");
+    }
+}
+
+#[test]
 fn cancel_with_unsaved_preset_edits_keeps_everything_until_discard() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);

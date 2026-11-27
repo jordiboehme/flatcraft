@@ -239,11 +239,7 @@ pub struct AutoParams {
 }
 
 fn run_auto(s: &mut Session, p: AutoParams, _: Origin) -> Result<Value, CommandError> {
-    if !(p.spacing_mm.is_finite() && p.spacing_mm >= 0.0) {
-        return Err(CommandError::InvalidParams(
-            "spacing_mm must be 0 or more".into(),
-        ));
-    }
+    // The range of spacing_mm is the schema's (checked by the registry).
     let area = cutting_area(s)?;
     // Empty: the selection, and with nothing selected every visible object.
     let chosen = if p.ids.is_empty() {

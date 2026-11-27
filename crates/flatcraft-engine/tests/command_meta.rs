@@ -74,40 +74,111 @@ fn ranges_match_what_the_commands_accept() {
 
 /// A field starts with the schema's default; where the command has none,
 /// with the table's start value, which the doc comment states for agents.
+/// A field that is the same as another command's parameter takes that
+/// one's start value.
 #[test]
 fn every_field_has_one_start_value() {
     for m in meta::PARAMS {
         let what = format!("{} {}", m.command, m.path);
         let info = meta::param_info(m.command, m.path).unwrap();
         let schema = info.default.as_ref().filter(|d| !d.is_null());
+        if let Some((c, p)) = m.same_as {
+            assert!(
+                schema.is_none() && m.start.is_none(),
+                "{what}: its own start"
+            );
+            let other = meta::meta(c, p).unwrap_or_else(|| panic!("{what}: {c} {p}"));
+            assert_eq!(other.label, m.label, "{what}: one field, one label");
+            assert_eq!(other.unit, m.unit, "{what}");
+            assert_eq!(
+                meta::param_info(c, p).unwrap().min,
+                info.min,
+                "{what}: one range"
+            );
+            assert_eq!(meta::param_info(c, p).unwrap().max, info.max);
+            assert_eq!(
+                meta::start_value(m.command, m.path),
+                meta::start_value(c, p)
+            );
+            continue;
+        }
         match (schema, m.start) {
             (Some(_), Some(_)) => panic!("{what}: two start values"),
             (Some(_), None) => {}
-            (None, Some(meta::Start::Number(n))) => assert!(
+            (None, Some(n)) => assert!(
                 info.description
                     .contains(&format!("The window starts with {n}.")),
                 "{what}: the doc comment does not say it starts with {n}"
             ),
-            (None, Some(meta::Start::Text(_))) => assert!(
-                info.description.contains("The window starts with"),
-                "{what}"
+            // The centre of a circle starts at the selection's, Turn about
+            // with the window's Each object switch.
+            (None, None) => assert!(
+                m.path.starts_with("center_mm") || m.path == "about",
+                "{what}: no start"
             ),
-            // The centre of a circle: the selection's, unless typed.
-            (None, None) => assert!(m.path.starts_with("center_mm"), "{what}: no start"),
         }
-        if m.path.starts_with("center_mm") {
-            continue;
-        }
-        assert!(meta::start_value(m.command, m.path).is_some(), "{what}");
     }
     assert_eq!(
         meta::start_value("object.move", "dx_mm"),
-        Some(serde_json::json!(10))
-    );
-    assert_eq!(
-        meta::start_value("object.duplicate", "offset_mm[1]"),
         Some(serde_json::json!(10.0))
     );
+    assert_eq!(
+        meta::start_value("object.move", "dy_mm"),
+        meta::start_value("object.duplicate", "offset_mm[1]")
+    );
+}
+
+/// The registry refuses a value outside the schema's range before the
+/// command runs, with the parameter's name and its range.
+#[test]
+fn the_registry_refuses_values_outside_the_schema_range() {
+    let dir = tempfile::tempdir().unwrap();
+    let profiles = flatcraft_device::ProfileStore::load(&dir.path().join("profiles")).unwrap();
+    let mut s = flatcraft_engine::Session::new(
+        profiles,
+        flatcraft_engine::Preferences::default(),
+        true,
+        dir.path().to_path_buf(),
+    );
+    for (cmd, params, says) in [
+        (
+            "arrange.auto",
+            serde_json::json!({ "spacing_mm": 101.0 }),
+            "spacing_mm must be from 0 to 100; it was 101",
+        ),
+        (
+            "object.copies",
+            serde_json::json!({ "id": 1, "count": 2, "layout": { "grid": { "columns": 0 } } }),
+            "layout.grid.columns must be from 1 to 501; it was 0",
+        ),
+        (
+            "object.duplicate",
+            serde_json::json!({ "offset_mm": [0.0, 20000.0] }),
+            "offset_mm[1] must be from -10000 to 10000; it was 20000",
+        ),
+        (
+            "object.rotate",
+            serde_json::json!({ "degrees": 720.0 }),
+            "degrees must be from -360 to 360; it was 720",
+        ),
+        (
+            "object.copies",
+            serde_json::json!({ "id": 1, "count": 1, "gap_x_mm": -1.0 }),
+            "gap_x_mm must be from 0 to 1000; it was -1",
+        ),
+    ] {
+        let e = s
+            .execute(cmd, params.clone(), flatcraft_engine::Origin::Agent)
+            .unwrap_err();
+        assert!(
+            matches!(e, flatcraft_engine::CommandError::InvalidParams(_)),
+            "{cmd} {params}: {e}"
+        );
+        assert!(e.to_string().contains(says), "{cmd}: {e}");
+    }
+    // In range passes the check (and fails later for its own reason).
+    let schema = meta::schema_of("arrange.auto").unwrap();
+    assert!(meta::out_of_range(&schema, &serde_json::json!({ "spacing_mm": 100.0 })).is_none());
 }
 
 #[test]

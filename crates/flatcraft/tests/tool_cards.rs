@@ -228,7 +228,10 @@ fn a_command_in_the_table_gets_a_working_card_from_it_alone() {
         let card = tool_card::CardState::new(list, None, &Default::default());
         let params = card.params(&[a], Some(a));
         for m in meta::fields_of(c) {
-            if m.path.starts_with("center_mm") {
+            // Left out, the command takes its own default: the selection's
+            // centre, and Turn about as one group (the window opens it with
+            // the Each object switch).
+            if m.path.starts_with("center_mm") || m.path == "about" {
                 continue;
             }
             assert!(
@@ -299,8 +302,9 @@ fn every_card_field_shows_with_its_card_and_dimmed_reason() {
     assert!(h.get_by_label("Turn about").accesskit_node().is_disabled());
 }
 
-/// With Copy on, Move / Copy shows object.duplicate's own fields, with
-/// their labels, cards and start values; off, object.move's.
+/// Move / Copy shows one offset pair in both modes, and Number of copies,
+/// dimmed while Copy is off. Move sends the pair as object.move's dx/dy,
+/// Copy as object.duplicate's offset_mm.
 #[test]
 fn copy_shows_the_duplicate_commands_own_fields() {
     let dir = tempfile::tempdir().unwrap();
@@ -309,20 +313,44 @@ fn copy_shows_the_duplicate_commands_own_fields() {
     select(&s, &[a]);
     let mut h = window(&dir, s.clone(), 1400.0);
     open(&mut h, PanelKind::MoveCopy);
-    assert!(h.query_by_label("Number of copies").is_none());
-    assert_eq!(field_text(&h, "X offset"), "10.00");
-    assert_eq!(field_text(&h, "Y offset"), "0.00");
-    h.get_by_label("Copy").click();
-    h.run_plan();
-    let card = &app(&h).ui.prepare.panel.as_ref().unwrap().card;
-    assert_eq!(card.command(), "object.duplicate");
-    // The duplicate's schema default: [10, 10].
+    // One start value for the pair: the duplicate's schema default.
     assert_eq!(field_text(&h, "X offset"), "10.00");
     assert_eq!(field_text(&h, "Y offset"), "10.00");
     assert_eq!(field_text(&h, "Number of copies"), "1");
+    assert!(
+        h.get_by_label("Number of copies")
+            .accesskit_node()
+            .is_disabled()
+    );
+    h.get_by_label("Number of copies").hover();
+    h.run_plan();
+    assert!(h.query_by_label_contains("Turn on Copy first").is_some());
+    type_into(&mut h, "Y offset", "-4");
+    let sn = snap(&mut h);
+    let p = app(&h).ui.prepare.panel.clone().unwrap();
+    let (command, params) = p.params(&sn);
+    assert_eq!(command, "object.move");
+    assert_eq!(
+        (params["dx_mm"].as_f64(), params["dy_mm"].as_f64()),
+        (Some(10.0), Some(-4.0))
+    );
+    h.get_by_label("Copy").click();
+    h.run_plan();
+    // The same pair, now the duplicate's offset.
+    assert_eq!(field_text(&h, "Y offset"), "-4.00");
+    assert!(
+        !h.get_by_label("Number of copies")
+            .accesskit_node()
+            .is_disabled()
+    );
+    let sn = snap(&mut h);
+    let p = app(&h).ui.prepare.panel.clone().unwrap();
+    let (command, params) = p.params(&sn);
+    assert_eq!(command, "object.duplicate");
+    assert_eq!(params["offset_mm"], json!([10.0, -4.0]));
     h.get_by_label("Y offset").hover();
     h.run_plan();
-    let text = tools::field_card("object.duplicate", "offset_mm[1]").unwrap();
+    let text = tools::field_card("object.move", "dy_mm").unwrap();
     assert!(h.query_by_label_contains(&text[..20]).is_some());
     let undo = undo_len(&s);
     h.get_by_role_and_label(Role::Button, "OK").click();
@@ -330,6 +358,39 @@ fn copy_shows_the_duplicate_commands_own_fields() {
     wait_for_workers(&mut h);
     assert_eq!(undo_len(&s), undo + 1);
     assert_eq!(s.lock().unwrap().doc().document.objects.len(), 4);
+}
+
+/// Toggling Copy changes neither the values shown nor the card's height.
+#[test]
+fn toggling_copy_does_not_move_the_card() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let [a, _, _] = three(&s);
+    select(&s, &[a]);
+    let mut h = window(&dir, s.clone(), 1400.0);
+    open(&mut h, PanelKind::MoveCopy);
+    type_into(&mut h, "X offset", "12.5");
+    let shown = |h: &AppHarness| {
+        (
+            field_text(h, "X offset"),
+            field_text(h, "Y offset"),
+            field_text(h, "Number of copies"),
+            app(h).ui.prepare.panel_rect.unwrap(),
+            h.get_by_role_and_label(Role::Button, "OK").rect(),
+        )
+    };
+    let before = shown(&h);
+    for _ in 0..2 {
+        h.get_by_label("Copy").click();
+        h.run_plan();
+        let now = shown(&h);
+        assert_eq!((&now.0, &now.1, &now.2), (&before.0, &before.1, &before.2));
+        assert!(
+            (now.3.height() - before.3.height()).abs() < 0.5,
+            "{now:?} {before:?}"
+        );
+        assert!((now.4.top() - before.4.top()).abs() < 0.5);
+    }
 }
 
 /// Columns and Rows at their largest: far more than 500 copies. OK is

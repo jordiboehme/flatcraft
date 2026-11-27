@@ -1308,6 +1308,12 @@ impl Session {
         params: serde_json::Value,
         origin: Origin,
     ) -> Result<serde_json::Value, CommandError> {
+        // The ranges of the schema hold for every caller.
+        if let Some(schema) = crate::commands::meta::schema_of(command.id())
+            && let Some(why) = crate::commands::meta::out_of_range(&schema, &params)
+        {
+            return Err(CommandError::InvalidParams(why));
+        }
         if !command.mutates_document() {
             let snapshot = command.changes_session().then(|| self.snapshot());
             let result = run_caught(command, self, params, origin);

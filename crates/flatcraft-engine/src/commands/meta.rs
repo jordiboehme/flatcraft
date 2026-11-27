@@ -37,15 +37,6 @@ impl Unit {
     }
 }
 
-/// The value a window field starts with where the command has no
-/// default of its own. The parameter's doc comment says it too, so
-/// agents read the same number.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Start {
-    Number(f64),
-    Text(&'static str),
-}
-
 /// The label and unit of one parameter of one command.
 #[derive(Debug, Clone, Copy)]
 pub struct ParamMeta {
@@ -56,8 +47,16 @@ pub struct ParamMeta {
     pub unit: Unit,
     /// For an enum: each value with its plain label, in schema order.
     pub choices: &'static [(&'static str, &'static str)],
-    /// The start value where the schema has no default.
-    pub start: Option<Start>,
+    /// The number a window field starts with where the schema has no
+    /// default. The parameter's doc comment says it too, so agents read
+    /// the same number.
+    pub start: Option<f64>,
+    /// Another command's parameter this one is the same field as, in a
+    /// card that runs either command (Move / Copy: `object.move` dx_mm is
+    /// `object.duplicate` offset_mm[0]). The card shows that field once
+    /// and sends its value as either parameter; its start value is that
+    /// parameter's.
+    pub same_as: Option<(&'static str, &'static str)>,
 }
 
 const fn p(
@@ -73,11 +72,17 @@ const fn p(
         unit,
         choices: &[],
         start: None,
+        same_as: None,
     }
 }
 
 const fn from(mut m: ParamMeta, start: f64) -> ParamMeta {
-    m.start = Some(Start::Number(start));
+    m.start = Some(start);
+    m
+}
+
+const fn same(mut m: ParamMeta, command: &'static str, path: &'static str) -> ParamMeta {
+    m.same_as = Some((command, path));
     m
 }
 
@@ -85,8 +90,16 @@ const fn from(mut m: ParamMeta, start: f64) -> ParamMeta {
 /// card shows them. A command listed here gets a tool card built from
 /// these rows alone.
 pub const PARAMS: &[ParamMeta] = &[
-    from(p("object.move", "dx_mm", "X offset", Unit::Mm), 10.0),
-    from(p("object.move", "dy_mm", "Y offset", Unit::Mm), 0.0),
+    same(
+        p("object.move", "dx_mm", "X offset", Unit::Mm),
+        "object.duplicate",
+        "offset_mm[0]",
+    ),
+    same(
+        p("object.move", "dy_mm", "Y offset", Unit::Mm),
+        "object.duplicate",
+        "offset_mm[1]",
+    ),
     p("object.duplicate", "offset_mm[0]", "X offset", Unit::Mm),
     p("object.duplicate", "offset_mm[1]", "Y offset", Unit::Mm),
     p("object.duplicate", "count", "Number of copies", Unit::Count),
@@ -96,7 +109,6 @@ pub const PARAMS: &[ParamMeta] = &[
             ("group", "As one group"),
             ("each", "Each about its own centre"),
         ],
-        start: Some(Start::Text("group")),
         ..p("object.rotate", "about", "Turn about", Unit::None)
     },
     from(
@@ -161,18 +173,96 @@ pub fn fields_of(command: &str) -> impl Iterator<Item = &'static ParamMeta> + '_
     PARAMS.iter().filter(move |m| m.command == command)
 }
 
+/// The field `path` of `command` is: itself, or the parameter it is the
+/// same field as ([`ParamMeta::same_as`]).
+pub fn canonical<'a>(command: &'a str, path: &'a str) -> (&'a str, &'a str) {
+    meta(command, path)
+        .and_then(|m| m.same_as)
+        .unwrap_or((command, path))
+}
+
 /// The value a field of `path` of `command` starts with: the schema's
-/// default, else the start value of the table. `None` when there is
-/// neither (the centre of a circle: the selection's, by default).
+/// default, else the start value of the table (of the parameter it is
+/// the same field as, if any). `None` when there is neither: the centre
+/// of a circle (the selection's) or Turn about (the window's Each object
+/// switch).
 pub fn start_value(command: &str, path: &str) -> Option<Value> {
+    let (command, path) = canonical(command, path);
     if let Some(d) = param_info(command, path)?.default.filter(|d| !d.is_null()) {
         return Some(d);
     }
-    Some(match meta(command, path)?.start? {
-        Start::Number(n) if n.fract() == 0.0 && n >= 0.0 => Value::from(n as u64),
-        Start::Number(n) => Value::from(n),
-        Start::Text(t) => Value::from(t),
+    let n = meta(command, path)?.start?;
+    Some(if n.fract() == 0.0 && n >= 0.0 {
+        Value::from(n as u64)
+    } else {
+        Value::from(n)
     })
+}
+
+/// The params schema of `command` as JSON, made once per command.
+pub fn schema_of(command: &str) -> Option<std::sync::Arc<Value>> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, LazyLock, Mutex};
+    static CACHE: LazyLock<Mutex<HashMap<&'static str, Arc<Value>>>> =
+        LazyLock::new(Default::default);
+    let c = registry::get(command)?;
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(v) = cache.get(c.id()) {
+        return Some(v.clone());
+    }
+    let v = Arc::new(serde_json::to_value(c.params_schema()).ok()?);
+    cache.insert(c.id(), v.clone());
+    Some(v)
+}
+
+/// The first value of `params` outside the range its schema gives, as
+/// a message that names the parameter and its range; `None` when every
+/// value is in range. The registry checks every command's params with
+/// it before the command runs, so the schema is the one source of the
+/// ranges for agents and the window alike.
+pub fn out_of_range(schema: &Value, params: &Value) -> Option<String> {
+    walk(schema, schema, params, "")
+}
+
+fn walk(root: &Value, schema: &Value, value: &Value, at: &str) -> Option<String> {
+    match value {
+        Value::Number(n) => {
+            let x = n.as_f64()?;
+            let target = concrete(root, schema);
+            let min = bound(schema, &target, "minimum");
+            let max = bound(schema, &target, "maximum");
+            let low = min.is_some_and(|m| x < m);
+            let high = max.is_some_and(|m| x > m);
+            if !(low || high) {
+                return None;
+            }
+            Some(match (min, max) {
+                (Some(lo), Some(hi)) => {
+                    format!("{at} must be from {lo} to {hi}; it was {x}")
+                }
+                (Some(lo), None) => format!("{at} must be {lo} or more; it was {x}"),
+                (None, Some(hi)) => format!("{at} must be at most {hi}; it was {x}"),
+                (None, None) => unreachable!("a value out of range has a bound"),
+            })
+        }
+        Value::Object(map) => map.iter().find_map(|(k, v)| {
+            let sub = find_property(root, schema, k)?;
+            let path = if at.is_empty() {
+                k.clone()
+            } else {
+                format!("{at}.{k}")
+            };
+            walk(root, sub, v, &path)
+        }),
+        Value::Array(items_v) => {
+            let item = items(root, schema)?;
+            items_v
+                .iter()
+                .enumerate()
+                .find_map(|(i, v)| walk(root, item, v, &format!("{at}[{i}]")))
+        }
+        _ => None,
+    }
 }
 
 /// The type of a parameter, as its field shows it.
@@ -201,8 +291,9 @@ pub struct ParamInfo {
 /// What the schema of `command` says about the parameter at `path`.
 /// `None` when there is no such command or parameter.
 pub fn param_info(command: &str, path: &str) -> Option<ParamInfo> {
-    let root = serde_json::to_value(registry::get(command)?.params_schema()).ok()?;
-    let mut node = &root;
+    let schema = schema_of(command)?;
+    let root: &Value = &schema;
+    let mut node = root;
     let mut description = String::new();
     let mut default = None;
     for step in path.split('.') {
@@ -210,17 +301,17 @@ pub fn param_info(command: &str, path: &str) -> Option<ParamInfo> {
             Some((n, rest)) => (n, Some(rest.trim_end_matches(']').parse::<usize>().ok()?)),
             None => (step, None),
         };
-        node = find_property(&root, node, name)?;
+        node = find_property(root, node, name)?;
         // A field's own description and default sit next to its `$ref`.
         description = text(node, "description").unwrap_or_default();
         default = node.get("default").cloned();
         if let Some(i) = index {
             default = default.and_then(|d| d.get(i).cloned());
-            node = items(&root, node)?;
+            node = items(root, node)?;
         }
     }
-    let target = concrete(&root, node);
-    let kind = kind_of(&root, &target)?;
+    let target = concrete(root, node);
+    let kind = kind_of(root, &target)?;
     if description.is_empty() {
         description = text(&target, "description").unwrap_or_default();
     }

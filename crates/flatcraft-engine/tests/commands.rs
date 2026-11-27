@@ -2923,11 +2923,18 @@ fn copies_that_would_land_too_far_away_are_refused() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = session(&dir);
     let id = import(&mut s, 20.0, 20.0);
+    // 2 m wide: 500 copies with the largest gap (1 m) reach 1.5 km.
+    s.execute(
+        "object.scale",
+        json!({ "ids": [id], "width_mm": 2000.0, "keep_aspect": true }),
+        Origin::User,
+    )
+    .unwrap();
     let before = undo_len(&s);
     let e = s
         .execute(
             "object.copies",
-            json!({ "id": id, "count": 500, "gap_mm": 5000.0 }),
+            json!({ "id": id, "count": 500, "gap_mm": 1000.0 }),
             Origin::Agent,
         )
         .unwrap_err();
@@ -3370,15 +3377,20 @@ fn any_finite_angle_is_reduced_by_full_turns() {
     run(
         &mut s,
         "object.rotate",
-        json!({ "ids": [a], "degrees": 735.0 }),
+        json!({ "ids": [a], "degrees": 345.0 }),
+    );
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [a], "degrees": 30.0 }),
     );
     assert!(close(angle(&s), 15.0));
     run(
         &mut s,
         "object.rotate",
-        json!({ "ids": [a], "degrees": -1e9 }),
+        json!({ "ids": [a], "degrees": -360.0 }),
     );
-    assert!(close(angle(&s), 95.0), "{}", angle(&s));
+    assert!(close(angle(&s), 15.0), "{}", angle(&s));
 }
 
 #[test]
@@ -3387,16 +3399,25 @@ fn angles_too_large_to_be_exact_are_refused() {
     let mut s = session(&dir);
     let a = import(&mut s, 20.0, 10.0);
     let steps = s.doc().undo.undo_len();
-    for params in [
-        json!({ "ids": [a], "angle_deg": 1e10 }),
-        json!({ "ids": [a], "angle_deg": -1.5e9 }),
-        json!({ "ids": [a], "degrees": 1e10 }),
+    // The schema's ranges, checked by the registry: angle_deg at most
+    // 1e9 either way (larger numbers are not exact), degrees at most 360.
+    for (params, range) in [
+        (
+            json!({ "ids": [a], "angle_deg": 1e10 }),
+            "-1000000000 to 1000000000",
+        ),
+        (
+            json!({ "ids": [a], "angle_deg": -1.5e9 }),
+            "-1000000000 to 1000000000",
+        ),
+        (json!({ "ids": [a], "degrees": 1e10 }), "-360 to 360"),
+        (json!({ "ids": [a], "degrees": 361.0 }), "-360 to 360"),
     ] {
         let e = s
             .execute("object.rotate", params.clone(), Origin::User)
             .unwrap_err();
         assert!(matches!(e, CommandError::InvalidParams(_)), "{params}: {e}");
-        assert!(e.to_string().contains("1000000000"), "{e}");
+        assert!(e.to_string().contains(range), "{e}");
     }
     assert_eq!(s.doc().undo.undo_len(), steps);
 }

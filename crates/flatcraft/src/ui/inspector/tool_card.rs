@@ -49,8 +49,12 @@ use crate::ui::{Action, groups, metrics, tools};
 /// ("pattern.rectangular rows").
 pub type Values = BTreeMap<String, Value>;
 
-/// The key of `path` of `owner` (a command id, or a card's id).
+/// The key of `path` of `owner` (a command id, or a card's id). A
+/// parameter that is the same field as another command's
+/// (`meta::ParamMeta::same_as`) has that one's key, so both share one
+/// value.
 pub fn key(owner: &str, path: &str) -> String {
+    let (owner, path) = meta::canonical(owner, path);
     format!("{owner} {path}")
 }
 
@@ -506,43 +510,86 @@ impl CardState {
         }
     }
 
-    /// The labels of the rows the card shows now, for the label column.
-    pub fn labels(&self) -> Vec<&'static str> {
-        let mut out: Vec<&'static str> = self.mode.iter().map(|m| m.label).collect();
-        let command = self.command();
+    /// The rows of the card: every field of every command of the card,
+    /// in the table's order, each field once (a field that is the same as
+    /// another command's shows once). Toggling the mode never changes
+    /// them, so the card keeps its height.
+    pub fn rows(&self) -> Vec<Row> {
+        let mut out = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
         let mut drawn: Vec<&str> = Vec::new();
-        for m in meta::fields_of(command) {
-            match special_of(command, m.path) {
-                Some(sp) if !drawn.contains(&sp.name) => {
-                    drawn.push(sp.name);
-                    out.extend(sp.labels);
+        for c in self.commands {
+            for m in meta::fields_of(c) {
+                if let Some(sp) = special_of(c, m.path) {
+                    if !drawn.contains(&sp.name) {
+                        drawn.push(sp.name);
+                        out.push(Row::Special(sp));
+                    }
+                    continue;
                 }
-                Some(_) => {}
-                None => out.push(m.label),
+                let k = key(c, m.path);
+                if seen.contains(&k) {
+                    continue;
+                }
+                seen.push(k);
+                out.push(Row::Field(c, m.path));
             }
         }
         out
     }
+
+    /// The labels of the rows, for the label column.
+    pub fn labels(&self) -> Vec<&'static str> {
+        let mut out: Vec<&'static str> = self.mode.iter().map(|m| m.label).collect();
+        for r in self.rows() {
+            match r {
+                Row::Special(sp) => out.extend(sp.labels),
+                Row::Field(c, p) => out.extend(meta::meta(c, p).map(|m| m.label)),
+            }
+        }
+        out
+    }
+
+    /// Why the field `path` of `command` does not apply now: it belongs to
+    /// the card's other command only.
+    pub fn not_now(&self, command: &str, path: &str) -> Option<String> {
+        let mode = self.mode?;
+        let now = self.command();
+        let shared = meta::fields_of(now).any(|m| key(now, m.path) == key(command, path));
+        if shared {
+            return None;
+        }
+        Some(if now == self.commands[0] {
+            format!("Turn on {} first.", mode.label)
+        } else {
+            format!("Turn off {} first.", mode.label)
+        })
+    }
 }
 
-/// The rows of the card: the mode switch, then the fields of the command
-/// that runs now, in the table's order.
+/// One row of a card.
+#[derive(Clone, Copy)]
+pub enum Row {
+    /// A field of a command's parameter (command, path).
+    Field(&'static str, &'static str),
+    /// A special widget's rows.
+    Special(&'static Special),
+}
+
+/// The rows of the card: the mode switch, then [`CardState::rows`].
 fn fields(ui: &mut Ui, state: &mut CardState, snap: &Snapshot) {
     if let Some(m) = state.mode {
         field_row(ui, &mode_spec(m), state, None);
     }
-    let command = state.command();
-    let mut drawn: Vec<&str> = Vec::new();
-    for m in meta::fields_of(command) {
-        if let Some(sp) = special_of(command, m.path) {
-            if !drawn.contains(&sp.name) {
-                drawn.push(sp.name);
-                (sp.draw)(ui, state, snap);
+    for r in state.rows() {
+        match r {
+            Row::Special(sp) => (sp.draw)(ui, state, snap),
+            Row::Field(c, p) => {
+                if let Some(s) = spec(c, p) {
+                    let why = state.not_now(c, p);
+                    field_row(ui, &s, state, why.as_deref());
+                }
             }
-            continue;
-        }
-        if let Some(s) = spec(command, m.path) {
-            field_row(ui, &s, state, None);
         }
     }
 }

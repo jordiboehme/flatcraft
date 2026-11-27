@@ -561,8 +561,9 @@ fn no_number_field_cuts_its_value() {
         shown_whole(&h, "100.00", width);
         // The panel fields, with their longest values.
         let last = &mut app_mut(&mut h).ui.prepare.panel_last;
-        last.insert("object.move dx_mm".into(), json!(-9999.99));
-        last.insert("object.rotate degrees".into(), json!(-359.99));
+        use flatcraft::ui::inspector::tool_card::key;
+        last.insert(key("object.move", "dx_mm"), json!(-9999.99));
+        last.insert(key("object.rotate", "degrees"), json!(-359.99));
         let ctx = h.ctx.clone();
         let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
         flatcraft::ui::arrange::open(

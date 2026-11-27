@@ -1044,10 +1044,10 @@ pub fn show(
         drag_preview(st.drag.as_ref(), snap, id)
     });
     let mut did_not_fit = Vec::new();
-    if let Some(p) = st.panel.clone() {
+    if let Some(p) = st.panel.as_ref() {
         // Packed once per change, for the ghosts, the fixed objects and
         // the ones that do not fit alike.
-        let plan = st.auto_plan.get(snap, &p);
+        let plan = st.auto_plan.get(snap, p);
         if let Some(plan) = plan {
             draw_fixed(
                 &painter,
@@ -1064,7 +1064,7 @@ pub fn show(
             snap,
             &view,
             mat_rgb,
-            &super::arrange::ghosts_with(snap, &p, plan),
+            &super::arrange::ghosts_with(snap, p, plan),
         );
     }
     draw_area(&painter, snap, &view, t, contrast);

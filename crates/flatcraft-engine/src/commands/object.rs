@@ -1001,29 +1001,10 @@ impl CopiesLayout {
 
 fn run_copies(s: &mut Session, p: CopiesParams, _: Origin) -> Result<Value, CommandError> {
     let mw = knife_of(s);
-    if !(1..=MAX_COPIES).contains(&p.count) {
-        return Err(CommandError::InvalidParams(format!(
-            "count must be 1 to {MAX_COPIES}"
-        )));
-    }
     let gap_x = p.gap_x_mm.unwrap_or(p.gap_mm);
     let gap_y = p.gap_y_mm.unwrap_or(p.gap_mm);
-    for (name, v) in [
-        ("gap_mm", p.gap_mm),
-        ("gap_x_mm", gap_x),
-        ("gap_y_mm", gap_y),
-    ] {
-        if !(v.is_finite() && v >= 0.0) {
-            return Err(CommandError::InvalidParams(format!(
-                "{name} must be 0 or more"
-            )));
-        }
-    }
-    if p.layout == (CopiesLayout::Grid { columns: 0 }) {
-        return Err(CommandError::InvalidParams(
-            "a grid needs 1 or more columns".into(),
-        ));
-    }
+    // The ranges of count, the gaps and the columns are the schema's
+    // (checked by the registry before the command runs).
     let unit = ObjectId(p.id);
     check_node(&s.doc().document, unit)?;
     let area = cutting_area(s).ok();
@@ -1158,9 +1139,10 @@ fn run_circular_copies(
             "count must be 2 or more, and {MAX_COPIES} copies in all at most"
         )));
     }
-    if !(p.total_deg.is_finite() && p.total_deg != 0.0 && p.total_deg.abs() <= 360.0) {
+    // Its range is the schema's; 0 is in it but stacks every copy.
+    if p.total_deg == 0.0 {
         return Err(CommandError::InvalidParams(
-            "total_deg must not be 0 and at most 360 either way".into(),
+            "total_deg must not be 0".into(),
         ));
     }
     let pivot = match p.center_mm {
@@ -1386,10 +1368,10 @@ pub struct MoveParams {
     /// Object ids; empty means the current selection.
     #[serde(default)]
     pub ids: Vec<u64>,
-    /// Relative move along x in mm (right is positive), at most 10000 either way. The window starts with 10.
+    /// Relative move along x in mm (right is positive), at most 10000 either way.
     #[schemars(range(min = -10000, max = 10000))]
     pub dx_mm: Option<f64>,
-    /// Relative move along y in mm (down is positive), at most 10000 either way. The window starts with 0.
+    /// Relative move along y in mm (down is positive), at most 10000 either way.
     #[schemars(range(min = -10000, max = 10000))]
     pub dy_mm: Option<f64>,
     /// Absolute target [x, y] in mm for the centre of the objects' common bounding box. Do not combine with dx_mm/dy_mm or x_mm/y_mm.
@@ -1837,8 +1819,9 @@ pub struct RotateParams {
     #[serde(default)]
     #[schemars(range(min = -360, max = 360))]
     pub degrees: Option<f64>,
-    /// Absolute angle in degrees, clockwise on screen: every object gets this rotation, each about its own centre. Full turns are removed, so 735 is 15 and -90 is 270. At most 1e9 either way. Give this or degrees.
+    /// Absolute angle in degrees, clockwise on screen: every object gets this rotation, each about its own centre. Full turns are removed, so 735 is 15 and -90 is 270. At most 1e9 either way (larger numbers are not exact). Give this or degrees.
     #[serde(default)]
+    #[schemars(range(min = -1e9, max = 1e9))]
     pub angle_deg: Option<f64>,
     /// group (default): turn the objects as one group about their common centre, the mean of their centres. each: turn each about its own centre. One object turns about its own centre either way. With angle_deg only each is allowed. The window starts with the Each object switch of the ribbon.
     #[serde(default)]
@@ -1853,22 +1836,14 @@ fn centres(doc: &Document, ids: &[ObjectId]) -> Vec<Point> {
         .collect()
 }
 
-/// The largest angle `object.rotate` takes, either way. Past it an f64
-/// no longer holds the angle exactly enough to reduce it by full turns.
-pub const MAX_ANGLE_DEG: f64 = 1e9;
-
-/// Refuses an angle that is not a number or too large to be exact. Any
-/// other angle is fine: it is reduced by full turns into [0, 360).
+/// Refuses an angle that is not a number. Its range is the schema's
+/// (checked by the registry before the command runs); any angle in it is
+/// reduced by full turns into [0, 360).
 pub fn check_angle(deg: f64) -> Result<(), CommandError> {
     if !deg.is_finite() {
         return Err(CommandError::InvalidParams(
             "the angle must be a number of degrees".into(),
         ));
-    }
-    if deg.abs() > MAX_ANGLE_DEG {
-        return Err(CommandError::InvalidParams(format!(
-            "the angle {deg} is too large: give at most 1000000000 degrees either way (larger numbers are not exact); full turns of 360 count as 0"
-        )));
     }
     Ok(())
 }
@@ -1952,7 +1927,7 @@ command!(
     mutates: true,
     params: RotateParams,
     run: run_rotate,
-    description: "Rotates objects in one undo step: by degrees, relative to their current rotation, or to angle_deg, an absolute angle every object gets about its own centre (the window's Angle field does this; give one of the two). Positive is clockwise on screen (y points down). Any angle up to 1e9 either way is fine: full turns are removed, so the stored rotation is in [0, 360) (735 is 15, -90 is 270). about (only with degrees): group | each, default group. With group, several objects turn as one group about their common centre, the mean of the selected objects' centres: each centre turns about that point and each object's own rotation grows by the angle, so the layout turns with them (the window does this for a multi-selection). With each, every object turns about its own centre and the centres stay. One object turns about its own centre either way. A whole group counts as one object: it turns as one piece about the centre of its box, and with angle_deg it turns until its own angle (0 when it was made, see document.state groups) is angle_deg. Objects picked inside a group turn on their own. Positions in mm, origin the 0,0 of the grid printed on the mat. Linked copies (see object.copies) keep their own rotation: only the objects in ids turn. The stored rotation is kept in [0, 360). An empty ids list means the current selection. Returns {objects: [{id, rotation_deg, center_mm: [x, y]}]}.",
+    description: "Rotates objects in one undo step: by degrees, relative to their current rotation, or to angle_deg, an absolute angle every object gets about its own centre (the window's Angle field does this; give one of the two). Positive is clockwise on screen (y points down). degrees is at most 360 either way, angle_deg at most 1e9 either way; full turns are removed, so the stored rotation is in [0, 360) (735 is 15, -90 is 270). about (only with degrees): group | each, default group. With group, several objects turn as one group about their common centre, the mean of the selected objects' centres: each centre turns about that point and each object's own rotation grows by the angle, so the layout turns with them (the window does this for a multi-selection). With each, every object turns about its own centre and the centres stay. One object turns about its own centre either way. A whole group counts as one object: it turns as one piece about the centre of its box, and with angle_deg it turns until its own angle (0 when it was made, see document.state groups) is angle_deg. Objects picked inside a group turn on their own. Positions in mm, origin the 0,0 of the grid printed on the mat. Linked copies (see object.copies) keep their own rotation: only the objects in ids turn. The stored rotation is kept in [0, 360). An empty ids list means the current selection. Returns {objects: [{id, rotation_deg, center_mm: [x, y]}]}.",
 );
 
 // ---------------------------------------------------------------- mirror
