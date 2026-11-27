@@ -175,12 +175,11 @@ pub fn group_hint(g: MaterialGroup) -> &'static str {
 /// The card of the picker itself.
 pub const PICKER_HINT: &str = "What you cut. It sets the starting speed, force and passes, and the card of each material says which side goes up and which mat to use. Hover a material in the list to read it.";
 
-/// The Material row of the Job grid: the label and the grouped picker.
-/// Returns the picked material's id when it differs from the document's.
-pub fn picker_row(ui: &mut Ui, snap: &Snapshot, t: &Tokens) -> Option<String> {
-    super::settings::painted_label(ui, "Material");
+/// The material picker: a combo grouped by kind of material. Returns the
+/// combo and the picked material's id when it differs from the
+/// document's. Its card is [`picker_card`]; the row that holds it shows it.
+pub fn picker(ui: &mut Ui, snap: &Snapshot, t: &Tokens) -> (egui::Response, Option<String>) {
     let current = &snap.job.material_id;
-    let shown = snap.material_cards.iter().find(|c| &c.id == current);
     let text = snap
         .material
         .as_ref()
@@ -189,6 +188,7 @@ pub fn picker_row(ui: &mut Ui, snap: &Snapshot, t: &Tokens) -> Option<String> {
     let r = egui::ComboBox::from_id_salt("Material")
         .selected_text(text)
         .width(ui.available_width())
+        .truncate()
         .height(600.0)
         .show_ui(ui, |ui| {
             for group in MaterialGroup::ALL {
@@ -215,14 +215,16 @@ pub fn picker_row(ui: &mut Ui, snap: &Snapshot, t: &Tokens) -> Option<String> {
                 }
             }
         });
-    super::settings::set_name(ui, &r.response, "Material");
-    let card = match shown {
+    (r.response, picked)
+}
+
+/// The card of the material picker, with the picked material's card.
+pub fn picker_card(snap: &Snapshot) -> String {
+    let current = &snap.job.material_id;
+    match snap.material_cards.iter().find(|c| &c.id == current) {
         Some(c) => format!("{PICKER_HINT}\n\n{}: {}", c.name, card_text(c)),
         None => PICKER_HINT.to_string(),
-    };
-    super::groups::card(&r.response, "Material", &card, None, false);
-    ui.end_row();
-    picked
+    }
 }
 
 /// A preset file for the document's material that was skipped at load.
@@ -283,7 +285,8 @@ pub fn test_cut_text(material: &str, backing: bool) -> String {
 /// Why the test shape button is dimmed.
 pub const NO_ROOM: &str = "There is no free spot on the mat for the test shape. Move your design closer together, or pick a larger mat.";
 
-/// "Start with a test cut" under the Job grid, for a material the cut log
+/// "Start with a test cut" in the Job panel's Machine and material
+/// section (a hint card), for a material the cut log
 /// has never seen. The button runs `tools.test_shape`; it is dimmed, with
 /// the reason, when the mat has no room for the shape.
 pub fn test_cut_hint(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec<Action>) {
@@ -297,32 +300,21 @@ pub fn test_cut_hint(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec
     let backing = snap.material.as_ref().is_none_or(|m| m.backing);
     let text = test_cut_text(name, backing);
     ui.add_space(t.spacing / 2.0);
-    let r = ui.label(
-        RichText::new(TEST_CUT_TITLE)
-            .font(fonts::semibold(13.0))
-            .color(t.warn_text),
+    let issue =
+        format!("You have not cut {name} yet. Cut a small test shape first, then the design.");
+    let button = super::inspector::blocks::HintButton {
+        label: TEST_CUT_BUTTON,
+        card: "Puts a 30 mm square with a 10 mm hole on a free spot of the mat, away from your design. Cut it first, check it, then cut the rest. Undo takes it back.",
+        why: (!tc.room).then_some(NO_ROOM),
+    };
+    let clicked = super::inspector::blocks::hint_card(
+        ui,
+        t,
+        Some((TEST_CUT_TITLE, &text)),
+        &issue,
+        &[button],
     );
-    super::groups::card(&r, TEST_CUT_TITLE, &text, None, false);
-    ui.add(
-        egui::Label::new(
-            RichText::new(format!(
-                "You have not cut {name} yet. Cut a small test shape first, then the design."
-            ))
-            .color(t.text_dim),
-        )
-        .wrap(),
-    );
-    let why = (!tc.room).then_some(NO_ROOM);
-    let b = ui.add_enabled(why.is_none(), egui::Button::new(TEST_CUT_BUTTON));
-    super::settings::set_name(ui, &b, TEST_CUT_BUTTON);
-    super::groups::card(
-        &b,
-        TEST_CUT_BUTTON,
-        "Puts a 30 mm square with a 10 mm hole on a free spot of the mat, away from your design. Cut it first, check it, then cut the rest. Undo takes it back.",
-        why,
-        false,
-    );
-    if b.clicked() {
+    if clicked == Some(0) {
         actions.push(Action::run(snap.doc_id, "tools.test_shape", json!({})));
     }
 }

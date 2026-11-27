@@ -122,6 +122,12 @@ fn the_job_card_shows_the_notes_of_the_picked_presets() {
         )
         .unwrap();
     }
+    // The notes are in the Material tips section, which starts folded.
+    s.lock()
+        .unwrap()
+        .prefs
+        .panel_sections
+        .insert("job.tips".into(), true);
     let mut h = harness(&dir, &s);
     to_prepare(&mut h);
     h.run_plan();

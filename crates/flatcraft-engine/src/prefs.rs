@@ -104,6 +104,12 @@ pub struct Preferences {
     /// the only writer; no registry command reads or changes it. A file
     /// without the key has no details yet.
     pub recent_details: Vec<RecentDetail>,
+    /// Which sections of the side panels are open, by section id (for
+    /// example `job.weeding`). A section without an entry uses its own
+    /// default; ids this version does not know are ignored. Only the
+    /// window writes it (a UI preference); no registry command reads or
+    /// changes it.
+    pub panel_sections: std::collections::BTreeMap<String, bool>,
 }
 
 /// The Home page's details of one recent project (see
@@ -424,6 +430,7 @@ impl Default for Preferences {
             panel_stage: PanelUser::None,
             default_strategy: CutStrategy::Quality,
             recent_details: Vec::new(),
+            panel_sections: std::collections::BTreeMap::new(),
         }
     }
 }

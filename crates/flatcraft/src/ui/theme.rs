@@ -39,6 +39,9 @@ pub struct Tokens {
     /// (light) or bright enough (dark) for 4.5:1. `warn` and `accent_cut`
     /// are for dots, icons and lines only.
     pub warn_text: Color32,
+    /// The dot beside a value that differs from its source (the material
+    /// or plotter preset): orange, for the dot only, never for text.
+    pub changed: Color32,
     /// The simulation grade on a panel (not on the mat: the mat picks its
     /// own colours, `colour::deviation_colours`): within the limit,
     /// within twice the limit, beyond.
@@ -85,6 +88,7 @@ impl Tokens {
             ok: Color32::from_rgb(0x46, 0xC2, 0x7A),
             warn: Color32::from_rgb(0xE8, 0xB2, 0x3A),
             warn_text: Color32::from_rgb(0xF2, 0xB4, 0x5A),
+            changed: Color32::from_rgb(0xF0, 0x8A, 0x3C),
             quality_good: Color32::from_rgb(0x3F, 0xB9, 0x50),
             quality_warn: Color32::from_rgb(0xF2, 0xA3, 0x3A),
             quality_bad: Color32::from_rgb(0xE5, 0x48, 0x4D),
@@ -117,6 +121,7 @@ impl Tokens {
             ok: Color32::from_rgb(0x2F, 0x9E, 0x5B),
             warn: Color32::from_rgb(0xD9, 0x9A, 0x1E),
             warn_text: Color32::from_rgb(0x94, 0x52, 0x00),
+            changed: Color32::from_rgb(0xE0, 0x70, 0x1A),
             // Deeper than the dark theme's, so they reach 3:1 on white.
             quality_good: Color32::from_rgb(0x1A, 0x7F, 0x45),
             quality_warn: Color32::from_rgb(0xA8, 0x6A, 0x00),

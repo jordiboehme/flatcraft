@@ -232,7 +232,11 @@ fn the_job_card_shows_the_material_tips() {
     set_material(&s, "window-cling");
     let mut h = tall(&dir, &s);
     cut_stage(&mut h, "Device & Material");
-    h.get_by_label(flatcraft::ui::settings::TIPS_HEADING);
+    // The section starts folded; a click on its title opens it.
+    assert!(!shows(&h, "Cling side up, backing down."));
+    h.get_by_label(flatcraft::ui::settings::TIPS_HEADING)
+        .click();
+    h.run_plan();
     assert!(shows(&h, "Cling side up, backing down."));
 }
 

@@ -525,10 +525,10 @@ fn the_button_is_dimmed_with_a_reason_and_the_cards_say_what_it_does() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     wait_for_workers(&mut h);
+    // Nothing selected: the inspector shows the Job panel, without the
+    // selection's cut options and their picker button.
     assert!(
-        h.get_by_label(keep_pick::BUTTON)
-            .accesskit_node()
-            .is_disabled(),
+        h.query_by_label(keep_pick::BUTTON).is_none(),
         "nothing selected"
     );
     let ctx = h.ctx.clone();
@@ -728,6 +728,14 @@ fn weeding_says_why_it_cuts_nothing_while_another_object_keeps_the_sheet() {
         "job.set_weeding",
         json!({ "box": true, "lines": "both" }),
     );
+    // The Weeding section starts folded; open it. Nothing selected, so
+    // the Job panel is all the inspector shows and the section is in view.
+    run(&s, "object.select", json!({ "ids": [] }));
+    s.lock()
+        .unwrap()
+        .prefs
+        .panel_sections
+        .insert("job.weeding".into(), true);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     wait_for_workers(&mut h);

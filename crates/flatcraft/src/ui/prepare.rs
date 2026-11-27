@@ -366,6 +366,12 @@ pub struct PrepareState {
     /// Counts the times a notes field got the keyboard: the typing of one
     /// visit to a field is one undo step (see `objects::notes`).
     pub notes_burst: u64,
+    /// What the inspector on the right shows (the job line toggles it).
+    /// UI state only: no undo step, never saved.
+    pub inspector: super::inspector::InspectorView,
+    /// The document and selection the inspector followed last frame: a
+    /// change takes it back to the selection.
+    pub inspector_key: Option<(u64, BTreeSet<u64>)>,
 }
 
 /// The Rename dialog: its object and the name typed so far.
@@ -454,6 +460,8 @@ impl Default for PrepareState {
             ribbon_layout: None,
             notes_open: true,
             notes_burst: 0,
+            inspector: Default::default(),
+            inspector_key: None,
         }
     }
 }
@@ -1474,6 +1482,7 @@ impl FlatCraftApp {
 pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut Vec<Action>) {
     let t = app.tokens;
     arrange::keep_or_close(&mut app.ui.prepare, snap);
+    super::inspector::follow_selection(&mut app.ui.prepare, snap);
     // Another document or another selection cancels the keep picker.
     if app
         .ui
@@ -1530,10 +1539,11 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
     } else {
         egui::Panel::right("flatcraft-settings")
             .resizable(true)
-            .default_size(260.0)
+            .default_size(320.0)
             .frame(egui::Frame::new().fill(t.panel).inner_margin(t.spacing))
             .show(ui, |ui| {
-                settings::show(ui, &mut app.ui.prepare, snap, &t, actions);
+                let dot = rails::job_dot(snap, Some(&app.ui.cut));
+                super::inspector::show(ui, &mut app.ui.prepare, snap, dot, &t, actions);
             });
     }
 

@@ -1014,7 +1014,7 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
                 );
                 ui.add_space(t.spacing);
             }
-            settings::job(ui, &mut app.ui.prepare, snap, &t, actions);
+            super::inspector::job::panel(ui, &mut app.ui.prepare, snap, &t, actions);
             super::materials::iron_on_reminder(ui, snap, &t, actions);
             if let Some(tr) = &app.ui.cut.transport {
                 ui.separator();

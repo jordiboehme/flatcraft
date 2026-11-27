@@ -400,8 +400,8 @@ fn the_default_strategy_starts_new_documents_and_the_panel_shows_it() {
         CutStrategy::OutlinesLast
     );
     to_prepare(&mut h);
-    // The Cut and Job panel shows the strategy of the document.
-    h.get_by_label("Outlines last");
+    // The job line shows the strategy of the document.
+    h.get_by_label_contains("· Outlines last");
 }
 
 #[test]

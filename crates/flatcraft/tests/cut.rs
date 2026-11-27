@@ -901,6 +901,12 @@ fn weeding_controls_set_the_job_and_dim_what_does_not_apply() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     import_square(&s);
+    // The Weeding section of the Job panel starts folded.
+    s.lock()
+        .unwrap()
+        .prefs
+        .panel_sections
+        .insert("job.weeding".into(), true);
     let mut h = harness(&dir, s.clone(), false);
     to_cut(&mut h);
     // Each weeding change starts the kept and waste worker; it asks for a

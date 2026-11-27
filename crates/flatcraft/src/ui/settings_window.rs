@@ -1912,9 +1912,12 @@ mod tests {
         for key in pref_keys() {
             // The recent projects list and its details are history, not
             // settings; the version of the default pins is bookkeeping
-            // that goes with the pins.
-            if key == "recent_projects" || key == "recent_details" || key == "pin_defaults_version"
-            {
+            // that goes with the pins; the open panel sections are where
+            // the person left the panels, changed by a click on them.
+            if matches!(
+                key.as_str(),
+                "recent_projects" | "recent_details" | "pin_defaults_version" | "panel_sections"
+            ) {
                 continue;
             }
             assert!(rows.contains(&key.as_str()), "no settings row for {key}");
@@ -1955,6 +1958,7 @@ mod tests {
             panel_stage: PanelUser::Open,
             default_strategy: CutStrategy::Fast,
             recent_details: Vec::new(),
+            panel_sections: Default::default(),
         };
         for f in fields() {
             assert!(differs(f, &other, &def), "{f} is not copied");

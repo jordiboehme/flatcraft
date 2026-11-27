@@ -1,0 +1,596 @@
+//! The building blocks of the side panels: the job line, a section that
+//! folds to a one-line summary, a row with its change dot and reset arrow,
+//! and a hint card. Every panel is made of these, so they look and behave
+//! the same everywhere.
+
+use std::collections::BTreeMap;
+
+use egui::{Align, Color32, FontId, Id, Layout, Rect, Response, RichText, Sense, Ui, vec2};
+
+use super::super::groups;
+use super::super::icons::{self, Icon};
+use super::super::rails::Dot;
+use super::super::settings::set_name;
+use super::super::theme::Tokens;
+use super::super::{Action, fonts};
+
+// ---------------------------------------------------------------- job line
+
+/// What the job line says: plotter, material, mat and strategy, and the
+/// state dot of the job.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JobSummary {
+    pub plotter: String,
+    pub material: String,
+    pub mat: String,
+    pub strategy: String,
+    pub dot: Dot,
+    /// The Job panel shows over a selection: a click goes back.
+    pub open: bool,
+}
+
+impl JobSummary {
+    /// "Cameo 2 · Vinyl (permanent) · 12x12 · Quality".
+    pub fn text(&self) -> String {
+        [&self.plotter, &self.material, &self.mat, &self.strategy]
+            .map(String::as_str)
+            .join(" · ")
+    }
+
+    /// The accessible name of the job line.
+    pub fn name(&self) -> String {
+        format!("Job: {}", self.text())
+    }
+}
+
+/// The card of the job line.
+pub fn job_line_card(s: &JobSummary) -> String {
+    let back = if s.open {
+        "You see the Job panel over your selection now. Click again, or press Esc, to go back to the selection."
+    } else {
+        "Click it to see and change the job, also while objects are selected. Click again, or press Esc, to go back to the selection."
+    };
+    format!(
+        "What this cut uses: {}. {}. The job is the plotter, the mat, the material and its cut values, and the order of the cut. {back}",
+        s.text(),
+        s.dot.label()
+    )
+}
+
+/// The height of the job line, in points.
+pub const JOB_LINE_H: f32 = 30.0;
+
+/// The job line: the state dot, the summary on one line (cut short with
+/// "..." when it does not fit, the card holds all of it) and a chevron.
+/// The whole line is one button.
+pub fn job_line(ui: &mut Ui, s: &JobSummary, t: &Tokens) -> Response {
+    let w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, JOB_LINE_H), Sense::click());
+    let name = s.name();
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.as_str()));
+    set_name(ui, &resp, &name);
+    if ui.is_rect_visible(rect) {
+        let p = ui.painter();
+        let hovered = resp.hovered();
+        let border = if s.open {
+            t.accent_prepare
+        } else if hovered {
+            t.text_dim
+        } else {
+            t.border
+        };
+        p.rect(
+            rect.shrink(0.5),
+            t.radius,
+            if hovered { t.surface } else { t.panel },
+            egui::Stroke::new(1.0, border),
+            egui::StrokeKind::Inside,
+        );
+        let dot = rect.left_center() + vec2(14.0, 0.0);
+        p.circle_filled(dot, 4.0, dot_colour(s.dot, t));
+        let icon = if s.open {
+            Icon::ChevronLeft
+        } else {
+            Icon::ChevronRight
+        };
+        let size = 14.0;
+        let tex = icons::texture(ui.ctx(), icon, size);
+        let icon_rect =
+            Rect::from_center_size(rect.right_center() - vec2(14.0, 0.0), vec2(size, size));
+        p.image(
+            tex.id(),
+            icon_rect,
+            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            t.text_dim,
+        );
+        let left = dot.x + 10.0;
+        let right = icon_rect.left() - 6.0;
+        one_line(
+            p,
+            &s.text(),
+            FontId::proportional(13.0),
+            t.text,
+            egui::pos2(left, rect.center().y),
+            (right - left).max(0.0),
+            Align::LEFT,
+        );
+    }
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    groups::card(&resp, "Job", &job_line_card(s), None, false);
+    resp
+}
+
+/// The colour of a state dot.
+pub fn dot_colour(d: Dot, t: &Tokens) -> Color32 {
+    match d {
+        Dot::Ready => t.ok,
+        Dot::Warning => t.warn,
+        Dot::Nothing => t.text_dim,
+        Dot::Notes => t.accent_prepare,
+    }
+}
+
+/// Paints `text` on one line, at most `width` wide (cut short with "..."),
+/// vertically centred on `at` and aligned at its x as `align` says.
+/// Returns the painted rect.
+fn one_line(
+    p: &egui::Painter,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    at: egui::Pos2,
+    width: f32,
+    align: Align,
+) -> Rect {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), font, color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(width);
+    let galley = p.layout_job(job);
+    let x = match align {
+        Align::Max => at.x - galley.size().x,
+        _ => at.x,
+    };
+    let pos = egui::pos2(x, at.y - galley.size().y / 2.0);
+    let rect = Rect::from_min_size(pos, galley.size());
+    p.galley(pos, galley, color);
+    rect
+}
+
+// ---------------------------------------------------------------- sections
+
+/// The open sections of the side panels, by id, as the person left them.
+/// It lives in egui's memory so a section can read it while its body
+/// borrows the panel state; the app seeds it from the preferences
+/// ([`seed`]) and stores it back when it changed ([`take_changed`]).
+#[derive(Debug, Clone, Default)]
+struct Sections {
+    open: BTreeMap<String, bool>,
+    changed: bool,
+}
+
+fn sections_id() -> Id {
+    Id::unique("flatcraft-panel-sections")
+}
+
+/// Puts the stored open sections into `ctx`.
+pub fn seed(ctx: &egui::Context, open: BTreeMap<String, bool>) {
+    ctx.data_mut(|d| {
+        d.insert_temp(
+            sections_id(),
+            Sections {
+                open,
+                changed: false,
+            },
+        );
+    });
+}
+
+/// The open sections, when a section was opened or folded since the last
+/// call.
+pub fn take_changed(ctx: &egui::Context) -> Option<BTreeMap<String, bool>> {
+    ctx.data_mut(|d| {
+        let s = d.get_temp_mut_or_default::<Sections>(sections_id());
+        std::mem::take(&mut s.changed).then(|| s.open.clone())
+    })
+}
+
+/// Whether the section `id` is open; `default` when the person never
+/// opened or folded it.
+pub fn is_open(ctx: &egui::Context, id: &str, default: bool) -> bool {
+    ctx.data(|d| {
+        d.get_temp::<Sections>(sections_id())
+            .and_then(|s| s.open.get(id).copied())
+            .unwrap_or(default)
+    })
+}
+
+/// Opens or folds the section `id`.
+pub fn set_open(ctx: &egui::Context, id: &str, open: bool) {
+    ctx.data_mut(|d| {
+        let s = d.get_temp_mut_or_default::<Sections>(sections_id());
+        s.open.insert(id.to_string(), open);
+        s.changed = true;
+    });
+}
+
+/// The height of a section header, in points. Fixed, so a changed
+/// summary never moves what is below it.
+pub const HEADER_H: f32 = 28.0;
+
+/// The id of a section's Advanced part.
+pub fn advanced_id(id: &str) -> String {
+    format!("{id}.advanced")
+}
+
+/// A section: a header with the title and, while folded, a one-line
+/// summary on the right, then the body while open. `card` says what the
+/// section holds (its hover card). An `advanced` part shows folded at the
+/// end of the body, under its own header. Returns whether it is open.
+#[allow(clippy::too_many_arguments)]
+pub fn section(
+    ui: &mut Ui,
+    id: &str,
+    title: &str,
+    card: &str,
+    summary: &str,
+    default_open: bool,
+    body: impl FnOnce(&mut Ui),
+    advanced: Option<&mut dyn FnMut(&mut Ui)>,
+) -> bool {
+    let open = header(ui, id, title, card, summary, default_open, false);
+    if open {
+        ui.add_space(2.0);
+        body(ui);
+        if let Some(advanced) = advanced {
+            let id = advanced_id(id);
+            let card = format!(
+                "Settings of {title} you rarely need. They are folded so the common ones stay in view."
+            );
+            if header(ui, &id, "Advanced", &card, "", false, true) {
+                advanced(ui);
+            }
+        }
+        ui.add_space(6.0);
+    }
+    open
+}
+
+/// The header of a section (or of its Advanced part, `sub`). Returns
+/// whether the section is open after this frame's click.
+fn header(
+    ui: &mut Ui,
+    id: &str,
+    title: &str,
+    card: &str,
+    summary: &str,
+    default_open: bool,
+    sub: bool,
+) -> bool {
+    let mut open = is_open(ui.ctx(), id, default_open);
+    let w = ui.available_width();
+    let h = if sub { HEADER_H - 4.0 } else { HEADER_H };
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
+    if resp.clicked() {
+        open = !open;
+        set_open(ui.ctx(), id, open);
+    }
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, title));
+    set_name(ui, &resp, title);
+    ui.ctx().accesskit_node_builder(resp.id, |node| {
+        node.set_expanded(open);
+    });
+    if ui.is_rect_visible(rect) {
+        let tk = tokens(ui);
+        let (ink, dim, rule) = (tk.text, tk.text_dim, tk.border);
+        let p = ui.painter();
+        if !sub {
+            p.hline(rect.x_range(), rect.top(), egui::Stroke::new(1.0, rule));
+        }
+        // The caret: right while folded, down while open.
+        let c = egui::pos2(rect.left() + 5.0, rect.center().y);
+        let s = 3.5;
+        let pts = if open {
+            vec![
+                c + vec2(-s, -s * 0.6),
+                c + vec2(s, -s * 0.6),
+                c + vec2(0.0, s * 0.8),
+            ]
+        } else {
+            vec![
+                c + vec2(-s * 0.6, -s),
+                c + vec2(-s * 0.6, s),
+                c + vec2(s * 0.8, 0.0),
+            ]
+        };
+        let caret = if resp.hovered() { ink } else { dim };
+        p.add(egui::Shape::convex_polygon(pts, caret, egui::Stroke::NONE));
+        let font = if sub {
+            fonts::semibold(12.0)
+        } else {
+            fonts::semibold(13.0)
+        };
+        let color = if sub { dim } else { ink };
+        let left = rect.left() + 14.0;
+        let t = one_line(
+            p,
+            title,
+            font,
+            color,
+            egui::pos2(left, rect.center().y),
+            (rect.right() - left).max(0.0),
+            Align::LEFT,
+        );
+        if !open && !summary.is_empty() {
+            let room = rect.right() - t.right() - 16.0;
+            if room > 12.0 {
+                one_line(
+                    p,
+                    summary,
+                    FontId::proportional(12.0),
+                    dim,
+                    egui::pos2(rect.right(), rect.center().y),
+                    room,
+                    Align::Max,
+                );
+            }
+        }
+    }
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let what = if open {
+        "Click to fold it."
+    } else {
+        "Click to open it."
+    };
+    let text = if summary.is_empty() {
+        format!("{card} {what}")
+    } else {
+        format!("{card}\n\nNow: {summary}. {what}")
+    };
+    groups::card(&resp, title, &text, None, false);
+    open
+}
+
+/// The tokens of the theme `ui` draws in.
+fn tokens(ui: &Ui) -> Tokens {
+    if ui.visuals().dark_mode {
+        Tokens::dark()
+    } else {
+        Tokens::light()
+    }
+}
+
+/// A short dimmed line inside a section (an explanation, a "why").
+pub fn note(ui: &mut Ui, text: &str, color: Color32) -> Response {
+    ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).wrap())
+}
+
+// ---------------------------------------------------------------- rows
+
+/// Where a value comes from, for the change dot: the source's name (for
+/// example "the material Vinyl (permanent)"), its value, whether the
+/// shown value differs from it, and the action that puts it back.
+#[derive(Debug, Clone)]
+pub struct SourceValue {
+    pub label: String,
+    pub value: String,
+    pub changed: bool,
+    pub reset: Action,
+}
+
+/// What a row did this frame.
+pub struct RowResponse {
+    /// The value widget.
+    pub widget: Response,
+    /// The reset arrow was clicked: run this.
+    pub reset: Option<Action>,
+}
+
+/// The width of the change dot's slot.
+const DOT_W: f32 = 12.0;
+
+/// The label column of a row in a panel `w` wide.
+pub fn label_width(w: f32) -> f32 {
+    (w * 0.38).clamp(72.0, 136.0)
+}
+
+/// A row: the dimmed label, the change dot, the value widget and the
+/// reset arrow. The widget gets the row's name (with "(modified)" while
+/// the value differs from its source) and the hover card `card`, plus a
+/// sentence on the source.
+pub fn row(
+    ui: &mut Ui,
+    label: &str,
+    card: &str,
+    source: Option<SourceValue>,
+    widget: impl FnOnce(&mut Ui) -> Response,
+) -> RowResponse {
+    row_dimmed(ui, label, card, None, source, widget)
+}
+
+/// [`row`] for a widget that may be dimmed: `why` says why and what to do
+/// (the widget itself draws dimmed).
+pub fn row_dimmed(
+    ui: &mut Ui,
+    label: &str,
+    card: &str,
+    why: Option<&str>,
+    source: Option<SourceValue>,
+    widget: impl FnOnce(&mut Ui) -> Response,
+) -> RowResponse {
+    let h = ui.spacing().interact_size.y;
+    let w = ui.available_width();
+    let changed = source.as_ref().is_some_and(|s| s.changed);
+    let reset_w = h + 4.0;
+    let label_w = label_width(w);
+    let mut reset = None;
+    let mut out = None;
+    let card = match &source {
+        Some(s) if s.changed => format!(
+            "{card} Changed: {} says {}. The orange dot marks a changed value, and the arrow puts {} back.",
+            s.label, s.value, s.value
+        ),
+        Some(s) => format!("{card} This is the value of {}.", s.label),
+        None => card.to_string(),
+    };
+    ui.allocate_ui_with_layout(vec2(w, h), Layout::left_to_right(Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let (lr, lresp) = ui.allocate_exact_size(vec2(label_w, h), Sense::hover());
+        let dim = tokens(ui).text_dim;
+        one_line(
+            ui.painter(),
+            label,
+            egui::TextStyle::Body.resolve(ui.style()),
+            dim,
+            egui::pos2(lr.left(), lr.center().y),
+            lr.width() - 4.0,
+            Align::LEFT,
+        );
+        groups::card(&lresp, label, &card, why, false);
+        let (dr, dresp) = ui.allocate_exact_size(vec2(DOT_W, h), Sense::hover());
+        if changed {
+            let color = tokens(ui).changed;
+            ui.painter().circle_filled(dr.center(), 3.5, color);
+            if let Some(s) = &source {
+                groups::card(
+                    &dresp,
+                    "Changed",
+                    &format!("{label} differs from {}, which says {}.", s.label, s.value),
+                    None,
+                    false,
+                );
+            }
+        }
+        let ww = (ui.available_width() - reset_w).max(24.0);
+        let r = ui
+            .allocate_ui_with_layout(vec2(ww, h), Layout::left_to_right(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                widget(ui)
+            })
+            .inner;
+        let name = if changed {
+            format!("{label} (modified)")
+        } else {
+            label.to_string()
+        };
+        set_name(ui, &r, &name);
+        groups::card(&r, label, &card, why, false);
+        ui.add_space(4.0);
+        match &source {
+            Some(s) if s.changed => {
+                let name = format!("Reset {}", label.to_lowercase());
+                let b = reset_button(ui, &name);
+                groups::card(
+                    &b,
+                    &name,
+                    &format!("Puts back {} from {}. One step to undo.", s.value, s.label),
+                    None,
+                    false,
+                );
+                if b.clicked() {
+                    reset = Some(s.reset.clone());
+                }
+            }
+            _ => {
+                ui.allocate_exact_size(vec2(h, h), Sense::hover());
+            }
+        }
+        out = Some(r);
+    });
+    ui.add_space(ui.spacing().item_spacing.y);
+    RowResponse {
+        widget: out.expect("the row draws its widget"),
+        reset,
+    }
+}
+
+/// The small reset arrow of a changed row.
+fn reset_button(ui: &mut Ui, name: &str) -> Response {
+    let size = 14.0;
+    let tex = icons::texture(ui.ctx(), Icon::RotateLeft, size);
+    let image =
+        egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), vec2(size, size)))
+            .alt_text(name);
+    let h = ui.spacing().interact_size.y;
+    let r = ui.add_sized(vec2(h, h), egui::Button::image(image).frame(false));
+    set_name(ui, &r, name);
+    r
+}
+
+/// A row that only shows a value (one that is changed elsewhere, for
+/// example in the presets). The value is painted on one line; for screen
+/// readers it is a read-only field named after the row.
+pub fn value_row(ui: &mut Ui, label: &str, card: &str, value: &str) -> Response {
+    row(ui, label, card, None, |ui| {
+        let size = vec2(ui.available_width(), ui.spacing().interact_size.y);
+        let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
+        let ink = tokens(ui).text;
+        one_line(
+            ui.painter(),
+            value,
+            egui::TextStyle::Body.resolve(ui.style()),
+            ink,
+            egui::pos2(rect.left() + 4.0, rect.center().y),
+            rect.width() - 4.0,
+            Align::LEFT,
+        );
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, label));
+        ui.ctx().accesskit_node_builder(resp.id, |node| {
+            node.set_read_only();
+            node.set_value(value);
+        });
+        resp
+    })
+    .widget
+}
+
+// ---------------------------------------------------------------- hint cards
+
+/// A button of a hint card: its text, its hover card and why it is
+/// dimmed, if it is.
+#[derive(Debug, Clone, Copy)]
+pub struct HintButton<'a> {
+    pub label: &'a str,
+    pub card: &'a str,
+    pub why: Option<&'a str>,
+}
+
+/// A hint: an issue in a soft amber box, with a title (and its card), the
+/// text and buttons that fix it. Returns the index of the clicked button.
+pub fn hint_card(
+    ui: &mut Ui,
+    t: &Tokens,
+    title: Option<(&str, &str)>,
+    issue: &str,
+    actions: &[HintButton<'_>],
+) -> Option<usize> {
+    let mut clicked = None;
+    egui::Frame::new()
+        .fill(t.warn.gamma_multiply(0.10))
+        .stroke(egui::Stroke::new(1.0, t.warn.gamma_multiply(0.6)))
+        .corner_radius(t.radius)
+        .inner_margin(egui::Margin::same(8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            if let Some((title, card)) = title {
+                let r = ui.label(
+                    RichText::new(title)
+                        .font(fonts::semibold(13.0))
+                        .color(t.warn_text),
+                );
+                groups::card(&r, title, card, None, false);
+            }
+            ui.add(egui::Label::new(RichText::new(issue).color(t.text)).wrap());
+            if !actions.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    for (i, b) in actions.iter().enumerate() {
+                        let r = ui.add_enabled(b.why.is_none(), egui::Button::new(b.label));
+                        set_name(ui, &r, b.label);
+                        groups::card(&r, b.label, b.card, b.why, false);
+                        if r.clicked() {
+                            clicked = Some(i);
+                        }
+                    }
+                });
+            }
+        });
+    clicked
+}

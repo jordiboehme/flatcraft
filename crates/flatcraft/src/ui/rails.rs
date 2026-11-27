@@ -597,7 +597,7 @@ pub fn show_rail(ui: &mut Ui, kind: SidePanel, side: Side, t: &Tokens, summary: 
 /// The chevron in a panel's header, which collapses the panel into its
 /// rail. Returns true when clicked. Put it at the right end of the header
 /// row with [`header`].
-fn collapse_button(ui: &mut Ui, kind: SidePanel, side: Side) -> bool {
+pub fn collapse_button(ui: &mut Ui, kind: SidePanel, side: Side) -> bool {
     let icon = match side {
         Side::Left => Icon::ChevronLeft,
         Side::Right => Icon::ChevronRight,

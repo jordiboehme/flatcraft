@@ -19,6 +19,7 @@ pub mod help;
 pub mod home;
 pub mod icons;
 pub mod import_dialog;
+pub mod inspector;
 pub mod keep_pick;
 pub mod kept;
 pub mod long;
@@ -227,6 +228,8 @@ pub enum Action {
     /// Store what the person chose for the side panels (Objects, Cut and
     /// Job, Cut stage) in the preferences.
     RememberPanels([flatcraft_engine::prefs::PanelUser; 3]),
+    /// Store which side panel sections are open (`Preferences::panel_sections`).
+    RememberSections(std::collections::BTreeMap<String, bool>),
     /// Store the spacing of the Auto arrange panel in the preferences, for
     /// the next panel and the one-click Auto arrange.
     RememberSpacing(f64),
@@ -462,14 +465,16 @@ pub struct FlatCraftApp {
 impl FlatCraftApp {
     /// Installs the fonts and the theme of the preferences on `ctx`.
     pub fn new(ctx: &egui::Context, session: SharedSession, config_dir: PathBuf) -> Self {
-        let (theme, rotate_each, panels) = {
+        let (theme, rotate_each, panels, sections) = {
             let s = lock(&session);
             (
                 s.prefs.theme,
                 s.prefs.rotate_each,
                 rails::Panels::from_prefs(&s.prefs),
+                s.prefs.panel_sections.clone(),
             )
         };
+        inspector::blocks::seed(ctx, sections);
         let tokens = Tokens::for_theme(theme, ctx.system_theme());
         fonts::install(ctx);
         theme::apply(ctx, &tokens, theme == Theme::System);
@@ -1560,6 +1565,14 @@ impl FlatCraftApp {
                     self.toast(Toast::error(format!("Cannot store the panel choices: {e}")));
                 }
             }
+            Action::RememberSections(open) => {
+                let result = lock(&self.session).update_prefs(|p| p.panel_sections = open);
+                if let Err(e) = result {
+                    self.toast(Toast::error(format!(
+                        "Cannot store which panel sections are open: {e}"
+                    )));
+                }
+            }
             Action::RememberSpacing(mm) => {
                 let result = lock(&self.session).update_prefs(|p| p.auto_arrange_spacing_mm = mm);
                 if let Err(e) = result {
@@ -2495,6 +2508,9 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     if let Some(users) = app.ui.prepare.panels.take_changed() {
         actions.push(Action::RememberPanels(users));
     }
+    if let Some(open) = inspector::blocks::take_changed(&ctx) {
+        actions.push(Action::RememberSections(open));
+    }
     // Number fields left with a text they could not read say so.
     for text in calc::take_toasts(&ctx) {
         actions.push(Action::Error(text));
@@ -2844,6 +2860,14 @@ fn prepare_keys(
     // focus on Escape before this runs.
     if st.panel.is_some() && help::pressed(ctx, help::PrepareKey::ClearSelection) {
         st.panel = None;
+        return;
+    }
+    // Then Escape takes the Job panel shown over a selection back to the
+    // selection, and changes nothing else.
+    if inspector::job_over_selection(st, snap)
+        && help::pressed(ctx, help::PrepareKey::ClearSelection)
+    {
+        st.inspector = inspector::InspectorView::Selection;
         return;
     }
     // The Select/Lasso toggle; Escape takes the Lasso tool back to Select.
