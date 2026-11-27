@@ -1253,7 +1253,7 @@ pub fn legend_rows(ui: &mut Ui, mat: [u8; 3], contrast: Color32, rows: &[LegendR
         let fade = if on { 1.0 } else { 0.4 };
         let colour = colour.gamma_multiply(fade);
         ui.horizontal(|ui| {
-            let (rect, r) = ui.allocate_exact_size(Vec2::new(44.0, 14.0), Sense::hover());
+            let (rect, r) = ui.allocate_exact_size(metrics::LEGEND_SWATCH, Sense::hover());
             let p = ui.painter();
             p.rect_filled(rect, 3.0, canvas::rgb(mat).gamma_multiply(fade));
             let line = [

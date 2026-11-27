@@ -287,10 +287,11 @@ fn workspace_tile_aligns_with_group_footers() {
 
 /// Calls and assignments that set layout or text size. Their numbers must
 /// come from `ui/metrics.rs`.
-const CALLS: [&str; 11] = [
-    ".spacing([",
+const CALLS: [&str; 16] = [
+    ".spacing(",
     "medium(",
     "FontId::monospace(",
+    "FontId::new(",
     ".size(",
     "add_space(",
     "Margin::same(",
@@ -299,11 +300,48 @@ const CALLS: [&str; 11] = [
     "semibold(",
     ".min_size(",
     "set_height(",
+    "set_min_height(",
+    "inner_margin(",
+    "outer_margin(",
+    "min_row_height(",
 ];
-const ASSIGNED: [&str; 2] = ["item_spacing", "button_padding"];
+/// Calls that take a size: a number in a `vec2` or an array given to
+/// them is a layout size (`allocate_exact_size(vec2(18.0, h), ..)`).
+const SIZED: [&str; 2] = ["allocate_exact_size(", "add_sized("];
+const SIZE_ARGS: [&str; 5] = [
+    "[",
+    "vec2(",
+    "egui::vec2(",
+    "Vec2::new(",
+    "egui::Vec2::new(",
+];
+const ASSIGNED: [&str; 3] = ["item_spacing", "button_padding", "interact_size"];
+
+/// The source with its `/* */` comments removed.
+fn strip_block_comments(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut rest = src;
+    while let Some(at) = rest.find("/*") {
+        out.push_str(&rest[..at]);
+        match rest[at..].find("*/") {
+            Some(end) => {
+                // Keep the line count.
+                let gone = &rest[at..at + end + 2];
+                out.extend(gone.chars().filter(|c| *c == '\n'));
+                rest = &rest[at + end + 2..];
+            }
+            None => {
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
 
 /// The source with its `//` comments blanked out (strings kept).
 fn strip_comments(src: &str) -> String {
+    let src = strip_block_comments(src);
     let mut out = String::with_capacity(src.len());
     for line in src.lines() {
         let b = line.as_bytes();
@@ -358,6 +396,22 @@ fn numbers(expr: &str) -> Vec<String> {
     found
 }
 
+/// The index of the bracket that closes the one opened just before `open`.
+fn closing(src: &str, open: usize, open_c: char, close_c: char) -> usize {
+    let mut depth = 1;
+    for (j, c) in src[open..].char_indices() {
+        if c == open_c {
+            depth += 1;
+        } else if c == close_c {
+            depth -= 1;
+        }
+        if depth == 0 {
+            return open + j;
+        }
+    }
+    src.len()
+}
+
 fn squash(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -372,27 +426,37 @@ fn layout_literals(src: &str) -> Vec<String> {
         while let Some(at) = src[from..].find(call) {
             let start = from + at;
             let open = start + call.len();
-            let mut depth = 1;
-            let mut end = open;
-            for (j, c) in src[open..].char_indices() {
-                match c {
-                    '(' => depth += 1,
-                    ')' => depth -= 1,
-                    _ => {}
-                }
-                if depth == 0 {
-                    end = open + j;
-                    break;
-                }
-            }
-            let args = &src[open..end];
+            let args = &src[open..closing(&src, open, '(', ')')];
             // `fn semibold(size: f32)` and friends declare, they do not call.
             let declares = src[..start].trim_end().ends_with("fn");
-            if !declares && !numbers(args).is_empty() {
+            // A margin built inside is scanned on its own.
+            let nested = call.ends_with("margin(") && args.contains("Margin");
+            if !declares && !nested && !numbers(args).is_empty() {
                 hits.push(squash(&format!("{call}{args})")));
             }
             from = open;
         }
+    }
+    for call in SIZED {
+        let mut from = 0;
+        while let Some(at) = src[from..].find(call) {
+            let open = from + at + call.len();
+            let args = &src[open..closing(&src, open, '(', ')')];
+            let sized = SIZE_ARGS.iter().any(|a| args.trim_start().starts_with(a));
+            if sized && !numbers(args).is_empty() {
+                hits.push(squash(&format!("{call}{args})")));
+            }
+            from = open;
+        }
+    }
+    let mut from = 0;
+    while let Some(at) = src[from..].find("Margin {") {
+        let open = from + at + "Margin {".len();
+        let fields = &src[open..closing(&src, open, '{', '}')];
+        if !numbers(fields).is_empty() {
+            hits.push(squash(&format!("Margin {{{fields}}}")));
+        }
+        from = open;
     }
     for name in ASSIGNED {
         let mut from = 0;
@@ -403,12 +467,15 @@ fn layout_literals(src: &str) -> Vec<String> {
                 .find(|c: char| !(c == '.' || c == 'x' || c == 'y'))
                 .unwrap_or(0);
             let after = rest[field..].trim_start();
-            if after.starts_with('=') && !after.starts_with("==") {
+            let op = ["+=", "-=", "="]
+                .into_iter()
+                .find(|op| after.starts_with(op) && !after.starts_with("=="));
+            if let Some(op) = op {
                 let end = after.find(';').unwrap_or(after.len());
-                let rhs = &after[1..end];
+                let rhs = &after[op.len()..end];
                 if !numbers(rhs).is_empty() {
                     hits.push(squash(&format!(
-                        "{name}{} = {}",
+                        "{name}{} {op} {}",
                         &rest[..field],
                         rhs.trim()
                     )));
@@ -452,21 +519,77 @@ fn ui_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 
 #[test]
 fn the_guard_finds_layout_literals() {
-    let src = "ui.add_space(3.0);\n\
-               ui.add_space(metrics::SPACE_8); // add_space(9.0)\n\
-               ui.add_space((w - x) / 2.0);\n\
+    // One line per pattern that must be found, then lines that must not.
+    let src = "grid.spacing([16.0, 4.0]);\n\
+               grid.spacing(vec2(16.0, 4.0));\n\
+               grid.spacing(egui::vec2(16.0, 4.0));\n\
+               fonts::medium(10.0);\n\
+               egui::FontId::monospace(11.0);\n\
+               egui::FontId::new(13.0, family);\n\
+               RichText::new(\"x\").size(11.0);\n\
+               ui.add_space(3.0);\n\
+               egui::Margin::same(6);\n\
                .inner_margin(egui::Margin::symmetric(\n    6,\n    metrics::SPACE_4 as i8,\n))\n\
-               ui.spacing_mut().item_spacing.y = 0.0;\n\
-               ui.spacing_mut().item_spacing = vec2(metrics::SPACE_4, 2.0 * pad);\n\
+               egui::FontId::proportional(12.0);\n\
                RichText::new(\"a // b\").font(fonts::semibold(15.0));\n\
+               egui::Button::new(\"+\").min_size(vec2(24.0, 22.0));\n\
+               ui.set_height(30.0);\n\
+               ui.set_min_height(30.0);\n\
+               frame.inner_margin(10.0);\n\
+               frame.outer_margin(2.0);\n\
+               grid.min_row_height(20.0);\n\
+               ui.allocate_exact_size(vec2(18.0, h), sense);\n\
+               ui.allocate_exact_size(egui::vec2(w, 18.0), sense);\n\
+               ui.allocate_exact_size(Vec2::new(14.0, 20.0), sense);\n\
+               ui.allocate_exact_size(egui::Vec2::new(10.0, 18.0), sense);\n\
+               ui.add_sized(\n    [120.0, h],\n    widget,\n);\n\
+               ui.add_sized(egui::vec2(120.0, h), widget);\n\
+               egui::Margin { left: 4, ..m };\n\
+               ui.spacing_mut().item_spacing = vec2(metrics::SPACE_4, 2.0 * pad);\n\
+               ui.spacing_mut().item_spacing.x += 2.0;\n\
+               ui.spacing_mut().button_padding.y -= 1.0;\n\
+               ui.spacing_mut().interact_size.y = 20.0;\n\
+               // not found:\n\
+               ui.add_space(metrics::SPACE_8); // add_space(9.0)\n\
+               /* ui.add_space(5.0); */\n\
+               ui.add_space((w - x) / 2.0);\n\
+               ui.spacing_mut().item_spacing.y = 0.0;\n\
+               ui.allocate_exact_size(vec2(w, metrics::ROW), sense);\n\
+               ui.allocate_exact_size(galley.size() + vec2(2.0, 0.0), sense);\n\
+               egui::Margin { left: metrics::SPACE_8 as i8, ..m };\n\
                pub fn semibold(size: f32) -> FontId {}\n";
     assert_eq!(
         layout_literals(src),
         vec![
+            ".spacing([16.0, 4.0])",
+            ".spacing(vec2(16.0, 4.0))",
+            ".spacing(egui::vec2(16.0, 4.0))",
+            "medium(10.0)",
+            "FontId::monospace(11.0)",
+            "FontId::new(13.0, family)",
+            ".size(11.0)",
             "add_space(3.0)",
+            "Margin::same(6)",
             "Margin::symmetric( 6, metrics::SPACE_4 as i8, )",
+            "FontId::proportional(12.0)",
             "semibold(15.0)",
+            ".min_size(vec2(24.0, 22.0))",
+            "set_height(30.0)",
+            "set_min_height(30.0)",
+            "inner_margin(10.0)",
+            "outer_margin(2.0)",
+            "min_row_height(20.0)",
+            "allocate_exact_size(vec2(18.0, h), sense)",
+            "allocate_exact_size(egui::vec2(w, 18.0), sense)",
+            "allocate_exact_size(Vec2::new(14.0, 20.0), sense)",
+            "allocate_exact_size(egui::Vec2::new(10.0, 18.0), sense)",
+            "add_sized( [120.0, h], widget, )",
+            "add_sized(egui::vec2(120.0, h), widget)",
+            "Margin { left: 4, ..m }",
             "item_spacing = vec2(metrics::SPACE_4, 2.0 * pad)",
+            "item_spacing.x += 2.0",
+            "button_padding.y -= 1.0",
+            "interact_size.y = 20.0",
         ]
     );
 }

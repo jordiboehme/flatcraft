@@ -207,7 +207,13 @@ fn issue_rows(
             ui.add_space(metrics::SPACE_4);
         }
         let row = ui.horizontal_top(|ui| {
-            let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 14.0), egui::Sense::hover());
+            let (dot, _) = ui.allocate_exact_size(
+                egui::vec2(
+                    metrics::MARKER_W,
+                    metrics::line_height(ui, &metrics::body()),
+                ),
+                egui::Sense::hover(),
+            );
             ui.painter()
                 .circle_filled(dot.center(), 3.5, severity_colour(issue.severity, t));
             ui.vertical(|ui| {

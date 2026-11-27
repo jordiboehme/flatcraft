@@ -935,7 +935,7 @@ fn header_ui(
     let mut enter = None;
     ui.scope_builder(
         egui::UiBuilder::new()
-            .max_rect(rect.shrink2(vec2(metrics::SPACE_12, 0.0)))
+            .max_rect(rect.shrink2(vec2(metrics::CLOSE_INSET, 0.0)))
             .layout(Layout::right_to_left(Align::Center)),
         |ui| {
             let x = ui.add(egui::Button::image(icon_image(ui, Icon::Close, metrics::ICON_COMPACT, t.text_dim).alt_text(CLOSE_NAME)).frame_when_inactive(false));
@@ -1291,8 +1291,11 @@ fn row_ui(
         info(
             ui,
             Rect::from_center_size(
-                pos2(text.right() + 11.0, lr.center().y),
-                egui::Vec2::splat(14.0),
+                pos2(
+                    text.right() + metrics::SPACE_4 + metrics::ICON_SMALL / 2.0,
+                    lr.center().y,
+                ),
+                egui::Vec2::splat(metrics::ICON_SMALL),
             ),
             r,
             t,
@@ -1337,6 +1340,13 @@ fn row_ui(
     ui.add_space(metrics::ROW_GAP);
 }
 
+/// A note on a whole section, under its rows: a little room above it, so
+/// it does not read as part of the last row.
+fn page_note(ui: &mut Ui, t: &Tokens, text: &str) {
+    ui.add_space(metrics::SPACE_4);
+    ui.add(egui::Label::new(RichText::new(text).color(t.text_dim)).wrap());
+}
+
 /// The ⓘ beside a label: hovering it shows the row's card.
 fn info(ui: &mut Ui, rect: Rect, r: &Row, t: &Tokens) {
     let resp = ui.interact(
@@ -1351,7 +1361,7 @@ fn info(ui: &mut Ui, rect: Rect, r: &Row, t: &Tokens) {
     } else {
         t.text_dim
     };
-    icon_image(ui, Icon::Info, 14.0, tint).paint_at(ui, rect);
+    icon_image(ui, Icon::Info, metrics::ICON_SMALL, tint).paint_at(ui, rect);
     super::groups::card(&resp, r.label, r.card.text(), None, true);
 }
 
@@ -1627,14 +1637,10 @@ fn appearance(ui: &mut Ui, cx: &mut Cx<'_>, d: &mut Preferences) {
                 .inner
             });
         }
-        ui.add(
-            egui::Label::new(
-                RichText::new(
-                    "A mat preset can still have its own colour. Pick Custom on its Mat colour row under Profiles, Mats.",
-                )
-                .color(t.text_dim),
-            )
-            .wrap(),
+        page_note(
+            ui,
+            &t,
+            "A mat preset can still have its own colour. Pick Custom on its Mat colour row under Profiles, Mats.",
         );
     });
 }
@@ -1670,7 +1676,7 @@ fn layout(ui: &mut Ui, cx: &mut Cx<'_>, d: &mut Preferences) {
             });
         }
         // One explanation for the three rows.
-        ui.add(egui::Label::new(RichText::new(PANELS_HELP).color(t.text_dim)).wrap());
+        page_note(ui, &t, PANELS_HELP);
     });
     section(ui, cx, "Ribbon", |ui, cx| {
         let t = *cx.t;
@@ -1778,12 +1784,10 @@ fn cutting(ui: &mut Ui, cx: &mut Cx<'_>, d: &mut Preferences, view: &profiles_wi
             );
             None
         });
-        ui.add(
-            egui::Label::new(
-                RichText::new("New documents start with these. An open document keeps its own.")
-                    .color(t.text_dim),
-            )
-            .wrap(),
+        page_note(
+            ui,
+            &t,
+            "New documents start with these. An open document keeps its own.",
         );
     });
     section(ui, cx, "Transform", |ui, cx| {
@@ -1821,9 +1825,20 @@ fn cutting(ui: &mut Ui, cx: &mut Cx<'_>, d: &mut Preferences, view: &profiles_wi
 /// at twice their size in points.
 fn spacing_example(ui: &mut Ui, mm: f64, t: &Tokens) {
     let gap = (mm as f32 * 2.0).clamp(0.0, 60.0);
-    let side = 20.0;
-    let (rect, _) = ui.allocate_exact_size(vec2(side * 2.0 + gap + 4.0, 34.0), Sense::hover());
-    let a = Rect::from_min_size(rect.left_top() + vec2(2.0, 2.0), egui::Vec2::splat(side));
+    // Two pieces, the gap mark and its label under them: 36 pt, so the
+    // label sits clear of the mark.
+    let side = metrics::ICON_COMPACT;
+    let (rect, _) = ui.allocate_exact_size(
+        vec2(
+            side + side + gap + metrics::SPACE_4,
+            metrics::ROW + metrics::SPACE_8,
+        ),
+        Sense::hover(),
+    );
+    let a = Rect::from_min_size(
+        rect.left_top() + Vec2::splat(metrics::SPACE_2),
+        egui::Vec2::splat(side),
+    );
     let b = a.translate(vec2(side + gap, 0.0));
     for r in [a, b] {
         ui.painter().rect(
@@ -1834,7 +1849,7 @@ fn spacing_example(ui: &mut Ui, mm: f64, t: &Tokens) {
             egui::StrokeKind::Inside,
         );
     }
-    let y = a.bottom() + 6.0;
+    let y = a.bottom() + metrics::SPACE_2;
     ui.painter().hline(
         a.right()..=b.left(),
         y,
@@ -1842,7 +1857,7 @@ fn spacing_example(ui: &mut Ui, mm: f64, t: &Tokens) {
     );
     paint(
         ui,
-        pos2((a.right() + b.left()) / 2.0, y + 1.0),
+        pos2((a.right() + b.left()) / 2.0, y + metrics::SPACE_2),
         egui::Align2::CENTER_TOP,
         &format!("{mm:.1} mm"),
         fonts::medium(metrics::TEXT_SMALL),

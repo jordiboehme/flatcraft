@@ -978,7 +978,13 @@ pub fn panel(
             let m = &r.metrics;
             // The grade and why first; the score after it, as what it is.
             ui.horizontal_top(|ui| {
-                let (rect, _) = ui.allocate_exact_size(Vec2::new(14.0, 20.0), Sense::hover());
+                let (rect, _) = ui.allocate_exact_size(
+                    Vec2::new(
+                        metrics::SPACE_16,
+                        metrics::line_height(ui, &metrics::heading()),
+                    ),
+                    Sense::hover(),
+                );
                 ui.painter()
                     .circle_filled(rect.center(), 6.0, grade_colour(m.grade, t));
                 let g = ui.add(
@@ -1228,7 +1234,10 @@ fn compare(ui: &mut Ui, st: &mut SimState, snap: &Snapshot, t: &Tokens, actions:
                         // The colour on a dot (3:1 for graphics), the
                         // text in the text colour (4.5:1 on any fill).
                         let (dot, _) =
-                            ui.allocate_exact_size(Vec2::new(10.0, 14.0), Sense::hover());
+                            ui.allocate_exact_size(
+                                Vec2::new(metrics::DOT_SLOT, metrics::line_height(ui, &metrics::body())),
+                                Sense::hover(),
+                            );
                         ui.painter()
                             .circle_filled(dot.center(), 4.0, grade_colour(m.grade, t));
                         let g = ui.label(grade_short(m));

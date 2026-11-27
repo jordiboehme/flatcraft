@@ -430,7 +430,10 @@ pub fn flat_icon(
 
 /// A thin vertical line between the commands and the tabs.
 fn thin_separator(ui: &mut Ui, t: &Tokens) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, 18.0), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(metrics::HAIRLINE, metrics::ICON_BAR),
+        egui::Sense::hover(),
+    );
     ui.painter().rect_filled(rect, 0.0, t.border);
 }
 

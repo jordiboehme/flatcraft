@@ -148,6 +148,11 @@ pub fn display() -> FontId {
     fonts::semibold(TEXT_DISPLAY)
 }
 
+/// The height of one line of `font`: a marker dot sits centred on it.
+pub fn line_height(ui: &egui::Ui, font: &FontId) -> f32 {
+    ui.fonts_mut(|f| f.row_height(font))
+}
+
 // ---------------------------------------------------------------- windows
 
 /// The room around the content of a window or a dialog.
@@ -161,8 +166,16 @@ pub const WINDOW_BAR: f32 = 48.0;
 pub const BUTTON_MIN_W: f32 = 64.0;
 /// The width of a small dialog with one field (Save as, Delete).
 pub const SMALL_DIALOG_W: f32 = 360.0;
-/// A window's close button (the x at its top right) and its icon.
+/// The slot of a marker dot before a line of text (a severity, a grade).
+pub const MARKER_W: f32 = SPACE_8;
+/// The swatch of a legend row: a line sample on the mat colour.
+pub const LEGEND_SWATCH: Vec2 = vec2(44.0, 14.0);
+/// A hairline divider.
+pub const HAIRLINE: f32 = 1.0;
+/// A window's close button (the x at its top right).
 pub const CLOSE_BUTTON: f32 = ICON_BUTTON;
+/// Room between a window's or a dialog's edge and its close button.
+pub const CLOSE_INSET: f32 = SPACE_12;
 
 // ---------------------------------------------------------------- base style
 

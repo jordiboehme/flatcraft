@@ -285,8 +285,8 @@ impl Dialog {
                 let max = ui.min_rect();
                 let x_rect = egui::Rect::from_center_size(
                     egui::pos2(
-                        max.right() - PAD - metrics::CLOSE_BUTTON / 2.0 + metrics::SPACE_4,
-                        max.top() + PAD + metrics::CLOSE_BUTTON / 2.0 - metrics::SPACE_4,
+                        max.right() - metrics::CLOSE_INSET - metrics::CLOSE_BUTTON / 2.0,
+                        max.top() + metrics::CLOSE_INSET + metrics::CLOSE_BUTTON / 2.0,
                     ),
                     egui::Vec2::splat(metrics::CLOSE_BUTTON),
                 );

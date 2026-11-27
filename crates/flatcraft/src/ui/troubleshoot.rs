@@ -203,7 +203,13 @@ fn item_row(
     card(&r, &it.title, &it.hint, None, false);
     if it.likely {
         ui.horizontal(|ui| {
-            let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 14.0), egui::Sense::hover());
+            let (dot, _) = ui.allocate_exact_size(
+                egui::vec2(
+                    metrics::MARKER_W,
+                    metrics::line_height(ui, &metrics::body()),
+                ),
+                egui::Sense::hover(),
+            );
             ui.painter().circle_filled(dot.center(), 3.5, t.warn);
             ui.label(RichText::new(LIKELY).color(t.warn_text));
         });

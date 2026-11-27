@@ -917,7 +917,7 @@ fn plotter_list(ui: &mut Ui, st: &mut ProfilesState, view: &View, t: &Tokens, he
 
 /// Width of the preset list column.
 /// The preset list (a fixed size, see docs/design/ui-rules.md).
-const LIST_WIDTH: f32 = 168.0;
+const LIST_WIDTH: f32 = 176.0;
 
 /// The name, origin and Save buttons of the selected plotter preset, then
 /// `body` with the draft. The Plotters and the Mats page share it.
@@ -1711,8 +1711,10 @@ fn mats(
                                 }
                             } else {
                                 // The default, shown as a swatch.
-                                let (r, _) =
-                                    ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
+                                let (r, _) = ui.allocate_exact_size(
+                                    egui::Vec2::splat(metrics::ICON_COMPACT),
+                                    Sense::hover(),
+                                );
                                 ui.painter().rect_filled(r, 3.0, canvas::rgb(shown));
                                 ui.painter().rect_stroke(
                                     r,

@@ -392,11 +392,15 @@ fn card(
     let inner = frame.show(ui, |ui| {
         ui.set_width(width - 2.0 * pad);
         ui.horizontal_top(|ui| {
-            let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 18.0), egui::Sense::hover());
+            let line = metrics::line_height(ui, &metrics::heading());
+            let (dot, _) =
+                ui.allocate_exact_size(egui::vec2(metrics::DOT_SLOT, line), egui::Sense::hover());
             ui.painter()
                 .circle_filled(dot.center(), 4.0, toast.kind.color(t));
             ui.vertical(|ui| {
-                ui.set_max_width(width - 2.0 * pad - 10.0 - X - 2.0 * ui.spacing().item_spacing.x);
+                ui.set_max_width(
+                    width - 2.0 * pad - metrics::DOT_SLOT - X - 2.0 * ui.spacing().item_spacing.x,
+                );
                 ui.add(
                     egui::Label::new(
                         RichText::new(&toast.text)
