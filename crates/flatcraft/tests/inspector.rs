@@ -1448,7 +1448,7 @@ fn a_new_selection_stops_a_long_check_and_never_waits_behind_it() {
     h.run_plan();
     assert!(in_inspector(&h, object::CHECKING).is_empty());
     the(&h, "Move apart");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + common::WORKER_TIMEOUT;
     while !stopped.load(Ordering::SeqCst) {
         assert!(
             std::time::Instant::now() < deadline,
@@ -1753,7 +1753,7 @@ fn an_idle_window_starts_the_waiting_check_when_a_stopped_one_ends() {
     let started = app(&h).ui.prepare.object_hints.started;
     assert_eq!(started, 3, "the newest waits for a slot");
     // The window goes idle: no frame is asked for.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + common::WORKER_TIMEOUT;
     while h.ctx.has_requested_repaint() {
         assert!(
             std::time::Instant::now() < deadline,
@@ -1764,7 +1764,7 @@ fn an_idle_window_starts_the_waiting_check_when_a_stopped_one_ends() {
     // A stopped check ends: it asks for a frame itself, and that frame
     // starts the waiting check. No input comes meanwhile.
     gates.lock().unwrap()[&vec![a, b, c]].store(true, Ordering::SeqCst);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + common::WORKER_TIMEOUT;
     while !h.ctx.has_requested_repaint() {
         assert!(
             std::time::Instant::now() < deadline,

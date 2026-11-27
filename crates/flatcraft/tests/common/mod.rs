@@ -130,6 +130,7 @@ pub fn harness_sized(
 /// count of frames, so a busy machine only makes it slower.
 pub fn settle(h: &mut AppHarness) {
     let start = std::time::Instant::now();
+    // run: the event wait itself; a failed try only steps on
     while h.run_ok().is_none() || landing(app(h)) {
         assert!(
             start.elapsed() < WORKER_TIMEOUT,
@@ -345,6 +346,7 @@ pub fn wait_until(h: &mut AppHarness, busy: impl Fn(&FlatCraftApp) -> bool) {
     loop {
         h.step();
         // Settled, and settling started no new work.
+        // run: the event wait itself; a failed try only steps on
         if !busy(app(h)) && h.run_ok().is_some() && !busy(app(h)) {
             return;
         }
