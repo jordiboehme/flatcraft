@@ -6,6 +6,7 @@ pub mod edit;
 pub mod export;
 pub mod group;
 pub mod job;
+pub mod meta;
 pub mod notes;
 pub mod object;
 pub mod profiles;

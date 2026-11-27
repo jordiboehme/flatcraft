@@ -816,9 +816,11 @@ pub struct DuplicateParams {
     #[serde(default)]
     pub ids: Vec<u64>,
     /// Offset of the copies in mm, [dx, dy]; y points down.
+    #[schemars(inner(range(min = -1e6, max = 1e6)))]
     #[serde(default = "default_offset")]
     pub offset_mm: [f64; 2],
     /// Copies of each object, 1 (default) to 500 in all; copy k is moved by k times offset_mm.
+    #[schemars(range(min = 1, max = 500))]
     #[serde(default = "one")]
     pub count: u32,
 }
@@ -952,6 +954,7 @@ pub enum CopiesLayout {
     /// original is the first cell.
     Grid {
         /// Cells per row, 1 or more.
+        #[schemars(range(min = 1))]
         columns: u32,
     },
 }
@@ -966,16 +969,20 @@ pub struct CopiesParams {
     /// The object or group to copy.
     pub id: u64,
     /// How many copies to add, 1 to 500.
+    #[schemars(range(min = 1, max = 500))]
     pub count: u32,
     /// "row" (default) or {"grid": {"columns": n}}.
     #[serde(default)]
     pub layout: CopiesLayout,
     /// Gap between neighbouring bounding boxes in mm (default 5), 0 or more.
     #[serde(default = "default_gap")]
+    #[schemars(range(min = 0))]
     pub gap_mm: f64,
     /// Gap between columns in mm, 0 or more; default gap_mm.
+    #[schemars(range(min = 0))]
     pub gap_x_mm: Option<f64>,
     /// Gap between rows in mm, 0 or more; default gap_mm.
+    #[schemars(range(min = 0))]
     pub gap_y_mm: Option<f64>,
     /// true makes linked copies: they share the source, the geometry, the trace settings, the cut options, the keep mode, the scale and the file link with the original; each keeps its own position, rotation and mirror.
     #[serde(default)]
@@ -1122,11 +1129,14 @@ pub struct CircularCopiesParams {
     #[serde(default)]
     pub ids: Vec<u64>,
     /// Instances around the circle, the original included: 2 or more (so count - 1 copies of each object, 500 copies in all at most).
+    #[schemars(range(min = 2, max = 501))]
     pub count: u32,
     /// The angle the instances spread over in degrees, clockwise on screen (default 360). Not 0, at most 360 either way.
     #[serde(default = "default_total_deg")]
+    #[schemars(range(min = -360, max = 360))]
     pub total_deg: f64,
     /// The centre of the circle [x, y] in mm. Default: the centre of the objects' common bounding box.
+    #[schemars(inner(range(min = -1e6, max = 1e6)))]
     pub center_mm: Option<[f64; 2]>,
     /// true (default): each copy also turns by its angle, like spokes. false: copies keep the original's rotation.
     #[serde(default = "default_true")]
@@ -1377,8 +1387,10 @@ pub struct MoveParams {
     #[serde(default)]
     pub ids: Vec<u64>,
     /// Relative move along x in mm (right is positive).
+    #[schemars(range(min = -1e6, max = 1e6))]
     pub dx_mm: Option<f64>,
     /// Relative move along y in mm (down is positive).
+    #[schemars(range(min = -1e6, max = 1e6))]
     pub dy_mm: Option<f64>,
     /// Absolute target [x, y] in mm for the centre of the objects' common bounding box. Do not combine with dx_mm/dy_mm or x_mm/y_mm.
     pub center_mm: Option<[f64; 2]>,
@@ -1823,6 +1835,7 @@ pub struct RotateParams {
     pub ids: Vec<u64>,
     /// Angle in degrees, clockwise on screen, added to the current rotation. At most 1e9 either way. Give this or angle_deg.
     #[serde(default)]
+    #[schemars(range(min = -1e9, max = 1e9))]
     pub degrees: Option<f64>,
     /// Absolute angle in degrees, clockwise on screen: every object gets this rotation, each about its own centre. Full turns are removed, so 735 is 15 and -90 is 270. At most 1e9 either way. Give this or degrees.
     #[serde(default)]

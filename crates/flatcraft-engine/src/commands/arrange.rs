@@ -234,6 +234,7 @@ pub struct AutoParams {
     pub ids: Vec<u64>,
     /// Gap between objects in mm (default 5).
     #[serde(default = "default_spacing")]
+    #[schemars(range(min = 0))]
     pub spacing_mm: f64,
 }
 
