@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 82503209e3a9d88ced21f85638bb46a7e2f1460a79e32ec4f5cf6ac0f652a9a3 # shrinks to layout = [[Piece { w: 5.0, h: 35.3693155460473, mode: Pieces, hole: None }], [Piece { w: 31.905227181538734, h: 12.862841002495385, mode: Pieces, hole: Some(Star { jitter: [0.31437398299794, 0.0, 0.0, 0.0, 0.0, 0.1416133609994288], radius: [0.6973577428213918, 0.6, 0.6, 0.6, 0.921343779617276, 0.6771059058947049] }) }, Piece { w: 5.0, h: 20.728010431533843, mode: Pieces, hole: Some(Star { jitter: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], radius: [0.6, 0.6, 0.6, 0.6, 0.6, 0.6] }) }]], weed = WeedSettings { weed_box: false, margin_mm: 1.0, per_object: false, lines: Off, spacing_mm: 5.0 }, no_mat = false, d = 0.2926088073669164
