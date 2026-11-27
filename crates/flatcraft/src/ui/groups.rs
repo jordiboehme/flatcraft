@@ -842,7 +842,17 @@ fn row(ui: &mut Ui, t: &'static Tool, cx: &mut Cx) {
     // toggle stays, so Tab reaches it.
     let focus_id = row_id.with("focus");
     let focused: bool = ui.data(|d| d.get_temp(focus_id)).unwrap_or(false);
-    let is_pinned = cx.snap.ribbon_pins.iter().any(|p| p == t.id);
+    // The Auto arrange split button shows when either of its two ids is
+    // pinned (old pin files may hold the card's id), so its row counts both.
+    let mut pin_ids: Vec<&'static str> = vec![t.id];
+    if t.act == Act::AutoArrange {
+        pin_ids.push(super::tools::by_act(Act::AutoArrangePanel).id);
+    }
+    let is_pinned = cx
+        .snap
+        .ribbon_pins
+        .iter()
+        .any(|p| pin_ids.contains(&p.as_str()));
     let indent = t.section.is_some();
     let mut has_focus = false;
     let row = ui.horizontal(|ui| {
@@ -883,10 +893,19 @@ fn row(ui: &mut Ui, t: &'static Tool, cx: &mut Cx) {
             let r = super::icon_button_hint(ui, icon, &pin_name(t, is_pinned), true, tip);
             has_focus |= r.has_focus();
             if r.clicked() {
-                cx.actions.push(Action::SetPin {
-                    id: t.id,
-                    pinned: !is_pinned,
-                });
+                // Pinning adds the action's own id; unpinning removes every
+                // id that shows its button.
+                let ids = if is_pinned {
+                    &pin_ids[..]
+                } else {
+                    &pin_ids[..1]
+                };
+                for &id in ids {
+                    cx.actions.push(Action::SetPin {
+                        id,
+                        pinned: !is_pinned,
+                    });
+                }
             }
         }
     });

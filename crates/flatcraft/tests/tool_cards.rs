@@ -549,3 +549,69 @@ fn the_auto_arrange_card_row_has_no_pin_of_its_own() {
             || h.query_all_by_label_contains("Unpin Auto arrange").count() == 1
     );
 }
+
+/// The Auto arrange row unpins the split button whichever of its two ids
+/// an old pin file holds, and pinning adds only its own id.
+#[test]
+fn unpinning_auto_arrange_removes_the_split_button() {
+    let main = tools::by_act(tools::Act::AutoArrange);
+    let more = tools::by_act(tools::Act::AutoArrangePanel).button_name();
+    for pins in [
+        &["auto_arrange", "auto_arrange.panel", "group"][..],
+        &["auto_arrange.panel", "group"][..],
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let s = session(&dir);
+        three(&s);
+        pin(&s, pins);
+        let mut h = window(&dir, s.clone(), 1400.0);
+        h.get_by_role_and_label(Role::Tab, "Layout").click();
+        h.run_plan();
+        assert!(h.query_by_role_and_label(Role::Button, &more).is_some());
+        h.get_by_role_and_label(Role::Button, "Arrange").click();
+        h.run_plan();
+        h.get_by_label(&main.row_name()).hover();
+        h.run_plan();
+        h.get_by_label("Unpin Auto arrange").click();
+        h.run_plan();
+        let stored = s.lock().unwrap().prefs.ribbon_pins.clone();
+        assert_eq!(stored, vec!["group".to_string()], "{pins:?}");
+        h.key_press(egui::Key::Escape);
+        h.run_plan();
+        assert!(
+            h.query_by_role_and_label(Role::Button, &more).is_none(),
+            "{pins:?}"
+        );
+        // Pinning it again adds only its own id.
+        h.get_by_role_and_label(Role::Button, "Arrange").click();
+        h.run_plan();
+        h.get_by_label(&main.row_name()).hover();
+        h.run_plan();
+        h.get_by_label("Pin Auto arrange").click();
+        h.run_plan();
+        let stored = s.lock().unwrap().prefs.ribbon_pins.clone();
+        assert!(stored.contains(&"auto_arrange".to_string()), "{pins:?}");
+        assert!(
+            !stored.contains(&"auto_arrange.panel".to_string()),
+            "{pins:?}"
+        );
+    }
+}
+
+/// In a short window the card's fields scroll inside it, so its title
+/// and OK stay in sight.
+#[test]
+fn the_card_buttons_stay_in_sight_in_a_short_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let [a, b, _] = three(&s);
+    select(&s, &[a, b]);
+    let mut h = harness_sized(&dir, s.clone(), [900.0, 500.0], 8, |a| a);
+    to_prepare(&mut h);
+    wait_for_workers(&mut h);
+    open(&mut h, PanelKind::CircularPattern);
+    let ok = h.get_by_role_and_label(Role::Button, "OK").rect();
+    assert!(ok.bottom() <= 500.0, "{ok:?}");
+    let close = h.get_by_label(tool_card::CLOSE).rect();
+    assert!(close.top() >= 0.0, "{close:?}");
+}

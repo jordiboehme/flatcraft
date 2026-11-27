@@ -466,7 +466,12 @@ pub fn show(
         ui.add_space(metrics::SPACE_4);
         // The fields scroll on their own when the window is short, so the
         // title and the buttons stay in sight.
-        let room = (ui.ctx().content_rect().height() * metrics::TOOL_CARD_FIELDS_SHARE)
+        // The room left in the panel, less the note and the buttons, and
+        // never more than a share of the window, so the inspector keeps
+        // some room below the card.
+        let left = ui.available_height() - metrics::ROW * metrics::TOOL_CARD_FOOT_ROWS;
+        let room = left
+            .min(ui.ctx().content_rect().height() * metrics::TOOL_CARD_FIELDS_SHARE)
             .max(metrics::ROW * 2.0);
         egui::ScrollArea::vertical()
             .id_salt("flatcraft-tool-card")

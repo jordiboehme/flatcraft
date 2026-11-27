@@ -64,6 +64,9 @@ pub const LEFT_PANEL_W: f32 = 224.0;
 /// The most of the window's height the fields of a tool card take; more
 /// fields scroll inside the card, so its title and buttons stay in sight.
 pub const TOOL_CARD_FIELDS_SHARE: f32 = 0.5;
+/// The rows a tool card keeps under its fields for its note (up to two
+/// lines) and its buttons.
+pub const TOOL_CARD_FOOT_ROWS: f32 = 4.0;
 
 /// The inner margin of a side panel.
 pub fn panel_margin() -> egui::Margin {

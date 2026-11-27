@@ -39,6 +39,7 @@ shape of the lock or a caret) may keep a local constant next to its drawing.
 | `BUTTON_MIN_W` / `CLOSE_BUTTON` / `CLOSE_INSET` / `SMALL_DIALOG_W` | 64 / 22 / 12 / 360 pt | A window's main button / a window's close x / its room to the window's edge / a one-field dialog. |
 | `MARKER_W`, `line_height(ui, font)` | 8 pt, one text line | A marker dot's slot before a line of text, as tall as that line. |
 | `LEGEND_SWATCH` / `HAIRLINE` | 44 x 14 / 1 pt | A legend row's line sample / a divider. |
+| `TOOL_CARD_FIELDS_SHARE` / `TOOL_CARD_FOOT_ROWS` | 0.5 / 4 | A tool card's fields take at most half the window's height and leave 4 rows of the panel for the note and the buttons; more fields scroll inside the card. |
 | `ITEM_SPACING`, `BUTTON_PADDING`, `WINDOW_MARGIN`, `TIGHT_BUTTON_PADDING` | (8, 6), (8, 4), 8, (4, 2) pt | egui's base style (`theme::apply`, `theme::tight`). |
 | Ribbon (`TAB_ROW`, `RIBBON_PAD`, `BIG_HEIGHT`, `GROUP_FOOTER`, ...) | as tuned | The ribbon and the Cut bar; see below. |
 
@@ -46,7 +47,7 @@ shape of the lock or a caret) may keep a local constant next to its drawing.
 
 - `ICON_BUTTON` 22 pt: the ribbon's compact height, so a compact button looks the same everywhere; it sits centred in a 28 pt row.
 - `TEXT_BODY` 12.5 pt: egui's Body size, which every widget uses.
-- The ribbon and the Cut bar: `TAB_ROW` 22, `RIBBON_PAD` (4, 3), `BIG_HEIGHT` 46, `BIG_PAD_Y` 3, `GROUP_FOOTER` 14, `COMPACT_HEIGHT` 22, `TILE_PAD` 14, `STEP_CHEVRON` 14, `LOCK_COLUMN` 14, and egui's Small style in the footers. They were tuned by eye and still come only from `metrics`.
+- The ribbon and the Cut bar: `TAB_ROW` 22, `RIBBON_PAD` (4, 3), `BIG_HEIGHT` 46, `BIG_PAD_Y` 3, `GROUP_FOOTER` 14, `COMPACT_HEIGHT` 22, `TILE_PAD` 14, `STEP_CHEVRON` 14, `SPLIT_CHEVRON` 14 (the chevron part of the Auto arrange split button), `LOCK_COLUMN` 14, and egui's Small style in the footers. They were tuned by eye and still come only from `metrics`.
 - The inspector's scroll bar: 6 pt wide, 2 pt from the content, 4 pt from the panel's edge, so it fits the 12 pt padding.
 - `ITEM_SPACING` 6 pt rows: egui's base style for popups, menus and windows. Every list outside the panels inherits it; panels and windows set their own spacing.
 - `ICON_BAR` 18 pt: the app bar's and the Cut steps' icons, tuned by eye with the app bar.
