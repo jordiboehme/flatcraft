@@ -132,15 +132,41 @@ fn search_filters_without_changing_selection() {
     assert!(!group_row(&h, "Badge"), "nothing in Badge matches");
     // The selection is what it was; the header tells that it is hidden.
     assert_eq!(selection(&s), vec![sc.star]);
-    let note = objects::filter_note(1, 1);
-    assert_eq!(note, "1 selected, 1 not shown");
+    // The header counts what the list shows: circle of 4 objects.
+    let note = objects::filter_note(1, 4);
+    assert_eq!(note, "1 of 4 shown");
     assert!(h.query_by_label(&note).is_some(), "the header says it");
-    // Its card says what that means.
-    assert!(objects::FILTER_NOTE_CARD.contains("the filter leaves them out"));
-    // A match that is selected is not filtered out: no note.
+    // Whole on its line at the default panel width, not cut short.
+    let texts = left_texts(&h);
+    assert!(texts.contains(&note), "{texts:?}");
+    // Its card says the selected star is not shown.
+    assert_eq!(
+        objects::filter_note_card(3, 4, 1),
+        "3 of 4 objects shown. 1 selected object is not shown because of the filter. Clear the filter to see it."
+    );
+    assert!(objects::filter_note_card(2, 4, 2).ends_with(
+        "2 selected objects are not shown because of the filter. Clear the filter to see them."
+    ));
+    h.ctx
+        .global_style_mut(|st| st.interaction.tooltip_delay = 0.0);
+    let at = h.get_by_label(&note).rect().center();
+    h.hover_at(at);
+    h.run_plan();
+    h.run_plan();
+    assert!(
+        h.query_by_label_contains("1 selected object is not shown because of the filter")
+            .is_some()
+    );
+    // The pointer leaves, the card closes.
+    let away = app(&h).ui.prepare.canvas_rect.center();
+    h.hover_at(away);
+    h.run_plan();
+    // A match that is selected is not left out: the card does not say
+    // so, the note stays.
     exec(&s, "object.select", json!({ "ids": [sc.circle] }));
     h.run_plan();
-    assert!(h.query_by_label_contains("not shown").is_none());
+    assert!(h.query_by_label(&note).is_some());
+    assert!(!objects::filter_note_card(1, 4, 0).contains("selected"));
     exec(&s, "object.select", json!({ "ids": [sc.star] }));
     h.run_plan();
     // A filter that matches nothing says so.
@@ -154,7 +180,8 @@ fn search_filters_without_changing_selection() {
     assert_eq!(field_text(&h, objects::FILTER_NAME), "");
     assert!(row(&h, "circle") && row(&h, "label") && group_row(&h, "Badge"));
     assert_eq!(selection(&s), vec![sc.star], "Escape kept the selection");
-    assert!(h.query_by_label(&note).is_none());
+    // No filter, no note.
+    assert!(h.query_by_label_contains(" shown").is_none());
     // The next Escape goes on as before: it clears the selection.
     h.key_press(Key::Escape);
     h.run_plan();
@@ -406,7 +433,7 @@ fn select_all_and_lasso_pick_on_the_mat_whatever_the_filter() {
     let all = selection(&s);
     assert_eq!(all.len(), 4, "{all:?}");
     assert!(all.contains(&sc.star), "the hidden star stays selected");
-    assert!(h.query_by_label(&objects::filter_note(4, 3)).is_some());
+    assert!(h.query_by_label(&objects::filter_note(1, 4)).is_some());
     // The lasso around the star (100..150 x 20..70 mm), whose row is
     // hidden: it picks the star's group Badge, as on any mat.
     let rect = app(&h).ui.prepare.canvas_rect;

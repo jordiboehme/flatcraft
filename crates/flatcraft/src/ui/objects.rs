@@ -47,15 +47,24 @@ pub fn show(
     super::inspector::blocks::panel_spacing(ui);
     let query = filter_text(st, snap).to_string();
     let shown = shown_rows(snap, &query);
-    let note = shown.as_ref().and_then(|shown| {
-        let hidden = snap
+    let note = shown.as_ref().map(|shown| {
+        let objects = snap
+            .objects
+            .iter()
+            .filter(|o| shown.contains(&o.id))
+            .count();
+        let out = snap
             .selection
             .iter()
             .filter(|id| !shown.contains(id))
             .count();
-        (hidden > 0).then(|| filter_note(snap.selection.len(), hidden))
+        let total = snap.objects.len();
+        (
+            filter_note(objects, total),
+            filter_note_card(objects, total, out),
+        )
     });
-    let note = note.as_deref().map(|n| (n, FILTER_NOTE_CARD));
+    let note = note.as_ref().map(|(n, c)| (n.as_str(), c.as_str()));
     if super::rails::header_with_note(ui, SidePanel::Objects, Side::Left, "Objects", note) {
         st.panels.set_collapsed(SidePanel::Objects, true);
     }
@@ -106,14 +115,27 @@ pub const FILTER_EMPTY_WHY: &str =
     "There are no objects yet. Import a design, then type here to find one by its name.";
 /// What the list says when the filter matches no row.
 pub const NO_MATCH: &str = "Nothing matches. These are not the droids you are looking for.";
-/// The card of the header's note while selected rows are hidden.
-pub const FILTER_NOTE_CARD: &str = "Some selected objects are not shown in the list because the filter leaves them out: they have no row now, but they are still selected and still show on the mat: the inspector and every action work on them. Clear the filter (Esc in the field) to see their rows again.";
+/// The header's note while a filter is on: "3 of 4 shown", the objects
+/// the list shows of all of them.
+pub fn filter_note(shown: usize, total: usize) -> String {
+    format!("{shown} of {total} shown")
+}
 
-/// The header's note: "2 selected, 1 not shown" (not "hidden": that is
-/// the eye toggle's word). At the default panel width it is cut short;
-/// its tooltip and card hold all of it.
-pub fn filter_note(selected: usize, filtered: usize) -> String {
-    format!("{selected} selected, {filtered} not shown")
+/// The card of the header's note: what it counts, and the selected
+/// objects the filter leaves out, when there are any.
+pub fn filter_note_card(shown: usize, total: usize, selected_out: usize) -> String {
+    let what = if total == 1 { "object" } else { "objects" };
+    let mut text = format!("{shown} of {total} {what} shown.");
+    match selected_out {
+        0 => text.push_str(" The filter only hides rows in this list. Clear it to see every row."),
+        1 => text.push_str(
+            " 1 selected object is not shown because of the filter. Clear the filter to see it.",
+        ),
+        n => text.push_str(&format!(
+            " {n} selected objects are not shown because of the filter. Clear the filter to see them."
+        )),
+    }
+    text
 }
 
 /// The filter typed for this document ("" when none).
