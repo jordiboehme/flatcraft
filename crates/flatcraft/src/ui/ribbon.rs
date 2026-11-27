@@ -782,8 +782,7 @@ fn search_box(ui: &mut Ui, cx: &mut Cx) {
 
 /// Height of the tab row above the ribbon panel.
 pub const TAB_ROW: f32 = 22.0;
-/// Room between the ribbon panel's border and its tools. The first tab
-/// starts this far in too, so it lines up with the first group.
+/// Room between the ribbon panel's border and its tools.
 pub const PANEL_PAD: egui::Vec2 = egui::vec2(4.0, 3.0);
 
 /// Where the ribbon drew its parts, for the tests and the next frame.
@@ -903,7 +902,9 @@ pub fn show(
         .rect;
     let gap = ui.spacing().item_spacing.x;
     let tabs_rect = egui::Rect::from_min_max(
-        egui::pos2(full.left() + PANEL_PAD.x, tab_row.top()),
+        // The first tab's outline starts on the panel's left edge, so the
+        // tab and the panel read as one folder.
+        egui::pos2(full.left(), tab_row.top()),
         egui::pos2((search.left() - gap).max(full.left()), tab_row.bottom()),
     );
     let active_tab = ui

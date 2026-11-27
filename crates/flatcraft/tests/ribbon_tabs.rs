@@ -353,25 +353,34 @@ fn tab_row_aligns_with_ribbon() {
         let a = import_square(&s);
         select_all(&s, &[a]);
         let mut h = rig(&dir, s, width);
-        for (tab, first) in [(RibbonTab::Layout, "Add"), (RibbonTab::View, "Zoom")] {
+        for tab in RibbonTab::ALL {
             show_tab(&mut h, tab);
             let l = layout(&h);
-            // The first tab starts where the first group starts.
+            // The first tab's outline starts on the ribbon box's left edge:
+            // the tab merges into the box, it is not indented.
             let tab_left = node_rect(&h, Role::Tab, RibbonTab::Layout.name()).left();
-            let group = node_rect(&h, Role::Button, first);
             assert!(
-                (tab_left - group.left()).abs() < 0.5,
-                "{width} {tab:?}: the tab starts at {tab_left}, {first} at {}",
-                group.left()
+                (tab_left - l.panel.left()).abs() < 0.5,
+                "{width} {tab:?}: the tab starts at {tab_left}, the box at {}",
+                l.panel.left()
             );
-            assert!((tab_left - l.tools.left()).abs() < 0.5, "{width} {tab:?}");
+            if tab == RibbonTab::Layout {
+                assert!(
+                    (l.active_tab.left() - l.panel.left()).abs() < 0.5,
+                    "{width}: the painted tab {:?}, the box {:?}",
+                    l.active_tab,
+                    l.panel
+                );
+            }
         }
+        // The Cut workspace has no tabs: its stage bar fills the box.
     }
 }
 
 #[test]
 fn ribbon_is_lower_than_before() {
-    // Before the polish the tab row and the panel were 98 pt tall.
+    // A regression guard at the measured height: the tab row and the
+    // panel were 98 pt before the polish (Task 63c) and are 88 pt now.
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let a = import_square(&s);
@@ -394,6 +403,10 @@ fn long_titles_have_short_ribbon_labels() {
     // the ribbon shows finds the action.
     for t in big() {
         let label = t.ribbon_label();
+        // An empty label is an icon-only button; its card names it.
+        if label.is_empty() {
+            continue;
+        }
         assert!(
             label.chars().count() <= 12,
             "{}: {label:?} is too long",
@@ -407,6 +420,23 @@ fn long_titles_have_short_ribbon_labels() {
             "{}: searching {label:?} does not find it",
             t.id
         );
+    }
+    // No two labels in one group clash: none is another plus "...", or a
+    // prefix of it ("Arrange..." beside "Auto arrange" would be one).
+    for a in big() {
+        for b in big().filter(|b| b.group == a.group && b.id != a.id) {
+            let (la, lb) = (a.ribbon_label(), b.ribbon_label());
+            if la.is_empty() || lb.is_empty() {
+                continue;
+            }
+            let bare = |l: &str| l.trim_end_matches("...").to_lowercase();
+            let (x, y) = (bare(la), bare(lb));
+            assert!(
+                !y.starts_with(&x) && !x.ends_with(&y) && !y.ends_with(&x),
+                "{la:?} and {lb:?} clash in {:?}",
+                a.group
+            );
+        }
     }
     let label = |id| tools::by_id(id).unwrap().ribbon_label();
     assert_eq!(label("pattern.rectangular"), "Pattern");
@@ -432,8 +462,9 @@ fn long_titles_have_short_ribbon_labels() {
         let texts = texts_in(&h, l.panel);
         for t in big().filter(|t| t.group.def().tab == tab) {
             let label = t.ribbon_label();
+            // An empty label: icon only, nothing painted.
             assert!(
-                texts.iter().any(|x| x == label),
+                label.is_empty() || texts.iter().any(|x| x == label),
                 "{tab:?}: {label:?} in {texts:?}"
             );
             if label != t.short_title() {

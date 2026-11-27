@@ -453,6 +453,9 @@ fn position(
             }
             // Keep aspect joins W and H on the right, in the rows' reset
             // slot (these values have no source to reset to).
+            // This column is wider than the ribbon's (`LOCK_COLUMN`) on
+            // purpose: it is the rows' reset slot, one button wide, so the
+            // lock lines up with the reset arrows of the rows above it.
             let h = ui.spacing().interact_size.y;
             let left = wh[0].right() + 4.0;
             let column = egui::Rect::from_x_y_ranges(left..=left + h, wh[0].top()..=wh[1].bottom());

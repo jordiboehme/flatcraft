@@ -650,7 +650,8 @@ fn pinned_buttons(ui: &mut Ui, mode: Mode, pins: &[&'static Tool], cx: &mut Cx) 
         let sel = t.selected(cx.st, *cx.show_debug);
         let name = t.button_name();
         let label = t.ribbon_label();
-        let r = big_button(ui, t.icon, label, &name, mode == Mode::Full, on, sel);
+        let show_label = mode == Mode::Full && !label.is_empty();
+        let r = big_button(ui, t.icon, label, &name, show_label, on, sel);
         tool_card(&r, t, cx.snap, false);
         if r.clicked() {
             t.run(cx.snap, cx.st, cx.show_debug, cx.actions);

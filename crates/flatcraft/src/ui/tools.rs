@@ -666,7 +666,9 @@ pub const TOOLS: [Tool; 45] = [
             Big,
             "Packs the selected objects onto the cutting area, Tetris style, with the gap you choose. Everything else stays where you put it, and the packed objects fit around it. Nothing selected: it packs every visible object. A preview shows where they land.",
         ),
-        "Arrange...",
+        // Icon only: "Auto arrange..." beside "Auto arrange" is too long,
+        // and a shorter word would clash with it. Its card names it.
+        "",
     ),
     in_section(
         tool(
@@ -960,7 +962,7 @@ impl Tool {
     /// What its big button shows on the ribbon: its short label, or else
     /// [`Tool::short_title`]. The card, the lists, the pins and search keep
     /// the full title, and the button keeps [`Tool::button_name`] as its
-    /// accessible name.
+    /// accessible name. An empty label makes an icon-only big button.
     pub fn ribbon_label(&self) -> &'static str {
         self.label.unwrap_or_else(|| self.short_title())
     }
