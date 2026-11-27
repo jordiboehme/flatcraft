@@ -1,6 +1,7 @@
 //! The Cut workspace, driven through egui_kittest.
 
 mod common;
+use common::RunPlan;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -29,12 +30,12 @@ fn run(s: &SharedSession, cmd: &str, params: Value) -> Value {
 
 fn to_cut(h: &mut AppHarness) {
     app_mut(h).ui.workspace = Workspace::Cut;
-    h.run();
+    h.run_plan();
 }
 
 fn stage(h: &mut AppHarness, name: &str) {
     h.get_by_role_and_label(Role::Tab, name).click();
-    h.run();
+    h.run_plan();
 }
 
 fn files_in(dir: &std::path::Path) -> Vec<String> {
@@ -72,7 +73,7 @@ fn send_writes_file_from_stage_4() {
     stage(&mut h, "Send");
     h.get_by_role_and_label(Role::Button, "Send to File Output")
         .click();
-    h.run();
+    h.run_plan();
     let out = dir.path().join("output");
     let names = files_in(&out);
     assert!(
@@ -91,7 +92,7 @@ fn send_writes_file_from_stage_4() {
     assert_eq!(gpgl.extension().unwrap(), "gpgl");
     let label = flatcraft::ui::files::reveal_label();
     h.get_by_label(label).click();
-    h.run();
+    h.run_plan();
     assert_eq!(*revealed.0.lock().unwrap(), vec![gpgl]);
 }
 
@@ -104,20 +105,20 @@ fn sent_bytes_show_in_the_debug_byte_log() {
     to_cut(&mut h);
     stage(&mut h, "Send");
     h.get_by_role_and_label(Role::Button, "Debug panel").click();
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label("No device (File Output)").is_some());
     assert!(h.query_by_label("home").is_none());
     h.get_by_role_and_label(Role::Button, "Send to File Output")
         .click();
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     let rows = &app(&h).ui.debug.log_rows;
     assert!(!rows.is_empty());
     assert_eq!(rows.last().unwrap().meaning, "home");
     assert!(h.query_by_label("home").is_some());
     // The listing of the current job.
     h.get_by_role_and_label(Role::Tab, "Listing").click();
-    h.run();
+    h.run_plan();
     assert!(
         h.query_by_label("FC18\t# blade offset 18 (firmware compensation)")
             .is_some()
@@ -214,7 +215,7 @@ fn status_lines_say_what_is_set_or_missing() {
     );
     // A planned job, on file and then on USB, with two passes.
     import_square(&s);
-    h.run();
+    h.run_plan();
     assert_eq!(
         status_lines(&mut h),
         [
@@ -227,7 +228,7 @@ fn status_lines_say_what_is_set_or_missing() {
     run(&s, "job.set_plotter", json!({ "id": "silhouette-cameo-2" }));
     run(&s, "job.set_overrides", json!({ "passes": 2 }));
     run(&s, "job.set_weeding", json!({ "box": true }));
-    h.run();
+    h.run_plan();
     assert_eq!(
         status_lines(&mut h),
         [
@@ -239,7 +240,7 @@ fn status_lines_say_what_is_set_or_missing() {
     );
     // The plotter preset is gone.
     s.lock().unwrap().doc_mut().document.job.plotter_id = "gone".into();
-    h.run();
+    h.run_plan();
     assert_eq!(
         status_lines(&mut h),
         [
@@ -263,7 +264,7 @@ fn simulate_stage_is_dimmed_with_its_reason() {
     let node = h.get_by_role_and_label(Role::Tab, "Simulate");
     assert!(node.accesskit_node().is_disabled());
     node.click();
-    h.run();
+    h.run_plan();
     assert_eq!(app(&h).ui.cut.stage, Stage::Device);
     assert!(h.query_by_role_and_label(Role::Tab, "Path").is_some());
     assert!(!SIMULATE_HINT.contains("milestone"), "{SIMULATE_HINT}");
@@ -322,11 +323,27 @@ fn the_bar_does_not_flicker_while_the_job_is_planned_again() {
         h.step();
         assert_eq!(tab_rects(&h), before);
     }
-    // A replan with a longer status line: the first frame already has the
-    // new layout, and the frames after it keep it.
+    // A replan with a longer status line: until the new plan lands the
+    // bar keeps the old line (no "Planning..." blip), the frame it lands
+    // has the new layout, and the frames after it keep it.
     run(&s, "job.set_overrides", json!({ "passes": 2 }));
-    h.step();
-    assert!(painted_texts(&h).contains(&"Quality · 2 passes".to_string()));
+    let start = std::time::Instant::now();
+    loop {
+        h.step();
+        if painted_texts(&h).contains(&"Quality · 2 passes".to_string()) {
+            break;
+        }
+        assert_eq!(
+            tab_rects(&h),
+            before,
+            "the bar keeps its layout while planning"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "the plan did not land"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
     let after = tab_rects(&h);
     assert_ne!(after, before, "the Path step grew");
     let debug = h.get_by_role_and_label(Role::Button, "Debug panel").rect();
@@ -351,7 +368,7 @@ fn stage_texts_have_no_em_dash() {
     to_cut(&mut h);
     texts.extend(status_lines(&mut h));
     import_square(&s);
-    h.run();
+    h.run_plan();
     texts.extend(status_lines(&mut h));
     for t in texts {
         assert!(!t.contains('\u{2014}'), "{t}");
@@ -380,7 +397,7 @@ fn out_of_area_disables_send() {
     let send = h.get_by_role_and_label(Role::Button, "Send to File Output");
     assert!(send.accesskit_node().is_disabled());
     send.click();
-    h.run();
+    h.run_plan();
     assert!(files_in(&dir.path().join("output")).is_empty());
 }
 
@@ -403,13 +420,13 @@ fn timeline_limits_drawn_paths() {
     assert_eq!(app(&h).ui.cut.visible_toolpaths(), 3);
     assert!(h.query_by_label("3 of 3").is_some());
     app_mut(&mut h).ui.cut.timeline.index = 1;
-    h.run();
+    h.run_plan();
     assert_eq!(app(&h).ui.cut.visible_toolpaths(), 1);
     assert!(h.query_by_label("1 of 3").is_some());
     // A changed job starts over with all toolpaths shown.
     // Two passes on closed rings are chained laps: still three toolpaths.
     run(&s, "job.set_overrides", json!({ "passes": 2 }));
-    h.run();
+    h.run_plan();
     assert_eq!(app(&h).ui.cut.timeline.total, 3);
     assert_eq!(app(&h).ui.cut.visible_toolpaths(), 3);
     assert!(h.query_by_label("3 of 3").is_some());
@@ -527,7 +544,7 @@ fn device_stage_shows_the_transport() {
     let text = format!("File Output → {}", out.display());
     assert!(h.query_by_label(&text).is_some(), "{text}");
     run(&s, "job.set_plotter", json!({ "id": "silhouette-cameo-2" }));
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label("USB 0b4d:112b").is_some());
     stage(&mut h, "Send");
     assert!(
@@ -557,7 +574,7 @@ fn agent_confirmation_dialog_allows() {
     // The dialog shows in every workspace, Home included.
     assert!(h.query_by_label(QUESTION).is_some());
     h.get_by_role_and_label(Role::Button, "Allow").click();
-    h.run();
+    h.run_plan();
     assert!(s.lock().unwrap().pending_send().is_none());
     assert!(h.query_by_label(QUESTION).is_none());
     let toast = app(&h).ui.toasts.last().cloned().unwrap();
@@ -572,7 +589,7 @@ fn agent_confirmation_dialog_denies() {
     let mut h = harness(&dir, s.clone(), true);
     to_cut(&mut h);
     h.get_by_role_and_label(Role::Button, "Deny").click();
-    h.run();
+    h.run_plan();
     assert!(s.lock().unwrap().pending_send().is_none());
     assert!(h.query_by_label(QUESTION).is_none());
     assert!(files_in(&dir.path().join("output")).is_empty());
@@ -614,7 +631,7 @@ fn allow_sends_the_snapshot_not_the_current_document() {
         assert!(flatcraft_engine::job::build(&g).is_err());
     }
     h.get_by_role_and_label(Role::Button, "Allow").click();
-    h.run();
+    h.run_plan();
     // A rebuild would say "Nothing to cut"; the snapshot reaches the USB
     // transport, which M1 does not have yet.
     let toast = app(&h).ui.toasts.last().cloned().unwrap();
@@ -636,7 +653,7 @@ fn agent_request_expires_after_five_minutes() {
     });
     assert!(h.query_by_label(QUESTION).is_some());
     *now.lock().unwrap() = asked + Duration::from_secs(300);
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label(QUESTION).is_none());
     assert!(s.lock().unwrap().pending_send().is_none());
     let toast = app(&h).ui.toasts.last().cloned().unwrap();
@@ -671,12 +688,12 @@ fn capture_viewer_shows_decoded_records() {
     let mut h = harness_with(&dir, s, move |a| a.with_file_picker(picker));
     to_cut(&mut h);
     h.get_by_role_and_label(Role::Button, "Debug panel").click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Tab, "Capture").click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Open capture...")
         .click();
-    h.run();
+    h.run_plan();
     let req = requests.lock().unwrap()[0].clone();
     assert_eq!(req.filters[0].1, vec!["jsonl".to_string()]);
     for label in ["init", "home", "reply 0", "4803", "0.250 s", "cameo.jsonl"] {
@@ -697,12 +714,12 @@ fn a_broken_capture_says_why() {
     let mut h = harness_with(&dir, s, move |a| a.with_file_picker(picker));
     to_cut(&mut h);
     h.get_by_role_and_label(Role::Button, "Debug panel").click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Tab, "Capture").click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Open capture...")
         .click();
-    h.run();
+    h.run_plan();
     let toast = app(&h).ui.toasts.last().cloned().unwrap();
     assert!(toast.text.contains("broken.jsonl"), "{}", toast.text);
     assert!(toast.text.contains("line 1"), "{}", toast.text);
@@ -718,27 +735,27 @@ fn debug_listing_shows_preview_and_last_sent() {
     to_cut(&mut h);
     stage(&mut h, "Send");
     h.get_by_role_and_label(Role::Button, "Debug panel").click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Tab, "Listing").click();
-    h.run();
+    h.run_plan();
     assert!(
         h.query_by_label("Preview of the current job (.gpgl.txt)")
             .is_some()
     );
     h.get_by_role_and_label(Role::RadioButton, "Last sent")
         .click();
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label("Nothing sent yet.").is_some());
     h.get_by_role_and_label(Role::Button, "Send to File Output")
         .click();
-    h.run();
+    h.run_plan();
     // The document changes after the send: the preview follows it, the
     // last sent listing does not.
     run(&s, "job.set_overrides", json!({ "speed": 2 }));
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::RadioButton, "Last sent")
         .click();
-    h.run();
+    h.run_plan();
     let gpgl = files_in(&dir.path().join("output"))
         .into_iter()
         .find(|n| n.ends_with(".gpgl"))
@@ -750,18 +767,18 @@ fn debug_listing_shows_preview_and_last_sent() {
     assert!(h.query_by_label("!5\t# speed 5").is_some());
     h.get_by_role_and_label(Role::RadioButton, "Preview")
         .click();
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label("!2\t# speed 2").is_some());
 }
 
 fn open_last_sent(h: &mut AppHarness) {
     h.get_by_role_and_label(Role::Button, "Debug panel").click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Tab, "Listing").click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::RadioButton, "Last sent")
         .click();
-    h.run();
+    h.run_plan();
 }
 
 fn sent_listing_name(dir: &tempfile::TempDir) -> String {
@@ -782,10 +799,10 @@ fn a_send_made_while_the_debug_panel_is_closed_shows_later() {
     stage(&mut h, "Send");
     h.get_by_role_and_label(Role::Button, "Send to File Output")
         .click();
-    h.run();
+    h.run_plan();
     // A preview after the send does not hide it.
     run(&s, "job.preview", json!({}));
-    h.run();
+    h.run_plan();
     open_last_sent(&mut h);
     assert!(h.query_by_label(&sent_listing_name(&dir)).is_some());
 }
@@ -801,7 +818,7 @@ fn last_sent_belongs_to_the_active_document() {
     stage(&mut h, "Send");
     h.get_by_role_and_label(Role::Button, "Send to File Output")
         .click();
-    h.run();
+    h.run_plan();
     let sent = sent_listing_name(&dir);
     open_last_sent(&mut h);
     assert!(h.query_by_label(&sent).is_some());
@@ -837,7 +854,7 @@ fn skipped_objects_are_left_out_of_the_cut_preview() {
         "object.set_cut",
         json!({ "ids": [extra["id"]], "cut": false }),
     );
-    h.run();
+    h.run_plan();
     assert_eq!(app(&h).ui.cut.timeline.total, 3);
 }
 
@@ -931,7 +948,7 @@ fn path_stage_counts_and_dashes_weed_paths() {
         "job.set_weeding",
         json!({ "box": true, "margin_mm": 10, "lines": "both", "spacing_mm": 20 }),
     );
-    h.run();
+    h.run_plan();
     assert!(!off(&h, "Weed paths"));
     assert!(!off(&h, flatcraft::ui::cut::LEGEND_WEED.0));
     // The weed box is drawn in dashes: many more line segments, in the
@@ -965,7 +982,7 @@ fn the_window_and_the_engine_share_the_cut_geometry() {
         Arc::ptr_eq(&cached, &before),
         "the move itself built nothing"
     );
-    h.run();
+    h.run_plan();
     let moved = s.lock().unwrap().doc().cached_cut_geometry().unwrap();
     assert!(!Arc::ptr_eq(&cached, &moved), "the window built it again");
     assert!(Arc::ptr_eq(

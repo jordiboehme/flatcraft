@@ -1,6 +1,7 @@
 //! The Prepare workspace, driven through egui_kittest.
 
 mod common;
+use common::RunPlan;
 
 use std::path::Path;
 
@@ -45,40 +46,40 @@ fn known_view(h: &mut AppHarness, mm: kurbo::Point) -> CanvasView {
     let p = &mut app_mut(h).ui.prepare;
     p.view = view;
     p.fit_pending = false;
-    h.run();
+    h.run_plan();
     view
 }
 
 /// Presses at `from`, moves in steps to `to` and releases, one frame each.
 fn drag(h: &mut AppHarness, from: Pos2, to: Pos2) {
     h.hover_at(from);
-    h.run();
+    h.run_plan();
     h.drag_at(from);
-    h.run();
+    h.run_plan();
     for t in [0.25, 0.5, 0.75, 1.0] {
         h.hover_at(from + (to - from) * t);
-        h.run();
+        h.run_plan();
     }
     h.drop_at(to);
-    h.run();
+    h.run_plan();
 }
 
 fn type_into(h: &mut AppHarness, label: &str, text: &str) {
     h.get_by_label(label).click();
-    h.run();
+    h.run_plan();
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
-    h.run();
+    h.run_plan();
     h.get_by_label(label).type_text(text);
-    h.run();
+    h.run_plan();
     h.key_press(egui::Key::Enter);
-    h.run();
+    h.run_plan();
 }
 
 /// Focuses the window, which starts a source check, and waits until the
 /// check is done.
 fn focus_window(h: &mut AppHarness) {
     h.event(Event::WindowFocused(false));
-    h.run();
+    h.run_plan();
     h.event(Event::WindowFocused(true));
     wait_for_workers(h);
 }
@@ -107,7 +108,7 @@ fn scale_field_sets_width() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Tab, "Layout").click();
-    h.run();
+    h.run_plan();
     type_into(&mut h, "Width (mm)", "100");
     let b = bounds(&s, id);
     let w = b["x1"].as_f64().unwrap() - b["x0"].as_f64().unwrap();
@@ -122,7 +123,7 @@ fn eye_toggle_hides_object() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Button, "Hide square").click();
-    h.run();
+    h.run_plan();
     assert!(
         !s.lock()
             .unwrap()
@@ -153,7 +154,7 @@ fn scissors_toggle_skips_and_restores_cutting() {
     };
     h.get_by_role_and_label(Role::Button, "Skip cutting square")
         .click();
-    h.run();
+    h.run_plan();
     assert!(!cut());
     // Still shown.
     assert!(
@@ -167,7 +168,7 @@ fn scissors_toggle_skips_and_restores_cutting() {
     );
     h.get_by_role_and_label(Role::Button, "Cut again square")
         .click();
-    h.run();
+    h.run_plan();
     assert!(cut());
 }
 
@@ -186,11 +187,11 @@ fn settings_override_marks_modified() {
         .unwrap()
         .execute("job.set_overrides", json!({ "force": 9 }), Origin::User)
         .unwrap();
-    h.run();
+    h.run_plan();
     let undo = undo_len(&s);
     // The reset button puts the material value back, for speed only.
     h.get_by_role_and_label(Role::Button, "Reset speed").click();
-    h.run();
+    h.run_plan();
     let job = s.lock().unwrap().doc().document.job.clone();
     assert_eq!((job.speed, job.force), (None, Some(9)));
     assert_eq!(undo_len(&s), undo + 1);
@@ -206,11 +207,11 @@ fn search_runs_auto_arrange() {
     to_prepare(&mut h);
     let before = undo_len(&s);
     h.get_by_label("Search commands").click();
-    h.run();
+    h.run_plan();
     h.get_by_label("Search commands").type_text("Auto-arrange");
-    h.run();
+    h.run_plan();
     h.key_press(egui::Key::Enter);
-    h.run();
+    h.run_plan();
     assert_eq!(undo_len(&s), before + 1);
 }
 
@@ -347,7 +348,7 @@ fn uncalibrated_pill_only_for_mats() {
         .unwrap()
         .execute("job.set_media", json!({ "id": "no-mat" }), Origin::User)
         .unwrap();
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label("This mat is not calibrated yet").is_none());
 }
 
@@ -393,7 +394,7 @@ fn changed_source_shows_reload_pill_and_reload_runs() {
     let before = undo_len(&s);
     h.get_by_role_and_label(Role::Button, "Reload changed files")
         .click();
-    h.run();
+    h.run_plan();
     assert!((width(&s, id) - 45.5).abs() < 1e-6, "{}", width(&s, id));
     assert_eq!(undo_len(&s), before + 1);
     assert!(h.query_by_label("1 source file changed").is_none());
@@ -429,7 +430,7 @@ fn missing_source_shows_reconnect_and_relink_works() {
     h.get_by_label(&old.join("a.svg").display().to_string());
     h.get_by_role_and_label(Role::Button, "Reconnect...")
         .click();
-    h.run();
+    h.run_plan();
     assert_eq!(picker.requests.lock().unwrap().len(), 1);
     let link = |id: u64| {
         s.lock()
@@ -451,7 +452,7 @@ fn missing_source_shows_reconnect_and_relink_works() {
     let undo = undo_len(&s);
     h.get_by_role_and_label(Role::Button, "Reconnect them too")
         .click();
-    h.run();
+    h.run_plan();
     assert_eq!(link(b), new.join("b.svg"));
     assert_eq!(link(c), new.join("c.svg"));
     assert_eq!(undo_len(&s), undo + 1);
@@ -471,7 +472,7 @@ fn unlink_forgets_the_missing_file() {
     focus_window(&mut h);
     h.get_by_label("1 source file not found");
     h.get_by_role_and_label(Role::Button, "Unlink file").click();
-    h.run();
+    h.run_plan();
     let st = s.lock().unwrap();
     assert!(st.doc().document.get(ObjectId(id)).unwrap().link.is_none());
     drop(st);
@@ -543,13 +544,13 @@ fn objects_panel_click_selects_and_shift_click_adds() {
         .next()
         .unwrap()
         .click();
-    h.run();
+    h.run_plan();
     assert_eq!(sel(&s), [a]);
     h.get_all_by_role_and_label(Role::Button, "square")
         .nth(1)
         .unwrap()
         .click_modifiers(Modifiers::SHIFT);
-    h.run();
+    h.run_plan();
     assert_eq!(sel(&s), [a, b]);
 }
 
@@ -572,7 +573,7 @@ fn out_of_area_pill_counts_objects() {
             Origin::User,
         )
         .unwrap();
-    h.run();
+    h.run_plan();
     h.get_by_label("1 object is outside the cutting area");
 }
 
@@ -624,15 +625,15 @@ fn typed_speed_is_one_command() {
     to_prepare(&mut h);
     let before = undo_len(&s);
     h.get_by_label("Speed").click();
-    h.run();
+    h.run_plan();
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
-    h.run();
+    h.run_plan();
     for c in ["1", "0"] {
         h.event(Event::Text(c.into()));
-        h.run();
+        h.run_plan();
     }
     h.key_press(egui::Key::Enter);
-    h.run();
+    h.run_plan();
     assert_eq!(s.lock().unwrap().doc().document.job.speed, Some(10));
     assert_eq!(undo_len(&s), before + 1);
 }
@@ -645,13 +646,13 @@ fn clicking_a_search_hit_runs_it() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     h.get_by_label("Search commands").click();
-    h.run();
+    h.run_plan();
     h.get_by_label("Search commands").type_text("dupl");
-    h.run();
+    h.run_plan();
     let before = s.lock().unwrap().doc().document.objects.len();
     h.get_by_role_and_label(Role::Button, "Duplicate (search)")
         .click();
-    h.run();
+    h.run_plan();
     assert_eq!(s.lock().unwrap().doc().document.objects.len(), before + 1);
 }
 
@@ -715,11 +716,11 @@ fn drag_is_cancelled_when_the_document_changes() {
     let before_undo = undo_len(&s);
     let from = view.mm_to_screen(start);
     h.hover_at(from);
-    h.run();
+    h.run_plan();
     h.drag_at(from);
-    h.run();
+    h.run_plan();
     h.hover_at(from + Vec2::new(10.0, 0.0));
-    h.run();
+    h.run_plan();
     // Mid-drag an agent opens a document with an object of the same id.
     let b_id = {
         s.lock()
@@ -737,7 +738,7 @@ fn drag_is_cancelled_when_the_document_changes() {
         wait_for_source_check(&mut h);
     }
     h.drop_at(from + Vec2::new(40.0, 20.0));
-    h.run();
+    h.run_plan();
     assert_eq!(object_centre(&s, b_id), b_start, "the new document moved");
     assert_eq!(undo_len(&s), b_undo);
     let st = s.lock().unwrap();
@@ -798,14 +799,14 @@ fn agent_switching_in_a_loop_does_not_check_each_time() {
             .unwrap()
             .execute("document.switch", json!({ "doc_id": a }), Origin::Agent)
             .unwrap();
-        h.run();
+        h.run_plan();
         // The status of the document comes back without a new check.
         h.get_by_label("1 source file not found");
         s.lock()
             .unwrap()
             .execute("document.switch", json!({ "index": 1 }), Origin::Agent)
             .unwrap();
-        h.run();
+        h.run_plan();
     }
     assert_eq!(
         app(&h).ui.prepare.sources.last_check,
@@ -1048,7 +1049,7 @@ fn the_shape_worker_builds_only_the_newest_shape() {
                 Origin::User,
             )
             .unwrap();
-        h.run();
+        h.run_plan();
     }
     for _ in 0..3 {
         let _ = release.send(());
@@ -1084,7 +1085,7 @@ fn a_dead_shape_worker_falls_back_to_building_inline() {
                 Origin::User,
             )
             .unwrap();
-        h.run();
+        h.run_plan();
         if app(&h).ui.prepare.cache.shape(doc, id).is_some() {
             break;
         }
@@ -1106,14 +1107,14 @@ fn the_mat_combo_shows_the_fallback_mat() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     h.get_by_label("Mat").click();
-    h.run();
+    h.run_plan();
     let item = h.get_by_label("Mat 12x12 (fallback)");
     let n = item.accesskit_node();
     // egui reports a selectable label's state as toggled.
     assert_eq!(n.toggled(), Some(egui::accesskit::Toggled::True));
     // Picking it makes it the document's own mat.
     h.get_by_label("Mat 12x12 (fallback)").click();
-    h.run();
+    h.run_plan();
     assert_eq!(s.lock().unwrap().doc().document.job.media_id, "mat-12x12");
     assert!(h.query_by_label_contains("is not available").is_none());
 }
@@ -1160,14 +1161,14 @@ fn trackpad_scroll_pans_and_wheel_zooms() {
     let view = known_view(&mut h, kurbo::Point::new(100.0, 100.0));
     let at = app(&h).ui.prepare.canvas_rect.center() + Vec2::new(30.0, 40.0);
     h.hover_at(at);
-    h.run();
+    h.run_plan();
     // Two fingers on a trackpad: pan, no zoom.
     h.event(wheel(
         egui::MouseWheelUnit::Point,
         egui::MouseWheelSource::Trackpad,
         Vec2::new(30.0, -12.0),
     ));
-    h.run();
+    h.run_plan();
     let v = app(&h).ui.prepare.view;
     assert_eq!(v.px_per_mm, view.px_per_mm);
     assert!((v.offset - view.offset - Vec2::new(30.0, -12.0)).length() < 1e-3);
@@ -1178,7 +1179,7 @@ fn trackpad_scroll_pans_and_wheel_zooms() {
         egui::MouseWheelSource::Wheel,
         Vec2::new(0.0, 1.0),
     ));
-    h.run();
+    h.run_plan();
     let w = app(&h).ui.prepare.view;
     assert!(w.px_per_mm > v.px_per_mm, "{w:?}");
     assert!((w.screen_to_mm(at) - mm).hypot() < 1e-3);
@@ -1193,10 +1194,10 @@ fn pinch_and_cmd_scroll_zoom_around_the_pointer() {
     let view = known_view(&mut h, kurbo::Point::new(100.0, 100.0));
     let at = app(&h).ui.prepare.canvas_rect.center() + Vec2::new(-20.0, 10.0);
     h.hover_at(at);
-    h.run();
+    h.run_plan();
     let mm = view.screen_to_mm(at);
     h.event(Event::Zoom(1.5));
-    h.run();
+    h.run_plan();
     let v = app(&h).ui.prepare.view;
     assert!((v.px_per_mm - view.px_per_mm * 1.5).abs() < 1e-4, "{v:?}");
     assert!((v.screen_to_mm(at) - mm).hypot() < 1e-3);
@@ -1211,7 +1212,7 @@ fn pinch_and_cmd_scroll_zoom_around_the_pointer() {
         Modifiers::COMMAND,
     );
     for _ in 0..5 {
-        h.run();
+        h.run_plan();
     }
     let w = app(&h).ui.prepare.view;
     assert!(w.px_per_mm > v.px_per_mm, "{w:?}");
@@ -1237,11 +1238,11 @@ fn search_reload_uses_the_selection() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     h.get_by_label("Search commands").click();
-    h.run();
+    h.run_plan();
     h.get_by_label("Search commands").type_text("Reload");
-    h.run();
+    h.run_plan();
     h.key_press(egui::Key::Enter);
-    h.run();
+    h.run_plan();
     assert!((width(&s, a) - 30.0).abs() < 1e-4);
     assert!((width(&s, b) - 20.0).abs() < 1e-4, "b was reloaded too");
 }
@@ -1256,7 +1257,7 @@ fn keep_aspect_is_fixed_when_a_selected_object_is_turned() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Tab, "Layout").click();
-    h.run();
+    h.run_plan();
     app_mut(&mut h).ui.prepare.fields.keep_aspect = false;
     // Straight objects may stretch together; one turned by 30 degrees
     // locks the shape.
@@ -1272,7 +1273,7 @@ fn keep_aspect_is_fixed_when_a_selected_object_is_turned() {
         .unwrap()
         .execute("object.select", json!({ "ids": [a, b] }), Origin::User)
         .unwrap();
-    h.run();
+    h.run_plan();
     let node = h.get_by_role_and_label(Role::CheckBox, "Keep aspect");
     let n = node.accesskit_node();
     assert!(n.is_disabled());
@@ -1321,7 +1322,7 @@ fn hidden_objects_are_not_drawn() {
             Origin::User,
         )
         .unwrap();
-    h.run();
+    h.run_plan();
     assert!(object_paths(&h, r).is_empty());
 }
 
@@ -1415,14 +1416,14 @@ fn no_source_check_during_a_drag() {
     let view = known_view(&mut h, start);
     let from = view.mm_to_screen(start);
     h.hover_at(from);
-    h.run();
+    h.run_plan();
     h.drag_at(from);
-    h.run();
+    h.run_plan();
     h.hover_at(from + Vec2::new(20.0, 0.0));
-    h.run();
+    h.run_plan();
     h.event(Event::WindowFocused(true));
     h.hover_at(from + Vec2::new(30.0, 0.0));
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.prepare.drag.is_some(), "the drag is still on");
     assert!(app(&h).ui.prepare.sources.missing.is_empty());
     assert!(app(&h).ui.prepare.sources.check_pending);
@@ -1468,18 +1469,18 @@ fn distribute_buttons_need_three_objects_and_are_one_step() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Tab, "Layout").click();
-    h.run();
+    h.run_plan();
     select(&s, &[a, b]);
-    h.run();
+    h.run_plan();
     open_arrange(&mut h);
     assert!(disabled(&h, "Distribute horizontally (Arrange)"));
     assert!(disabled(&h, "Distribute vertically (Arrange)"));
     select(&s, &[a, b, c]);
-    h.run();
+    h.run_plan();
     assert!(!disabled(&h, "Distribute vertically (Arrange)"));
     let before = undo_len(&s);
     h.get_by_label("Distribute horizontally (Arrange)").click();
-    h.run();
+    h.run_plan();
     wait_for_workers(&mut h);
     assert_eq!(undo_len(&s), before + 1);
     let x = |id| bounds(&s, id)["x0"].as_f64().unwrap();
@@ -1490,23 +1491,23 @@ fn distribute_buttons_need_three_objects_and_are_one_step() {
 /// Opens the Arrange drop-down of the Layout tab.
 fn open_arrange(h: &mut AppHarness) {
     h.get_by_role_and_label(Role::Button, "Arrange").click();
-    h.run();
+    h.run_plan();
 }
 
 /// Opens the panel of `label` ("Rotate...") from the list of its group
 /// (Transform, Edit or Arrange).
 fn open_panel(h: &mut AppHarness, label: &str) {
     h.get_by_role_and_label(Role::Tab, "Layout").click();
-    h.run();
+    h.run_plan();
     let tool = flatcraft::ui::tools::TOOLS
         .iter()
         .find(|t| t.title == label)
         .unwrap_or_else(|| panic!("no action {label}"));
     h.get_by_role_and_label(Role::Button, tool.group.def().title)
         .click();
-    h.run();
+    h.run_plan();
     h.get_by_label(&tool.row_name()).click();
-    h.run();
+    h.run_plan();
 }
 
 fn panel_kind(h: &AppHarness) -> Option<flatcraft::ui::arrange::PanelKind> {
@@ -1533,7 +1534,7 @@ fn cancel_name() -> String {
 
 fn click_ok(h: &mut AppHarness) {
     h.get_by_role_and_label(Role::Button, "OK").click();
-    h.run();
+    h.run_plan();
     wait_for_workers(h);
 }
 
@@ -1547,12 +1548,12 @@ fn copies_opens_the_rectangular_pattern_panel_and_ok_is_one_step() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     select(&s, &[a, b]);
-    h.run();
+    h.run_plan();
     assert!(disabled(&h, "Copies"), "one object at a time");
     select(&s, &[a]);
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Copies").click();
-    h.run();
+    h.run_plan();
     assert_eq!(panel_kind(&h), Some(PanelKind::RectangularPattern));
     assert!(
         !flatcraft::ui::modal_open(app(&h)),
@@ -1560,13 +1561,13 @@ fn copies_opens_the_rectangular_pattern_panel_and_ok_is_one_step() {
     );
     h.get_by_label("Linked copies");
     h.get_by_label("Columns").click();
-    h.run();
+    h.run_plan();
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
-    h.run();
+    h.run_plan();
     h.event(Event::Text("4".into()));
-    h.run();
+    h.run_plan();
     h.key_press(egui::Key::Enter);
-    h.run();
+    h.run_plan();
     assert_eq!(values(&mut h).rect.columns, 4);
     let before = undo_len(&s);
     click_ok(&mut h);
@@ -1594,7 +1595,7 @@ fn panels_remember_the_last_values_that_ran() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Button, "Copies").click();
-    h.run();
+    h.run_plan();
     {
         let r = &mut values(&mut h).rect;
         r.columns = 2;
@@ -1604,9 +1605,9 @@ fn panels_remember_the_last_values_that_ran() {
     }
     click_ok(&mut h);
     select(&s, &[a]);
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Copies").click();
-    h.run();
+    h.run_plan();
     let r = values(&mut h).rect.clone();
     assert_eq!(
         (r.columns, r.rows, r.gap_x_mm, r.gap_y_mm),
@@ -1616,9 +1617,9 @@ fn panels_remember_the_last_values_that_ran() {
     values(&mut h).rect.columns = 7;
     h.get_by_role_and_label(Role::Button, &cancel_name())
         .click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Copies").click();
-    h.run();
+    h.run_plan();
     assert_eq!(values(&mut h).rect.columns, 2);
 }
 
@@ -1647,7 +1648,7 @@ fn cancel_close_and_escape_change_nothing() {
         ("Auto arrange...", vec![a, b]),
     ] {
         select(&s, &ids);
-        h.run();
+        h.run_plan();
         let (before, rev, undo) = (document_bytes(&s), revision(&s), undo_len(&s));
         for how in [cancel_name().as_str(), "Close panel", "escape"] {
             open_panel(&mut h, label);
@@ -1663,13 +1664,13 @@ fn cancel_close_and_escape_change_nothing() {
                 v.circular.count = 7;
                 v.spacing_mm = 12.0;
             }
-            h.run();
+            h.run_plan();
             if how == "escape" {
                 h.key_press(egui::Key::Escape);
             } else {
                 h.get_by_label(how).click();
             }
-            h.run();
+            h.run_plan();
             wait_for_workers(&mut h);
             assert!(app(&h).ui.prepare.panel.is_none(), "{label} {how}");
             assert_eq!(document_bytes(&s), before, "{label} {how}");
@@ -1692,11 +1693,11 @@ fn escape_in_a_panel_field_closes_the_panel_at_once() {
     to_prepare(&mut h);
     open_panel(&mut h, "Move / Copy...");
     h.get_by_label("X offset").click();
-    h.run();
+    h.run_plan();
     assert!(h.ctx.egui_wants_keyboard_input(), "the field has the keys");
     let before = document_bytes(&s);
     h.key_press(egui::Key::Escape);
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.prepare.panel.is_none(), "one press closes it");
     assert_eq!(document_bytes(&s), before, "and keeps the selection");
     // Delete afterwards works on the canvas again: the field let go.
@@ -1714,16 +1715,16 @@ fn search_reaches_arrange_commands_that_are_not_on_the_tab() {
     to_prepare(&mut h);
     let search = |h: &mut AppHarness, query: &str, hit: &str| {
         h.get_by_label("Search commands").click();
-        h.run();
+        h.run_plan();
         h.get_by_label("Search commands").type_text(query);
-        h.run();
+        h.run_plan();
         h.get_by_role_and_label(Role::Button, hit).click();
-        h.run();
-        h.run();
+        h.run_plan();
+        h.run_plan();
     };
     // Rotate opens its panel.
     select(&s, &[a]);
-    h.run();
+    h.run_plan();
     search(&mut h, "rotate", "Rotate... (search)");
     assert_eq!(
         panel_kind(&h),
@@ -1731,7 +1732,7 @@ fn search_reaches_arrange_commands_that_are_not_on_the_tab() {
     );
     h.get_by_role_and_label(Role::Button, &cancel_name())
         .click();
-    h.run();
+    h.run_plan();
     // Mirror: unpinned, search runs it from the table all the same.
     let pins = |h: &mut AppHarness, keep: &[&str]| {
         let keep: Vec<String> = keep.iter().map(|k| k.to_string()).collect();
@@ -1739,7 +1740,7 @@ fn search_reaches_arrange_commands_that_are_not_on_the_tab() {
             .unwrap()
             .update_prefs(|p| p.ribbon_pins = keep)
             .unwrap();
-        h.run();
+        h.run_plan();
     };
     pins(&mut h, &[]);
     assert!(
@@ -1768,7 +1769,7 @@ fn search_reaches_arrange_commands_that_are_not_on_the_tab() {
     );
     assert!(disabled(&h, "Distribute horizontally (Arrange)"));
     h.key_press(egui::Key::Escape);
-    h.run();
+    h.run_plan();
     // With three objects it runs.
     s.lock()
         .unwrap()
@@ -1779,7 +1780,7 @@ fn search_reaches_arrange_commands_that_are_not_on_the_tab() {
         )
         .unwrap();
     select(&s, &[a, b, c]);
-    h.run();
+    h.run_plan();
     let undo = undo_len(&s);
     search(&mut h, "distrib", "Distribute horizontally (search)");
     wait_for_workers(&mut h);
@@ -1796,7 +1797,7 @@ fn keys_typed_into_a_panel_field_leave_the_document_alone() {
     to_prepare(&mut h);
     open_panel(&mut h, "Move / Copy...");
     h.get_by_label("X offset").click();
-    h.run();
+    h.run_plan();
     assert!(h.ctx.egui_wants_keyboard_input(), "the field has the keys");
     let (rev, centre) = (revision(&s), object_centre(&s, a));
     for key in [
@@ -1806,7 +1807,7 @@ fn keys_typed_into_a_panel_field_leave_the_document_alone() {
         egui::Key::ArrowDown,
     ] {
         h.key_press(key);
-        h.run();
+        h.run_plan();
     }
     wait_for_workers(&mut h);
     assert_eq!(revision(&s), rev);
@@ -1825,9 +1826,9 @@ fn move_copy_moves_or_copies_in_one_step() {
     to_prepare(&mut h);
     // Pinned by default.
     h.get_by_role_and_label(Role::Tab, "Layout").click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Move / Copy").click();
-    h.run();
+    h.run_plan();
     let c = object_centre(&s, a);
     {
         let m = &mut values(&mut h).move_copy;
@@ -1840,9 +1841,9 @@ fn move_copy_moves_or_copies_in_one_step() {
     assert_eq!(object_centre(&s, a), c + kurbo::Vec2::new(12.5, -4.0));
     // Copy: the original stays, copy k is k offsets away.
     h.get_by_role_and_label(Role::Button, "Move / Copy").click();
-    h.run();
+    h.run_plan();
     h.get_by_label("Copy").click();
-    h.run();
+    h.run_plan();
     {
         let m = &mut values(&mut h).move_copy;
         m.dx_mm = 0.0;
@@ -1880,10 +1881,10 @@ fn rotate_panel_turns_in_one_step() {
     let rev = revision(&s);
     open_panel(&mut h, "Rotate...");
     h.get_by_label("Each about its own centre").click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, &cancel_name())
         .click();
-    h.run();
+    h.run_plan();
     assert!(!app(&h).ui.prepare.fields.each);
     assert!(
         !s.lock().unwrap().prefs.rotate_each,
@@ -1893,7 +1894,7 @@ fn rotate_panel_turns_in_one_step() {
     // OK turns each about its own centre and stores the switch.
     open_panel(&mut h, "Rotate...");
     h.get_by_label("Each about its own centre").click();
-    h.run();
+    h.run_plan();
     let (na, nb) = (object_centre(&s, a), object_centre(&s, b));
     click_ok(&mut h);
     assert_eq!((object_centre(&s, a), object_centre(&s, b)), (na, nb));
@@ -1917,10 +1918,10 @@ fn circular_panel_previews_exactly_what_ok_makes() {
         c.own_centre = true;
         c.center_mm = [120.0, 120.0];
     }
-    h.run();
+    h.run_plan();
     let one = ghost_points(&h);
     values(&mut h).circular.count = 4;
-    h.run();
+    h.run_plan();
     let three = ghost_points(&h);
     assert!(!one.is_empty(), "the ghost is drawn");
     assert_eq!(three.len(), 3 * one.len(), "one ghost per copy");
@@ -1995,7 +1996,7 @@ fn rectangular_panel_previews_exactly_what_ok_makes() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Button, "Copies").click();
-    h.run();
+    h.run_plan();
     {
         let r = &mut values(&mut h).rect;
         r.columns = 3;
@@ -2003,7 +2004,7 @@ fn rectangular_panel_previews_exactly_what_ok_makes() {
         r.gap_x_mm = 2.5;
         r.gap_y_mm = 7.0;
     }
-    h.run();
+    h.run_plan();
     assert!(!ghost_points(&h).is_empty());
     let ghosts = current_ghosts(&mut h);
     assert_eq!(ghosts.len(), 5);
@@ -2025,7 +2026,7 @@ fn pins_round_trip_through_the_preferences() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Tab, "Layout").click();
-    h.run();
+    h.run_plan();
     // The default pins: two big buttons, four directions.
     for label in [
         "Move / Copy",
@@ -2040,19 +2041,19 @@ fn pins_round_trip_through_the_preferences() {
     assert!(h.query_by_label("Circular pattern").is_none());
     let open = |h: &mut AppHarness, group: &str| {
         h.get_by_role_and_label(Role::Button, group).click();
-        h.run();
+        h.run_plan();
     };
     open(&mut h, "Edit");
     h.get_by_label(flatcraft::ui::groups::FOOTER);
     let hover = |h: &mut AppHarness, row: &str| {
         let at = h.get_by_label(row).rect().center();
         h.hover_at(egui::pos2(at.x, at.y));
-        h.run();
-        h.run();
+        h.run_plan();
+        h.run_plan();
     };
     hover(&mut h, "Circular pattern... (Edit)");
     h.get_by_label("Pin Circular pattern").click();
-    h.run();
+    h.run_plan();
     let stored =
         |h: &AppHarness| flatcraft_engine::prefs::Preferences::load(&app(h).config_dir).ribbon_pins;
     assert!(
@@ -2078,11 +2079,11 @@ fn pins_round_trip_through_the_preferences() {
         ),
     ] {
         h.key_press(egui::Key::Escape);
-        h.run();
+        h.run_plan();
         open(&mut h, group);
         hover(&mut h, row);
         h.get_by_label(toggle).click();
-        h.run();
+        h.run_plan();
         h.get_by_label(flatcraft::ui::groups::FOOTER);
     }
     let mut want = flatcraft_engine::prefs::default_ribbon_pins();
@@ -2090,7 +2091,7 @@ fn pins_round_trip_through_the_preferences() {
     want.extend(["pattern.circular".into(), "align.top.selection".into()]);
     assert_eq!(stored(&h), want);
     h.key_press(egui::Key::Escape);
-    h.run();
+    h.run_plan();
     assert!(
         h.query_by_role_and_label(Role::Button, "Mirror vertically")
             .is_none()
@@ -2111,11 +2112,11 @@ fn search_finds_copies_and_distribute() {
         ("copies", "Copies... (search)"),
     ] {
         h.get_by_label("Search commands").click();
-        h.run();
+        h.run_plan();
         h.get_by_label("Search commands").type_text(query);
-        h.run();
+        h.run_plan();
         h.get_by_role_and_label(Role::Button, hit).click();
-        h.run();
+        h.run_plan();
     }
     assert_eq!(
         panel_kind(&h),
@@ -2170,14 +2171,14 @@ fn rectangular_pattern_makes_linked_copies() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Button, "Copies").click();
-    h.run();
+    h.run_plan();
     {
         let r = &mut values(&mut h).rect;
         r.columns = 2;
         r.rows = 2;
     }
     h.get_by_label("Linked copies").click();
-    h.run();
+    h.run_plan();
     assert!(values(&mut h).rect.linked);
     let before = undo_len(&s);
     click_ok(&mut h);
@@ -2197,9 +2198,9 @@ fn rectangular_pattern_makes_linked_copies() {
     assert!(ids.iter().all(|i| link_group(&s, *i) == g));
     // The switch is remembered with the other values.
     select(&s, &[a]);
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Copies").click();
-    h.run();
+    h.run_plan();
     assert!(values(&mut h).rect.linked);
 }
 
@@ -2219,7 +2220,7 @@ fn objects_panel_marks_linked_copies_and_unlinks_one() {
     h.get_by_label("Linked copy, one of 3. It shares the source, the cut options, the keep mode and the scale.");
     let before = undo_len(&s);
     h.get_by_role_and_label(Role::Button, "Unlink copy").click();
-    h.run();
+    h.run_plan();
     wait_for_workers(&mut h);
     assert_eq!(undo_len(&s), before + 1);
     assert_eq!(link_group(&s, all[1]), None);
@@ -2240,7 +2241,7 @@ fn settings_say_how_many_linked_copies_an_edit_changes() {
     to_prepare(&mut h);
     h.get_by_label("Applies to 3 linked copies");
     select(&s, &[lone]);
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label("Applies to 3 linked copies").is_none());
 }
 
@@ -2256,7 +2257,7 @@ fn canvas_marks_a_selection_with_linked_copies() {
     to_prepare(&mut h);
     h.get_by_label("Linked copies selected");
     select(&s, &[lone]);
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label("Linked copies selected").is_none());
 }
 
@@ -2271,10 +2272,10 @@ fn arrange_tab_says_scaling_reaches_linked_copies() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Tab, "Layout").click();
-    h.run();
+    h.run_plan();
     h.get_by_label("Scales all 3 linked copies");
     select(&s, &[lone]);
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label("Scales all 3 linked copies").is_none());
 }
 
@@ -2293,7 +2294,7 @@ fn changed_file_of_linked_copies_counts_once() {
     h.get_by_label("1 source file changed");
     h.get_by_role_and_label(Role::Button, "Reload changed files")
         .click();
-    h.run();
+    h.run_plan();
     for m in all {
         assert!((width(&s, m) - 45.5).abs() < 1e-6, "{}", width(&s, m));
     }
@@ -2311,9 +2312,9 @@ fn cut_mode_on_a_linked_copy_changes_every_member_in_one_step() {
     to_prepare(&mut h);
     let before = undo_len(&s);
     h.get_by_role_and_label(Role::ComboBox, "Cut mode").click();
-    h.run();
+    h.run_plan();
     h.get_by_label("All lines").click();
-    h.run();
+    h.run_plan();
     wait_for_workers(&mut h);
     assert_eq!(undo_len(&s), before + 1);
     let mode = |id: u64| {
@@ -2369,7 +2370,7 @@ fn advance(now: &std::sync::Mutex<std::time::Instant>, ms: u64) {
 
 fn press(h: &mut AppHarness, modifiers: Modifiers, key: egui::Key) {
     h.key_press_modifiers(modifiers, key);
-    h.run();
+    h.run_plan();
 }
 
 #[test]
@@ -2421,20 +2422,20 @@ fn a_key_burst_is_one_undo_step() {
     // A key held down repeats: one step, however long it is held.
     advance(&now, 600);
     h.key_down(egui::Key::ArrowDown);
-    h.run();
+    h.run_plan();
     for _ in 0..3 {
         advance(&now, 700);
         h.key_down(egui::Key::ArrowDown);
-        h.run();
+        h.run_plan();
     }
     h.key_up(egui::Key::ArrowDown);
-    h.run();
+    h.run_plan();
     assert_eq!(undo_len(&s), before + 2, "a pause, then a held key");
     assert!((object_centre(&s, a) - start - kurbo::Vec2::new(3.0, 4.0)).hypot() < 1e-9);
     let doc = s.lock().unwrap().doc().id();
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![flatcraft::ui::Action::Undo(doc)]);
-    h.run();
+    h.run_plan();
     assert!((object_centre(&s, a) - start - kurbo::Vec2::new(3.0, 0.0)).hypot() < 1e-9);
 }
 
@@ -2448,7 +2449,7 @@ fn arrows_are_ignored_in_a_text_field() {
     to_prepare(&mut h);
     let start = object_centre(&s, a);
     h.get_by_label("Search commands").click();
-    h.run();
+    h.run_plan();
     press(&mut h, Modifiers::NONE, egui::Key::ArrowRight);
     press(&mut h, Modifiers::COMMAND, egui::Key::A);
     assert_eq!(object_centre(&s, a), start);
@@ -2470,11 +2471,11 @@ fn arrows_move_an_object_selected_on_the_canvas() {
     let view = known_view(&mut h, start);
     let at = view.mm_to_screen(start);
     h.hover_at(at);
-    h.run();
+    h.run_plan();
     h.drag_at(at);
-    h.run();
+    h.run_plan();
     h.drop_at(at);
-    h.run();
+    h.run_plan();
     assert_eq!(selection(&s), [a]);
     press(&mut h, Modifiers::NONE, egui::Key::ArrowLeft);
     assert!((object_centre(&s, a) - start + kurbo::Vec2::new(1.0, 0.0)).hypot() < 1e-9);
@@ -2529,7 +2530,7 @@ fn a_frame_on_the_empty_canvas_selects_what_it_touches() {
     h.event(Event::ModifiersChanged(Modifiers::SHIFT));
     drag(&mut h, around_c.0, around_c.1);
     h.event(Event::ModifiersChanged(Modifiers::NONE));
-    h.run();
+    h.run_plan();
     assert_eq!(selection(&s), [a, b, c]);
     // Without Shift the frame replaces the selection.
     drag(&mut h, around_c.0, around_c.1);
@@ -2562,12 +2563,12 @@ fn drag_scale_of_a_linked_copy_previews_every_member() {
     let from = view.mm_to_screen(kurbo::Point::new(f(&ba, "x1"), f(&ba, "y1")));
     let to = from + Vec2::new(50.0, 50.0);
     h.hover_at(from);
-    h.run();
+    h.run_plan();
     h.drag_at(from);
-    h.run();
+    h.run_plan();
     for t in [0.5, 1.0] {
         h.hover_at(from + (to - from) * t);
-        h.run();
+        h.run_plan();
     }
     let grow = |x: f64, c: f64| c + (x - c) * 1.5;
     let want = view.rect_to_screen(kurbo::Rect::new(
@@ -2581,7 +2582,7 @@ fn drag_scale_of_a_linked_copy_previews_every_member() {
         "the linked copy grows about its own centre in the preview"
     );
     h.drop_at(to);
-    h.run();
+    h.run_plan();
     // The engine agrees with the preview.
     let got = screen_bounds(&h, &s, b);
     assert!((got.min - want.min).length() < 1.0 && (got.max - want.max).length() < 1.0);
@@ -2597,7 +2598,7 @@ fn rotate_and_mirror_turn_a_multi_selection_as_a_group_or_each_object() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Tab, "Layout").click();
-    h.run();
+    h.run_plan();
     let (ca, cb) = (object_centre(&s, a), object_centre(&s, b));
     // Group by default: half a turn swaps the two centres.
     let rotate = |h: &mut AppHarness, degrees: f64| {
@@ -2610,13 +2611,13 @@ fn rotate_and_mirror_turn_a_multi_selection_as_a_group_or_each_object() {
     // Both Mirror directions are pinned by default: one click each.
     let mirror = |h: &mut AppHarness, item: &str| {
         h.get_by_role_and_label(Role::Button, item).click();
-        h.run();
+        h.run_plan();
     };
     mirror(&mut h, "Mirror horizontally");
     assert!((object_centre(&s, a) - ca).hypot() < 1e-5, "group mirror");
     // Each object: the centres stay.
     h.get_by_label("Each object").click();
-    h.run();
+    h.run_plan();
     let (ca, cb) = (object_centre(&s, a), object_centre(&s, b));
     rotate(&mut h, 90.0);
     mirror(&mut h, "Mirror vertically");
@@ -2633,7 +2634,7 @@ fn rotate_and_mirror_turn_a_multi_selection_as_a_group_or_each_object() {
     assert!(rot(a).mirror == rot(b).mirror);
     // One object: the switch is off, it has nothing to choose.
     select(&s, &[a]);
-    h.run();
+    h.run_plan();
     assert!(disabled(&h, "Each object"));
 }
 
@@ -2647,7 +2648,7 @@ fn typed_size_of_a_multi_selection_sizes_the_common_box() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Tab, "Layout").click();
-    h.run();
+    h.run_plan();
     let f = |v: &Value, k: &str| v[k].as_f64().unwrap();
     // 110 mm wide (two 50 mm squares, 10 mm apart): to 220 mm.
     type_into(&mut h, "Width (mm)", "220");
@@ -2671,7 +2672,7 @@ fn typed_percent_of_a_multi_selection_scales_the_group() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Tab, "Layout").click();
-    h.run();
+    h.run_plan();
     let f = |v: &Value, k: &str| v[k].as_f64().unwrap();
     let (oa, ob) = (bounds(&s, a), bounds(&s, b));
     let before = undo_len(&s);
@@ -2703,9 +2704,9 @@ fn each_object_is_remembered_across_restarts() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Tab, "Layout").click();
-    h.run();
+    h.run_plan();
     h.get_by_label("Each object").click();
-    h.run();
+    h.run_plan();
     assert!(
         s.lock().unwrap().prefs.rotate_each,
         "stored in the preferences"
@@ -2723,14 +2724,14 @@ fn each_object_is_remembered_across_restarts() {
     to_prepare(&mut h);
     assert!(app(&h).ui.prepare.fields.each);
     h.get_by_role_and_label(Role::Tab, "Layout").click();
-    h.run();
+    h.run_plan();
     assert_eq!(
         h.get_by_label("Each object").accesskit_node().toggled(),
         Some(egui::accesskit::Toggled::True)
     );
     // Off again is stored too.
     h.get_by_label("Each object").click();
-    h.run();
+    h.run_plan();
     assert!(!flatcraft_engine::prefs::Preferences::load(dir.path()).rotate_each);
 }
 
@@ -2767,7 +2768,7 @@ fn each_pinned_direction_runs_its_command_in_one_click() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Tab, "Layout").click();
-    h.run();
+    h.run_plan();
     let ids = json!([a, b, c]);
     let align = |mode: &str, to: &str| {
         (
@@ -2846,7 +2847,7 @@ fn each_pinned_direction_runs_its_command_in_one_click() {
         let before = document_bytes(&s);
         let undo = undo_len(&s);
         h.get_by_role_and_label(Role::Button, label).click();
-        h.run();
+        h.run_plan();
         wait_for_workers(&mut h);
         assert_eq!(undo_len(&s), undo + 1, "{label}: one step");
         let clicked = document_bytes(&s);
@@ -2861,7 +2862,7 @@ fn each_pinned_direction_runs_its_command_in_one_click() {
             .unwrap()
             .execute("edit.undo", json!({}), Origin::User)
             .unwrap();
-        h.run();
+        h.run_plan();
     }
 }
 
@@ -2875,17 +2876,17 @@ fn escape_in_the_search_box_leaves_the_panel_open() {
     to_prepare(&mut h);
     open_panel(&mut h, "Move / Copy...");
     h.get_by_label("Search commands").click();
-    h.run();
+    h.run_plan();
     assert!(h.ctx.egui_wants_keyboard_input(), "search has the keys");
     let before = document_bytes(&s);
     h.key_press(egui::Key::Escape);
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.prepare.panel.is_some(), "the panel stays");
     assert!(!h.ctx.egui_wants_keyboard_input(), "search let go");
     assert_eq!(document_bytes(&s), before, "the selection stays too");
     // With no focus, Escape closes the panel.
     h.key_press(egui::Key::Escape);
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.prepare.panel.is_none());
 }
 
@@ -2899,20 +2900,20 @@ fn a_field_message_does_not_come_back_when_the_panel_opens_again() {
     to_prepare(&mut h);
     open_panel(&mut h, "Move / Copy...");
     h.get_by_label("X offset").click();
-    h.run();
+    h.run_plan();
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
-    h.run();
+    h.run_plan();
     h.event(Event::Text("5+".into()));
-    h.run();
+    h.run_plan();
     h.key_press(egui::Key::Enter);
-    h.run();
+    h.run_plan();
     let msg = "Can't read '5+': something is missing after +. Press Esc to go back.";
     h.get_by_label(msg);
     h.get_by_role_and_label(Role::Button, &cancel_name())
         .click();
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.prepare.panel.is_none());
     open_panel(&mut h, "Move / Copy...");
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label(msg).is_none(), "an old message is gone");
 }

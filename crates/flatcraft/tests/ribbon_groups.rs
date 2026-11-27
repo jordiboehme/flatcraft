@@ -3,6 +3,7 @@
 //! option, and the Auto arrange panel.
 
 mod common;
+use common::RunPlan;
 
 use common::*;
 use egui::accesskit::Role;
@@ -50,14 +51,14 @@ fn rig(dir: &tempfile::TempDir, s: SharedSession) -> AppHarness {
 
 fn show_tab(h: &mut AppHarness, tab: &str) {
     h.get_by_role_and_label(Role::Tab, tab).click();
-    h.run();
+    h.run_plan();
 }
 
 fn hover(h: &mut AppHarness, label: &str) {
     let at = h.get_by_label(label).rect().center();
     h.hover_at(egui::pos2(at.x, at.y));
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
 }
 
 fn disabled(h: &AppHarness, label: &str) -> bool {
@@ -80,8 +81,8 @@ fn textures(h: &AppHarness) -> Vec<egui::TextureId> {
 fn hover_button(h: &mut AppHarness, label: &str) {
     let at = h.get_by_role_and_label(Role::Button, label).rect().center();
     h.hover_at(egui::pos2(at.x, at.y));
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
 }
 
 #[test]
@@ -91,7 +92,7 @@ fn the_chevron_group_button_opens_the_list() {
     let mut h = rig(&dir, s);
     assert!(h.query_by_label(FOOTER).is_none());
     h.get_by_role_and_label(Role::Button, "Edit").click();
-    h.run();
+    h.run_plan();
     h.get_by_label(FOOTER);
     for t in tools::GroupId::Edit.tools() {
         h.get_by_label(&t.row_name());
@@ -100,7 +101,7 @@ fn the_chevron_group_button_opens_the_list() {
     let dup = h.get_by_label("Duplicate (Edit)");
     assert!(dup.rect().width() > 100.0);
     h.get_by_role_and_label(Role::Button, "Edit").click();
-    h.run();
+    h.run_plan();
     assert!(
         h.query_by_label(FOOTER).is_none(),
         "a second click closes it"
@@ -116,7 +117,7 @@ fn pinning_two_actions_in_a_row_keeps_the_list_open() {
     let mut h = rig(&dir, s);
     show_tab(&mut h, "Layout");
     h.get_by_role_and_label(Role::Button, "Arrange").click();
-    h.run();
+    h.run_plan();
     for (row, toggle, button) in [
         ("Ungroup (Arrange)", "Pin Ungroup", "Ungroup"),
         (
@@ -130,7 +131,7 @@ fn pinning_two_actions_in_a_row_keeps_the_list_open() {
         hover(&mut h, toggle);
         h.get_by_label(PIN_TIP);
         h.get_by_label(toggle).click();
-        h.run();
+        h.run_plan();
         h.get_by_label(FOOTER);
         // The ribbon shows it at once.
         h.get_by_role_and_label(Role::Button, button);
@@ -143,7 +144,7 @@ fn pinning_two_actions_in_a_row_keeps_the_list_open() {
     );
     // A pinned row keeps its (un)pin toggle visible without hovering.
     h.hover_at(egui::pos2(1.0, 1.0));
-    h.run();
+    h.run_plan();
     h.get_by_label("Unpin Ungroup");
 }
 
@@ -165,7 +166,7 @@ fn cards_show_the_description_of_actions_and_groups() {
     }
     // A list row's card too.
     h.get_by_role_and_label(Role::Button, "Transform").click();
-    h.run();
+    h.run_plan();
     let mirror = tools::by_act(Act::MirrorVertical);
     hover(&mut h, &mirror.row_name());
     h.get_by_label(mirror.description);
@@ -180,12 +181,12 @@ fn unpinning_the_last_pin_leaves_the_group_as_a_tile_that_opens_the_list() {
     h.get_by_role_and_label(Role::Button, "Reload");
     h.get_by_role_and_label(Role::Button, "Linked files")
         .click();
-    h.run();
+    h.run_plan();
     hover(&mut h, &reload.row_name());
     h.get_by_label("Unpin Reload").click();
-    h.run();
+    h.run_plan();
     h.key_press(egui::Key::Escape);
-    h.run();
+    h.run_plan();
     assert!(
         h.query_by_role_and_label(Role::Button, "Reload").is_none(),
         "unpinned"
@@ -193,7 +194,7 @@ fn unpinning_the_last_pin_leaves_the_group_as_a_tile_that_opens_the_list() {
     // The group never disappears: its tile opens the list.
     h.get_by_role_and_label(Role::Button, "Linked files")
         .click();
-    h.run();
+    h.run_plan();
     h.get_by_label(&reload.row_name());
     h.get_by_label(FOOTER);
 }
@@ -207,7 +208,7 @@ fn a_dimmed_row_says_why_and_does_nothing() {
     let mut h = rig(&dir, s.clone());
     show_tab(&mut h, "Layout");
     h.get_by_role_and_label(Role::Button, "Arrange").click();
-    h.run();
+    h.run_plan();
     let row = "Distribute horizontally (Arrange)";
     assert!(disabled(&h, row), "visible but dimmed");
     hover(&mut h, row);
@@ -216,11 +217,11 @@ fn a_dimmed_row_says_why_and_does_nothing() {
     h.get_by_label(tools::by_act(Act::DistributeHorizontal).description);
     let before = document_bytes(&s);
     h.get_by_label(row).click();
-    h.run();
+    h.run_plan();
     assert_eq!(document_bytes(&s), before, "nothing ran");
     // The pin toggle of a dimmed row still works.
     h.get_by_label("Pin Distribute horizontally").click();
-    h.run();
+    h.run_plan();
     assert!(stored(&h).contains(&"distribute.horizontal".to_string()));
 }
 
@@ -239,7 +240,7 @@ fn a_pinned_dimmed_action_shows_its_reason_and_does_nothing() {
     h.get_by_label("Select 3 or more objects first.");
     let before = document_bytes(&s);
     h.get_by_role_and_label(Role::Button, name).click();
-    h.run();
+    h.run_plan();
     assert_eq!(document_bytes(&s), before);
 }
 
@@ -253,18 +254,18 @@ fn the_align_option_switches_the_rows_and_their_icons() {
     let mut h = rig(&dir, s);
     show_tab(&mut h, "Layout");
     h.get_by_role_and_label(Role::Button, "Arrange").click();
-    h.run();
+    h.run_plan();
     let tex =
         |h: &AppHarness, icon: Icon| icons::texture(&h.ctx, icon, flatcraft::ui::ICON_SIZE).id();
     let plain = tex(&h, Icon::AlignLeft);
     let framed = tex(&h, Icon::AlignLeftArea);
-    h.run();
+    h.run_plan();
     assert!(textures(&h).contains(&plain));
     assert!(!textures(&h).contains(&framed));
     hover(&mut h, "Align left (Arrange)");
     h.get_by_label("Pin Align left · selection");
     h.get_by_label("To the cutting area").click();
-    h.run();
+    h.run_plan();
     // At once: the rows are the cutting-area actions, with the framed icon.
     assert!(textures(&h).contains(&framed));
     hover(&mut h, "Align left (Arrange)");
@@ -274,7 +275,7 @@ fn the_align_option_switches_the_rows_and_their_icons() {
         tools::by_act(Act::Align(tools::AlignMode::Left, tools::AlignTo::Area)).description,
     );
     h.get_by_label("Pin Align left · cutting area").click();
-    h.run();
+    h.run_plan();
     assert!(stored(&h).contains(&"align.left.area".to_string()));
     // The pin is named with both parts on the ribbon.
     h.get_by_role_and_label(Role::Button, "Align left · cutting area");
@@ -290,9 +291,9 @@ fn auto_arrange_spacing_round_trips_and_is_one_undo_step() {
     let mut h = rig(&dir, s.clone());
     show_tab(&mut h, "Layout");
     h.get_by_role_and_label(Role::Button, "Arrange").click();
-    h.run();
+    h.run_plan();
     h.get_by_label("Auto arrange... (Arrange)").click();
-    h.run();
+    h.run_plan();
     let p = app(&h).ui.prepare.panel.clone().expect("the panel opens");
     assert_eq!(p.kind, flatcraft::ui::arrange::PanelKind::AutoArrange);
     assert_eq!(p.values.spacing_mm, 5.0, "the stored spacing");
@@ -304,7 +305,7 @@ fn auto_arrange_spacing_round_trips_and_is_one_undo_step() {
         .unwrap()
         .values
         .spacing_mm = 2.5;
-    h.run();
+    h.run_plan();
     // The preview is where the objects land.
     let ctx = h.ctx.clone();
     let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
@@ -317,7 +318,7 @@ fn auto_arrange_spacing_round_trips_and_is_one_undo_step() {
     let before = document_bytes(&s);
     let undo = undo_len(&s);
     h.get_by_role_and_label(Role::Button, "OK").click();
-    h.run();
+    h.run_plan();
     wait_for_workers(&mut h);
     assert_eq!(undo_len(&s), undo + 1, "one step");
     assert_eq!(
@@ -353,13 +354,13 @@ fn auto_arrange_spacing_round_trips_and_is_one_undo_step() {
         .unwrap();
     assert_eq!(document_bytes(&s), before);
     pin(&s, &["auto_arrange"]);
-    h.run();
+    h.run_plan();
     hover(&mut h, "Auto arrange");
     h.get_by_label("Auto arrange · 2.5 mm");
     let undo = undo_len(&s);
     h.get_by_role_and_label(Role::Button, "Auto arrange")
         .click();
-    h.run();
+    h.run_plan();
     wait_for_workers(&mut h);
     assert_eq!(undo_len(&s), undo + 1);
     assert_eq!(document_bytes(&s), arranged, "the same as the panel's OK");
@@ -374,10 +375,10 @@ fn escape_closes_a_group_list_and_keeps_the_selection() {
     let mut h = rig(&dir, s.clone());
     show_tab(&mut h, "Layout");
     h.get_by_role_and_label(Role::Button, "Arrange").click();
-    h.run();
+    h.run_plan();
     h.get_by_label(FOOTER);
     h.key_press(egui::Key::Escape);
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label(FOOTER).is_none(), "the list closed");
     let selection: Vec<u64> = s
         .lock()
@@ -447,11 +448,11 @@ fn without_a_cutting_area_the_actions_that_need_one_are_dimmed() {
     let before = document_bytes(&s);
     h.get_by_role_and_label(Role::Button, "Auto arrange")
         .click();
-    h.run();
+    h.run_plan();
     assert_eq!(document_bytes(&s), before);
     // In the list too.
     h.get_by_role_and_label(Role::Button, "Arrange").click();
-    h.run();
+    h.run_plan();
     assert!(disabled(&h, "Auto arrange (Arrange)"));
 }
 
@@ -494,14 +495,14 @@ fn a_dimmed_switch_that_is_on_does_not_look_active() {
     assert!(!looks_on(&h, r), "but does not look active");
     select(&s, &[ids[0]]);
     app_mut(&mut h).ui.prepare.fields.each = true;
-    h.run();
+    h.run_plan();
     let each = h.get_by_role_and_label(Role::CheckBox, "Each object");
     assert!(each.accesskit_node().is_disabled());
     let r = each.rect();
     assert!(!looks_on(&h, r));
     // Enabled and on, it does look on.
     select(&s, &ids);
-    h.run();
+    h.run_plan();
     let r = h
         .get_by_role_and_label(Role::CheckBox, "Each object")
         .rect();
@@ -517,23 +518,23 @@ fn the_pin_toggle_is_reachable_by_keyboard() {
     let mut h = rig(&dir, s);
     show_tab(&mut h, "Layout");
     h.get_by_role_and_label(Role::Button, "Edit").click();
-    h.run();
+    h.run_plan();
     // Nothing hovered: an unpinned row shows no toggle.
     h.hover_at(egui::pos2(1.0, 1.0));
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label("Pin Circular pattern").is_none());
     h.get_by_label("Circular pattern... (Edit)").focus();
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     h.key_press(egui::Key::Tab);
-    h.run();
+    h.run_plan();
     let toggle = h.get_by_label("Pin Circular pattern");
     assert!(
         toggle.accesskit_node().is_focused(),
         "Tab moved to the toggle"
     );
     h.key_press(egui::Key::Enter);
-    h.run();
+    h.run_plan();
     assert!(stored(&h).contains(&"pattern.circular".to_string()));
 }
 
@@ -546,9 +547,9 @@ fn auto_arrange_panel_says_what_it_packs_and_shows_what_stays() {
     let mut h = rig(&dir, s.clone());
     show_tab(&mut h, "Layout");
     h.get_by_role_and_label(Role::Button, "Arrange").click();
-    h.run();
+    h.run_plan();
     h.get_by_label("Auto arrange... (Arrange)").click();
-    h.run();
+    h.run_plan();
     let card = flatcraft::ui::arrange::AUTO_ARRANGE_CARD;
     assert_eq!(
         card,
@@ -571,7 +572,7 @@ fn auto_arrange_panel_says_what_it_packs_and_shows_what_stays() {
 
     // Nothing selected: all of them, nothing fixed.
     select(&s, &[]);
-    h.run();
+    h.run_plan();
     // The title, and the card still open over it.
     assert!(
         h.query_all_by_label("Auto arrange all objects")
@@ -584,7 +585,7 @@ fn auto_arrange_panel_says_what_it_packs_and_shows_what_stays() {
 
     // One selected.
     select(&s, &ids[..1]);
-    h.run();
+    h.run_plan();
     // The title, and the card still open over it.
     assert!(
         h.query_all_by_label("Auto arrange 1 selected object")
@@ -605,7 +606,7 @@ fn auto_arrange_panel_says_what_it_packs_and_shows_what_stays() {
     };
     set_visible(&ids[2..3], false);
     select(&s, &ids[..3]);
-    h.run();
+    h.run_plan();
     assert!(
         h.query_all_by_label("Auto arrange 2 selected objects")
             .next()
@@ -615,7 +616,7 @@ fn auto_arrange_panel_says_what_it_packs_and_shows_what_stays() {
     assert_eq!(flatcraft::ui::arrange::ghosts(&snap, &panel).len(), 2);
     // Only hidden ones selected: nothing to pack, OK is dimmed and says why.
     select(&s, &ids[2..3]);
-    h.run();
+    h.run_plan();
     h.get_by_label(
         "The selected objects are hidden, so there is nothing to pack. Show them, or select nothing to pack every visible object.",
     );
@@ -633,7 +634,7 @@ fn auto_arrange_panel_says_what_it_packs_and_shows_what_stays() {
         .as_u64()
         .unwrap();
     select(&s, &ids[..1]);
-    h.run();
+    h.run_plan();
     let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
     let o = snap.object(pic).unwrap();
     assert!(o.bounds().is_none() && o.arrange_bounds().is_some());
@@ -675,18 +676,18 @@ fn one_click_auto_arrange_is_dimmed_when_only_hidden_objects_are_selected() {
     let undo = undo_len(&s);
     h.get_by_role_and_label(Role::Button, "Auto arrange")
         .click();
-    h.run();
+    h.run_plan();
     wait_for_workers(&mut h);
     assert_eq!(undo_len(&s), undo);
     // In the list too.
     h.get_by_role_and_label(Role::Button, "Arrange").click();
-    h.run();
+    h.run_plan();
     assert!(disabled(&h, "Auto arrange (Arrange)"));
     assert!(disabled(&h, "Auto arrange... (Arrange)"));
     // A visible one selected again: it runs.
     let ctx = h.ctx.clone();
     select(&s, &[_b]);
-    h.run();
+    h.run_plan();
     let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
     assert_eq!(tools::by_act(Act::AutoArrange).blocked(&snap), None);
 }
@@ -770,7 +771,7 @@ fn the_auto_arrange_preview_matches_the_command_in_many_scenes() {
         }
         let chosen: Vec<u64> = ids.iter().copied().filter(|_| next(4) != 0).collect();
         select(&s, &chosen);
-        h.run();
+        h.run_plan();
         let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
         let plan = flatcraft::ui::arrange::auto_arrange_plan(&snap, 5.0).unwrap();
         let ghosts: Vec<(u64, kurbo::Point)> = plan
@@ -835,9 +836,9 @@ fn the_auto_arrange_preview_is_exactly_where_ok_puts_them() {
     let mut h = rig(&dir, s.clone());
     show_tab(&mut h, "Layout");
     h.get_by_role_and_label(Role::Button, "Arrange").click();
-    h.run();
+    h.run_plan();
     h.get_by_label("Auto arrange... (Arrange)").click();
-    h.run();
+    h.run_plan();
     let ctx = h.ctx.clone();
     let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
     let panel = app(&h).ui.prepare.panel.clone().unwrap();
@@ -848,7 +849,7 @@ fn the_auto_arrange_preview_is_exactly_where_ok_puts_them() {
     assert_eq!(ghosts.len(), 5);
     let before = centres(&s);
     h.get_by_role_and_label(Role::Button, "OK").click();
-    h.run();
+    h.run_plan();
     wait_for_workers(&mut h);
     let after = centres(&s);
     for (id, at) in &after {
@@ -871,9 +872,9 @@ fn the_panel_says_which_objects_do_not_fit() {
     let mut h = rig(&dir, s.clone());
     show_tab(&mut h, "Layout");
     h.get_by_role_and_label(Role::Button, "Arrange").click();
-    h.run();
+    h.run_plan();
     h.get_by_label("Auto arrange... (Arrange)").click();
-    h.run();
+    h.run_plan();
     h.get_by_label(&flatcraft::ui::arrange::did_not_fit_note(1));
     assert_eq!(
         flatcraft::ui::arrange::did_not_fit_note(2),

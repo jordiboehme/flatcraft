@@ -142,6 +142,9 @@ pub fn menu_why(snap: Option<&Snapshot>) -> Option<&'static str> {
     let Some(snap) = snap else {
         return Some(NO_DOCUMENT);
     };
+    if snap.busy {
+        return Some(super::long::BUSY_CARD);
+    }
     why_nothing(&in_scope(snap, ExportScope::All), true)
 }
 

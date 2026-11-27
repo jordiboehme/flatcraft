@@ -164,3 +164,153 @@ fn an_import_built_before_the_window_changed_the_document_is_not_stored() {
     // The import, the move and the import.
     assert_eq!(st.doc().undo.undo_len(), 3);
 }
+
+/// Holds every Cut plan the window builds until the test lets it go, and
+/// counts them.
+struct PlanGate {
+    entered: Receiver<()>,
+    release: Sender<()>,
+}
+
+fn plan_gate(app: &mut flatcraft::ui::FlatCraftApp) -> PlanGate {
+    let (entered_tx, entered) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel::<()>();
+    let entered_tx = Mutex::new(entered_tx);
+    let release_rx = Mutex::new(release_rx);
+    app.ui.cut.set_builder(move |input| {
+        entered_tx.lock().unwrap().send(()).unwrap();
+        let _ = release_rx.lock().unwrap().recv_timeout(WORKER_TIMEOUT);
+        flatcraft_engine::job::build_classified(input)
+    });
+    PlanGate { entered, release }
+}
+
+/// The texts painted last frame.
+fn texts(h: &common::AppHarness) -> Vec<String> {
+    common::painted(h)
+        .into_iter()
+        .filter_map(|s| match s {
+            egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_cut_plan_builds_on_a_worker_and_a_stale_plan_is_never_shown() {
+    use flatcraft::ui::cut::{PLANNING, Stage};
+    let dir = tempfile::tempdir().unwrap();
+    let s = common::session(&dir);
+    let id = common::import_square(&s);
+    let mut h = common::harness(&dir, s.clone(), false);
+    common::app_mut(&mut h).ui.cut.stage = Stage::Path;
+    common::app_mut(&mut h).ui.workspace = flatcraft::ui::Workspace::Cut;
+    common::settle(&mut h);
+    let gate = plan_gate(common::app_mut(&mut h));
+    let built = common::app(&h).ui.cut.plans_built();
+    // A change gives a new input A.
+    s.lock()
+        .unwrap()
+        .execute(
+            "object.move",
+            json!({ "ids": [id], "dx_mm": 3.0 }),
+            Origin::User,
+        )
+        .unwrap();
+    h.step();
+    gate.entered.recv_timeout(WORKER_TIMEOUT).unwrap();
+    // The plan of A builds; the window keeps drawing frames meanwhile.
+    for _ in 0..3 {
+        h.step();
+    }
+    let cut = &common::app(&h).ui.cut;
+    assert!(cut.planning() && cut.plan.is_none(), "{:?}", cut.plan);
+    assert!(
+        cut.previous.is_some(),
+        "the plan before is kept to draw faded"
+    );
+    assert!(texts(&h).iter().any(|t| t == PLANNING), "the note shows");
+    // The person moves the square while A builds: A is stale now.
+    s.lock()
+        .unwrap()
+        .execute(
+            "object.move",
+            json!({ "ids": [id], "dx_mm": 7.0 }),
+            Origin::User,
+        )
+        .unwrap();
+    h.step();
+    gate.release.send(()).unwrap();
+    // B starts in the frame that takes A; A is dropped, never shown.
+    let start = std::time::Instant::now();
+    while gate.entered.try_recv().is_err() {
+        assert!(start.elapsed() < WORKER_TIMEOUT, "B did not start");
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    for _ in 0..3 {
+        h.step();
+    }
+    let cut = &common::app(&h).ui.cut;
+    assert_eq!(cut.plans_built(), built + 1, "A was built");
+    assert!(cut.plan.is_none(), "A is not shown");
+    assert!(cut.planning());
+    gate.release.send(()).unwrap();
+    common::settle(&mut h);
+    let cut = &common::app(&h).ui.cut;
+    assert_eq!(cut.plans_built(), built + 2);
+    let shown = cut.job().expect("the plan of B");
+    let now = flatcraft_engine::job::build(&s.lock().unwrap()).unwrap();
+    assert_eq!(
+        shown.job.bytes, now.job.bytes,
+        "the plan of the moved square"
+    );
+    assert!(!texts(&h).iter().any(|t| t == PLANNING), "the note is gone");
+}
+
+#[test]
+fn the_window_draws_while_its_own_import_runs() {
+    use flatcraft::ui::{Action, long, tools};
+    let dir = tempfile::tempdir().unwrap();
+    let s = common::session(&dir);
+    let png = dir.path().join("square.png");
+    write_square(&png);
+    let picker = common::FakePicker::answering([png]);
+    let mut h = common::harness_with(&dir, s.clone(), move |a| a.with_file_picker(picker));
+    common::app_mut(&mut h).ui.workspace = flatcraft::ui::Workspace::Prepare;
+    common::settle(&mut h);
+    let g = gate(&s);
+    let doc_id = s.lock().unwrap().doc().id();
+    let ctx = h.ctx.clone();
+    common::app_mut(&mut h).apply(&ctx, vec![Action::Import { doc_id }]);
+    assert_eq!(
+        g.entered.recv_timeout(WORKER_TIMEOUT).unwrap(),
+        "object.import"
+    );
+    // The import traces on its worker; the window draws and the lock is
+    // free.
+    for _ in 0..3 {
+        h.step();
+    }
+    assert!(s.try_lock().is_ok(), "the session lock is free");
+    assert!(common::app(&h).long.busy());
+    assert!(
+        texts(&h).iter().any(|t| t == "Importing..."),
+        "the busy note"
+    );
+    let snap = flatcraft::ui::prepare::snapshot(common::app_mut(&mut h), &ctx);
+    assert_eq!(
+        tools::by_id("import").unwrap().blocked(&snap),
+        Some(long::BUSY_CARD),
+        "Import is dimmed and says why"
+    );
+    assert_eq!(s.lock().unwrap().doc().document.objects.len(), 0);
+    g.release.send(()).unwrap();
+    common::settle(&mut h);
+    assert!(!common::app(&h).long.busy());
+    let st = s.lock().unwrap();
+    assert_eq!(st.doc().document.objects.len(), 1);
+    assert_eq!(st.doc().undo.undo_len(), 1, "one undo step");
+    drop(st);
+    assert!(!texts(&h).iter().any(|t| t == "Importing..."));
+}

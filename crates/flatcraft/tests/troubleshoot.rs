@@ -4,6 +4,7 @@
 //! fixes (job overrides, one undo step each).
 
 mod common;
+use common::RunPlan;
 
 use common::*;
 use egui::accesskit::Role;
@@ -19,17 +20,17 @@ use serde_json::json;
 
 fn open_from_send(h: &mut AppHarness) {
     app_mut(h).ui.workspace = Workspace::Cut;
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Tab, "Send").click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, LABEL).click();
-    h.run();
+    h.run_plan();
 }
 
 fn pick(h: &mut AppHarness, symptom: Symptom) {
     h.get_by_role_and_label(Role::Button, symptom.label())
         .click();
-    h.run();
+    h.run_plan();
 }
 
 fn engine_list(s: &flatcraft_mcp::SharedSession, symptom: Symptom) -> Checklist {
@@ -59,7 +60,7 @@ fn it_opens_under_the_send_button_and_asks_what_happened() {
     }
     // Close keeps nothing open.
     h.get_by_role_and_label(Role::Button, "Close").click();
-    h.run();
+    h.run_plan();
     assert!(!app(&h).ui.troubleshoot.open);
     assert!(h.query_by_label(troubleshoot::ASK).is_none());
 }
@@ -104,7 +105,7 @@ fn force_plus_two_changes_the_job_once_and_undo_takes_it_back() {
         .clone();
     let before = undo_len(&s);
     h.get_by_role_and_label(Role::Button, "Force +2").click();
-    h.run();
+    h.run_plan();
     assert_eq!(undo_len(&s), before + 1, "one undo step");
     assert_eq!(job_force(&s), Some(12));
     // The window ran the engine's fix, with its args.
@@ -128,9 +129,9 @@ fn force_plus_two_changes_the_job_once_and_undo_takes_it_back() {
     );
     // Close, then the app bar's Undo.
     h.get_by_role_and_label(Role::Button, "Close").click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Undo").click();
-    h.run();
+    h.run_plan();
     assert_eq!(job_force(&s), None);
 }
 
@@ -149,7 +150,7 @@ fn a_fix_at_the_limit_is_dimmed_with_its_reason() {
     let b = h.get_by_role_and_label(Role::Button, "Force +2");
     assert!(b.accesskit_node().is_disabled());
     b.hover();
-    h.run();
+    h.run_plan();
     h.get_by_label("Force is at this plotter's maximum, 33. Add a pass, or check the blade depth.");
 }
 
@@ -165,10 +166,10 @@ fn the_test_shape_button_puts_it_beside_the_design() {
     // The last item: scroll the list down to it first.
     h.get_by_role_and_label(Role::Button, "Add a test shape")
         .scroll_to_me();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Add a test shape")
         .click();
-    h.run();
+    h.run_plan();
     assert_eq!(undo_len(&s), before + 1);
     let state = s
         .lock()
@@ -222,7 +223,7 @@ fn the_last_good_cut_shows_with_its_day() {
     h.get_by_label(&format!("Cut on {}", flatcraft::ui::outcome::day(&e.date)));
     h.get_by_role_and_label(Role::Button, "Use these settings")
         .click();
-    h.run();
+    h.run_plan();
     let job = s.lock().unwrap().doc().document.job.clone();
     assert_eq!(
         (job.speed, job.force, job.passes),
@@ -236,11 +237,11 @@ fn the_help_menu_opens_it_from_home() {
     let s = session(&dir);
     let mut h = harness(&dir, s.clone(), false);
     app_mut(&mut h).ui.workspace = Workspace::Home;
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Help").click();
-    h.run();
+    h.run_plan();
     h.get_by_label(HelpItem::Troubleshoot.label()).click();
-    h.run();
+    h.run_plan();
     assert_eq!(app(&h).ui.workspace, Workspace::Cut);
     assert!(app(&h).ui.troubleshoot.open);
     h.get_by_label(troubleshoot::ASK);
@@ -265,7 +266,7 @@ fn show_me_points_at_the_objects_that_are_not_mirrored() {
     pick(&mut h, Symptom::WrongPlaceOrSize);
     h.get_by_label(troubleshoot::LIKELY);
     h.get_by_role_and_label(Role::Button, "Show me").click();
-    h.run();
+    h.run_plan();
     assert!(!app(&h).ui.troubleshoot.open, "it leaves for Prepare");
     assert_eq!(app(&h).ui.workspace, Workspace::Prepare);
     let sel: Vec<u64> = s
@@ -314,7 +315,7 @@ fn mirror_for_iron_on_comes_first_and_a_second_click_does_nothing() {
     let before = undo_len(&s);
     h.get_by_role_and_label(Role::Button, "Mirror for iron-on")
         .click();
-    h.run();
+    h.run_plan();
     assert_eq!(undo_len(&s), before + 1);
     assert!(
         s.lock()
@@ -347,10 +348,10 @@ fn cut_only_the_test_shape_from_the_helper() {
     let before = undo_len(&s);
     h.get_by_role_and_label(Role::Button, "Cut only the test shape")
         .scroll_to_me();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Cut only the test shape")
         .click();
-    h.run();
+    h.run_plan();
     assert_eq!(undo_len(&s), before + 1);
     let doc = s.lock().unwrap().doc().document.clone();
     for o in &doc.objects {
@@ -358,9 +359,9 @@ fn cut_only_the_test_shape_from_the_helper() {
     }
     // Undo turns the design back on.
     h.get_by_role_and_label(Role::Button, "Close").click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Undo").click();
-    h.run();
+    h.run_plan();
     assert!(
         s.lock()
             .unwrap()
@@ -391,7 +392,7 @@ fn the_list_is_made_again_only_when_something_changed() {
         "no change, no rebuild"
     );
     h.get_by_role_and_label(Role::Button, "Force +2").click();
-    h.run();
+    h.run_plan();
     assert_eq!(app(&h).ui.troubleshoot.builds(), first + 1);
     // A preset note changes the list without a document change.
     s.lock()
@@ -399,7 +400,7 @@ fn the_list_is_made_again_only_when_something_changed() {
         .profiles
         .set_material_notes("copy-paper", "Use the blue mat.")
         .unwrap();
-    h.run();
+    h.run_plan();
     h.get_by_label("1. Your notes");
 }
 
@@ -477,7 +478,7 @@ fn mirror_for_iron_on_keeps_an_uneven_design_in_place_in_the_window() {
     pick(&mut h, Symptom::WrongPlaceOrSize);
     h.get_by_role_and_label(Role::Button, "Mirror for iron-on")
         .click();
-    h.run();
+    h.run_plan();
     let after = union(&s);
     assert!(
         (after.x0 - before.x0).abs() < 1e-6 && (after.x1 - before.x1).abs() < 1e-6,

@@ -2,6 +2,7 @@
 //! Cut: the engine's issues, and buttons that run the fixes' commands.
 
 mod common;
+use common::RunPlan;
 
 use common::{
     AppHarness, app, app_mut, harness, import_square, session, to_prepare, wait_for_workers,
@@ -130,7 +131,7 @@ fn show_me_selects_the_object_and_moves_the_view_to_it() {
     let (s, mut h) = start(&dir);
     drop_svg(&mut h, &dir, "frame", &page(TINY));
     run(&s, "object.select", json!({ "ids": [] }));
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Show me").click();
     wait_for_workers(&mut h);
     let id = s.lock().unwrap().doc().document.objects[0].id;
@@ -158,7 +159,7 @@ fn dismiss_hides_the_card() {
     let (_, mut h) = start(&dir);
     drop_svg(&mut h, &dir, "frame", &page(TINY));
     h.get_by_role_and_label(Role::Button, "Dismiss").click();
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.prepare.report.is_none());
     assert!(h.query_by_label(TINY_TEXT).is_none());
 }
@@ -194,7 +195,7 @@ fn a_problem_that_the_file_has_stays_until_dismissed() {
 
 fn to_cut(h: &mut AppHarness) {
     app_mut(h).ui.workspace = Workspace::Cut;
-    h.run();
+    h.run_plan();
 }
 
 #[test]
@@ -209,7 +210,7 @@ fn cut_names_why_nothing_cuts_and_fixes_it() {
     let text = "'square' is set to skip, so the knife leaves it out.";
     assert!(h.query_by_label(text).is_some());
     h.get_by_role_and_label(Role::Button, "Cut it").click();
-    h.run();
+    h.run_plan();
     assert!(s.lock().unwrap().doc().document.objects[0].cut_enabled);
     assert!(matches!(app(&h).ui.cut.plan, Some(Ok(_))));
     assert!(h.query_by_label(text).is_none());
@@ -270,7 +271,7 @@ fn an_object_off_the_mat_moves_back_from_cut() {
     assert!(h.query_by_label("Houston, we have a problem").is_some());
     h.get_by_role_and_label(Role::Button, "Move onto the mat")
         .click();
-    h.run();
+    h.run_plan();
     assert!(matches!(app(&h).ui.cut.plan, Some(Ok(_))));
 }
 
@@ -349,7 +350,7 @@ fn an_object_a_hair_wider_than_the_mat_opens_cut_and_moves_on() {
     to_cut(&mut h);
     h.get_by_role_and_label(Role::Button, "Move onto the mat")
         .click();
-    h.run();
+    h.run_plan();
     assert!(matches!(app(&h).ui.cut.plan, Some(Ok(_))));
 }
 
@@ -365,7 +366,7 @@ fn a_job_that_cuts_shows_its_issues_with_fixes_in_cut() {
     let mut h = harness(&dir, s.clone(), false);
     to_cut(&mut h);
     h.get_by_role_and_label(Role::Tab, "Path").click();
-    h.run();
+    h.run_plan();
     assert!(
         h.query_by_label(
             "'lines': 1 filled shape has no area or is thinner than 0.01 mm, so the cut mode Object outlines cuts nothing of it."
@@ -379,7 +380,7 @@ fn a_job_that_cuts_shows_its_issues_with_fixes_in_cut() {
     );
     h.get_by_role_and_label(Role::Button, "Cut all lines")
         .click();
-    h.run();
+    h.run_plan();
     let job = app(&h).ui.cut.job().unwrap();
     assert!(job.issues.is_empty());
 }
@@ -407,8 +408,8 @@ fn hidden_lines_are_counted_and_one_click_scrolls_to_them() {
     for _ in 0..10 {
         let Some(_) = more(&h) else { break };
         h.get_by_label_contains("more below").click();
-        h.run();
-        h.run();
+        h.run_plan();
+        h.run_plan();
     }
     assert_eq!(more(&h), None);
 }

@@ -3,6 +3,7 @@
 //! card, and the notes in the Cut workspace.
 
 mod common;
+use common::RunPlan;
 
 use common::*;
 use egui::accesskit::Role;
@@ -28,16 +29,16 @@ fn snap(h: &mut AppHarness) -> prepare::Snapshot {
 /// Clicks into the field and types `text`, staying in it.
 fn type_into(h: &mut AppHarness, label: &str, text: &str) {
     h.get_by_label(label).click();
-    h.run();
+    h.run_plan();
     h.get_by_label(label).type_text(text);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
 }
 
 fn in_prepare(dir: &tempfile::TempDir, s: SharedSession) -> AppHarness {
     let mut h = harness_with(dir, s, |a| a);
     to_prepare(&mut h);
-    h.run();
+    h.run_plan();
     h
 }
 
@@ -68,11 +69,11 @@ fn typing_notes_is_one_undo_step_and_marks_the_document_unsaved() {
     );
 
     run(&s, "edit.undo", json!({}));
-    h.run();
+    h.run_plan();
     assert_eq!(s.lock().unwrap().doc().document.description, "");
     assert_eq!(field_text(&h, "Project description"), "");
     run(&s, "edit.undo", json!({}));
-    h.run();
+    h.run_plan();
     assert_eq!(s.lock().unwrap().doc().document.notes, "");
     assert_eq!(field_text(&h, "Project notes"), "");
 }
@@ -90,7 +91,7 @@ fn an_agent_append_shows_in_the_field() {
             Origin::Agent,
         )
         .unwrap();
-    h.run();
+    h.run_plan();
     assert_eq!(field_text(&h, "Project notes"), "Agent: try force 14.");
 }
 
@@ -104,8 +105,8 @@ fn the_notes_section_collapses_and_has_hover_cards() {
     for label in ["Project description", "Project notes"] {
         let at = h.get_by_label(label).rect().center();
         h.hover_at(at);
-        h.run();
-        h.run();
+        h.run_plan();
+        h.run_plan();
         assert!(
             h.query_by_label_contains("only on this computer").is_some()
                 || h.query_by_label_contains("project file").is_some(),
@@ -113,10 +114,10 @@ fn the_notes_section_collapses_and_has_hover_cards() {
         );
     }
     h.get_by_role_and_label(Role::Button, "Notes").click();
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label("Project notes").is_none(), "collapsed");
     h.get_by_role_and_label(Role::Button, "Notes").click();
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label("Project notes").is_some(), "open again");
 }
 
@@ -132,7 +133,7 @@ fn the_objects_rail_has_a_dot_when_the_project_has_notes() {
         "document.set_notes",
         json!({ "notes": "Use the blue mat." }),
     );
-    h.run();
+    h.run_plan();
     let summary = rails::objects_summary(&snap(&mut h));
     assert_eq!(summary.dot, Some(Dot::Notes));
     assert!(
@@ -146,7 +147,7 @@ fn the_objects_rail_has_a_dot_when_the_project_has_notes() {
         "document.set_notes",
         json!({ "notes": "", "description": "Labels" }),
     );
-    h.run();
+    h.run_plan();
     assert_eq!(rails::objects_summary(&snap(&mut h)).dot, None);
 
     run(
@@ -159,7 +160,7 @@ fn the_objects_rail_has_a_dot_when_the_project_has_notes() {
         .prepare
         .panels
         .set_collapsed(SidePanel::Objects, true);
-    h.run();
+    h.run_plan();
     let rail = h.get_by_label_contains("Open the Objects panel");
     assert!(
         rail.accesskit_node()
@@ -184,12 +185,12 @@ fn the_tab_card_shows_the_description() {
     let mut h = harness_with(&dir, s.clone(), |a| a);
     h.ctx
         .global_style_mut(|st| st.interaction.tooltip_delay = 0.0);
-    h.run();
+    h.run_plan();
     let tab = format!("Untitled 1 {}", flatcraft::ui::app_bar::DIRTY);
     let at = h.get_by_role_and_label(Role::Button, &tab).rect().center();
     h.hover_at(at);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert!(
         h.query_by_label_contains("Gift tags for the fair")
             .is_some()
@@ -244,9 +245,9 @@ fn the_cut_workspace_shows_the_notes_above_the_send_button() {
     );
     let mut h = harness_with(&dir, s.clone(), |a| a);
     app_mut(&mut h).ui.workspace = Workspace::Cut;
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Tab, "Send").click();
-    h.run();
+    h.run_plan();
     let notes = h.get_by_label("Tape the corners down.").rect();
     let send = h
         .get_by_role_and_label(Role::Button, "Send to File Output")
@@ -257,12 +258,12 @@ fn the_cut_workspace_shows_the_notes_above_the_send_button() {
     );
     // Collapsible, with a "Notes" heading.
     h.get_by_role_and_label(Role::Button, "Notes").click();
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label("Tape the corners down.").is_none());
 
     // No notes: no section.
     run(&s, "document.set_notes", json!({ "notes": "" }));
-    h.run();
+    h.run_plan();
     assert!(h.query_by_role_and_label(Role::Button, "Notes").is_none());
 }
 
@@ -274,22 +275,22 @@ fn typing_over_many_frames_is_still_one_undo_step() {
     let steps = undo_len(&s);
     let mut h = in_prepare(&dir, s.clone());
     h.get_by_label("Project notes").click();
-    h.run();
+    h.run_plan();
     for c in ["a", "b", "c", "d"] {
         h.get_by_label("Project notes").type_text(c);
-        h.run();
-        h.run();
+        h.run_plan();
+        h.run_plan();
     }
     assert_eq!(s.lock().unwrap().doc().document.notes, "abcd");
     assert_eq!(undo_len(&s), steps + 1, "one visit, one undo step");
     // Leaving the field and coming back is a new step.
     h.key_press(egui::Key::Escape);
-    h.run();
+    h.run_plan();
     h.get_by_label("Project notes").click();
-    h.run();
+    h.run_plan();
     h.get_by_label("Project notes").type_text("e");
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(undo_len(&s), steps + 2);
 }
 
@@ -301,10 +302,10 @@ fn the_notes_stay_reachable_in_a_short_window_with_many_objects() {
     run(&s, "object.select", json!({ "ids": [ids[0]] }));
     let mut h = harness_sized(&dir, s.clone(), [1400.0, 700.0], 8, |a| a);
     to_prepare(&mut h);
-    h.run();
+    h.run_plan();
     h.get_by_label("Project notes").scroll_to_me();
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     let field = h.get_by_label("Project notes").rect();
     assert!(
         field.bottom() <= 700.0 && field.top() >= 0.0,

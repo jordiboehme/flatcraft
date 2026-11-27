@@ -3,6 +3,7 @@
 //! every pinned action and compact switches inside their group.
 
 mod common;
+use common::RunPlan;
 
 use common::*;
 use egui::Rect;
@@ -35,7 +36,7 @@ fn select_all(s: &SharedSession, ids: &[u64]) {
 
 fn show_tab(h: &mut AppHarness, tab: RibbonTab) {
     h.get_by_role_and_label(Role::Tab, tab.name()).click();
-    h.run();
+    h.run_plan();
 }
 
 fn layout(h: &AppHarness) -> Layout {

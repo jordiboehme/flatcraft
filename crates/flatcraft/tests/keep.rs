@@ -3,6 +3,7 @@
 //! in Prepare).
 
 mod common;
+use common::RunPlan;
 
 use common::{
     AppHarness, app, app_mut, harness, import_square, painted, session, to_prepare, undo_len,
@@ -71,9 +72,9 @@ fn the_keep_combo_sets_the_selection_in_one_step() {
     assert_eq!(h.query_all_by_label("Keep").count(), 1);
     let before = undo_len(&s);
     h.get_by_role_and_label(Role::ComboBox, "Keep").click();
-    h.run();
+    h.run_plan();
     h.get_by_label("Stencil").click();
-    h.run();
+    h.run_plan();
     wait_for_workers(&mut h);
     assert_eq!(undo_len(&s), before + 1);
     assert_eq!(keep(&s, a), KeepMode::Stencil);
@@ -93,7 +94,7 @@ fn a_mixed_selection_shows_mixed() {
     to_prepare(&mut h);
     assert!(drawn(&h, "Mixed"));
     run(&s, "object.select", json!({ "ids": [b] }));
-    h.run();
+    h.run_plan();
     assert!(!drawn(&h, "Mixed") && drawn(&h, "Both"));
 }
 
@@ -117,14 +118,14 @@ fn prepare_shows_kept_and_waste_only_when_switched_on() {
     import_square(&s);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    h.run();
+    h.run_plan();
     assert!(!app(&h).ui.prepare.show_kept_waste, "off by default");
     assert!(!overlay_drawn(&h));
     let ctx = h.ctx.clone();
     let doc = s.lock().unwrap().doc().id();
     let toggle = Cmd::Tool("view.kept").action(doc, &[]).unwrap();
     app_mut(&mut h).apply(&ctx, vec![toggle.clone()]);
-    h.run();
+    h.run_plan();
     wait_for_mask(&mut h);
     assert!(app(&h).ui.prepare.show_kept_waste);
     assert!(overlay_drawn(&h), "the overlay is drawn");
@@ -140,11 +141,11 @@ fn prepare_shows_kept_and_waste_only_when_switched_on() {
     assert_eq!(app(&h).ui.cut.kept.made, made, "made once per plan");
     // A new plan makes a new mask.
     run(&s, "object.set_keep", json!({ "keep": "stencil" }));
-    h.run();
+    h.run_plan();
     wait_for_mask(&mut h);
     assert_eq!(app(&h).ui.cut.kept.made, made + 1);
     app_mut(&mut h).apply(&ctx, vec![toggle]);
-    h.run();
+    h.run_plan();
     assert!(!overlay_drawn(&h), "switched off again");
 }
 
@@ -156,7 +157,7 @@ fn cut_always_shows_kept_and_waste() {
     let mut h = harness(&dir, s.clone(), false);
     assert!(!app(&h).ui.prepare.show_kept_waste);
     app_mut(&mut h).ui.workspace = Workspace::Cut;
-    h.run();
+    h.run_plan();
     wait_for_mask(&mut h);
     assert!(overlay_drawn(&h));
     assert_eq!(
@@ -164,7 +165,7 @@ fn cut_always_shows_kept_and_waste() {
         Some(flatcraft::ui::kept::WORKER)
     );
     h.get_by_role_and_label(Role::Tab, "Path").click();
-    h.run();
+    h.run_plan();
     assert!(overlay_drawn(&h));
     h.get_by_label(flatcraft::ui::cut::LEGEND_KEPT.0);
     h.get_by_label(flatcraft::ui::cut::LEGEND_WASTE.0);
@@ -183,11 +184,11 @@ fn the_toggle_is_dimmed_with_a_reason_when_nothing_can_be_planned() {
     assert!(why.contains("import something"), "{why}");
     let id = import_square(&s);
     run(&s, "object.set_cut", json!({ "ids": [id], "cut": false }));
-    h.run();
+    h.run_plan();
     let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
     assert!(tool.blocked(&snap).unwrap().contains("hidden or skipped"));
     run(&s, "object.set_cut", json!({ "ids": [id], "cut": true }));
-    h.run();
+    h.run_plan();
     let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
     assert_eq!(tool.blocked(&snap), None);
 }
@@ -206,9 +207,9 @@ fn a_paper_stencil_shows_its_hint_once_per_object() {
     to_prepare(&mut h);
     let pick = |h: &mut AppHarness, mode: &str| {
         h.get_by_role_and_label(Role::ComboBox, "Keep").click();
-        h.run();
+        h.run_plan();
         h.get_by_label(mode).click();
-        h.run();
+        h.run_plan();
         wait_for_workers(h);
     };
     assert!(app(&h).ui.prepare.report.is_none());
@@ -250,7 +251,7 @@ fn switching_to_paper_shows_the_stencil_hint_once_per_object_and_material() {
     let material = |h: &mut AppHarness, id: &str| {
         let act = flatcraft::ui::Action::run(doc, "job.set_material", json!({ "id": id }));
         app_mut(h).apply(&ctx, vec![act]);
-        h.run();
+        h.run_plan();
         wait_for_workers(h);
     };
     assert!(app(&h).ui.prepare.report.is_none(), "vinyl has a backing");

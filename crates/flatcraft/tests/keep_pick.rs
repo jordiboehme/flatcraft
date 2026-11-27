@@ -2,6 +2,7 @@
 //! the keep mode from the part people click as staying.
 
 mod common;
+use common::RunPlan;
 
 use common::{
     AppHarness, app, app_mut, harness, painted, session, to_prepare, undo_len, wait_for_workers,
@@ -107,6 +108,7 @@ fn wait_for_masks(h: &mut AppHarness) {
             .as_ref()
             .is_some_and(KeepPick::pending)
             || a.ui.cut.kept.pending()
+            || a.ui.cut.planning()
     });
 }
 
@@ -121,7 +123,7 @@ fn hover(h: &mut AppHarness, p: kurbo::Point) {
 fn click(h: &mut AppHarness, p: kurbo::Point) {
     let at = screen(h, p);
     h.event(Event::PointerMoved(at));
-    h.run();
+    h.run_plan();
     for pressed in [true, false] {
         h.event(Event::PointerButton {
             pos: at,
@@ -208,7 +210,7 @@ fn done_sets_the_mode_in_one_undo_step_and_cancel_changes_nothing() {
     click(&mut h, p.sheet);
     let before = undo_len(&s);
     h.get_by_label("Done").click();
-    h.run();
+    h.run_plan();
     wait_for_workers(&mut h);
     assert!(app(&h).ui.prepare.keep_pick.is_none(), "Done ends picking");
     assert_eq!(keep(&s, o), KeepMode::Stencil);
@@ -222,7 +224,7 @@ fn done_sets_the_mode_in_one_undo_step_and_cancel_changes_nothing() {
     click(&mut h, p.sheet);
     let before = undo_len(&s);
     h.get_by_label_contains("Cancel").click();
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.prepare.keep_pick.is_none());
     assert_eq!((keep(&s, o), undo_len(&s)), (KeepMode::Pieces, before));
 
@@ -231,7 +233,7 @@ fn done_sets_the_mode_in_one_undo_step_and_cancel_changes_nothing() {
     wait_for_masks(&mut h);
     click(&mut h, p.stroke);
     h.key_press(egui::Key::Escape);
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.prepare.keep_pick.is_none());
     assert_eq!((keep(&s, o), undo_len(&s)), (KeepMode::Pieces, before));
     assert_eq!(
@@ -271,23 +273,23 @@ fn another_selection_or_workspace_cancels_and_clicks_select_nothing() {
     let bar = h.get_by_label(keep_pick::TITLE).rect();
     let before = (pick(&h).shape, pick(&h).sheet);
     h.event(Event::PointerMoved(bar.center()));
-    h.run();
+    h.run_plan();
     h.get_by_label(keep_pick::TITLE).click();
-    h.run();
+    h.run_plan();
     assert_eq!((pick(&h).shape, pick(&h).sheet), before);
     // Another selection (an agent) cancels.
     run(&s, "object.select", json!({ "ids": [other] }));
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.prepare.keep_pick.is_none());
     assert_eq!(keep(&s, o), KeepMode::Pieces);
     // Leaving the workspace cancels.
     run(&s, "object.select", json!({ "ids": [o] }));
-    h.run();
+    h.run_plan();
     h.get_by_label(keep_pick::BUTTON).click();
     wait_for_masks(&mut h);
     click(&mut h, p.stroke);
     app_mut(&mut h).ui.workspace = Workspace::Cut;
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.prepare.keep_pick.is_none());
     assert_eq!(keep(&s, o), KeepMode::Pieces);
 }
@@ -375,7 +377,7 @@ fn the_overlay_follows_the_marks_from_masks_the_worker_built() {
             click(&mut h, at);
         }
         wait_for_masks(&mut h);
-        h.run();
+        h.run_plan();
         let pk = pick(&h);
         assert_eq!(pk.result(), Some(mode));
         let cache = pk.preview(mode);
@@ -404,7 +406,7 @@ fn the_overlay_follows_the_marks_from_masks_the_worker_built() {
         .mask_of(&ctx, &job, area, &v)
         .unwrap();
     h.get_by_label("Done").click();
-    h.run();
+    h.run_plan();
     wait_for_workers(&mut h);
     assert_eq!(
         (keep(&s, o), keep(&s, copy)),
@@ -439,7 +441,7 @@ fn the_window_and_an_agent_pick_the_same_mode_for_the_same_points() {
             click(&mut h, *at);
         }
         h.get_by_label("Done").click();
-        h.run();
+        h.run_plan();
         wait_for_workers(&mut h);
         let window = keep(&s, o);
         // An agent, on a fresh copy of the document.
@@ -480,7 +482,7 @@ fn a_group_picks_its_members_and_the_context_menu_starts_picking() {
     // Right-click on a member: the menu offers the picker.
     let at = screen(&h, bounds(&s, b).center());
     h.event(Event::PointerMoved(at));
-    h.run();
+    h.run_plan();
     for pressed in [true, false] {
         h.event(Event::PointerButton {
             pos: at,
@@ -489,8 +491,8 @@ fn a_group_picks_its_members_and_the_context_menu_starts_picking() {
             modifiers: Modifiers::NONE,
         });
     }
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     h.get_by_label(Item::PickKeep.label()).click();
     wait_for_masks(&mut h);
     let ids: Vec<u64> = pick(&h).ids.iter().copied().collect();
@@ -506,7 +508,7 @@ fn a_group_picks_its_members_and_the_context_menu_starts_picking() {
     );
     click(&mut h, kurbo::Point::new(bounds(&s, b).x1 + 20.0, 30.0));
     h.get_by_label("Done").click();
-    h.run();
+    h.run_plan();
     wait_for_workers(&mut h);
     assert_eq!(
         (keep(&s, a), keep(&s, b)),
@@ -537,7 +539,7 @@ fn the_button_is_dimmed_with_a_reason_and_the_cards_say_what_it_does() {
     );
     run(&s, "object.set_cut", json!({ "ids": [o], "cut": false }));
     run(&s, "object.select", json!({ "ids": [o] }));
-    h.run();
+    h.run_plan();
     assert!(
         h.get_by_label(keep_pick::BUTTON)
             .accesskit_node()
@@ -547,7 +549,7 @@ fn the_button_is_dimmed_with_a_reason_and_the_cards_say_what_it_does() {
     let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
     assert_eq!(keep_pick::why_not(&snap, &[o]), Some(keep_pick::NOT_CUT));
     run(&s, "object.set_cut", json!({ "ids": [o], "cut": true }));
-    h.run();
+    h.run_plan();
     assert!(
         !h.get_by_label(keep_pick::BUTTON)
             .accesskit_node()
@@ -605,12 +607,12 @@ fn the_menu_bar_offers_the_picker_with_the_same_rules() {
     assert_eq!(offered(&mut h, &[]), None, "nothing selected");
     assert_eq!(offered(&mut h, &[o]), Some(Item::PickKeep));
     run(&s, "object.set_cut", json!({ "ids": [o], "cut": false }));
-    h.run();
+    h.run_plan();
     assert_eq!(offered(&mut h, &[o]), None, "skipped");
     // A click on the menu item starts picking on the selection.
     run(&s, "object.set_cut", json!({ "ids": [o], "cut": true }));
     run(&s, "object.select", json!({ "ids": [o] }));
-    h.run();
+    h.run_plan();
     let doc = s.lock().unwrap().doc().id();
     let action = Cmd::PickKeep.action(doc, &[]).unwrap();
     app_mut(&mut h).apply(&ctx, vec![action]);
@@ -681,7 +683,7 @@ fn a_linked_copy_of_the_selection_is_the_shape_too() {
     click(&mut h, c.stroke);
     assert_eq!(pick(&h).result(), Some(KeepMode::Pieces));
     h.get_by_label("Done").click();
-    h.run();
+    h.run_plan();
     wait_for_workers(&mut h);
     assert_eq!(
         (keep(&s, o), keep(&s, copy)),
@@ -737,14 +739,14 @@ fn weeding_says_why_it_cuts_nothing_while_another_object_keeps_the_sheet() {
         "object.set_keep",
         json!({ "ids": [o], "keep": "stencil" }),
     );
-    h.run();
+    h.run_plan();
     assert!(drawn(&h, text), "the Weeding section says why");
     assert_eq!(why_now(&mut h), Some(text));
     // The settings stay usable.
     assert!(!h.get_by_label("Weed box").accesskit_node().is_disabled());
     // And the plan has no weed path.
     app_mut(&mut h).ui.workspace = Workspace::Cut;
-    h.run();
+    h.run_plan();
     assert_eq!(
         flatcraft::ui::cut::weed_count(&app(&h).ui.cut.job().unwrap()),
         0
@@ -755,7 +757,7 @@ fn weeding_says_why_it_cuts_nothing_while_another_object_keeps_the_sheet() {
         "job.set_weeding",
         json!({ "box": false, "lines": "off" }),
     );
-    h.run();
+    h.run_plan();
     assert_eq!(why_now(&mut h), Some(flatcraft::ui::cut::WEEDING_OFF));
 }
 
@@ -764,7 +766,19 @@ fn weeding_says_why_it_cuts_nothing_while_another_object_keeps_the_sheet() {
 fn why_now(h: &mut AppHarness) -> Option<&'static str> {
     let ctx = h.ctx.clone();
     let snap = flatcraft::ui::prepare::snapshot_with(app_mut(h), &ctx, true);
-    app_mut(h).ui.cut.update(&snap);
+    // The plan is built on a worker: wait for it by the clock.
+    let start = std::time::Instant::now();
+    loop {
+        app_mut(h).ui.cut.update(&ctx, &snap);
+        if !app(h).ui.cut.planning() {
+            break;
+        }
+        assert!(
+            start.elapsed() < common::WORKER_TIMEOUT,
+            "the plan did not land"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     let kept = flatcraft::ui::cut::sheet_kept_now(&app(h).ui.cut, &snap);
     flatcraft::ui::cut::weed_why(&snap, kept)
 }
@@ -794,7 +808,7 @@ fn an_open_line_stencil_does_not_stop_weeding_as_the_plan_says() {
     );
     let mut h = harness(&dir, s.clone(), false);
     app_mut(&mut h).ui.workspace = Workspace::Cut;
-    h.run();
+    h.run_plan();
     // The score lines have no closed cut, so the plan keeps no sheet and
     // weeds around the square.
     let job = app(&h).ui.cut.job().unwrap();

@@ -223,7 +223,16 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                         if ui.button("New").clicked() {
                             actions.push(Action::NewProject);
                         }
-                        if ui.button("Open").clicked() {
+                        let busy = app.long.busy();
+                        let open = ui.add_enabled(!busy, egui::Button::new("Open"));
+                        card(
+                            &open,
+                            "Open",
+                            "Opens a FlatCraft project file. It takes the place of an empty, untouched document, else it opens in a new tab.",
+                            busy.then_some(super::long::BUSY_CARD),
+                            false,
+                        );
+                        if open.clicked() {
                             actions.push(Action::OpenDialog);
                         }
                         if ui.button("Save").clicked() {
@@ -302,6 +311,18 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                     hot_right.extend([version.rect, help.rect, settings.rect]);
                     if settings.clicked() {
                         actions.push(Action::ShowSettings);
+                    }
+                    if let Some(note) = app.long.note() {
+                        let r = egui::Frame::new()
+                            .stroke(egui::Stroke::new(1.0, t.text_dim))
+                            .corner_radius(t.radius * 2)
+                            .inner_margin(egui::Margin::symmetric(t.spacing as i8, 2))
+                            .show(ui, |ui| {
+                                ui.label(RichText::new(note).color(t.text_dim));
+                            })
+                            .response
+                            .interact(egui::Sense::hover());
+                        card(&r, note, super::long::NOTE_CARD, None, false);
                     }
                     if let Some(status) = agent {
                         let color = if status == "Agent connected" {

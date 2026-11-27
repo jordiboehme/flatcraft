@@ -3,6 +3,7 @@
 //! degree steps, and the Angle field of Position and size.
 
 mod common;
+use common::RunPlan;
 
 use common::{
     AppHarness, app, app_mut, harness, import_square, painted, session, to_prepare, undo_len,
@@ -42,7 +43,7 @@ fn rig(dir: &tempfile::TempDir, s: SharedSession, mm: kurbo::Point) -> (AppHarne
     let mut h = harness(dir, s, false);
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Tab, "Layout").click();
-    h.run();
+    h.run_plan();
     let rect = app(&h).ui.prepare.canvas_rect;
     let view = CanvasView {
         offset: rect.center().to_vec2() - Vec2::new(mm.x as f32, mm.y as f32) * 2.0,
@@ -51,7 +52,7 @@ fn rig(dir: &tempfile::TempDir, s: SharedSession, mm: kurbo::Point) -> (AppHarne
     let p = &mut app_mut(&mut h).ui.prepare;
     p.view = view;
     p.fit_pending = false;
-    h.run();
+    h.run_plan();
     (h, view)
 }
 
@@ -95,24 +96,24 @@ fn turned(p: Pos2, pivot: Pos2, deg: f32) -> Pos2 {
 /// steps, one frame each; the button stays down.
 fn turn_to(h: &mut AppHarness, from: Pos2, pivot: Pos2, deg: f32) {
     h.hover_at(from);
-    h.run();
+    h.run_plan();
     h.drag_at(from);
-    h.run();
+    h.run_plan();
     for t in [0.25, 0.5, 0.75, 1.0] {
         h.hover_at(turned(from, pivot, deg * t));
-        h.run();
+        h.run_plan();
     }
 }
 
 /// A whole turn with `modifiers` held from start to end.
 fn turn(h: &mut AppHarness, from: Pos2, pivot: Pos2, deg: f32, modifiers: Modifiers) {
     h.event(egui::Event::ModifiersChanged(modifiers));
-    h.run();
+    h.run_plan();
     turn_to(h, from, pivot, deg);
     h.drop_at(turned(from, pivot, deg));
-    h.run();
+    h.run_plan();
     h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
-    h.run();
+    h.run_plan();
 }
 
 fn snap(h: &mut AppHarness) -> flatcraft::ui::prepare::Snapshot {
@@ -146,11 +147,11 @@ fn drawn(h: &AppHarness, text: &str) -> bool {
 /// leaving it.
 fn type_text(h: &mut AppHarness, label: &str, text: &str) {
     h.get_by_label(label).click();
-    h.run();
+    h.run_plan();
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
-    h.run();
+    h.run_plan();
     h.get_by_label(label).type_text(text);
-    h.run();
+    h.run_plan();
 }
 
 // ---------------------------------------------------------------- zone
@@ -169,7 +170,7 @@ fn the_rotate_zone_turns_one_object_about_its_centre() {
     assert_eq!(cursor(&h), CursorIcon::None);
     assert_eq!(undo_len(&s), before);
     h.drop_at(turned(from, pivot, 90.0));
-    h.run();
+    h.run_plan();
     assert_eq!(undo_len(&s), before + 1, "one undo step");
     let t = transform(&s, id);
     assert!(near(t.rotation_deg, 90.0), "{t:?}");
@@ -177,7 +178,7 @@ fn the_rotate_zone_turns_one_object_about_its_centre() {
         near(t.center_mm.x, 45.0) && near(t.center_mm.y, 45.0),
         "{t:?}"
     );
-    h.run();
+    h.run_plan();
     assert_eq!(fields(&h).angle, "90.00");
 }
 
@@ -202,23 +203,23 @@ fn hovering_the_rotate_zone_shows_the_rotate_cursor_and_its_card() {
     let dir = tempfile::tempdir().unwrap();
     let (_s, _id, mut h, v) = square(&dir);
     h.hover_at(zone(&v, kurbo::Point::new(70.0, 70.0)));
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(cursor(&h), CursorIcon::None, "the painted rotate cursor");
     assert!(app(&h).ui.prepare.rotate_cursor.is_some());
     // Its card, with this system's keys.
-    h.run();
+    h.run_plan();
     h.get_by_label("Rotate");
     h.get_by_label(&help::rotate_card(Os::CURRENT));
     // On the handle itself: the resize cursor.
     h.hover_at(mm(&v, 70.0, 70.0));
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(cursor(&h), CursorIcon::ResizeNwSe);
     assert!(app(&h).ui.prepare.rotate_cursor.is_none());
     // Inside the box near the corner: no rotate zone (that is a move).
     h.hover_at(mm(&v, 70.0, 70.0) - Vec2::splat(9.0));
-    h.run();
+    h.run_plan();
     assert_ne!(cursor(&h), CursorIcon::None);
 }
 
@@ -233,13 +234,13 @@ fn the_handle_wins_inside_its_own_hit_area() {
     assert!(from.distance(corner) < canvas::HANDLE_PICK);
     let to = from + Vec2::splat(20.0);
     h.hover_at(from);
-    h.run();
+    h.run_plan();
     h.drag_at(from);
-    h.run();
+    h.run_plan();
     h.hover_at(to);
-    h.run();
+    h.run_plan();
     h.drop_at(to);
-    h.run();
+    h.run_plan();
     let t = transform(&s, id);
     assert!(near(t.rotation_deg, 0.0), "{t:?}");
     assert!(t.scale_x > 1.1, "{t:?}");
@@ -250,16 +251,16 @@ fn a_click_in_the_rotate_zone_keeps_the_selection() {
     let dir = tempfile::tempdir().unwrap();
     let (s, id, mut h, v) = square(&dir);
     run(&s, "object.select", json!({ "ids": [id] }));
-    h.run();
+    h.run_plan();
     let at = zone(&v, kurbo::Point::new(70.0, 70.0));
     h.hover_at(at);
-    h.run();
+    h.run_plan();
     // Press and release on the spot: a click.
     h.drag_at(at);
-    h.run();
+    h.run_plan();
     h.drop_at(at);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(s.lock().unwrap().doc().selection.len(), 1);
 }
 
@@ -273,8 +274,8 @@ fn cmd_or_ctrl_on_a_corner_rotates_instead_of_resizing() {
     // Holding the key over a corner shows the rotate cursor.
     h.event(egui::Event::ModifiersChanged(rotate_keys()));
     h.hover_at(mm(&v, 70.0, 70.0));
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(cursor(&h), CursorIcon::None);
     turn(
         &mut h,
@@ -294,7 +295,7 @@ fn shift_snaps_one_object_to_15_degree_steps() {
     let dir = tempfile::tempdir().unwrap();
     let (s, id, mut h, v) = square(&dir);
     run(&s, "object.rotate", json!({ "ids": [id], "degrees": 10.0 }));
-    h.run();
+    h.run_plan();
     // The corner moved with the turn; take the zone of the new box.
     let b = canvas::selection_box(&snap(&mut h)).unwrap();
     // 10 + 52 = 62 snaps to 60.
@@ -314,7 +315,7 @@ fn shift_snaps_the_turn_of_several_objects() {
     let (s, a, b, mut h, v) = two_squares(&dir);
     run(&s, "object.rotate", json!({ "ids": [a], "degrees": 10.0 }));
     run(&s, "object.select", json!({ "ids": [a, b] }));
-    h.run();
+    h.run_plan();
     let bx = canvas::selection_box(&snap(&mut h)).unwrap();
     let before = undo_len(&s);
     // A turn of 52 snaps to 45, about the mean of the centres (75, 45).
@@ -342,9 +343,9 @@ fn a_turn_back_to_the_start_adds_no_undo_step() {
     let from = zone(&v, kurbo::Point::new(70.0, 70.0));
     turn_to(&mut h, from, mm(&v, 45.0, 45.0), 40.0);
     h.hover_at(from);
-    h.run();
+    h.run_plan();
     h.drop_at(from);
-    h.run();
+    h.run_plan();
     assert_eq!(undo_len(&s), before);
 }
 
@@ -370,13 +371,13 @@ fn the_angle_field_turns_one_object_to_the_typed_angle() {
     let dir = tempfile::tempdir().unwrap();
     let (s, id, mut h, _) = square(&dir);
     run(&s, "object.rotate", json!({ "ids": [id], "degrees": 10.0 }));
-    h.run();
+    h.run_plan();
     assert_eq!(fields(&h).angle, "10.00");
     let before = undo_len(&s);
     type_text(&mut h, ANGLE, "-30");
     h.key_press(Key::Tab);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(undo_len(&s), before + 1);
     let t = transform(&s, id);
     assert!(near(t.rotation_deg, 330.0), "{t:?}");
@@ -394,8 +395,8 @@ fn escape_puts_the_angle_back() {
     let before = undo_len(&s);
     type_text(&mut h, ANGLE, "45");
     h.key_press(Key::Escape);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(undo_len(&s), before);
     assert!(near(transform(&s, id).rotation_deg, 0.0));
     assert_eq!(fields(&h).angle, "0.00");
@@ -409,16 +410,16 @@ fn the_angle_field_shows_mixed_and_sets_every_object() {
     assert_eq!(fields(&h).angle, "0.00");
     run(&s, "object.rotate", json!({ "ids": [a], "degrees": 20.0 }));
     run(&s, "object.select", json!({ "ids": [a, b] }));
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(fields(&h).angle, "", "mixed angles show the Mixed hint");
     assert!(drawn(&h, "Mixed"), "the hint is drawn");
     let (ca, cb) = (transform(&s, a).center_mm, transform(&s, b).center_mm);
     let before = undo_len(&s);
     type_text(&mut h, ANGLE, "45");
     h.key_press(Key::Enter);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(undo_len(&s), before + 1, "one undo step");
     for (id, c) in [(a, ca), (b, cb)] {
         let t = transform(&s, id);
@@ -440,8 +441,8 @@ fn the_angle_field_follows_an_agent() {
         "object.rotate",
         json!({ "ids": [id], "angle_deg": 123.5 }),
     );
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(fields(&h).angle, "123.50");
 }
 
@@ -451,12 +452,12 @@ fn tab_from_the_percent_field_reaches_the_angle() {
     let (s, _id, mut h, _) = square(&dir);
     let before = undo_len(&s);
     h.get_by_label("Scale (%)").click();
-    h.run();
+    h.run_plan();
     let editing = |h: &AppHarness| fields(h).editing.map(|e| e.field);
     let mut reached = false;
     for _ in 0..3 {
         h.key_press(Key::Tab);
-        h.run();
+        h.run_plan();
         if editing(&h) == Some(flatcraft::ui::prepare::SizeField::Angle) {
             reached = true;
             break;
@@ -464,7 +465,7 @@ fn tab_from_the_percent_field_reaches_the_angle() {
     }
     assert!(reached, "Tab reaches the Angle field");
     h.key_press(Key::Escape);
-    h.run();
+    h.run_plan();
     assert_eq!(undo_len(&s), before);
 }
 
@@ -475,7 +476,7 @@ fn the_rotate_card_opens_next_to_the_pointer() {
     let at = zone(&v, kurbo::Point::new(70.0, 70.0));
     h.hover_at(at);
     for _ in 0..4 {
-        h.run();
+        h.run_plan();
     }
     let card = h.get_by_label(&help::rotate_card(Os::CURRENT)).rect();
     let canvas = app(&h).ui.prepare.canvas_rect;
@@ -495,8 +496,8 @@ fn a_typed_angle_is_reduced_by_full_turns() {
     ] {
         type_text(&mut h, ANGLE, typed);
         h.key_press(Key::Enter);
-        h.run();
-        h.run();
+        h.run_plan();
+        h.run_plan();
         assert!(near(transform(&s, id).rotation_deg, want), "{typed}");
         assert_eq!(fields(&h).angle, shown, "{typed}");
     }
@@ -509,8 +510,8 @@ fn a_typed_angle_too_large_to_be_exact_is_refused() {
     let before = undo_len(&s);
     type_text(&mut h, ANGLE, "1e10");
     h.key_press(Key::Enter);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(undo_len(&s), before);
     assert!(near(transform(&s, id).rotation_deg, 0.0));
     // The field keeps the text and says why under it.
@@ -521,8 +522,8 @@ fn a_typed_angle_too_large_to_be_exact_is_refused() {
     h.get_by_label(&msg);
     // Esc puts the old value back.
     h.key_press(Key::Escape);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(fields(&h).angle, "0.00");
     assert_eq!(undo_len(&s), before);
 }
@@ -549,14 +550,14 @@ fn an_object_under_the_rotate_zone_wins_a_click() {
     let (s, _a, b, mut h, v) = neighbour(&dir);
     let at = zone(&v, kurbo::Point::new(70.0, 70.0));
     h.hover_at(at);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_ne!(cursor(&h), CursorIcon::None, "no rotate cursor over b");
     h.drag_at(at);
-    h.run();
+    h.run_plan();
     h.drop_at(at);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     let sel: Vec<u64> = s
         .lock()
         .unwrap()
@@ -575,15 +576,15 @@ fn an_object_under_the_rotate_zone_wins_a_drag() {
     let at = zone(&v, kurbo::Point::new(70.0, 70.0));
     let before = transform(&s, b).center_mm;
     h.hover_at(at);
-    h.run();
+    h.run_plan();
     h.drag_at(at);
-    h.run();
+    h.run_plan();
     for t in [0.5, 1.0] {
         h.hover_at(at + Vec2::new(20.0, 0.0) * t);
-        h.run();
+        h.run_plan();
     }
     h.drop_at(at + Vec2::new(20.0, 0.0));
-    h.run();
+    h.run_plan();
     assert!(near(transform(&s, a).rotation_deg, 0.0));
     let after = transform(&s, b).center_mm;
     assert!(
@@ -600,8 +601,8 @@ fn one_object_never_shows_mixed() {
     // An emptied field is just empty.
     type_text(&mut h, ANGLE, "");
     h.key_press(Key::Backspace);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(fields(&h).angle, "");
     assert!(!drawn(&h, "Mixed"));
 }
@@ -610,12 +611,12 @@ fn one_object_never_shows_mixed() {
 fn two_objects_with_one_angle_do_not_show_mixed() {
     let dir = tempfile::tempdir().unwrap();
     let (_s, _a, _b, mut h, _) = two_squares(&dir);
-    h.run();
+    h.run_plan();
     assert_eq!(fields(&h).angle, "0.00");
     assert!(!drawn(&h, "Mixed"));
     type_text(&mut h, ANGLE, "");
     h.key_press(Key::Backspace);
-    h.run();
+    h.run_plan();
     assert!(!drawn(&h, "Mixed"));
 }
 
@@ -639,8 +640,8 @@ fn every_corner_has_a_rotate_zone() {
         let (s, id, mut h, v) = square(&dir);
         let (_, at) = corner_zones(&v)[i];
         h.hover_at(at);
-        h.run();
-        h.run();
+        h.run_plan();
+        h.run_plan();
         assert_eq!(cursor(&h), CursorIcon::None, "corner {i}");
         turn(&mut h, at, mm(&v, 45.0, 45.0), 30.0, Modifiers::NONE);
         let t = transform(&s, id);
@@ -657,7 +658,7 @@ fn the_rotate_card_opens_away_from_the_selection() {
         let (_, at) = corner_zones(&v)[i];
         h.hover_at(at);
         for _ in 0..4 {
-            h.run();
+            h.run_plan();
         }
         let card = h.get_by_label(&help::rotate_card(Os::CURRENT)).rect();
         let selection = egui::Rect::from_two_pos(mm(&v, 20.0, 20.0), mm(&v, 70.0, 70.0));
@@ -692,8 +693,8 @@ fn a_typed_angle_applies_to_its_document_when_the_document_changes() {
     type_text(&mut h, ANGLE, "30");
     h.get_by_role_and_label(Role::Button, "New document")
         .click();
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     let g = s.lock().unwrap();
     assert_eq!(g.docs.len(), 2);
     assert_ne!(g.doc().id(), first, "the new document is active");
@@ -719,13 +720,13 @@ fn a_typed_angle_counts_before_a_save_click() {
     let mut h = common::harness_with(&dir, s.clone(), |a| a.with_file_picker(picker.clone()));
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Tab, "Layout").click();
-    h.run();
+    h.run_plan();
     type_text(&mut h, ANGLE, "30");
     h.get_all_by_role_and_label(Role::Button, "Save")
         .next()
         .unwrap()
         .click();
-    h.run();
+    h.run_plan();
     let doc = flatcraft_engine::commands::project::load_rebuilt(
         &flatcraft_device::ProfileStore::load(&dir.path().join("profiles")).unwrap(),
         &path,
@@ -754,8 +755,8 @@ fn an_object_behind_the_selection_leaves_the_rotate_zone_alone() {
     let big_before = transform(&s, big);
     let at = zone(&v, kurbo::Point::new(70.0, 70.0));
     h.hover_at(at);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(cursor(&h), CursorIcon::None, "the rotate cursor");
     turn(&mut h, at, mm(&v, 45.0, 45.0), 30.0, Modifiers::NONE);
     assert!(near(transform(&s, small).rotation_deg, 30.0));
@@ -789,8 +790,8 @@ fn a_backing_piece_with_its_edge_in_the_zone_leaves_it_alone() {
     let (mut h, v) = rig(&dir, s.clone(), kurbo::Point::new(45.0, 45.0));
     let at = zone(&v, kurbo::Point::new(70.0, 70.0));
     h.hover_at(at);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(cursor(&h), CursorIcon::None, "the rotate cursor");
     let before = transform(&s, back);
     turn(&mut h, at, mm(&v, 45.0, 45.0), 30.0, Modifiers::NONE);

@@ -4,6 +4,7 @@
 //! action.
 
 mod common;
+use common::RunPlan;
 
 use common::*;
 use egui::accesskit::Role;
@@ -133,7 +134,7 @@ fn check_tab(h: &mut AppHarness, tab: &str, width: f32) -> usize {
         }
         // The list holds every action.
         h.get_by_role_and_label(Role::Button, def.title).click();
-        h.run();
+        h.run_plan();
         for to_area in [false, true] {
             if g == GroupId::Arrange {
                 let option = if to_area {
@@ -142,7 +143,7 @@ fn check_tab(h: &mut AppHarness, tab: &str, width: f32) -> usize {
                     "To the selection"
                 };
                 h.get_by_label(option).click();
-                h.run();
+                h.run_plan();
             }
             let want: Vec<&Tool> = g
                 .tools()
@@ -174,14 +175,14 @@ fn check_tab(h: &mut AppHarness, tab: &str, width: f32) -> usize {
             assert!(window(h).contains_rect(each[0].rect()));
         }
         h.key_press(egui::Key::Escape);
-        h.run();
+        h.run_plan();
     }
     tiles
 }
 
 fn show_tab(h: &mut AppHarness, tab: &str) {
     h.get_by_role_and_label(Role::Tab, tab).click();
-    h.run();
+    h.run_plan();
 }
 
 #[test]
@@ -292,10 +293,10 @@ fn a_listed_action_works_and_closes_the_list() {
         "the Transform group is a tile"
     );
     h.get_by_role_and_label(Role::Button, "Transform").click();
-    h.run();
+    h.run_plan();
     let undo = undo_len(&s);
     h.get_by_label("Mirror vertically (Transform)").click();
-    h.run();
+    h.run_plan();
     wait_for_workers(&mut h);
     assert_eq!(undo_len(&s), undo + 1, "mirrored from the list");
     assert!(
@@ -314,13 +315,13 @@ fn search_opens_a_list_on_a_collapsed_ribbon() {
     let mut h = sized(&dir, s.clone(), 900.0);
     show_tab(&mut h, "Layout");
     h.get_by_label("Search commands").click();
-    h.run();
+    h.run_plan();
     h.get_by_label("Search commands").type_text("distribute");
-    h.run();
+    h.run_plan();
     // One object: Distribute cannot run, so search opens its list.
     h.get_by_role_and_label(Role::Button, "Distribute vertically (search)")
         .click();
-    h.run();
+    h.run_plan();
     assert!(
         matches!(
             collapse::level(&h.ctx, ribbon::bar_id()),
@@ -335,10 +336,10 @@ fn search_opens_a_list_on_a_collapsed_ribbon() {
     );
     // One object lines up with the cutting area.
     h.get_by_label("To the cutting area").click();
-    h.run();
+    h.run_plan();
     let undo = undo_len(&s);
     h.get_by_label("Align right (Arrange)").click();
-    h.run();
+    h.run_plan();
     wait_for_workers(&mut h);
     assert_eq!(undo_len(&s), undo + 1, "aligned from the list");
 }
@@ -384,7 +385,7 @@ fn resizing_settles_without_flipping() {
     ] {
         h.set_size(egui::vec2(w, 900.0));
         // `run` fails when the frames keep asking for more.
-        h.run();
+        h.run_plan();
         let level = collapse::level(&h.ctx, ribbon::bar_id());
         h.step();
         assert_eq!(
@@ -426,7 +427,7 @@ fn a_field_that_shrinks_back_lets_the_ribbon_grow_again() {
                     )
                     .unwrap();
             }
-            h.run();
+            h.run_plan();
             wait_for_workers(h);
         };
         size(&mut h, 123456.75);
@@ -451,7 +452,7 @@ fn a_field_that_shrinks_back_lets_the_ribbon_grow_again() {
     let mut w = 1400.0;
     while w > 600.0 {
         h.set_size(egui::vec2(w - 10.0, 900.0));
-        h.run();
+        h.run_plan();
         if collapse::level(&h.ctx, ribbon::bar_id()) != Some(Level::Full) {
             break;
         }
@@ -478,7 +479,7 @@ fn a_field_that_shrinks_back_lets_the_ribbon_grow_again() {
                 )
                 .unwrap();
         }
-        h.run();
+        h.run_plan();
         wait_for_workers(&mut h);
         if !full {
             changed += 1;
@@ -563,14 +564,14 @@ fn no_number_field_cuts_its_value() {
             &snap,
             flatcraft::ui::arrange::PanelKind::MoveCopy,
         );
-        h.run();
+        h.run_plan();
         shown_whole(&h, "-9999.99", width);
         flatcraft::ui::arrange::open(
             &mut app_mut(&mut h).ui.prepare,
             &snap,
             flatcraft::ui::arrange::PanelKind::Rotate,
         );
-        h.run();
+        h.run_plan();
         shown_whole(&h, "-359.99", width);
     }
 }
@@ -583,7 +584,7 @@ fn the_cut_bar_fits_at_every_width() {
         import_square(&s);
         let mut h = sized(&dir, s, width);
         app_mut(&mut h).ui.workspace = ui::Workspace::Cut;
-        h.run();
+        h.run_plan();
         let w = window(&h);
         let debug = h.get_by_label("Debug panel").rect();
         assert!(w.contains_rect(debug), "{width}: Debug panel off-screen");
@@ -618,7 +619,7 @@ fn the_cut_bar_folds_to_numbers_then_to_a_list() {
         import_square(&s);
         let mut h = harness_sized(&dir, s, [width, 600.0], 8, |app| app);
         app_mut(&mut h).ui.workspace = ui::Workspace::Cut;
-        h.run();
+        h.run_plan();
         let level = collapse::level(&h.ctx, ui::cut::bar_id());
         assert_eq!(level, Some(want), "{width}");
         h.step();
@@ -630,7 +631,7 @@ fn the_cut_bar_folds_to_numbers_then_to_a_list() {
         } else {
             assert!(find(&h, Role::Tab, "Send").is_empty(), "{width}");
             h.get_by_label(collapse::MORE).click();
-            h.run();
+            h.run_plan();
         }
         // A folded step says its status in its card, in plain words; a
         // dimmed one says it once, in its reason.
@@ -666,7 +667,7 @@ fn the_cut_bar_folds_to_numbers_then_to_a_list() {
         }
         // Every stage is reachable and works.
         h.get_by_role_and_label(Role::Tab, "Send").click();
-        h.run();
+        h.run_plan();
         assert_eq!(app(&h).ui.cut.stage, ui::cut::Stage::Send, "{width}");
     }
 }
@@ -687,7 +688,7 @@ fn the_agent_pill_leaves_room_for_the_active_tab() {
             .unwrap()
             .execute("document.switch", json!({ "doc_id": id }), Origin::User)
             .ok();
-        h.run();
+        h.run_plan();
         let name = format!("Untitled {}", i + 1);
         let tab = h.get_by_role_and_label(Role::Button, &name).rect();
         let right = pill.min.x.min(settings.min.x);
@@ -745,7 +746,7 @@ fn the_active_tab_stays_visible_with_12_documents() {
                 .execute("document.switch", json!({ "doc_id": id }), Origin::User)
                 .ok();
             app_mut(&mut h).ui.workspace = ui::Workspace::Prepare;
-            h.run();
+            h.run_plan();
             let active = s.lock().unwrap().doc().id();
             assert_eq!(active, id, "switched");
             h.get_by_label("New document");
@@ -768,7 +769,7 @@ fn the_active_tab_stays_visible_with_12_documents() {
             continue;
         }
         h.get_by_label(app_bar::ALL_DOCUMENTS).click();
-        h.run();
+        h.run_plan();
         for n in &names {
             h.get_by_label(&format!("{n} (documents)"));
         }
@@ -776,7 +777,7 @@ fn the_active_tab_stays_visible_with_12_documents() {
         // its tab.
         let hidden = missing[0].clone();
         h.get_by_label(&format!("{hidden} (documents)")).click();
-        h.run();
+        h.run_plan();
         assert!(h.query_by_role_and_label(Role::Button, &hidden).is_some());
         assert!(
             h.query_by_label(&format!("{hidden} (documents)")).is_none(),

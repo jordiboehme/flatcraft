@@ -1,6 +1,7 @@
 //! The right-click menu of a document tab.
 
 mod common;
+use common::RunPlan;
 
 use common::{FakeRevealer, app, app_mut, copied, harness_with, session};
 use egui::accesskit::Role;
@@ -38,7 +39,7 @@ fn rig() -> (
 
 fn open_menu(h: &mut common::AppHarness, tab: &str) {
     h.get_by_role_and_label(Role::Button, tab).click_secondary();
-    h.run();
+    h.run_plan();
 }
 
 #[test]
@@ -47,7 +48,7 @@ fn reveal_and_copy_path_act_on_the_tab_file() {
     open_menu(&mut h, "Stickers");
     h.get_by_role_and_label(Role::Button, reveal_menu_label())
         .click();
-    h.run();
+    h.run_plan();
     assert_eq!(*revealed.0.lock().unwrap(), std::slice::from_ref(&path));
     open_menu(&mut h, "Stickers");
     h.get_by_role_and_label(Role::Button, "Copy path").click();
@@ -64,8 +65,8 @@ fn an_untitled_tab_dims_reveal_and_copy_with_the_reason() {
         assert!(node.accesskit_node().is_disabled(), "{item}");
         let at = node.rect().center();
         h.hover_at(at);
-        h.run();
-        h.run();
+        h.run_plan();
+        h.run_plan();
         h.get_by_label(SAVE_FIRST);
     }
     assert!(revealed.0.lock().unwrap().is_empty());
@@ -76,7 +77,7 @@ fn close_closes_the_tab() {
     let (_dir, s, mut h, _r, _path) = rig();
     open_menu(&mut h, "Stickers");
     h.get_by_role_and_label(Role::Button, "Close").click();
-    h.run();
+    h.run_plan();
     assert_eq!(s.lock().unwrap().docs.len(), 1);
     assert!(s.lock().unwrap().doc().path.is_none());
 }
@@ -92,7 +93,7 @@ fn close_other_tabs_asks_for_each_dirty_document() {
         st.execute("document.new", json!({}), Origin::User).unwrap();
         st.docs[0].dirty = true;
     }
-    h.run();
+    h.run_plan();
     let keep = s.lock().unwrap().docs[1].id();
     let (stickers, dirty) = {
         let st = s.lock().unwrap();
@@ -101,15 +102,15 @@ fn close_other_tabs_asks_for_each_dirty_document() {
     open_menu(&mut h, "Untitled 2");
     h.get_by_role_and_label(Role::Button, "Close other tabs")
         .click();
-    h.run();
+    h.run_plan();
     // In tab order: Stickers is asked about first, nothing closed yet.
     assert_eq!(app(&h).ui.unsaved, Some(Unsaved::Close(stickers)));
     assert_eq!(s.lock().unwrap().docs.len(), 4);
     h.get_by_role_and_label(Role::Button, "Don't Save").click();
-    h.run();
+    h.run_plan();
     assert_eq!(app(&h).ui.unsaved, Some(Unsaved::Close(dirty)));
     h.get_by_role_and_label(Role::Button, "Don't Save").click();
-    h.run();
+    h.run_plan();
     assert_eq!(app(&h).ui.unsaved, None);
     let st = s.lock().unwrap();
     assert_eq!(st.docs.len(), 1);
@@ -125,13 +126,13 @@ fn cancel_stops_close_other_tabs() {
         st.doc_mut().dirty = true;
         st.docs[0].dirty = true;
     }
-    h.run();
+    h.run_plan();
     let keep = s.lock().unwrap().docs[1].id();
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![flatcraft::ui::Action::CloseOthers(keep)]);
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Cancel").click();
-    h.run();
+    h.run_plan();
     assert_eq!(app(&h).ui.unsaved, None);
     assert_eq!(s.lock().unwrap().docs.len(), 3, "nothing more was closed");
     assert!(app(&h).ui.close_queue.is_empty());
@@ -144,9 +145,9 @@ fn no_tab_menu_while_a_dialog_is_open() {
     let id = s.lock().unwrap().docs[0].id();
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![flatcraft::ui::Action::Close(id)]);
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Stickers •")
         .click_secondary();
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label("Close other tabs").is_none());
 }

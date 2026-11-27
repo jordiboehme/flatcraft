@@ -280,9 +280,11 @@ impl KeptCache {
                 .is_some_and(|(p, a, v)| Arc::ptr_eq(p, job) && *a == area && v == variant)
     }
 
-    /// True while a worker builds the mask of the newest plan.
+    /// True while a worker builds the mask of the newest plan. A mask that
+    /// is built but not drawn yet (its plan is no longer shown) is not
+    /// pending: nothing more comes.
     pub fn pending(&self) -> bool {
-        self.pending
+        self.pending && self.slot.lock().is_ok_and(|s| s.is_none())
     }
 
     /// The texture of the newest mask, once it was drawn.

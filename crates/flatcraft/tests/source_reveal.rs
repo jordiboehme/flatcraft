@@ -2,6 +2,7 @@
 //! the macOS menu bar's Object menu.
 
 mod common;
+use common::RunPlan;
 
 use std::path::Path;
 
@@ -141,7 +142,7 @@ fn a_linked_file_that_exists_is_revealed_and_copied() {
     );
     // The menu bar offers the same, through the same items.
     select(&r.s, &ids);
-    r.h.run();
+    r.h.run_plan();
     let m = model(&mut r);
     assert!(enabled(&m, &Cmd::RevealSource));
     assert!(enabled(&m, &Cmd::CopySourcePath));
@@ -161,7 +162,7 @@ fn a_missing_file_is_dimmed_with_its_reason() {
     std::fs::remove_file(&file).unwrap();
     // The source check (off the UI thread) finds it gone.
     r.h.event(egui::Event::WindowFocused(false));
-    r.h.run();
+    r.h.run_plan();
     r.h.event(egui::Event::WindowFocused(true));
     wait_for_workers(&mut r.h);
     let list = items(&mut r, &[id]);
@@ -176,7 +177,7 @@ fn a_missing_file_is_dimmed_with_its_reason() {
     run(&mut r, Item::RevealSource, &[id]);
     assert!(r.revealed.0.lock().unwrap().is_empty());
     select(&r.s, &[id]);
-    r.h.run();
+    r.h.run_plan();
     let m = model(&mut r);
     assert!(!enabled(&m, &Cmd::RevealSource));
     assert!(!enabled(&m, &Cmd::CopySourcePath));
@@ -190,7 +191,7 @@ fn an_object_without_a_file_never_shows_the_items() {
     assert_eq!(reason(&list, Item::RevealSource), None);
     assert_eq!(reason(&list, Item::CopySourcePath), None);
     select(&r.s, &[id]);
-    r.h.run();
+    r.h.run_plan();
     let m = model(&mut r);
     assert!(!enabled(&m, &Cmd::RevealSource));
 }
@@ -215,7 +216,7 @@ fn objects_from_different_files_are_dimmed() {
     let list = items(&mut r, &[ia, plain]);
     assert_eq!(reason(&list, Item::RevealSource), Some(None));
     select(&r.s, &[ia, ib]);
-    r.h.run();
+    r.h.run_plan();
     let m = model(&mut r);
     assert!(!enabled(&m, &Cmd::CopySourcePath));
 }
@@ -291,7 +292,7 @@ fn twelve_copies_of_one_file_touch_no_file_per_frame() {
             .collect();
     assert_eq!(ids.len(), 12);
     select(&r.s, &ids);
-    r.h.run();
+    r.h.run_plan();
     let calls = flatcraft_engine::commands::sources::find_linked_calls();
     for _ in 0..10 {
         r.h.step();
@@ -377,7 +378,7 @@ fn a_reveal_that_fails_shows_why() {
             revealed: FakeRevealer::default(),
         };
         run(&mut r, Item::RevealSource, &[id]);
-        r.h.run();
+        r.h.run_plan();
         let texts: Vec<String> = app(&r.h).ui.toasts.iter().map(|t| t.text.clone()).collect();
         let want = if at_once {
             "no file manager"

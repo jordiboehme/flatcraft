@@ -887,6 +887,9 @@ impl ObjView {
 #[derive(Debug, Clone)]
 pub struct Snapshot {
     pub doc_id: u64,
+    /// A long command of the window (import, trace, open, export) runs or
+    /// waits (`FlatCraftApp::long`): the actions that start one are dimmed.
+    pub busy: bool,
     /// The document's revision (`DocState::revision`): it changes with
     /// every change of the document, undo and redo included.
     pub doc_rev: u64,
@@ -1100,6 +1103,7 @@ pub fn snapshot(app: &mut FlatCraftApp, ctx: &egui::Context) -> Snapshot {
 /// thread; until one is ready the object shows its last shape (or none),
 /// and the window repaints when it arrives.
 pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool) -> Snapshot {
+    let busy = app.long.busy();
     let cache = &mut app.ui.prepare.cache;
     let test_cut_cache = &mut app.ui.prepare.test_cut_cache;
     let cards_cache = &mut app.ui.prepare.cards_cache;
@@ -1187,6 +1191,7 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
         }
         Snapshot {
             doc_id: st.id(),
+            busy,
             doc_rev: st.revision(),
             objects,
             tree: st.document.tree(),

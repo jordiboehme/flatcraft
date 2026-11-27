@@ -2,11 +2,16 @@
 //! Send), the mat canvas with the toolpaths on top, the timeline and the
 //! stage panel on the right.
 //!
-//! The job is planned with the engine's `job::build_input`, the same build
-//! `job.preview` runs. The input is taken in the frame's snapshot (one
-//! short lock) and the build runs after the lock is released, only when
-//! the input changed: the same geometry `Arc`s placed the same way with the
-//! same settings and profiles give the same plan.
+//! The job is planned with the engine's `job::build_classified`, the same
+//! build `job.preview` runs. The input is taken in the frame's snapshot
+//! (one short lock) and the build runs on a worker thread, only when the
+//! input changed: the same geometry `Arc`s placed the same way with the
+//! same settings and profiles give the same plan. A frame waits a moment
+//! ([`PLAN_WAIT`]) for a plan it just asked for, so a small job shows at
+//! once; a big one lands in a later frame. Meanwhile the canvas shows the
+//! last plan faded with a "Planning..." note, and everything that counts
+//! (stats, legend, timeline, kept overlay) reads only the plan of the
+//! current input. A plan built for an older input is never shown.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,7 +19,9 @@ use std::sync::Arc;
 use egui::{Align2, Color32, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use flatcraft_device::TransportSpec;
 use flatcraft_engine::CommandError;
-use flatcraft_engine::job::{JobInput, JobResult, build_classified, file_output_dir, summary};
+use flatcraft_engine::job::{
+    BuildFailure, JobInput, JobResult, build_classified, file_output_dir, summary,
+};
 
 use super::canvas::{self, CanvasView};
 use super::collapse::{self, Group, Mode};
@@ -82,6 +89,68 @@ impl Stage {
 /// The plan of the current input, or why there is none.
 pub type Plan = Result<Arc<JobResult>, CommandError>;
 
+/// How long a frame waits for a plan it just asked for. Small jobs land in
+/// the same frame; a big one is taken in a later frame.
+pub const PLAN_WAIT: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// The note on the canvas and in the stage panel while a plan is built.
+pub const PLANNING: &str = "Planning...";
+
+/// The hover card of the note and of a step that waits for the plan.
+pub const PLANNING_CARD: &str = "FlatCraft is working out the cut for your latest change: the order, the knife moves and the weeding. The faded lines are the plan before it. Everything else in the window keeps working meanwhile.";
+
+/// Why Send is dimmed while the plan is built.
+pub const PLANNING_SEND: &str =
+    "Wait a moment: FlatCraft is still planning the cut for your latest change.";
+
+/// Builds a plan; tests replace it with a slow one.
+pub type PlanBuilder = Arc<dyn Fn(&JobInput) -> Result<JobResult, BuildFailure> + Send + Sync>;
+
+/// What a plan worker gives back: its document, revision and input (with
+/// the cut geometry it built), and the plan.
+type Built = (u64, u64, JobInput, Result<JobResult, BuildFailure>);
+
+/// The worker that builds plans, one at a time. A copy starts idle.
+struct PlanWorker {
+    builder: PlanBuilder,
+    /// The plan being built: its document and input, and where its result
+    /// arrives.
+    running: Option<((u64, JobInput), std::sync::mpsc::Receiver<Built>)>,
+    /// The newest input asked for while another one was built.
+    queued: Option<(u64, u64, JobInput)>,
+    /// How many plans were built, for tests.
+    built: usize,
+}
+
+impl Default for PlanWorker {
+    fn default() -> Self {
+        Self {
+            builder: Arc::new(build_classified),
+            running: None,
+            queued: None,
+            built: 0,
+        }
+    }
+}
+
+impl Clone for PlanWorker {
+    fn clone(&self) -> Self {
+        Self {
+            builder: self.builder.clone(),
+            ..Self::default()
+        }
+    }
+}
+
+impl std::fmt::Debug for PlanWorker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlanWorker")
+            .field("running", &self.running.is_some())
+            .field("queued", &self.queued.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Everything Cut remembers between frames.
 #[derive(Debug, Clone)]
 pub struct CutState {
@@ -95,7 +164,15 @@ pub struct CutState {
     pub timeline: Timeline,
     /// The document and input the plan was built from.
     plan_key: Option<(u64, JobInput)>,
+    /// The plan of the current input: `None` while it is built.
     pub plan: Option<Plan>,
+    /// The plan before, while the plan of a newer input is built: its
+    /// cuts are drawn faded and the stage bar keeps its status lines, so
+    /// nothing jumps. Nothing counts from it.
+    pub previous: Option<Plan>,
+    /// The document and input of the newest request.
+    wanted: Option<(u64, JobInput)>,
+    worker: PlanWorker,
     /// The plan failed because no visible object has cut paths.
     pub nothing_to_cut: bool,
     /// Why the plan failed, with fixes (`BuildFailure::issues`); empty
@@ -121,6 +198,9 @@ impl Default for CutState {
             timeline: Timeline::default(),
             plan_key: None,
             plan: None,
+            previous: None,
+            wanted: None,
+            worker: PlanWorker::default(),
             nothing_to_cut: false,
             issues: Vec::new(),
             transport: None,
@@ -132,30 +212,52 @@ impl Default for CutState {
 }
 
 impl CutState {
-    /// Rebuilds the plan when the snapshot's job input changed. Call it
-    /// without the session lock.
-    pub fn update(&mut self, snap: &Snapshot) {
+    /// Builds the plan of `f` instead of the engine's build (tests).
+    pub fn set_builder(
+        &mut self,
+        f: impl Fn(&JobInput) -> Result<JobResult, BuildFailure> + Send + Sync + 'static,
+    ) {
+        self.worker.builder = Arc::new(f);
+    }
+
+    /// True while a plan is built or waits to be built.
+    pub fn planning(&self) -> bool {
+        self.worker.running.is_some() || self.worker.queued.is_some()
+    }
+
+    /// How many plans were built, for tests.
+    pub fn plans_built(&self) -> usize {
+        self.worker.built
+    }
+
+    /// Asks for the plan of the snapshot's job input when it changed, and
+    /// takes a plan the worker finished. Call it without the session lock.
+    /// Returns the input of a plan that landed in this frame, with its
+    /// document and revision, so the caller can offer its cut geometry
+    /// to the document's cache.
+    pub fn update(&mut self, ctx: &egui::Context, snap: &Snapshot) -> Option<(u64, u64, JobInput)> {
         self.transport = snap.plotter.as_ref().map(|p| p.transport.clone());
         match &snap.job_input {
             None => {}
             Some(Ok(input)) => {
-                let same = self
-                    .plan_key
-                    .as_ref()
-                    .is_some_and(|(d, i)| *d == snap.doc_id && i == input);
-                if !same {
-                    let built = build_classified(input);
-                    self.nothing_to_cut = built.as_ref().err().is_some_and(|f| f.nothing_to_cut);
-                    self.issues = built
-                        .as_ref()
-                        .err()
-                        .map(|f| f.issues.clone())
-                        .unwrap_or_default();
-                    let plan = built.map_err(|f| f.error).map(Arc::new);
-                    let total = plan.as_ref().map_or(0, |r| r.plan.toolpaths.len());
-                    self.timeline.reset(total);
-                    self.plan = Some(plan);
-                    self.plan_key = Some((snap.doc_id, input.clone()));
+                let current = |k: &Option<(u64, JobInput)>| {
+                    k.as_ref()
+                        .is_some_and(|(d, i)| *d == snap.doc_id && i == input)
+                };
+                if !current(&self.plan_key) && !current(&self.wanted) {
+                    self.wanted = Some((snap.doc_id, input.clone()));
+                    // Nothing counts from the plan of an older input.
+                    if let Some(plan) = self.plan.take() {
+                        self.previous = Some(plan);
+                    }
+                    // The timeline counts the plan of this input only.
+                    self.timeline.reset(0);
+                    self.plan_key = None;
+                    self.worker.queued = Some((snap.doc_id, snap.doc_rev, input.clone()));
+                } else if current(&self.plan_key) {
+                    // Back to the input of the plan shown: nothing to wait for.
+                    self.wanted = None;
+                    self.worker.queued = None;
                 }
             }
             Some(Err(e)) => {
@@ -166,8 +268,99 @@ impl CutState {
                 self.issues.clear();
                 self.plan = Some(Err(e.clone()));
                 self.plan_key = None;
+                self.wanted = None;
+                self.previous = None;
+                self.worker.queued = None;
             }
         }
+        self.pump(ctx)
+    }
+
+    /// Starts the queued plan when the worker is free, and takes a plan it
+    /// finished: waits [`PLAN_WAIT`] for one it just started.
+    fn pump(&mut self, ctx: &egui::Context) -> Option<(u64, u64, JobInput)> {
+        let mut landed = None;
+        loop {
+            let mut started = false;
+            if self.worker.running.is_none() {
+                let Some((doc, rev, input)) = self.worker.queued.take() else {
+                    return landed;
+                };
+                let (tx, rx) = std::sync::mpsc::channel();
+                let builder = self.worker.builder.clone();
+                let repaint = ctx.clone();
+                let key = (doc, input.clone());
+                let spawned = std::thread::Builder::new()
+                    .name("flatcraft-plan".into())
+                    .spawn(move || {
+                        let built = builder(&input);
+                        let _ = tx.send((doc, rev, input, built));
+                        repaint.request_repaint();
+                    });
+                if spawned.is_err() {
+                    eprintln!("flatcraft: cannot start the plan worker");
+                    return landed;
+                }
+                self.worker.running = Some((key, rx));
+                started = true;
+            }
+            let Some((_, rx)) = self.worker.running.as_ref() else {
+                return landed;
+            };
+            let got = if started {
+                rx.recv_timeout(PLAN_WAIT).ok()
+            } else {
+                match rx.try_recv() {
+                    Ok(b) => Some(b),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                    // The worker died: forget it, ask again next time.
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        self.worker.running = None;
+                        self.wanted = None;
+                        return landed;
+                    }
+                }
+            };
+            let Some((doc, rev, input, built)) = got else {
+                return landed;
+            };
+            self.worker.running = None;
+            self.worker.built += 1;
+            let wanted = self
+                .wanted
+                .as_ref()
+                .is_some_and(|(d, i)| *d == doc && *i == input);
+            if wanted {
+                if self
+                    .worker
+                    .queued
+                    .as_ref()
+                    .is_some_and(|(d, _, i)| *d == doc && *i == input)
+                {
+                    self.worker.queued = None;
+                }
+                self.take(doc, input.clone(), built);
+                landed = Some((doc, rev, input));
+            }
+            // A plan of an older input is dropped; the newest one is next.
+        }
+    }
+
+    /// Makes `built` the plan of the current input.
+    fn take(&mut self, doc: u64, input: JobInput, built: Result<JobResult, BuildFailure>) {
+        self.nothing_to_cut = built.as_ref().err().is_some_and(|f| f.nothing_to_cut);
+        self.issues = built
+            .as_ref()
+            .err()
+            .map(|f| f.issues.clone())
+            .unwrap_or_default();
+        let plan = built.map_err(|f| f.error).map(Arc::new);
+        let total = plan.as_ref().map_or(0, |r| r.plan.toolpaths.len());
+        self.timeline.reset(total);
+        self.plan = Some(plan);
+        self.plan_key = Some((doc, input));
+        self.wanted = None;
+        self.previous = None;
     }
 
     /// The built job, if the plan worked.
@@ -270,6 +463,8 @@ enum Status {
     NothingToCut,
     NeedsFix,
     NotPlanned,
+    /// The plan of the latest change is being built.
+    Planning,
     NotReady,
     /// Ready to send; over USB when true, else to a file.
     Ready(bool),
@@ -284,9 +479,16 @@ impl Status {
         } else {
             None
         };
-        let unplanned = match &st.plan {
+        // While the plan of the latest change is built, the bar keeps the
+        // status lines of the plan before, so it does not jump.
+        let plan = match &st.plan {
+            None if st.planning() => st.previous.as_ref(),
+            p => p.as_ref(),
+        };
+        let unplanned = match plan {
             Some(Err(_)) if st.nothing_to_cut => Status::NothingToCut,
             Some(Err(_)) => Status::NeedsFix,
+            None if st.planning() => Status::Planning,
             _ => Status::NotPlanned,
         };
         match stage {
@@ -300,7 +502,7 @@ impl Status {
                 }
                 (_, _, why) => why.unwrap_or(Status::Missing("plotter")),
             },
-            Stage::Path => match (&st.plan, missing) {
+            Stage::Path => match (plan, missing) {
                 (Some(Ok(job)), _) => Status::Plan(
                     settings_window::strategy_name(snap.job.strategy),
                     passes_text(job),
@@ -310,7 +512,7 @@ impl Status {
                 _ => unplanned,
             },
             Stage::Simulate => Status::NotReady,
-            Stage::Send => match (&st.plan, missing, &snap.plotter) {
+            Stage::Send => match (plan, missing, &snap.plotter) {
                 (_, Some(why), _) => why,
                 (Some(Ok(_)), None, Some(p)) => {
                     Status::Ready(matches!(p.transport, TransportSpec::Usb { .. }))
@@ -332,6 +534,7 @@ impl Status {
             Status::NothingToCut => "Nothing to cut".into(),
             Status::NeedsFix => "Needs a fix".into(),
             Status::NotPlanned => "Not planned yet".into(),
+            Status::Planning => PLANNING.into(),
             Status::NotReady => "Not ready yet".into(),
             Status::Ready(true) => "USB · ready".into(),
             Status::Ready(false) => "File · ready".into(),
@@ -354,6 +557,7 @@ impl Status {
             Status::NothingToCut => "There is nothing to cut yet.".into(),
             Status::NeedsFix => "The job needs a fix first. Path says what.".into(),
             Status::NotPlanned => "The job is not planned yet.".into(),
+            Status::Planning => "FlatCraft is planning the cut for your latest change.".into(),
             Status::NotReady => format!("{} is not ready yet in this build.", stage.name()),
             Status::Ready(true) => "Ready to send to the plotter over USB.".into(),
             Status::Ready(false) => "Ready to write the job to a file.".into(),
@@ -642,6 +846,23 @@ fn stats(ui: &mut Ui, job: &JobResult, snap: &Snapshot, t: &Tokens) {
         });
 }
 
+/// The stats rows while the plan of the latest change is built: the same
+/// rows (so nothing jumps), with "..." for every number, and the note.
+fn planning_stats(ui: &mut Ui, t: &Tokens) {
+    let note = ui.label(RichText::new(PLANNING).color(t.text_dim));
+    super::groups::card(&note, PLANNING, PLANNING_CARD, None, false);
+    egui::Grid::new("flatcraft-cut-stats")
+        .num_columns(2)
+        .spacing([t.spacing * 2.0, t.spacing * 0.5])
+        .show(ui, |ui| {
+            for row in ["Paths", "Weed paths", "Cut length", "Travel length"] {
+                ui.add_enabled(false, egui::Label::new(row));
+                ui.add_enabled(false, egui::Label::new("..."));
+                ui.end_row();
+            }
+        });
+}
+
 /// How many weed paths are cut: the weed part of the job's cut
 /// toolpaths, so "Weed paths" and "Paths" count the same way.
 pub fn weed_count(job: &JobResult) -> usize {
@@ -716,6 +937,7 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
                 );
             }
             Some(Err(e)) => problem(ui, st, e, snap.doc_id, &t, actions),
+            None if st.planning() => planning_stats(ui, &t),
             None => {}
         },
         Stage::Simulate => {
@@ -723,6 +945,7 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
         }
         Stage::Send => {
             let ok = matches!(st.plan, Some(Ok(_)));
+            let planning = st.planning() && st.plan.is_none();
             if let Some(p) = &snap.plotter {
                 ui.label(RichText::new(&p.name).font(fonts::medium(13.0)));
                 ui.label(RichText::new(transport_text(&p.transport, snap)).color(t.text_dim));
@@ -740,6 +963,7 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
                     warnings(ui, job, snap.doc_id, &t, actions);
                 }
                 Some(Err(e)) => problem(ui, st, e, snap.doc_id, &t, actions),
+                None if st.planning() => planning_stats(ui, &t),
                 None => {}
             }
             super::materials::iron_on_reminder(ui, snap, &t, actions);
@@ -748,6 +972,8 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
             let label = send_label(snap);
             let hint = if ok {
                 "Punch it, Chewie."
+            } else if planning {
+                PLANNING_SEND
             } else {
                 "Fix the problem above first."
             };
@@ -966,6 +1192,18 @@ fn passes_text(job: &JobResult) -> String {
 // ---------------------------------------------------------------- canvas
 
 /// The mat with the toolpaths on top. Only pan and zoom: Cut edits nothing.
+/// The cuts of the last plan, faded, while the plan of the latest change
+/// is built. No order numbers, starts or travel: they may be gone.
+fn draw_previous(painter: &egui::Painter, view: &CanvasView, job: &JobResult, colour: Color32) {
+    let stroke = Stroke::new(1.0, colour.gamma_multiply(0.35));
+    for tp in &job.plan.toolpaths {
+        let points: Vec<Pos2> = tp.points.iter().map(|p| view.mm_to_screen(*p)).collect();
+        if points.len() > 1 {
+            painter.add(egui::Shape::line(points, stroke));
+        }
+    }
+}
+
 fn cut_canvas(
     ui: &mut Ui,
     rect: Rect,
@@ -1001,6 +1239,20 @@ fn cut_canvas(
             .draw(ui.ctx(), &painter, &view, &job, area, mat_rgb, t);
     }
     let job = st.job().filter(|_| st.stage != Stage::Device);
+    // While the plan of the latest change is built, the last plan shows
+    // faded under a note; it never counts.
+    let previous = match &st.previous {
+        Some(Ok(prev)) if job.is_none() && st.planning() && st.stage != Stage::Device => {
+            Some(prev.clone())
+        }
+        _ => None,
+    };
+    if let Some(prev) = &previous {
+        draw_previous(&painter, &view, prev, contrast);
+        let galley = painter.layout_no_wrap(PLANNING.to_string(), fonts::medium(12.0), t.text_dim);
+        let at = rect.left_top() + Vec2::new(canvas::RULER + t.spacing, canvas::RULER + t.spacing);
+        painter.galley(at, galley, t.text_dim);
+    }
     let faded = if job.is_some() { 0.3 } else { 1.0 };
     canvas::draw_objects(&painter, snap, &view, mat_rgb, faded, true, |_| None);
     if let Some(job) = &job {

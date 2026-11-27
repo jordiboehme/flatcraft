@@ -3,6 +3,7 @@
 //! material, driven through egui_kittest.
 
 mod common;
+use common::RunPlan;
 
 use common::*;
 use egui::accesskit::Role;
@@ -19,9 +20,9 @@ fn tall(dir: &tempfile::TempDir, s: &flatcraft_mcp::SharedSession) -> AppHarness
 /// The Cut workspace at `stage`.
 fn cut_stage(h: &mut AppHarness, stage: &str) {
     app_mut(h).ui.workspace = Workspace::Cut;
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Tab, stage).click();
-    h.run();
+    h.run_plan();
 }
 
 fn set_material(s: &flatcraft_mcp::SharedSession, id: &str) {
@@ -41,7 +42,7 @@ fn shows(h: &AppHarness, text: &str) -> bool {
 
 fn open_picker(h: &mut AppHarness) {
     h.get_by_label("Material").click();
-    h.run();
+    h.run_plan();
 }
 
 #[test]
@@ -79,16 +80,16 @@ fn the_picker_lists_materials_in_their_groups() {
     // Picking one sets the document's material, also one far down the
     // list (scrolled into view first).
     h.get_by_label("Adhesive vinyl (removable)").click();
-    h.run();
+    h.run_plan();
     assert_eq!(
         s.lock().unwrap().doc().document.job.material_id,
         "vinyl-removable"
     );
     open_picker(&mut h);
     h.get_by_label("Vellum").scroll_to_me();
-    h.run();
+    h.run_plan();
     h.get_by_label("Vellum").click();
-    h.run();
+    h.run_plan();
     assert_eq!(s.lock().unwrap().doc().document.job.material_id, "vellum");
 }
 
@@ -100,7 +101,7 @@ fn a_material_card_explains_tips_values_mat_and_backing() {
     cut_stage(&mut h, "Device & Material");
     open_picker(&mut h);
     h.get_by_label("Heat transfer vinyl (glitter)").hover();
-    h.run();
+    h.run_plan();
     assert!(shows(
         &h,
         "Mirror the design and cut with the shiny carrier side down"
@@ -117,7 +118,7 @@ fn a_material_card_explains_tips_values_mat_and_backing() {
     assert!(shows(&h, materials::MIRROR_TEXT));
     assert!(shows(&h, materials::NEVER_CUT_TEXT));
     h.get_by_label("Copy paper").hover();
-    h.run();
+    h.run_plan();
     assert!(shows(&h, materials::backing_text(false)));
     assert!(shows(&h, "Mat: light grip."));
 }
@@ -133,7 +134,7 @@ fn a_material_never_cut_suggests_a_test_cut() {
     let b = h.get_by_role_and_label(Role::Button, materials::TEST_CUT_BUTTON);
     assert!(!b.accesskit_node().is_disabled());
     b.click();
-    h.run();
+    h.run_plan();
     let names: Vec<String> = s
         .lock()
         .unwrap()
@@ -149,11 +150,11 @@ fn a_material_never_cut_suggests_a_test_cut() {
         .unwrap()
         .execute("job.send", json!({}), Origin::User)
         .unwrap();
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label(materials::TEST_CUT_TITLE).is_none());
     // Another material that was never cut shows it again.
     set_material(&s, "kraft-paper");
-    h.run();
+    h.run_plan();
     h.get_by_label(materials::TEST_CUT_TITLE);
 }
 
@@ -176,7 +177,7 @@ fn the_test_cut_button_is_dimmed_without_room() {
     let b = h.get_by_role_and_label(Role::Button, materials::TEST_CUT_BUTTON);
     assert!(b.accesskit_node().is_disabled());
     b.hover();
-    h.run();
+    h.run_plan();
     h.get_by_label(materials::NO_ROOM);
 }
 
@@ -197,7 +198,7 @@ fn iron_on_without_mirror_gets_a_reminder_that_never_blocks() {
     h.get_by_label(materials::MIRROR_TITLE);
     h.get_by_role_and_label(Role::Button, materials::MIRROR_BUTTON)
         .click();
-    h.run();
+    h.run_plan();
     let mirrored = s
         .lock()
         .unwrap()
@@ -271,13 +272,13 @@ fn the_test_shape_room_is_measured_once_per_revision() {
     assert!(first >= 1);
     // Frames without a change reuse the answer.
     for _ in 0..5 {
-        h.run();
+        h.run_plan();
     }
     assert_eq!(builds(&h), first);
     // Another material (a new revision) measures again, once.
     set_material(&s, "kraft-paper");
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(builds(&h), first + 1);
 }
 
@@ -296,7 +297,7 @@ fn the_test_cut_card_follows_the_backing_sheet() {
         let mut h = tall(&dir, &s);
         cut_stage(&mut h, "Device & Material");
         h.get_by_label(materials::TEST_CUT_TITLE).hover();
-        h.run();
+        h.run_plan();
         assert_eq!(shows(&h, "drops out"), !backing, "{id}");
         assert_eq!(
             shows(&h, "only a light line, not a cut through it"),
@@ -318,9 +319,9 @@ fn every_group_heading_has_a_card() {
     for g in flatcraft_device::MaterialGroup::ALL {
         // The last heading sits below the popup's fold.
         h.get_by_label(g.label()).scroll_to_me();
-        h.run();
+        h.run_plan();
         h.get_by_label(g.label()).hover();
-        h.run();
+        h.run_plan();
         assert!(shows(&h, materials::group_hint(g)), "{g:?}");
     }
     assert!(materials::group_hint(flatcraft_device::MaterialGroup::IronOn).contains("mirrored"));
@@ -341,11 +342,11 @@ fn a_skipped_user_file_for_the_material_shows_in_the_job_card() {
     let mut h = tall(&dir, &s);
     cut_stage(&mut h, "Device & Material");
     h.get_by_label(materials::skipped_text(true)).hover();
-    h.run();
+    h.run_plan();
     assert!(shows(&h, "new id"));
     // Another material: no note.
     set_material(&s, "kraft-paper");
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label(materials::skipped_text(true)).is_none());
 }
 
@@ -359,7 +360,7 @@ fn the_picker_entries_are_built_once_until_something_changes() {
     let builds = |h: &AppHarness| app(h).ui.prepare.cards_cache.builds;
     let first = builds(&h);
     for _ in 0..5 {
-        h.run();
+        h.run_plan();
     }
     assert_eq!(builds(&h), first);
     // A cut changes the log: the "never cut" marks are built again.
@@ -367,8 +368,8 @@ fn the_picker_entries_are_built_once_until_something_changes() {
         .unwrap()
         .execute("job.send", json!({}), Origin::User)
         .unwrap();
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(builds(&h), first + 1);
 }
 

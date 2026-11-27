@@ -1,6 +1,7 @@
 //! The About dialog and the easter eggs, driven through egui_kittest.
 
 mod common;
+use common::RunPlan;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -16,7 +17,7 @@ use flatcraft::ui::{Action, NOTHING_TO_UNDO, PUNCH_IT, PUNCH_IT_ODDS};
 fn act(h: &mut AppHarness, action: Action) {
     let ctx = h.ctx.clone();
     app_mut(h).apply(&ctx, vec![action]);
-    h.run();
+    h.run_plan();
 }
 
 fn open_about(h: &mut AppHarness) {
@@ -130,7 +131,7 @@ fn the_buttons_open_the_right_links() {
             vec![url.to_string()],
             "{button}"
         );
-        h.run();
+        h.run_plan();
     }
 }
 
@@ -153,13 +154,13 @@ fn the_version_label_opens_about() {
     let version = format!("v{}", env!("CARGO_PKG_VERSION"));
     let rect = h.get_by_label(&version).rect();
     h.hover_at(rect.center());
-    h.run();
+    h.run_plan();
     assert_eq!(
         h.output().platform_output.cursor_icon,
         egui::CursorIcon::PointingHand
     );
     h.get_by_label(&version).click();
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.about.open);
     h.get_by_label(about::TAGLINE);
 }
@@ -170,12 +171,12 @@ fn licenses_link_shows_the_list_and_back_returns() {
     let mut h = harness(&dir, session(&dir), false);
     open_about(&mut h);
     h.get_by_role_and_label(Role::Link, about::LICENSES).click();
-    h.run();
+    h.run_plan();
     h.get_by_label("Third-party licenses");
     h.get_by_label(about::THIRD_PARTY);
     assert!(about::THIRD_PARTY.contains("egui 0.37.0 - MIT OR Apache-2.0"));
     h.get_by_role_and_label(Role::Button, "Back").click();
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label("Third-party licenses").is_none());
     h.get_by_label(about::TAGLINE);
 }
@@ -186,7 +187,7 @@ fn escape_closes_the_dialog() {
     let mut h = harness(&dir, session(&dir), false);
     open_about(&mut h);
     h.key_press(egui::Key::Escape);
-    h.run();
+    h.run_plan();
     assert!(!app(&h).ui.about.open);
     assert!(h.query_by_label(about::TAGLINE).is_none());
 }
@@ -203,7 +204,7 @@ fn every_opening_shows_another_quote() {
         h.get_by_label(&format!("\u{201c}{}\u{201d}", QUOTES[q].0));
         last = Some(q);
         app_mut(&mut h).ui.about.close();
-        h.run();
+        h.run_plan();
     }
 }
 
@@ -215,18 +216,18 @@ fn five_banner_clicks_run_the_knife_then_end_of_line() {
     // Clicks elsewhere in the dialog do not count.
     for _ in 0..3 {
         h.get_by_label(about::TAGLINE).click();
-        h.run();
+        h.run_plan();
     }
     assert_eq!(app(&h).ui.about.banner_clicks, 0);
     for n in 1..about::BANNER_CLICKS {
         h.get_by_label(about::BANNER_NAME).click();
-        h.run();
+        h.run_plan();
         assert_eq!(app(&h).ui.about.banner_clicks, n);
         assert!(app(&h).ui.about.knife.is_none());
     }
     // Time alone does nothing.
     *now.lock().unwrap() += Duration::from_secs(10);
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label(about::END_OF_LINE).is_none());
     h.get_by_label(about::BANNER_NAME).click();
     // The knife asks for frames while it moves, so step instead of settling.
@@ -256,7 +257,7 @@ fn five_banner_clicks_run_the_knife_then_end_of_line() {
     // After the fade-out the banner is back to normal: no knife, no text,
     // and no more frames are asked for, so the harness settles.
     *now.lock().unwrap() = restarted + Duration::from_secs_f32(end + 0.1);
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.about.knife.is_none());
     assert!(h.query_by_label(about::END_OF_LINE).is_none());
     // A new knife after it finished.
@@ -271,7 +272,7 @@ fn five_banner_clicks_run_the_knife_then_end_of_line() {
     h.get_by_label(about::END_OF_LINE);
     // Closing and opening again starts over.
     app_mut(&mut h).ui.about.close();
-    h.run();
+    h.run_plan();
     open_about(&mut h);
     assert!(h.query_by_label(about::END_OF_LINE).is_none());
     assert_eq!(app(&h).ui.about.banner_clicks, 0);
@@ -334,15 +335,15 @@ fn a_new_apps_first_send_is_the_usual_toast() {
 
 fn type_speed(h: &mut AppHarness, label: &str, text: &str) {
     h.get_by_label(label).click();
-    h.run();
+    h.run_plan();
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
-    h.run();
+    h.run_plan();
     for c in text.chars() {
         h.event(Event::Text(c.to_string()));
-        h.run();
+        h.run_plan();
     }
     h.key_press(egui::Key::Enter);
-    h.run();
+    h.run_plan();
 }
 
 #[test]
@@ -363,7 +364,7 @@ fn speed_above_the_maximum_goes_to_eleven() {
     h.get_by_label("99 is too large: give at most 33. Press Esc to go back.");
     assert!(h.query_by_label(eleven).is_none());
     h.key_press(egui::Key::Escape);
-    h.run();
+    h.run_plan();
     // Above the maximum: clamped, and the joke.
     type_speed(&mut h, "Speed (modified)", "11");
     assert_eq!(s.lock().unwrap().doc().document.job.speed, Some(10));
@@ -407,14 +408,14 @@ fn keys_do_not_reach_prepare_while_about_is_open() {
     open_about(&mut h);
     let before = common::undo_len(&s);
     h.key_press(egui::Key::Delete);
-    h.run();
+    h.run_plan();
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
-    h.run();
+    h.run_plan();
     h.key_press(egui::Key::ArrowRight);
-    h.run();
+    h.run_plan();
     assert_eq!(common::undo_len(&s), before);
     h.key_press(egui::Key::Escape);
-    h.run();
+    h.run_plan();
     assert!(!app(&h).ui.about.open);
     assert_eq!(common::undo_len(&s), before);
 }
@@ -441,7 +442,7 @@ fn reset_speed_ends_eleven() {
     let dir = tempfile::tempdir().unwrap();
     let (mut h, s) = eleven_shown(&dir);
     h.get_by_role_and_label(Role::Button, "Reset speed").click();
-    h.run();
+    h.run_plan();
     assert_eq!(speed(&s), None);
     assert!(h.query_by_label(flatcraft::ui::settings::ELEVEN).is_none());
 }
@@ -471,7 +472,7 @@ fn an_agents_override_ends_eleven() {
             flatcraft_engine::session::Origin::Agent,
         )
         .unwrap();
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label(flatcraft::ui::settings::ELEVEN).is_none());
 }
 
@@ -549,12 +550,12 @@ fn keys_do_not_reach_prepare_under_the_unsaved_dialog() {
     let question = "Save changes to Untitled 1?";
     h.get_by_label(question);
     h.key_press(egui::Key::Delete);
-    h.run();
+    h.run_plan();
     assert_eq!(objects(&s), 1);
     assert_eq!(selection(&s), 1);
     // Escape cancels the dialog, and the selection stays.
     h.key_press(egui::Key::Escape);
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label(question).is_none());
     assert!(app(&h).ui.unsaved.is_none());
     assert_eq!((objects(&s), selection(&s)), (1, 1));
@@ -592,9 +593,9 @@ fn keys_do_not_reach_prepare_under_the_pending_send_dialog() {
     let mut h = harness(&dir, s.clone(), true);
     to_prepare(&mut h);
     h.key_press(egui::Key::Delete);
-    h.run();
+    h.run_plan();
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
-    h.run();
+    h.run_plan();
     assert_eq!((objects(&s), selection(&s)), (2, 1));
     assert!(s.lock().unwrap().pending_send().is_some());
 }
@@ -647,7 +648,7 @@ fn the_menu_waits_while_a_dialog_is_open() {
     open_about(&mut h);
     assert_eq!(app(&h).menu_gate(menu()), vec![Action::Quit]);
     app_mut(&mut h).ui.about.close();
-    h.run();
+    h.run_plan();
     import_square(&s);
     act(&mut h, Action::Close(doc));
     assert!(app(&h).ui.unsaved.is_some());

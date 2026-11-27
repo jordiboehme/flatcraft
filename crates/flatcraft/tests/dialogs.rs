@@ -2,6 +2,7 @@
 //! questions on Quit, and Escape never running the destructive action.
 
 mod common;
+use common::RunPlan;
 
 use common::*;
 use egui::accesskit::Role;
@@ -17,7 +18,7 @@ use serde_json::json;
 fn act(h: &mut AppHarness, action: Action) {
     let ctx = h.ctx.clone();
     app_mut(h).apply(&ctx, vec![action]);
-    h.run();
+    h.run_plan();
 }
 
 /// `n` documents with a square each, all with unsaved changes; the last
@@ -87,14 +88,14 @@ fn escape_and_the_close_button_cancel() {
     let mut h = harness(&dir, s.clone(), false);
     ask_close(&mut h, &s);
     h.key_press(Key::Escape);
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.unsaved.is_none());
     assert_eq!(docs(&s), 1);
     assert!(s.lock().unwrap().doc().dirty, "nothing was discarded");
     assert_eq!(s.lock().unwrap().doc().document.objects.len(), 1);
     ask_close(&mut h, &s);
     h.get_by_role_and_label(Role::Button, CLOSE_NAME).click();
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.unsaved.is_none());
     assert_eq!(s.lock().unwrap().doc().document.objects.len(), 1);
 }
@@ -107,7 +108,7 @@ fn enter_saves() {
     let mut h = harness_with(&dir, s.clone(), |a| a.with_file_picker(picker.clone()));
     ask_close(&mut h, &s);
     h.key_press(Key::Enter);
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.unsaved.is_none());
     assert_eq!(
         flatcraft_core::project::load(&path).unwrap().objects.len(),
@@ -133,7 +134,7 @@ fn command_d_is_dont_save_and_not_duplicate() {
     assert_eq!(before, 2);
     ask_close(&mut h, &s);
     h.key_press_modifiers(Modifiers::COMMAND, Key::D);
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.unsaved.is_none());
     let g = s.lock().unwrap();
     assert_eq!(g.docs.len(), 1);
@@ -154,7 +155,7 @@ fn quit_asks_for_each_document_in_turn() {
     h.get_by_label("Save changes to Untitled 1?");
     h.get_by_label("2 more documents have unsaved changes.");
     h.key_press(Key::Enter);
-    h.run();
+    h.run_plan();
     assert_eq!(
         flatcraft_core::project::load(&path).unwrap().objects.len(),
         1
@@ -164,12 +165,12 @@ fn quit_asks_for_each_document_in_turn() {
     h.get_by_label("Save changes to Untitled 2?");
     h.get_by_label("1 more document has unsaved changes.");
     h.get_by_role_and_label(Role::Button, "Don't Save").click();
-    h.run();
+    h.run_plan();
     assert!(!closing(&h));
     // 3: Cancel stops quitting; the third document keeps its changes.
     h.get_by_label("Save changes to Untitled 3?");
     h.key_press(Key::Escape);
-    h.run();
+    h.run_plan();
     assert!(!closing(&h));
     assert!(app(&h).ui.unsaved.is_none());
     assert_eq!(docs(&s), 3);
@@ -177,10 +178,10 @@ fn quit_asks_for_each_document_in_turn() {
     act(&mut h, Action::Quit);
     h.get_by_label("Save changes to Untitled 2?");
     h.key_press_modifiers(Modifiers::COMMAND, Key::D);
-    h.run();
+    h.run_plan();
     h.get_by_label("Save changes to Untitled 3?");
     h.key_press_modifiers(Modifiers::COMMAND, Key::D);
-    h.run();
+    h.run_plan();
     assert!(closing(&h), "the last answer quits");
 }
 
@@ -191,10 +192,10 @@ fn escape_never_runs_the_destructive_action() {
     let mut h = harness(&dir, s.clone(), false);
     ask_close(&mut h, &s);
     h.key_press(Key::Escape);
-    h.run();
+    h.run_plan();
     act(&mut h, Action::Quit);
     h.key_press(Key::Escape);
-    h.run();
+    h.run_plan();
     assert_eq!(docs(&s), 2);
     assert!(s.lock().unwrap().docs.iter().all(|d| d.dirty));
     assert!(!closing(&h));
@@ -220,14 +221,14 @@ fn escape_never_runs_the_destructive_action() {
     for key in [Key::Escape, Key::Enter] {
         act(&mut h, Action::Quit);
         h.key_press(key);
-        h.run();
+        h.run_plan();
         assert!(!closing(&h), "{key:?} quit");
         assert!(s.lock().unwrap().pending_send().is_some());
     }
     // Cmd+D is not Quit anyway either: that key is only Don't Save.
     act(&mut h, Action::Quit);
     h.key_press_modifiers(Modifiers::COMMAND, Key::D);
-    h.run();
+    h.run_plan();
     assert!(!closing(&h));
 }
 
@@ -261,19 +262,19 @@ fn rename_uses_the_dialog() {
         id,
         name: String::new(),
     });
-    h.run();
+    h.run_plan();
     // The title and the primary button.
     assert_eq!(h.query_all_by_label("Rename").count(), 2);
     h.get_by_role_and_label(Role::Image, "Info");
     h.get_by_role_and_label(Role::Button, CLOSE_NAME);
     // An empty name cannot be used: Enter does nothing.
     h.key_press(Key::Enter);
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.prepare.rename.is_some());
     h.get_by_label("Name").type_text("Lid");
-    h.run();
+    h.run_plan();
     h.key_press(Key::Enter);
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.prepare.rename.is_none());
     let name = s.lock().unwrap().doc().document.objects[0].name.clone();
     assert_eq!(name, "Lid");
@@ -352,7 +353,7 @@ fn no_key_allows_an_agent_cut() {
         h.get_by_label(SEND_QUESTION);
         h.get_by_role_and_label(Role::Image, "Warning");
         h.key_press_modifiers(mods, key);
-        h.run();
+        h.run_plan();
         // Cmd+D does nothing; Enter and Escape deny. None allows.
         let g = s.lock().unwrap();
         if key == Key::D {
@@ -374,7 +375,7 @@ fn no_key_allows_an_agent_cut() {
     let (dir, s) = waiting_send();
     let mut h = harness(&dir, s.clone(), true);
     h.get_by_role_and_label(Role::Button, "Allow").click();
-    h.run();
+    h.run_plan();
     assert!(s.lock().unwrap().pending_send().is_none());
     assert!(
         app(&h)
@@ -395,14 +396,14 @@ fn a_key_held_while_a_dialog_opens_does_not_answer_it() {
     h.get_by_label("Save changes to Untitled 1?");
     // It repeats, then comes up: nothing is answered.
     h.event(key_event(Key::Enter, true, true, Modifiers::NONE));
-    h.run();
+    h.run_plan();
     h.event(key_event(Key::Enter, false, false, Modifiers::NONE));
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.unsaved.is_some());
     assert_eq!(docs(&s), 1);
     // A fresh Escape now cancels.
     h.key_press(Key::Escape);
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.unsaved.is_none());
 }
 
@@ -413,15 +414,15 @@ fn a_held_command_d_answers_only_one_document() {
     act(&mut h, Action::Quit);
     h.get_by_label("Save changes to Untitled 1?");
     h.event(key_event(Key::D, true, false, Modifiers::COMMAND));
-    h.run();
+    h.run_plan();
     h.get_by_label("Save changes to Untitled 2?");
     // The key repeats while held: the second question stays.
     for _ in 0..3 {
         h.event(key_event(Key::D, true, true, Modifiers::COMMAND));
-        h.run();
+        h.run_plan();
     }
     h.event(key_event(Key::D, false, false, Modifiers::COMMAND));
-    h.run();
+    h.run_plan();
     h.get_by_label("Save changes to Untitled 2?");
     assert!(!closing(&h));
 }
@@ -451,12 +452,12 @@ fn quit_also_asks_about_a_document_an_agent_changed_meanwhile() {
         .unwrap();
     assert!(s.lock().unwrap().docs[1].dirty);
     h.key_press(Key::Enter);
-    h.run();
+    h.run_plan();
     assert!(path.exists(), "A was saved");
     assert!(!closing(&h), "B is not answered yet");
     h.get_by_label("Save changes to Untitled 2?");
     h.key_press_modifiers(Modifiers::COMMAND, Key::D);
-    h.run();
+    h.run_plan();
     assert!(closing(&h));
 }
 
@@ -477,7 +478,7 @@ fn quit_skips_a_document_saved_meanwhile() {
             Origin::User,
         )
         .unwrap();
-    h.run();
+    h.run_plan();
     h.get_by_label("Save changes to Untitled 2?");
     assert!(h.query_by_label("Save changes to Untitled 1?").is_none());
 }
@@ -492,7 +493,7 @@ fn keys_answer_only_the_dialog_on_top() {
     h.get_by_label(SEND_QUESTION);
     h.get_by_label("Save changes to Untitled 1?");
     h.key_press(Key::Escape);
-    h.run();
+    h.run_plan();
     // Escape cancelled the top dialog only; the agent's request still waits.
     assert!(app(&h).ui.unsaved.is_none());
     assert!(s.lock().unwrap().pending_send().is_some());
@@ -510,10 +511,10 @@ fn rename_takes_a_name_typed_in_the_same_frame_as_enter() {
         id,
         name: String::new(),
     });
-    h.run();
+    h.run_plan();
     h.event(egui::Event::Text("Lid".into()));
     h.key_press(Key::Enter);
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.prepare.rename.is_none());
     assert_eq!(s.lock().unwrap().doc().document.objects[0].name, "Lid");
 }
@@ -528,7 +529,7 @@ fn quit_asks_again_about_a_document_changed_after_its_answer() {
     act(&mut h, Action::Quit);
     h.get_by_label("Save changes to Untitled 1?");
     h.key_press(Key::Enter);
-    h.run();
+    h.run_plan();
     assert!(
         path.exists() && !s.lock().unwrap().docs[0].dirty,
         "A was saved"
@@ -549,11 +550,11 @@ fn quit_asks_again_about_a_document_changed_after_its_answer() {
     }
     // B: Don't Save. A is asked again (its name is now its file name).
     h.key_press_modifiers(Modifiers::COMMAND, Key::D);
-    h.run();
+    h.run_plan();
     assert!(!closing(&h), "A changed after its answer");
     h.get_by_label("Save changes to a?");
     h.key_press_modifiers(Modifiers::COMMAND, Key::D);
-    h.run();
+    h.run_plan();
     assert!(closing(&h));
 }
 
@@ -623,7 +624,7 @@ fn quit_asks_again_when_an_agent_changes_the_document_during_its_save() {
     act(&mut h, Action::Quit);
     h.get_by_label("Save changes to Untitled 1?");
     h.key_press(Key::Enter);
-    h.run();
+    h.run_plan();
     assert!(path.exists(), "the first save wrote the file");
     assert_eq!(
         flatcraft_core::project::load(&path).unwrap().objects.len(),
@@ -637,7 +638,7 @@ fn quit_asks_again_when_an_agent_changes_the_document_during_its_save() {
     );
     // Save again: now nothing is lost and FlatCraft quits.
     h.key_press(Key::Enter);
-    h.run();
+    h.run_plan();
     assert_eq!(
         flatcraft_core::project::load(&path).unwrap().objects.len(),
         2
@@ -650,7 +651,7 @@ fn quit_asks_again_when_an_agent_changes_the_document_during_its_save() {
 /// Moves the pointer onto the button `label` and lets its card show.
 fn hover_button(h: &mut AppHarness, label: &str) {
     h.hover_at(egui::pos2(1.0, 1.0));
-    h.run();
+    h.run_plan();
     let at = h
         .get_all_by_role_and_label(Role::Button, label)
         .last()
@@ -659,7 +660,7 @@ fn hover_button(h: &mut AppHarness, label: &str) {
         .center();
     h.hover_at(at);
     for _ in 0..6 {
-        h.run();
+        h.run_plan();
     }
 }
 
@@ -699,7 +700,7 @@ fn the_rename_buttons_have_cards_and_a_dimmed_rename_says_why() {
         id,
         name: String::new(),
     });
-    h.run();
+    h.run_plan();
     hover_button(&mut h, "Rename");
     assert!(shows(&h, RENAME_NEEDS_NAME));
     assert!(shows(&h, RENAME_HINT));
@@ -727,7 +728,7 @@ fn quit_while_an_agent_waits_has_cards() {
     let (dir, s) = waiting_send();
     let mut h = harness(&dir, s.clone(), true);
     app_mut(&mut h).ui.unsaved = Some(Unsaved::PendingSend);
-    h.run();
+    h.run_plan();
     h.get_by_label("Quit while an agent waits?");
     hover_button(&mut h, "Quit anyway");
     assert!(shows(&h, QUIT_ANYWAY_HINT));

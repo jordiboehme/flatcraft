@@ -4,6 +4,7 @@
 //! apply when they lose the focus.
 
 mod common;
+use common::RunPlan;
 
 use common::{AppHarness, app, app_mut, harness, import_square, session, to_prepare, undo_len};
 use egui::accesskit::Role;
@@ -46,7 +47,7 @@ fn rig(dir: &tempfile::TempDir, s: SharedSession, mm: kurbo::Point) -> (AppHarne
     let mut h = harness(dir, s, false);
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Tab, "Layout").click();
-    h.run();
+    h.run_plan();
     let rect = app(&h).ui.prepare.canvas_rect;
     let view = CanvasView {
         offset: rect.center().to_vec2() - Vec2::new(mm.x as f32, mm.y as f32) * 2.0,
@@ -55,7 +56,7 @@ fn rig(dir: &tempfile::TempDir, s: SharedSession, mm: kurbo::Point) -> (AppHarne
     let p = &mut app_mut(&mut h).ui.prepare;
     p.view = view;
     p.fit_pending = false;
-    h.run();
+    h.run_plan();
     (h, view)
 }
 
@@ -71,18 +72,18 @@ fn square(dir: &tempfile::TempDir) -> (SharedSession, u64, AppHarness, CanvasVie
 /// button stays down.
 fn drag_to(h: &mut AppHarness, from: Pos2, to: Pos2) {
     h.hover_at(from);
-    h.run();
+    h.run_plan();
     h.drag_at(from);
-    h.run();
+    h.run_plan();
     for t in [0.25, 0.5, 0.75, 1.0] {
         h.hover_at(from + (to - from) * t);
-        h.run();
+        h.run_plan();
     }
 }
 
 fn drop_at(h: &mut AppHarness, to: Pos2) {
     h.drop_at(to);
-    h.run();
+    h.run_plan();
 }
 
 /// A whole drag with `modifiers` held from start to end.
@@ -91,7 +92,7 @@ fn drag(h: &mut AppHarness, from: Pos2, to: Pos2, modifiers: Modifiers) {
     drag_to(h, from, to);
     drop_at(h, to);
     h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
-    h.run();
+    h.run_plan();
 }
 
 fn mm(v: &CanvasView, x: f64, y: f64) -> Pos2 {
@@ -100,7 +101,7 @@ fn mm(v: &CanvasView, x: f64, y: f64) -> Pos2 {
 
 fn set_keep(h: &mut AppHarness, on: bool) {
     app_mut(h).ui.prepare.fields.keep_aspect = on;
-    h.run();
+    h.run_plan();
 }
 
 fn fields(h: &AppHarness) -> flatcraft::ui::prepare::Fields {
@@ -111,11 +112,11 @@ fn fields(h: &AppHarness) -> flatcraft::ui::prepare::Fields {
 /// leaving it.
 fn type_text(h: &mut AppHarness, label: &str, text: &str) {
     h.get_by_label(label).click();
-    h.run();
+    h.run_plan();
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
-    h.run();
+    h.run_plan();
     h.get_by_label(label).type_text(text);
-    h.run();
+    h.run_plan();
 }
 
 // ---------------------------------------------------------------- handles
@@ -243,7 +244,7 @@ fn the_fields_follow_a_drag() {
     let from = mm(&v, 45.0, 45.0);
     let to = mm(&v, 55.0, 50.0);
     drag_to(&mut h, from, to);
-    h.run();
+    h.run_plan();
     let f = fields(&h);
     assert_eq!((f.x.as_str(), f.y.as_str()), ("30.00", "25.00"));
     drop_at(&mut h, to);
@@ -252,7 +253,7 @@ fn the_fields_follow_a_drag() {
     let from = mm(&v, 80.0, 50.0);
     let to = mm(&v, 90.0, 50.0);
     drag_to(&mut h, from, to);
-    h.run();
+    h.run_plan();
     let f = fields(&h);
     assert_eq!((f.x.as_str(), f.width.as_str()), ("30.00", "60.00"));
     assert_eq!(f.height, "50.00");
@@ -265,8 +266,8 @@ fn the_fields_follow_a_nudge() {
     let (_s, _id, mut h, _) = square(&dir);
     // No field has the keys, so the arrow nudges the square by 1 mm.
     h.key_press(Key::ArrowRight);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(fields(&h).x, "21.00");
 }
 
@@ -335,7 +336,7 @@ fn a_typed_width_stretches_two_straight_objects() {
     set_keep(&mut h, false);
     type_text(&mut h, "Width (mm)", "220");
     h.key_press(Key::Enter);
-    h.run();
+    h.run_plan();
     let (na, nb) = (bounds(&s, a), bounds(&s, b));
     assert!(near(nb.x1 - na.x0, 220.0), "{na:?} {nb:?}");
     assert!(
@@ -346,7 +347,7 @@ fn a_typed_width_stretches_two_straight_objects() {
     set_keep(&mut h, true);
     type_text(&mut h, "Width (mm)", "110");
     h.key_press(Key::Enter);
-    h.run();
+    h.run_plan();
     let (na, nb) = (bounds(&s, a), bounds(&s, b));
     assert!(near(nb.x1 - na.x0, 110.0), "{na:?} {nb:?}");
     assert!(near(na.height(), 25.0), "{na:?}");
@@ -378,7 +379,7 @@ fn tab_applies_the_width() {
     type_text(&mut h, "Width (mm)", "80");
     assert_eq!(undo_len(&s), before, "nothing yet while typing");
     h.key_press(Key::Tab);
-    h.run();
+    h.run_plan();
     assert_eq!(undo_len(&s), before + 1, "one undo step");
     let b = bounds(&s, id);
     assert!(near(b.width(), 80.0), "{b:?}");
@@ -390,13 +391,13 @@ fn shift_tab_applies_x() {
     let (s, id, mut h, _) = square(&dir);
     type_text(&mut h, "Y (mm)", "33");
     h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
-    h.run();
+    h.run_plan();
     let b = bounds(&s, id);
     assert!(near(b.y0, 33.0) && near(b.x0, 20.0), "{b:?}");
     // Now in X: type and Shift-Tab out again.
     type_text(&mut h, "X (mm)", "12.5");
     h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
-    h.run();
+    h.run_plan();
     let b = bounds(&s, id);
     assert!(near(b.x0, 12.5) && near(b.y0, 33.0), "{b:?}");
 }
@@ -409,7 +410,7 @@ fn a_click_elsewhere_applies_the_height() {
     // The empty mat, away from the square.
     let p = mm(&v, 150.0, 150.0);
     h.hover_at(p);
-    h.run();
+    h.run_plan();
     h.event(egui::Event::PointerButton {
         pos: p,
         button: egui::PointerButton::Primary,
@@ -422,8 +423,8 @@ fn a_click_elsewhere_applies_the_height() {
         pressed: false,
         modifiers: Modifiers::NONE,
     });
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     let b = bounds(&s, id);
     assert!(near(b.height(), 25.0), "{b:?}");
 }
@@ -435,8 +436,8 @@ fn escape_puts_the_shown_value_back() {
     let before = undo_len(&s);
     type_text(&mut h, "Width (mm)", "80");
     h.key_press(Key::Escape);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(undo_len(&s), before);
     assert!(near(bounds(&s, id).width(), 50.0));
     assert_eq!(fields(&h).width, "50.00");
@@ -452,12 +453,12 @@ fn tabbing_through_unchanged_fields_changes_nothing() {
     let (s, _id, mut h, _) = square(&dir);
     let before = undo_len(&s);
     h.get_by_label("X (mm)").click();
-    h.run();
+    h.run_plan();
     let editing = |h: &AppHarness| fields(h).editing.map(|e| e.field);
     let mut seen = vec![editing(&h)];
     for _ in 0..4 {
         h.key_press(Key::Tab);
-        h.run();
+        h.run_plan();
         seen.push(editing(&h));
     }
     use flatcraft::ui::prepare::SizeField::*;
@@ -467,7 +468,7 @@ fn tabbing_through_unchanged_fields_changes_nothing() {
         "the focus moved through every field"
     );
     h.key_press(Key::Escape);
-    h.run();
+    h.run_plan();
     assert_eq!(undo_len(&s), before, "no undo step for an unchanged value");
 }
 
@@ -478,7 +479,7 @@ fn a_typed_value_applies_at_once_when_the_tab_changes() {
     let before = undo_len(&s);
     type_text(&mut h, "Width (mm)", "80");
     h.get_by_role_and_label(Role::Tab, "View").click();
-    h.run();
+    h.run_plan();
     assert_eq!(undo_len(&s), before + 1);
     assert!(near(bounds(&s, id).width(), 80.0));
     assert!(fields(&h).editing.is_none());
@@ -489,18 +490,18 @@ fn a_tab_applies_to_the_selection_of_now() {
     let dir = tempfile::tempdir().unwrap();
     let (s, a, b, mut h, _) = two_squares(&dir);
     run(&s, "object.select", json!({ "ids": [a] }));
-    h.run();
+    h.run_plan();
     h.get_by_label("Width (mm)").click();
-    h.run();
+    h.run_plan();
     // An agent selects the other square while the field has the focus.
     run(&s, "object.select", json!({ "ids": [b] }));
-    h.run();
+    h.run_plan();
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
-    h.run();
+    h.run_plan();
     h.get_by_label("Width (mm)").type_text("80");
-    h.run();
+    h.run_plan();
     h.key_press(Key::Tab);
-    h.run();
+    h.run_plan();
     assert!(near(bounds(&s, a).width(), 50.0), "the old selection stays");
     assert!(near(bounds(&s, b).width(), 80.0));
 }
@@ -512,14 +513,14 @@ fn each_applied_value_is_one_undo_step() {
     let before = undo_len(&s);
     type_text(&mut h, "X (mm)", "10");
     h.key_press(Key::Tab);
-    h.run();
+    h.run_plan();
     // Now in Y.
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
-    h.run();
+    h.run_plan();
     h.get_by_label("Y (mm)").type_text("15");
-    h.run();
+    h.run_plan();
     h.key_press(Key::Enter);
-    h.run();
+    h.run_plan();
     assert_eq!(undo_len(&s), before + 2);
     let b = bounds(&s, id);
     assert!(near(b.x0, 10.0) && near(b.y0, 15.0), "{b:?}");
@@ -532,12 +533,12 @@ fn a_focused_field_is_never_overwritten() {
     type_text(&mut h, "Width (mm)", "77");
     // An agent scales the square while the person types.
     run(&s, "object.scale", json!({ "ids": [id], "factor": 2.0 }));
-    h.run();
+    h.run_plan();
     assert_eq!(fields(&h).width, "77");
     // The other fields show the new size.
     assert_eq!(fields(&h).height, "100.00");
     h.key_press(Key::Enter);
-    h.run();
+    h.run_plan();
     assert!(near(bounds(&s, id).width(), 77.0));
 }
 
@@ -554,7 +555,7 @@ fn x_and_y_are_the_corner_of_the_turned_shape() {
     assert_eq!(f.y, format!("{:.2}", b.y0));
     type_text(&mut h, "X (mm)", "5");
     h.key_press(Key::Enter);
-    h.run();
+    h.run_plan();
     let n = bounds(&s, id);
     assert!(near(n.x0, 5.0) && near(n.y0, b.y0), "{n:?}");
     assert!(near(n.width(), b.width()), "only moved");
@@ -574,7 +575,7 @@ fn x_moves_a_multi_selection_as_one() {
     let before = undo_len(&s);
     type_text(&mut h, "X (mm)", "0");
     h.key_press(Key::Tab);
-    h.run();
+    h.run_plan();
     assert_eq!(undo_len(&s), before + 1);
     let (na, nb) = (bounds(&s, a), bounds(&s, b));
     assert!(near(na.x0, 0.0) && near(nb.x0, 60.0), "{na:?} {nb:?}");
@@ -587,13 +588,13 @@ fn a_field_tabbed_into_shows_the_new_value() {
     // Keep aspect is on: W 80 makes H 80 too, and H has the focus now.
     type_text(&mut h, "Width (mm)", "80");
     h.key_press(Key::Tab);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(fields(&h).height, "80.00");
     // Leaving H unchanged applies nothing more.
     let before = undo_len(&s);
     h.key_press(Key::Tab);
-    h.run();
+    h.run_plan();
     assert_eq!(undo_len(&s), before);
 }
 
@@ -606,8 +607,8 @@ fn a_typed_value_applies_to_its_document_when_the_document_changes() {
     type_text(&mut h, "Width (mm)", "80");
     h.get_by_role_and_label(Role::Button, "New document")
         .click();
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     let g = s.lock().unwrap();
     assert_eq!(g.docs.len(), 2);
     assert_ne!(g.doc().id(), first, "the new document is active");
@@ -648,7 +649,7 @@ fn saving_rig(dir: &tempfile::TempDir) -> (SharedSession, AppHarness, std::path:
     let mut h = common::harness_with(dir, s.clone(), |a| a.with_file_picker(picker.clone()));
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Tab, "Layout").click();
-    h.run();
+    h.run_plan();
     (s, h, path)
 }
 
@@ -661,7 +662,7 @@ fn a_typed_value_counts_before_a_save_click() {
         .next()
         .unwrap()
         .click();
-    h.run();
+    h.run_plan();
     assert!(near(saved_width(&path), 80.0));
     assert!(!s.lock().unwrap().doc().dirty, "saved after the change");
 }
@@ -679,7 +680,7 @@ fn a_typed_value_counts_before_cmd_s() {
     } else {
         h.key_press_modifiers(Modifiers::COMMAND, Key::S);
     }
-    h.run();
+    h.run_plan();
     assert!(near(saved_width(&path), 80.0));
     assert!(!s.lock().unwrap().doc().dirty, "saved after the change");
 }
@@ -690,12 +691,12 @@ fn a_typed_value_counts_before_closing_the_tab() {
     let (s, mut h, path) = saving_rig(&dir);
     // Saved, so the document is clean before the typing.
     run(&s, "project.save", json!({ "path": path }));
-    h.run();
+    h.run_plan();
     assert!(!s.lock().unwrap().doc().dirty);
     let id = s.lock().unwrap().doc().document.objects[0].id.0;
     type_text(&mut h, "Width (mm)", "80");
     h.get_by_role_and_label(Role::Button, "Close sized").click();
-    h.run();
+    h.run_plan();
     h.get_by_label("Save changes to sized?");
     assert!(s.lock().unwrap().doc().dirty);
     assert!(app(&h).ui.toasts.is_empty(), "no error toast");
@@ -753,12 +754,12 @@ fn the_keep_aspect_lock_opens_and_closes() {
     assert_eq!(toggled(&h), Some(egui::accesskit::Toggled::True));
     h.get_by_role_and_label(Role::CheckBox, "Keep aspect")
         .click();
-    h.run();
+    h.run_plan();
     assert!(!fields(&h).keep_aspect);
     assert_eq!(toggled(&h), Some(egui::accesskit::Toggled::False));
     h.get_by_role_and_label(Role::CheckBox, "Keep aspect")
         .click();
-    h.run();
+    h.run_plan();
     assert!(fields(&h).keep_aspect);
 }
 
@@ -767,9 +768,9 @@ fn the_keep_aspect_lock_opens_and_closes() {
 /// Presses and releases the primary button at `at`.
 fn click_at(h: &mut AppHarness, at: Pos2) {
     h.drag_at(at);
-    h.run();
+    h.run_plan();
     h.drop_at(at);
-    h.run();
+    h.run_plan();
 }
 
 #[test]
@@ -781,7 +782,7 @@ fn a_double_click_selects_the_whole_value() {
     let r = h.get_by_label("Width (mm)").rect();
     let at = Pos2::new(r.left() + 8.0, r.center().y);
     h.hover_at(at);
-    h.run();
+    h.run_plan();
     // A test frame lasts longer than a real double-click may take. The
     // click on the Layout tab is long past, so this is not a triple click.
     h.ctx
@@ -791,9 +792,9 @@ fn a_double_click_selects_the_whole_value() {
     }
     click_at(&mut h, at);
     click_at(&mut h, at);
-    h.run();
+    h.run_plan();
     h.get_by_label("Width (mm)").type_text("7");
-    h.run();
+    h.run_plan();
     assert_eq!(fields(&h).width, "7", "typing replaced the whole value");
 }
 
@@ -805,11 +806,11 @@ fn a_single_click_places_the_cursor_without_a_selection() {
     // Past the end of the text: the cursor goes to the end.
     let at = Pos2::new(r.right() - 2.0, r.center().y);
     h.hover_at(at);
-    h.run();
+    h.run_plan();
     click_at(&mut h, at);
-    h.run();
+    h.run_plan();
     h.get_by_label("Width (mm)").type_text("5");
-    h.run();
+    h.run_plan();
     assert_eq!(
         fields(&h).width,
         "50.005",
@@ -822,19 +823,19 @@ fn tab_into_a_field_selects_the_whole_value() {
     let dir = tempfile::tempdir().unwrap();
     let (_s, _id, mut h, _) = square(&dir);
     h.get_by_label("X (mm)").click();
-    h.run();
+    h.run_plan();
     h.key_press(Key::Tab);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     h.get_by_label("Y (mm)").type_text("9");
-    h.run();
+    h.run_plan();
     assert_eq!(fields(&h).y, "9");
     // Shift-Tab back into X too.
     h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     h.get_by_label("X (mm)").type_text("4");
-    h.run();
+    h.run_plan();
     assert_eq!(fields(&h).x, "4");
 }
 
@@ -852,16 +853,16 @@ fn a_click_on_the_bracket_toggles_keep_aspect() {
     let arm = Pos2::new(keep.right() - 3.0, w.center().y);
     assert!(fields(&h).keep_aspect);
     h.hover_at(arm);
-    h.run();
+    h.run_plan();
     click_at(&mut h, arm);
-    h.run();
+    h.run_plan();
     assert!(!fields(&h).keep_aspect, "the arm toggled it");
     // A click into W focuses W and leaves Keep aspect as it is.
     let into_w = Pos2::new(w.left() + 4.0, w.center().y);
     h.hover_at(into_w);
-    h.run();
+    h.run_plan();
     click_at(&mut h, into_w);
-    h.run();
+    h.run_plan();
     assert!(!fields(&h).keep_aspect);
     assert_eq!(
         fields(&h).editing.map(|e| e.field),

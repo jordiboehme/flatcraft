@@ -1,6 +1,7 @@
 //! The compact workspace switcher and the flat rows of the Objects panel.
 
 mod common;
+use common::RunPlan;
 
 use common::{AppHarness, app, app_mut, harness, import_square, painted, session, to_prepare};
 use egui::accesskit::Role;
@@ -21,8 +22,8 @@ fn texts(h: &AppHarness) -> Vec<String> {
 
 fn open_list(h: &mut AppHarness) {
     h.get_by_role_and_label(Role::Button, "Workspace").click();
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
 }
 
 #[test]
@@ -31,7 +32,7 @@ fn the_closed_tile_is_narrow_and_as_tall_as_the_ribbon() {
     let mut h = harness(&dir, session(&dir), false);
     for w in [Workspace::Home, Workspace::Prepare, Workspace::Cut] {
         app_mut(&mut h).ui.workspace = w;
-        h.run();
+        h.run_plan();
         let r = h.get_by_role_and_label(Role::Button, "Workspace").rect();
         assert!(r.width() < 110.0, "{w:?} tile is {} pt wide", r.width());
         assert!(r.width() > 60.0, "{w:?} tile is {} pt wide", r.width());
@@ -39,7 +40,7 @@ fn the_closed_tile_is_narrow_and_as_tall_as_the_ribbon() {
     }
     // Prepare: the tile is as tall as the tab row plus the ribbon panel.
     app_mut(&mut h).ui.workspace = Workspace::Prepare;
-    h.run();
+    h.run_plan();
     let layout = app(&h).ui.prepare.ribbon_layout.unwrap();
     let tile = h.get_by_role_and_label(Role::Button, "Workspace").rect();
     assert!((tile.top() - layout.tab_row.top()).abs() < 0.5);
@@ -82,7 +83,7 @@ fn the_current_badge_follows_the_workspace() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(&dir, session(&dir), false);
     app_mut(&mut h).ui.workspace = Workspace::Cut;
-    h.run();
+    h.run_plan();
     open_list(&mut h);
     let cut_row = h.get_by_role_and_label(Role::Button, "Cut").rect();
     let badge = painted(&h)
@@ -102,27 +103,27 @@ fn arrows_move_enter_picks_and_escape_closes() {
     to_prepare(&mut h);
     open_list(&mut h);
     h.key_press(egui::Key::ArrowDown);
-    h.run();
+    h.run_plan();
     h.key_press(egui::Key::Enter);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(app(&h).ui.workspace, Workspace::Cut);
     assert!(h.query_by_label("WORKSPACE").is_none());
 
     open_list(&mut h);
     h.key_press(egui::Key::ArrowUp);
-    h.run();
+    h.run_plan();
     h.key_press(egui::Key::Enter);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(app(&h).ui.workspace, Workspace::Prepare);
 
     open_list(&mut h);
     h.key_press(egui::Key::ArrowDown);
-    h.run();
+    h.run_plan();
     h.key_press(egui::Key::Escape);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert!(h.query_by_label("WORKSPACE").is_none());
     assert_eq!(app(&h).ui.workspace, Workspace::Prepare);
 }
@@ -191,7 +192,7 @@ fn object_rows_show_normal_skipped_and_hidden_and_toggle_independently() {
     // depend on each other.
     h.get_by_role_and_label(Role::Button, "Cut again square")
         .click();
-    h.run();
+    h.run_plan();
     let g = s.lock().unwrap();
     let doc = &g.doc().document;
     assert!(
@@ -225,7 +226,7 @@ fn a_row_click_selects_and_a_double_click_renames() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Button, "square").click();
-    h.run();
+    h.run_plan();
     assert!(
         s.lock()
             .unwrap()
@@ -261,8 +262,8 @@ fn in_cut_the_stage_panel_is_flush_with_the_tile() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(&dir, session(&dir), false);
     app_mut(&mut h).ui.workspace = Workspace::Cut;
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     let tile = h.get_by_role_and_label(Role::Button, "Workspace").rect();
     let border = app(&h).tokens.border;
     let panel = painted(&h)

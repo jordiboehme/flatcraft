@@ -2,6 +2,7 @@
 //! when the preset is picked.
 
 mod common;
+use common::RunPlan;
 
 use common::{AppHarness, harness_sized, session, to_prepare};
 use egui::accesskit::Role;
@@ -16,27 +17,27 @@ fn harness(dir: &tempfile::TempDir, s: &SharedSession) -> AppHarness {
 
 fn open(h: &mut AppHarness, tab: &str) {
     h.get_by_role_and_label(Role::Button, "Settings").click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Tab, tab).click();
-    h.run();
+    h.run_plan();
 }
 
 /// Scrolls `label` into view and clicks it.
 fn click(h: &mut AppHarness, label: &str) {
     h.get_by_label(label).scroll_to_me();
-    h.run();
+    h.run_plan();
     h.get_by_label(label).click();
-    h.run();
+    h.run_plan();
 }
 
 /// Clicks into the field and types `text` without leaving it.
 fn type_into(h: &mut AppHarness, label: &str, text: &str) {
     h.get_by_label(label).scroll_to_me();
-    h.run();
+    h.run_plan();
     h.get_by_label(label).click();
-    h.run();
+    h.run_plan();
     h.get_by_label(label).type_text(text);
-    h.run();
+    h.run_plan();
 }
 
 fn disabled(h: &AppHarness, label: &str) -> bool {
@@ -81,14 +82,14 @@ fn notes_on_a_user_preset_save_with_it() {
     click(&mut h, "Copy paper");
     click(&mut h, "Save as user preset...");
     h.get_by_label("Preset name").click();
-    h.run();
+    h.run_plan();
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
-    h.run();
+    h.run_plan();
     h.get_by_label("Preset name").type_text("My Paper");
-    h.run();
+    h.run_plan();
     h.key_press(egui::Key::Enter);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert!(
         h.query_by_label("Save notes").is_none(),
         "Save preset does it"
@@ -123,7 +124,7 @@ fn the_job_card_shows_the_notes_of_the_picked_presets() {
     }
     let mut h = harness(&dir, &s);
     to_prepare(&mut h);
-    h.run();
+    h.run_plan();
     h.get_by_label("Weed within a day.");
     h.get_by_label("Check the output folder.");
     s.lock()
@@ -134,7 +135,7 @@ fn the_job_card_shows_the_notes_of_the_picked_presets() {
             Origin::User,
         )
         .unwrap();
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label("Weed within a day.").is_none());
     h.get_by_label("Check the output folder.");
 }
@@ -187,16 +188,16 @@ fn save_notes_keeps_the_other_edits_that_are_not_saved() {
     click(&mut h, "Solo");
     // An edit of the force that is not saved, then the notes.
     h.get_by_label("Force (modified)").click();
-    h.run();
+    h.run_plan();
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
-    h.run();
+    h.run_plan();
     h.get_by_label("Force (modified)").type_text("12");
-    h.run();
+    h.run_plan();
     h.key_press(egui::Key::Enter);
-    h.run();
+    h.run_plan();
     type_into(&mut h, "Preset notes", "Felt, cut twice.");
     click(&mut h, "Save notes");
-    h.run();
+    h.run_plan();
     let text = std::fs::read_to_string(materials.join("solo.toml")).unwrap();
     assert!(text.contains("Felt, cut twice."), "{text}");
     assert!(

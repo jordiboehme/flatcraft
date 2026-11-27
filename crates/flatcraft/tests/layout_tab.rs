@@ -2,6 +2,7 @@
 //! tabs, the group order, search targets, saved names and the folding.
 
 mod common;
+use common::RunPlan;
 
 use common::*;
 use egui::accesskit::Role;
@@ -196,7 +197,7 @@ fn at_1400_pt_no_group_of_layout_is_folded() {
     let s = session(&dir);
     let mut h = harness_sized(&dir, s, [1400.0, 900.0], 8, |app| app);
     to_prepare(&mut h);
-    h.run();
+    h.run_plan();
     assert_eq!(collapse::level(&h.ctx, ribbon::bar_id()), Some(Level::Full));
 }
 
@@ -209,7 +210,7 @@ fn linked_files_folds_first() {
         select(&s, &[a]);
         let mut h = harness_sized(&dir, s, [width, height], 8, |app| app);
         to_prepare(&mut h);
-        h.run();
+        h.run_plan();
         let level = collapse::level(&h.ctx, ribbon::bar_id());
         // The modes of Add, Edit, Size (keep), Transform, Arrange and
         // Linked files.

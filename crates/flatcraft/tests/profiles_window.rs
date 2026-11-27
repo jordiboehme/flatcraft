@@ -2,6 +2,7 @@
 //! moved there from the old App tab, driven through egui_kittest.
 
 mod common;
+use common::RunPlan;
 
 use common::{AppHarness, FakePicker, app, app_mut, harness_steps, painted, session};
 use egui::accesskit::{Role, Toggled};
@@ -21,35 +22,35 @@ fn harness(dir: &tempfile::TempDir, s: &SharedSession) -> AppHarness {
 
 fn open(h: &mut AppHarness, tab: &str) {
     h.get_by_role_and_label(Role::Button, "Settings").click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Tab, tab).click();
-    h.run();
+    h.run_plan();
 }
 
 /// Shows another page of the open window.
 fn page(h: &mut AppHarness, name: &str) {
     h.get_by_role_and_label(Role::Tab, name).click();
-    h.run();
+    h.run_plan();
 }
 
 fn click(h: &mut AppHarness, label: &str) {
     // The material page is taller than the window: scroll the control into
     // view first, so the click lands on it.
     h.get_by_label(label).scroll_to_me();
-    h.run();
+    h.run_plan();
     h.get_by_label(label).click();
-    h.run();
+    h.run_plan();
 }
 
 fn type_into(h: &mut AppHarness, label: &str, text: &str) {
     h.get_by_label(label).click();
-    h.run();
+    h.run_plan();
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
-    h.run();
+    h.run_plan();
     h.get_by_label(label).type_text(text);
-    h.run();
+    h.run_plan();
     h.key_press(egui::Key::Enter);
-    h.run();
+    h.run_plan();
 }
 
 fn disabled(h: &AppHarness, label: &str) -> bool {
@@ -90,7 +91,7 @@ fn use_plotter(h: &mut AppHarness, s: &SharedSession, id: &str) {
         .unwrap();
     app_mut(h).ui.show_settings = false;
     app_mut(h).ui.workspace = Workspace::Prepare;
-    h.run();
+    h.run_plan();
 }
 
 #[test]
@@ -257,7 +258,7 @@ fn hide_builtin_mat() {
 
     use_plotter(&mut h, &s, "user-my-cameo");
     h.get_by_role_and_label(Role::ComboBox, "Mat").click();
-    h.run();
+    h.run_plan();
     // The popup is open: "No mat" is only listed there.
     assert!(h.query_by_label("No mat").is_some());
     assert!(h.query_by_label("Mat 12x24").is_none());
@@ -278,7 +279,7 @@ fn invalid_mat_disables_save() {
     h.get_by_label("The grid (origin plus size) must lie inside the physical mat.");
     assert!(disabled(&h, "Save preset"));
     h.get_by_label("Save preset").click();
-    h.run();
+    h.run_plan();
     let after =
         std::fs::read_to_string(dir.path().join("profiles/plotters/user-my-cameo.toml")).unwrap();
     assert_eq!(before, after);
@@ -372,11 +373,11 @@ fn material_override_saves_only_the_override() {
     click(&mut h, "Copy paper");
     click(&mut h, "Save as user preset...");
     h.get_by_label("Preset name").click();
-    h.run();
+    h.run_plan();
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
-    h.run();
+    h.run_plan();
     h.get_by_label("Preset name").type_text("My Paper");
-    h.run();
+    h.run_plan();
     click(&mut h, "Create");
     click(&mut h, "Add override for");
     click(&mut h, "Silhouette Cameo 2");
@@ -415,10 +416,10 @@ fn default_material_persists_and_new_documents_use_it() {
     let mut h = harness(&dir, &s);
     open(&mut h, "Cutting");
     h.get_by_label("Default material").click();
-    h.run();
+    h.run_plan();
     // The list is longer than the popup: scroll the entry into view.
     h.get_by_label("Adhesive vinyl (permanent)").scroll_to_me();
-    h.run();
+    h.run_plan();
     click(&mut h, "Adhesive vinyl (permanent)");
     click(&mut h, "OK");
     assert_eq!(Preferences::load(dir.path()).default_material, "vinyl");
@@ -502,7 +503,7 @@ fn an_out_of_range_preset_can_be_fixed_in_the_window() {
     s.lock().unwrap().doc_mut().document.job.material_id = "wild-vinyl".into();
     let mut h = harness(&dir, &s);
     app_mut(&mut h).ui.workspace = Workspace::Prepare;
-    h.run();
+    h.run_plan();
     h.get_by_label_contains("Open Settings to fix it.");
     // Picking it for a job is refused with the same hint.
     let e = s
@@ -930,7 +931,7 @@ fn clear_hover(h: &mut AppHarness) -> std::collections::BTreeSet<String> {
     h.hover_at(egui::pos2(1395.0, 2395.0));
     let mut before = texts(h);
     for _ in 0..10 {
-        h.run();
+        h.run_plan();
         let now = texts(h);
         if now == before {
             return now;
@@ -960,7 +961,7 @@ fn controls_without_a_card(h: &mut AppHarness, anchor: &str) -> (usize, usize, V
         {
             n.scroll_to_me();
         }
-        h.run();
+        h.run_plan();
         let before = clear_hover(h);
         let Some(at) = node(h) else {
             missing.push(format!("{} (gone)", c.label));
@@ -970,7 +971,7 @@ fn controls_without_a_card(h: &mut AppHarness, anchor: &str) -> (usize, usize, V
         // The card is the new text the hover brought: its title and body.
         // A card waits for the tooltip delay, so give it some frames.
         let shown = (0..40).any(|_| {
-            h.run();
+            h.run_plan();
             texts(h)
                 .difference(&before)
                 .any(|t| t.len() > 20 && t.ends_with(['.', '!', '?']))
@@ -1027,7 +1028,7 @@ fn every_control_in_the_preset_pages_has_a_hover_card() {
         .unwrap()
         .get_by_label("Cancel")
         .click();
-    h.run();
+    h.run_plan();
     // The system mats: Add mat and Copy mat dimmed.
     page(&mut h, "Mats");
     check(&mut h, close, "Mats of a system preset");
@@ -1062,8 +1063,8 @@ fn dimmed_fields_say_why_on_their_card() {
     let hover = |h: &mut AppHarness, label: &str| {
         let at = h.get_by_label(label).rect().center();
         h.hover_at(egui::pos2(at.x, at.y));
-        h.run();
-        h.run();
+        h.run_plan();
+        h.run_plan();
     };
     // A system preset is read-only.
     open(&mut h, "Plotters");
@@ -1102,11 +1103,11 @@ fn dimmed_buttons_say_why_on_their_card() {
     let mut h = common::harness_sized(&dir, s.clone(), [1400.0, 2400.0], 8, |app| app);
     let hover = |h: &mut AppHarness, label: &str| {
         h.hover_at(egui::pos2(1395.0, 2395.0));
-        h.run();
+        h.run_plan();
         let at = h.get_by_label(label).rect().center();
         h.hover_at(egui::pos2(at.x, at.y));
         for _ in 0..10 {
-            h.run();
+            h.run_plan();
         }
     };
     // A system preset's mats cannot be added to.
@@ -1138,7 +1139,7 @@ fn hover_role(h: &mut AppHarness, role: Role, label: &str) {
     let at = h.get_by_role_and_label(role, label).rect().center();
     h.hover_at(egui::pos2(at.x, at.y));
     for _ in 0..10 {
-        h.run();
+        h.run_plan();
     }
 }
 
@@ -1152,7 +1153,7 @@ fn copy_mat_says_why_it_is_dimmed() {
     page(&mut h, "Mats");
     // A hidden built-in mat is picked: it cannot be copied.
     h.get_by_role_and_label(Role::Button, "Mat 12x24").click();
-    h.run();
+    h.run_plan();
     click(&mut h, "Hidden");
     assert!(disabled(&h, "Copy mat"));
     hover_role(&mut h, Role::Button, "Copy mat");
@@ -1162,7 +1163,7 @@ fn copy_mat_says_why_it_is_dimmed() {
     // no mat is picked any more.
     for mat in ["Mat 12x12", "No mat"] {
         h.get_by_role_and_label(Role::Button, mat).click();
-        h.run();
+        h.run_plan();
         click(&mut h, "Hidden");
     }
     click(&mut h, "Add mat");
@@ -1203,14 +1204,14 @@ fn a_mat_field_takes_a_calculation_with_units() {
     // Typed and not left: Save preset counts it first. (The click into
     // the next field gives up the bad text with a toast.)
     h.get_by_label("Grid origin y (mm)").click();
-    h.run();
+    h.run_plan();
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
-    h.run();
+    h.run_plan();
     h.get_by_label("Grid origin y (mm)").type_text("1/2in");
-    h.run();
+    h.run_plan();
     click(&mut h, "Save preset");
     for _ in 0..3 {
-        h.run();
+        h.run_plan();
     }
     let p = store(&s).plotter("user-my-cameo").unwrap();
     assert!((p.media[0].grid.origin_y_mm - 12.7).abs() < 1e-9);
@@ -1233,12 +1234,12 @@ fn a_usb_id_field_reads_hex_and_follows_the_click_rules() {
     type_into(&mut h, "USB vendor id", "1+1");
     h.get_by_label("Can't read '1+1': type up to 4 hex digits, 0-9 and A-F. Press Esc to go back.");
     h.key_press(egui::Key::Escape);
-    h.run();
+    h.run_plan();
     type_into(&mut h, "USB vendor id", "0x1a2b");
     assert_eq!(common::field_text(&h, "USB vendor id"), "1A2B");
     click(&mut h, "Save preset");
     for _ in 0..3 {
-        h.run();
+        h.run_plan();
     }
     assert_ne!(before, 0x1a2b);
     assert_eq!(vid(&s), 0x1a2b);
@@ -1365,8 +1366,8 @@ fn corner_mode_and_min_radius_override_per_plotter() {
     let hover = |h: &mut AppHarness, label: &str| {
         let at = h.get_by_label(label).rect().center();
         h.hover_at(egui::pos2(at.x, at.y));
-        h.run();
-        h.run();
+        h.run_plan();
+        h.run_plan();
     };
     open(&mut h, "Materials");
     click(&mut h, "Copy paper");

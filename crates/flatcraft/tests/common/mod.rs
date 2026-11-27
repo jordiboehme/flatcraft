@@ -94,6 +94,11 @@ pub fn harness_sized(
             std::thread::sleep(worker_delay());
             ui::prepare::build_shape(input)
         });
+        let repaint = ctx.clone();
+        app.ui.cut.set_builder(move |input| {
+            slow_worker(&repaint);
+            flatcraft_engine::job::build_classified(input)
+        });
     }
     *h.state_mut() = Some(setup(app));
     settle(&mut h);
@@ -107,7 +112,13 @@ pub fn harness_sized(
 /// count of frames, so a busy machine only makes it slower.
 pub fn settle(h: &mut AppHarness) {
     let start = std::time::Instant::now();
-    while h.run_ok().is_none() {
+    // The Cut plan and the window's long commands run on workers too.
+    let busy = |h: &AppHarness| {
+        h.state()
+            .as_ref()
+            .is_some_and(|a| a.ui.cut.planning() || a.long.busy())
+    };
+    while h.run_ok().is_none() || busy(h) {
         assert!(
             start.elapsed() < WORKER_TIMEOUT,
             "the window did not settle within {WORKER_TIMEOUT:?}"
@@ -233,7 +244,10 @@ pub const WORKER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1
 /// nothing left to build, then lets the window settle. See [`wait_until`].
 pub fn wait_for_workers(h: &mut AppHarness) {
     wait_until(h, |app| {
-        app.source_check_job.is_some() || app.ui.prepare.cache.building() > 0
+        app.source_check_job.is_some()
+            || app.ui.prepare.cache.building() > 0
+            || app.ui.cut.planning()
+            || app.long.busy()
     });
 }
 
@@ -258,7 +272,10 @@ pub fn wait_until(h: &mut AppHarness, busy: impl Fn(&FlatCraftApp) -> bool) {
         }
         assert!(
             start.elapsed() < WORKER_TIMEOUT,
-            "the source check or the shape worker did not finish within {WORKER_TIMEOUT:?}"
+            "the source check or the shape worker did not finish within {WORKER_TIMEOUT:?} (plan {} long {} causes {:?})",
+            app(h).ui.cut.planning(),
+            app(h).long.busy(),
+            h.ctx.repaint_causes(),
         );
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
@@ -364,4 +381,17 @@ pub fn check_click_rules(h: &mut AppHarness, label: &str) {
     assert_eq!(field_text(h, label), "7", "{label}: Tab");
     esc(h);
     assert_eq!(field_text(h, label), shown, "{label}: Esc");
+}
+
+/// Settling that also waits for the Cut plan worker.
+pub trait RunPlan {
+    /// Runs frames until the Cut plan of the current input landed and the
+    /// window settled, by the clock (see [`wait_until`]).
+    fn run_plan(&mut self);
+}
+
+impl RunPlan for AppHarness {
+    fn run_plan(&mut self) {
+        wait_until(self, |app| app.ui.cut.planning() || app.long.busy());
+    }
 }

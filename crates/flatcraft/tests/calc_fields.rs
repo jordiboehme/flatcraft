@@ -3,6 +3,7 @@
 //! input it cannot read. Agents still send plain numbers.
 
 mod common;
+use common::RunPlan;
 
 use common::{AppHarness, app, harness, import_square, session, to_prepare, undo_len};
 use egui::accesskit::Role;
@@ -51,7 +52,7 @@ fn square(dir: &tempfile::TempDir) -> (SharedSession, u64, AppHarness) {
     let mut h = harness(dir, s.clone(), false);
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Tab, "Layout").click();
-    h.run();
+    h.run_plan();
     (s, id, h)
 }
 
@@ -59,16 +60,16 @@ fn square(dir: &tempfile::TempDir) -> (SharedSession, u64, AppHarness) {
 /// `key` to leave it.
 fn enter(h: &mut AppHarness, label: &str, text: &str, key: Key) {
     h.get_by_label(label).click();
-    h.run();
+    h.run_plan();
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
-    h.run();
+    h.run_plan();
     for c in text.chars() {
         h.event(Event::Text(c.to_string()));
     }
-    h.run();
+    h.run_plan();
     h.key_press(key);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
 }
 
 fn fields(h: &AppHarness) -> flatcraft::ui::prepare::Fields {
@@ -108,8 +109,8 @@ fn enter_with_a_text_it_cannot_read_keeps_it_and_escape_restores() {
     assert!(has_focus(&h, "Width (mm)"), "the field keeps the keys");
     // Escape puts the old value back and the message goes.
     h.key_press(Key::Escape);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(fields(&h).width, "50.00");
     assert!(h.query_by_label(msg).is_none());
     assert_eq!(undo_len(&s), before);
@@ -133,7 +134,7 @@ fn tab_with_a_text_it_cannot_read_restores_and_says_so_in_a_toast() {
     );
     // The focus went on with Tab and stays there.
     for _ in 0..3 {
-        h.run();
+        h.run_plan();
     }
     assert!(!has_focus(&h, "Width (mm)"));
     assert!(has_focus(&h, "Height (mm)"));
@@ -146,15 +147,15 @@ fn a_click_on_another_field_after_a_bad_width_moves_the_focus_there() {
     let passes = |s: &SharedSession| s.lock().unwrap().doc().document.job.passes;
     // Typed, not left yet.
     h.get_by_label("Width (mm)").click();
-    h.run();
+    h.run_plan();
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
-    h.run();
+    h.run_plan();
     h.event(Event::Text("2in+".into()));
-    h.run();
+    h.run_plan();
     h.get_by_label("Passes").click();
-    h.run();
+    h.run_plan();
     for _ in 0..3 {
-        h.run();
+        h.run_plan();
     }
     assert!(has_focus(&h, "Passes"), "no focus is taken back");
     assert!(!has_focus(&h, "Width (mm)"));
@@ -163,11 +164,11 @@ fn a_click_on_another_field_after_a_bad_width_moves_the_focus_there() {
     assert!(toast.text.ends_with("Nothing changed."), "{}", toast.text);
     // And Passes works as usual.
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
-    h.run();
+    h.run_plan();
     h.event(Event::Text("2".into()));
-    h.run();
+    h.run_plan();
     h.key_press(Key::Enter);
-    h.run();
+    h.run_plan();
     assert_eq!(passes(&s), Some(2));
 }
 
@@ -195,14 +196,14 @@ fn a_selection_change_drops_a_bad_text_and_a_good_one_stays_with_its_objects() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Tab, "Layout").click();
-    h.run();
+    h.run_plan();
     // A text it cannot read, kept by Enter; then another selection.
     enter(&mut h, "X (mm)", "abc", Key::Enter);
     assert!(fields(&h).error.is_some());
     let before = undo_len(&s);
     select(b);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert!(fields(&h).editing.is_none() && fields(&h).error.is_none());
     assert_eq!(fields(&h).x, "100.00", "it shows the new selection");
     assert!(!has_focus(&h, "X (mm)"));
@@ -213,18 +214,18 @@ fn a_selection_change_drops_a_bad_text_and_a_good_one_stays_with_its_objects() {
     // a relative edit counts from a's value.
     let typed_for_a_then_b = |h: &mut AppHarness, text: &str| {
         select(a);
-        h.run();
+        h.run_plan();
         h.get_by_label("X (mm)").click();
-        h.run();
+        h.run_plan();
         h.key_press_modifiers(Modifiers::COMMAND, Key::A);
-        h.run();
+        h.run_plan();
         h.event(Event::Text(text.into()));
-        h.run();
+        h.run_plan();
         select(b);
-        h.run();
+        h.run_plan();
         h.key_press(Key::Enter);
-        h.run();
-        h.run();
+        h.run_plan();
+        h.run_plan();
     };
     typed_for_a_then_b(&mut h, "+=5");
     assert!(near(bounds(&s, a).x0, 25.0), "{:?}", bounds(&s, a));
@@ -243,12 +244,12 @@ fn a_fixed_text_applies_and_the_message_goes() {
     assert!(near(bounds(&s, id).height(), 50.0));
     // Still in the field: fix the text and leave it.
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
-    h.run();
+    h.run_plan();
     h.event(Event::Text("10/4".into()));
-    h.run();
+    h.run_plan();
     h.key_press(Key::Enter);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert!(near(bounds(&s, id).height(), 2.5), "{:?}", bounds(&s, id));
     assert!(fields(&h).error.is_none());
 }
@@ -293,37 +294,37 @@ fn a_whole_number_field_rounds_and_says_what_it_cannot_read() {
     to_prepare(&mut h);
     let passes = |s: &SharedSession| s.lock().unwrap().doc().document.job.passes;
     h.get_by_label("Passes").click();
-    h.run();
+    h.run_plan();
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
-    h.run();
+    h.run_plan();
     h.event(Event::Text("5/2".into()));
-    h.run();
+    h.run_plan();
     h.key_press(Key::Enter);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(passes(&s), Some(3), "2.5 rounds to 3");
     h.get_by_label("Passes (modified)").click();
-    h.run();
+    h.run_plan();
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
-    h.run();
+    h.run_plan();
     h.event(Event::Text("2*".into()));
-    h.run();
+    h.run_plan();
     h.key_press(Key::Enter);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(passes(&s), Some(3), "nothing applied");
     h.get_by_label("Can't read '2*': something is missing after *. Press Esc to go back.");
     // Force refuses a value above its range (only Speed clamps).
     h.key_press(Key::Escape);
-    h.run();
+    h.run_plan();
     h.get_by_label("Force").click();
-    h.run();
+    h.run_plan();
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
-    h.run();
+    h.run_plan();
     h.event(Event::Text("40".into()));
-    h.run();
+    h.run_plan();
     h.key_press(Key::Tab);
-    h.run();
+    h.run_plan();
     let force = s.lock().unwrap().doc().document.job.force;
     assert_eq!(force, None, "refused");
     let toast = app(&h).ui.toasts.last().cloned().unwrap();
@@ -355,8 +356,8 @@ fn a_text_it_cannot_read_left_behind_by_a_tab_switch_says_so_in_a_toast() {
     enter(&mut h, "Width (mm)", "(50", Key::Enter);
     assert!(fields(&h).error.is_some());
     h.get_by_role_and_label(Role::Tab, "View").click();
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(undo_len(&s), before);
     assert!(near(bounds(&s, id).width(), 50.0));
     assert!(fields(&h).error.is_none() && fields(&h).editing.is_none());

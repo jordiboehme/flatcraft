@@ -4,6 +4,7 @@
 //! while a ring moves.
 
 mod common;
+use common::RunPlan;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -56,12 +57,12 @@ fn rig(reduce_motion: bool) -> Rig {
 impl Rig {
     fn show(&mut self, t: Toast) {
         app_mut(&mut self.h).toast(t);
-        self.h.run();
+        self.h.run_plan();
     }
 
     fn later(&mut self, d: Duration) {
         *self.now.lock().unwrap() += d;
-        self.h.run();
+        self.h.run_plan();
     }
 
     fn titles(&self) -> Vec<String> {
@@ -99,7 +100,7 @@ fn each_kind_has_its_lifetime_and_errors_stay() {
     assert_eq!(r.titles(), ["broken"], "an error stays until closed");
     // Its × closes it.
     r.h.get_by_role_and_label(Role::Button, CLOSE_NAME).click();
-    r.h.run();
+    r.h.run_plan();
     assert!(r.titles().is_empty());
 }
 
@@ -110,12 +111,12 @@ fn hovering_a_toast_pauses_it() {
     r.later(Duration::from_secs(2));
     let at = r.h.get_by_label("Saved").rect().center();
     r.h.hover_at(at);
-    r.h.run();
+    r.h.run_plan();
     r.later(Duration::from_secs(30));
     assert_eq!(r.titles(), ["Saved"], "the clock stands while hovered");
     // The pointer leaves: 3 s are left.
     r.h.hover_at(egui::pos2(10.0, 400.0));
-    r.h.run();
+    r.h.run_plan();
     r.later(Duration::from_millis(2900));
     assert_eq!(r.titles(), ["Saved"]);
     r.later(Duration::from_millis(100));
@@ -135,7 +136,7 @@ fn a_click_on_a_toast_with_a_file_shows_the_file() {
     r.h.get_by_label(&file.display().to_string());
     r.h.get_by_role_and_label(Role::Button, reveal_label())
         .click();
-    r.h.run();
+    r.h.run_plan();
     assert_eq!(*r.revealed.0.lock().unwrap(), vec![file]);
     // A toast without a file is no button.
     r.show(Toast::info("Nothing to see"));
@@ -153,7 +154,7 @@ fn saving_shows_a_saved_toast_with_the_path() {
     let doc = s.lock().unwrap().doc().id();
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![Action::Save { doc_id: doc }]);
-    h.run();
+    h.run_plan();
     let t = app(&h).ui.toasts.last().cloned().unwrap();
     assert_eq!((t.text.as_str(), t.kind), ("Saved", ToastKind::Success));
     let full = std::path::absolute(&path).unwrap();
@@ -193,7 +194,7 @@ fn the_window_repaints_often_only_while_a_ring_moves() {
     r.show(Toast::info("rest"));
     let at = r.h.get_by_label("rest").rect().center();
     r.h.hover_at(at);
-    r.h.run();
+    r.h.run_plan();
     assert!(r.repaint_delay() > Duration::from_secs(1));
     // Reduced motion: no ring, the same lifetime, a repaint only when it
     // expires.
@@ -213,7 +214,7 @@ fn the_easter_egg_toasts_still_show() {
     let doc = s.lock().unwrap().doc().id();
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![Action::Undo(doc)]);
-    h.run();
+    h.run_plan();
     h.get_by_label(NOTHING_TO_UNDO);
 }
 
@@ -234,17 +235,17 @@ fn closing_a_toast_never_hits_its_neighbour() {
             .unwrap()
             .center();
     r.h.hover_at(x);
-    r.h.run();
+    r.h.run_plan();
     r.h.drag_at(x);
-    r.h.run();
+    r.h.run_plan();
     r.h.drop_at(x);
-    r.h.run();
+    r.h.run_plan();
     assert_eq!(r.titles(), ["B"]);
     assert_eq!(app(&r.h).ui.toasts[0].id, ids[1], "B keeps its id");
     // A click on B shows B's file.
     r.h.get_by_role_and_label(Role::Button, reveal_label())
         .click();
-    r.h.run();
+    r.h.run_plan();
     assert_eq!(*r.revealed.0.lock().unwrap(), vec![b]);
 }
 
@@ -258,7 +259,7 @@ fn in_prepare_and_cut_notices_sit_over_the_canvas() {
         app_mut(&mut r.h).ui.workspace = ws;
         settle(&mut r.h);
         r.show(Toast::info("over the canvas"));
-        r.h.run();
+        r.h.run_plan();
         let toast = r.h.get_by_label("over the canvas").rect();
         let canvas = match ws {
             flatcraft::ui::Workspace::Cut => app(&r.h).ui.cut.canvas_rect,
@@ -470,7 +471,7 @@ fn the_zoom_hint_moves_above_the_notices() {
     assert!(hint(&h).is_some(), "the hint shows");
     app_mut(&mut h).toast(Toast::error("over the hint"));
     settle(&mut h);
-    h.run();
+    h.run_plan();
     let stack = stack_rect(&h);
     let at = hint(&h).unwrap();
     assert!(!at.intersects(stack), "{at:?} under {stack:?}");

@@ -2,6 +2,7 @@
 //! search and the theme preview, driven through egui_kittest.
 
 mod common;
+use common::RunPlan;
 
 use common::{AppHarness, app, app_mut, harness_sized, harness_steps, session, to_prepare};
 use egui::accesskit::{Role, Toggled};
@@ -22,14 +23,14 @@ fn harness(dir: &tempfile::TempDir, s: &SharedSession) -> AppHarness {
 
 fn open(h: &mut AppHarness, page: &str) {
     h.get_by_role_and_label(Role::Button, "Settings").click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Tab, page).click();
-    h.run();
+    h.run_plan();
 }
 
 fn click(h: &mut AppHarness, label: &str) {
     h.get_by_label(label).click();
-    h.run();
+    h.run_plan();
 }
 
 fn disabled(h: &AppHarness, label: &str) -> bool {
@@ -130,7 +131,7 @@ fn every_setting_is_reachable() {
     for (id, names) in REACHABLE {
         let page = settings_window::row(id).page;
         h.get_by_role_and_label(Role::Tab, page.name()).click();
-        h.run();
+        h.run_plan();
         for name in names {
             assert!(
                 h.query_by_label(name).is_some(),
@@ -171,7 +172,7 @@ fn cancel_discards_apply_keeps_and_ok_keeps_and_closes() {
 
     // OK stores it and closes.
     h.get_by_role_and_label(Role::Tab, "Agents").click();
-    h.run();
+    h.run_plan();
     click(&mut h, "Allow agents to start cuts");
     click(&mut h, "OK");
     assert!(!is_open(&h));
@@ -193,7 +194,7 @@ fn the_close_button_and_escape_drop_the_changes() {
             click(&mut h, CLOSE_NAME);
         } else {
             h.key_press(egui::Key::Escape);
-            h.run();
+            h.run_plan();
         }
         assert!(!is_open(&h), "{how}");
         assert!(!s.lock().unwrap().prefs.allow_agent_cuts, "{how}");
@@ -212,10 +213,10 @@ fn restore_page_defaults_only_touches_that_page() {
     open(&mut h, "General");
     click(&mut h, "Reload changed files automatically");
     h.get_by_role_and_label(Role::Tab, "Cutting").click();
-    h.run();
+    h.run_plan();
     click(&mut h, "Cut strategy: Fast");
     h.get_by_role_and_label(Role::Tab, "Appearance").click();
-    h.run();
+    h.run_plan();
     assert!(!disabled(&h, "Restore page defaults"));
     click(&mut h, "Restore page defaults");
     assert!(disabled(&h, "Restore page defaults"));
@@ -236,7 +237,7 @@ fn a_preset_page_has_no_page_defaults_and_apply_stores_the_other_pages() {
     open(&mut h, "General");
     click(&mut h, "Reload changed files automatically");
     h.get_by_role_and_label(Role::Tab, "Plotters").click();
-    h.run();
+    h.run_plan();
     assert!(disabled(&h, "Restore page defaults"));
     // Apply stores the staged preferences; the preset keeps its own Save.
     click(&mut h, "Apply");
@@ -252,21 +253,21 @@ fn ok_with_an_unsaved_preset_asks_first() {
     open(&mut h, "General");
     click(&mut h, "Reload changed files automatically");
     h.get_by_role_and_label(Role::Tab, "Plotters").click();
-    h.run();
+    h.run_plan();
     click(&mut h, "Silhouette Cameo 2");
     click(&mut h, "Save as user preset...");
     h.get_by_label("Preset name").type_text(" X");
-    h.run();
+    h.run_plan();
     click(&mut h, "Create");
     let edit = &mut app_mut(&mut h).ui.profiles.plotter.as_mut().unwrap().edit;
     edit.scale_x = 1.5;
-    h.run();
+    h.run_plan();
     click(&mut h, "OK");
     assert!(is_open(&h));
     h.get_by_label("Discard your changes?");
     // Moving between the Plotters and the Mats page keeps the edit.
     h.get_by_role_and_label(Role::Tab, "Mats").click();
-    h.run();
+    h.run_plan();
     assert_eq!(
         app(&h).ui.profiles.plotter.as_ref().unwrap().edit.scale_x,
         1.5
@@ -306,9 +307,9 @@ fn search_finds_a_setting_by_a_word_from_its_card() {
     open(&mut h, "General");
     // Cmd+F (Ctrl+F) puts the keyboard into the search field.
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::F);
-    h.run();
+    h.run_plan();
     h.get_by_label(SEARCH_NAME).type_text("Voltron");
-    h.run();
+    h.run_plan();
     // "Voltron" is only in the card of Each object.
     click(&mut h, "Each object (Cutting)");
     let st = &app(&h).ui.settings;
@@ -319,11 +320,11 @@ fn search_finds_a_setting_by_a_word_from_its_card() {
 
     // Enter takes the best result, also on a preset page.
     h.get_by_label(SEARCH_NAME).click();
-    h.run();
+    h.run_plan();
     h.get_by_label(SEARCH_NAME).type_text("pressure");
-    h.run();
+    h.run_plan();
     h.key_press(egui::Key::Enter);
-    h.run();
+    h.run_plan();
     let st = &app(&h).ui.settings;
     assert_eq!(st.page, Page::Materials);
     assert_eq!(st.highlight.map(|(id, _)| id), Some("material.force"));
@@ -338,9 +339,9 @@ fn search_unfolds_a_folded_section() {
     click(&mut h, "Agent cuts section");
     assert!(h.query_by_label("Allow agents to start cuts").is_none());
     h.get_by_label(SEARCH_NAME).click();
-    h.run();
+    h.run_plan();
     h.get_by_label(SEARCH_NAME).type_text("trust");
-    h.run();
+    h.run_plan();
     click(&mut h, "Agent cuts (Agents)");
     h.get_by_label("Allow agents to start cuts");
 }
@@ -353,7 +354,7 @@ fn applied_panels_and_each_object_take_effect_at_once() {
     open(&mut h, "Layout");
     click(&mut h, "Objects panel: Collapsed");
     h.get_by_role_and_label(Role::Tab, "Cutting").click();
-    h.run();
+    h.run_plan();
     click(&mut h, "Turn and scale each object about its own centre");
     click(&mut h, "More Auto arrange spacing");
     click(&mut h, "OK");
@@ -409,7 +410,7 @@ fn the_window_fits_at_900_by_600() {
     let s = session(&dir);
     let mut h = harness_sized(&dir, s.clone(), [900.0, 600.0], 8, |app| app);
     h.get_by_role_and_label(Role::Button, "Settings").click();
-    h.run();
+    h.run_plan();
     let window: Rect = h
         .ctx
         .memory(|m| m.area_rect(egui::Id::unique("flatcraft-settings")))
@@ -418,7 +419,7 @@ fn the_window_fits_at_900_by_600() {
     assert!(screen.contains_rect(window), "{window:?} in {screen:?}");
     for page in Page::ALL {
         h.get_by_role_and_label(Role::Tab, page.name()).click();
-        h.run();
+        h.run_plan();
         let mut names: Vec<&str> = vec![
             CLOSE_NAME,
             SEARCH_NAME,
@@ -495,11 +496,11 @@ fn cancel_with_unsaved_preset_edits_keeps_everything_until_discard() {
     open(&mut h, "General");
     click(&mut h, "Reload changed files automatically");
     h.get_by_role_and_label(Role::Tab, "Plotters").click();
-    h.run();
+    h.run_plan();
     click(&mut h, "Silhouette Cameo 2");
     click(&mut h, "Save as user preset...");
     h.get_by_label("Preset name").type_text(" X");
-    h.run();
+    h.run_plan();
     click(&mut h, "Create");
     app_mut(&mut h)
         .ui
@@ -509,7 +510,7 @@ fn cancel_with_unsaved_preset_edits_keeps_everything_until_discard() {
         .unwrap()
         .edit
         .scale_x = 1.5;
-    h.run();
+    h.run_plan();
     for how in ["cancel", "escape"] {
         click(&mut h, "Cancel");
         h.get_by_label("Discard your changes?");
@@ -520,7 +521,7 @@ fn cancel_with_unsaved_preset_edits_keeps_everything_until_discard() {
         } else {
             // Escape on the question means Keep editing.
             h.key_press(egui::Key::Escape);
-            h.run();
+            h.run_plan();
         }
         assert!(is_open(&h), "{how}");
         assert!(h.query_by_label("Discard your changes?").is_none(), "{how}");
@@ -545,13 +546,13 @@ fn command_f_alone_gives_the_search_field_the_keyboard() {
     open(&mut h, "General");
     // Without Cmd+F, typed text goes nowhere.
     h.event(egui::Event::Text("theme".into()));
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.settings.search.is_empty());
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::F);
-    h.run();
+    h.run_plan();
     // Raw key events, not aimed at any widget.
     h.event(egui::Event::Text("theme".into()));
-    h.run();
+    h.run_plan();
     assert_eq!(app(&h).ui.settings.search, "theme");
     h.get_by_label("Theme (Appearance)");
 }
@@ -562,15 +563,15 @@ fn search_scrolls_to_the_calibration_note() {
     let s = session(&dir);
     let mut h = harness_sized(&dir, s.clone(), [900.0, 600.0], 8, |app| app);
     h.get_by_role_and_label(Role::Button, "Settings").click();
-    h.run();
+    h.run_plan();
     let window: Rect = h
         .ctx
         .memory(|m| m.area_rect(egui::Id::unique("flatcraft-settings")))
         .unwrap();
     h.get_by_label(SEARCH_NAME).click();
-    h.run();
+    h.run_plan();
     h.get_by_label(SEARCH_NAME).type_text("wizard");
-    h.run();
+    h.run_plan();
     click(&mut h, "Calibration (Mats)");
     assert_eq!(app(&h).ui.settings.page, Page::Mats);
     let note = h
@@ -621,9 +622,9 @@ fn the_keyboard_page_lists_the_drag_modifiers() {
 
 fn click_at(h: &mut AppHarness, at: egui::Pos2) {
     h.drag_at(at);
-    h.run();
+    h.run_plan();
     h.drop_at(at);
-    h.run();
+    h.run_plan();
 }
 
 /// A number field of the window: a calculation counts, a double-click
@@ -638,7 +639,7 @@ fn a_number_field_takes_a_calculation_and_a_double_click_selects_it_all() {
     // On the "5" of "5.0", which a word selection would take alone.
     let at = egui::pos2(r.left() + 6.0, r.center().y);
     h.hover_at(at);
-    h.run();
+    h.run_plan();
     // The first click turns the drag value into a text field (egui
     // selects it all); the second places the cursor.
     click_at(&mut h, at);
@@ -653,13 +654,13 @@ fn a_number_field_takes_a_calculation_and_a_double_click_selects_it_all() {
     }
     click_at(&mut h, at);
     click_at(&mut h, at);
-    h.run();
+    h.run_plan();
     // With only "5" selected this would read "7,.0", which has a dot and
     // a comma; the whole value replaced reads "7,", that is 7.
     h.event(egui::Event::Text("7,".into()));
-    h.run();
+    h.run_plan();
     h.key_press(egui::Key::Enter);
-    h.run();
+    h.run_plan();
     click(&mut h, "OK");
     assert_eq!(stored(&dir).auto_arrange_spacing_mm, 7.0);
 }
@@ -671,13 +672,13 @@ fn a_number_field_refuses_a_value_outside_its_range_and_says_why() {
     let mut h = harness(&dir, &s);
     open(&mut h, "Cutting");
     h.get_by_label("Auto arrange spacing").click();
-    h.run();
+    h.run_plan();
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
-    h.run();
+    h.run_plan();
     h.event(egui::Event::Text("5in".into()));
-    h.run();
+    h.run_plan();
     h.key_press(egui::Key::Enter);
-    h.run();
+    h.run_plan();
     let (_, hi) = flatcraft_engine::prefs::AUTO_SPACING_RANGE_MM.into_inner();
     h.get_by_label(&format!(
         "127 is too large: give at most {hi} mm. Press Esc to go back."
@@ -693,18 +694,18 @@ fn ok_counts_a_typed_value_and_restores_one_it_cannot_read() {
     let mut h = harness(&dir, &s);
     let type_without_leaving = |h: &mut AppHarness, text: &str| {
         h.get_by_label("Auto arrange spacing").click();
-        h.run();
+        h.run_plan();
         h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
-        h.run();
+        h.run_plan();
         h.event(egui::Event::Text(text.into()));
-        h.run();
+        h.run_plan();
     };
     // Typed, still in the field: OK counts it first.
     open(&mut h, "Cutting");
     type_without_leaving(&mut h, "2*3");
     click(&mut h, "OK");
     for _ in 0..3 {
-        h.run();
+        h.run_plan();
     }
     assert!(!is_open(&h));
     assert_eq!(stored(&dir).auto_arrange_spacing_mm, 6.0);
@@ -713,7 +714,7 @@ fn ok_counts_a_typed_value_and_restores_one_it_cannot_read() {
     type_without_leaving(&mut h, "2*");
     click(&mut h, "OK");
     for _ in 0..3 {
-        h.run();
+        h.run_plan();
     }
     assert!(!is_open(&h));
     assert_eq!(stored(&dir).auto_arrange_spacing_mm, 6.0);
@@ -734,6 +735,6 @@ fn the_stepper_field_follows_the_click_rules_and_esc_keeps_the_window() {
     assert!(is_open(&h), "Esc in the field only puts the value back");
     // Esc with no field being typed into closes the window as before.
     h.key_press(egui::Key::Escape);
-    h.run();
+    h.run_plan();
     assert!(!is_open(&h));
 }

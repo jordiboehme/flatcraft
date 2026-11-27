@@ -4,6 +4,7 @@
 //! the ribbon and context menu items with their dimmed reasons.
 
 mod common;
+use common::RunPlan;
 
 use common::{AppHarness, app, app_mut, harness, import_square, session, to_prepare, undo_len};
 use egui::accesskit::Role;
@@ -63,7 +64,7 @@ fn rig(dir: &tempfile::TempDir, s: SharedSession) -> (AppHarness, CanvasView) {
     let mut h = harness(dir, s, false);
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Tab, "Layout").click();
-    h.run();
+    h.run_plan();
     let rect = app(&h).ui.prepare.canvas_rect;
     let view = CanvasView {
         offset: rect.center().to_vec2() - Vec2::new(145.0, 45.0) * 2.0,
@@ -72,7 +73,7 @@ fn rig(dir: &tempfile::TempDir, s: SharedSession) -> (AppHarness, CanvasView) {
     let p = &mut app_mut(&mut h).ui.prepare;
     p.view = view;
     p.fit_pending = false;
-    h.run();
+    h.run_plan();
     (h, view)
 }
 
@@ -85,7 +86,7 @@ fn at(v: &CanvasView, x: f64, y: f64) -> Pos2 {
 fn click(h: &mut AppHarness, p: Pos2, clicks: usize, modifiers: Modifiers) {
     h.event(Event::ModifiersChanged(modifiers));
     h.event(Event::PointerMoved(p));
-    h.run();
+    h.run_plan();
     for _ in 0..clicks {
         for pressed in [true, false] {
             h.event(Event::PointerButton {
@@ -98,9 +99,9 @@ fn click(h: &mut AppHarness, p: Pos2, clicks: usize, modifiers: Modifiers) {
             h.step();
         }
     }
-    h.run();
+    h.run_plan();
     h.event(Event::ModifiersChanged(Modifiers::NONE));
-    h.run();
+    h.run_plan();
 }
 
 #[test]
@@ -129,7 +130,7 @@ fn a_click_picks_the_group_and_a_double_click_one_member() {
     assert_eq!(selection(&s), vec![a]);
     // Escape leaves the group: the whole group is selected again.
     h.key_press(Key::Escape);
-    h.run();
+    h.run_plan();
     assert_eq!(selection(&s), vec![a, b]);
     assert_eq!(app(&h).ui.prepare.entered, None);
     // Go in again, then click outside the group.
@@ -152,7 +153,7 @@ fn cmd_g_groups_and_shift_cmd_g_ungroups() {
     let (mut h, _) = rig(&dir, s.clone());
     let steps = undo_len(&s);
     h.key_press_modifiers(Modifiers::COMMAND, Key::G);
-    h.run();
+    h.run_plan();
     assert_eq!(s.lock().unwrap().doc().document.groups.len(), 1);
     assert_eq!(undo_len(&s), steps + 1, "one undo step");
     let shift_cmd = Modifiers {
@@ -160,7 +161,7 @@ fn cmd_g_groups_and_shift_cmd_g_ungroups() {
         ..Modifiers::COMMAND
     };
     h.key_press_modifiers(shift_cmd, Key::G);
-    h.run();
+    h.run_plan();
     assert!(s.lock().unwrap().doc().document.groups.is_empty());
     assert_eq!(undo_len(&s), steps + 2);
 }
@@ -230,19 +231,19 @@ fn the_objects_panel_folds_a_group_open() {
     let rows_before = h.query_all_by_label("Hide square").count();
     h.get_by_role_and_label(Role::Button, "Open Group 1")
         .click();
-    h.run();
+    h.run_plan();
     let doc_id = s.lock().unwrap().doc().id();
     assert!(app(&h).ui.prepare.open_groups.contains(&(doc_id, g)));
     assert_eq!(h.query_all_by_label("Hide square").count(), rows_before + 2);
     // A click on the group row selects the whole group.
     h.get_by_label("Group 1, group of 2 objects").click();
-    h.run();
+    h.run_plan();
     assert_eq!(selection(&s).len(), 2);
     assert!(selection(&s).contains(&a));
     // Hiding the group hides both members.
     h.get_by_role_and_label(Role::Button, "Hide Group 1")
         .click();
-    h.run();
+    h.run_plan();
     let guard = s.lock().unwrap();
     let doc = &guard.doc().document;
     let hidden = doc.objects.iter().filter(|o| !o.visible).count();
@@ -253,16 +254,16 @@ fn the_objects_panel_folds_a_group_open() {
 /// Presses at `from`, moves to `to` in steps and lets go.
 fn drag(h: &mut AppHarness, from: Pos2, to: Pos2) {
     h.hover_at(from);
-    h.run();
+    h.run_plan();
     h.drag_at(from);
-    h.run();
+    h.run_plan();
     for t in [0.25, 0.5, 0.75, 1.0] {
         h.hover_at(from + (to - from) * t);
-        h.run();
+        h.run_plan();
     }
     h.drop_at(to);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
 }
 
 #[test]
@@ -286,9 +287,9 @@ fn a_group_is_renamed_from_its_row() {
         id: g,
         name: "Badge".into(),
     });
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Rename").click();
-    h.run();
+    h.run_plan();
     let name = s
         .lock()
         .unwrap()
@@ -330,7 +331,7 @@ fn rows_drag_into_and_out_of_a_group() {
     // Open the group and drag a member below the list: it leaves.
     h.get_by_role_and_label(Role::Button, "Open Group 1")
         .click();
-    h.run();
+    h.run_plan();
     let member = h
         .query_all_by_label("Hide square")
         .map(|n| n.rect().center())
@@ -339,22 +340,22 @@ fn rows_drag_into_and_out_of_a_group() {
     let from = Pos2::new(member.x - 120.0, member.y);
     // The drop zone shows while dragging, under the last row.
     h.hover_at(from);
-    h.run();
+    h.run_plan();
     h.drag_at(from);
-    h.run();
+    h.run_plan();
     h.hover_at(from + Vec2::new(0.0, 20.0));
-    h.run();
+    h.run_plan();
     let zone = h
         .get_by_label("Drop here to take it out of its group")
         .rect()
         .center();
     for t in [0.5, 1.0] {
         h.hover_at(from + (zone - from) * t);
-        h.run();
+        h.run_plan();
     }
     h.drop_at(zone);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert_eq!(parent(&s, a), None);
 }
 
@@ -363,7 +364,7 @@ fn rows_drag_into_and_out_of_a_group() {
 /// the harness's step time.
 fn double_click(h: &mut AppHarness, p: Pos2) {
     h.event(Event::PointerMoved(p));
-    h.run();
+    h.run_plan();
     let mut t = h.ctx.input(|i| i.time);
     for _ in 0..2 {
         for pressed in [true, false] {
@@ -378,7 +379,7 @@ fn double_click(h: &mut AppHarness, p: Pos2) {
             h.step();
         }
     }
-    h.run();
+    h.run_plan();
 }
 
 #[test]
@@ -412,7 +413,7 @@ fn cmd_drag_moves_one_member_of_a_selected_group() {
     h.event(Event::ModifiersChanged(Modifiers::COMMAND));
     drag(&mut h, at(&v, 145.0, 60.0), at(&v, 145.0, 80.0));
     h.event(Event::ModifiersChanged(Modifiers::NONE));
-    h.run();
+    h.run_plan();
     assert_eq!(centre(a), a0, "the other member stays");
     assert!((centre(b).y - b0.y - 20.0).abs() < 1e-6, "{:?}", centre(b));
     assert_eq!(selection(&s), vec![b]);

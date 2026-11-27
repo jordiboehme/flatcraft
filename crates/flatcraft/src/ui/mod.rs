@@ -21,6 +21,7 @@ pub mod icons;
 pub mod import_dialog;
 pub mod keep_pick;
 pub mod kept;
+pub mod long;
 pub mod materials;
 #[cfg(target_os = "macos")]
 pub mod menu;
@@ -413,6 +414,9 @@ pub struct FlatCraftApp {
     pub source_check: flatcraft_mcp::server::SourceChecker,
     /// The check of linked files that is running, if any.
     pub source_check_job: Option<std::sync::mpsc::Receiver<prepare::CheckDone>>,
+    /// The window's long commands (import, trace, reload, relink, open,
+    /// export), run off the session lock on a worker, one at a time.
+    pub long: long::LongJobs,
     /// Rolls the maker quote and the rare "Punch it." toast. Seeded with
     /// [`rng::DEFAULT_SEED`]; `main` seeds it from the clock and tests with
     /// [`FlatCraftApp::with_seed`].
@@ -480,6 +484,7 @@ impl FlatCraftApp {
             clock: std::sync::Arc::new(Instant::now),
             source_check: std::sync::Arc::new(flatcraft_engine::commands::sources::check_unlocked),
             source_check_job: None,
+            long: long::LongJobs::new(ctx),
             rng: rng::XorShift::default(),
             injected: Vec::new(),
             title_bar: cfg!(target_os = "macos"),
@@ -815,6 +820,21 @@ impl FlatCraftApp {
     /// Runs a command on the document `doc_id`, under one lock, only while
     /// it is still the active document. Errors become toasts.
     fn run_on(&mut self, doc_id: u64, command: &'static str, params: Value) -> Option<Value> {
+        if flatcraft_engine::unlocked::runs_unlocked(command) {
+            // Off the session lock on a worker; its result is taken in
+            // `finish_long`, in this frame when it is quick.
+            self.run_long(long::LongJob {
+                work: long::Work::Command {
+                    doc_id: Some(doc_id),
+                    command,
+                    params,
+                },
+                then: long::Then::Command {
+                    doc_id: Some(doc_id),
+                },
+            });
+            return None;
+        }
         let result = {
             let mut s = lock(&self.session);
             if s.doc().id() != doc_id {
@@ -837,6 +857,67 @@ impl FlatCraftApp {
             Some(Ok(v)) => {
                 self.after_command(command, &v);
                 Some(v)
+            }
+        }
+    }
+
+    /// Queues a long command and runs what is ready (see [`long`]).
+    fn run_long(&mut self, job: long::LongJob) {
+        self.long.push(job);
+        self.pump_long();
+    }
+
+    /// Starts the next long command and takes the ones that finished.
+    /// Every frame calls it.
+    pub fn pump_long(&mut self) {
+        while let Some((job, result)) = self.long.poll(&self.session) {
+            self.finish_long(job, result);
+        }
+    }
+
+    /// What follows a long command, as it followed the command when it ran
+    /// under the lock.
+    fn finish_long(&mut self, job: long::LongJob, result: Result<Value, CommandError>) {
+        let command = job.command();
+        let v = match result {
+            Err(e) if e == flatcraft_engine::unlocked::not_active() => {
+                self.toast(Toast::warning(flatcraft_engine::unlocked::NOT_ACTIVE));
+                return;
+            }
+            Err(e) => {
+                self.toast(Toast::error(person_text(&e)));
+                return;
+            }
+            Ok(v) => v,
+        };
+        match job.then {
+            long::Then::Command { doc_id } => {
+                let active = lock(&self.session).doc().id();
+                if doc_id.is_none_or(|d| d == active) {
+                    self.after_command(command, &v);
+                }
+            }
+            long::Then::ImportToPrepare => {
+                self.after_command(command, &v);
+                self.ui.workspace = Workspace::Prepare;
+            }
+            long::Then::Export(path) => self.exported(&path, &v),
+            long::Then::Open { path, replaces } => {
+                self.opened(&path, &v);
+                if let Some(old) = replaces {
+                    let found = std::path::absolute(&path).unwrap_or(path);
+                    if found != old {
+                        self.remove_recent(&old);
+                    }
+                }
+            }
+            long::Then::Sample => {
+                for w in v["warnings"].as_array().into_iter().flatten() {
+                    if let Some(w) = w.as_str() {
+                        self.toast(Toast::warning(w.to_string()));
+                    }
+                }
+                self.ui.workspace = Workspace::Prepare;
             }
         }
     }
@@ -1198,29 +1279,20 @@ impl FlatCraftApp {
                 }
             }
             Action::Open(path) => {
-                self.open_project(&path);
+                self.open_project(&path, None);
             }
             Action::RemoveRecent(path) => self.remove_recent(&path),
             Action::OpenSample(i) => {
                 let Some(sample) = home::SAMPLES.get(i) else {
                     return;
                 };
-                let result = flatcraft_engine::commands::project::open_bytes(
-                    &mut lock(&self.session),
-                    sample.bytes,
-                    sample.title,
-                );
-                match result {
-                    Ok(v) => {
-                        for w in v["warnings"].as_array().into_iter().flatten() {
-                            if let Some(w) = w.as_str() {
-                                self.toast(Toast::warning(w.to_string()));
-                            }
-                        }
-                        self.ui.workspace = Workspace::Prepare;
-                    }
-                    Err(e) => self.toast(Toast::error(person_text(&e))),
-                }
+                self.run_long(long::LongJob {
+                    work: long::Work::Sample {
+                        bytes: std::sync::Arc::from(sample.bytes),
+                        title: sample.title.to_string(),
+                    },
+                    then: long::Then::Sample,
+                });
             }
             Action::LocateRecent(old) => {
                 let req = files::FileRequest {
@@ -1229,13 +1301,8 @@ impl FlatCraftApp {
                     file_name: Some(display_name(&old)),
                     ..Default::default()
                 };
-                if let Some(found) = self.files.pick_file(&req)
-                    && self.open_project(&found)
-                {
-                    let found = std::path::absolute(&found).unwrap_or(found);
-                    if found != old {
-                        self.remove_recent(&old);
-                    }
+                if let Some(found) = self.files.pick_file(&req) {
+                    self.open_project(&found, Some(old));
                 }
             }
             Action::ShowOpen(doc_id, workspace) => {
@@ -1686,14 +1753,20 @@ impl FlatCraftApp {
         }
         // The active document now: an earlier file of the same drop may
         // have opened a project.
-        let doc_id = lock(&self.session).doc().id();
+        // That project opens before them (one long command at a time), so
+        // the files go into the document active when their import begins.
         let params = match files.as_slice() {
             [one] => json!({ "path": one }),
             _ => json!({ "paths": files }),
         };
-        if self.run_on(doc_id, "object.import", params).is_some() {
-            self.ui.workspace = Workspace::Prepare;
-        }
+        self.run_long(long::LongJob {
+            work: long::Work::Command {
+                doc_id: None,
+                command: "object.import",
+                params,
+            },
+            then: long::Then::ImportToPrepare,
+        });
     }
 
     /// Copies what the Trace dialog needs under one lock and opens it.
@@ -1783,9 +1856,19 @@ impl FlatCraftApp {
             "scope": scope,
             "include_skipped": d.include_skipped,
         });
-        let Some(v) = self.run_on(d.doc_id, "document.export", params) else {
-            return;
-        };
+        self.run_long(long::LongJob {
+            work: long::Work::Command {
+                doc_id: Some(d.doc_id),
+                command: "document.export",
+                params,
+            },
+            then: long::Then::Export(path),
+        });
+    }
+
+    /// The toast of a finished export to `path`.
+    fn exported(&mut self, path: &Path, v: &Value) {
+        let path = path.to_path_buf();
         let shapes = v["shapes"].as_u64().unwrap_or(0);
         let what = if shapes == 1 {
             "1 shape".to_string()
@@ -1849,12 +1932,24 @@ impl FlatCraftApp {
         );
     }
 
-    /// Opens a project file, puts it first in the recent list and goes to
-    /// Prepare. False when it could not be opened (a toast says why).
-    fn open_project(&mut self, path: &Path) -> bool {
-        let Some(v) = self.execute("project.open", json!({ "path": path })) else {
-            return false;
-        };
+    /// Opens a project file off the session lock (see [`long`]); then
+    /// [`Self::opened`] puts it first in the recent list and goes to
+    /// Prepare. A failure is a toast that says why. `replaces` is a
+    /// recent entry the file was located for: it leaves the list when the
+    /// file opened from another place.
+    fn open_project(&mut self, path: &Path, replaces: Option<PathBuf>) {
+        self.run_long(long::LongJob {
+            work: long::Work::Open(path.to_path_buf()),
+            then: long::Then::Open {
+                path: path.to_path_buf(),
+                replaces,
+            },
+        });
+    }
+
+    /// What follows an open project: the recent list, its picture, the
+    /// warnings and Prepare.
+    fn opened(&mut self, path: &Path, v: &Value) {
         self.remember_recent(path);
         self.refresh_thumbnail(path);
         for w in v["warnings"].as_array().into_iter().flatten() {
@@ -1864,7 +1959,6 @@ impl FlatCraftApp {
         }
         self.ui.workspace = Workspace::Prepare;
         self.ui.prepare.sources.check_pending = true;
-        true
     }
 
     /// Makes Home read the picture of `path` again: a save wrote a new
@@ -2091,6 +2185,7 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     app.ui.number_documents(&open);
     guard_close(&ctx, app);
     refresh_prefs(&ctx, app);
+    app.pump_long();
     app.ui.prepare.panels.window_w = ctx.content_rect().width();
     // A dialog keeps the keys: Escape closes or cancels it, and Delete or
     // Cmd+Z must not change the document behind it.
@@ -2144,7 +2239,11 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
         || report_check;
     let snap = (workspace != Workspace::Home).then(|| prepare::snapshot_with(app, &ctx, wants_job));
     if let Some(snap) = &snap {
-        app.ui.cut.update(snap);
+        // A plan that landed this frame was built on the worker; its cut
+        // geometry goes back into the document's cache.
+        if let Some((doc, rev, input)) = app.ui.cut.update(&ctx, snap) {
+            lock(&app.session).offer_cut_geometry(doc, rev, &input);
+        }
         app.ui.prepare.sheet_kept = cut::sheet_kept_now(&app.ui.cut, snap);
         if report_check && let Some(card) = &mut app.ui.prepare.report {
             card.refresh(snap);

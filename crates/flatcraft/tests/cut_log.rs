@@ -2,6 +2,7 @@
 //! "How did it go?" question, which only the person answers.
 
 mod common;
+use common::RunPlan;
 
 use common::*;
 use egui::accesskit::Role;
@@ -90,7 +91,7 @@ fn a_file_output_send_is_logged_and_asks_nothing() {
     // The Job card recalls it.
     h.get_by_role_and_label(Role::Tab, "Device & Material")
         .click();
-    h.run();
+    h.run_plan();
     let line = outcome::last_time_text(&log.entries[0]);
     assert!(line.starts_with("Last time with this material: "), "{line}");
     assert!(line.ends_with(" - not rated yet"), "{line}");
@@ -103,10 +104,10 @@ fn the_person_answers_from_the_job_card() {
     let (dir, s, mut h) = sent_once();
     h.get_by_role_and_label(Role::Tab, "Device & Material")
         .click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, &rate_button(&dir))
         .click();
-    h.run();
+    h.run_plan();
     assert!(dialog_open(&h));
     assert!(
         in_dialog(&h, "Save").accesskit_node().is_disabled(),
@@ -114,14 +115,14 @@ fn the_person_answers_from_the_job_card() {
     );
     h.get_by_role_and_label(Role::Button, "It went well")
         .click();
-    h.run();
+    h.run_plan();
     h.get_by_label("Outcome note").click();
-    h.run();
+    h.run_plan();
     h.get_by_label("Outcome note").type_text("clean edges");
-    h.run();
+    h.run_plan();
     in_dialog(&h, "Save").click();
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert!(!dialog_open(&h));
     let log = cutlog::read(dir.path());
     let o = log.entries[0].outcome.as_ref().unwrap();
@@ -138,15 +139,15 @@ fn not_now_records_nothing() {
     let before = std::fs::read_to_string(dir.path().join(cutlog::FILE)).unwrap();
     h.get_by_role_and_label(Role::Tab, "Device & Material")
         .click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, &rate_button(&dir))
         .click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "It did not go well")
         .click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Not now").click();
-    h.run();
+    h.run_plan();
     assert!(!dialog_open(&h));
     assert_eq!(
         std::fs::read_to_string(dir.path().join(cutlog::FILE)).unwrap(),

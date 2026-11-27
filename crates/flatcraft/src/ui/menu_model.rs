@@ -608,7 +608,12 @@ fn file_menu(inp: &MenuInput) -> Sub {
             "File",
             vec![
                 item(Cmd::New, "New", true, Accel::of("New project")),
-                item(Cmd::Open, "Open...", true, Accel::of("Open")),
+                item(
+                    Cmd::Open,
+                    "Open...",
+                    !inp.snap.is_some_and(|s| s.busy),
+                    Accel::of("Open"),
+                ),
                 Entry::Sub(recent),
                 Entry::Separator,
                 item(Cmd::Save, "Save", true, Accel::of("Save")),

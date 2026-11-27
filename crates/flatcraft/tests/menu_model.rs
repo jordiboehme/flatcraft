@@ -3,6 +3,7 @@
 //! muda glue (`ui::menu`) is macOS only and has its own small tests.
 
 mod common;
+use common::RunPlan;
 
 use std::path::PathBuf;
 
@@ -32,7 +33,7 @@ fn with_selection(n: usize) -> (tempfile::TempDir, SharedSession, AppHarness, Ve
     select(&s, &ids[..n]);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    h.run();
+    h.run_plan();
     (dir, s, h, ids)
 }
 
@@ -313,7 +314,7 @@ fn link_copies_and_unlink_follow_the_link_state() {
             Origin::User,
         )
         .unwrap();
-    h.run();
+    h.run_plan();
     let m = model_of(&mut h, &[]);
     assert!(!leaf(&m, &Cmd::LinkCopies).enabled, "they are linked");
     assert!(leaf(&m, &Cmd::Unlink).enabled);
@@ -332,7 +333,7 @@ fn hide_and_skip_cutting_flip_their_titles() {
     );
     run("object.set_cut", json!({ "ids": [ids[0]], "cut": false }));
     let _ = ids2;
-    h.run();
+    h.run_plan();
     let m = model_of(&mut h, &[]);
     assert_eq!(leaf(&m, &Cmd::ToggleHide).title, "Show");
     assert_eq!(leaf(&m, &Cmd::ToggleCut).title, "Cut again");
@@ -609,7 +610,7 @@ fn the_gate_stops_every_menu_item_but_quit_while_a_dialog_is_open() {
     assert_eq!(app(&h).menu_gate(all.clone()), all);
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![Action::ShowAbout]);
-    h.run();
+    h.run_plan();
     assert_eq!(
         app(&h).menu_gate(all.clone()),
         vec![Action::Quit],
@@ -634,17 +635,17 @@ fn menu_actions_run_the_same_things_as_the_ribbon() {
     };
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![Action::Menu(Cmd::Tool("duplicate"))]);
-    h.run();
+    h.run_plan();
     assert_eq!(count(&s), 4, "Duplicate");
     // A dimmed item does nothing: Distribute needs 3 objects.
     app_mut(&mut h).apply(&ctx, vec![Action::Menu(Cmd::Tool("distribute.horizontal"))]);
-    h.run();
+    h.run_plan();
     assert_eq!(count(&s), 4);
     // Hide.
     select(&s, &[ids[0]]);
-    h.run();
+    h.run_plan();
     app_mut(&mut h).apply(&ctx, vec![Action::Menu(Cmd::ToggleHide)]);
-    h.run();
+    h.run_plan();
     let state = s
         .lock()
         .unwrap()
@@ -673,7 +674,7 @@ fn menu_items_do_nothing_outside_prepare() {
     app_mut(&mut h).ui.workspace = Workspace::Cut;
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![Action::Menu(Cmd::Tool("duplicate"))]);
-    h.run();
+    h.run_plan();
     let n = s
         .lock()
         .unwrap()
@@ -728,8 +729,8 @@ use flatcraft::ui::Unsaved;
 fn rename_open(h: &mut AppHarness) {
     let ctx = h.ctx.clone();
     app_mut(h).apply(&ctx, vec![Action::Menu(Cmd::Rename)]);
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert!(app(h).ui.prepare.rename.is_some());
     assert!(h.ctx.text_edit_focused(), "the name field has the focus");
 }
@@ -779,15 +780,15 @@ fn the_edit_items_reach_a_text_field_in_a_dialog() {
     // Select All, typing and Undo act on the field, not on the document.
     let steps = undo_len(&s);
     app_mut(&mut h).apply(&ctx, vec![Action::Menu(Cmd::SelectAll)]);
-    h.run();
+    h.run_plan();
     h.event(egui::Event::Text("zz".into()));
-    h.run();
+    h.run_plan();
     fn name(h: &AppHarness) -> String {
         app(h).ui.prepare.rename.as_ref().unwrap().name.clone()
     }
     assert_eq!(name(&h), "zz", "Select All selected the name");
     app_mut(&mut h).apply(&ctx, vec![Action::Menu(Cmd::Undo)]);
-    h.run();
+    h.run_plan();
     assert_ne!(name(&h), "zz", "Undo undid the typing");
     assert_eq!(undo_len(&s), steps, "the document was not touched");
     // Cut, Copy and Paste ask the window for the clipboard.
@@ -799,7 +800,7 @@ fn the_edit_items_reach_a_text_field_in_a_dialog() {
             Action::Menu(Cmd::Paste),
         ],
     );
-    h.run();
+    h.run_plan();
 }
 
 #[test]
@@ -832,7 +833,7 @@ fn a_text_field_keeps_the_keys_of_duplicate_import_and_delete() {
     // And a late click does not duplicate behind the dialog's field.
     rename_open(&mut h);
     app_mut(&mut h).apply(&ctx, vec![Action::Menu(Cmd::Tool("duplicate"))]);
-    h.run();
+    h.run_plan();
     let n = s
         .lock()
         .unwrap()
@@ -941,7 +942,7 @@ fn quit_with_a_pending_send_asks_first() {
     let mut h = harness(&dir, s.clone(), true);
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
-    h.run();
+    h.run_plan();
     assert_eq!(app(&h).ui.unsaved, Some(Unsaved::PendingSend));
     h.get_by_label("Quit while an agent waits?");
     h.get_by_label("An agent is waiting for your OK to send a cut.");
@@ -949,15 +950,15 @@ fn quit_with_a_pending_send_asks_first() {
     // Cancel keeps the window and the request.
     h.get_by_role_and_label(egui::accesskit::Role::Button, "Cancel")
         .click();
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.unsaved.is_none() && !app(&h).ui.closing);
     assert!(s.lock().unwrap().pending_send().is_some());
     // The window's close button asks the same way.
     app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(egui::accesskit::Role::Button, "Quit anyway")
         .click();
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.closing);
 }
 
@@ -1009,7 +1010,7 @@ fn fixture() -> Fixture {
     to_prepare(&mut h);
     app_mut(&mut h).ui.prepare.sources.doc_id = s.lock().unwrap().doc().id();
     app_mut(&mut h).ui.prepare.sources.missing.push(linked);
-    h.run();
+    h.run_plan();
     // Not fitted and not at 100%, so both zoom items have something to do.
     app_mut(&mut h).ui.prepare.view.px_per_mm = 5.0;
     Fixture {

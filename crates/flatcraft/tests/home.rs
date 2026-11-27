@@ -1,6 +1,7 @@
 //! Home's Start page: the New cards, the recent projects and the samples.
 
 mod common;
+use common::RunPlan;
 
 use common::{
     FakePicker, SQUARE_SVG, app, harness_sized, harness_with, session, wait_for_source_check,
@@ -47,10 +48,10 @@ fn import_card_asks_first_and_imports_into_a_new_project() {
 
     // Cancelled: no new project, Home stays.
     h.get_by_role_and_label(Role::Button, "Home").click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Import design...")
         .click();
-    h.run();
+    h.run_plan();
     assert_eq!(s.lock().unwrap().docs.len(), 2);
     assert_eq!(app(&h).ui.workspace, Workspace::Home);
 }
@@ -259,7 +260,7 @@ fn a_missing_recent_project_can_be_located_or_removed() {
     wait_for_pictures(&mut h);
     h.get_by_role_and_label(Role::Button, "Remove from list")
         .click();
-    h.run();
+    h.run_plan();
     assert_eq!(
         s.lock().unwrap().prefs.recent_projects,
         std::slice::from_ref(&moved)
@@ -282,10 +283,10 @@ fn right_click_removes_a_recent_project() {
     wait_for_pictures(&mut h);
     h.get_by_role_and_label(Role::Button, "Open coasters")
         .click_secondary();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Remove from list")
         .click();
-    h.run();
+    h.run_plan();
     assert!(s.lock().unwrap().prefs.recent_projects.is_empty());
     assert!(path.exists(), "no file is deleted");
 }
@@ -387,14 +388,14 @@ fn home_shows_the_eight_newest_and_show_all_lists_the_rest() {
     );
     h.get_by_role_and_label(Role::Button, "Show all (11)")
         .click();
-    h.run();
+    h.run_plan();
     assert_eq!(
         h.get_all_by_role_and_label(Role::Button, "Remove from list")
             .count(),
         11
     );
     h.get_by_role_and_label(Role::Button, "Show fewer").click();
-    h.run();
+    h.run_plan();
     assert_eq!(
         h.get_all_by_role_and_label(Role::Button, "Remove from list")
             .count(),
@@ -448,14 +449,14 @@ fn right_click_removes_a_missing_recent_project() {
         pressed: false,
         modifiers: egui::Modifiers::NONE,
     });
-    h.run();
+    h.run_plan();
     // The row's own button and the menu's.
     let removes: Vec<_> = h
         .get_all_by_role_and_label(Role::Button, "Remove from list")
         .collect();
     assert_eq!(removes.len(), 2, "the menu opened");
     removes.last().unwrap().click();
-    h.run();
+    h.run_plan();
     assert!(s.lock().unwrap().prefs.recent_projects.is_empty());
 }
 
@@ -521,11 +522,11 @@ fn home_looks_at_recent_files_once_per_visit() {
     app_mut(&mut h).ui.workspace = Workspace::Prepare;
     wait_for_source_check(&mut h);
     app_mut(&mut h).ui.workspace = Workspace::Home;
-    h.run();
+    h.run_plan();
     assert_eq!(app(&h).ui.home.file_checks, 4);
     // So does the window getting focus.
     h.event(egui::Event::WindowFocused(true));
-    h.run();
+    h.run_plan();
     assert_eq!(app(&h).ui.home.file_checks, 6);
 }
 

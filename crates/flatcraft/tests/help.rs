@@ -1,6 +1,7 @@
 //! The Help menu, the shortcuts sheet and the shortcut table.
 
 mod common;
+use common::RunPlan;
 
 use common::{AppHarness, app, app_mut, harness, import_square, session, to_prepare};
 use egui::accesskit::Role;
@@ -25,7 +26,7 @@ fn opened(h: &AppHarness) -> Vec<String> {
 /// what the click asked for.
 fn pick(h: &mut AppHarness, item: HelpItem) {
     h.get_by_role_and_label(Role::Button, "Help").click();
-    h.run();
+    h.run_plan();
     h.get_by_label(item.label()).click();
     h.step();
 }
@@ -35,7 +36,7 @@ fn the_help_menu_lists_its_items() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(&dir, session(&dir), false);
     h.get_by_role_and_label(Role::Button, "Help").click();
-    h.run();
+    h.run_plan();
     for item in HelpItem::ALL {
         h.get_by_label(item.label());
     }
@@ -99,7 +100,7 @@ fn about_item_opens_the_dialog_on_every_platform() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(&dir, session(&dir), false);
     pick(&mut h, HelpItem::About);
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.about.open);
     assert!(opened(&h).is_empty());
 }
@@ -109,7 +110,7 @@ fn shortcuts_item_opens_the_sheet_and_close_ends_it() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(&dir, session(&dir), false);
     pick(&mut h, HelpItem::Shortcuts);
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.show_shortcuts);
     h.get_by_label("Keyboard shortcuts");
     let cmd = if cfg!(target_os = "macos") {
@@ -121,7 +122,7 @@ fn shortcuts_item_opens_the_sheet_and_close_ends_it() {
     h.get_by_label("Save As");
     // Keys do not reach the app behind the sheet.
     h.get_by_role_and_label(Role::Button, "Close").click();
-    h.run();
+    h.run_plan();
     assert!(!app(&h).ui.show_shortcuts);
     assert!(h.query_by_label("Select all objects").is_none());
 }
@@ -131,9 +132,9 @@ fn escape_closes_the_sheet() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(&dir, session(&dir), false);
     app_mut(&mut h).ui.show_shortcuts = true;
-    h.run();
+    h.run_plan();
     h.key_press(Key::Escape);
-    h.run();
+    h.run_plan();
     assert!(!app(&h).ui.show_shortcuts);
 }
 
@@ -216,7 +217,7 @@ fn every_prepare_key_does_what_the_sheet_says() {
         // Held while dragging a handle; see `tests/position_size.rs`.
         let Some(key) = s.key() else { continue };
         h.key_press_modifiers(s.modifiers, key);
-        h.run();
+        h.run_plan();
         match key {
             Key::A => assert_eq!(selection(), 2, "{who}"),
             Key::D => assert_eq!(objects(), 3, "{who}"),
@@ -292,7 +293,7 @@ fn the_sheet_lists_the_space_drag_pan_and_settings() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(&dir, session(&dir), false);
     app_mut(&mut h).ui.show_shortcuts = true;
-    h.run();
+    h.run_plan();
     h.get_by_label("Space");
     h.get_by_label("Pan the canvas (hold it and drag, or drag with the middle button)");
     h.get_by_label("Settings...");
@@ -310,7 +311,7 @@ fn space_drag_pans_the_canvas() {
     let before = app(&h).ui.prepare.view;
     let from = app(&h).ui.prepare.canvas_rect.center();
     h.hover_at(from);
-    h.run();
+    h.run_plan();
     h.event(egui::Event::Key {
         key: help::pan_key(),
         physical_key: None,
@@ -318,15 +319,15 @@ fn space_drag_pans_the_canvas() {
         repeat: false,
         modifiers: Modifiers::NONE,
     });
-    h.run();
+    h.run_plan();
     h.drag_at(from);
-    h.run();
+    h.run_plan();
     for t in [0.5, 1.0] {
         h.hover_at(from + egui::vec2(60.0, 20.0) * t);
-        h.run();
+        h.run_plan();
     }
     h.drop_at(from + egui::vec2(60.0, 20.0));
-    h.run();
+    h.run_plan();
     let moved = app(&h).ui.prepare.view.offset - before.offset;
     assert!(
         (moved.x - 60.0).abs() < 1.0 && (moved.y - 20.0).abs() < 1.0,
@@ -379,7 +380,7 @@ fn the_sheet_lists_the_handle_modifiers() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(&dir, session(&dir), false);
     app_mut(&mut h).ui.show_shortcuts = true;
-    h.run();
+    h.run_plan();
     assert_eq!(h.get_all_by_label("Shift+drag").count(), 2);
     h.get_by_label(option);
     h.get_by_label(cmd);
@@ -474,7 +475,7 @@ fn the_sheet_shows_calculations_and_its_examples_are_right() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(&dir, session(&dir), false);
     pick(&mut h, HelpItem::Shortcuts);
-    h.run();
+    h.run_plan();
     h.get_by_label(help::CALC_TITLE);
     h.get_by_label("3/4in + 1cm");
     use flatcraft_core::numexpr::{Kind, eval};
@@ -510,11 +511,11 @@ fn every_help_item_has_a_hover_card() {
         assert!(!item.hint().is_empty(), "{item:?}");
         assert!(!item.hint().contains('\u{2014}'), "{item:?}");
         h.get_by_role_and_label(Role::Button, "Help").click();
-        h.run();
+        h.run_plan();
         h.get_by_label(item.label()).hover();
-        h.run();
+        h.run_plan();
         h.get_by_label(item.hint());
         h.key_press(Key::Escape);
-        h.run();
+        h.run_plan();
     }
 }

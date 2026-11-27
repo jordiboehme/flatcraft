@@ -6,6 +6,7 @@
 //! `cargo nextest run -p flatcraft --test samples --run-ignored only`.
 
 mod common;
+use common::RunPlan;
 
 use std::f64::consts::{PI, TAU};
 use std::fmt::Write as _;
@@ -1284,7 +1285,7 @@ fn a_sample_opens_as_an_untitled_copy() {
     assert_eq!(requests.lock().unwrap()[0].title, "Save As");
     // A second sample opens next to it.
     app_mut(&mut h).ui.workspace = Workspace::Home;
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Stencil").click();
     wait_for_source_check(&mut h);
     assert_eq!(s.lock().unwrap().docs.len(), 2);

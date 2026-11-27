@@ -2,6 +2,7 @@
 //! egui_kittest.
 
 mod common;
+use common::RunPlan;
 
 use std::path::{Path, PathBuf};
 
@@ -128,7 +129,7 @@ fn press(h: &mut AppHarness, p: Pos2, button: PointerButton) {
     // The hit test reads the shapes the worker builds.
     wait_for_workers(h);
     h.event(Event::PointerMoved(p));
-    h.run();
+    h.run_plan();
     for pressed in [true, false] {
         h.event(Event::PointerButton {
             pos: p,
@@ -137,8 +138,8 @@ fn press(h: &mut AppHarness, p: Pos2, button: PointerButton) {
             modifiers: Modifiers::NONE,
         });
     }
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
 }
 
 fn right_click(h: &mut AppHarness, p: Pos2) {
@@ -226,7 +227,7 @@ fn dimmed_items(h: &AppHarness) -> Vec<Item> {
 
 fn click_item(h: &mut AppHarness, item: Item) {
     h.get_by_role(Role::Menu).get_by_label(&name(item)).click();
-    h.run();
+    h.run_plan();
 }
 
 /// Items with a submenu: opens it and clicks `entry`.
@@ -237,7 +238,7 @@ fn click_sub(h: &mut AppHarness, item: Item, entry: &str) {
         .find(|m| m.query_by_label(entry).is_some())
         .expect("the submenu is open");
     sub.get_by_label(entry).click();
-    h.run();
+    h.run_plan();
 }
 
 struct Rig {
@@ -283,7 +284,7 @@ impl Rig {
 fn right_click_selects_an_object_outside_the_selection() {
     let mut r = rig(2);
     select(&r.s, &[r.ids[0]]);
-    r.h.run();
+    r.h.run_plan();
     r.right_click_object(1);
     assert!(menu_open(&r.h));
     assert_eq!(selection(&r.s), vec![r.ids[1]]);
@@ -293,7 +294,7 @@ fn right_click_selects_an_object_outside_the_selection() {
 fn right_click_inside_the_selection_keeps_it() {
     let mut r = rig(3);
     select(&r.s, &[r.ids[0], r.ids[1]]);
-    r.h.run();
+    r.h.run_plan();
     r.right_click_object(1);
     assert!(menu_open(&r.h));
     assert_eq!(selection(&r.s), vec![r.ids[0], r.ids[1]]);
@@ -305,7 +306,7 @@ fn right_click_inside_the_selection_keeps_it() {
 fn right_click_on_the_empty_mat_clears_the_selection() {
     let mut r = rig(1);
     select(&r.s, &[r.ids[0]]);
-    r.h.run();
+    r.h.run_plan();
     right_click(&mut r.h, at_mm(&r.view, 200.0, 200.0));
     assert!(menu_open(&r.h));
     assert!(selection(&r.s).is_empty());
@@ -320,13 +321,13 @@ fn right_click_uses_the_hit_test_of_the_left_click() {
     left_click(&mut r.h, near);
     assert_eq!(selection(&r.s), vec![r.ids[0]]);
     select(&r.s, &[]);
-    r.h.run();
+    r.h.run_plan();
     right_click(&mut r.h, near);
     assert_eq!(selection(&r.s), vec![r.ids[0]]);
     // Far off: neither finds it.
     let far = at_mm(&r.view, 45.0 + 25.0 + 10.0, 45.0);
     select(&r.s, &[]);
-    r.h.run();
+    r.h.run_plan();
     left_click(&mut r.h, far);
     assert!(selection(&r.s).is_empty());
     right_click(&mut r.h, far);
@@ -337,15 +338,15 @@ fn right_click_uses_the_hit_test_of_the_left_click() {
 fn objects_panel_rows_use_the_same_rule() {
     let mut r = rig(2);
     select(&r.s, &[r.ids[0]]);
-    r.h.run();
+    r.h.run_plan();
     // Two rows named "square": the second is the second object.
     let row =
         r.h.query_all_by_role_and_label(Role::Button, "square")
             .nth(1)
             .unwrap();
     row.click_secondary();
-    r.h.run();
-    r.h.run();
+    r.h.run_plan();
+    r.h.run_plan();
     assert!(menu_open(&r.h));
     assert_eq!(selection(&r.s), vec![r.ids[1]]);
     assert!(r.items().contains(&Item::Rename));
@@ -428,7 +429,7 @@ fn trace_again_with_several_objects_is_dimmed_and_link_follows_the_design() {
 fn the_menu_of_two_objects() {
     let mut r = rig(2);
     select(&r.s, &r.ids.clone());
-    r.h.run();
+    r.h.run_plan();
     r.right_click_object(0);
     // Two imports of one file: the same bytes, so they can be linked.
     assert_eq!(
@@ -463,7 +464,7 @@ fn the_menu_of_two_objects() {
 fn the_menu_of_three_objects_adds_distribute() {
     let mut r = rig(3);
     select(&r.s, &r.ids.clone());
-    r.h.run();
+    r.h.run_plan();
     r.right_click_object(1);
     let items = r.items();
     assert!(
@@ -493,7 +494,7 @@ fn the_menu_of_a_picture_offers_trace_again() {
     };
     app_mut(&mut h).ui.prepare.view = view;
     app_mut(&mut h).ui.prepare.fit_pending = false;
-    h.run();
+    h.run_plan();
     // The ring has a hole: click on its band.
     let x1 = bounds["x1"].as_f64().unwrap();
     right_click(&mut h, at_mm(&view, x1 - 2.0, cy));
@@ -517,7 +518,7 @@ fn the_menu_of_a_linked_copy_offers_unlink_and_link() {
         json!({ "id": r.ids[0], "count": 2, "linked": true }),
     );
     let copy = copies["ids"][0].as_u64().unwrap();
-    r.h.run();
+    r.h.run_plan();
     let view = r.view;
     // The copies sit to the right of the original, 55 mm apart.
     let b = object(&r.s, copy)["bounds_mm"].clone();
@@ -546,7 +547,7 @@ fn link_copies_is_offered_for_copies_of_one_source() {
     let d = exec(&r.s, "object.duplicate", json!({ "ids": [r.ids[0]] }));
     let dup = d["ids"][0].as_u64().unwrap();
     select(&r.s, &[r.ids[0], dup]);
-    r.h.run();
+    r.h.run_plan();
     r.right_click_object(0);
     assert!(r.items().contains(&LinkCopies), "{:?}", r.items());
     click_item(&mut r.h, LinkCopies);
@@ -583,7 +584,7 @@ fn the_menu_of_the_empty_mat() {
 fn a_dimmed_item_says_why_and_does_nothing() {
     let mut r = rig(2);
     select(&r.s, &r.ids.clone());
-    r.h.run();
+    r.h.run_plan();
     r.h.ctx
         .global_style_mut(|s| s.interaction.tooltip_delay = 0.0);
     r.right_click_object(0);
@@ -595,15 +596,15 @@ fn a_dimmed_item_says_why_and_does_nothing() {
             .rect()
             .center();
     r.h.hover_at(egui::pos2(at.x, at.y));
-    r.h.run();
-    r.h.run();
+    r.h.run_plan();
+    r.h.run_plan();
     r.h.get_by_label("Select 3 or more objects first.");
     r.h.get_by_label(Distribute.description());
     let undo = undo_len(&r.s);
     r.h.get_by_role(Role::Menu)
         .get_by_role_and_label(Role::Button, &name(Distribute))
         .click();
-    r.h.run();
+    r.h.run_plan();
     assert_eq!(undo_len(&r.s), undo, "nothing ran");
     // The titles of ribbon actions come from the table.
     for item in [
@@ -626,7 +627,7 @@ fn a_hidden_object_offers_show_and_a_skipped_one_cut_again() {
         "object.set_cut",
         json!({ "ids": [r.ids[0]], "cut": false }),
     );
-    r.h.run();
+    r.h.run_plan();
     r.right_click_object(0);
     let items = r.items();
     assert!(items.contains(&CutAgain) && !items.contains(&SkipCutting));
@@ -638,11 +639,11 @@ fn a_hidden_object_offers_show_and_a_skipped_one_cut_again() {
         "object.set_visible",
         json!({ "ids": [r.ids[0]], "visible": false }),
     );
-    r.h.run();
+    r.h.run_plan();
     r.h.get_by_role_and_label(Role::Button, "square")
         .click_secondary();
-    r.h.run();
-    r.h.run();
+    r.h.run_plan();
+    r.h.run_plan();
     let items = r.items();
     assert!(items.contains(&Show) && !items.contains(&Hide), "{items:?}");
 }
@@ -717,7 +718,7 @@ fn align_and_distribute_run_the_ribbon_commands() {
         json!({ "ids": [r.ids[1]], "dx_mm": 0.0, "dy_mm": 30.0 }),
     );
     select(&r.s, &r.ids.clone());
-    r.h.run();
+    r.h.run_plan();
     let top = |r: &Rig, i: usize| object(&r.s, r.ids[i])["bounds_mm"]["y0"].as_f64().unwrap();
     assert!((top(&r, 1) - top(&r, 0)).abs() > 1.0);
     r.right_click_object(0);
@@ -730,7 +731,7 @@ fn align_and_distribute_run_the_ribbon_commands() {
         "object.move",
         json!({ "ids": [r.ids[1]], "dx_mm": 30.0, "dy_mm": 0.0 }),
     );
-    r.h.run();
+    r.h.run_plan();
     let left = |r: &Rig, i: usize| object(&r.s, r.ids[i])["bounds_mm"]["x0"].as_f64().unwrap();
     let uneven = (left(&r, 1) - left(&r, 0)) - (left(&r, 2) - left(&r, 1));
     assert!(uneven.abs() > 1.0);
@@ -744,7 +745,7 @@ fn align_and_distribute_run_the_ribbon_commands() {
 fn hide_and_skip_cutting_run_the_panel_commands() {
     let mut r = rig(2);
     select(&r.s, &r.ids.clone());
-    r.h.run();
+    r.h.run_plan();
     r.right_click_object(0);
     click_item(&mut r.h, SkipCutting);
     // The whole selection takes the new state, as the scissors do.
@@ -764,13 +765,13 @@ fn rename_asks_for_a_name_and_runs_the_command() {
     r.right_click_object(0);
     click_item(&mut r.h, Rename);
     assert!(app(&r.h).ui.prepare.rename.is_some());
-    r.h.run();
+    r.h.run_plan();
     r.h.key_press_modifiers(Modifiers::COMMAND, Key::A);
-    r.h.run();
+    r.h.run_plan();
     r.h.get_by_label("Name").type_text("Lid");
-    r.h.run();
+    r.h.run_plan();
     r.h.key_press(Key::Enter);
-    r.h.run();
+    r.h.run_plan();
     assert_eq!(object(&r.s, r.ids[0])["name"], "Lid");
     assert!(app(&r.h).ui.prepare.rename.is_none());
     // Undoable.
@@ -784,7 +785,7 @@ fn rename_cancel_changes_nothing() {
     r.right_click_object(0);
     click_item(&mut r.h, Rename);
     r.h.get_by_role_and_label(Role::Button, "Cancel").click();
-    r.h.run();
+    r.h.run_plan();
     assert!(app(&r.h).ui.prepare.rename.is_none());
     assert_eq!(object(&r.s, r.ids[0])["name"], "square");
 }
@@ -812,7 +813,7 @@ fn reload_and_reconnect_follow_the_linked_file() {
     };
     app_mut(&mut h).ui.prepare.view = view;
     app_mut(&mut h).ui.prepare.fit_pending = false;
-    h.run();
+    h.run_plan();
     let width = |s: &SharedSession| {
         let b = object(s, id)["bounds_mm"].clone();
         b["x1"].as_f64().unwrap() - b["x0"].as_f64().unwrap()
@@ -832,7 +833,7 @@ fn reload_and_reconnect_follow_the_linked_file() {
     let moved: PathBuf = dir.path().join("moved.svg");
     std::fs::rename(&file, &moved).unwrap();
     h.event(Event::WindowFocused(false));
-    h.run();
+    h.run_plan();
     h.event(Event::WindowFocused(true));
     wait_for_workers(&mut h);
     let b = object(&s, id)["bounds_mm"].clone();
@@ -886,7 +887,7 @@ fn mat_items_import_select_all_arrange_and_fit() {
     let view = known_view(&mut h);
     right_click(&mut h, at_mm(&view, 200.0, 120.0));
     click_item(&mut h, ZoomToFit);
-    h.run();
+    h.run_plan();
     assert_ne!(app(&h).ui.prepare.view, view);
     // Import asks the picker.
     let view = app(&h).ui.prepare.view;
@@ -903,7 +904,7 @@ fn escape_closes_the_menu_and_keeps_the_selection() {
     r.right_click_object(0);
     assert!(menu_open(&r.h));
     r.h.key_press(Key::Escape);
-    r.h.run();
+    r.h.run_plan();
     assert!(!menu_open(&r.h));
     assert_eq!(selection(&r.s), vec![r.ids[0]]);
 }
@@ -923,7 +924,7 @@ fn delete_key_waits_while_the_menu_is_open() {
     r.right_click_object(0);
     assert!(menu_open(&r.h));
     r.h.key_press(Key::Delete);
-    r.h.run();
+    r.h.run_plan();
     assert_eq!(object_count(&r.s), 1);
 }
 
@@ -937,12 +938,12 @@ fn cmd_d_duplicates_and_cmd_i_imports() {
     let mut h = harness_with(&dir, s.clone(), move |app| app.with_file_picker(p));
     to_prepare(&mut h);
     select(&s, &[id]);
-    h.run();
+    h.run_plan();
     h.key_press_modifiers(Modifiers::COMMAND, Key::D);
-    h.run();
+    h.run_plan();
     assert_eq!(object_count(&s), 2);
     h.key_press_modifiers(Modifiers::COMMAND, Key::I);
-    h.run();
+    h.run_plan();
     assert_eq!(picker.requests.lock().unwrap().len(), 1);
 }
 
@@ -988,10 +989,10 @@ fn shifted_keys_are_not_duplicate_or_import() {
     let mut h = harness_with(&dir, s.clone(), move |app| app.with_file_picker(p));
     to_prepare(&mut h);
     select(&s, &[id]);
-    h.run();
+    h.run_plan();
     for key in [Key::D, Key::I, Key::A] {
         h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, key);
-        h.run();
+        h.run_plan();
     }
     assert_eq!(object_count(&s), 1);
     assert!(picker.requests.lock().unwrap().is_empty());
@@ -1007,12 +1008,12 @@ fn cmd_d_and_cmd_i_wait_while_a_text_field_has_the_keys() {
     let mut h = harness_with(&dir, s.clone(), move |app| app.with_file_picker(p));
     to_prepare(&mut h);
     select(&s, &[id]);
-    h.run();
+    h.run_plan();
     h.get_by_label("Search commands").click();
-    h.run();
+    h.run_plan();
     for key in [Key::D, Key::I] {
         h.key_press_modifiers(Modifiers::COMMAND, key);
-        h.run();
+        h.run_plan();
     }
     assert_eq!(object_count(&s), 1);
     assert!(picker.requests.lock().unwrap().is_empty());
@@ -1082,7 +1083,7 @@ fn export_selected_opens_the_export_dialog_on_the_selection() {
     assert!(r.items().contains(&ExportSelected));
     assert!(!dimmed(&r.h, ExportSelected));
     click_item(&mut r.h, ExportSelected);
-    r.h.run();
+    r.h.run_plan();
     let d = app(&r.h)
         .ui
         .export
@@ -1100,7 +1101,7 @@ fn export_selected_is_dimmed_for_hidden_objects_and_says_why() {
         "object.set_visible",
         json!({ "ids": [r.ids[0]], "visible": false }),
     );
-    r.h.run();
+    r.h.run_plan();
     let ctx = r.h.ctx.clone();
     let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut r.h), &ctx);
     let st = &app(&r.h).ui.prepare;
@@ -1126,7 +1127,7 @@ fn auto_arrange_on_the_empty_mat_is_active_from_the_first_frame() {
         )
         .unwrap();
     select(&r.s, &r.ids[..1]);
-    r.h.run();
+    r.h.run_plan();
     wait_for_workers(&mut r.h);
     // The item is judged by what it will do (the cleared selection), not
     // by the selection the snapshot still holds.
@@ -1140,7 +1141,7 @@ fn auto_arrange_on_the_empty_mat_is_active_from_the_first_frame() {
     );
     let p = at_mm(&r.view, 200.0, 120.0);
     r.h.event(Event::PointerMoved(p));
-    r.h.run();
+    r.h.run_plan();
     for pressed in [true, false] {
         r.h.event(Event::PointerButton {
             pos: p,
@@ -1157,7 +1158,7 @@ fn auto_arrange_on_the_empty_mat_is_active_from_the_first_frame() {
         assert!(frames < 10, "the menu does not open");
     }
     assert!(!dimmed(&r.h, AutoArrange), "dimmed in frame {frames}");
-    r.h.run();
+    r.h.run_plan();
     assert!(!dimmed(&r.h, AutoArrange));
     // It packs the visible object, the hidden one stays.
     let undo = r.s.lock().unwrap().doc().undo.undo_len();

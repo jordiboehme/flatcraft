@@ -1,6 +1,7 @@
 //! The app bar as the macOS title bar and the document tabs (Task 40).
 
 mod common;
+use common::RunPlan;
 
 use common::*;
 use egui::accesskit::Role;
@@ -28,7 +29,7 @@ fn three_documents(s: &SharedSession) {
 
 fn rig(dir: &tempfile::TempDir, s: SharedSession, title_bar: bool) -> AppHarness {
     let mut h = harness_with(dir, s, |app| app.with_title_bar(title_bar));
-    h.run();
+    h.run_plan();
     h
 }
 
@@ -68,7 +69,7 @@ fn drag_from(h: &mut AppHarness, at: Pos2) -> bool {
     h.drop_at(at + egui::vec2(30.0, 0.0));
     h.step();
     started |= starts_drag(h);
-    h.run();
+    h.run_plan();
     started
 }
 
@@ -111,7 +112,7 @@ fn the_close_button_sits_inside_its_tab() {
     let before = s.lock().unwrap().docs.len();
     h.get_by_role_and_label(Role::Button, "Close Untitled 2")
         .click();
-    h.run();
+    h.run_plan();
     assert_eq!(s.lock().unwrap().docs.len(), before - 1);
     assert!(h.query_by_label("Untitled 2").is_none());
 }
@@ -138,7 +139,7 @@ fn a_long_name_is_cut_and_the_tooltip_has_it_whole() {
     let mut h = harness_sized(&dir, s, [1100.0, 800.0], 8, |a| a.with_title_bar(true));
     h.ctx
         .global_style_mut(|st| st.interaction.tooltip_delay = 0.0);
-    h.run();
+    h.run_plan();
     // The accessible name stays whole while the painted name is cut.
     let r = rect(&h, Role::Button, name);
     let font = egui::FontId::proportional(14.0);
@@ -151,8 +152,8 @@ fn a_long_name_is_cut_and_the_tooltip_has_it_whole() {
     let close = rect(&h, Role::Button, &format!("Close {name}"));
     assert!(r.contains_rect(close));
     h.hover_at(r.center());
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
     assert!(
         h.query_all_by_label(name).count() >= 2,
         "the tooltip shows the whole name"
@@ -187,7 +188,7 @@ fn dragging_empty_bar_space_moves_the_window_and_buttons_do_not() {
     let docs = s.lock().unwrap().docs.len();
     h.get_by_role_and_label(Role::Button, "New document")
         .click();
-    h.run();
+    h.run_plan();
     assert_eq!(s.lock().unwrap().docs.len(), docs + 1);
     // Under a system title bar the bar does not move the window.
     let dir = tempfile::tempdir().unwrap();
@@ -210,7 +211,7 @@ fn double_click(
     let mut h = harness_with(&dir, s, move |a| {
         a.with_title_bar(true).with_double_click(action)
     });
-    h.run();
+    h.run_plan();
     // The harness takes a quarter second per frame and hands the second
     // click a frame later: allow that much time between the clicks.
     h.ctx
@@ -347,8 +348,8 @@ fn the_bar_explains_itself_on_hover() {
     let hover = |h: &mut AppHarness, role: Role, name: &str| {
         let at = rect(h, role, name).center();
         h.hover_at(at);
-        h.run();
-        h.run();
+        h.run_plan();
+        h.run_plan();
     };
     // The dot is explained on a tab with unsaved changes.
     hover(&mut h, Role::Button, &format!("Untitled 1 {DIRTY}"));

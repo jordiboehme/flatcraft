@@ -2,6 +2,7 @@
 //! and the toasts of an export, driven through egui_kittest.
 
 mod common;
+use common::RunPlan;
 
 use std::path::PathBuf;
 
@@ -50,17 +51,17 @@ fn rig(
     let p = picker.clone();
     let mut h = harness_with(&dir, s.clone(), move |app| app.with_file_picker(p));
     to_prepare(&mut h);
-    h.run();
+    h.run_plan();
     (dir, s, h, picker, ids)
 }
 
 fn open_from_app_bar(h: &mut AppHarness) {
     h.get_by_label("File").click();
-    h.run();
+    h.run_plan();
     h.get_by_label(flatcraft::ui::menu_model::EXPORT_TITLE)
         .click();
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
 }
 
 fn dialog_open(h: &AppHarness) -> bool {
@@ -75,8 +76,8 @@ fn click_export(h: &mut AppHarness) {
     // The dialog's primary button (the File menu is closed by now).
     h.get_by_role_and_label(Role::Button, export_dialog::EXPORT)
         .click();
-    h.run();
-    h.run();
+    h.run_plan();
+    h.run_plan();
 }
 
 fn last_toast(h: &AppHarness) -> Option<Toast> {
@@ -97,7 +98,7 @@ fn file_export_writes_the_chosen_format_with_the_document_name() {
     // Nothing selected: All objects, and Selected objects says why not.
     assert!(disabled(&h, export_dialog::SELECTED));
     h.get_by_label("DXF").click();
-    h.run();
+    h.run_plan();
     assert_eq!(
         app(&h).ui.export.as_ref().unwrap().format,
         ExportFormat::Dxf
@@ -124,7 +125,7 @@ fn the_default_name_follows_the_project_file() {
     let out = dir.path().join("x.pdf");
     let (_d, s, mut h, picker, _) = rig(1, vec![out.clone()]);
     exec(&s, "project.save", json!({ "path": project }));
-    h.run();
+    h.run_plan();
     let doc = doc_id(&s);
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(
@@ -171,7 +172,7 @@ fn the_scope_starts_on_the_selection_and_can_take_all() {
     let out = dir.path().join("x.svg");
     let (_d, s, mut h, _p, ids) = rig(2, vec![out.clone(), out.clone()]);
     exec(&s, "object.select", json!({ "ids": [ids[0]] }));
-    h.run();
+    h.run_plan();
     open_from_app_bar(&mut h);
     assert_eq!(
         app(&h).ui.export.as_ref().unwrap().scope,
@@ -183,7 +184,7 @@ fn the_scope_starts_on_the_selection_and_can_take_all() {
 
     open_from_app_bar(&mut h);
     h.get_by_label(export_dialog::ALL).click();
-    h.run();
+    h.run_plan();
     click_export(&mut h);
     let svg = std::fs::read_to_string(&out).unwrap();
     assert_eq!(svg.matches("<g ").count(), 2);
@@ -199,13 +200,13 @@ fn skipped_objects_dim_export_until_the_box_is_ticked() {
         "object.set_cut",
         json!({ "ids": [ids[0]], "cut": false }),
     );
-    h.run();
+    h.run_plan();
     open_from_app_bar(&mut h);
     assert!(disabled(&h, export_dialog::EXPORT));
     assert!(h.query_by_label(export_dialog::ALL_SKIPPED).is_some());
     assert!(!disabled(&h, export_dialog::INCLUDE_SKIPPED));
     h.get_by_label(export_dialog::INCLUDE_SKIPPED).click();
-    h.run();
+    h.run_plan();
     assert!(!disabled(&h, export_dialog::EXPORT));
     click_export(&mut h);
     assert!(out.exists());
@@ -225,7 +226,7 @@ fn escape_closes_the_dialog() {
     open_from_app_bar(&mut h);
     assert!(dialog_open(&h));
     h.key_press(egui::Key::Escape);
-    h.run();
+    h.run_plan();
     assert!(!dialog_open(&h));
 }
 
@@ -282,7 +283,7 @@ fn the_menu_bar_has_file_export() {
         "object.set_visible",
         json!({ "ids": [ids[0]], "visible": false }),
     );
-    h.run();
+    h.run_plan();
     assert!(!export_enabled(&model(&mut h, Workspace::Prepare)));
     // A skipped object can still be exported with the box.
     exec(
@@ -295,7 +296,7 @@ fn the_menu_bar_has_file_export() {
         "object.set_cut",
         json!({ "ids": [ids[0]], "cut": false }),
     );
-    h.run();
+    h.run_plan();
     assert!(export_enabled(&model(&mut h, Workspace::Prepare)));
 }
 
@@ -306,7 +307,7 @@ fn the_menu_bar_item_opens_the_dialog() {
     let action = Cmd::Export.action(doc, &[]).unwrap();
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![action]);
-    h.run();
+    h.run_plan();
     assert!(dialog_open(&h));
 }
 
@@ -316,9 +317,9 @@ fn the_app_bar_export_is_dimmed_without_objects_and_on_home() {
     let s = session(&dir);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    h.run();
+    h.run_plan();
     h.get_by_label("File").click();
-    h.run();
+    h.run_plan();
     assert!(disabled(&h, flatcraft::ui::menu_model::EXPORT_TITLE));
     // From Home, the action says what to do instead of opening.
     app_mut(&mut h).ui.workspace = Workspace::Home;
@@ -336,11 +337,11 @@ fn the_app_bar_export_is_dimmed_without_objects_and_on_home() {
 fn export_selected_opens_on_the_selection() {
     let (_d, s, mut h, _p, ids) = rig(2, vec![]);
     exec(&s, "object.select", json!({ "ids": [ids[1]] }));
-    h.run();
+    h.run_plan();
     let doc = doc_id(&s);
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![Action::ExportDialog { doc_id: doc }]);
-    h.run();
+    h.run_plan();
     assert_eq!(
         app(&h).ui.export.as_ref().unwrap().scope,
         ExportScope::Selected
@@ -352,11 +353,11 @@ fn export_selected_opens_on_the_selection() {
 
 fn hover_button(h: &mut AppHarness, label: &str) {
     h.hover_at(egui::pos2(1.0, 1.0));
-    h.run();
+    h.run_plan();
     let at = h.get_by_role_and_label(Role::Button, label).rect().center();
     h.hover_at(at);
     for _ in 0..6 {
-        h.run();
+        h.run_plan();
     }
 }
 
@@ -368,7 +369,7 @@ fn a_dimmed_export_says_why_on_hover() {
         "object.set_cut",
         json!({ "ids": [ids[0]], "cut": false }),
     );
-    h.run();
+    h.run_plan();
     open_from_app_bar(&mut h);
     assert!(disabled(&h, export_dialog::EXPORT));
     // The warning line under the controls says it once; the card again.

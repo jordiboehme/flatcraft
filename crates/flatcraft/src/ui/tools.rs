@@ -980,6 +980,10 @@ impl Tool {
         if needs_area && snap.area.is_none() {
             return Some(NO_AREA);
         }
+        // One long command at a time (`super::long`).
+        if snap.busy && matches!(self.act, Act::Import | Act::Trace | Act::Reload) {
+            return Some(super::long::BUSY_CARD);
+        }
         match self.act {
             Act::Import
             | Act::TestPatterns

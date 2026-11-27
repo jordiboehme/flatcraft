@@ -1,6 +1,7 @@
 //! The app shell, driven through egui_kittest.
 
 mod common;
+use common::RunPlan;
 
 use common::{
     FakePicker, app, app_mut, harness, harness_with, import_square, session, wait_for_source_check,
@@ -19,12 +20,12 @@ fn switcher_changes_workspace() {
     let mut h = harness(&dir, session(&dir), false);
     h.check_accessibility();
     h.get_by_role_and_label(Role::Button, "Workspace").click();
-    h.run();
+    h.run_plan();
     // The open popup and its cards have accessible names too.
     h.check_accessibility();
     h.get_by_role_and_label(Role::Button, "Prepare");
     h.get_by_role_and_label(Role::Button, "Cut").click();
-    h.run();
+    h.run_plan();
     assert_eq!(app(&h).ui.workspace, Workspace::Cut);
 }
 
@@ -58,7 +59,7 @@ fn undo_button_calls_edit_undo() {
     };
     let mut h = harness(&dir, s.clone(), false);
     h.get_by_role_and_label(Role::Button, "Undo").click();
-    h.run();
+    h.run_plan();
     let s = s.lock().unwrap();
     assert_eq!(
         s.doc().document.get(ObjectId(id)).unwrap().transform,
@@ -73,7 +74,7 @@ fn new_tab_adds_document() {
     let mut h = harness(&dir, s.clone(), false);
     h.get_by_role_and_label(Role::Button, "New document")
         .click();
-    h.run();
+    h.run_plan();
     assert_eq!(s.lock().unwrap().docs.len(), 2);
 }
 
@@ -127,13 +128,13 @@ fn home_new_reuses_the_empty_start_document() {
     let s = session(&dir);
     let mut h = harness(&dir, s.clone(), false);
     h.get_by_role_and_label(Role::Button, "New project").click();
-    h.run();
+    h.run_plan();
     assert_eq!(s.lock().unwrap().docs.len(), 1);
     assert_eq!(app(&h).ui.workspace, Workspace::Prepare);
 
     // A document with content stays; New opens a second one.
     h.get_by_role_and_label(Role::Button, "Home").click();
-    h.run();
+    h.run_plan();
     s.lock().unwrap().doc_mut().dirty = true;
     h.get_by_role_and_label(Role::Button, "New project").click();
     wait_for_source_check(&mut h);
@@ -245,20 +246,20 @@ fn closing_a_dirty_tab_offers_discard() {
     let mut h = harness(&dir, s.clone(), false);
     h.get_by_role_and_label(Role::Button, "Close Untitled 1")
         .click();
-    h.run();
+    h.run_plan();
     assert_eq!(s.lock().unwrap().docs[0].document.objects.len(), 1);
     h.get_by_label("Save changes to Untitled 1?");
     // Cancel keeps it.
     h.get_by_role_and_label(Role::Button, "Cancel").click();
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label("Save changes to Untitled 1?").is_none());
     assert_eq!(s.lock().unwrap().docs[0].document.objects.len(), 1);
     // Discard closes it.
     h.get_by_role_and_label(Role::Button, "Close Untitled 1")
         .click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Don't Save").click();
-    h.run();
+    h.run_plan();
     let st = s.lock().unwrap();
     assert_eq!(st.docs.len(), 1);
     assert!(st.doc().document.objects.is_empty(), "a fresh document");
@@ -274,13 +275,13 @@ fn closing_a_dirty_tab_can_save_it_first() {
     let mut h = harness_with(&dir, s.clone(), |a| a.with_file_picker(picker.clone()));
     h.get_by_role_and_label(Role::Button, "Close Untitled 1")
         .click();
-    h.run();
+    h.run_plan();
     // The ribbon has a Save button too; the dialog is drawn last.
     h.get_all_by_role_and_label(Role::Button, "Save")
         .last()
         .unwrap()
         .click();
-    h.run();
+    h.run_plan();
     assert_eq!(
         flatcraft_core::project::load(&path).unwrap().objects.len(),
         1
@@ -308,11 +309,11 @@ fn quit_with_unsaved_work_asks_first_and_cancel_keeps_the_app() {
     let mut h = harness(&dir, s.clone(), false);
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
-    h.run();
+    h.run_plan();
     h.get_by_label("Save changes to Untitled 1?");
     assert!(!asks_to_close(&h));
     h.get_by_role_and_label(Role::Button, "Cancel").click();
-    h.run();
+    h.run_plan();
     assert!(h.query_by_label("Save changes to Untitled 1?").is_none());
     assert!(!asks_to_close(&h));
     assert!(!app(&h).ui.closing);
@@ -343,18 +344,18 @@ fn discard_on_quit_closes_the_window() {
     let mut h = harness(&dir, s.clone(), false);
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
-    h.run();
+    h.run_plan();
     // One document after the other, each by its name.
     h.get_by_label("Save changes to Untitled 1?");
     h.get_by_role_and_label(Role::Button, "Don't Save").click();
-    h.run();
+    h.run_plan();
     assert!(
         !app(&h).ui.closing,
         "the second document is still asked about"
     );
     h.get_by_label("Save changes to Untitled 2?");
     h.get_by_role_and_label(Role::Button, "Don't Save").click();
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.closing, "the window closes");
     assert!(app(&h).ui.unsaved.is_none());
     // The Close command comes back as a close request, which now goes ahead.
@@ -382,7 +383,7 @@ fn the_window_close_button_asks_too() {
         .push(egui::ViewportEvent::Close);
     h.step();
     assert!(root_commands(&h).contains(&egui::ViewportCommand::CancelClose));
-    h.run();
+    h.run_plan();
     h.get_by_label("Save changes to Untitled 1?");
 }
 
@@ -396,13 +397,13 @@ fn save_all_asks_for_a_path_per_untitled_document() {
     let mut h = harness_with(&dir, s.clone(), |a| a.with_file_picker(picker.clone()));
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
-    h.run();
+    h.run_plan();
     // The app bar has a Save button too; the dialog is drawn last.
     h.get_all_by_role_and_label(Role::Button, "Save")
         .last()
         .unwrap()
         .click();
-    h.run();
+    h.run_plan();
     assert_eq!(picker.requests.lock().unwrap().len(), 1);
     assert_eq!(
         flatcraft_core::project::load(&path).unwrap().objects.len(),
@@ -421,13 +422,13 @@ fn a_cancelled_save_all_keeps_the_app_open() {
     let mut h = harness_with(&dir, s.clone(), |a| a.with_file_picker(picker.clone()));
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
-    h.run();
+    h.run_plan();
     // The app bar has a Save button too; the dialog is drawn last.
     h.get_all_by_role_and_label(Role::Button, "Save")
         .last()
         .unwrap()
         .click();
-    h.run();
+    h.run_plan();
     assert!(!asks_to_close(&h));
     assert!(!app(&h).ui.closing);
     assert!(s.lock().unwrap().doc().dirty);
@@ -440,11 +441,11 @@ fn untitled_names_stay_with_their_document() {
     for _ in 0..2 {
         h.get_by_role_and_label(Role::Button, "New document")
             .click();
-        h.run();
+        h.run_plan();
     }
     h.get_by_role_and_label(Role::Button, "Close Untitled 2")
         .click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Untitled 1");
     h.get_by_role_and_label(Role::Button, "Untitled 3");
     assert!(h.query_by_label("Untitled 2").is_none());
@@ -468,7 +469,7 @@ fn cmd_n_and_home_new_reuse_the_empty_start_document() {
     let s = session(&dir);
     let mut h = harness(&dir, s.clone(), false);
     cmd_n(&mut h);
-    h.run();
+    h.run_plan();
     assert_eq!(s.lock().unwrap().docs.len(), 1);
     assert_eq!(app(&h).ui.workspace, Workspace::Prepare);
     s.lock().unwrap().doc_mut().dirty = true;
@@ -548,7 +549,7 @@ fn a_broken_preferences_file_shows_a_toast_once() {
     let path = dir.path().join(flatcraft_engine::prefs::FILE_NAME);
     std::fs::write(&path, "allow_agent_cuts = [").unwrap();
     let mut h = harness(&dir, s, false);
-    h.run();
+    h.run_plan();
     let warnings = |h: &common::AppHarness| {
         app(h)
             .ui
@@ -564,7 +565,7 @@ fn a_broken_preferences_file_shows_a_toast_once() {
     // A second later the file is still broken: no second toast.
     let later = std::time::Instant::now() + std::time::Duration::from_secs(2);
     app_mut(&mut h).clock = std::sync::Arc::new(move || later);
-    h.run();
+    h.run_plan();
     assert_eq!(warnings(&h).len(), 1);
 }
 
@@ -577,7 +578,7 @@ fn the_start_up_preferences_warning_shows_a_toast() {
         .unwrap()
         .note_prefs_warning("preferences.toml is broken. Using default preferences.".into());
     let mut h = harness(&dir, s, false);
-    h.run();
+    h.run_plan();
     assert!(
         app(&h)
             .ui
@@ -612,7 +613,7 @@ fn a_theme_read_back_by_a_preference_save_is_applied() {
         .unwrap();
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![Action::Open(path)]);
-    h.run();
+    h.run_plan();
     assert_eq!(app(&h).tokens, Tokens::for_theme(Theme::Light, None));
 }
 
@@ -636,7 +637,7 @@ fn a_backup_of_broken_preferences_shows_a_toast() {
     .unwrap();
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![Action::Open(path)]);
-    h.run();
+    h.run_plan();
     assert!(
         app(&h)
             .ui
@@ -660,10 +661,10 @@ fn toasts_expire_by_the_window_clock() {
         a.with_clock(move || *clock.lock().unwrap())
     });
     app_mut(&mut h).toast(Toast::info("Great Scott!"));
-    h.run();
+    h.run_plan();
     assert_eq!(app(&h).ui.toasts.len(), 1);
     *now.lock().unwrap() += flatcraft::ui::toasts::LIFETIME;
-    h.run();
+    h.run_plan();
     assert!(
         app(&h).ui.toasts.is_empty(),
         "expired after 5 s on the clock"
@@ -684,11 +685,11 @@ fn the_system_theme_switches_the_tokens_live() {
     );
     let mut h = harness(&dir, s, false);
     h.input_mut().system_theme = Some(egui::Theme::Light);
-    h.run();
+    h.run_plan();
     assert_eq!(app(&h).tokens, Tokens::light());
     assert_eq!(h.ctx.theme(), egui::Theme::Light);
     h.input_mut().system_theme = Some(egui::Theme::Dark);
-    h.run();
+    h.run_plan();
     assert_eq!(app(&h).tokens, Tokens::dark());
     assert_eq!(h.ctx.theme(), egui::Theme::Dark);
 }
@@ -709,7 +710,7 @@ fn a_fixed_theme_ignores_the_system() {
         let mut h = harness(&dir, s, false);
         for sys in [egui::Theme::Light, egui::Theme::Dark] {
             h.input_mut().system_theme = Some(sys);
-            h.run();
+            h.run_plan();
             assert_eq!(app(&h).tokens, want, "{pref:?} under system {sys:?}");
         }
     }
@@ -747,6 +748,6 @@ fn tabs_and_dialogs_name_a_project_without_its_extension() {
     let id = s.lock().unwrap().docs[0].id();
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![Action::Close(id)]);
-    h.run();
+    h.run_plan();
     h.get_by_label("Save changes to Stickers?");
 }
