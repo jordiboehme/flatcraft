@@ -49,6 +49,10 @@ pub const DEVICE_LIMIT_MM: f64 = 0.075;
 /// unit (0.05 mm), what the rounding alone can do. It does not follow
 /// [`DEVICE_LIMIT_MM`], which also covers the tip drag on the pivot arcs.
 pub const DEVICE_WASTE_TOLERANCE_MM: f64 = 0.05;
+// The planner's rounding keeps waste tips out of kept material with a
+// margin inside the simulator's device tolerance.
+const _: () = assert!(flatcraft_path::quantize::KEPT_TOLERANCE_MM < DEVICE_WASTE_TOLERANCE_MM);
+
 /// The end-to-end limit (R7), the guarantee that counts: the cut against
 /// the source shape, after flattening, the knife stage and the device
 /// rounding, at every grid position. 0.06 mm: one device unit plus the

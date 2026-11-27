@@ -162,7 +162,7 @@ pub fn apply(
     if let Some(grid) = hs.device_grid {
         // A push it keeps (to hold the cut within `MAX_DROP_MM`) is not
         // silent: the simulator's device mode reports it as pushed.
-        let _ = quantize::round_runs(paths, &grid, hs.offset_mm, start_heading);
+        let _ = quantize::round_runs(paths, &grid, hs.offset_mm, start_heading, kept);
     }
     AppliedCompensation::Host {
         offset_mm: hs.offset_mm,

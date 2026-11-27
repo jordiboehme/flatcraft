@@ -9,10 +9,12 @@
 //!   holes, each object in a random keep mode (Pieces, Stencil, Both on the
 //!   shared sheet), random weeding, a mat or none, and lifted corners with
 //!   a 0.1 mm overshoot (`CornerMode::LiftOvershoot`): no blade tip ever
-//!   cuts into kept material, in float. The same on the device grid
-//!   (`no_cut_into_kept_material_on_the_device_grid`) fails today and is
-//!   ignored with the failing case in `properties.proptest-regressions`
-//!   (Task 16 report).
+//!   cuts into kept material, in float, and planned for and snapped to the
+//!   Cameo 2 device grid at three grid origins
+//!   (`no_cut_into_kept_material_on_the_device_grid`). The first case that
+//!   failed there (a hole start rounded 0.057 mm into its piece, Task 16)
+//!   replays first from `properties.proptest-regressions` and is the named
+//!   test `star_hole_start_stays_out_of_the_piece_on_the_device_grid`.
 
 #[path = "../../flatcraft-path/tests/support/shapes.rs"]
 mod shapes;
@@ -34,11 +36,6 @@ use proptest::prelude::*;
 /// The cutting area of the uncalibrated 12x12 mat: its grid, inset by 5 mm.
 fn area() -> Rect {
     Rect::new(5.0, 5.0, 299.8, 299.8)
-}
-
-/// The Cameo 2 rounding: 20 units per mm from the grid origin.
-fn grid() -> DeviceGrid {
-    DeviceGrid::new(20.0, Point::ZERO)
 }
 
 fn host(d: f64, grid: Option<DeviceGrid>) -> Compensation {
@@ -292,15 +289,99 @@ proptest! {
         nothing_cut_into_kept(&layout, weed, no_mat, d, None)?;
     }
 
-    /// The same rows planned for and snapped to the Cameo 2 device grid.
+}
+
+/// The grid origins the device-grid property runs at: where the unit
+/// lattice lies under the shapes changes how a start rounds.
+const ORIGINS: [f64; 3] = [0.0, 0.0125, 0.025];
+
+fn grid_at(o: f64) -> DeviceGrid {
+    DeviceGrid::new(20.0, Point::new(o, o))
+}
+
+/// Cases of the device-grid property in CI: each case plans and simulates
+/// at three grid origins, and 256 cases took 75 s, so CI runs 32.
+const DEVICE_CI_CASES: u32 = 32;
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(DEVICE_CI_CASES))]
+
+    /// The rows planned for and snapped to the Cameo 2 device grid.
     #[test]
-    #[ignore = "STOP (Task 16): fails on the device grid, a hole start goes 0.057 mm into the piece; see task-16-report.md"]
     fn no_cut_into_kept_material_on_the_device_grid(
         layout in pieces(),
         weed in weed(),
         no_mat in any::<bool>(),
         d in 0.25f64..=0.3,
     ) {
-        nothing_cut_into_kept(&layout, weed, no_mat, d, Some(grid()))?;
+        for o in ORIGINS {
+            nothing_cut_into_kept(&layout, weed, no_mat, d, Some(grid_at(o)))?;
+        }
     }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(FULL_CASES))]
+
+    #[test]
+    #[ignore = "full run (256 cases at three origins, about 75 s); run with --ignored"]
+    fn no_cut_into_kept_material_on_the_device_grid_full(
+        layout in pieces(),
+        weed in weed(),
+        no_mat in any::<bool>(),
+        d in 0.25f64..=0.3,
+    ) {
+        for o in ORIGINS {
+            nothing_cut_into_kept(&layout, weed, no_mat, d, Some(grid_at(o)))?;
+        }
+    }
+}
+
+/// The case Task 16's property found: a star hole in a strip of pieces
+/// 0.5 mm apart (all Pieces, no weeding, a mat). Its start, rounded to the
+/// device grid at origin 0, took the tip 0.057 mm out of the hole into the
+/// piece; the rounding now keeps every waste move out of kept material.
+#[test]
+fn star_hole_start_stays_out_of_the_piece_on_the_device_grid() {
+    let layout = vec![
+        vec![Piece {
+            w: 5.0,
+            h: 35.3693155460473,
+            mode: KeepMode::Pieces,
+            hole: None,
+        }],
+        vec![
+            Piece {
+                w: 31.905227181538734,
+                h: 12.862841002495385,
+                mode: KeepMode::Pieces,
+                hole: Some(shapes::Star {
+                    jitter: vec![0.31437398299794, 0.0, 0.0, 0.0, 0.0, 0.1416133609994288],
+                    radius: vec![
+                        0.6973577428213918,
+                        0.6,
+                        0.6,
+                        0.6,
+                        0.921343779617276,
+                        0.6771059058947049,
+                    ],
+                }),
+            },
+            Piece {
+                w: 5.0,
+                h: 20.728010431533843,
+                mode: KeepMode::Pieces,
+                hole: Some(shapes::Star {
+                    jitter: vec![0.0; 6],
+                    radius: vec![0.6; 6],
+                }),
+            },
+        ],
+    ];
+    let d = 0.2926088073669164;
+    for o in ORIGINS {
+        nothing_cut_into_kept(&layout, WeedSettings::default(), false, d, Some(grid_at(o)))
+            .unwrap_or_else(|e| panic!("origin {o}: {e}"));
+    }
+    nothing_cut_into_kept(&layout, WeedSettings::default(), false, d, None).unwrap();
 }
