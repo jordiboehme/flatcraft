@@ -261,6 +261,9 @@ pub fn job_dot(snap: &Snapshot, cut: Option<&CutState>) -> Dot {
 pub struct Summary {
     pub parts: Vec<String>,
     pub dot: Option<Dot>,
+    /// The Objects list is filtered by this text: the rail says
+    /// "filtered" and its card explains it.
+    pub filter: Option<String>,
 }
 
 impl Summary {
@@ -299,7 +302,33 @@ pub fn objects_summary(snap: &Snapshot) -> Summary {
         }
     }
     let dot = (!snap.notes.trim().is_empty()).then_some(Dot::Notes);
-    Summary { parts, dot }
+    Summary {
+        parts,
+        dot,
+        filter: None,
+    }
+}
+
+/// The word the Objects rail adds while the list is filtered.
+pub const FILTERED: &str = "filtered";
+
+/// [`objects_summary`] while the Objects list is filtered by `filter`
+/// (nothing changes when it is empty): "filtered" after the counts.
+pub fn objects_summary_filtered(snap: &Snapshot, filter: &str) -> Summary {
+    let mut s = objects_summary(snap);
+    let f = filter.trim();
+    if !f.is_empty() {
+        s.parts.push(FILTERED.to_string());
+        s.filter = Some(f.to_string());
+    }
+    s
+}
+
+/// What the rail's card adds while the Objects list is filtered.
+pub fn filtered_card(filter: &str) -> String {
+    format!(
+        "The list is filtered by \"{filter}\": it shows only the rows whose name has it. The filter changes nothing on the mat and nothing in the selection. Open the panel and press Esc in the filter field to see every row again."
+    )
 }
 
 fn mode_word(m: CutMode) -> &'static str {
@@ -331,6 +360,7 @@ pub fn settings_summary(snap: &Snapshot, dot: Dot) -> Summary {
     Summary {
         parts,
         dot: Some(dot),
+        filter: None,
     }
 }
 
@@ -342,6 +372,7 @@ pub fn stage_summary(stage: Stage, dot: Dot) -> Summary {
             stage.name().to_string(),
         ],
         dot: Some(dot),
+        filter: None,
     }
 }
 
@@ -572,9 +603,14 @@ pub fn show_rail(ui: &mut Ui, kind: SidePanel, side: Side, t: &Tokens, summary: 
                 &resp,
                 &format!("Open the {} panel", kind.title()),
                 &format!(
-                    "{}. This is {}. Click anywhere on the strip to open it.",
+                    "{}. This is {}. Click anywhere on the strip to open it.{}",
                     summary.full(),
-                    kind.what()
+                    kind.what(),
+                    summary
+                        .filter
+                        .as_deref()
+                        .map(|f| format!("\n\n{}", filtered_card(f)))
+                        .unwrap_or_default()
                 ),
                 None,
                 false,

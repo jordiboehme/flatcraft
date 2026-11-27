@@ -291,3 +291,37 @@ fn the_playback_bar_takes_clicks_after_the_pointer_moved() {
     let tl = &app(&h).ui.cut.timeline;
     assert!(tl.visible() < tl.total, "{} of {}", tl.visible(), tl.total);
 }
+
+/// Every resizable side panel draws its content through
+/// `rails::panel_body`, so content that over-asks can never widen it.
+#[test]
+fn every_resizable_side_panel_holds_its_content_to_its_width() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui");
+    let mut found = 0;
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "rs") {
+            continue;
+        }
+        let src = std::fs::read_to_string(&path).unwrap();
+        for (at, _) in src.match_indices(".resizable(true)") {
+            // Only side panels (windows resize on their own terms).
+            let before = &src[..at];
+            let start = before.rfind("egui::").unwrap_or(0);
+            let head = &src[start..at];
+            if !(head.starts_with("egui::Panel::left") || head.starts_with("egui::Panel::right")) {
+                continue;
+            }
+            found += 1;
+            let after = &src[at..];
+            let show = after.find(".show(").expect("the panel shows");
+            let body = &after[show..(show + 200).min(after.len())];
+            assert!(
+                body.contains("panel_body("),
+                "{} at byte {at}: a resizable side panel without rails::panel_body",
+                path.display()
+            );
+        }
+    }
+    assert_eq!(found, 3, "Objects, Cut and Job, Cut stage");
+}

@@ -107,11 +107,11 @@ pub const FILTER_EMPTY_WHY: &str =
 /// What the list says when the filter matches no row.
 pub const NO_MATCH: &str = "Nothing matches. These are not the droids you are looking for.";
 /// The card of the header's note while selected rows are hidden.
-pub const FILTER_NOTE_CARD: &str = "Some selected objects have no row now because the filter hides them. They are still selected: the inspector and every action work on them. Clear the filter (Esc in the field) to see their rows again.";
+pub const FILTER_NOTE_CARD: &str = "Some selected objects are hidden by the filter: they have no row now, but they are still selected: the inspector and every action work on them. Clear the filter (Esc in the field) to see their rows again.";
 
-/// The header's note: "2 selected, 1 hidden by the filter".
+/// The header's note: "2 selected, 1 hidden" (its card says by what).
 pub fn filter_note(selected: usize, hidden: usize) -> String {
-    format!("{selected} selected, {hidden} hidden by the filter")
+    format!("{selected} selected, {hidden} hidden")
 }
 
 /// The filter typed for this document ("" when none).

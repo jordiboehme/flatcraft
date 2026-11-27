@@ -1522,6 +1522,9 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
     super::inspector::follow_selection(&mut app.ui.prepare, snap);
     // The object inspector says again this frame whether its fields show.
     app.ui.prepare.inspector_fields = false;
+    // The filter field says again this frame whether it has the keys; it
+    // is not drawn while the Objects panel is a rail.
+    app.ui.prepare.objects_filter_keys = false;
     // Another document or another selection cancels the keep picker.
     if app
         .ui
@@ -1537,7 +1540,8 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
     }
     app.ui.prepare.panels.arrange_open = app.ui.prepare.panel.is_some();
     if app.ui.prepare.panels.collapsed(SidePanel::Objects) {
-        let summary = rails::objects_summary(snap);
+        let filter = objects::filter_text(&app.ui.prepare, snap);
+        let summary = rails::objects_summary_filtered(snap, filter);
         if rails::show_rail(ui, SidePanel::Objects, Side::Left, &t, &summary) {
             app.ui
                 .prepare

@@ -7,8 +7,8 @@ use common::RunPlan;
 
 use common::*;
 use egui::accesskit::Role;
-use egui::{Key, Rect};
-use egui_kittest::kittest::Queryable as _;
+use egui::{Event, Key, Modifiers, Rect, Vec2};
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use flatcraft::ui::objects;
 use flatcraft::ui::prepare;
 use flatcraft::ui::rails::{self, Dot};
@@ -133,12 +133,14 @@ fn search_filters_without_changing_selection() {
     // The selection is what it was; the header tells that it is hidden.
     assert_eq!(selection(&s), vec![sc.star]);
     let note = objects::filter_note(1, 1);
-    assert_eq!(note, "1 selected, 1 hidden by the filter");
+    assert_eq!(note, "1 selected, 1 hidden");
     assert!(h.query_by_label(&note).is_some(), "the header says it");
+    // Its card says by what.
+    assert!(objects::FILTER_NOTE_CARD.contains("hidden by the filter"));
     // A match that is selected is not hidden: no note.
     exec(&s, "object.select", json!({ "ids": [sc.circle] }));
     h.run_plan();
-    assert!(h.query_by_label_contains("hidden by the filter").is_none());
+    assert!(h.query_by_label_contains(" hidden").is_none());
     exec(&s, "object.select", json!({ "ids": [sc.star] }));
     h.run_plan();
     // A filter that matches nothing says so.
@@ -152,7 +154,7 @@ fn search_filters_without_changing_selection() {
     assert_eq!(field_text(&h, objects::FILTER_NAME), "");
     assert!(row(&h, "circle") && row(&h, "label") && group_row(&h, "Badge"));
     assert_eq!(selection(&s), vec![sc.star], "Escape kept the selection");
-    assert!(h.query_by_label_contains("hidden by the filter").is_none());
+    assert!(h.query_by_label(&note).is_none());
     // The next Escape goes on as before: it clears the selection.
     h.key_press(Key::Escape);
     h.run_plan();
@@ -221,7 +223,6 @@ fn group_matches_show_members() {
     assert!(!row(&h, "square"));
     let doc = s.lock().unwrap().doc().id();
     assert!(!app(&h).ui.prepare.open_groups.contains(&(doc, sc.badge)));
-    let _ = sc.square;
 }
 
 #[test]
@@ -354,5 +355,158 @@ fn left_panel_reachable_at_900() {
     inside(
         h.get_by_role_and_label(Role::Button, "label").rect(),
         "a row",
+    );
+}
+
+/// Sets the filter as if typed, without giving the field the keys.
+fn set_filter(h: &mut AppHarness, s: &SharedSession, text: &str) {
+    let doc = s.lock().unwrap().doc().id();
+    app_mut(h).ui.prepare.objects_filter = Some((doc, text.to_string()));
+    h.run_plan();
+}
+
+#[test]
+fn typing_in_the_filter_leaves_tools_and_selection_alone() {
+    let (_d, s, mut h, sc) = prepare_at(1400.0);
+    let count = s.lock().unwrap().doc().document.objects.len();
+    h.get_by_label(objects::FILTER_NAME).click();
+    h.run_plan();
+    // V and L switch the tools, Delete and Backspace remove the selection:
+    // not while the filter has the keys.
+    for (key, text) in [(Key::V, "v"), (Key::L, "l")] {
+        h.key_press(key);
+        h.event(Event::Text(text.into()));
+        h.run_plan();
+    }
+    assert_eq!(field_text(&h, objects::FILTER_NAME), "vl");
+    h.key_press(Key::Delete);
+    h.run_plan();
+    h.key_press(Key::Backspace);
+    h.run_plan();
+    assert_eq!(field_text(&h, objects::FILTER_NAME), "v");
+    let st = &app(&h).ui.prepare;
+    assert_eq!(st.select_tool, prepare::SelectTool::Select);
+    assert_eq!(selection(&s), vec![sc.star]);
+    assert_eq!(s.lock().unwrap().doc().document.objects.len(), count);
+}
+
+/// The filter is about the list only. Cmd+A and the lasso pick on the mat,
+/// so they reach objects whose rows the filter hides, and an object that
+/// is selected and hidden stays selected through Cmd+A. The filter itself
+/// never selects or deselects anything.
+#[test]
+fn select_all_and_lasso_pick_on_the_mat_whatever_the_filter() {
+    let (_d, s, mut h, sc) = prepare_at(1400.0);
+    set_filter(&mut h, &s, "circ");
+    assert!(!row(&h, "label") && !group_row(&h, "Badge"));
+    assert_eq!(selection(&s), vec![sc.star], "the filter selected nothing");
+    // Cmd+A: every object, the hidden star among them.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.run_plan();
+    let all = selection(&s);
+    assert_eq!(all.len(), 4, "{all:?}");
+    assert!(all.contains(&sc.star), "the hidden star stays selected");
+    assert!(h.query_by_label(&objects::filter_note(4, 3)).is_some());
+    // The lasso around the star (100..150 x 20..70 mm), whose row is
+    // hidden: it picks the star's group Badge, as on any mat.
+    let rect = app(&h).ui.prepare.canvas_rect;
+    let view = flatcraft::ui::canvas::CanvasView {
+        offset: rect.center().to_vec2() - Vec2::new(145.0, 45.0) * 2.0,
+        px_per_mm: 2.0,
+    };
+    let p = &mut app_mut(&mut h).ui.prepare;
+    p.view = view;
+    p.fit_pending = false;
+    p.select_tool = prepare::SelectTool::Lasso;
+    h.run_plan();
+    let at = |x: f64, y: f64| view.mm_to_screen(kurbo::Point::new(x, y));
+    let path = [
+        at(92.0, 12.0),
+        at(158.0, 12.0),
+        at(158.0, 78.0),
+        at(92.0, 78.0),
+        at(92.0, 14.0),
+    ];
+    h.hover_at(path[0]);
+    h.run_plan();
+    h.drag_at(path[0]);
+    h.run_plan();
+    for w in path.windows(2) {
+        for t in [0.25, 0.5, 0.75, 1.0] {
+            h.hover_at(w[0] + (w[1] - w[0]) * t);
+            h.run_plan();
+        }
+    }
+    h.drop_at(path[4]);
+    h.run_plan();
+    let mut got = selection(&s);
+    got.sort_unstable();
+    assert_eq!(got, [sc.square, sc.star]);
+    // Still filtered: the lasso changed the selection, not the filter.
+    assert_eq!(field_text(&h, objects::FILTER_NAME), "circ");
+}
+
+#[test]
+fn the_folded_objects_rail_says_filtered() {
+    let (_d, s, mut h, _) = prepare_at(1400.0);
+    set_filter(&mut h, &s, "circ");
+    h.get_by_label("Collapse the Objects panel").click();
+    h.run_plan();
+    let rail = h.get_by_label_contains("Open the Objects panel");
+    let name = rail.accesskit_node().label().unwrap_or_default();
+    assert!(name.contains(rails::FILTERED), "{name}");
+    let sum = rails::objects_summary_filtered(&snap(&mut h), "circ");
+    assert_eq!(sum.parts.last().map(String::as_str), Some(rails::FILTERED));
+    assert!(rails::filtered_card("circ").contains("\"circ\""));
+    // Its card explains it.
+    h.ctx
+        .global_style_mut(|st| st.interaction.tooltip_delay = 0.0);
+    let at = h
+        .get_by_label_contains("Open the Objects panel")
+        .rect()
+        .center();
+    h.hover_at(at);
+    h.run_plan();
+    h.run_plan();
+    assert!(
+        h.query_by_label_contains("The list is filtered by")
+            .is_some()
+    );
+    // No filter, no word.
+    assert!(
+        !rails::objects_summary_filtered(&snap(&mut h), " ")
+            .parts
+            .iter()
+            .any(|p| p == rails::FILTERED)
+    );
+}
+
+#[test]
+fn a_filter_field_that_is_not_drawn_never_takes_an_escape() {
+    let (_d, s, mut h, _) = prepare_at(1400.0);
+    set_filter(&mut h, &s, "circ");
+    // The Objects panel as a rail, then the Cut workspace: the field is
+    // not drawn, so it cannot have had the keys.
+    for step in ["rail", "cut"] {
+        if step == "rail" {
+            h.get_by_label("Collapse the Objects panel").click();
+        } else {
+            app_mut(&mut h).ui.workspace = flatcraft::ui::Workspace::Cut;
+        }
+        h.run_plan();
+        app_mut(&mut h).ui.prepare.objects_filter_keys = true;
+        h.run_plan();
+        assert!(!app(&h).ui.prepare.objects_filter_keys, "{step}");
+    }
+    to_prepare(&mut h);
+    h.run_plan();
+    // Escape now clears the selection, as always, and keeps the filter.
+    h.key_press(Key::Escape);
+    h.run_plan();
+    assert!(selection(&s).is_empty());
+    let doc = s.lock().unwrap().doc().id();
+    assert_eq!(
+        app(&h).ui.prepare.objects_filter,
+        Some((doc, "circ".to_string()))
     );
 }

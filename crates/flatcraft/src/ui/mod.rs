@@ -2533,9 +2533,11 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     }
     switcher::ribbon(ui, app, snap.as_ref(), &mut actions);
     if workspace != Workspace::Prepare {
-        // The Trace dialog and the keep picker live in Prepare.
+        // The Trace dialog and the keep picker live in Prepare, and so
+        // does the Objects filter field: it has no keys elsewhere.
         app.ui.trace = None;
         app.ui.prepare.keep_pick = None;
+        app.ui.prepare.objects_filter_keys = false;
     }
     match (&snap, workspace) {
         (Some(snap), Workspace::Cut) => cut::show(ui, app, snap, &mut actions),
