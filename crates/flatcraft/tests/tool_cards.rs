@@ -465,3 +465,87 @@ fn folding_the_panel_cancels_the_card() {
     );
     assert_eq!(document(&s), before);
 }
+
+fn pin(s: &SharedSession, pins: &[&str]) {
+    let pins: Vec<String> = pins.iter().map(|p| p.to_string()).collect();
+    s.lock()
+        .unwrap()
+        .update_prefs(|p| p.ribbon_pins = pins)
+        .unwrap();
+}
+
+/// Auto arrange runs now and has a card: one split button. The main part
+/// runs it, the chevron part on its right opens the card, and there is no
+/// second, icon-only button beside it.
+#[test]
+fn auto_arrange_is_one_split_button() {
+    let main = tools::by_act(tools::Act::AutoArrange).button_name();
+    let more = tools::by_act(tools::Act::AutoArrangePanel).button_name();
+    for pins in [
+        &["auto_arrange"][..],
+        &["auto_arrange", "auto_arrange.panel"][..],
+        &["auto_arrange.panel"][..],
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let s = session(&dir);
+        let [a, b, _] = three(&s);
+        select(&s, &[a, b]);
+        pin(&s, pins);
+        let mut h = window(&dir, s.clone(), 1400.0);
+        h.get_by_role_and_label(Role::Tab, "Layout").click();
+        h.run_plan();
+        assert_eq!(
+            h.query_all_by_role_and_label(Role::Button, &main).count(),
+            1,
+            "{pins:?}"
+        );
+        assert_eq!(
+            h.query_all_by_role_and_label(Role::Button, &more).count(),
+            1,
+            "{pins:?}"
+        );
+        let m = h.get_by_role_and_label(Role::Button, &main).rect();
+        let c = h.get_by_role_and_label(Role::Button, &more).rect();
+        // One button: the chevron touches the main part and is as tall.
+        assert!((c.left() - m.right()).abs() < 0.5, "{pins:?}: {m:?} {c:?}");
+        assert!((c.top() - m.top()).abs() < 0.5 && (c.height() - m.height()).abs() < 0.5);
+        assert!(c.width() < m.width() / 2.0, "{pins:?}: a narrow chevron");
+        // The chevron opens the card and changes nothing.
+        let before = (document(&s), undo_len(&s));
+        click_at(&mut h, c.center());
+        let p = app(&h).ui.prepare.panel.as_ref().map(|p| p.kind);
+        assert_eq!(p, Some(PanelKind::AutoArrange), "{pins:?}");
+        assert_eq!((document(&s), undo_len(&s)), before);
+        h.get_by_role_and_label(Role::Button, &cancel_name())
+            .click();
+        h.run_plan();
+        // The main part runs Auto arrange at once: one step, no card.
+        click_at(&mut h, m.center());
+        wait_for_workers(&mut h);
+        assert!(app(&h).ui.prepare.panel.is_none(), "{pins:?}");
+        assert_eq!(undo_len(&s), before.1 + 1, "{pins:?}");
+    }
+}
+
+#[test]
+fn the_auto_arrange_card_row_has_no_pin_of_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    three(&s);
+    let mut h = window(&dir, s.clone(), 1400.0);
+    h.get_by_role_and_label(Role::Tab, "Layout").click();
+    h.run_plan();
+    h.get_by_role_and_label(Role::Button, "Arrange").click();
+    h.run_plan();
+    let t = tools::by_act(tools::Act::AutoArrangePanel);
+    h.get_by_label(&t.row_name()).hover();
+    h.run_plan();
+    let auto = tools::by_act(tools::Act::AutoArrange);
+    h.get_by_label(&auto.row_name()).hover();
+    h.run_plan();
+    assert!(h.query_by_label_contains("Pin Auto arrange...").is_none());
+    assert!(
+        h.query_all_by_label_contains("Pin Auto arrange").count() == 1
+            || h.query_all_by_label_contains("Unpin Auto arrange").count() == 1
+    );
+}

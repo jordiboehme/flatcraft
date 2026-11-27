@@ -234,6 +234,9 @@ pub const LOCK_COLUMN: f32 = 14.0;
 pub const SEARCH_WIDTH: f32 = 200.0;
 /// The chevron between two Cut steps.
 pub const STEP_CHEVRON: f32 = 14.0;
+/// The chevron part of a split button (Auto arrange), as wide as a Cut
+/// step's chevron.
+pub const SPLIT_CHEVRON: f32 = STEP_CHEVRON;
 /// The workspace tile: the tab row and the ribbon panel.
 pub const TILE_HEIGHT: f32 = TAB_ROW + RIBBON_PAD.y + TOOLS_ROW + RIBBON_PAD.y;
 /// Room between the workspace tile's edge and its text.

@@ -238,6 +238,8 @@ fn the_default_pins_are_the_buttons_the_ribbon_had() {
                 "Mirror horizontally",
                 "Mirror vertically",
                 "Auto arrange",
+                // The chevron part of the Auto arrange split button.
+                "Auto arrange...",
                 "Group",
             ][..],
         ),

@@ -21,7 +21,7 @@ use super::help;
 use super::icons::{self, Icon};
 use super::prepare::{PrepareState, Snapshot};
 use super::settings::set_name;
-use super::tools::{AlignTo, GroupDef, GroupId, Section, Style, Tool};
+use super::tools::{Act, AlignTo, GroupDef, GroupId, Section, Style, Tool};
 use super::{Action, ICON_SIZE, metrics};
 
 // The ribbon's layout values live in `metrics`.
@@ -653,7 +653,17 @@ pub fn pins_row(ui: &mut Ui, add: impl FnOnce(&mut Ui)) -> egui::Rect {
 /// two when there are more than three. Every action of every tab looks the
 /// same way, so a group's pins fill the row's height.
 fn pinned_buttons(ui: &mut Ui, mode: Mode, pins: &[&'static Tool], cx: &mut Cx) {
+    // Auto arrange runs now and has a card: one split button, wherever
+    // either of the two is pinned.
+    let mut split_drawn = false;
     for t in pins.iter().filter(|t| t.style == Style::Big) {
+        if matches!(t.act, Act::AutoArrange | Act::AutoArrangePanel) {
+            if !split_drawn {
+                split_button(ui, mode, cx);
+                split_drawn = true;
+            }
+            continue;
+        }
         let on = t.blocked(cx.snap).is_none();
         let sel = t.selected(cx.st, *cx.show_debug);
         let name = t.button_name();
@@ -695,6 +705,59 @@ fn pinned_buttons(ui: &mut Ui, mode: Mode, pins: &[&'static Tool], cx: &mut Cx) 
             });
         }
     });
+}
+
+/// The split button of Auto arrange: the main part runs it at once with
+/// the stored gap, the chevron part on its right opens its tool card.
+/// Both keep the names, cards and dimmed reasons of their actions.
+fn split_button(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
+    let main = super::tools::by_act(Act::AutoArrange);
+    let more = super::tools::by_act(Act::AutoArrangePanel);
+    // The two parts touch: the main part is laid out without the button
+    // gap after it, the chevron part with it.
+    let gap = ui.spacing().item_spacing.x;
+    ui.spacing_mut().item_spacing.x = 0.0;
+    let on = main.blocked(cx.snap).is_none();
+    let r = big_button(
+        ui,
+        main.icon,
+        main.ribbon_label(),
+        &main.button_name(),
+        mode == Mode::Full,
+        on,
+        None,
+    );
+    ui.spacing_mut().item_spacing.x = gap;
+    tool_card(&r, main, cx.snap, false);
+    if r.clicked() {
+        main.run(cx.snap, cx.st, cx.show_debug, cx.actions);
+    }
+    let on = more.blocked(cx.snap).is_none();
+    let r = chevron_part(ui, &more.button_name(), on);
+    tool_card(&r, more, cx.snap, false);
+    if r.clicked() {
+        more.run(cx.snap, cx.st, cx.show_debug, cx.actions);
+    }
+}
+
+/// The narrow chevron part of a split button, [`BIG_HEIGHT`] tall.
+fn chevron_part(ui: &mut Ui, name: &str, enabled: bool) -> Response {
+    ui.add_enabled_ui(enabled, |ui| {
+        let (rect, resp) = ui.allocate_exact_size(
+            egui::vec2(metrics::SPLIT_CHEVRON, BIG_HEIGHT),
+            egui::Sense::click(),
+        );
+        let on = ui.is_enabled();
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::accesskit::Role::Button, on, name));
+        if ui.is_rect_visible(rect) {
+            paint_state(ui, rect, &resp, None, on);
+            let size = metrics::ICON_SMALL;
+            let at = egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(size));
+            image(ui, Icon::ChevronDown, size).paint_at(ui, at);
+        }
+        resp
+    })
+    .inner
 }
 
 /// The heading of a section of the list. Align also asks what to line up
@@ -808,7 +871,10 @@ fn row(ui: &mut Ui, t: &'static Tool, cx: &mut Cx) {
             ui.close();
         }
         has_focus = r.has_focus();
-        if hovered || is_pinned || focused || has_focus {
+        // Auto arrange's card is the chevron of the Auto arrange button:
+        // it has no button of its own to pin.
+        let pinnable = t.act != Act::AutoArrangePanel;
+        if pinnable && (hovered || is_pinned || focused || has_focus) {
             let (icon, tip) = match (is_pinned, hovered) {
                 (true, true) => (Icon::PinOff, UNPIN_TIP),
                 (true, false) => (Icon::Pin, UNPIN_TIP),

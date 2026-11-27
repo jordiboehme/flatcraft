@@ -423,7 +423,7 @@ pub fn show(
 ) -> (Option<Outcome>, egui::Rect) {
     let mut out = None;
     let frame = egui::Frame::new()
-        .fill(t.surface)
+        .fill(t.panel)
         .stroke(egui::Stroke::new(metrics::HAIRLINE, t.border))
         .corner_radius(t.radius)
         .inner_margin(egui::Margin::same(metrics::CARD_PAD as i8));

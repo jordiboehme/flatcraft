@@ -654,7 +654,7 @@ pub const TOOLS: [Tool; 45] = [
         Icon::Arrange,
         G::Arrange,
         Big,
-        "Packs the selected objects onto the cutting area, Tetris style, in one click. Everything else stays where you put it, and the packed objects fit around it. Nothing selected: it packs every visible object. It uses the gap you last chose in the Auto arrange panel.",
+        "Packs the selected objects onto the cutting area, Tetris style, in one click. Everything else stays where you put it, and the packed objects fit around it. Nothing selected: it packs every visible object. It uses the gap you last chose in its card: the small arrow on its right opens it.",
     ),
     labelled(
         tool(
@@ -664,10 +664,10 @@ pub const TOOLS: [Tool; 45] = [
             Icon::AutoArrangePanel,
             G::Arrange,
             Big,
-            "Packs the selected objects onto the cutting area, Tetris style, with the gap you choose. Everything else stays where you put it, and the packed objects fit around it. Nothing selected: it packs every visible object. A preview shows where they land.",
+            "Packs the selected objects onto the cutting area, Tetris style, with the gap you choose. Everything else stays where you put it, and the packed objects fit around it. Nothing selected: it packs every visible object. A preview shows where they land. On the ribbon it is the small arrow on the right of Auto arrange.",
         ),
-        // Icon only: "Auto arrange..." beside "Auto arrange" is too long,
-        // and a shorter word would clash with it. Its card names it.
+        // No button of its own: it is the chevron part of the Auto
+        // arrange split button (`groups::split_button`), named by its card.
         "",
     ),
     in_section(
