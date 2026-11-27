@@ -846,14 +846,31 @@ impl FlatCraftApp {
     /// once per object and material: after a keep mode or a material
     /// changed.
     fn stencil_hint(&mut self, doc_id: u64) {
-        let (found, material) = {
+        // The input is taken under the lock, the check (it builds the cut
+        // geometry) runs without it, and the geometry is offered back.
+        let (input, material, at) = {
             let s = lock(&self.session);
-            let material = s.doc().document.job.material_id.clone();
-            let found = flatcraft_engine::job::JobInput::of(&s)
-                .map(|input| flatcraft_engine::report::check(&input, None))
-                .unwrap_or_default();
-            (found, material)
+            let st = s.doc();
+            let job = &st.document.job;
+            let input = match (
+                s.profiles.plotter(&job.plotter_id),
+                s.profiles.material(&job.material_id),
+            ) {
+                (Ok(p), Ok(m)) => Some(
+                    flatcraft_engine::job::JobInput::from_parts(&st.document, p, &m)
+                        .with_seed(st.cached_cut_geometry()),
+                ),
+                _ => None,
+            };
+            (input, job.material_id.clone(), (st.id(), st.revision()))
         };
+        let found = input
+            .as_ref()
+            .map(|input| flatcraft_engine::report::check(input, None))
+            .unwrap_or_default();
+        if let Some(input) = &input {
+            lock(&self.session).offer_cut_geometry(at.0, at.1, input);
+        }
         let issues: Vec<_> = found
             .issues
             .into_iter()
