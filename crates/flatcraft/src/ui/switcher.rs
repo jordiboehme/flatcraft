@@ -202,6 +202,11 @@ fn switcher(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
 
 /// The width of the tile for the workspace `w`: its widest line and the
 /// padding, nothing more.
+///
+/// The foot is drawn in the footers' Small style now, but the width is
+/// still measured with the 10.5 pt "Workspace" it had before: a narrower
+/// tile would move every group of the ribbon and the Cut bar to the left.
+/// Change it only together with the ribbon's look.
 pub fn tile_width(ui: &Ui, w: Workspace) -> f32 {
     let name = ui.fonts_mut(|f| {
         f.layout_no_wrap(w.name().to_owned(), metrics::heading(), Color32::WHITE)
@@ -321,7 +326,7 @@ fn tile(ui: &mut Ui, t: &Tokens, w: Workspace) -> egui::Response {
         name,
         t.text,
     );
-    let chevron = metrics::ICON_CHEVRON;
+    let chevron = metrics::ICON_SMALL;
     let total = galley.size().x + 2.0 + chevron;
     let x0 = rect.center().x - total / 2.0;
     let line_h = galley.size().y;

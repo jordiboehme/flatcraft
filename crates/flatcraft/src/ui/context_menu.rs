@@ -61,6 +61,8 @@ pub enum Item {
     RevealSource,
     /// Copy the linked file's path.
     CopySourcePath,
+    /// Forget the linked file; the objects stay as they are.
+    UnlinkFile,
     /// Export the objects' cut shapes (the Export dialog on the selection).
     ExportSelected,
     Delete,
@@ -117,6 +119,7 @@ impl Item {
             Item::Reconnect => "Reconnect source...",
             Item::RevealSource => super::files::reveal_source_label(),
             Item::CopySourcePath => "Copy source path",
+            Item::UnlinkFile => "Unlink file",
             Item::SelectAll => "Select all",
             Item::ExportSelected => "Export selected...",
             _ => unreachable!("the other items are ribbon actions"),
@@ -158,6 +161,9 @@ impl Item {
             }
             Item::CopySourcePath => {
                 "Copies the full path of the design file this object was imported from."
+            }
+            Item::UnlinkFile => {
+                "Forget the file these objects were imported from. The objects stay as they are; FlatCraft no longer watches the file or reads it again. One step to undo."
             }
             Item::SelectAll => "Select every visible object on the mat.",
             Item::ExportSelected => super::export_dialog::SELECTED_HINT,
@@ -209,12 +215,27 @@ impl Item {
                 .is_empty()
                 .then_some("Import something first. There is nothing to select yet."),
             Item::RevealSource | Item::CopySourcePath => source_file(snap, st, ids)?.err(),
+            Item::UnlinkFile => linked_ids(snap, ids)
+                .is_empty()
+                .then_some(NO_FILE_TO_UNLINK),
             Item::ExportSelected => super::export_dialog::selected_why(snap, ids),
             Item::PickKeep => super::keep_pick::why_not(snap, ids),
             _ => self.tool()?.blocked_for(snap, ids),
         }
     }
 }
+
+/// The objects of `ids` that are linked to a file.
+pub fn linked_ids(snap: &Snapshot, ids: &[u64]) -> Vec<u64> {
+    ids.iter()
+        .copied()
+        .filter(|id| snap.object(*id).is_some_and(|o| o.link.is_some()))
+        .collect()
+}
+
+/// Why Unlink file is dimmed: no file to forget.
+pub const NO_FILE_TO_UNLINK: &str =
+    "No file to unlink: these objects were not imported from a file.";
 
 /// Why Reveal source and Copy source path are dimmed: the file is gone.
 pub const SOURCE_MISSING: &str = "The file was moved or deleted. Use Reconnect source.";
@@ -359,6 +380,7 @@ pub fn items(snap: &Snapshot, st: &PrepareState, ids: &[u64]) -> Vec<Vec<Item>> 
     if objs.iter().any(|o| o.link.is_some()) {
         g.push(Item::RevealSource);
         g.push(Item::CopySourcePath);
+        g.push(Item::UnlinkFile);
     }
     groups.push(g);
 
@@ -542,6 +564,17 @@ pub fn run_item(
             } else {
                 Action::CopyPath(path)
             });
+        }
+        Item::UnlinkFile => {
+            let linked = linked_ids(snap, ids);
+            if linked.is_empty() {
+                return false;
+            }
+            actions.push(Action::run(
+                doc_id,
+                "object.unlink",
+                json!({ "ids": linked }),
+            ));
         }
         Item::ExportSelected => actions.push(Action::ExportDialog { doc_id }),
         Item::Delete => actions.push(ribbon::delete_action(doc_id, ids)),

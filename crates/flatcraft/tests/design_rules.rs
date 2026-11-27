@@ -229,20 +229,22 @@ fn left_panel_has_no_selection_info_block() {
     h.get_by_role_and_label(Role::Button, "Notes");
 }
 
-/// The top of the first glyph of the painted text `text` and its size.
-fn glyph_top(h: &AppHarness, text: &str) -> Option<(f32, f32)> {
+/// The top of the first glyph of the painted text `text`, its size and
+/// its colour.
+fn glyph_top(h: &AppHarness, text: &str) -> Option<(f32, f32, egui::Color32)> {
     painted(h).into_iter().find_map(|s| match s {
         egui::Shape::Text(t) if t.galley.text() == text => {
             let row = &t.galley.rows[0];
             let g = row.row.glyphs.first()?;
-            Some((t.pos.y + row.pos.y + g.pos.y, g.font_face_height))
+            let colour = t.galley.job.sections.first()?.format.color;
+            Some((t.pos.y + row.pos.y + g.pos.y, g.font_face_height, colour))
         }
         _ => None,
     })
 }
 
 #[test]
-fn workspace_tile_foot_sits_on_the_footer_line() {
+fn workspace_tile_aligns_with_group_footers() {
     for w in [900.0f32, 1400.0] {
         let dir = tempfile::tempdir().unwrap();
         let s = session(&dir);
@@ -261,6 +263,8 @@ fn workspace_tile_foot_sits_on_the_footer_line() {
             "Prepare at {w}: {tile:?} {footer:?}"
         );
         assert!(near(tile.1, footer.1), "same size at {w}");
+        // At rest (nothing hovered) in the footers' colour.
+        assert_eq!(tile.2, footer.2, "same colour at {w}");
         app_mut(&mut h).ui.workspace = Workspace::Cut;
         settle(&mut h);
         let tile = glyph_top(&h, "Workspace").expect("the tile's foot");

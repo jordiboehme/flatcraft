@@ -121,10 +121,11 @@ pub fn show(
     }
     ui.add_space(metrics::SPACE_8);
     let objects = shows_objects(st, snap);
-    // A thin bar that fits the panel's right padding.
+    // A bar that fits the panel's right padding: 2 pt from the content,
+    // 6 pt wide, 4 pt from the panel's edge.
     ui.spacing_mut().scroll = egui::style::ScrollStyle {
-        bar_width: metrics::SPACE_4,
-        bar_inner_margin: metrics::SPACE_4,
+        bar_width: 6.0,
+        bar_inner_margin: metrics::SPACE_2,
         bar_outer_margin: metrics::SPACE_4,
         ..egui::style::ScrollStyle::floating()
     };

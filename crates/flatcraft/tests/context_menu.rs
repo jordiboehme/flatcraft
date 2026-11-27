@@ -162,7 +162,7 @@ fn name(item: Item) -> String {
     }
 }
 
-const ALL: [Item; 33] = [
+const ALL: [Item; 34] = [
     Item::Duplicate,
     Item::Copies,
     Item::LinkCopies,
@@ -190,6 +190,7 @@ const ALL: [Item; 33] = [
     Item::Reconnect,
     Item::RevealSource,
     Item::CopySourcePath,
+    Item::UnlinkFile,
     Item::ExportSelected,
     Item::Delete,
     Item::Import,

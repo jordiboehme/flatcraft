@@ -55,6 +55,9 @@ except the two files below.
 | Test patterns | flask-conical |
 | Objects panel | panel-left |
 | Settings panel | panel-right |
+| Collapse the right panel | panel-right-close |
+| Collapse the left panel | panel-left-close |
+| Unlink file | file-x |
 | Rotate left | rotate-ccw |
 | Zoom 100% | percent |
 | Copies | copy-plus |

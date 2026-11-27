@@ -22,7 +22,7 @@ use super::icons::{self, Icon};
 use super::prepare::{PrepareState, Snapshot};
 use super::settings::set_name;
 use super::tools::{AlignTo, GroupDef, GroupId, Section, Style, Tool};
-use super::{Action, ICON_SIZE};
+use super::{Action, ICON_SIZE, metrics};
 
 // The ribbon's layout values live in `metrics`.
 use super::metrics::{
@@ -173,7 +173,7 @@ pub fn big_button(
     enabled: bool,
     selected: Option<bool>,
 ) -> Response {
-    const ICON: f32 = 24.0;
+    const ICON: f32 = metrics::ICON_BIG;
     ui.add_enabled_ui(enabled, |ui| {
         let font = egui::TextStyle::Small.resolve(ui.style());
         let text = if show_label { label } else { "" };
@@ -273,8 +273,9 @@ fn line_height(ui: &Ui, style: egui::TextStyle) -> f32 {
 pub fn step_detail_top(ui: &Ui, center_y: f32) -> f32 {
     let title = line_height(ui, egui::TextStyle::Body);
     let detail = line_height(ui, egui::TextStyle::Small);
-    let block = 24.0 + STEP_GAP + title + detail;
-    center_y - block / 2.0 + 24.0 + STEP_GAP + title
+    let icon = metrics::ICON_BIG;
+    let block = icon + STEP_GAP + title + detail;
+    center_y - block / 2.0 + icon + STEP_GAP + title
 }
 
 /// Where the top of a group footer's text sits in a footer centred on
@@ -303,7 +304,7 @@ pub fn step_button(
     enabled: bool,
     selected: bool,
 ) -> Response {
-    const ICON: f32 = 24.0;
+    const ICON: f32 = metrics::ICON_BIG;
     ui.add_enabled_ui(enabled, |ui| {
         let layout = |text: &str, style: egui::TextStyle| {
             ui.painter().layout_no_wrap(
@@ -477,7 +478,7 @@ fn group_id(group: GroupId) -> Id {
 /// A group's tile: its icon, title and a small chevron, [`ROW_HEIGHT`]
 /// tall and [`tile_width`] wide.
 fn tile(ui: &mut Ui, def: &GroupDef) -> Response {
-    const ICON: f32 = 24.0;
+    const ICON: f32 = metrics::ICON_BIG;
     let width = tile_width(ui, def.title);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), egui::Sense::hover());
     let resp = ui.interact(rect, group_id(def.id), egui::Sense::click());
@@ -530,7 +531,7 @@ fn group_button(ui: &mut Ui, def: &GroupDef, width: f32) -> Response {
     let galley =
         ui.painter()
             .layout_no_wrap(def.title.to_string(), font, egui::Color32::PLACEHOLDER);
-    let chevron = 12.0;
+    let chevron = metrics::ICON_SMALL;
     let width = width.max(galley.size().x + chevron + 2.0 * BIG_PAD_X);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, GROUP_FOOTER), egui::Sense::hover());
     let resp = ui.interact(rect, group_id(def.id), egui::Sense::click());

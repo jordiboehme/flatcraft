@@ -1273,7 +1273,7 @@ fn hints_are_checked_off_the_ui_thread_and_the_last_check_shows_faded() {
     assert!(h.query_by_label("Move apart").is_none());
     open.store(true, Ordering::SeqCst);
     h.run_plan();
-    the(&h, "Move apart");
+    let fresh = the(&h, "Move apart");
     assert!(in_inspector(&h, object::CHECKING).is_empty());
     let ui = std::thread::current().id();
     assert!(!threads.lock().unwrap().is_empty());
@@ -1292,10 +1292,17 @@ fn hints_are_checked_off_the_ui_thread_and_the_last_check_shows_faded() {
     the(&h, object::CHECKING);
     let fix = &in_inspector(&h, "Move apart")[0];
     assert!(fix.accesskit_node().is_disabled());
+    // The check says so in the header: the faded card stays where it was.
+    assert_eq!(fix.rect(), fresh, "the stale card does not move");
     open.store(true, Ordering::SeqCst);
     h.run_plan();
     let fix = &in_inspector(&h, "Move apart")[0];
     assert!(!fix.accesskit_node().is_disabled());
+    assert_eq!(
+        fix.rect(),
+        fresh,
+        "the fresh card is where the stale one was"
+    );
     // The Job view hides the hints: no check runs for it.
     job_line(&h).click();
     h.run_plan();

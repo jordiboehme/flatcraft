@@ -129,6 +129,11 @@ pub enum Icon {
     Pointer,
     /// The Lasso tool of the Select/Lasso toggle.
     Lasso,
+    /// "Unlink file": forget the linked file.
+    FileX,
+    /// The buttons that fold a side panel into its rail.
+    PanelRightClose,
+    PanelLeftClose,
 }
 
 macro_rules! svg {
@@ -138,7 +143,7 @@ macro_rules! svg {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 92] = [
+    pub const ALL: [Icon; 95] = [
         Icon::Import,
         Icon::Trace,
         Icon::Duplicate,
@@ -231,6 +236,9 @@ impl Icon {
         Icon::Pipette,
         Icon::Pointer,
         Icon::Lasso,
+        Icon::FileX,
+        Icon::PanelRightClose,
+        Icon::PanelLeftClose,
     ];
 
     /// The plain icon a framed "to the cutting area" icon is made from.
@@ -291,6 +299,9 @@ impl Icon {
             Icon::TestPatterns => svg!("flask-conical"),
             Icon::PanelLeft => svg!("panel-left"),
             Icon::PanelRight => svg!("panel-right"),
+            Icon::FileX => svg!("file-x"),
+            Icon::PanelRightClose => svg!("panel-right-close"),
+            Icon::PanelLeftClose => svg!("panel-left-close"),
             Icon::RotateLeft => svg!("rotate-ccw"),
             Icon::ZoomActual => svg!("percent"),
             Icon::Copies => svg!("copy-plus"),

@@ -608,17 +608,18 @@ pub fn collapse_card(kind: SidePanel) -> String {
 }
 
 /// The button in a panel's header that collapses the panel into its
-/// rail: a compact chevron button pointing to its side. Returns
+/// rail: a compact button with the panel-close icon of its side. Returns
 /// true when clicked. Put it at the right end of the header row with
 /// [`header`].
 pub fn collapse_button(ui: &mut Ui, kind: SidePanel, side: Side) -> bool {
     let icon = match side {
-        Side::Left => Icon::ChevronLeft,
-        Side::Right => Icon::ChevronRight,
+        Side::Left => Icon::PanelLeftClose,
+        Side::Right => Icon::PanelRightClose,
     };
     let name = collapse_name(kind);
     let size = super::metrics::ICON_COMPACT;
-    let tex = icons::texture(ui.ctx(), icon, size);
+    let ink = super::theme::Tokens::of(ui.visuals()).text_dim;
+    let tex = icons::texture_colored(ui.ctx(), icon, size, ink);
     let image =
         egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), vec2(size, size)))
             .alt_text(&name);

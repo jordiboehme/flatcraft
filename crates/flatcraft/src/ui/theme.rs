@@ -412,6 +412,15 @@ mod tests {
     }
 
     #[test]
+    fn corner_radii() {
+        // Fields and cards 6 pt, the ribbon 2 pt, in both themes.
+        for t in [Tokens::dark(), Tokens::light()] {
+            assert_eq!(t.radius, 6);
+            assert_eq!(t.ribbon_radius, 2);
+        }
+    }
+
+    #[test]
     fn token_values() {
         let d = Tokens::dark();
         assert_eq!(d.bg, Color32::from_rgb(0x15, 0x17, 0x1A));

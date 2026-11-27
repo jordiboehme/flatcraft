@@ -12,7 +12,7 @@ use super::super::icons::{self, Icon};
 use super::super::rails::Dot;
 use super::super::settings::set_name;
 use super::super::theme::Tokens;
-use super::super::{Action, fonts, metrics};
+use super::super::{Action, metrics};
 
 // ---------------------------------------------------------------- job line
 
@@ -166,7 +166,7 @@ pub fn job_line(
         p.circle_filled(dot, 4.0, dot_colour(s.dot, t));
         // Down opens the Job view over the selection, left goes back. No
         // chevron with nothing selected (nothing to open).
-        let size = metrics::ICON_CHEVRON;
+        let size = metrics::ICON_SMALL;
         let mut right = job_rect.right() - metrics::SPACE_8;
         let icon = match (s.selection, s.open) {
             (false, _) => None,
@@ -197,12 +197,13 @@ pub fn job_line(
             (right - left).max(0.0),
         );
         let icon = metrics::ICON_COMPACT;
-        let tex = icons::texture(ui.ctx(), Icon::ChevronRight, icon);
+        let ink = if fold.hovered() { t.text } else { t.text_dim };
+        let tex = icons::texture_colored(ui.ctx(), Icon::PanelRightClose, icon, ink);
         p.image(
             tex.id(),
             Rect::from_center_size(fold_rect.center(), vec2(icon, icon)),
             Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-            if fold.hovered() { t.text } else { t.text_dim },
+            egui::Color32::WHITE,
         );
     }
     let resp = if s.selection {
@@ -256,7 +257,7 @@ fn line_parts(
     };
     // Below a few letters a part says nothing: the whole line is cut short
     // (a part that is short by itself, like "File", is fine).
-    let need = |w: f32, full: f32| w < full.min(24.0);
+    let need = |w: f32, full: f32| w < full.min(metrics::SPACE_24);
     if need(pw, measure(plotter)) || need(mw, measure(&s.material)) {
         one_line(
             p,
@@ -445,7 +446,72 @@ pub fn section_named(
     body: impl FnOnce(&mut Ui),
     advanced: Option<&mut dyn FnMut(&mut Ui)>,
 ) -> bool {
-    let open = header(ui, id, title, name, card, summary, default_open, false);
+    section_kind(
+        ui,
+        id,
+        title,
+        name,
+        card,
+        summary,
+        default_open,
+        Kind::Section,
+        body,
+        advanced,
+    )
+}
+
+/// [`section`] whose summary shows while it is open too: a state that
+/// comes and goes ("checking...") sits in the header's one line, so the
+/// body never changes height for it. The summary is also a label for
+/// screen readers then.
+pub fn section_live(
+    ui: &mut Ui,
+    id: &str,
+    title: &str,
+    card: &str,
+    summary: &str,
+    default_open: bool,
+    body: impl FnOnce(&mut Ui),
+) -> bool {
+    section_kind(
+        ui,
+        id,
+        title,
+        title,
+        card,
+        summary,
+        default_open,
+        Kind::Live,
+        body,
+        None,
+    )
+}
+
+/// What a header is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// A section's header: the summary shows while folded.
+    Section,
+    /// A section's header whose summary shows while open too.
+    Live,
+    /// The header of a section's Advanced part.
+    Sub,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn section_kind(
+    ui: &mut Ui,
+    id: &str,
+    title: &str,
+    name: &str,
+    card: &str,
+    summary: &str,
+    default_open: bool,
+    kind: Kind,
+    body: impl FnOnce(&mut Ui),
+    advanced: Option<&mut dyn FnMut(&mut Ui)>,
+) -> bool {
+    let open = header(ui, id, title, name, card, summary, default_open, kind);
     if open {
         clear_labels(ui);
         body(ui);
@@ -454,7 +520,7 @@ pub fn section_named(
             let card = format!(
                 "Settings of {title} you rarely need. They are folded so the common ones stay in view."
             );
-            if header(ui, &id, "Advanced", "Advanced", &card, "", false, true) {
+            if header(ui, &id, "Advanced", "Advanced", &card, "", false, Kind::Sub) {
                 advanced(ui);
             }
         }
@@ -474,10 +540,10 @@ fn header(
     card: &str,
     summary: &str,
     default_open: bool,
-    sub: bool,
+    kind: Kind,
 ) -> bool {
     let open = is_open(ui.ctx(), id, default_open);
-    let open = header_row(ui, title, name, card, summary, open, sub);
+    let open = header_row(ui, title, name, card, summary, open, kind);
     if open != is_open(ui.ctx(), id, default_open) {
         set_open(ui.ctx(), id, open);
     }
@@ -488,7 +554,7 @@ fn header(
 /// panel's Notes): it looks and reads like every section's. Returns the
 /// state after this frame's click.
 pub fn toggle_header(ui: &mut Ui, title: &str, card: &str, open: bool) -> bool {
-    header_row(ui, title, title, card, "", open, false)
+    header_row(ui, title, title, card, "", open, Kind::Section)
 }
 
 /// Draws a header with the state `open` and returns it after a click.
@@ -499,8 +565,9 @@ fn header_row(
     card: &str,
     summary: &str,
     mut open: bool,
-    sub: bool,
+    kind: Kind,
 ) -> bool {
+    let sub = kind == Kind::Sub;
     let w = ui.available_width();
     let h = if sub { metrics::SUB_HEADER } else { HEADER_H };
     let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
@@ -538,12 +605,12 @@ fn header_row(
         let caret = if resp.hovered() { ink } else { dim };
         p.add(egui::Shape::convex_polygon(pts, caret, egui::Stroke::NONE));
         let font = if sub {
-            fonts::semibold(metrics::TEXT_SECONDARY)
+            metrics::subsection_title()
         } else {
             metrics::section_title()
         };
         let color = if sub { dim } else { ink };
-        let left = rect.left() + 14.0;
+        let left = rect.left() + metrics::CARET_SLOT;
         let t = one_line(
             p,
             title,
@@ -553,10 +620,10 @@ fn header_row(
             (rect.right() - left).max(0.0),
             Align::LEFT,
         );
-        if !open && !summary.is_empty() {
+        if (!open || kind == Kind::Live) && !summary.is_empty() {
             let room = rect.right() - t.right() - metrics::SPACE_16;
-            if room > 12.0 {
-                one_line(
+            if room > metrics::SPACE_12 {
+                let r = one_line(
                     p,
                     summary,
                     metrics::secondary(),
@@ -565,6 +632,13 @@ fn header_row(
                     room,
                     Align::Max,
                 );
+                if kind == Kind::Live {
+                    let node = ui.interact(r, resp.id.with("summary"), Sense::hover());
+                    node.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::Role::Label, true, summary)
+                    });
+                    set_name(ui, &node, summary);
+                }
             }
         }
     }
@@ -775,7 +849,7 @@ pub fn row_dimmed(
                 );
             }
         }
-        let ww = (ui.available_width() - reset_w).max(24.0);
+        let ww = (ui.available_width() - reset_w).max(metrics::CONTROL);
         let r = ui
             .allocate_ui_with_layout(vec2(ww, h), Layout::left_to_right(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = metrics::SPACE_4;
@@ -854,15 +928,14 @@ pub fn actions_row(ui: &mut Ui, label: &str, card: &str, add: impl FnOnce(&mut U
     });
 }
 
-/// The height of the heading under the job line ("Job", "2 objects"):
-/// the title and one line under it.
+/// The height of the heading under the job line: one panel row.
 pub const HEADING_H: f32 = metrics::HEADING;
 
-/// The heading under the job line: what the panel shows ("2 objects",
-/// "Group 'Badge'") and one dimmed line under it ("Star, Circle · in
-/// group Badge"), cut short with "..." when it does not fit. Always
-/// [`HEADING_H`] tall, so nothing below it moves when the selection
-/// changes; its card holds the whole text.
+/// The heading under the job line, on one line: what the panel shows
+/// ("2 objects", "Group 'Badge'"), then dimmed what the panel shows
+/// nowhere else ("· in group Badge", "· 1 of 3 linked copies"), cut short
+/// with "..." when it does not fit. Always one row tall, so nothing below
+/// it moves when the selection changes; its card holds the whole text.
 pub fn heading(ui: &mut Ui, title: &str, subtitle: &str, card: &str) -> Response {
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(vec2(w, HEADING_H), Sense::hover());
@@ -871,34 +944,44 @@ pub fn heading(ui: &mut Ui, title: &str, subtitle: &str, card: &str) -> Response
     if ui.is_rect_visible(rect) {
         let tk = tokens(ui);
         let p = ui.painter();
-        // The title in the top 20 pt, the line under it in the rest.
-        let title_h = metrics::ROW - metrics::SPACE_8;
-        one_line(
+        let y = rect.center().y;
+        let t = one_line(
             p,
             title,
             metrics::heading(),
             tk.text,
-            egui::pos2(rect.left(), rect.top() + title_h / 2.0),
+            egui::pos2(rect.left(), y),
             w,
             Align::LEFT,
         );
-        one_line(
-            p,
-            subtitle,
-            metrics::secondary(),
-            tk.text_dim,
-            egui::pos2(
-                rect.left(),
-                rect.top() + title_h + (HEADING_H - title_h) / 2.0,
-            ),
-            w,
-            Align::LEFT,
-        );
+        if !subtitle.is_empty() {
+            let sep = one_line(
+                p,
+                SEP,
+                metrics::secondary(),
+                tk.text_dim,
+                egui::pos2(t.right(), y),
+                (rect.right() - t.right()).max(0.0),
+                Align::LEFT,
+            );
+            let room = rect.right() - sep.right();
+            if room > metrics::SPACE_24 {
+                one_line(
+                    p,
+                    subtitle,
+                    metrics::secondary(),
+                    tk.text_dim,
+                    egui::pos2(sep.right(), y),
+                    room,
+                    Align::LEFT,
+                );
+            }
+        }
     }
     let text = if subtitle.is_empty() {
         card.to_string()
     } else {
-        format!("{subtitle}.\n\n{card}")
+        format!("{title} · {subtitle}.\n\n{card}")
     };
     groups::card(&resp, title, &text, None, false);
     resp
@@ -1075,7 +1158,7 @@ pub fn hint_card_with(
                     }
                     if dismiss.is_some() {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let size = 12.0;
+                            let size = metrics::ICON_SMALL;
                             let tex = icons::texture(ui.ctx(), Icon::Close, size);
                             let image = egui::Image::from_texture(egui::load::SizedTexture::new(
                                 tex.id(),

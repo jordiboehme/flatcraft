@@ -70,7 +70,7 @@ pub const FIELDS: [(SizeField, &str); 6] = [
 /// accessible name), for the reachability test: each one is in its
 /// section, at most one fold away. The Source actions depend on the
 /// object (a file, a picture): they are [`SOURCE_ITEMS`], always shown.
-pub const SETTINGS: [(&str, &str); 27] = [
+pub const SETTINGS: [(&str, &str); 26] = [
     (CUT, "Cut mode"),
     (CUT, "Keep"),
     (CUT, keep_pick::BUTTON),
@@ -97,7 +97,6 @@ pub const SETTINGS: [(&str, &str); 27] = [
     (ARRANGE, "Send to back"),
     (ARRANGE, "Group"),
     (SOURCE, "File"),
-    (SOURCE, UNLINK_FILE),
 ];
 
 /// The name of the switch that aligns to the cutting area.
@@ -621,12 +620,13 @@ pub const GROUP_ITEMS: [(Item, Icon); 4] = [
 ];
 
 /// The buttons of the Source section, with their icons.
-pub const SOURCE_ITEMS: [(Item, Icon); 5] = [
+pub const SOURCE_ITEMS: [(Item, Icon); 6] = [
     (Item::RevealSource, Icon::SvgFile),
     (Item::CopySourcePath, Icon::Duplicate),
     (Item::Reload, Icon::Reload),
     (Item::Reconnect, Icon::Plug),
     (Item::TraceAgain, Icon::Trace),
+    (Item::UnlinkFile, Icon::FileX),
 ];
 
 /// Why Link copies is dimmed for these objects.
@@ -688,6 +688,7 @@ pub fn item_why(
         Item::Reconnect if !linked => Some(NOT_LINKED),
         Item::Reconnect if !broken => Some(FILE_THERE),
         Item::TraceAgain if !objs.iter().any(|o| o.raster) => Some(NOT_A_PICTURE),
+        Item::UnlinkFile if !linked => Some(context_menu::NO_FILE_TO_UNLINK),
         _ => menu(),
     }
 }
@@ -760,42 +761,10 @@ fn source(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Vec
                 for (item, icon) in SOURCE_ITEMS {
                     item_button(ui, item, icon, st, snap, &ids, actions);
                 }
-                unlink_file_button(ui, snap, &ids, actions);
             });
         },
         None,
     );
-}
-
-/// The name of the Source button that forgets the file.
-pub const UNLINK_FILE: &str = "Unlink file";
-/// Its card.
-pub const UNLINK_FILE_CARD: &str = "Forget the file these objects were imported from. The objects stay as they are; FlatCraft no longer watches the file or reads it again. One step to undo.";
-
-/// The Source button that forgets the linked file (`object.unlink`),
-/// dimmed when no selected object has one.
-fn unlink_file_button(ui: &mut Ui, snap: &Snapshot, ids: &[u64], actions: &mut Vec<Action>) {
-    let linked: Vec<u64> = ids
-        .iter()
-        .copied()
-        .filter(|id| snap.object(*id).is_some_and(|o| o.link.is_some()))
-        .collect();
-    let why = linked.is_empty().then_some(NOT_LINKED);
-    let r = icon_button(
-        ui,
-        Icon::Close,
-        UNLINK_FILE,
-        UNLINK_FILE,
-        UNLINK_FILE_CARD,
-        why,
-    );
-    if r.clicked() && why.is_none() {
-        actions.push(Action::run(
-            snap.doc_id,
-            "object.unlink",
-            serde_json::json!({ "ids": linked }),
-        ));
-    }
 }
 
 // ---------------------------------------------------------------- hints
@@ -1161,7 +1130,7 @@ pub fn on_the_card(n: usize) -> String {
 /// What the Hints section says when there is nothing to tell.
 pub const NO_HINTS: &str = "Nothing to tell. These objects are good to go.";
 /// While the objects are checked.
-pub const CHECKING: &str = "Checking these objects...";
+pub const CHECKING: &str = "checking...";
 /// When there is nothing to check with.
 pub const NO_PROFILES: &str = "Pick a plotter and a material to check these objects.";
 /// When the check could not be started.
@@ -1185,84 +1154,73 @@ pub fn more_hints(n: usize) -> String {
 fn hints(ui: &mut Ui, st: &PrepareState, snap: &Snapshot, t: &Tokens, actions: &mut Vec<Action>) {
     let view = st.object_hints.view(snap);
     let (issues, on_card) = hint_issues(st, snap, &view);
-    let summary = if view.issues.is_none() && view.checking {
-        "checking".to_string()
+    // A running check says so in the header's one line, so the cards
+    // below (the last check, faded) never move while it runs.
+    let summary = if view.checking {
+        CHECKING.to_string()
     } else {
         hints_summary(issues.len() + on_card)
     };
-    blocks::section(
-        ui,
-        HINTS,
-        "Hints",
-        HINTS_CARD,
-        &summary,
-        true,
-        |ui| {
-            // What the check is doing, when there is something to say. It
-            // is the last section, so the line coming and going moves
-            // nothing below it.
-            let status = if view.checking {
-                CHECKING
-            } else if view.no_profiles {
-                NO_PROFILES
-            } else if view.failed {
-                CANNOT_CHECK
-            } else if on_card > 0 {
-                ""
-            } else if view.issues.is_some_and(|_| issues.is_empty()) {
-                NO_HINTS
-            } else {
-                ""
-            };
-            if !status.is_empty() {
-                blocks::status_line(ui, status, t.text_dim);
+    blocks::section_live(ui, HINTS, "Hints", HINTS_CARD, &summary, true, |ui| {
+        // What the last check found when there is no card to show.
+        let status = if view.no_profiles {
+            NO_PROFILES
+        } else if view.failed {
+            CANNOT_CHECK
+        } else if on_card > 0 {
+            ""
+        } else if view.issues.is_some_and(|_| issues.is_empty()) {
+            NO_HINTS
+        } else {
+            ""
+        };
+        if !status.is_empty() {
+            blocks::status_line(ui, status, t.text_dim);
+        }
+        if on_card > 0 {
+            blocks::note(ui, &on_the_card(on_card), t.text_dim);
+        }
+        ui.scope(|ui| {
+            if view.stale {
+                ui.multiply_opacity(0.5);
             }
-            if on_card > 0 {
-                blocks::note(ui, &on_the_card(on_card), t.text_dim);
-            }
-            ui.scope(|ui| {
-                if view.stale {
-                    ui.multiply_opacity(0.5);
+            for (n, issue) in issues.iter().take(MAX_CARDS).enumerate() {
+                if n > 0 {
+                    ui.add_space(t.spacing / 2.0);
                 }
-                for (n, issue) in issues.iter().take(MAX_CARDS).enumerate() {
-                    if n > 0 {
-                        ui.add_space(t.spacing / 2.0);
-                    }
-                    let fixes: Vec<_> = issue
-                        .fixes
-                        .iter()
-                        .filter_map(|f| Some((f, report::fix_action(snap.doc_id, f)?)))
-                        .collect();
-                    let why = view.stale.then_some(STALE_FIX);
-                    let buttons: Vec<HintButton> = fixes
-                        .iter()
-                        .map(|(f, _)| HintButton {
-                            label: &f.label,
-                            card: &f.description,
-                            why,
-                        })
-                        .collect();
-                    // Without a fix the hint says what to do.
-                    let detail = buttons.is_empty().then_some(issue.hint.as_str());
-                    if let Some(i) = blocks::hint_card_with(
-                        ui,
-                        t,
-                        None,
-                        Some((issue.code.title(), &issue.hint)),
-                        &issue.message,
-                        detail,
-                        // An error stops the cut: red, like the import card.
-                        issue.severity == flatcraft_engine::report::Severity::Error,
-                        &buttons,
-                    ) {
-                        actions.push(fixes[i].1.clone());
-                    }
+                let fixes: Vec<_> = issue
+                    .fixes
+                    .iter()
+                    .filter_map(|f| Some((f, report::fix_action(snap.doc_id, f)?)))
+                    .collect();
+                let why = view.stale.then_some(STALE_FIX);
+                let buttons: Vec<HintButton> = fixes
+                    .iter()
+                    .map(|(f, _)| HintButton {
+                        label: &f.label,
+                        card: &f.description,
+                        why,
+                    })
+                    .collect();
+                // Without a fix the hint says what to do.
+                let detail = buttons.is_empty().then_some(issue.hint.as_str());
+                if let Some(i) = blocks::hint_card_with(
+                    ui,
+                    t,
+                    None,
+                    Some((issue.code.title(), &issue.hint)),
+                    &issue.message,
+                    detail,
+                    // An error stops the cut: red, like the import card.
+                    issue.severity == flatcraft_engine::report::Severity::Error,
+                    &buttons,
+                ) {
+                    actions.push(fixes[i].1.clone());
                 }
-            });
-            if issues.len() > MAX_CARDS {
-                blocks::note(ui, &more_hints(issues.len() - MAX_CARDS), t.text_dim);
             }
-        },
-        None,
-    );
+        });
+        if issues.len() > MAX_CARDS {
+            blocks::note(ui, &more_hints(issues.len() - MAX_CARDS), t.text_dim);
+        }
+    });
 }

@@ -39,8 +39,8 @@ pub const ICON_BUTTON: f32 = 22.0;
 pub const SECTION_HEADER: f32 = 28.0;
 /// The header of a section's Advanced part.
 pub const SUB_HEADER: f32 = 24.0;
-/// The heading of the inspector: a title line and one line under it.
-pub const HEADING: f32 = 36.0;
+/// The heading of the inspector: one row, the title and a dimmed note.
+pub const HEADING: f32 = ROW;
 /// The room left and right of a panel's content.
 pub const PANEL_PAD_X: f32 = SPACE_12;
 /// The room above a panel's content.
@@ -51,6 +51,8 @@ pub const PANEL_PAD_BOTTOM: f32 = SPACE_8;
 /// within these bounds.
 pub const LABEL_MIN: f32 = 64.0;
 pub const LABEL_MAX: f32 = 112.0;
+/// Room left of a section title for its caret.
+pub const CARET_SLOT: f32 = SPACE_16;
 /// The slot of the change dot between a label and its value.
 pub const DOT_SLOT: f32 = SPACE_12;
 /// How far a member's row is indented per group level in Objects.
@@ -80,8 +82,8 @@ pub fn label_column(widest: f32) -> f32 {
 pub const ICON_COMPACT: f32 = 16.0;
 /// Icons in the ribbon's big buttons and the Cut steps.
 pub const ICON_BIG: f32 = 24.0;
-/// The small chevrons and arrows inside a control.
-pub const ICON_CHEVRON: f32 = 12.0;
+/// Small icons inside a control: chevrons, a card's close X.
+pub const ICON_SMALL: f32 = 12.0;
 
 // ---------------------------------------------------------------- type
 
@@ -106,6 +108,11 @@ pub fn secondary() -> FontId {
 
 pub fn section_title() -> FontId {
     fonts::semibold(TEXT_SECTION)
+}
+
+/// A sub-section title (an Advanced part): secondary size, semibold.
+pub fn subsection_title() -> FontId {
+    fonts::semibold(TEXT_SECONDARY)
 }
 
 pub fn heading() -> FontId {

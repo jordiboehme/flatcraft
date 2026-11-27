@@ -17,6 +17,11 @@ use super::{Action, ICON_SIZE, fonts, metrics};
 
 /// A small icon with an accessible name.
 fn badge(ui: &mut Ui, icon: Icon, name: &str, colour: egui::Color32) {
+    badge_with(ui, icon, name, name, colour);
+}
+
+/// [`badge`] whose hover text is `card`.
+fn badge_with(ui: &mut Ui, icon: Icon, name: &str, card: &str, colour: egui::Color32) {
     let tex = icons::texture_colored(ui.ctx(), icon, metrics::ICON_COMPACT, colour);
     ui.add(
         egui::Image::from_texture(egui::load::SizedTexture::new(
@@ -25,7 +30,7 @@ fn badge(ui: &mut Ui, icon: Icon, name: &str, colour: egui::Color32) {
         ))
         .alt_text(name),
     )
-    .on_hover_text(name);
+    .on_hover_text(card);
 }
 
 pub fn show(
@@ -182,6 +187,12 @@ pub fn list_keys_hint(os: super::help::Os) -> String {
 
 static LIST_KEYS: std::sync::LazyLock<String> =
     std::sync::LazyLock::new(|| list_keys_hint(super::help::Os::CURRENT));
+
+/// The group row's sentence on changing one member.
+pub const GROUP_MEMBER_HINT: &str = "Double-click a member on the mat to change it alone.";
+
+/// The card of the mark on a row whose file changed.
+pub const SOURCE_CHANGED_CARD: &str = "Source file changed: the file has changed since the import. Use Reload source in the context menu or in Source in the inspector to bring the change in.";
 
 /// The card of an object row.
 pub const OBJECT_ROW_HINT: &str = "An object on the mat. Click to select it. Double-click to rename. The eye hides it, the scissors skip it when cutting.";
@@ -568,7 +579,10 @@ fn group_row(
     super::groups::card(
         &row,
         &name,
-        &format!("{GROUP_ROW_HINT} {}", LIST_KEYS.as_str()),
+        &format!(
+            "{GROUP_ROW_HINT} {GROUP_MEMBER_HINT} {}",
+            LIST_KEYS.as_str()
+        ),
         None,
         false,
     );
@@ -671,7 +685,13 @@ fn object_row(
             }
             let src = &st.sources;
             if src.changed.contains(&o.id) {
-                badge(ui, Icon::Reload, "Source file changed", t.accent_prepare);
+                badge_with(
+                    ui,
+                    Icon::Reload,
+                    "Source file changed",
+                    SOURCE_CHANGED_CARD,
+                    t.accent_prepare,
+                );
             } else if src.missing.contains(&o.id) {
                 badge(ui, Icon::BrokenLink, "Source file not found", t.danger);
             } else if src.unreadable.contains(&o.id) {
