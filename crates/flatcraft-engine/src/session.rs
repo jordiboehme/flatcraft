@@ -174,8 +174,9 @@ struct BoundsKey {
     transform: Transform,
     local_bounds: Rect,
     cut: CutOptions,
-    /// The knife's narrowest feature, as bits (slivers do not count).
-    min_width: u64,
+    /// The knife's tolerance and narrowest feature, as bits (slivers do
+    /// not count).
+    knife: [u64; 2],
 }
 
 /// A cached bounding box. The geometry `Arc` is kept so its address cannot
@@ -188,13 +189,16 @@ struct BoundsEntry {
 }
 
 impl BoundsKey {
-    fn of(o: &Object, min_width: f64) -> Self {
+    fn of(o: &Object, min_width: crate::cutgeom::Knife) -> Self {
         Self {
             geometry: Arc::as_ptr(&o.geometry) as usize,
             transform: o.transform,
             local_bounds: o.local_bounds,
             cut: o.cut,
-            min_width: min_width.to_bits(),
+            knife: [
+                min_width.tolerance_mm.to_bits(),
+                min_width.min_width_mm.to_bits(),
+            ],
         }
     }
 }
@@ -335,7 +339,7 @@ impl DocState {
     /// knife whose narrowest feature is `min_width`. Only objects whose
     /// geometry, transform or cut options (or the width) changed since the
     /// last call are computed again.
-    pub fn placed_bounds_all(&mut self, min_width: f64) -> Vec<Option<Rect>> {
+    pub fn placed_bounds_all(&mut self, min_width: crate::cutgeom::Knife) -> Vec<Option<Rect>> {
         let cache = &mut self.bounds_cache;
         let objects = &self.document.objects;
         cache.retain(|id, _| objects.iter().any(|o| o.id == *id));

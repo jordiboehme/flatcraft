@@ -124,7 +124,7 @@ fn run_test_shape(s: &mut Session, _: super::NoParams, _: Origin) -> Result<Valu
             true,
         ),
     };
-    let mw = super::min_width_of(s);
+    let mw = super::knife_of(s);
     let o = object_mut(&mut s.doc_mut().document, id)?;
     let b = super::placed_bounds_or_center(o, mw);
     super::translate(o, spot - b.origin());

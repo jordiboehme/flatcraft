@@ -666,3 +666,40 @@ fn a_compound_sliver_off_the_mat_takes_no_space() {
     let c = run(&mut s, "document.check", json!({}));
     assert_eq!(codes(&c), ["thin_slivers"], "{c}");
 }
+
+/// A command's box and the cut geometry's box are measured with the same
+/// knife: the active plotter's tolerance and narrowest feature, so both
+/// are equal, also for a plotter with a coarser tolerance.
+#[test]
+fn the_command_box_is_the_cut_geometry_box() {
+    let d = dirs();
+    user_plotter(d.config.path(), "flatten_tolerance_mm = 0.05\n");
+    let mut s = session(&d);
+    run(&mut s, "job.set_plotter", json!({ "id": "custom" }));
+    // A curve and a sliver in one path: the box is the curve's pieces,
+    // flattened with the plotter's tolerance.
+    let id = import(
+        &mut s,
+        &svg(r#"<path d="M30 50 C40 13 63 21 70 50 Z M10 90 H90 V90.1 H10 Z"/>"#),
+        "curve and sliver",
+    );
+    let cached = s
+        .cut_geometry()
+        .unwrap()
+        .bounds(flatcraft_core::document::ObjectId(id))
+        .unwrap();
+    let st = run(&mut s, "document.state", json!({}));
+    let b = &st["objects"][0]["bounds_mm"];
+    for (got, want) in [
+        (b["x0"].as_f64().unwrap(), cached.x0),
+        (b["y0"].as_f64().unwrap(), cached.y0),
+        (b["x1"].as_f64().unwrap(), cached.x1),
+        (b["y1"].as_f64().unwrap(), cached.y1),
+    ] {
+        assert!((got - want).abs() < 1e-9, "{b} {cached:?}");
+    }
+    assert!(
+        cached.width() < 40.0,
+        "the sliver does not count: {cached:?}"
+    );
+}

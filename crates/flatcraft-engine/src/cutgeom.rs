@@ -304,15 +304,34 @@ pub fn cut_paths(
         .collect()
 }
 
-/// Bounding box of what is cut of the object in mat mm, for a knife whose
-/// narrowest feature is `min_width_mm` (see `report::min_width_mm`);
+/// What a box of what is cut is measured with: the plotter's flatten
+/// tolerance and the knife's narrowest feature (`report::min_width_mm`),
+/// the same two the cut geometry is built with, so a command's box and
+/// the cached one ([`CutGeometry::bounds`]) are equal.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Knife {
+    pub tolerance_mm: f64,
+    pub min_width_mm: f64,
+}
+
+impl Default for Knife {
+    /// The default plotter: 0.01 mm tolerance, a 0.25 mm blade offset.
+    fn default() -> Self {
+        Self {
+            tolerance_mm: BOUNDS_TOLERANCE_MM,
+            min_width_mm: 0.125,
+        }
+    }
+}
+
+/// Bounding box of what is cut of the object in mat mm, cut with `knife`;
 /// `None` if the object has no paths. The same rule as the boxes of the
 /// cut geometry ([`CutGeometry::bounds`]): a fill is cut, so a sliver that
 /// is not cut never counts (see [`path_box`]). Each box is kept per
 /// shape, scale, turn and cut options (not position), so asking again is
 /// cheap. A fill-only path with no area (cut as nothing) still counts with
 /// its centre line.
-pub fn cut_bounds(object: &Object, min_width_mm: f64) -> Option<Rect> {
+pub fn cut_bounds(object: &Object, knife: Knife) -> Option<Rect> {
     #[cfg(test)]
     tests::CUT_BOUNDS_CALLS.with(|n| n.set(n.get() + 1));
     let mut centred = object.transform;
@@ -329,7 +348,8 @@ pub fn cut_bounds(object: &Object, min_width_mm: f64) -> Option<Rect> {
             object.local_bounds.x1,
             object.local_bounds.y1,
             object.cut.auto_threshold_mm,
-            min_width_mm,
+            knife.min_width_mm,
+            knife.tolerance_mm,
         ]
         .map(f64::to_bits),
         mirror: t.mirror,
@@ -340,45 +360,104 @@ pub fn cut_bounds(object: &Object, min_width_mm: f64) -> Option<Rect> {
     let found = memo
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(&key)
-        .map(|(_, b)| *b);
+        .get(&key, &object.geometry);
     let at_origin = match found {
         Some(b) => b,
         None => {
             let affine = centred.affine(object.local_bounds);
-            let b = cut_bounds_of(&object.geometry, &object.cut, affine, min_width_mm);
-            let mut m = memo
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if m.len() >= BOUNDS_MEMO_SIZE {
-                m.clear();
-            }
-            m.insert(key, (object.geometry.clone(), b));
+            let b = cut_bounds_of(&object.geometry, &object.cut, affine, knife);
+            memo.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .put(key, &object.geometry, b);
             b
         }
     };
     at_origin.map(|b| b + object.transform.center_mm.to_vec2())
 }
 
-/// What a box of [`cut_bounds`] depends on, but the position. The geometry
-/// `Arc` is held beside it, so its address cannot be reused.
+/// What a box of [`cut_bounds`] depends on, but the position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct BoundsMemoKey {
     geometry: usize,
-    numbers: [u64; 9],
+    numbers: [u64; 10],
     mirror: bool,
     mode: u8,
     strokes: u8,
 }
 
-type BoundsMemo =
-    std::sync::Mutex<std::collections::HashMap<BoundsMemoKey, (Arc<Vec<CutPath>>, Option<Rect>)>>;
+/// The boxes [`cut_bounds`] worked out, the most recently used ones. Each
+/// holds its geometry weakly: it never keeps a closed document's shapes
+/// alive, and a box whose geometry is gone (or whose address now belongs
+/// to other geometry) is never used. At most [`BOUNDS_MEMO_SIZE`] boxes.
+#[derive(Debug, Default)]
+struct BoundsMemo {
+    entries: std::collections::HashMap<BoundsMemoKey, MemoEntry>,
+    clock: u64,
+}
 
-/// The boxes [`cut_bounds`] worked out, for every session of the process.
-static BOUNDS_MEMO: std::sync::OnceLock<BoundsMemo> = std::sync::OnceLock::new();
+#[derive(Debug)]
+struct MemoEntry {
+    geometry: std::sync::Weak<Vec<CutPath>>,
+    bounds: Option<Rect>,
+    used: u64,
+}
 
-/// At most this many boxes are kept; then they are all forgotten.
-const BOUNDS_MEMO_SIZE: usize = 4096;
+impl BoundsMemo {
+    fn get(&mut self, key: &BoundsMemoKey, geometry: &Arc<Vec<CutPath>>) -> Option<Option<Rect>> {
+        self.clock += 1;
+        let clock = self.clock;
+        let e = self.entries.get_mut(key)?;
+        if !e
+            .geometry
+            .upgrade()
+            .is_some_and(|g| Arc::ptr_eq(&g, geometry))
+        {
+            self.entries.remove(key);
+            return None;
+        }
+        e.used = clock;
+        Some(e.bounds)
+    }
+
+    fn put(&mut self, key: BoundsMemoKey, geometry: &Arc<Vec<CutPath>>, bounds: Option<Rect>) {
+        if self.entries.len() >= BOUNDS_MEMO_SIZE {
+            self.entries.retain(|_, e| e.geometry.strong_count() > 0);
+        }
+        while self.entries.len() >= BOUNDS_MEMO_SIZE {
+            let Some(oldest) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, e)| e.used)
+                .map(|(k, _)| *k)
+            else {
+                break;
+            };
+            self.entries.remove(&oldest);
+        }
+        self.clock += 1;
+        self.entries.insert(
+            key,
+            MemoEntry {
+                geometry: Arc::downgrade(geometry),
+                bounds,
+                used: self.clock,
+            },
+        );
+    }
+}
+
+/// The memo of [`cut_bounds`], for every session of the process.
+static BOUNDS_MEMO: std::sync::OnceLock<std::sync::Mutex<BoundsMemo>> = std::sync::OnceLock::new();
+
+/// At most this many boxes are kept; the least recently used goes first.
+const BOUNDS_MEMO_SIZE: usize = 256;
+
+#[cfg(test)]
+pub(crate) fn bounds_memo_len() -> usize {
+    BOUNDS_MEMO
+        .get()
+        .map_or(0, |m| m.lock().unwrap().entries.len())
+}
 
 /// [`cut_bounds`] of geometry placed with `affine` and cut with `options`,
 /// worked out every time.
@@ -386,14 +465,14 @@ pub fn cut_bounds_of(
     geometry: &[CutPath],
     options: &CutOptions,
     affine: Affine,
-    min_width_mm: f64,
+    knife: Knife,
 ) -> Option<Rect> {
     geometry
         .iter()
         .filter_map(|p| {
             if cuts_its_fill(p, options, affine) {
                 let (cut, slivers) =
-                    cut_path_counted(p, options, affine, BOUNDS_TOLERANCE_MM, min_width_mm);
+                    cut_path_counted(p, options, affine, knife.tolerance_mm, knife.min_width_mm);
                 path_box(p, options, affine, &cut, slivers)
             } else {
                 shape_bounds(p, options, affine)
@@ -1868,6 +1947,59 @@ pub(crate) mod tests {
         ]);
         assert_eq!(out.len(), 1, "{out:?}");
         assert_eq!(out[0].len(), 3, "{out:?}");
+    }
+
+    /// The box memo stays within its size, and never keeps geometry alive.
+    #[test]
+    fn the_box_memo_is_bounded_and_holds_no_geometry() {
+        let mut objects = Vec::new();
+        for k in 0..(BOUNDS_MEMO_SIZE + 60) {
+            let x = k as f64;
+            let path = kurbo::Rect::new(x, 0.0, x + 5.0, 5.0).to_path(0.01);
+            let geometry = vec![CutPath {
+                path: path.clone(),
+                color: None,
+                label: None,
+                paint: Default::default(),
+            }];
+            let o = Object::shape_only(
+                Arc::new(geometry),
+                path.bounding_box(),
+                Default::default(),
+                CutOptions::default(),
+            );
+            let _ = cut_bounds(&o, Knife::default());
+            assert_eq!(Arc::strong_count(&o.geometry), 1, "held only weakly");
+            assert!(
+                bounds_memo_len() <= BOUNDS_MEMO_SIZE,
+                "{}",
+                bounds_memo_len()
+            );
+            objects.push(o);
+        }
+        assert_eq!(bounds_memo_len(), BOUNDS_MEMO_SIZE);
+        // A second ask of a recent box is served from the memo.
+        let last = objects.last().unwrap();
+        assert_eq!(
+            cut_bounds(last, Knife::default()),
+            cut_bounds(last, Knife::default())
+        );
+        // Closed documents leave dead boxes; the next one clears them.
+        objects.clear();
+        let path = kurbo::Rect::new(0.0, 0.0, 1.0, 1.0).to_path(0.01);
+        let o = Object::shape_only(
+            Arc::new(vec![CutPath {
+                path: path.clone(),
+                color: None,
+                label: None,
+                paint: Default::default(),
+            }]),
+            path.bounding_box(),
+            Default::default(),
+            CutOptions::default(),
+        );
+        let _ = cut_bounds(&o, Knife::default());
+        assert_eq!(bounds_memo_len(), 1);
     }
 
     #[test]

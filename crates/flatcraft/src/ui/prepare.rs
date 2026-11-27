@@ -464,9 +464,9 @@ struct ShapeKey {
     local_bounds: kurbo::Rect,
     frame: kurbo::Rect,
     cut: CutOptions,
-    /// The knife's narrowest feature, as bits: slivers do not count for
-    /// the bounds.
-    min_width: u64,
+    /// The knife's tolerance and narrowest feature, as bits: slivers do
+    /// not count for the bounds.
+    knife: [u64; 2],
 }
 
 /// A cached shape, its key and the geometry the key points to.
@@ -491,11 +491,11 @@ pub struct ShapeInput {
     /// The narrowest filled shape the knife cuts
     /// (`commands::min_width_of`): slivers thinner are not cut and do not
     /// count for the bounds.
-    pub min_width: f64,
+    pub min_width: flatcraft_engine::cutgeom::Knife,
 }
 
 impl ShapeInput {
-    fn of(o: &Object, min_width: f64) -> Self {
+    fn of(o: &Object, min_width: flatcraft_engine::cutgeom::Knife) -> Self {
         Self {
             geometry: o.geometry.clone(),
             transform: o.transform,
@@ -517,7 +517,10 @@ impl ShapeInput {
             local_bounds: self.local_bounds,
             frame: self.frame,
             cut: self.cut,
-            min_width: self.min_width.to_bits(),
+            knife: [
+                self.min_width.tolerance_mm.to_bits(),
+                self.min_width.min_width_mm.to_bits(),
+            ],
         }
     }
 
@@ -1152,7 +1155,7 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
                 }
         });
         let mut objects = Vec::with_capacity(st.document.objects.len());
-        let min_width = flatcraft_engine::commands::min_width_of(&s);
+        let min_width = flatcraft_engine::commands::knife_of(&s);
         for (i, o) in st.document.objects.iter().enumerate() {
             let input = ShapeInput::of(o, min_width);
             let shape = match cache.current(doc_id, o.id.0, &input.key()) {
@@ -1759,7 +1762,7 @@ mod tests {
             transform: Transform::default(),
             frame: kurbo::Rect::ZERO,
             cut: CutOptions::default(),
-            min_width: 0.125,
+            min_width: Default::default(),
         };
         let shape = build_shape(&input);
         assert_eq!(shape.lines.len(), 1);

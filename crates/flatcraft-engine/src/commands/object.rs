@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 
 use super::sources::{FileKind, ReadError, absolute, clip, file_kind, new_link, read_capped};
 use super::{
-    check_exists, check_node, command, common_box, cutting_area, ids_json, inside, min_width_of,
+    check_exists, check_node, command, common_box, cutting_area, ids_json, inside, knife_of,
     object_mut, placed_bounds, rect_json, resolve_ids, resolve_units, translate, unit_leaves,
     units_of,
 };
@@ -88,7 +88,7 @@ fn add_object(
     frame: Rect,
 ) -> Result<ObjectId, CommandError> {
     let area = cutting_area(s).ok();
-    let mw = min_width_of(s);
+    let mw = knife_of(s);
     let doc = &mut s.doc_mut().document;
     let id = doc.add(name, source, paths);
     let o = object_mut(doc, id)?;
@@ -108,7 +108,7 @@ fn add_object(
 }
 
 fn bounds_json(s: &Session, id: ObjectId) -> Value {
-    let mw = min_width_of(s);
+    let mw = knife_of(s);
     s.doc()
         .document
         .get(id)
@@ -298,7 +298,7 @@ fn add_raster(
 /// A warning if the shapes of object `id` do not fit the cutting area in
 /// width or height, so no move can bring them inside.
 fn larger_than_area(s: &Session, id: ObjectId) -> Option<String> {
-    let mw = min_width_of(s);
+    let mw = knife_of(s);
     let area = cutting_area(s).ok()?;
     let b = s
         .doc()
@@ -547,7 +547,7 @@ fn run_retrace(s: &mut Session, p: RetraceParams, _: Origin) -> Result<Value, Co
     let id = ObjectId(p.id);
     let settings = p.settings.into_trace()?;
     let blade = blade_offset_mm(s);
-    let mw = min_width_of(s);
+    let mw = knife_of(s);
     check_exists(&s.doc().document, id)?;
     let o = s
         .doc()
@@ -964,7 +964,7 @@ impl CopiesLayout {
 }
 
 fn run_copies(s: &mut Session, p: CopiesParams, _: Origin) -> Result<Value, CommandError> {
-    let mw = min_width_of(s);
+    let mw = knife_of(s);
     if !(1..=MAX_COPIES).contains(&p.count) {
         return Err(CommandError::InvalidParams(format!(
             "count must be 1 to {MAX_COPIES}"
@@ -1112,7 +1112,7 @@ fn run_circular_copies(
     p: CircularCopiesParams,
     _: Origin,
 ) -> Result<Value, CommandError> {
-    let mw = min_width_of(s);
+    let mw = knife_of(s);
     let (ids, units) = resolve_units(s, &p.ids)?;
     if p.count < 2 || u64::from(p.count - 1) * units.len() as u64 > u64::from(MAX_COPIES) {
         return Err(CommandError::InvalidParams(format!(
@@ -1222,7 +1222,7 @@ fn run_circular_copies(
 
 /// The point a unit turns about on its own: an object's centre, a
 /// group's box centre (of what is cut).
-pub(crate) fn unit_centre(doc: &Document, unit: ObjectId, mw: f64) -> Point {
+pub(crate) fn unit_centre(doc: &Document, unit: ObjectId, mw: crate::cutgeom::Knife) -> Point {
     match doc.get(unit) {
         Some(o) => o.transform.center_mm,
         None => common_box(doc, &unit_leaves(doc, unit), mw)
@@ -1367,7 +1367,7 @@ fn run_move(s: &mut Session, p: MoveParams, _: Origin) -> Result<Value, CommandE
     let corner = p.x_mm.is_some() || p.y_mm.is_some();
     // The box the window shows: hidden objects do not count.
     let common =
-        |s: &Session| common_box(&s.doc().document, &ids, min_width_of(s)).unwrap_or(Rect::ZERO);
+        |s: &Session| common_box(&s.doc().document, &ids, knife_of(s)).unwrap_or(Rect::ZERO);
     let delta = match (relative, p.center_mm, corner) {
         (false, None, false) => {
             return Err(CommandError::InvalidParams(
@@ -1489,7 +1489,7 @@ fn positive(name: &str, v: Option<f64>) -> Result<Option<f64>, CommandError> {
 }
 
 fn run_scale(s: &mut Session, p: ScaleParams, _: Origin) -> Result<Value, CommandError> {
-    let mw = min_width_of(s);
+    let mw = knife_of(s);
     let ids = resolve_ids(s, &p.ids)?;
     let factor = positive("factor", p.factor)?;
     let width = positive("width_mm", p.width_mm)?;
@@ -1632,7 +1632,11 @@ fn odd_quarter(deg: f64) -> Option<bool> {
 
 /// The box `object.scale` scales a set of objects by: what is cut of the
 /// shown ones (see `box_members`). Every id must exist and have geometry.
-fn scale_box(doc: &Document, ids: &[ObjectId], mw: f64) -> Result<Rect, CommandError> {
+fn scale_box(
+    doc: &Document,
+    ids: &[ObjectId],
+    mw: crate::cutgeom::Knife,
+) -> Result<Rect, CommandError> {
     for id in ids {
         check_exists(doc, *id)?;
     }
@@ -1664,7 +1668,7 @@ fn scale_group(
     scaled: &mut Vec<ObjectId>,
     measured: Option<Rect>,
 ) -> Result<(), CommandError> {
-    let mw = min_width_of(s);
+    let mw = knife_of(s);
     let doc = &mut s.doc_mut().document;
     let group_box = |doc: &Document| scale_box(doc, ids, mw);
     let old = match measured {
@@ -1850,7 +1854,7 @@ fn run_rotate(s: &mut Session, p: RotateParams, _: Origin) -> Result<Value, Comm
     };
     check_angle(degrees)?;
     let units = units_of(&s.doc().document, &ids);
-    let mw = min_width_of(s);
+    let mw = knife_of(s);
     let doc = &mut s.doc_mut().document;
     // The turn of each unit: relative as given; for an absolute angle an
     // object gets it about its own centre, and a group turns as one piece
@@ -1975,7 +1979,7 @@ fn run_mirror(s: &mut Session, p: MirrorParams, _: Origin) -> Result<Value, Comm
         }
     }
     let units = units_of(&s.doc().document, &ids);
-    let mw = min_width_of(s);
+    let mw = knife_of(s);
     let doc = &mut s.doc_mut().document;
     // About group: everything as one piece. About each: each unit on its
     // own; a whole group is one unit and flips across its own box.
@@ -2017,7 +2021,7 @@ fn mirror_set(
     ids: &[ObjectId],
     axis: MirrorAxis,
     keep_box: bool,
-    mw: f64,
+    mw: crate::cutgeom::Knife,
 ) -> Result<(), CommandError> {
     let group_box = |doc: &Document| common_box(doc, ids, mw);
     let before = keep_box.then(|| group_box(doc)).flatten();

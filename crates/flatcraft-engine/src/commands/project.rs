@@ -101,7 +101,7 @@ fn mat_json(s: &Session) -> (Value, Option<String>) {
 fn run_state(s: &mut Session, _: NoParams, _: Origin) -> Result<Value, CommandError> {
     let (mat, mat_warning) = mat_json(s);
     let area = cutting_area(s).ok().map(rect_json).unwrap_or(Value::Null);
-    let mw = super::min_width_of(s);
+    let mw = super::knife_of(s);
     let bounds = s.doc_mut().placed_bounds_all(mw);
     let st = s.doc();
     let job = &st.document.job;

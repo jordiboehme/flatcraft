@@ -19,6 +19,7 @@ use flatcraft_device::{Media, PlotterProfile, ProfileError};
 use kurbo::{Point, Rect, Vec2};
 use serde::de::DeserializeOwned;
 
+use crate::cutgeom::Knife;
 use crate::session::{CommandError, Session};
 
 /// Defines a unit struct that implements `Command` by parsing `$params` and
@@ -178,22 +179,25 @@ pub(crate) fn box_members<'a>(doc: &'a Document, ids: &[ObjectId]) -> Vec<&'a Ob
 /// The box of what is cut of the objects `ids` together (see
 /// [`placed_bounds_or_center`] and [`box_members`]), `None` for no
 /// objects.
-pub(crate) fn common_box(doc: &Document, ids: &[ObjectId], min_width: f64) -> Option<Rect> {
+pub(crate) fn common_box(doc: &Document, ids: &[ObjectId], knife: Knife) -> Option<Rect> {
     box_members(doc, ids)
         .into_iter()
-        .map(|o| placed_bounds_or_center(o, min_width))
+        .map(|o| placed_bounds_or_center(o, knife))
         .reduce(|a, b| a.union(b))
 }
 
-/// The narrowest filled shape the active document's plotter cuts
-/// (`report::min_width_mm` of its blade offset, the default blade when the
-/// plotter is unknown): what every box of what is cut is measured with.
-pub fn min_width_of(s: &Session) -> f64 {
-    let blade = s
-        .profiles
-        .plotter(&s.doc().document.job.plotter_id)
-        .map_or(f64::NAN, |p| p.blade_offset_mm);
-    crate::report::min_width_mm(blade)
+/// What every box of what is cut is measured with: the active document's
+/// plotter's flatten tolerance and narrowest filled shape
+/// (`report::min_width_mm` of its blade offset), the same the cut geometry
+/// uses; the default plotter's when the plotter is unknown.
+pub fn knife_of(s: &Session) -> Knife {
+    match s.profiles.plotter(&s.doc().document.job.plotter_id) {
+        Ok(p) => Knife {
+            tolerance_mm: p.flatten_tolerance_mm,
+            min_width_mm: crate::report::min_width_mm(p.blade_offset_mm),
+        },
+        Err(_) => Knife::default(),
+    }
 }
 
 /// Fails unless `id` names an object or a group.
@@ -233,10 +237,10 @@ pub(crate) fn object_mut(doc: &mut Document, id: ObjectId) -> Result<&mut Object
 
 /// Bounding box of what is cut of the object (its cut geometry per its cut
 /// options, so stroke outlines count, and slivers thinner than
-/// `min_width` do not; see [`min_width_of`]), in mat mm. Falls back to the
+/// the knife's narrowest feature do not; see [`knife_of`]), in mat mm. Falls back to the
 /// centre lines when nothing is cut; `None` if the object has no geometry.
-pub fn placed_bounds(o: &Object, min_width: f64) -> Option<Rect> {
-    crate::cutgeom::cut_bounds(o, min_width).or_else(|| bounds(&o.placed_paths()))
+pub fn placed_bounds(o: &Object, knife: Knife) -> Option<Rect> {
+    crate::cutgeom::cut_bounds(o, knife).or_else(|| bounds(&o.placed_paths()))
 }
 
 /// The source's page frame placed on the mat (its bounding box after the
@@ -257,24 +261,24 @@ pub fn placed_frame(o: &Object) -> Option<Rect> {
 /// It is [`centred_arrange_bounds`] moved by the centre, exactly as the
 /// window's preview builds it from its cached shape, so both get the
 /// same numbers to the last bit.
-pub fn arrange_bounds(o: &Object, min_width: f64) -> Option<Rect> {
+pub fn arrange_bounds(o: &Object, knife: Knife) -> Option<Rect> {
     let mut at_origin = Object::shape_only(o.geometry.clone(), o.local_bounds, o.transform, o.cut);
     at_origin.frame = o.frame;
     at_origin.transform.center_mm = Point::ORIGIN;
-    centred_arrange_bounds(&at_origin, min_width).map(|b| b + o.transform.center_mm.to_vec2())
+    centred_arrange_bounds(&at_origin, knife).map(|b| b + o.transform.center_mm.to_vec2())
 }
 
 /// The Auto arrange box of `o` as placed with its centre at 0,0 (the
 /// caller sets it). [`arrange_bounds`] and the window's shape cache both
 /// use it.
-pub fn centred_arrange_bounds(o: &Object, min_width: f64) -> Option<Rect> {
-    placed_bounds(o, min_width).or_else(|| placed_frame(o))
+pub fn centred_arrange_bounds(o: &Object, knife: Knife) -> Option<Rect> {
+    placed_bounds(o, knife).or_else(|| placed_frame(o))
 }
 
 /// Bounding box of the placed geometry, or the transform centre as a point
 /// when the object has no geometry.
-pub(crate) fn placed_bounds_or_center(o: &Object, min_width: f64) -> Rect {
-    placed_bounds(o, min_width)
+pub(crate) fn placed_bounds_or_center(o: &Object, knife: Knife) -> Rect {
+    placed_bounds(o, knife)
         .unwrap_or_else(|| Rect::from_points(o.transform.center_mm, o.transform.center_mm))
 }
 

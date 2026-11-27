@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{
-    arrange_bounds, command, common_box, cutting_area, ids_json, inside, min_width_of, object_mut,
+    arrange_bounds, command, common_box, cutting_area, ids_json, inside, knife_of, object_mut,
     resolve_ids, translate, unit_leaves, units_of,
 };
 use crate::placement;
@@ -48,7 +48,7 @@ pub struct AlignParams {
 
 fn run_align(s: &mut Session, p: AlignParams, _: Origin) -> Result<Value, CommandError> {
     let ids = resolve_ids(s, &p.ids)?;
-    let mw = min_width_of(s);
+    let mw = knife_of(s);
     let target = match p.relative_to {
         AlignTarget::CuttingArea => cutting_area(s)?,
         AlignTarget::Selection => common_box(&s.doc().document, &ids, mw).unwrap_or(Rect::ZERO),
@@ -126,7 +126,7 @@ fn run_distribute(s: &mut Session, p: DistributeParams, _: Origin) -> Result<Val
             "Distribute needs at least 3 objects, {have}."
         )));
     }
-    let mw = min_width_of(s);
+    let mw = knife_of(s);
     let doc = &s.doc().document;
     let mut items: Vec<(ObjectId, f64, f64)> = Vec::with_capacity(ids.len());
     for id in &ids {
@@ -175,7 +175,7 @@ command!(
 
 /// Moves `o` by `d` if it then lies inside `area`. Otherwise it stays
 /// exactly where it was and the result is false.
-fn place(o: &mut Object, d: Vec2, area: Rect, mw: f64) -> bool {
+fn place(o: &mut Object, d: Vec2, area: Rect, mw: crate::cutgeom::Knife) -> bool {
     let centre = o.transform.center_mm;
     translate(o, d);
     if arrange_bounds(o, mw).is_some_and(|nb| inside(nb, area)) {
@@ -194,7 +194,7 @@ fn place_unit(
     unit: ObjectId,
     d: Vec2,
     area: Rect,
-    mw: f64,
+    mw: crate::cutgeom::Knife,
 ) -> Result<bool, CommandError> {
     if doc.group_node(unit).is_none() {
         return Ok(place(object_mut(doc, unit)?, d, area, mw));
@@ -250,7 +250,7 @@ fn run_auto(s: &mut Session, p: AutoParams, _: Origin) -> Result<Value, CommandE
     } else {
         resolve_ids(s, &p.ids)?
     };
-    let mw = min_width_of(s);
+    let mw = knife_of(s);
     let doc = &mut s.doc_mut().document;
     // A whole group packs as one item, a member picked inside a group
     // alone (see `placement::auto_keys` and `placement::auto_units`).
@@ -344,7 +344,7 @@ mod tests {
             o,
             Vec2::new(0.7, 0.7),
             Rect::new(50.0, 50.0, 60.0, 60.0),
-            0.125
+            Default::default()
         ));
         assert_eq!(o.transform.center_mm, Point::new(0.1, 0.1));
     }

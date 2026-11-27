@@ -2618,7 +2618,7 @@ fn reopening_warns_when_an_svg_rebuilds_to_other_bounds() {
 /// The placed bounds the arrange commands work with.
 fn cmd_bounds(s: &Session, id: u64) -> Rect {
     let o = s.doc().document.get(ObjectId(id)).unwrap();
-    flatcraft_engine::commands::placed_bounds(o, 0.125).unwrap()
+    flatcraft_engine::commands::placed_bounds(o, Default::default()).unwrap()
 }
 
 /// Imports a w x h rectangle and moves its top-left corner to (x0, y0).

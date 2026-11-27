@@ -48,7 +48,11 @@ fn transform(s: &Session, id: u64) -> Transform {
 }
 
 fn bounds(s: &Session, id: u64) -> Rect {
-    placed_bounds(s.doc().document.get(ObjectId(id)).unwrap(), 0.125).unwrap()
+    placed_bounds(
+        s.doc().document.get(ObjectId(id)).unwrap(),
+        Default::default(),
+    )
+    .unwrap()
 }
 
 fn common(s: &Session, ids: &[u64]) -> Rect {

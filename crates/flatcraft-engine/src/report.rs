@@ -682,7 +682,7 @@ pub fn object_bounds(input: &JobInput, o: &JobObject) -> Option<Rect> {
         return cut.bounds(o.id);
     }
     let affine = o.transform.affine(o.local_bounds);
-    cutgeom::cut_bounds_of(&o.geometry, &o.cut, affine, input.min_width_mm())
+    cutgeom::cut_bounds_of(&o.geometry, &o.cut, affine, input.knife())
 }
 
 /// What the report checks with: the cutting area, the flatten tolerance

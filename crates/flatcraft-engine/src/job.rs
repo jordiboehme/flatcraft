@@ -528,6 +528,14 @@ impl JobInput {
         report::min_width_mm(self.plotter.blade_offset_mm)
     }
 
+    /// What the cut geometry is built with, for a box of what is cut.
+    pub fn knife(&self) -> cutgeom::Knife {
+        cutgeom::Knife {
+            tolerance_mm: self.tolerance_mm(),
+            min_width_mm: self.min_width_mm(),
+        }
+    }
+
     /// The cut geometry of the objects: built once per input, from the
     /// seed where it still fits. Every reader of the input (the build, the
     /// export, the report) shares it.
