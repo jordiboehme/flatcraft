@@ -888,6 +888,17 @@ pub(crate) enum PlanUnits {
 
 /// [`build_classified`], with host compensation planned for `units`.
 pub(crate) fn build_planned(input: &JobInput, units: PlanUnits) -> Result<JobResult, BuildFailure> {
+    build_planned_with(input, units, |_| {})
+}
+
+/// [`build_planned`], with `tweak` applied to the pipeline settings just
+/// before the plan: the benchmark's comparison variants (`crate::bench`)
+/// change settings the document cannot.
+pub(crate) fn build_planned_with(
+    input: &JobInput,
+    units: PlanUnits,
+    tweak: impl FnOnce(&mut PipelineSettings),
+) -> Result<JobResult, BuildFailure> {
     let JobInput {
         objects,
         job,
@@ -995,6 +1006,7 @@ pub(crate) fn build_planned(input: &JobInput, units: PlanUnits) -> Result<JobRes
     if let (PlanUnits::Float, Compensation::Host(h)) = (units, &mut pipeline.compensation) {
         h.device_grid = None;
     }
+    tweak(&mut pipeline);
     // A clipped visible outline is no ring: what is seen of it stands
     // for its rings in the kept material and the weeds.
     let placed_ids: std::collections::BTreeSet<ObjectId> =

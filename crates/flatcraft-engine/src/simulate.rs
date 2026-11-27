@@ -287,6 +287,15 @@ fn sim_warnings(mode: SimMode, plotter: &PlotterProfile) -> Vec<String> {
 /// on the device grid or in floats as the key says; firmware mode only
 /// reports the commanded path (`result: None`).
 pub fn compute(input: SimInput) -> Result<SimRun, CommandError> {
+    compute_with(input, |_| {})
+}
+
+/// [`compute`], with `tweak` applied to the pipeline settings of the job
+/// build (see `job::build_planned_with`).
+pub(crate) fn compute_with(
+    input: SimInput,
+    tweak: impl FnOnce(&mut flatcraft_path::PipelineSettings),
+) -> Result<SimRun, CommandError> {
     if let Some(h) = &input.hook {
         (h.0)("job.simulate");
     }
@@ -303,7 +312,7 @@ pub fn compute(input: SimInput) -> Result<SimRun, CommandError> {
         SimGrid::Device => job::PlanUnits::Device,
         SimGrid::Float => job::PlanUnits::Float,
     };
-    let job = job::build_planned(&input, units).map_err(|f| f.error)?;
+    let job = job::build_planned_with(&input, units, tweak).map_err(|f| f.error)?;
     let plotter = &input.plotter;
     let (media, _) = crate::commands::effective_media(plotter, &input.job)?;
     let plan_index: Vec<usize> = job::cut_mask(&job)

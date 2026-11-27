@@ -5657,6 +5657,7 @@ dependencies = [
  "anyhow",
  "clap",
  "flatcraft-device",
+ "flatcraft-engine",
  "tempfile",
 ]
 

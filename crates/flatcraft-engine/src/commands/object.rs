@@ -262,7 +262,7 @@ pub(crate) fn trace_report(t: &TraceResult, invert: bool) -> (Vec<String>, Value
 }
 
 /// Adds a traced raster object to the active document and selects it.
-fn add_raster(
+pub(crate) fn add_raster(
     s: &mut Session,
     name: String,
     bytes: std::sync::Arc<[u8]>,

@@ -1,4 +1,5 @@
-//! Developer tasks. `cargo xtask capture <file.pcapng>` turns a Wireshark recording into fixtures.
+//! Developer tasks. `cargo xtask capture <file.pcapng>` turns a Wireshark recording into fixtures;
+//! `cargo xtask bench-quality [--write]` runs the quality benchmarks.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -8,6 +9,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use flatcraft_device::capture::{self, CaptureRecord};
 use flatcraft_device::gpgl::decode;
+use flatcraft_engine::bench;
 
 const ETX: u8 = 0x03;
 const NO_COMMANDS: &str =
@@ -38,6 +40,12 @@ enum Task {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Run the quality benchmarks and compare them with tests/fixtures/bench/baseline.json.
+    BenchQuality {
+        /// Write the baseline, docs/quality/benchmarks.md and the dense-trace fixture again.
+        #[arg(long)]
+        write: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -48,6 +56,7 @@ fn main() -> Result<()> {
             name,
             device,
         } => run_capture(&file, out.as_deref(), name, device),
+        Task::BenchQuality { write } => run_bench(write),
     }
 }
 
@@ -56,6 +65,55 @@ fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+}
+
+/// Runs every benchmark, prints the tables, then writes the baseline (`write`) or
+/// compares with it. A strategy row past the device limit is never written.
+fn run_bench(write: bool) -> Result<()> {
+    let root = workspace_root();
+    let scratch = std::env::temp_dir().join(format!("flatcraft-bench-{}", std::process::id()));
+    let rows = bench::run_all(&scratch);
+    let _ = std::fs::remove_dir_all(&scratch);
+    let crossings = bench::crossing_sweep();
+    println!("{}", bench::tables(&rows, true));
+    println!("### crossing sweep\n\n{}", bench::sweep_table(&crossings));
+    let misses = bench::device_limit_misses(&rows);
+    if !misses.is_empty() {
+        bail!(
+            "device limit missed, nothing written:\n{}",
+            misses.join("\n")
+        );
+    }
+    let baseline_path = root.join("tests/fixtures/bench/baseline.json");
+    if write {
+        // The page is made from the baseline as the test reads it back: a
+        // float can come back one bit off, and that can move a printed digit.
+        let json = bench::Baseline { rows, crossings }.to_json();
+        let base = bench::Baseline::from_json(&json).context("read the new baseline back")?;
+        let page = root.join("docs/quality/benchmarks.md");
+        let png = root.join("tests/fixtures/bench/dense-trace.png");
+        for (path, bytes) in [
+            (&baseline_path, json.into_bytes()),
+            (&page, bench::markdown(&base).into_bytes()),
+            (&png, bench::dense_trace_png()),
+        ] {
+            std::fs::write(path, bytes).with_context(|| format!("write {}", path.display()))?;
+            println!("wrote {}", path.display());
+        }
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(&baseline_path)
+        .with_context(|| format!("read {}", baseline_path.display()))?;
+    let base = bench::Baseline::from_json(&text).context("parse the baseline")?;
+    let regressions = bench::regressions(&base, &rows, &crossings);
+    if !regressions.is_empty() {
+        bail!(
+            "regressions against the baseline:\n{}",
+            regressions.join("\n")
+        );
+    }
+    println!("no regressions against {}", baseline_path.display());
+    Ok(())
 }
 
 fn run_capture(
