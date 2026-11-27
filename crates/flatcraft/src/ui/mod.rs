@@ -228,7 +228,8 @@ pub enum Action {
     /// Store what the person chose for the side panels (Objects, Cut and
     /// Job, Cut stage) in the preferences.
     RememberPanels([flatcraft_engine::prefs::PanelUser; 3]),
-    /// Store which side panel sections are open (`Preferences::panel_sections`).
+    /// Store the side panel sections opened or folded since the last time
+    /// (merged into `Preferences::panel_sections`).
     RememberSections(std::collections::BTreeMap<String, bool>),
     /// Store the spacing of the Auto arrange panel in the preferences, for
     /// the next panel and the one-click Auto arrange.
@@ -1566,7 +1567,7 @@ impl FlatCraftApp {
                 }
             }
             Action::RememberSections(open) => {
-                let result = lock(&self.session).update_prefs(|p| p.panel_sections = open);
+                let result = lock(&self.session).update_prefs(|p| p.panel_sections.extend(open));
                 if let Err(e) = result {
                     self.toast(Toast::error(format!(
                         "Cannot store which panel sections are open: {e}"

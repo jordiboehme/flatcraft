@@ -21,10 +21,15 @@ use super::super::{Action, fonts};
 #[derive(Debug, Clone, PartialEq)]
 pub struct JobSummary {
     pub plotter: String,
+    /// A shorter name of the plotter for the line, when its preset has
+    /// one (the model of a USB plotter, "Cameo 2").
+    pub plotter_short: Option<String>,
     pub material: String,
     pub mat: String,
     pub strategy: String,
     pub dot: Dot,
+    /// Objects are selected: a click shows the Job panel over them.
+    pub selection: bool,
     /// The Job panel shows over a selection: a click goes back.
     pub open: bool,
 }
@@ -47,8 +52,10 @@ impl JobSummary {
 pub fn job_line_card(s: &JobSummary) -> String {
     let back = if s.open {
         "You see the Job panel over your selection now. Click again, or press Esc, to go back to the selection."
+    } else if s.selection {
+        "Click it to see only the job, over your selection. Click again, or press Esc, to go back to the selection."
     } else {
-        "Click it to see and change the job, also while objects are selected. Click again, or press Esc, to go back to the selection."
+        "Nothing is selected, so the Job panel is right below. Select objects to choose what is cut of them; then a click here shows the job over them."
     };
     format!(
         "What this cut uses: {}. {}. The job is the plotter, the mat, the material and its cut values, and the order of the cut. {back}",
@@ -65,13 +72,20 @@ pub const JOB_LINE_H: f32 = 30.0;
 /// The whole line is one button.
 pub fn job_line(ui: &mut Ui, s: &JobSummary, t: &Tokens) -> Response {
     let w = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, JOB_LINE_H), Sense::click());
+    // With nothing selected the Job panel is already below: the line only
+    // shows, a click does nothing.
+    let sense = if s.selection {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, JOB_LINE_H), sense);
     let name = s.name();
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.as_str()));
     set_name(ui, &resp, &name);
     if ui.is_rect_visible(rect) {
         let p = ui.painter();
-        let hovered = resp.hovered();
+        let hovered = resp.hovered() && s.selection;
         let border = if s.open {
             t.accent_prepare
         } else if hovered {
@@ -88,36 +102,118 @@ pub fn job_line(ui: &mut Ui, s: &JobSummary, t: &Tokens) -> Response {
         );
         let dot = rect.left_center() + vec2(14.0, 0.0);
         p.circle_filled(dot, 4.0, dot_colour(s.dot, t));
-        let icon = if s.open {
-            Icon::ChevronLeft
-        } else {
-            Icon::ChevronRight
-        };
+        // Down opens the Job view over the selection, left goes back. No
+        // chevron with nothing selected (nothing to open), so it never
+        // reads like the panel's fold button beside it.
         let size = 14.0;
-        let tex = icons::texture(ui.ctx(), icon, size);
-        let icon_rect =
-            Rect::from_center_size(rect.right_center() - vec2(14.0, 0.0), vec2(size, size));
-        p.image(
-            tex.id(),
-            icon_rect,
-            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-            t.text_dim,
-        );
+        let mut right = rect.right() - 8.0;
+        let icon = match (s.selection, s.open) {
+            (false, _) => None,
+            (true, false) => Some(Icon::ChevronDown),
+            (true, true) => Some(Icon::ChevronLeft),
+        };
+        if let Some(icon) = icon {
+            let tex = icons::texture(ui.ctx(), icon, size);
+            let icon_rect =
+                Rect::from_center_size(rect.right_center() - vec2(14.0, 0.0), vec2(size, size));
+            p.image(
+                tex.id(),
+                icon_rect,
+                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                t.text_dim,
+            );
+            right = icon_rect.left() - 6.0;
+        }
         let left = dot.x + 10.0;
-        let right = icon_rect.left() - 6.0;
-        one_line(
+        line_parts(
             p,
-            &s.text(),
+            s,
             FontId::proportional(13.0),
             t.text,
             egui::pos2(left, rect.center().y),
             (right - left).max(0.0),
-            Align::LEFT,
         );
     }
-    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let resp = if s.selection {
+        resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    } else {
+        resp
+    };
     groups::card(&resp, "Job", &job_line_card(s), None, false);
     resp
+}
+
+/// The separator between the parts of the job line.
+const SEP: &str = " · ";
+
+/// Paints the job line's parts from `at`, within `width`. The mat and the
+/// strategy always show in full (they are short and they are what a
+/// person checks after a change); the plotter and the material share the
+/// rest, each cut short on its own with "...". Only when even the mat and
+/// the strategy do not fit is the whole line cut short at its end.
+fn line_parts(
+    p: &egui::Painter,
+    s: &JobSummary,
+    font: FontId,
+    color: Color32,
+    at: egui::Pos2,
+    width: f32,
+) {
+    let measure = |text: &str| {
+        p.layout_no_wrap(text.to_string(), font.clone(), color)
+            .size()
+            .x
+    };
+    let plotter = s.plotter_short.as_deref().unwrap_or(&s.plotter);
+    let sep = measure(SEP);
+    let fixed = measure(&s.mat) + measure(&s.strategy) + 3.0 * sep;
+    let room = width - fixed;
+    let (pw, mw) = (measure(plotter), measure(&s.material));
+    // A part that needs less than half gives the rest to the other.
+    let (pw, mw) = if pw + mw <= room {
+        (pw, mw)
+    } else if pw <= room / 2.0 {
+        (pw, room - pw)
+    } else if mw <= room / 2.0 {
+        (room - mw, mw)
+    } else {
+        (room / 2.0, room / 2.0)
+    };
+    // Below a few letters a part says nothing: the whole line is cut short.
+    if pw < 24.0 || mw < 24.0 {
+        one_line(
+            p,
+            &[plotter, &s.material, &s.mat, &s.strategy].join(SEP),
+            font,
+            color,
+            at,
+            width,
+            Align::LEFT,
+        );
+        return;
+    }
+    let mut x = at.x;
+    let parts = [
+        (plotter, pw + 0.5),
+        (SEP, sep + 0.5),
+        (s.material.as_str(), mw + 0.5),
+        (SEP, sep + 0.5),
+        (s.mat.as_str(), f32::INFINITY),
+        (SEP, sep + 0.5),
+        (s.strategy.as_str(), f32::INFINITY),
+    ];
+    for (text, w) in parts {
+        let r = one_line(
+            p,
+            text,
+            font.clone(),
+            color,
+            egui::pos2(x, at.y),
+            w,
+            Align::LEFT,
+        );
+        x = r.right();
+    }
 }
 
 /// The colour of a state dot.
@@ -164,7 +260,8 @@ fn one_line(
 #[derive(Debug, Clone, Default)]
 struct Sections {
     open: BTreeMap<String, bool>,
-    changed: bool,
+    /// The ids opened or folded since the last [`take_changed`].
+    changed: std::collections::BTreeSet<String>,
 }
 
 fn sections_id() -> Id {
@@ -178,18 +275,25 @@ pub fn seed(ctx: &egui::Context, open: BTreeMap<String, bool>) {
             sections_id(),
             Sections {
                 open,
-                changed: false,
+                changed: Default::default(),
             },
         );
     });
 }
 
-/// The open sections, when a section was opened or folded since the last
-/// call.
+/// The sections opened or folded since the last call, with their new
+/// state; `None` when there are none. Only these are stored, so another
+/// window's choices for other sections are kept.
 pub fn take_changed(ctx: &egui::Context) -> Option<BTreeMap<String, bool>> {
     ctx.data_mut(|d| {
         let s = d.get_temp_mut_or_default::<Sections>(sections_id());
-        std::mem::take(&mut s.changed).then(|| s.open.clone())
+        let changed = std::mem::take(&mut s.changed);
+        (!changed.is_empty()).then(|| {
+            changed
+                .into_iter()
+                .filter_map(|id| s.open.get(&id).map(|&o| (id, o)))
+                .collect()
+        })
     })
 }
 
@@ -208,7 +312,7 @@ pub fn set_open(ctx: &egui::Context, id: &str, open: bool) {
     ctx.data_mut(|d| {
         let s = d.get_temp_mut_or_default::<Sections>(sections_id());
         s.open.insert(id.to_string(), open);
-        s.changed = true;
+        s.changed.insert(id.to_string());
     });
 }
 

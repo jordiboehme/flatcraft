@@ -51,7 +51,7 @@ pub fn follow_selection(st: &mut PrepareState, snap: &Snapshot) {
 /// The subtitles under "Job": nothing selected, over a selection (the
 /// Job view), and under the selection's cut options.
 pub const SUBTITLES: [&str; 3] = [
-    "Nothing selected: what this cut uses.",
+    "Nothing selected: what this cut uses. Select objects to choose what is cut of them.",
     "What this cut uses. Click the job line or press Esc to go back.",
     "What this cut uses, for the whole document.",
 ];
@@ -93,7 +93,9 @@ pub fn show(
     if collapse {
         st.panels.set_collapsed(SidePanel::Settings, true);
     }
-    if clicked {
+    // With nothing selected the Job panel is below anyway: the line does
+    // not toggle (it does not take clicks then).
+    if clicked && !snap.selection.is_empty() {
         st.inspector = match st.inspector {
             InspectorView::Selection => InspectorView::Job,
             InspectorView::Job => InspectorView::Selection,

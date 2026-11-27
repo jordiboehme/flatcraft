@@ -70,6 +70,7 @@ pub fn summary(snap: &Snapshot, dot: Dot, open: bool) -> JobSummary {
             .plotter
             .as_ref()
             .map_or(snap.job.plotter_id.clone(), |p| p.name.clone()),
+        plotter_short: snap.plotter.as_ref().and_then(plotter_short),
         material: snap
             .material
             .as_ref()
@@ -80,8 +81,21 @@ pub fn summary(snap: &Snapshot, dot: Dot, open: bool) -> JobSummary {
             .map_or(snap.job.media_id.clone(), |m| m.name.clone()),
         strategy: strategy_name(snap.job.strategy).to_string(),
         dot,
+        selection: !snap.selection.is_empty(),
         open,
     }
+}
+
+/// The plotter's short name for the job line: the model of a USB plotter
+/// ("Cameo 2"). A File Output preset keeps its name, which says it writes
+/// a file.
+pub fn plotter_short(p: &flatcraft_device::PlotterProfile) -> Option<String> {
+    use flatcraft_device::TransportSpec;
+    let model = p.model.trim();
+    (matches!(p.transport, TransportSpec::Usb { .. })
+        && !model.is_empty()
+        && model.len() < p.name.len())
+    .then(|| model.to_string())
 }
 
 /// The `job.set_overrides` field of an override.
@@ -655,32 +669,41 @@ fn some_text(s: Option<&str>) -> Option<&str> {
     s.map(str::trim).filter(|s| !s.is_empty())
 }
 
-/// The summary of the Material tips section.
+/// The first words of a text for a one-line summary: up to six words,
+/// then "...".
+fn first_words(text: &str) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() <= 6 {
+        words.join(" ")
+    } else {
+        format!("{}...", words[..6].join(" "))
+    }
+}
+
+/// The summary of the Material tips section: the first words of the
+/// material's tips, and whether there are notes of your own.
 pub fn tips_summary(snap: &Snapshot) -> String {
     let mut parts = Vec::new();
-    if snap
+    if let Some(tips) = snap
         .material
         .as_ref()
-        .is_some_and(|m| some_text(m.tips.as_deref()).is_some())
+        .and_then(|m| some_text(m.tips.as_deref()))
     {
-        parts.push("tips");
+        parts.push(first_words(tips));
     }
-    if snap
+    let notes = snap
         .plotter
         .as_ref()
         .is_some_and(|p| some_text(p.notes.as_deref()).is_some())
-    {
-        parts.push("plotter notes");
-    }
-    if snap
-        .material
-        .as_ref()
-        .is_some_and(|m| some_text(m.notes.as_deref()).is_some())
-    {
-        parts.push("material notes");
+        || snap
+            .material
+            .as_ref()
+            .is_some_and(|m| some_text(m.notes.as_deref()).is_some());
+    if notes {
+        parts.push("your notes".into());
     }
     if parts.is_empty() {
-        "none".into()
+        "none for this material".into()
     } else {
         parts.join(" · ")
     }

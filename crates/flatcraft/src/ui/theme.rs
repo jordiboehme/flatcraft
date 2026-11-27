@@ -121,7 +121,7 @@ impl Tokens {
             ok: Color32::from_rgb(0x2F, 0x9E, 0x5B),
             warn: Color32::from_rgb(0xD9, 0x9A, 0x1E),
             warn_text: Color32::from_rgb(0x94, 0x52, 0x00),
-            changed: Color32::from_rgb(0xE0, 0x70, 0x1A),
+            changed: Color32::from_rgb(0xC8, 0x5A, 0x0A),
             // Deeper than the dark theme's, so they reach 3:1 on white.
             quality_good: Color32::from_rgb(0x1A, 0x7F, 0x45),
             quality_warn: Color32::from_rgb(0xA8, 0x6A, 0x00),
@@ -292,6 +292,18 @@ mod tests {
             }
             // The cut line must show against the paper it outlines.
             assert!(contrast(t.icon_cut, t.icon_paper) >= 2.0);
+        }
+    }
+
+    /// The change dot reads at 3:1 (graphics) on the panel and the
+    /// surface in both themes.
+    #[test]
+    fn the_change_dot_reads_on_the_panel() {
+        for t in [Tokens::dark(), Tokens::light()] {
+            for bg in [t.panel, t.surface] {
+                let c = contrast(t.changed, bg);
+                assert!(c >= 3.0, "{:?} on {bg:?}: {c:.2}", t.changed);
+            }
         }
     }
 

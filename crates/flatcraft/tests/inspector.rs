@@ -100,8 +100,12 @@ fn job_line_shows_plotter_material_mat_strategy() {
 fn job_line_click_shows_job_panel_with_a_selection_and_selection_change_returns() {
     let dir = tempfile::tempdir().unwrap();
     let (s, mut h) = window(&dir, 1400.0, |_| {});
-    // Nothing selected: the Job panel, no cut options.
+    // Nothing selected: the Job panel, no cut options. A click on the job
+    // line changes nothing then: the Job panel is already there.
     assert!(has(&h, "Plotter") && !has(&h, "Cut mode"));
+    job_line(&h).click();
+    h.run_plan();
+    assert_eq!(view(&h), InspectorView::Selection);
     let first = selection_all(&s)[0];
     let second = import_square(&s);
     run(&s, "object.select", json!({ "ids": [first] }));
@@ -223,6 +227,20 @@ fn sections_remember_open_state() {
     assert_eq!(stored.get(job::WEEDING), Some(&true));
     assert_eq!(stored.get(job::VALUES), Some(&false));
     assert_eq!(stored.get("nope.gone"), Some(&true), "kept, not used");
+    // Another window stored a section meanwhile: a fold here keeps it.
+    s.lock()
+        .unwrap()
+        .update_prefs(|p| {
+            p.panel_sections.insert(job::ORDER.into(), false);
+        })
+        .unwrap();
+    h.get_by_label("Weeding").click();
+    h.run_plan();
+    h.get_by_label("Weeding").click();
+    h.run_plan();
+    let stored = Preferences::load(dir.path()).panel_sections;
+    assert_eq!(stored.get(job::ORDER), Some(&false), "the other window's");
+    assert_eq!(stored.get(job::WEEDING), Some(&true));
     assert_eq!(
         s.lock().unwrap().prefs.panel_sections.get(job::WEEDING),
         Some(&true)
@@ -533,4 +551,121 @@ fn escape_cancels_a_lasso_in_progress_before_the_card_and_the_job_view() {
     h.key_press(Key::Escape);
     h.run_plan();
     assert!(selection(&s).is_empty());
+}
+
+/// The texts painted inside the job line, last frame.
+fn job_line_texts(h: &AppHarness) -> Vec<String> {
+    let r = job_line(h).rect();
+    painted(h)
+        .iter()
+        .filter_map(|s| match s {
+            Shape::Text(t) if r.contains(t.pos + egui::vec2(1.0, 1.0)) => {
+                Some(t.galley.text().to_string())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn job_line_always_paints_the_mat_and_the_strategy() {
+    let dir = tempfile::tempdir().unwrap();
+    // The longest material names, on a USB plotter and on File Output.
+    for plotter in ["silhouette-cameo-2", "file-output-gpgl-cameo2"] {
+        let (s, mut h) = window(&dir, 1400.0, |s| {
+            run(s, "job.set_plotter", json!({ "id": plotter }));
+            run(s, "job.set_material", json!({ "id": "cardstock-heavy" }));
+        });
+        // The panel has its default width.
+        assert!(job_line(&h).rect().width() < 320.0);
+        let texts = job_line_texts(&h);
+        let sn = snap(&mut h);
+        let mat = sn.mat.as_ref().unwrap().name.clone();
+        assert!(texts.contains(&mat), "{texts:?}");
+        assert!(texts.contains(&"Quality".to_string()), "{texts:?}");
+        if plotter == "silhouette-cameo-2" {
+            // A USB plotter shows its model.
+            assert!(texts.contains(&"Cameo 2".to_string()), "{texts:?}");
+        }
+        // The plotter and the material are cut short, each on its own.
+        assert!(
+            texts.iter().any(|t| t.starts_with("Cardstock")),
+            "{texts:?}"
+        );
+        // A change of either shows at once.
+        run(
+            &s,
+            "job.set_strategy",
+            json!({ "strategy": "outlines_last" }),
+        );
+        let other = sn
+            .plotter
+            .as_ref()
+            .unwrap()
+            .media
+            .iter()
+            .find(|m| m.name != mat)
+            .unwrap()
+            .clone();
+        run(&s, "job.set_media", json!({ "id": other.id }));
+        h.run_plan();
+        let texts = job_line_texts(&h);
+        assert!(texts.contains(&"Outlines last".to_string()), "{texts:?}");
+        assert!(texts.contains(&other.name), "{texts:?}");
+        // The full text stays in the name (and the card).
+        let name = job_line(&h).accesskit_node().label().unwrap_or_default();
+        assert!(
+            name.contains("Cardstock (heavy, about 250-300 g/m2)"),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn the_inspector_keeps_its_width() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_s, mut h) = window(&dir, 1400.0, |s| {
+        run(s, "job.set_material", json!({ "id": "cardstock-heavy" }));
+    });
+    let first = job_line(&h).rect();
+    for _ in 0..10 {
+        h.step();
+    }
+    assert_eq!(job_line(&h).rect(), first, "no growth frame by frame");
+    // Narrower and wider windows: the line fits its panel each time.
+    for w in [1100.0, 1920.0, 1400.0] {
+        h.set_size(egui::vec2(w, 900.0));
+        h.run_plan();
+        let r = job_line(&h).rect();
+        for _ in 0..5 {
+            h.step();
+        }
+        assert_eq!(job_line(&h).rect(), r, "stable at {w}");
+        assert!(r.right() <= w, "inside the window at {w}");
+    }
+}
+
+#[test]
+fn escape_in_a_job_panel_field_only_leaves_the_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, mut h) = window(&dir, 1400.0, |_| {});
+    let id = selection_all(&s)[0];
+    run(&s, "object.select", json!({ "ids": [id] }));
+    h.run_plan();
+    job_line(&h).click();
+    h.run_plan();
+    h.get_by_label("Force").click();
+    h.run_plan();
+    assert!(h.get_by_label("Force").is_focused());
+    // 1: the field lets go; the Job view and the selection stay.
+    h.key_press(Key::Escape);
+    h.run_plan();
+    assert!(!h.get_by_label("Force").is_focused());
+    assert_eq!(view(&h), InspectorView::Job);
+    assert_eq!(selection(&s), vec![id]);
+    // 2: the Job view goes back.
+    h.key_press(Key::Escape);
+    h.run_plan();
+    assert_eq!(view(&h), InspectorView::Selection);
+    assert_eq!(selection(&s), vec![id]);
 }
