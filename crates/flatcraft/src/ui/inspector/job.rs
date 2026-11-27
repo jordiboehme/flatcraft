@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use super::super::calc::{self, Number};
 use super::super::prepare::{Eleven, Override, PrepareState, Snapshot};
 use super::super::rails::Dot;
+use super::super::settings::set_name;
 use super::super::settings::{
     ELEVEN, SHEET_KEPT_NO_WEEDING, TIPS_HEADING, WEED_BOX_OFF, WEED_LINES_OFF, WEEDING_HINT,
     WEEDING_OFF, weed_lines_name,
@@ -20,7 +21,7 @@ use super::super::settings::{
 use super::super::settings_window::strategy_name;
 use super::super::theme::Tokens;
 use super::super::tools::Setting;
-use super::super::{Action, materials, outcome};
+use super::super::{Action, groups, materials, outcome};
 use super::blocks::{self, JobSummary, SourceValue};
 
 /// The ids of the Job panel's sections.
@@ -130,8 +131,9 @@ fn passes_word(n: u32) -> String {
 
 /// A combo box `width` wide with an entry per choice (and its hint).
 /// Returns the combo and the picked value when it differs from `current`.
+/// Its text is cut short when it does not fit, so the panel never grows.
 #[allow(clippy::too_many_arguments)]
-fn combo<T: Clone + PartialEq>(
+pub fn combo<T: Clone + PartialEq>(
     ui: &mut Ui,
     salt: &str,
     text: &str,
@@ -505,10 +507,22 @@ fn order(ui: &mut Ui, snap: &Snapshot, actions: &mut Vec<Action>) {
                     json!({ "strategy": flatcraft_engine::simulate::strategy_name(s) }),
                 );
             }
+            blocks::actions_row(ui, "", COMPARE_CARD, |ui| {
+                let r = ui.link(COMPARE);
+                set_name(ui, &r, COMPARE);
+                groups::card(&r, COMPARE, COMPARE_CARD, None, false);
+                if r.clicked() {
+                    actions.push(Action::CompareStrategies);
+                }
+            });
         },
         None,
     );
 }
+
+/// The Order section's link to the strategy comparison, and its card.
+pub const COMPARE: &str = "Compare strategies";
+pub const COMPARE_CARD: &str = "Opens the Cut workspace at Simulate, where this job is simulated with each cut order side by side: the grade, the worst miss, the travel and the time. Pick one there. Nothing changes until you do.";
 
 /// The `job.set_weeding` value of a weed lines choice.
 fn weed_lines_key(l: WeedLines) -> &'static str {

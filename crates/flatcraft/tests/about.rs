@@ -6,7 +6,10 @@ use common::RunPlan;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use common::{AppHarness, app, app_mut, harness, harness_with, import_square, session, to_prepare};
+use common::{
+    AppHarness, app, app_mut, harness, harness_with, import_square, select_none, session,
+    to_prepare,
+};
 use egui::accesskit::Role;
 use egui::{Event, Modifiers};
 use egui_kittest::kittest::Queryable as _;
@@ -351,6 +354,7 @@ fn speed_above_the_maximum_goes_to_eleven() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     import_square(&s);
+    select_none(&s);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     let eleven = flatcraft::ui::settings::ELEVEN;
@@ -428,6 +432,7 @@ fn speed(s: &flatcraft_mcp::SharedSession) -> Option<u8> {
 fn eleven_shown(dir: &tempfile::TempDir) -> (AppHarness, flatcraft_mcp::SharedSession) {
     let s = session(dir);
     import_square(&s);
+    select_none(&s);
     let mut h = harness(dir, s.clone(), false);
     to_prepare(&mut h);
     type_speed(&mut h, "Speed", "4");
@@ -605,6 +610,7 @@ fn eleven_shows_when_the_material_speed_is_already_the_maximum() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     import_square(&s);
+    select_none(&s);
     {
         let mut g = s.lock().unwrap();
         let parent = g.doc().document.job.material_id.clone();

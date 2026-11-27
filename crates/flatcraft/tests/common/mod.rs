@@ -138,6 +138,22 @@ pub fn settle(h: &mut AppHarness) {
     }
 }
 
+/// Selects nothing, so the inspector shows the Job panel (with a
+/// selection it shows the object inspector).
+pub fn select_none(s: &SharedSession) {
+    s.lock()
+        .unwrap()
+        .execute("object.select", json!({ "ids": [] }), Origin::User)
+        .unwrap();
+}
+
+/// Shows the Job panel over the selection: a click on the job line.
+pub fn show_job(h: &mut AppHarness) {
+    use egui_kittest::kittest::Queryable as _;
+    h.get_by_label_contains("Job: ").click();
+    h.run_plan();
+}
+
 /// Shows Prepare and waits for the source check it starts.
 pub fn to_prepare(h: &mut AppHarness) {
     app_mut(h).ui.workspace = ui::Workspace::Prepare;

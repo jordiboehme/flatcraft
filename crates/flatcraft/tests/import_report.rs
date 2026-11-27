@@ -161,7 +161,12 @@ fn dismiss_hides_the_card() {
     h.get_by_role_and_label(Role::Button, "Dismiss").click();
     h.run_plan();
     assert!(app(&h).ui.prepare.report.is_none());
-    assert!(h.query_by_label(TINY_TEXT).is_none());
+    // The card is gone; the selected object's hint stays in the object
+    // inspector, right of the canvas.
+    let canvas = app(&h).ui.prepare.canvas_rect;
+    let hints: Vec<_> = h.query_all_by_label(TINY_TEXT).map(|n| n.rect()).collect();
+    assert_eq!(hints.len(), 1, "{hints:?}");
+    assert!(hints[0].left() > canvas.right(), "{hints:?} {canvas:?}");
 }
 
 #[test]

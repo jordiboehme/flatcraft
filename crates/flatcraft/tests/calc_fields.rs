@@ -145,6 +145,8 @@ fn a_click_on_another_field_after_a_bad_width_moves_the_focus_there() {
     let dir = tempfile::tempdir().unwrap();
     let (s, _id, mut h) = square(&dir);
     let passes = |s: &SharedSession| s.lock().unwrap().doc().document.job.passes;
+    // Passes is in the Job panel, over the selection.
+    common::show_job(&mut h);
     // Typed, not left yet.
     h.get_by_label("Width (mm)").click();
     h.run_plan();
@@ -290,6 +292,7 @@ fn a_whole_number_field_rounds_and_says_what_it_cannot_read() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     import_square(&s);
+    common::select_none(&s);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     let passes = |s: &SharedSession| s.lock().unwrap().doc().document.job.passes;
@@ -377,6 +380,7 @@ fn a_job_field_follows_the_click_rules() {
     let dir = tempfile::tempdir().unwrap();
     let (s, _id, mut h) = square(&dir);
     let before = undo_len(&s);
+    common::show_job(&mut h);
     common::check_click_rules(&mut h, "Passes");
     assert_eq!(undo_len(&s), before);
 }

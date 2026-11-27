@@ -325,6 +325,9 @@ pub enum Action {
     /// Redo the last undone change of this document.
     Redo(u64),
     SetWorkspace(Workspace),
+    /// Show the Cut workspace at its Simulate stage, where the strategies
+    /// are compared (the Job panel's Compare link).
+    CompareStrategies,
     /// Send this document's job (`job.send`, as the person).
     Send {
         doc_id: u64,
@@ -1035,6 +1038,44 @@ impl FlatCraftApp {
         self.toast(toast.with_detail("The report shows when you open its tab."));
     }
 
+    /// Checks the selected objects again for the object inspector's
+    /// Hints when the document, the profiles or the selection changed. The
+    /// input is taken under the lock, the check (it builds the cut
+    /// geometry) runs without it, and the geometry is offered back.
+    fn object_hints(&mut self, snap: &prepare::Snapshot) {
+        let (Some(plotter), Some(material)) = (&snap.plotter, &snap.material) else {
+            self.ui
+                .prepare
+                .object_hints
+                .store(snap, snap.doc_rev, Vec::new());
+            return;
+        };
+        let (input, rev) = {
+            let s = lock(&self.session);
+            let st = s.doc();
+            if st.id() != snap.doc_id {
+                return;
+            }
+            let input = flatcraft_engine::job::JobInput::from_parts(
+                &st.document,
+                plotter.clone(),
+                material,
+            )
+            .with_seed(st.cached_cut_geometry());
+            (input, st.revision())
+        };
+        let ids: Vec<flatcraft_core::document::ObjectId> = snap
+            .selection
+            .iter()
+            .map(|i| flatcraft_core::document::ObjectId(*i))
+            .collect();
+        let found = flatcraft_engine::report::check(&input, Some(&ids));
+        if input.built_cut_geometry().is_some() {
+            lock(&self.session).offer_cut_geometry(snap.doc_id, rev, &input);
+        }
+        self.ui.prepare.object_hints.store(snap, rev, found.issues);
+    }
+
     /// Opens the stencil hint card (`stencil_island`) for the Stencil
     /// objects with inner parts on a material without a backing sheet,
     /// once per object and material: after a keep mode or a material
@@ -1472,6 +1513,10 @@ impl FlatCraftApp {
                 self.execute("edit.redo", json!({ "doc_id": doc_id }));
             }
             Action::SetWorkspace(w) => self.ui.workspace = w,
+            Action::CompareStrategies => {
+                self.ui.workspace = Workspace::Cut;
+                self.ui.cut.stage = cut::Stage::Simulate;
+            }
             Action::Send { doc_id } => {
                 self.run_on(doc_id, "job.send", json!({}));
             }
@@ -2407,6 +2452,19 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
             .sim
             .update(&ctx, &app.session, snap, deadline, simulating);
         app.ui.prepare.sheet_kept = cut::sheet_kept_now(&app.ui.cut, snap);
+        // The object inspector's hints follow the document and the
+        // selection; not while a drag or a nudge burst changes the
+        // document every frame (the last check shows meanwhile).
+        let p = &app.ui.prepare;
+        if workspace == Workspace::Prepare
+            && !p.panels.collapsed(rails::SidePanel::Settings)
+            && !snap.selection.is_empty()
+            && p.drag.is_none()
+            && p.nudge.is_none()
+            && p.object_hints.stale(snap)
+        {
+            app.object_hints(snap);
+        }
         if report_check && let Some(card) = &mut app.ui.prepare.report {
             card.refresh(snap);
             if card.is_empty() {
@@ -2445,7 +2503,12 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
         // frame (the app bar's actions too), also when its group left the
         // screen.
         let p = &mut app.ui.prepare;
-        let on_screen = workspace == Workspace::Prepare && p.tab == prepare::RibbonTab::Layout;
+        let prepare = workspace == Workspace::Prepare;
+        let (tab, inspector) = (p.tab, p.inspector_fields);
+        let on_screen = |place| match place {
+            prepare::FieldPlace::Ribbon => prepare && tab == prepare::RibbonTab::Layout,
+            prepare::FieldPlace::Inspector => prepare && inspector,
+        };
         ribbon::finish_pending(&ctx, p, snap, on_screen, &mut actions);
     }
     app_bar::show(ui, app, &mut actions);

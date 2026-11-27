@@ -9,7 +9,7 @@ use common::*;
 use egui::accesskit::Role;
 use egui::{Key, Shape};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
-use flatcraft::ui::inspector::{self, InspectorView, blocks, job};
+use flatcraft::ui::inspector::{self, InspectorView, blocks, job, object};
 use flatcraft::ui::prepare;
 use flatcraft_engine::prefs::{PanelUser, Preferences};
 use flatcraft_engine::session::Origin;
@@ -110,8 +110,8 @@ fn job_line_click_shows_job_panel_with_a_selection_and_selection_change_returns(
     let second = import_square(&s);
     run(&s, "object.select", json!({ "ids": [first] }));
     h.run_plan();
-    // A selection: its cut options, then the job.
-    assert!(has(&h, "Cut mode") && has(&h, "Plotter"));
+    // A selection: the object inspector, the job is behind the job line.
+    assert!(has(&h, "Cut mode") && !has(&h, "Plotter"));
     assert_eq!(view(&h), InspectorView::Selection);
     job_line(&h).click();
     h.run_plan();
@@ -344,7 +344,7 @@ fn reachable(h: &mut AppHarness, settings: &[(&str, &str)]) {
     for &(section, label) in settings {
         let title = job::SECTIONS
             .iter()
-            .chain(&[(inspector::SELECTION, "Selection")])
+            .chain(&object::SECTIONS)
             .find(|(id, _)| *id == section)
             .unwrap()
             .1;
@@ -404,18 +404,13 @@ fn every_job_setting_is_reachable() {
             assert_card(&mut h, title);
         }
         reachable(&mut h, &job::SETTINGS);
-        // With a selection: its cut options and the job, all reachable.
+        // With a selection the job is one click on the job line away.
         let id = selection_all(&s)[0];
         run(&s, "object.select", json!({ "ids": [id] }));
         h.run_plan();
-        reachable(
-            &mut h,
-            &[
-                (inspector::SELECTION, "Cut mode"),
-                (inspector::SELECTION, "Keep"),
-                (inspector::SELECTION, "Strokes"),
-            ],
-        );
+        assert!(!has(&h, "Plotter"));
+        job_line(&h).click();
+        h.run_plan();
         reachable(&mut h, &job::SETTINGS);
     }
 }
@@ -428,7 +423,7 @@ fn every_job_row_and_section_has_a_plain_card() {
         job::STRATEGY_CARD,
         inspector::SUBTITLES[0],
         inspector::SUBTITLES[1],
-        inspector::SUBTITLES[2],
+        job::COMPARE_CARD,
     ] {
         assert!(!text.is_empty());
         assert!(!text.contains('\u{2014}'), "{text}");
@@ -673,4 +668,491 @@ fn escape_in_a_job_panel_field_only_leaves_the_field() {
     h.run_plan();
     assert_eq!(view(&h), InspectorView::Selection);
     assert_eq!(selection(&s), vec![id]);
+}
+
+// ---------------------------------------------------------------- object inspector
+
+/// The nodes named `label` in the inspector's column (right of the
+/// canvas, below the ribbon): the ribbon and the Objects panel have some
+/// of the same names.
+fn in_inspector<'a>(h: &'a AppHarness, label: &'a str) -> Vec<egui_kittest::Node<'a>> {
+    let left = app(h).ui.prepare.canvas_rect.right();
+    let top = job_line(h).rect().top();
+    h.query_all_by_label(label)
+        .filter(|n| n.rect().left() >= left && n.rect().top() >= top)
+        .collect()
+}
+
+fn the(h: &AppHarness, label: &str) -> egui::Rect {
+    let found = in_inspector(h, label);
+    assert_eq!(found.len(), 1, "{label} in the inspector");
+    found[0].rect()
+}
+
+/// The shown value of the combo (or field) named `label`.
+fn value(h: &AppHarness, label: &str) -> String {
+    let found = in_inspector(h, label);
+    assert_eq!(found.len(), 1, "{label} in the inspector");
+    found[0].accesskit_node().value().unwrap_or_default()
+}
+
+fn rename(s: &SharedSession, id: u64, name: &str) {
+    run(s, "object.rename", json!({ "id": id, "name": name }));
+}
+
+/// Two squares, "alpha" at 20,20 and "beta" at 100,20, nothing selected.
+fn two_squares(s: &SharedSession) -> (u64, u64) {
+    let a = selection_all(s)[0];
+    let b = import_square(s);
+    run(s, "object.move", json!({ "ids": [b], "x_mm": 100.0 }));
+    rename(s, a, "alpha");
+    rename(s, b, "beta");
+    run(s, "object.select", json!({ "ids": [] }));
+    (a, b)
+}
+
+#[test]
+fn inspector_follows_selection_in_the_same_frame() {
+    let dir = tempfile::tempdir().unwrap();
+    let ids = std::cell::Cell::new((0, 0));
+    let (s, mut h) = window(&dir, 1400.0, |s| {
+        let (a, b) = two_squares(s);
+        run(
+            s,
+            "object.set_keep",
+            json!({ "ids": [b], "keep": "stencil" }),
+        );
+        ids.set((a, b));
+    });
+    let (a, b) = ids.get();
+    let line = job_line(&h).rect();
+    let job_heading = the(&h, "Job");
+    run(&s, "object.select", json!({ "ids": [a] }));
+    h.step();
+    assert_eq!(the(&h, "alpha"), job_heading, "the heading stays put");
+    assert_eq!(value(&h, "Keep"), "Pieces");
+    // Another selection: the heading and the values follow in one frame.
+    run(&s, "object.select", json!({ "ids": [b] }));
+    h.step();
+    assert!(in_inspector(&h, "alpha").is_empty());
+    the(&h, "beta");
+    assert_eq!(value(&h, "Keep"), "Stencil");
+    // Back to nothing: the Job panel, in the same place.
+    run(&s, "object.select", json!({ "ids": [] }));
+    h.step();
+    assert_eq!(the(&h, "Job"), job_heading);
+    assert!(in_inspector(&h, "Keep").is_empty());
+    assert_eq!(job_line(&h).rect(), line, "the job line never moves");
+    // A group: named as one; a member of an entered group: its name and
+    // its group.
+    let g = run(&s, "object.group", json!({ "ids": [a, b] }))["group_id"]
+        .as_u64()
+        .unwrap();
+    rename(&s, g, "Badge");
+    run(&s, "object.select", json!({ "ids": [a, b] }));
+    h.step();
+    the(&h, "Group 'Badge'");
+    let doc = s.lock().unwrap().doc().id();
+    app_mut(&mut h).ui.prepare.entered = Some((doc, g));
+    run(&s, "object.select", json!({ "ids": [b] }));
+    h.step();
+    the(&h, "beta · in group Badge");
+    assert_eq!(value(&h, "Keep"), "Stencil");
+}
+
+#[test]
+fn mixed_selection_shows_mixed() {
+    let dir = tempfile::tempdir().unwrap();
+    let ids = std::cell::Cell::new((0, 0));
+    let (s, mut h) = window(&dir, 1400.0, |s| {
+        let (a, b) = two_squares(s);
+        run(
+            s,
+            "object.set_keep",
+            json!({ "ids": [b], "keep": "stencil" }),
+        );
+        run(s, "object.rotate", json!({ "ids": [b], "angle_deg": 30.0 }));
+        run(s, "object.select", json!({ "ids": [a, b] }));
+        ids.set((a, b));
+    });
+    the(&h, "2 objects");
+    assert_eq!(value(&h, "Keep"), "Mixed");
+    // What they share shows as it is.
+    assert_eq!(value(&h, "Cut mode"), "Object outlines");
+    assert_eq!(value(&h, "Strokes"), "Auto");
+    // Folded, the Cut summary says it too.
+    h.get_by_label("Cut").click();
+    h.run_plan();
+    assert!(painted_text(&h, "Object outlines · Mixed"));
+    h.get_by_label("Cut").click();
+    h.run_plan();
+    // Position and size: the common box, and no one angle.
+    h.get_by_label("Position and size").click();
+    h.run_plan();
+    assert_eq!(value(&h, "X"), "20.00");
+    assert_eq!(value(&h, "Angle"), "", "turned different ways");
+    assert!(painted_text(&h, "Mixed"));
+    // A change applies to both, one step to undo.
+    let undo = undo_len(&s);
+    let (a, b) = ids.get();
+    h.get_by_label("Keep").click();
+    h.run_plan();
+    h.get_by_label("Both").click();
+    h.run_plan();
+    assert_eq!(undo_len(&s), undo + 1);
+    let keep = |id: u64| {
+        s.lock()
+            .unwrap()
+            .doc()
+            .document
+            .get(flatcraft_core::document::ObjectId(id))
+            .unwrap()
+            .keep
+    };
+    assert_eq!(keep(a), flatcraft_core::document::KeepMode::Both);
+    assert_eq!(keep(b), flatcraft_core::document::KeepMode::Both);
+    assert_eq!(value(&h, "Keep"), "Both");
+}
+
+#[test]
+fn object_cut_mode_offers_merged_and_visible() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, mut h) = window(&dir, 1400.0, |s| {
+        let id = selection_all(s)[0];
+        run(s, "object.select", json!({ "ids": [id] }));
+    });
+    let id = selection_all(&s)[0];
+    let mode = |s: &SharedSession| {
+        s.lock()
+            .unwrap()
+            .doc()
+            .document
+            .get(flatcraft_core::document::ObjectId(id))
+            .unwrap()
+            .cut
+            .mode
+    };
+    for (entry, want) in [
+        (
+            "Merged outline",
+            flatcraft_core::document::CutMode::MergedOutline,
+        ),
+        (
+            "Visible outline",
+            flatcraft_core::document::CutMode::VisibleOutline,
+        ),
+    ] {
+        let undo = undo_len(&s);
+        h.get_by_label("Cut mode").click();
+        h.run_plan();
+        h.get_by_label(entry).click();
+        h.run_plan();
+        assert_eq!(mode(&s), want);
+        assert_eq!(undo_len(&s), undo + 1, "one step to undo");
+        assert_eq!(value(&h, "Cut mode"), entry);
+    }
+    // Strokes do not apply to All lines: dimmed, and its card says why.
+    run(
+        &s,
+        "object.set_cut_options",
+        json!({ "ids": [id], "mode": "all_lines" }),
+    );
+    h.run_plan();
+    let strokes = in_inspector(&h, "Strokes");
+    assert!(strokes[0].accesskit_node().is_disabled());
+    h.get_by_label("Strokes").hover();
+    h.run_plan();
+    assert!(
+        h.query_by_label(object::STROKES_ALL_LINES).is_some(),
+        "the card says why"
+    );
+}
+
+#[test]
+fn hint_card_fix_runs_existing_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let ids = std::cell::Cell::new((0, 0));
+    let (s, mut h) = window(&dir, 1400.0, |s| {
+        let (a, b) = two_squares(s);
+        // 0.3 mm apart: too close to cut cleanly.
+        run(
+            s,
+            "object.move",
+            json!({ "ids": [b], "x_mm": 70.3, "y_mm": 20.0 }),
+        );
+        run(s, "object.select", json!({ "ids": [a, b] }));
+        ids.set((a, b));
+    });
+    let (a, b) = ids.get();
+    let ignore = "Ignore for this object pair";
+    the(&h, ignore);
+    the(&h, "Move apart");
+    // Ignore runs document.ignore_issue: one undo step, stored with the
+    // document, and the hint is gone.
+    let undo = undo_len(&s);
+    h.get_by_label(ignore).click();
+    h.run_plan();
+    assert_eq!(undo_len(&s), undo + 1);
+    let ignored = s.lock().unwrap().doc().document.ignored_pairs.clone();
+    assert_eq!(ignored.len(), 1);
+    assert_eq!(ignored[0].ids, [a.min(b), a.max(b)]);
+    assert!(h.query_by_label("Move apart").is_none());
+    assert!(painted_text(&h, object::NO_HINTS));
+    // Undo brings it back; Move apart runs the fix's object.move.
+    run(&s, "edit.undo", json!({}));
+    h.run_plan();
+    let before = s
+        .lock()
+        .unwrap()
+        .doc()
+        .document
+        .get(flatcraft_core::document::ObjectId(b))
+        .unwrap()
+        .transform
+        .center_mm;
+    h.get_by_label("Move apart").click();
+    h.run_plan();
+    let after = s
+        .lock()
+        .unwrap()
+        .doc()
+        .document
+        .get(flatcraft_core::document::ObjectId(b))
+        .unwrap()
+        .transform
+        .center_mm;
+    assert_ne!(before, after, "moved apart");
+    assert!(h.query_by_label("Move apart").is_none());
+}
+
+/// Every setting of `settings` is in its object inspector section, at
+/// most one fold away, can be scrolled into view in the inspector's
+/// column, and shows its card on hover.
+fn reachable_objects(h: &mut AppHarness, settings: &[(&str, &str)]) {
+    let window = h.ctx.content_rect();
+    for &(section, label) in settings {
+        let title = object::SECTIONS
+            .iter()
+            .find(|(id, _)| *id == section)
+            .unwrap()
+            .1;
+        let mut tries = 0;
+        while in_inspector(h, label).is_empty() {
+            tries += 1;
+            assert!(tries < 30, "{label} is not reachable");
+            let header = h.get_by_label(title);
+            let expanded = header.accesskit_node().data().is_expanded();
+            let at = egui::pos2(job_line(h).rect().center().x, window.height() * 0.55);
+            if expanded == Some(false) {
+                header.scroll_to_me();
+                h.run_plan();
+                h.get_by_label(title).click();
+                h.run_plan();
+            } else {
+                wheel_down(h, at);
+            }
+        }
+        in_inspector(h, label)[0].scroll_to_me();
+        h.run_plan();
+        let r = the(h, label);
+        assert!(window.contains_rect(r), "{label} at {r:?} in {window:?}");
+        // Its card shows on hover.
+        let before = h.query_all_by_label(label).count();
+        in_inspector(h, label)[0].hover();
+        h.run_plan();
+        assert!(
+            h.query_all_by_label(label).count() > before,
+            "{label} at {r:?} in {window:?} shows no card"
+        );
+        h.hover_at(egui::pos2(1.0, 1.0));
+        h.run_plan();
+    }
+}
+
+#[test]
+fn every_object_setting_is_reachable() {
+    for w in [900.0, 1920.0] {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("logo.svg");
+        std::fs::write(&file, common::SQUARE_SVG).unwrap();
+        let (s, mut h) = window(&dir, w, |s| {
+            s.lock().unwrap().prefs.panel_settings = PanelUser::None;
+            let id = run(s, "object.import", json!({ "path": file }))["id"]
+                .as_u64()
+                .unwrap();
+            run(s, "object.select", json!({ "ids": [id] }));
+        });
+        wait_for_workers(&mut h);
+        open_right_panel(&mut h);
+        // Every section header has its card, titled as it reads.
+        for (_, name) in object::SECTIONS {
+            let title = if name == object::ARRANGE_NAME {
+                "Arrange"
+            } else {
+                name
+            };
+            h.get_by_label(name).scroll_to_me();
+            h.run_plan();
+            let before = h.query_all_by_label(title).count();
+            h.get_by_label(name).hover();
+            h.run_plan();
+            assert!(
+                h.query_all_by_label(title).count() > before,
+                "{name} shows no card"
+            );
+            h.hover_at(egui::pos2(1.0, 1.0));
+            h.run_plan();
+        }
+        reachable_objects(&mut h, &object::SETTINGS);
+        // The Source actions of a linked file.
+        let sn = snap(&mut h);
+        let items = object::source_items(&sn, &app(&h).ui.prepare);
+        assert!(items.len() >= 3, "{items:?}");
+        let names: Vec<String> = items.iter().map(|i| i.text(&sn, &[])).collect();
+        let source: Vec<(&str, &str)> =
+            names.iter().map(|n| (object::SOURCE, n.as_str())).collect();
+        reachable_objects(&mut h, &source);
+        // The common path: speed and force, one click on the job line.
+        job_line(&h).click();
+        h.run_plan();
+        reachable(&mut h, &[(job::VALUES, "Speed"), (job::VALUES, "Force")]);
+        drop(s);
+    }
+}
+
+#[test]
+fn tab_switch_never_shows_other_document_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let docs = std::cell::Cell::new((0, 0));
+    let (_s, mut h) = window(&dir, 1400.0, |s| {
+        // The first document: alpha and beta 0.3 mm apart, a hint, alpha
+        // kept as a stencil.
+        let (a, b) = two_squares(s);
+        run(
+            s,
+            "object.move",
+            json!({ "ids": [b], "x_mm": 70.3, "y_mm": 20.0 }),
+        );
+        run(
+            s,
+            "object.set_keep",
+            json!({ "ids": [a], "keep": "stencil" }),
+        );
+        run(s, "object.select", json!({ "ids": [a, b] }));
+        let first = s.lock().unwrap().doc().id();
+        // The second: one square, "gamma", alone.
+        run(s, "document.new", json!({}));
+        let c = import_square(s);
+        rename(s, c, "gamma");
+        run(s, "object.select", json!({ "ids": [c] }));
+        let second = s.lock().unwrap().doc().id();
+        docs.set((first, second));
+    });
+    let (first, second) = docs.get();
+    let ctx = h.ctx.clone();
+    for _ in 0..2 {
+        app_mut(&mut h).apply(&ctx, vec![flatcraft::ui::Action::Switch(first)]);
+        h.step();
+        the(&h, "2 objects");
+        assert_eq!(value(&h, "Keep"), "Mixed");
+        the(&h, "Move apart");
+        app_mut(&mut h).apply(&ctx, vec![flatcraft::ui::Action::Switch(second)]);
+        h.step();
+        assert!(in_inspector(&h, "2 objects").is_empty());
+        the(&h, "gamma");
+        assert_eq!(value(&h, "Keep"), "Pieces");
+        assert!(
+            h.query_by_label("Move apart").is_none(),
+            "no hint of the other document"
+        );
+    }
+}
+
+#[test]
+fn compare_link_opens_the_strategy_comparison() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_s, mut h) = window(&dir, 1400.0, |_| {});
+    h.get_by_label(job::COMPARE).click();
+    h.run_plan();
+    assert_eq!(app(&h).ui.workspace, flatcraft::ui::Workspace::Cut);
+    assert_eq!(app(&h).ui.cut.stage, flatcraft::ui::cut::Stage::Simulate);
+}
+
+#[test]
+fn position_fields_in_the_inspector_apply_like_the_ribbon() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, mut h) = window(&dir, 1400.0, |s| {
+        let id = selection_all(s)[0];
+        run(s, "object.select", json!({ "ids": [id] }));
+        s.lock()
+            .unwrap()
+            .prefs
+            .panel_sections
+            .insert(object::POSITION.into(), true);
+    });
+    let id = selection_all(&s)[0];
+    let bounds = |h: &mut AppHarness| snap(h).box_of(&[id]).unwrap();
+    assert_eq!(value(&h, "X"), "20.00");
+    let undo = undo_len(&s);
+    // A calculation, applied when the field loses the focus by Enter.
+    in_inspector(&h, "X")[0].click();
+    h.run_plan();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, Key::A);
+    h.run_plan();
+    h.event(egui::Event::Text("20+15".into()));
+    h.run_plan();
+    // The ribbon's X shows what is typed while the inspector edits it.
+    assert_eq!(app(&h).ui.prepare.fields.x, "20+15");
+    h.key_press(Key::Enter);
+    h.run_plan();
+    let b = bounds(&mut h);
+    assert!((b.x0 - 35.0).abs() < 1e-6, "{b:?}");
+    assert_eq!(undo_len(&s), undo + 1, "one step to undo");
+    assert_eq!(value(&h, "X"), "35.00");
+    // The ribbon's field shows it too.
+    assert_eq!(field_text(&h, "X (mm)"), "35.00");
+    // Esc puts the shown value back.
+    in_inspector(&h, "Width")[0].click();
+    h.run_plan();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, Key::A);
+    h.run_plan();
+    h.event(egui::Event::Text("99".into()));
+    h.run_plan();
+    h.key_press(Key::Escape);
+    h.run_plan();
+    assert_eq!(undo_len(&s), undo + 1);
+    assert_eq!(value(&h, "Width"), "50.00");
+    // The ribbon's View tab does not end an edit in the inspector.
+    in_inspector(&h, "Y")[0].click();
+    h.run_plan();
+    app_mut(&mut h).ui.prepare.tab = prepare::RibbonTab::View;
+    h.run_plan();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, Key::A);
+    h.run_plan();
+    h.event(egui::Event::Text("40".into()));
+    h.run_plan();
+    h.key_press(Key::Tab);
+    h.run_plan();
+    let b = bounds(&mut h);
+    assert!((b.y0 - 40.0).abs() < 1e-6, "{b:?}");
+}
+
+#[test]
+fn every_object_section_has_a_plain_card() {
+    for text in [
+        object::CUT_CARD,
+        object::POSITION_CARD,
+        object::ARRANGE_CARD,
+        object::SOURCE_CARD,
+        object::HINTS_CARD,
+        object::HEADING_CARD,
+        object::STROKES_ALL_LINES,
+        object::NO_HINTS,
+        &object::on_the_card(1),
+        &object::on_the_card(2),
+    ] {
+        assert!(!text.is_empty());
+        assert!(!text.contains('\u{2014}'), "{text}");
+        assert!(text.ends_with('.'), "{text}");
+    }
 }

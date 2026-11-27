@@ -191,10 +191,21 @@ pub enum SizeField {
     Angle,
 }
 
+/// Where a Position and size field is drawn: the same fields, with the
+/// same rules, sit in the ribbon and in the object inspector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum FieldPlace {
+    #[default]
+    Ribbon,
+    Inspector,
+}
+
 /// The number field being edited: it applies when it loses the focus.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FieldEdit {
     pub field: SizeField,
+    /// Where it is being edited.
+    pub place: FieldPlace,
     /// The text it showed when the editing began. An unchanged text
     /// applies nothing.
     pub shown: String,
@@ -209,7 +220,8 @@ pub struct FieldEdit {
     pub value: Option<f64>,
 }
 
-/// Edit buffers of the ribbon's number fields.
+/// Edit buffers of the Position and size fields (the ribbon's and the
+/// object inspector's share them: one field is edited at a time).
 #[derive(Debug, Clone)]
 pub struct Fields {
     /// The top-left corner of the selection box, in mm from the grid's 0,0.
@@ -372,6 +384,11 @@ pub struct PrepareState {
     /// The document and selection the inspector followed last frame: a
     /// change takes it back to the selection.
     pub inspector_key: Option<(u64, BTreeSet<u64>)>,
+    /// The object inspector drew its Position and size fields last frame
+    /// (their edit ends when they are gone, see `ribbon::finish_pending`).
+    pub inspector_fields: bool,
+    /// The hints of the selected objects, for the object inspector.
+    pub object_hints: super::inspector::object::Hints,
 }
 
 /// The Rename dialog: its object and the name typed so far.
@@ -462,6 +479,8 @@ impl Default for PrepareState {
             notes_burst: 0,
             inspector: Default::default(),
             inspector_key: None,
+            inspector_fields: false,
+            object_hints: Default::default(),
         }
     }
 }
@@ -1483,6 +1502,8 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
     let t = app.tokens;
     arrange::keep_or_close(&mut app.ui.prepare, snap);
     super::inspector::follow_selection(&mut app.ui.prepare, snap);
+    // The object inspector says again this frame whether its fields show.
+    app.ui.prepare.inspector_fields = false;
     // Another document or another selection cancels the keep picker.
     if app
         .ui
@@ -1543,7 +1564,15 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
             .frame(egui::Frame::new().fill(t.panel).inner_margin(t.spacing))
             .show(ui, |ui| {
                 let dot = rails::job_dot(snap, Some(&app.ui.cut));
-                super::inspector::show(ui, &mut app.ui.prepare, snap, dot, &t, actions);
+                super::inspector::show(
+                    ui,
+                    &mut app.ui.prepare,
+                    snap,
+                    dot,
+                    &t,
+                    &mut app.ui.show_debug,
+                    actions,
+                );
             });
     }
 

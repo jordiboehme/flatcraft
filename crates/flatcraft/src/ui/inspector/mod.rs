@@ -2,27 +2,30 @@
 //! visible, and below it what the selection is cut with, or the Job panel.
 //!
 //! - Nothing selected: the Job panel.
-//! - Objects selected: their cut options (the interim Selection section,
-//!   until the object inspector takes over), then the Job panel.
-//! - A click on the job line shows only the Job panel, also over a
-//!   selection ([`InspectorView::Job`]); a second click, Escape or another
-//!   selection goes back.
+//! - Objects selected: the object inspector ([`object`]).
+//! - A click on the job line shows the Job panel over a selection
+//!   ([`InspectorView::Job`]); a second click, Escape or another selection
+//!   goes back.
+//!
+//! The job line and the heading under it stay where they are when the
+//! selection changes, so the panel never jumps.
 
 pub mod blocks;
 pub mod job;
+pub mod object;
 
-use egui::{RichText, Ui};
+use egui::Ui;
 
+use super::Action;
 use super::prepare::{PrepareState, Snapshot};
 use super::rails::{Dot, Side, SidePanel};
 use super::theme::Tokens;
-use super::{Action, fonts};
 
 /// What the inspector shows. UI state only: no undo step, never saved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InspectorView {
-    /// What the selection asks for: its cut options and the job, or only
-    /// the job when nothing is selected.
+    /// What the selection asks for: the object inspector, or the job when
+    /// nothing is selected.
     #[default]
     Selection,
     /// Only the Job panel, also over a selection (the job line asked).
@@ -31,9 +34,6 @@ pub enum InspectorView {
 
 /// The ids of every tip a person can hide (`Preferences.hidden_tips`).
 pub const KNOWN_TIPS: &[&str] = &[super::materials::TEST_CUT_TIP];
-
-/// The id of the interim Selection section.
-pub const SELECTION: &str = "object.cut";
 
 /// Whether the Job panel shows over a selection (the job line is "open").
 pub fn job_over_selection(st: &PrepareState, snap: &Snapshot) -> bool {
@@ -51,33 +51,41 @@ pub fn follow_selection(st: &mut PrepareState, snap: &Snapshot) {
     }
 }
 
-/// The subtitles under "Job": nothing selected, over a selection (the
-/// Job view), and under the selection's cut options.
-pub const SUBTITLES: [&str; 3] = [
-    "Nothing selected: what this cut uses. Select objects to choose what is cut of them.",
-    "What this cut uses. Click the job line or press Esc to go back.",
-    "What this cut uses, for the whole document.",
+/// The line under "Job": nothing selected, and over a selection (the
+/// Job view). The heading's card says the rest ([`SUBTITLES`]).
+pub const SUBTITLE_LINES: [&str; 2] = [
+    "Nothing selected: what this cut uses",
+    "What this cut uses. Esc goes back",
 ];
 
-/// The subtitle under "Job".
-pub fn job_subtitle(st: &PrepareState, snap: &Snapshot) -> &'static str {
-    if snap.selection.is_empty() {
-        SUBTITLES[0]
-    } else if st.inspector == InspectorView::Job {
-        SUBTITLES[1]
-    } else {
-        SUBTITLES[2]
-    }
+/// The cards of the heading "Job", in the order of [`SUBTITLE_LINES`].
+pub const SUBTITLES: [&str; 2] = [
+    "Nothing selected: what this cut uses. Select objects to choose what is cut of them.",
+    "What this cut uses, over your selection. Click the job line or press Esc to go back to the selection.",
+];
+
+/// The line under "Job" and its card.
+pub fn job_subtitle(st: &PrepareState, snap: &Snapshot) -> (&'static str, &'static str) {
+    let i = usize::from(!snap.selection.is_empty() && st.inspector == InspectorView::Job);
+    (SUBTITLE_LINES[i], SUBTITLES[i])
+}
+
+/// Whether the object inspector shows (objects are selected and the job
+/// line did not ask for the job).
+pub fn shows_objects(st: &PrepareState, snap: &Snapshot) -> bool {
+    !snap.selection.is_empty() && st.inspector == InspectorView::Selection
 }
 
 /// The inspector: the job line with the panel's fold button, then the
-/// sections in a scroll area.
+/// heading and the sections in a scroll area: the object inspector with a
+/// selection, else the Job panel. Each keeps its own scroll position.
 pub fn show(
     ui: &mut Ui,
     st: &mut PrepareState,
     snap: &Snapshot,
     dot: Dot,
     t: &Tokens,
+    show_debug: &mut bool,
     actions: &mut Vec<Action>,
 ) {
     let open = job_over_selection(st, snap);
@@ -105,21 +113,27 @@ pub fn show(
         };
     }
     ui.add_space(t.spacing);
+    let objects = shows_objects(st, snap);
     egui::ScrollArea::vertical()
-        .id_salt("flatcraft-inspector")
+        .id_salt(if objects {
+            "flatcraft-inspector-objects"
+        } else {
+            "flatcraft-inspector"
+        })
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            if !snap.selection.is_empty() && st.inspector == InspectorView::Selection {
-                super::settings::selection(ui, st, snap, t, actions);
-                ui.add_space(t.spacing);
+            // Room for the scroll bar on the right, so it never lies over
+            // a reset arrow or the Keep aspect lock.
+            let bar = ui.spacing().scroll;
+            let room = bar.bar_width + bar.bar_inner_margin + bar.bar_outer_margin;
+            ui.set_max_width((ui.available_width() - room).max(0.0));
+            if objects {
+                object::panel(ui, st, snap, t, show_debug, actions);
+            } else {
+                let (line, card) = job_subtitle(st, snap);
+                blocks::heading(ui, "Job", line, card);
+                ui.add_space(t.spacing / 2.0);
+                job::panel(ui, st, snap, t, actions);
             }
-            ui.label(RichText::new("Job").font(fonts::semibold(16.0)));
-            ui.label(
-                RichText::new(job_subtitle(st, snap))
-                    .size(12.0)
-                    .color(t.text_dim),
-            );
-            ui.add_space(t.spacing / 2.0);
-            job::panel(ui, st, snap, t, actions);
         });
 }

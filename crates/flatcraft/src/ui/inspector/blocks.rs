@@ -342,7 +342,35 @@ pub fn section(
     body: impl FnOnce(&mut Ui),
     advanced: Option<&mut dyn FnMut(&mut Ui)>,
 ) -> bool {
-    let open = header(ui, id, title, card, summary, default_open, false);
+    section_named(
+        ui,
+        id,
+        title,
+        title,
+        card,
+        summary,
+        default_open,
+        body,
+        advanced,
+    )
+}
+
+/// [`section`] whose header has the accessible name `name` instead of its
+/// title, for a title another control of the window already has (the
+/// ribbon's Arrange group and the object inspector's Arrange section).
+#[allow(clippy::too_many_arguments)]
+pub fn section_named(
+    ui: &mut Ui,
+    id: &str,
+    title: &str,
+    name: &str,
+    card: &str,
+    summary: &str,
+    default_open: bool,
+    body: impl FnOnce(&mut Ui),
+    advanced: Option<&mut dyn FnMut(&mut Ui)>,
+) -> bool {
+    let open = header(ui, id, title, name, card, summary, default_open, false);
     if open {
         ui.add_space(2.0);
         body(ui);
@@ -351,7 +379,7 @@ pub fn section(
             let card = format!(
                 "Settings of {title} you rarely need. They are folded so the common ones stay in view."
             );
-            if header(ui, &id, "Advanced", &card, "", false, true) {
+            if header(ui, &id, "Advanced", "Advanced", &card, "", false, true) {
                 advanced(ui);
             }
         }
@@ -362,10 +390,12 @@ pub fn section(
 
 /// The header of a section (or of its Advanced part, `sub`). Returns
 /// whether the section is open after this frame's click.
+#[allow(clippy::too_many_arguments)]
 fn header(
     ui: &mut Ui,
     id: &str,
     title: &str,
+    name: &str,
     card: &str,
     summary: &str,
     default_open: bool,
@@ -379,8 +409,8 @@ fn header(
         open = !open;
         set_open(ui.ctx(), id, open);
     }
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, title));
-    set_name(ui, &resp, title);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
+    set_name(ui, &resp, name);
     ui.ctx().accesskit_node_builder(resp.id, |node| {
         node.set_expanded(open);
     });
@@ -608,6 +638,83 @@ pub fn row_dimmed(
     }
 }
 
+/// A row of buttons (or links) after the dimmed label, for actions that
+/// belong together ("Align": six small buttons). The buttons keep their
+/// own names and cards; `card` is the label's. They wrap to more lines
+/// when the panel is narrow. An empty label leaves the label column empty.
+pub fn actions_row(ui: &mut Ui, label: &str, card: &str, add: impl FnOnce(&mut Ui)) {
+    let h = ui.spacing().interact_size.y;
+    let w = ui.available_width();
+    let label_w = label_width(w);
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let (lr, lresp) = ui.allocate_exact_size(vec2(label_w + DOT_W, h), Sense::hover());
+        if !label.is_empty() {
+            let dim = tokens(ui).text_dim;
+            one_line(
+                ui.painter(),
+                label,
+                egui::TextStyle::Body.resolve(ui.style()),
+                dim,
+                egui::pos2(lr.left(), lr.center().y),
+                label_w - 4.0,
+                Align::LEFT,
+            );
+            groups::card(&lresp, label, card, None, false);
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+            add(ui);
+        });
+    });
+    ui.add_space(ui.spacing().item_spacing.y);
+}
+
+/// The height of the heading under the job line ("Job", "2 objects"):
+/// the title and one line under it.
+pub const HEADING_H: f32 = 40.0;
+
+/// The heading under the job line: what the panel shows ("2 objects",
+/// "Group 'Badge'") and one dimmed line under it ("Star, Circle · in
+/// group Badge"), cut short with "..." when it does not fit. Always
+/// [`HEADING_H`] tall, so nothing below it moves when the selection
+/// changes; its card holds the whole text.
+pub fn heading(ui: &mut Ui, title: &str, subtitle: &str, card: &str) -> Response {
+    let w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, HEADING_H), Sense::hover());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, title));
+    set_name(ui, &resp, title);
+    if ui.is_rect_visible(rect) {
+        let tk = tokens(ui);
+        let p = ui.painter();
+        one_line(
+            p,
+            title,
+            fonts::semibold(16.0),
+            tk.text,
+            egui::pos2(rect.left(), rect.top() + 11.0),
+            w,
+            Align::LEFT,
+        );
+        one_line(
+            p,
+            subtitle,
+            FontId::proportional(12.0),
+            tk.text_dim,
+            egui::pos2(rect.left(), rect.top() + 30.0),
+            w,
+            Align::LEFT,
+        );
+    }
+    let text = if subtitle.is_empty() {
+        card.to_string()
+    } else {
+        format!("{subtitle}.\n\n{card}")
+    };
+    groups::card(&resp, title, &text, None, false);
+    resp
+}
+
 /// The small reset arrow of a changed row.
 fn reset_button(ui: &mut Ui, name: &str) -> Response {
     let size = 14.0;
@@ -733,6 +840,20 @@ pub fn hint_card(
     issue: &str,
     actions: &[HintButton<'_>],
 ) -> Option<usize> {
+    hint_card_with(ui, t, dismiss, title, issue, None, actions)
+}
+
+/// [`hint_card`] with a dimmed line under the text (`detail`: what to do
+/// when no button fixes it).
+pub fn hint_card_with(
+    ui: &mut Ui,
+    t: &Tokens,
+    dismiss: Option<&str>,
+    title: Option<(&str, &str)>,
+    issue: &str,
+    detail: Option<&str>,
+    actions: &[HintButton<'_>],
+) -> Option<usize> {
     if dismiss.is_some_and(|id| tip_hidden(ui.ctx(), id)) {
         return None;
     }
@@ -778,6 +899,9 @@ pub fn hint_card(
                 });
             }
             ui.add(egui::Label::new(RichText::new(issue).color(t.text)).wrap());
+            if let Some(detail) = detail {
+                ui.add(egui::Label::new(RichText::new(detail).color(t.text_dim)).wrap());
+            }
             if !actions.is_empty() {
                 ui.horizontal_wrapped(|ui| {
                     for (i, b) in actions.iter().enumerate() {

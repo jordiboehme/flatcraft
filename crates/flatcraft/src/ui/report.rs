@@ -151,6 +151,14 @@ impl ImportCard {
     }
 }
 
+/// What a fix's button runs: exactly the fix's registry command with its
+/// arguments, the same an agent runs. `None` when the command is unknown.
+pub fn fix_action(doc_id: u64, fix: &report::Fix) -> Option<Action> {
+    // The registry's own id: a fix names a real command.
+    let command = flatcraft_engine::registry::get(&fix.command)?;
+    Some(Action::run(doc_id, command.id(), fix.args.clone()))
+}
+
 /// Issues, the most severe first, keeping their order within a severity.
 pub fn by_severity<'a>(issues: impl Iterator<Item = &'a Issue>) -> Vec<&'a Issue> {
     let mut v: Vec<&Issue> = issues.collect();
@@ -216,14 +224,13 @@ fn issue_rows(
                 }
                 ui.horizontal_wrapped(|ui| {
                     for fix in &issue.fixes {
-                        // The registry's own id: a fix names a real command.
-                        let Some(command) = flatcraft_engine::registry::get(&fix.command) else {
+                        let Some(action) = fix_action(doc_id, fix) else {
                             continue;
                         };
                         let r = ui.button(fix.label.as_str());
                         card(&r, &fix.label, &fix.description, None, false);
                         if r.clicked() {
-                            actions.push(Action::run(doc_id, command.id(), fix.args.clone()));
+                            actions.push(action);
                             clicked = true;
                         }
                     }

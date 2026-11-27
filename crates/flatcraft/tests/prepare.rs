@@ -6,8 +6,9 @@ use common::RunPlan;
 use std::path::Path;
 
 use common::{
-    AppHarness, FakePicker, app, app_mut, harness, harness_with, import_square, painted, session,
-    to_prepare, undo_len, wait_for_source_check, wait_for_workers, worker_delay,
+    AppHarness, FakePicker, app, app_mut, harness, harness_with, import_square, painted,
+    select_none, session, show_job, to_prepare, undo_len, wait_for_source_check, wait_for_workers,
+    worker_delay,
 };
 use egui::accesskit::Role;
 use egui::{Color32, Event, Modifiers, Pos2, Shape, Vec2};
@@ -177,6 +178,7 @@ fn settings_override_marks_modified() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     import_square(&s);
+    select_none(&s);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     assert!(h.query_by_label("Speed (modified)").is_none());
@@ -673,6 +675,7 @@ fn typed_speed_is_one_command() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     import_square(&s);
+    select_none(&s);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     let before = undo_len(&s);
@@ -1000,9 +1003,13 @@ fn settings_rows_have_one_accessible_node_each() {
     import_square(&s);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    for label in [
-        "Cut mode", "Keep", "Strokes", "Plotter", "Mat", "Material", "Speed", "Force", "Passes",
-    ] {
+    // The object inspector, with the square selected.
+    for label in ["Cut mode", "Keep", "Strokes"] {
+        assert_eq!(h.query_all_by_label(label).count(), 1, "{label}");
+    }
+    // The Job panel, over it.
+    show_job(&mut h);
+    for label in ["Plotter", "Mat", "Material", "Speed", "Force", "Passes"] {
         assert_eq!(h.query_all_by_label(label).count(), 1, "{label}");
     }
 }
@@ -1155,6 +1162,7 @@ fn the_mat_combo_shows_the_fallback_mat() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     import_square(&s);
+    select_none(&s);
     s.lock().unwrap().doc_mut().document.job.media_id = "gone".into();
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);

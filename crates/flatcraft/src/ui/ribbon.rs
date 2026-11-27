@@ -14,7 +14,7 @@ use super::canvas;
 use super::collapse::{self, Group, Mode};
 use super::groups::{self, Cx, Extras};
 use super::icons::Icon;
-use super::prepare::{FieldEdit, Fields, PrepareState, RibbonTab, SizeField, Snapshot};
+use super::prepare::{FieldEdit, FieldPlace, Fields, PrepareState, RibbonTab, SizeField, Snapshot};
 use super::rails::SidePanel;
 use super::settings::set_name;
 use super::theme::Tokens;
@@ -93,9 +93,10 @@ impl SizeField {
         }
     }
 
-    /// Its widget id, the same wherever the group is drawn.
-    fn id(self) -> egui::Id {
-        egui::Id::unique(("flatcraft-size-field", self.id_salt()))
+    /// Its widget id in `place`, the same wherever the group is drawn
+    /// there.
+    pub fn id(self, place: FieldPlace) -> egui::Id {
+        egui::Id::unique(("flatcraft-size-field", self.id_salt(), place))
     }
 
     /// What the field takes: its unit, its range.
@@ -120,61 +121,98 @@ impl SizeField {
     }
 }
 
-/// Draws a number field. It shows `current` while it is not being edited
-/// and never overwrites what the person types. The typed value counts when
-/// the field loses the focus (Tab, Shift-Tab, Enter, a click elsewhere),
-/// see [`finish_edit`]; Escape puts the shown value back. It is always as
-/// wide as its text, and at least as wide as [`WIDEST_MM`], so no digit is
-/// cut.
-fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) -> egui::Rect {
-    let id = nf.field.id();
-    let focused = ui.memory(|m| m.has_focus(id));
-    let fields = &mut cx.st.fields;
-    let editing = fields.editing.as_ref().is_some_and(|e| e.field == nf.field);
-    if !focused && !editing {
-        *nf.field.buf(fields) = nf.current.clone();
-    } else if editing {
-        // Nothing typed yet (the focus came by Tab, say): it follows the
-        // value, which a field applied in the same frame may have changed.
-        // It also follows the selection, so a Tab out of it never moves
-        // what was selected before.
-        let shown = fields.editing.as_ref().map(|e| e.shown.clone());
-        let now: Vec<u64> = cx.snap.selection.iter().copied().collect();
-        if shown.as_deref() != Some(nf.field.buf(fields).as_str())
-            && fields.editing.as_ref().is_some_and(|e| e.ids != now)
-        {
-            // Typed, and then the selection changed (an agent, a menu
-            // command): a text it can read stays with the objects, the
-            // document and the value it was typed for. A text it cannot
-            // read, or an empty selection, ends the edit with the old
-            // value.
-            let typed = nf.field.buf(fields).trim().to_string();
-            let start = fields.editing.as_ref().and_then(|e| e.value);
-            let read = nf.field.spec().eval(&typed, start);
-            match (read, now.is_empty()) {
-                (Ok(_), false) => {}
-                (read, _) => {
-                    if let (Err(e), false) = (read, now.is_empty()) {
-                        cx.actions.push(Action::Error(calc::dropped(&e.message)));
-                    }
-                    *nf.field.buf(fields) = nf.current.clone();
-                    fields.editing = None;
-                    fields.error = None;
-                    ui.memory_mut(|m| m.surrender_focus(id));
-                }
-            }
-        } else if shown.as_deref() == Some(nf.field.buf(fields).as_str()) {
-            *nf.field.buf(fields) = nf.current.clone();
-            if let Some(e) = fields.editing.as_mut() {
-                e.shown = nf.current.clone();
-                e.value = nf.value;
-                e.doc_id = cx.snap.doc_id;
-                e.ids = cx.snap.selection.iter().copied().collect();
-                e.free = canvas::free_aspect(cx.snap, &e.ids);
+/// The field `field` as it shows now: its label, name, card and value.
+/// The ribbon and the object inspector both draw it from here.
+fn number_field_of(field: SizeField, snap: &Snapshot, st: &PrepareState) -> NumberField<'static> {
+    let any = !snap.selection.is_empty();
+    let b = canvas::live_box(snap, st);
+    let nf = |label, widest, name, setting, value: Option<f64>| NumberField {
+        field,
+        label,
+        icon: None,
+        hint: "",
+        widest,
+        name,
+        setting,
+        current: value.map(mm).unwrap_or_default(),
+        value,
+        enabled: any,
+    };
+    match field {
+        SizeField::X => nf(
+            "X",
+            WIDEST_MM,
+            "X (mm)",
+            Setting::PositionX,
+            b.map(|b| b.x0),
+        ),
+        SizeField::Y => nf(
+            "Y",
+            WIDEST_MM,
+            "Y (mm)",
+            Setting::PositionY,
+            b.map(|b| b.y0),
+        ),
+        // A size is never negative.
+        SizeField::Width => nf(
+            "W",
+            WIDEST_SIZE,
+            "Width (mm)",
+            Setting::Width,
+            b.map(|b| b.width()),
+        ),
+        SizeField::Height => nf(
+            "H",
+            WIDEST_SIZE,
+            "Height (mm)",
+            Setting::Height,
+            b.map(|b| b.height()),
+        ),
+        // As wide as the Angle below it: 3 digits and 2 decimals.
+        SizeField::Percent => nf(
+            "%",
+            WIDEST_DEG,
+            "Scale (%)",
+            Setting::ScalePercent,
+            any.then(|| canvas::live_percent(st).unwrap_or(100.0)),
+        ),
+        SizeField::Angle => {
+            let angle = canvas::live_angle(snap, st);
+            // Mixed only for several objects turned different ways, never
+            // for an emptied field.
+            let mixed = snap.selection.len() > 1 && angle.is_none();
+            NumberField {
+                icon: Some(Icon::Rotate),
+                // Turned different ways: no one angle to show.
+                hint: if mixed { "Mixed" } else { "" },
+                ..nf(
+                    "Angle",
+                    WIDEST_DEG,
+                    "Angle (degrees)",
+                    Setting::Angle,
+                    angle,
+                )
             }
         }
     }
-    let why = (!nf.enabled).then_some("Select something first.");
+}
+
+/// The card of a field: what it is, and how to type a calculation.
+fn field_card(nf: &NumberField) -> String {
+    calc::with_hint(nf.setting.card(), nf.field.spec().kind)
+}
+
+/// Why the fields are dimmed.
+const SELECT_FIRST: &str = "Select something first.";
+
+/// Draws a number field of the ribbon: its label, then the field. It shows
+/// `current` while it is not being edited and never overwrites what the
+/// person types. The typed value counts when the field loses the focus
+/// (Tab, Shift-Tab, Enter, a click elsewhere), see [`finish_edit`]; Escape
+/// puts the shown value back. It is always as wide as its text, and at
+/// least as wide as [`WIDEST_MM`], so no digit is cut.
+fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) -> egui::Rect {
+    let why = (!nf.enabled).then_some(SELECT_FIRST);
     let l = match nf.icon {
         Some(icon) => {
             let tex = super::icons::texture(ui.ctx(), icon, LABEL_ICON);
@@ -192,10 +230,111 @@ fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) -> egui::Rect {
         }
         None => ui.label(nf.label),
     };
-    let card = calc::with_hint(nf.setting.card(), nf.field.spec().kind);
+    let card = field_card(&nf);
     groups::card(&l, nf.name, &card, why, false);
+    let (name, widest) = (nf.name, nf.widest);
+    let resp = field_edit(
+        ui,
+        nf,
+        FieldPlace::Ribbon,
+        cx.st,
+        cx.snap,
+        cx.actions,
+        |ui, buf| field_width(ui, buf).max(field_width(ui, widest)),
+    );
+    set_name(ui, &resp, name);
+    groups::card(&resp, name, &card, why, false);
+    resp.rect
+}
+
+/// A Position and size field of the object inspector, as wide as the row
+/// gives it. The row names it and gives it its card ([`inspector_card`]).
+/// The same field, value and rules as in the ribbon.
+pub fn inspector_field(
+    ui: &mut Ui,
+    field: SizeField,
+    st: &mut PrepareState,
+    snap: &Snapshot,
+    actions: &mut Vec<Action>,
+) -> egui::Response {
+    let nf = number_field_of(field, snap, st);
+    field_edit(ui, nf, FieldPlace::Inspector, st, snap, actions, |ui, _| {
+        ui.available_width()
+    })
+}
+
+/// The card of a field in the object inspector: the ribbon's card.
+pub fn inspector_card(field: SizeField, snap: &Snapshot, st: &PrepareState) -> String {
+    field_card(&number_field_of(field, snap, st))
+}
+
+/// The text field of a number field in `place`, `width(ui, text)` wide:
+/// it follows the value while it is not edited, and applies what was
+/// typed when it loses the focus. A field has a twin in the other place;
+/// while one is edited, the other shows what is typed.
+fn field_edit(
+    ui: &mut Ui,
+    nf: NumberField,
+    place: FieldPlace,
+    st: &mut PrepareState,
+    snap: &Snapshot,
+    actions: &mut Vec<Action>,
+    width: impl FnOnce(&Ui, &str) -> f32,
+) -> egui::Response {
+    let id = nf.field.id(place);
+    let focused = ui.memory(|m| m.has_focus(id));
+    let fields = &mut st.fields;
+    // Edited here, or in its twin (the twin is drawn first in a frame, so
+    // only the place being edited touches the text).
+    let field = nf.field;
+    let edited = |f: &Fields| f.editing.as_ref().map(|e| (e.field == field, e.place));
+    let twin = edited(fields).is_some_and(|(same, p)| same && p != place);
+    let editing = edited(fields).is_some_and(|(same, p)| same && p == place);
+    if !focused && !twin && !editing {
+        *nf.field.buf(fields) = nf.current.clone();
+    } else if editing {
+        // Nothing typed yet (the focus came by Tab, say): it follows the
+        // value, which a field applied in the same frame may have changed.
+        // It also follows the selection, so a Tab out of it never moves
+        // what was selected before.
+        let shown = fields.editing.as_ref().map(|e| e.shown.clone());
+        let now: Vec<u64> = snap.selection.iter().copied().collect();
+        if shown.as_deref() != Some(nf.field.buf(fields).as_str())
+            && fields.editing.as_ref().is_some_and(|e| e.ids != now)
+        {
+            // Typed, and then the selection changed (an agent, a menu
+            // command): a text it can read stays with the objects, the
+            // document and the value it was typed for. A text it cannot
+            // read, or an empty selection, ends the edit with the old
+            // value.
+            let typed = nf.field.buf(fields).trim().to_string();
+            let start = fields.editing.as_ref().and_then(|e| e.value);
+            let read = nf.field.spec().eval(&typed, start);
+            match (read, now.is_empty()) {
+                (Ok(_), false) => {}
+                (read, _) => {
+                    if let (Err(e), false) = (read, now.is_empty()) {
+                        actions.push(Action::Error(calc::dropped(&e.message)));
+                    }
+                    *nf.field.buf(fields) = nf.current.clone();
+                    fields.editing = None;
+                    fields.error = None;
+                    ui.memory_mut(|m| m.surrender_focus(id));
+                }
+            }
+        } else if shown.as_deref() == Some(nf.field.buf(fields).as_str()) {
+            *nf.field.buf(fields) = nf.current.clone();
+            if let Some(e) = fields.editing.as_mut() {
+                e.shown = nf.current.clone();
+                e.value = nf.value;
+                e.doc_id = snap.doc_id;
+                e.ids = snap.selection.iter().copied().collect();
+                e.free = canvas::free_aspect(snap, &e.ids);
+            }
+        }
+    }
     let buf = nf.field.buf(fields);
-    let width = field_width(ui, buf).max(field_width(ui, nf.widest));
+    let w = width(ui, buf);
     let resp = ui.add_enabled(
         nf.enabled,
         egui::TextEdit::singleline(buf)
@@ -205,32 +344,37 @@ fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) -> egui::Rect {
                 FIELD_MARGIN.x as i8,
                 FIELD_MARGIN.y as i8,
             ))
-            .desired_width(width)
-            .min_size(egui::vec2(width, 0.0)),
+            .desired_width(w)
+            .min_size(egui::vec2(w, 0.0)),
     );
-    set_name(ui, &resp, nf.name);
-    calc::select_whole_value(ui, &resp, nf.field.buf(&mut cx.st.fields));
-    groups::card(&resp, nf.name, &card, why, false);
-    if let Some((_, msg)) = cx.st.fields.error.as_ref().filter(|(f, _)| *f == nf.field) {
+    calc::select_whole_value(ui, &resp, nf.field.buf(&mut st.fields));
+    let here = st.fields.editing.as_ref().is_none_or(|e| e.place == place);
+    if let Some((_, msg)) = st
+        .fields
+        .error
+        .as_ref()
+        .filter(|(f, _)| *f == nf.field && here)
+    {
         calc::show_message(ui, id, resp.rect, msg);
     }
-    let editing = cx
-        .st
-        .fields
-        .editing
-        .as_ref()
-        .is_some_and(|e| e.field == nf.field);
+    let editing = edited(&st.fields).is_some_and(|(same, p)| same && p == place);
     if resp.has_focus() {
         if !editing {
             // Another field still editing lost the focus in this pass.
-            finish_edit(ui.ctx(), cx.st, cx.actions, false);
-            if cx.st.fields.editing.is_none() {
-                let ids: Vec<u64> = cx.snap.selection.iter().copied().collect();
-                cx.st.fields.editing = Some(FieldEdit {
+            finish_edit(ui.ctx(), st, actions, false);
+            if st.fields.editing.is_none() {
+                if twin {
+                    // Its twin showed the text typed there: this one
+                    // starts from the value.
+                    *nf.field.buf(&mut st.fields) = nf.current.clone();
+                }
+                let ids: Vec<u64> = snap.selection.iter().copied().collect();
+                st.fields.editing = Some(FieldEdit {
                     field: nf.field,
+                    place,
                     shown: nf.current,
-                    doc_id: cx.snap.doc_id,
-                    free: canvas::free_aspect(cx.snap, &ids),
+                    doc_id: snap.doc_id,
+                    free: canvas::free_aspect(snap, &ids),
                     ids,
                     value: nf.value,
                 });
@@ -239,26 +383,27 @@ fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) -> egui::Rect {
     } else if editing {
         // Enter with a text it cannot read stays in the field.
         let enter = calc::keys(ui.ctx()).0;
-        finish_edit(ui.ctx(), cx.st, cx.actions, enter && nf.enabled);
+        finish_edit(ui.ctx(), st, actions, enter && nf.enabled);
     }
-    resp.rect
+    resp
 }
 
 /// Once a frame, before the ribbon: ends the editing of a field that lost
 /// the focus outside the group (a click on the canvas, another ribbon
-/// tab), whose group is not on screen (`on_screen` false: another tab or
-/// workspace), or whose document is no longer the active one, so its value
-/// applies at once, in order and in its own document.
+/// tab), whose place is not on screen (`on_screen` of its place false:
+/// another tab or workspace, a folded section), or whose document is no
+/// longer the active one, so its value applies at once, in order and in
+/// its own document.
 pub fn finish_pending(
     ctx: &egui::Context,
     st: &mut PrepareState,
     snap: &Snapshot,
-    on_screen: bool,
+    on_screen: impl Fn(FieldPlace) -> bool,
     actions: &mut Vec<Action>,
 ) {
     let Some(e) = &st.fields.editing else { return };
-    let here = on_screen && e.doc_id == snap.doc_id;
-    if !here || !ctx.memory(|m| m.has_focus(e.field.id())) {
+    let here = on_screen(e.place) && e.doc_id == snap.doc_id;
+    if !here || !ctx.memory(|m| m.has_focus(e.field.id(e.place))) {
         finish_edit(ctx, st, actions, false);
     }
 }
@@ -296,7 +441,7 @@ fn finish_edit(ctx: &egui::Context, st: &mut PrepareState, actions: &mut Vec<Act
             }
         }
         Err(e) if keep => {
-            ctx.memory_mut(|m| m.request_focus(edit.field.id()));
+            ctx.memory_mut(|m| m.request_focus(edit.field.id(edit.place)));
             st.fields.error = Some((edit.field, calc::kept(&e.message)));
             st.fields.editing = Some(edit);
         }
@@ -1001,7 +1146,7 @@ fn size_group(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
                         .min_col_width(0.0)
                         .spacing(SIZE_GRID_GAP)
                         .show(ui, |ui| size_scale(ui, cx));
-                    keep_aspect(ui, cx, column, wh);
+                    keep_aspect(ui, FieldPlace::Ribbon, cx.st, cx.snap, column, wh, false);
                 },
             );
             linked_note(ui, mode, cx);
@@ -1024,36 +1169,8 @@ fn size_group(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
 
 /// The first column: X above Y, the top-left corner of the selection box.
 fn size_xy(ui: &mut Ui, cx: &mut Cx) {
-    let any = !cx.snap.selection.is_empty();
-    let b = canvas::live_box(cx.snap, cx.st);
-    for (field, label, name, setting, value) in [
-        (
-            SizeField::X,
-            "X",
-            "X (mm)",
-            Setting::PositionX,
-            b.map(|b| b.x0),
-        ),
-        (
-            SizeField::Y,
-            "Y",
-            "Y (mm)",
-            Setting::PositionY,
-            b.map(|b| b.y0),
-        ),
-    ] {
-        let nf = NumberField {
-            field,
-            label,
-            icon: None,
-            hint: "",
-            widest: WIDEST_MM,
-            name,
-            setting,
-            current: value.map(mm).unwrap_or_default(),
-            value,
-            enabled: any,
-        };
+    for field in [SizeField::X, SizeField::Y] {
+        let nf = number_field_of(field, cx.snap, cx.st);
         number_field(ui, nf, cx);
         ui.end_row();
     }
@@ -1062,38 +1179,11 @@ fn size_xy(ui: &mut Ui, cx: &mut Cx) {
 /// The second column: W above H. Returns the rects of the two fields.
 fn size_wh(ui: &mut Ui, cx: &mut Cx) -> [egui::Rect; 2] {
     let mut rects = [egui::Rect::NOTHING; 2];
-    let any = !cx.snap.selection.is_empty();
-    let b = canvas::live_box(cx.snap, cx.st);
-    for (field, label, name, setting, value) in [
-        (
-            SizeField::Width,
-            "W",
-            "Width (mm)",
-            Setting::Width,
-            b.map(|b| b.width()),
-        ),
-        (
-            SizeField::Height,
-            "H",
-            "Height (mm)",
-            Setting::Height,
-            b.map(|b| b.height()),
-        ),
-    ] {
-        let nf = NumberField {
-            field,
-            label,
-            icon: None,
-            hint: "",
-            // A size is never negative.
-            widest: WIDEST_SIZE,
-            name,
-            setting,
-            current: value.map(mm).unwrap_or_default(),
-            value,
-            enabled: any,
-        };
-        let i = usize::from(field == SizeField::Height);
+    for (i, field) in [SizeField::Width, SizeField::Height]
+        .into_iter()
+        .enumerate()
+    {
+        let nf = number_field_of(field, cx.snap, cx.st);
         rects[i] = number_field(ui, nf, cx);
         ui.end_row();
     }
@@ -1102,25 +1192,7 @@ fn size_wh(ui: &mut Ui, cx: &mut Cx) -> [egui::Rect; 2] {
 
 /// The Angle under the %, with the rotate icon as its label.
 fn size_angle(ui: &mut Ui, cx: &mut Cx) {
-    let any = !cx.snap.selection.is_empty();
-    let angle = canvas::live_angle(cx.snap, cx.st);
-    // Mixed only for several objects turned different ways, never for an
-    // emptied field.
-    let mixed = cx.snap.selection.len() > 1 && angle.is_none();
-    let current = angle.map(mm).unwrap_or_default();
-    let nf = NumberField {
-        field: SizeField::Angle,
-        label: "Angle",
-        icon: Some(Icon::Rotate),
-        // Turned different ways: no one angle to show.
-        hint: if mixed { "Mixed" } else { "" },
-        widest: WIDEST_DEG,
-        name: "Angle (degrees)",
-        setting: Setting::Angle,
-        current,
-        value: angle,
-        enabled: any,
-    };
+    let nf = number_field_of(SizeField::Angle, cx.snap, cx.st);
     number_field(ui, nf, cx);
     ui.end_row();
 }
@@ -1133,22 +1205,7 @@ const SIZE_GRID_GAP: egui::Vec2 = egui::vec2(4.0, 4.0);
 
 /// The third column: % above the Angle.
 fn size_scale(ui: &mut Ui, cx: &mut Cx) {
-    let any = !cx.snap.selection.is_empty();
-    let percent = any.then(|| canvas::live_percent(cx.st).unwrap_or(100.0));
-    let current = percent.map(mm).unwrap_or_default();
-    let nf = NumberField {
-        field: SizeField::Percent,
-        label: "%",
-        icon: None,
-        hint: "",
-        // As wide as the Angle below it: 3 digits and 2 decimals.
-        widest: WIDEST_DEG,
-        name: "Scale (%)",
-        setting: Setting::ScalePercent,
-        current,
-        value: percent,
-        enabled: any,
-    };
+    let nf = number_field_of(SizeField::Percent, cx.snap, cx.st);
     number_field(ui, nf, cx);
     ui.end_row();
     size_angle(ui, cx);
@@ -1236,23 +1293,34 @@ fn snap_line(v: f32, ppp: f32) -> f32 {
 /// and bracket are one toggle: one hit area (the bracket's height in the
 /// column, never over the fields), one name, one card, and they light up
 /// together on hover. Monochrome, in the bracket's colour.
-fn keep_aspect(ui: &mut Ui, cx: &mut Cx, column: egui::Rect, wh: [egui::Rect; 2]) {
-    let ids: Vec<u64> = cx.snap.selection.iter().copied().collect();
+///
+/// The object inspector draws the same toggle right of its W and H rows
+/// (`fields_left`), with its own id in its `place`.
+pub fn keep_aspect(
+    ui: &mut Ui,
+    place: FieldPlace,
+    st: &mut PrepareState,
+    snap: &Snapshot,
+    column: egui::Rect,
+    wh: [egui::Rect; 2],
+    fields_left: bool,
+) -> egui::Response {
+    let ids: Vec<u64> = snap.selection.iter().copied().collect();
     let any = !ids.is_empty();
-    let forced = canvas::aspect_lock(cx.snap, &ids).filter(|_| any);
+    let forced = canvas::aspect_lock(snap, &ids).filter(|_| any);
     // With linked copies selected the card says how they follow.
-    let card = if cx.snap.selected().any(|o| o.link_group.is_some()) {
+    let card = if snap.selected().any(|o| o.link_group.is_some()) {
         Setting::KeepAspectLinked
     } else {
         Setting::KeepAspect
     };
-    let why = forced.or((!any).then_some("Select something first."));
+    let why = forced.or((!any).then_some(SELECT_FIRST));
     let enabled = why.is_none();
-    let on = forced.is_some() || cx.st.fields.keep_aspect;
+    let on = forced.is_some() || st.fields.keep_aspect;
 
     let (top, bottom) = (wh[0].center().y, wh[1].center().y);
     let hit = egui::Rect::from_x_y_ranges(column.x_range(), (top - 6.0)..=(bottom + 6.0));
-    let id = egui::Id::unique("flatcraft-keep-aspect");
+    let id = egui::Id::unique(("flatcraft-keep-aspect", place));
     let sense = if enabled {
         egui::Sense::click()
     } else {
@@ -1261,10 +1329,10 @@ fn keep_aspect(ui: &mut Ui, cx: &mut Cx, column: egui::Rect, wh: [egui::Rect; 2]
     let mut resp = ui.interact(hit, id, sense);
     resp.widget_info(|| WidgetInfo::selected(Role::CheckBox, enabled, on, "Keep aspect"));
     if enabled && resp.clicked() {
-        cx.st.fields.keep_aspect = !cx.st.fields.keep_aspect;
+        st.fields.keep_aspect = !st.fields.keep_aspect;
         resp.mark_changed();
     }
-    let on = forced.is_some() || cx.st.fields.keep_aspect;
+    let on = forced.is_some() || st.fields.keep_aspect;
 
     let v = ui.visuals();
     let colour = if !enabled {
@@ -1281,14 +1349,24 @@ fn keep_aspect(ui: &mut Ui, cx: &mut Cx, column: egui::Rect, wh: [egui::Rect; 2]
     // The bracket: arms from W and H to a line through the lock, broken
     // around it with room to spare.
     let ppp = ui.ctx().pixels_per_point();
-    let x = snap_line(hit.left() + LOCK_X, ppp);
-    let right = hit.right() - 1.0;
+    // The lock's line, and where the arms meet the fields.
+    let lock_x = if fields_left {
+        hit.right() - LOCK_X
+    } else {
+        hit.left() + LOCK_X
+    };
+    let x = snap_line(lock_x, ppp);
+    let arms = if fields_left {
+        hit.left() + 1.0
+    } else {
+        hit.right() - 1.0
+    };
     let (top, bottom) = (snap_line(top, ppp), snap_line(bottom, ppp));
     let middle = (top + bottom) / 2.0;
     let stroke = egui::Stroke::new(1.0, colour);
     painter.line(
         vec![
-            egui::pos2(right, top),
+            egui::pos2(arms, top),
             egui::pos2(x, top),
             egui::pos2(x, snap_line(middle - LOCK_GAP, ppp)),
         ],
@@ -1296,16 +1374,17 @@ fn keep_aspect(ui: &mut Ui, cx: &mut Cx, column: egui::Rect, wh: [egui::Rect; 2]
     );
     painter.line(
         vec![
-            egui::pos2(right, bottom),
+            egui::pos2(arms, bottom),
             egui::pos2(x, bottom),
             egui::pos2(x, snap_line(middle + LOCK_GAP, ppp)),
         ],
         stroke,
     );
-    let lock = lock_shape(egui::pos2(hit.left() + LOCK_X, middle), !on, ppp);
+    let lock = lock_shape(egui::pos2(lock_x, middle), !on, ppp);
     painter.rect_filled(lock.body, 1.0, colour);
     painter.line(lock.shackle, stroke);
     groups::card(&resp, "Keep aspect", card.card(), why, false);
+    resp
 }
 
 /// "Scales all N linked copies" after the columns, when it applies.
