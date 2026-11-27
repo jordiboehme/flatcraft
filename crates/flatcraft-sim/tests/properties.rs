@@ -14,7 +14,11 @@
 //!   (`no_cut_into_kept_material_on_the_device_grid`). The first case that
 //!   failed there (a hole start rounded 0.057 mm into its piece, Task 16)
 //!   replays first from `properties.proptest-regressions` and is the named
-//!   test `star_hole_start_stays_out_of_the_piece_on_the_device_grid`.
+//!   test `star_hole_start_stays_out_of_the_piece_on_the_device_grid`. On
+//!   the device grid it also checks every path against the device limits.
+//!
+//! CI runs use a fixed seed (`shapes::CI_SEED`, see there for what to do
+//! when one fails); the `--ignored` `_full` twins draw random cases.
 
 #[path = "../../flatcraft-path/tests/support/shapes.rs"]
 mod shapes;
@@ -28,7 +32,8 @@ use flatcraft_path::{
     PlacedPath, ToolpathKind, plan,
 };
 use flatcraft_sim::{
-    ALGORITHM_LIMIT_MM, DeviceGrid, JobMetrics, SimSettings, measure_kept, simulate,
+    ALGORITHM_LIMIT_MM, DEVICE_LIMIT_MM, DeviceGrid, JobMetrics, SimSettings, measure_kept,
+    simulate,
 };
 use kurbo::{BezPath, Point, Rect};
 use proptest::prelude::*;
@@ -98,7 +103,7 @@ fn meets_algorithm_limit(layout: &[(usize, shapes::Item)], d: f64) -> Result<(),
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(CI_CASES))]
+    #![proptest_config(shapes::ci_config(CI_CASES))]
 
     #[test]
     fn host_random_polygons_meet_algorithm_limit(
@@ -254,6 +259,27 @@ fn nothing_cut_into_kept(
         d,
         m.worst_spots
     );
+    if grid.is_some() {
+        // A waste point the rounding moved off its nearest unit point to
+        // keep out of kept material may start a cut: the cut still meets
+        // the device limits.
+        for p in &m.per_path {
+            let what = format!(
+                "grid {grid:?} d {d}, toolpath {} ({:?})",
+                p.toolpath, out.toolpaths[p.toolpath].source
+            );
+            for (name, v) in [
+                ("hausdorff", p.hausdorff_mm),
+                ("correspondence", p.max_correspondence_mm),
+                ("start", p.max_start_deviation_mm),
+                ("closure gap", p.closure_gap_mm.unwrap_or(0.0)),
+            ] {
+                prop_assert!(v <= DEVICE_LIMIT_MM, "STOP: {what}: {name} {v}");
+            }
+            prop_assert_eq!(p.uncut_mm, 0.0, "STOP: {}: uncut", what);
+            prop_assert_eq!(p.pushed, 0, "STOP: {}: pushed", what);
+        }
+    }
     Ok(())
 }
 
@@ -262,7 +288,7 @@ fn pieces() -> impl Strategy<Value = Vec<Vec<Piece>>> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(CI_CASES))]
+    #![proptest_config(shapes::ci_config(CI_CASES))]
 
     #[test]
     fn no_cut_into_kept_material(
@@ -295,6 +321,10 @@ proptest! {
 /// lattice lies under the shapes changes how a start rounds.
 const ORIGINS: [f64; 3] = [0.0, 0.0125, 0.025];
 
+/// The origins of the `_full` twin: [`ORIGINS`] and three more off the
+/// quarter-unit lattice (Task 16 review).
+const FULL_ORIGINS: [f64; 6] = [0.0, 0.0125, 0.025, 0.0375, 0.007, 0.041];
+
 fn grid_at(o: f64) -> DeviceGrid {
     DeviceGrid::new(20.0, Point::new(o, o))
 }
@@ -304,7 +334,7 @@ fn grid_at(o: f64) -> DeviceGrid {
 const DEVICE_CI_CASES: u32 = 32;
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(DEVICE_CI_CASES))]
+    #![proptest_config(shapes::ci_config(DEVICE_CI_CASES))]
 
     /// The rows planned for and snapped to the Cameo 2 device grid.
     #[test]
@@ -324,14 +354,14 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(FULL_CASES))]
 
     #[test]
-    #[ignore = "full run (256 cases at three origins, about 75 s); run with --ignored"]
+    #[ignore = "full run (256 cases at six origins, about 150 s); run with --ignored"]
     fn no_cut_into_kept_material_on_the_device_grid_full(
         layout in pieces(),
         weed in weed(),
         no_mat in any::<bool>(),
         d in 0.25f64..=0.3,
     ) {
-        for o in ORIGINS {
+        for o in FULL_ORIGINS {
             nothing_cut_into_kept(&layout, weed, no_mat, d, Some(grid_at(o)))?;
         }
     }
@@ -384,4 +414,58 @@ fn star_hole_start_stays_out_of_the_piece_on_the_device_grid() {
             .unwrap_or_else(|e| panic!("origin {o}: {e}"));
     }
     nothing_cut_into_kept(&layout, WeedSettings::default(), false, d, None).unwrap();
+}
+
+/// A case where no unit point round a hole start keeps the tip fully out
+/// of the kept stencil sheet (found by the property, grid origin 0.0125):
+/// the plan counts it (`rounding.kept_left`, which the engine turns into a
+/// job warning), and the simulator still finds nothing cut into kept
+/// material within its device tolerance.
+#[test]
+fn a_start_the_rounding_cannot_keep_out_is_counted_in_the_plan() {
+    let small = || Piece {
+        w: 5.0,
+        h: 5.0,
+        mode: KeepMode::Pieces,
+        hole: None,
+    };
+    let layout = vec![vec![
+        Piece {
+            w: 37.44558522050858,
+            h: 19.359574145472635,
+            mode: KeepMode::Stencil,
+            hole: Some(shapes::Star {
+                jitter: vec![
+                    0.0,
+                    0.16922390898996564,
+                    0.05150691899708112,
+                    0.06272148496303577,
+                    0.0,
+                    0.0,
+                ],
+                radius: vec![0.6, 0.8923311919259685, 0.9609781487785769, 0.6, 0.6, 0.6],
+            }),
+        },
+        small(),
+        small(),
+    ]];
+    let weed = WeedSettings {
+        weed_box: false,
+        margin_mm: 1.0,
+        per_object: false,
+        lines: WeedLines::Off,
+        spacing_mm: 5.0,
+    };
+    let d = 0.27964536049389704;
+    let (input, keep_modes) = rows(&layout);
+    let s = PipelineSettings {
+        compensation: host(d, Some(grid_at(0.0125))),
+        corner_mode: LIFT,
+        weed,
+        keep_modes,
+        ..PipelineSettings::with_defaults(area(), Point::ZERO)
+    };
+    let out = plan(&input, &s).unwrap();
+    assert!(out.rounding.kept_left >= 1, "{:?}", out.rounding);
+    nothing_cut_into_kept(&layout, weed, false, d, Some(grid_at(0.0125))).unwrap();
 }

@@ -125,7 +125,7 @@ fn of(out: &CutPlan, source: PathRef) -> impl Iterator<Item = &Toolpath> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(shapes::ci_config(256))]
 
     /// Structural: every closed ring's first lap is a closed ring turning
     /// counter-clockwise (clockwise on a reversed pass), every point of the toolpath lies on that ring,

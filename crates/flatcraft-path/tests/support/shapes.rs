@@ -29,6 +29,23 @@ use kurbo::{BezPath, Point};
 use proptest::collection::vec;
 use proptest::prelude::*;
 
+/// The seed of every property run in CI: CI draws the same cases on every
+/// run and every OS, so a red run is real and repeats. The `--ignored`
+/// `_full` twins keep drawing new random cases. When a property fails,
+/// proptest prints the shrunk case and its `cc` seed: copy that line into
+/// the test's `.proptest-regressions` file and commit it, so it replays
+/// first everywhere (regressions replay with a fixed seed too).
+pub const CI_SEED: u64 = 0x5eed_f1a7_c4af_7016;
+
+/// The proptest settings of a CI property run of `cases` cases.
+pub fn ci_config(cases: u32) -> ProptestConfig {
+    ProptestConfig {
+        cases,
+        rng_seed: proptest::test_runner::RngSeed::Fixed(CI_SEED),
+        ..ProptestConfig::default()
+    }
+}
+
 /// The size of one grid cell, mm.
 pub const CELL_MM: f64 = 70.0;
 /// Cells along each side.
