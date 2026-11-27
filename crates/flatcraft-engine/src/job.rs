@@ -196,15 +196,36 @@ pub(crate) fn dropped_short_warning(n: usize) -> String {
     }
 }
 
-/// The warnings of rounding host runs to plotter steps: blade starts or
-/// overshoots it could not keep fully out of a kept piece, and moves that
-/// still push the blade. Each once per job, only when it happened.
+/// The warnings a plan itself gives, once per job, in this order: paths
+/// too short to cut, weed boxes left out (`per_object`: the job weeds a
+/// box per object) or blocked, and what rounding to plotter steps left
+/// ([`rounding_warnings`]). The job build and the offset series both use
+/// it.
+pub(crate) fn plan_warnings(plan: &CutPlan, per_object: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    if plan.dropped_short > 0 {
+        out.push(dropped_short_warning(plan.dropped_short));
+    }
+    if plan.dropped_weed_boxes > 0 {
+        out.push(weed_box_warning(plan.dropped_weed_boxes, per_object));
+    }
+    if plan.blocked_weed_boxes > 0 {
+        out.push(weed_box_blocked_warning(plan.blocked_weed_boxes));
+    }
+    out.extend(rounding_warnings(&plan.rounding));
+    out
+}
+
+/// The warnings of rounding host runs to plotter steps: blade moves at a
+/// start or a corner (lead-ins, swivels, overshoots) it could not keep
+/// fully out of a piece you keep, and moves that still push the blade.
+/// Each once per job, only when it happened.
 pub(crate) fn rounding_warnings(r: &flatcraft_path::quantize::RoundReport) -> Vec<String> {
     let mut out = Vec::new();
     match r.kept_left {
         0 => {}
-        1 => out.push("1 blade start could not be kept fully out of a kept piece after rounding to plotter steps. Run the simulation to see where.".to_string()),
-        n => out.push(format!("{n} blade starts could not be kept fully out of a kept piece after rounding to plotter steps. Run the simulation to see where.")),
+        1 => out.push("1 blade move at a start or a corner could not be kept fully out of a piece you keep after rounding to plotter steps. Run the simulation to see where.".to_string()),
+        n => out.push(format!("{n} blade moves at a start or a corner could not be kept fully out of a piece you keep after rounding to plotter steps. Run the simulation to see where.")),
     }
     match r.pushes_kept {
         0 => {}
@@ -1001,20 +1022,7 @@ pub(crate) fn build_planned(input: &JobInput, units: PlanUnits) -> Result<JobRes
             CommandError::Refused(other.to_string()).into()
         }
     })?;
-    if cut_plan.dropped_short > 0 {
-        warnings.push(dropped_short_warning(cut_plan.dropped_short));
-    }
-    warnings.extend(rounding_warnings(&cut_plan.rounding));
-
-    if cut_plan.dropped_weed_boxes > 0 {
-        warnings.push(weed_box_warning(
-            cut_plan.dropped_weed_boxes,
-            job.weed.per_object,
-        ));
-    }
-    if cut_plan.blocked_weed_boxes > 0 {
-        warnings.push(weed_box_blocked_warning(cut_plan.blocked_weed_boxes));
-    }
+    warnings.extend(plan_warnings(&cut_plan, job.weed.per_object));
 
     let settings = cut_settings(input);
     let mut emitted = emit_plan(&cut_plan, objects, &cut, plotter, &media_id, &settings)?;
@@ -1494,7 +1502,7 @@ mod tests {
         assert_eq!(
             one,
             [
-                "1 blade start could not be kept fully out of a kept piece after rounding to plotter steps. Run the simulation to see where."
+                "1 blade move at a start or a corner could not be kept fully out of a piece you keep after rounding to plotter steps. Run the simulation to see where."
             ]
         );
         let both = rounding_warnings(&RoundReport {
@@ -1503,7 +1511,7 @@ mod tests {
             ..RoundReport::default()
         });
         assert_eq!(both.len(), 2, "{both:?}");
-        assert!(both[0].starts_with("3 blade starts could not be kept fully out of a kept piece after rounding to plotter steps."));
+        assert!(both[0].starts_with("3 blade moves at a start or a corner could not be kept fully out of a piece you keep after rounding to plotter steps."));
         assert!(both[1].starts_with(
             "2 blade moves still push the blade from behind after rounding to plotter steps."
         ));
@@ -1521,7 +1529,42 @@ mod tests {
         };
         let w = rounding_warnings(&r.merge(r));
         assert_eq!(w.len(), 1);
-        assert!(w[0].starts_with("2 blade starts"), "{w:?}");
+        assert!(w[0].starts_with("2 blade moves"), "{w:?}");
+    }
+
+    /// The warnings of a real plan, with its rounding counts set by hand:
+    /// both rounding warnings come once, after the plan's other ones, and
+    /// a plan with nothing to say gives none.
+    #[test]
+    fn plan_warnings_carry_the_rounding_counts() {
+        let square = kurbo::BezPath::from_svg("M20 20 H30 V30 H20 Z").unwrap();
+        let input = [PlacedPath {
+            path: square,
+            source: PathRef {
+                object: ObjectId(1),
+                path_index: 0,
+            },
+        }];
+        let s = PipelineSettings::with_defaults(
+            kurbo::Rect::new(5.0, 5.0, 295.0, 295.0),
+            kurbo::Point::ZERO,
+        );
+        let mut p = plan(&input, &s).unwrap();
+        assert!(plan_warnings(&p, false).is_empty());
+        p.rounding.kept_left = 1;
+        p.rounding.pushes_kept = 2;
+        p.dropped_short = 1;
+        let w = plan_warnings(&p, false);
+        assert_eq!(w.len(), 3, "{w:?}");
+        assert_eq!(w[0], dropped_short_warning(1));
+        assert!(
+            w[1].starts_with("1 blade move at a start or a corner could not be kept fully out"),
+            "{w:?}"
+        );
+        assert!(
+            w[2].starts_with("2 blade moves still push the blade from behind"),
+            "{w:?}"
+        );
     }
 
     const SQUARE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><rect x="20" y="20" width="30" height="30"/></svg>"#;

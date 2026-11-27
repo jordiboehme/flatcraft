@@ -56,12 +56,11 @@ pub struct RoundReport {
     /// unit point would take the tip into kept material and that went to
     /// another unit point round them instead.
     pub kept_moved: usize,
-    /// Waste points no unit point round them keeps out of kept material
-    /// (deeper than [`KEPT_TOLERANCE_MM`]): the one that takes the tip
-    /// least deep was taken. Also a deep point where all four unit points
-    /// push, and a waste end whose step got longer when the points before
-    /// it were dropped. The job warns about them
-    /// (`flatcraft_engine::job`).
+    /// Waste moves of the rounded runs (the drop, lead-ins, swivels,
+    /// overshoots) whose tip still goes deeper than [`KEPT_TOLERANCE_MM`]
+    /// into kept material: no unit point round them kept it out. Counted
+    /// on the points really kept, on the moves as they are sent. The job
+    /// warns about them (`flatcraft_engine::job`).
     pub kept_left: usize,
 }
 
@@ -88,6 +87,9 @@ struct Kept {
     tip: Point,
     /// The move here pushes the blade (counted in `pushes_kept`).
     pushed: bool,
+    /// A waste move here takes the tip too deep into kept material
+    /// (counted in `kept_left`).
+    deep: bool,
 }
 
 /// A run being rounded.
@@ -110,12 +112,20 @@ impl Rounding<'_> {
         push_angle_deg(a.at, b, a.tip) > PUSHED_DEG
     }
 
-    /// Keep `b` after the last point, counting a push it cannot avoid.
+    /// Keep `b` after the last point, counting a push it cannot avoid and
+    /// a waste move whose tip goes too deep into kept material
+    /// ([`tip_depth`] above [`KEPT_TOLERANCE_MM`]). Only points really kept
+    /// are counted, and a point dropped later takes its counts with it.
     fn keep(&mut self, planned: Point, b: Point, seg: u32) {
         let a = self.last();
         let pushed = push_angle_deg(a.at, b, a.tip) > PUSHED_DEG;
         if pushed {
             self.report.pushes_kept += 1;
+        }
+        let deep =
+            seg == WASTE_SEG && tip_depth(self.kept, a.at, b, a.tip, self.d) > KEPT_TOLERANCE_MM;
+        if deep {
+            self.report.kept_left += 1;
         }
         self.out.push(Kept {
             planned,
@@ -123,6 +133,7 @@ impl Rounding<'_> {
             seg,
             tip: drag(a.at, b, a.tip, self.d),
             pushed,
+            deep,
         });
     }
 
@@ -175,20 +186,13 @@ impl Rounding<'_> {
                 }
             }
         }
+        // All four push: the caller drops the point or keeps it as a
+        // counted push. A deep tip of a point it keeps is counted there.
         let Some((over, _, _, c)) = best else {
-            // All four push: the caller drops the point or keeps it as a
-            // counted push. A deep tip is never silent either.
-            if nearest_depth > KEPT_TOLERANCE_MM {
-                self.report.kept_left += 1;
-            }
             return nearest;
         };
-        if nearest_depth > KEPT_TOLERANCE_MM {
-            if over > 0.0 {
-                self.report.kept_left += 1;
-            } else {
-                self.report.kept_moved += 1;
-            }
+        if nearest_depth > KEPT_TOLERANCE_MM && over == 0.0 {
+            self.report.kept_moved += 1;
         }
         c
     }
@@ -357,6 +361,7 @@ pub fn round_runs(
                     seg: run.seg[0],
                     tip: at - offset,
                     pushed: false,
+                    deep: false,
                 }],
                 pending: Vec::new(),
                 report: &mut report,
@@ -383,10 +388,6 @@ pub fn round_runs(
                 // The end of the run stays: drop the points before it,
                 // newest first, while the step onto it pushes and every
                 // dropped point stays within the bound.
-                let (before, deep_before) = (r.out.len(), {
-                    let a = r.last();
-                    seg == WASTE_SEG && tip_depth(kept, a.at, b, a.tip, d) > KEPT_TOLERANCE_MM
-                });
                 while r.out.len() > 1 && r.pushes_to(b) {
                     let k = r.last();
                     r.out.pop();
@@ -401,14 +402,8 @@ pub fn round_runs(
                         // That push is gone with its point.
                         r.report.pushes_kept -= 1;
                     }
-                }
-                if seg == WASTE_SEG && r.out.len() < before && !deep_before {
-                    // The step onto the end now starts earlier: a waste end
-                    // (an overshoot) is checked again, and counted when
-                    // its tip goes too deep into kept material.
-                    let a = r.last();
-                    if tip_depth(kept, a.at, b, a.tip, d) > KEPT_TOLERANCE_MM {
-                        r.report.kept_left += 1;
+                    if k.deep {
+                        r.report.kept_left -= 1;
                     }
                 }
                 if b == r.last().at {

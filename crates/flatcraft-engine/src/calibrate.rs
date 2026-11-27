@@ -377,10 +377,7 @@ pub fn build(input: &SeriesInput) -> Result<Series, CommandError> {
     let settings = job::cut_settings(job_input);
     let emitted = job::emit_plan(&merged, &objects, &cut, plotter, &media.id, &settings)?;
     let mut warnings: Vec<String> = mat_warning.into_iter().collect();
-    if merged.dropped_short > 0 {
-        warnings.push(job::dropped_short_warning(merged.dropped_short));
-    }
-    warnings.extend(job::rounding_warnings(&merged.rounding));
+    warnings.extend(job::plan_warnings(&merged, false));
     let not_cut = job::paths_not_cut(&merged, &emitted.collapsed);
     if not_cut > 0 {
         warnings.push(job::collapsed_warning(not_cut));
