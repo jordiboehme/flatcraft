@@ -148,7 +148,10 @@ fn fixtures_are_small() {
 
 #[test]
 fn benchmarks_page_matches_the_baseline() {
-    let page = std::fs::read_to_string(root().join("docs/quality/benchmarks.md")).unwrap();
+    // A Windows checkout may have CRLF line ends.
+    let page = std::fs::read_to_string(root().join("docs/quality/benchmarks.md"))
+        .unwrap()
+        .replace("\r\n", "\n");
     let want = bench::markdown(&baseline());
     if let Some((a, b)) = page.lines().zip(want.lines()).find(|(a, b)| a != b) {
         panic!(
