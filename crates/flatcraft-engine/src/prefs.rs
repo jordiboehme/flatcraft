@@ -144,7 +144,7 @@ impl Preferences {
 /// Every id `ribbon_pins` can hold, in the order of the ribbon's table
 /// (`flatcraft::ui::tools::TOOLS`). An Align id carries what it lines up
 /// with: `align.left.selection` and `align.left.area` are two pins.
-pub const RIBBON_PIN_IDS: [&str; 41] = [
+pub const RIBBON_PIN_IDS: [&str; 45] = [
     "import",
     "trace",
     "test_patterns",
@@ -178,6 +178,10 @@ pub const RIBBON_PIN_IDS: [&str; 41] = [
     "auto_arrange.panel",
     "group",
     "ungroup",
+    "order.front",
+    "order.forward",
+    "order.backward",
+    "order.back",
     "zoom.fit",
     "zoom.100",
     "view.grid",

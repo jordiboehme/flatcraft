@@ -349,6 +349,88 @@ fn clip_piece(piece: &CutPiece, cover: &[Contour], tol: f64) -> (Vec<CutPiece>, 
     (pieces, true)
 }
 
+/// Boxes sorted into a grid of cells about one box wide, built once, for
+/// asking which boxes meet a box. A box that would cover too many cells,
+/// and a query that would, fall back to a plain walk over the boxes.
+struct BoxGrid {
+    boxes: Vec<Option<Rect>>,
+    cell: f64,
+    cells: std::collections::HashMap<(i64, i64), Vec<usize>>,
+    huge: Vec<usize>,
+}
+
+/// A box over more cells than this is not put into the grid.
+const MAX_GRID_CELLS: i64 = 4096;
+
+impl BoxGrid {
+    fn new(boxes: Vec<Option<Rect>>) -> Self {
+        let sides: Vec<f64> = boxes
+            .iter()
+            .flatten()
+            .map(|b| b.width().max(b.height()))
+            .collect();
+        let mean = sides.iter().sum::<f64>() / sides.len().max(1) as f64;
+        let mut grid = Self {
+            boxes,
+            cell: mean.max(1e-3),
+            cells: Default::default(),
+            huge: Vec::new(),
+        };
+        for i in 0..grid.boxes.len() {
+            let Some(b) = grid.boxes[i] else {
+                continue;
+            };
+            match grid.span(b) {
+                Some((x0, y0, x1, y1)) => {
+                    for x in x0..=x1 {
+                        for y in y0..=y1 {
+                            grid.cells.entry((x, y)).or_default().push(i);
+                        }
+                    }
+                }
+                None => grid.huge.push(i),
+            }
+        }
+        grid
+    }
+
+    /// The cells of `b`, or `None` when they are too many.
+    fn span(&self, b: Rect) -> Option<(i64, i64, i64, i64)> {
+        let c = |v: f64| (v / self.cell).floor() as i64;
+        let (x0, y0, x1, y1) = (c(b.x0), c(b.y0), c(b.x1), c(b.y1));
+        ((x1 - x0 + 1).saturating_mul(y1 - y0 + 1) <= MAX_GRID_CELLS).then_some((x0, y0, x1, y1))
+    }
+
+    /// Calls `f` once with the index of every box that meets `b`, in no
+    /// particular order.
+    fn query(&self, b: Rect, mut f: impl FnMut(usize)) {
+        let mut test = |i: usize| {
+            #[cfg(test)]
+            tests::BOX_TESTS.with(|n| n.set(n.get() + 1));
+            if self.boxes[i].is_some_and(|a| boxes_meet(a, b)) {
+                f(i);
+            }
+        };
+        let Some((x0, y0, x1, y1)) = self.span(b) else {
+            (0..self.boxes.len()).for_each(test);
+            return;
+        };
+        let mut seen = std::collections::HashSet::new();
+        for x in x0..=x1 {
+            for y in y0..=y1 {
+                for &i in self.cells.get(&(x, y)).into_iter().flatten() {
+                    if seen.insert(i) {
+                        test(i);
+                    }
+                }
+            }
+        }
+        for &i in &self.huge {
+            test(i);
+        }
+    }
+}
+
 /// True if the painted areas `a` and `b` overlap with an area larger than
 /// the tolerance squared.
 fn areas_overlap(a: &[Contour], b: &[Contour], tol: f64) -> bool {
@@ -402,16 +484,23 @@ pub(super) fn apply(objects: &[JobObject], out: &mut CutGeometry, tol: f64, min_
             }
             a
         }
+        // Only candidates whose boxes meet are compared (a grid of boxes),
+        // so a sheet of many objects costs about as many tests as it has
+        // objects, not their square.
+        let grid = BoxGrid::new(areas.iter().map(|a| a.1).collect());
         for a in 0..candidates.len() {
-            for b in a + 1..candidates.len() {
-                let (oa, ob) = (&objects[candidates[a]], &objects[candidates[b]]);
-                if oa.keep != ob.keep {
-                    continue;
+            let Some(ba) = areas[a].1 else {
+                continue;
+            };
+            let mut near = Vec::new();
+            grid.query(ba, |b| {
+                if b > a {
+                    near.push(b);
                 }
-                let (Some(ba), Some(bb)) = (areas[a].1, areas[b].1) else {
-                    continue;
-                };
-                if !boxes_meet(ba, bb) || find(&mut root, a) == find(&mut root, b) {
+            });
+            for b in near {
+                let (oa, ob) = (&objects[candidates[a]], &objects[candidates[b]]);
+                if oa.keep != ob.keep || find(&mut root, a) == find(&mut root, b) {
                     continue;
                 }
                 if areas_overlap(&areas[a].0, &areas[b].0, tol) {
@@ -441,51 +530,60 @@ pub(super) fn apply(objects: &[JobObject], out: &mut CutGeometry, tol: f64, min_
         welded.push((*back, group.clone(), pieces, facts));
     }
 
-    // Visible outline: clipped by every shown painted area in front.
+    // Visible outline: clipped by every shown painted area in front. The
+    // painted paths of the shown objects sit in a grid of boxes, so each
+    // piece is compared only with the shapes near it.
     let mut visible = Vec::new();
-    for k in 0..objects.len() {
-        let o = &objects[k];
-        if o.cut.mode != CutMode::VisibleOutline {
-            continue;
-        }
-        let base = out.solo[&o.id].pieces.clone();
-        let front: Vec<&Painted> = objects[k + 1..]
+    if objects
+        .iter()
+        .any(|o| o.cut.mode == CutMode::VisibleOutline)
+    {
+        let first = objects
             .iter()
-            .enumerate()
-            .filter(|(_, f)| f.visible)
-            .flat_map(|(j, _)| painted(k + 1 + j).iter())
-            .filter(|p| p.area_box.is_some())
+            .position(|o| o.cut.mode == CutMode::VisibleOutline)
+            .unwrap_or(0);
+        let shapes: Vec<(usize, &Painted)> = (first + 1..objects.len())
+            .filter(|&j| objects[j].visible)
+            .flat_map(|j| painted(j).iter().map(move |p| (j, p)))
+            .filter(|(_, p)| p.area_box.is_some())
             .collect();
-        let mut pieces = Vec::new();
-        let mut clipped = out.solo[&o.id].clipped;
-        for piece in base.iter() {
-            let b = piece.path.bounding_box();
-            let cover: Vec<Contour> = front
-                .iter()
-                .filter(|p| p.area_box.is_some_and(|a| boxes_meet(a, b)))
-                .flat_map(|p| p.area.iter().cloned())
-                .collect();
-            let (parts, changed) = clip_piece(piece, &cover, tol);
-            clipped |= changed;
-            pieces.extend(parts);
+        let grid = BoxGrid::new(shapes.iter().map(|(_, p)| p.area_box).collect());
+        // The painted areas in front of object `k` whose boxes meet `b`.
+        let cover_of = |k: usize, b: Rect| -> Vec<Contour> {
+            let mut hits = Vec::new();
+            grid.query(b, |i| {
+                if shapes[i].0 > k {
+                    hits.push(i);
+                }
+            });
+            hits.sort_unstable();
+            hits.into_iter()
+                .flat_map(|i| shapes[i].1.area.iter().cloned())
+                .collect()
+        };
+        for (k, o) in objects.iter().enumerate().skip(first) {
+            if o.cut.mode != CutMode::VisibleOutline {
+                continue;
+            }
+            let base = out.solo[&o.id].pieces.clone();
+            let mut pieces = Vec::new();
+            let mut clipped = out.solo[&o.id].clipped;
+            for piece in base.iter() {
+                let cover = cover_of(k, piece.path.bounding_box());
+                let (parts, changed) = clip_piece(piece, &cover, tol);
+                clipped |= changed;
+                pieces.extend(parts);
+            }
+            let covered = !base.is_empty() && pieces.is_empty();
+            // The outline of what is left of a clipped object: its pieces
+            // are no rings, so the plan reads this for what is kept.
+            let region = (clipped && !covered && o.visible && o.cut_enabled).then(|| {
+                let (own, own_box) = area_of(k);
+                let cover = own_box.map_or_else(Vec::new, |b| cover_of(k, b));
+                visible_region(&own, &cover, tol)
+            });
+            visible.push((o.id, covered, pieces, region));
         }
-        let covered = !base.is_empty() && pieces.is_empty();
-        // The outline of what is left of a clipped object: its pieces are
-        // no rings, so the plan reads this for what is kept.
-        let region = (clipped && !covered && o.visible && o.cut_enabled).then(|| {
-            let (own, own_box) = area_of(k);
-            let cover: Vec<Contour> = front
-                .iter()
-                .filter(|p| {
-                    p.area_box
-                        .zip(own_box)
-                        .is_some_and(|(a, b)| boxes_meet(a, b))
-                })
-                .flat_map(|p| p.area.iter().cloned())
-                .collect();
-            visible_region(&own, &cover, tol)
-        });
-        visible.push((o.id, covered, pieces, region));
     }
 
     for (back, group, pieces, facts) in welded {
@@ -564,4 +662,100 @@ pub(crate) fn would_weld(a: &JobObject, b: &JobObject, tol: f64, min_width: f64)
             .collect()
     };
     areas_overlap(&area(a), &area(b), tol)
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    thread_local! {
+        /// How many boxes the grids of the cross-object pass tested on
+        /// this thread.
+        pub(crate) static BOX_TESTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    /// `n` squares of 8 mm on a grid, each overlapping its neighbours by
+    /// 1 mm, all in `mode`.
+    fn sheet(n: usize, mode: CutMode) -> Vec<JobObject> {
+        use flatcraft_core::document::{Document, JobSettings, Source};
+        let mut doc = Document::new(JobSettings {
+            plotter_id: "cameo2".into(),
+            material_id: "cardstock".into(),
+            media_id: "a4".into(),
+            speed: None,
+            force: None,
+            passes: None,
+            strategy: Default::default(),
+            weed: Default::default(),
+        });
+        let side = (n as f64).sqrt().ceil() as usize;
+        for k in 0..n {
+            let (x, y) = ((k % side) as f64 * 7.0, (k / side) as f64 * 7.0);
+            let path = Rect::new(x, y, x + 8.0, y + 8.0).to_path(0.01);
+            let id = doc.add(
+                format!("s{k}"),
+                Source::Svg {
+                    name: "s.svg".into(),
+                    bytes: Vec::new().into(),
+                },
+                vec![CutPath {
+                    path,
+                    color: None,
+                    label: None,
+                    paint: Default::default(),
+                }],
+            );
+            let o = doc.get_mut(id).unwrap();
+            o.transform.center_mm = o.local_bounds.center();
+            o.cut.mode = mode;
+        }
+        crate::job::JobInput::objects_of(&doc)
+    }
+
+    /// The box tests of one build of the cross-object pass grow about
+    /// linearly with the number of objects: four times the objects may
+    /// cost at most six times the tests (a square would be sixteen).
+    #[test]
+    fn the_cross_object_pass_is_not_quadratic() {
+        for mode in [CutMode::MergedOutline, CutMode::VisibleOutline] {
+            let tests_for = |n: usize| {
+                let objects = sheet(n, mode);
+                BOX_TESTS.with(|c| c.set(0));
+                let _ = crate::cutgeom::objects_cut_geometry(&objects, 0.01, 0.125, None);
+                BOX_TESTS.with(|c| c.get())
+            };
+            let (small, large) = (tests_for(100), tests_for(400));
+            assert!(small > 0, "{mode:?}");
+            assert!(
+                large <= 6 * small,
+                "{mode:?}: {small} tests for 100 objects, {large} for 400"
+            );
+        }
+    }
+
+    #[test]
+    fn the_box_grid_finds_exactly_the_boxes_that_meet() {
+        let boxes: Vec<Option<Rect>> = (0..50)
+            .map(|k| {
+                let x = f64::from(k % 10) * 5.0;
+                let y = f64::from(k / 10) * 5.0;
+                (k % 7 != 3).then(|| Rect::new(x, y, x + 6.0, y + 6.0))
+            })
+            .chain([Some(Rect::new(-1e6, -1e6, 1e6, 1e6))])
+            .collect();
+        let grid = BoxGrid::new(boxes.clone());
+        for q in [
+            Rect::new(0.0, 0.0, 1.0, 1.0),
+            Rect::new(12.0, 7.0, 13.0, 30.0),
+            Rect::new(-1e7, -1e7, 1e7, 1e7),
+        ] {
+            let mut got = Vec::new();
+            grid.query(q, |i| got.push(i));
+            got.sort_unstable();
+            let want: Vec<usize> = (0..boxes.len())
+                .filter(|&i| boxes[i].is_some_and(|a| boxes_meet(a, q)))
+                .collect();
+            assert_eq!(got, want, "{q:?}");
+        }
+    }
 }

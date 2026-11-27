@@ -43,6 +43,7 @@ pub mod toasts;
 pub mod tools;
 pub mod troubleshoot;
 
+use flatcraft_engine::commands::group::ReorderTo;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{MutexGuard, PoisonError};
@@ -2860,6 +2861,21 @@ fn prepare_keys(
                 } else {
                     tools::ungroup_action(snap.doc_id, &ids)
                 });
+            }
+            return;
+        }
+    }
+    // The stacking order, Shift variants first: Cmd+] must not take
+    // Shift+Cmd+].
+    for (key, to) in [
+        (help::PrepareKey::BringToFront, ReorderTo::Front),
+        (help::PrepareKey::SendToBack, ReorderTo::Back),
+        (help::PrepareKey::BringForward, ReorderTo::Forward),
+        (help::PrepareKey::SendBackward, ReorderTo::Backward),
+    ] {
+        if help::pressed(ctx, key) {
+            if tools::by_act(tools::Act::Order(to)).blocked(snap).is_none() {
+                actions.push(tools::reorder_action(snap.doc_id, &ids, to));
             }
             return;
         }

@@ -162,7 +162,7 @@ fn name(item: Item) -> String {
     }
 }
 
-const ALL: [Item; 29] = [
+const ALL: [Item; 33] = [
     Item::Duplicate,
     Item::Copies,
     Item::LinkCopies,
@@ -175,6 +175,10 @@ const ALL: [Item; 29] = [
     Item::Distribute,
     Item::Group,
     Item::Ungroup,
+    Item::BringToFront,
+    Item::BringForward,
+    Item::SendBackward,
+    Item::SendToBack,
     Item::Hide,
     Item::Show,
     Item::SkipCutting,
@@ -374,6 +378,10 @@ fn the_menu_of_one_object() {
             Distribute,
             Group,
             Ungroup,
+            BringToFront,
+            BringForward,
+            SendBackward,
+            SendToBack,
             Hide,
             SkipCutting,
             PickKeep,
@@ -385,7 +393,16 @@ fn the_menu_of_one_object() {
     // Not now: shown dimmed, with the reason on hover.
     assert_eq!(
         dimmed_items(&r.h),
-        vec![LinkCopies, Distribute, Group, Ungroup]
+        vec![
+            LinkCopies,
+            Distribute,
+            Group,
+            Ungroup,
+            BringToFront,
+            BringForward,
+            SendBackward,
+            SendToBack
+        ]
     );
 }
 
@@ -446,6 +463,10 @@ fn the_menu_of_two_objects() {
             Distribute,
             Group,
             Ungroup,
+            BringToFront,
+            BringForward,
+            SendBackward,
+            SendToBack,
             Hide,
             SkipCutting,
             PickKeep,
@@ -456,7 +477,16 @@ fn the_menu_of_two_objects() {
     );
     assert_eq!(
         dimmed_items(&r.h),
-        vec![Copies, Distribute, Ungroup, Rename]
+        vec![
+            Copies,
+            Distribute,
+            Ungroup,
+            BringToFront,
+            BringForward,
+            SendBackward,
+            SendToBack,
+            Rename
+        ]
     );
 }
 
@@ -471,8 +501,20 @@ fn the_menu_of_three_objects_adds_distribute() {
         items.contains(&Align) && items.contains(&Distribute),
         "{items:?}"
     );
-    // Rename and Copies are for one object: dimmed, not gone.
-    assert_eq!(dimmed_items(&r.h), vec![Copies, Ungroup, Rename]);
+    // Rename and Copies are for one object: dimmed, not gone. With every
+    // object picked there is nothing to pass in the stacking order.
+    assert_eq!(
+        dimmed_items(&r.h),
+        vec![
+            Copies,
+            Ungroup,
+            BringToFront,
+            BringForward,
+            SendBackward,
+            SendToBack,
+            Rename
+        ]
+    );
 }
 
 #[test]
@@ -1165,4 +1207,24 @@ fn auto_arrange_on_the_empty_mat_is_active_from_the_first_frame() {
     click_item(&mut r.h, AutoArrange);
     wait_for_workers(&mut r.h);
     assert_eq!(r.s.lock().unwrap().doc().undo.undo_len(), undo + 1);
+}
+
+#[test]
+fn bring_to_front_in_the_menu_moves_the_object_in_one_step() {
+    let mut r = rig(2);
+    r.right_click_object(0);
+    let before = undo_len(&r.s);
+    assert!(!dimmed(&r.h, BringToFront) && dimmed(&r.h, SendToBack));
+    click_item(&mut r.h, BringToFront);
+    let order: Vec<u64> =
+        r.s.lock()
+            .unwrap()
+            .doc()
+            .document
+            .objects
+            .iter()
+            .map(|o| o.id.0)
+            .collect();
+    assert_eq!(order, [r.ids[1], r.ids[0]]);
+    assert_eq!(undo_len(&r.s), before + 1);
 }

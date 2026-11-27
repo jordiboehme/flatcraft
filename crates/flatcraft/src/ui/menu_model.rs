@@ -727,8 +727,8 @@ fn object_menu(inp: &MenuInput) -> Sub {
     }
     let transform = Entry::Sub(sub("transform", GroupId::Transform.def().title, moves));
     // The Arrange group: Align and Distribute as submenus, then the
-    // panel of Auto arrange (the one-click one stays on the ribbon). Group
-    // and Ungroup sit in the Object menu itself.
+    // panel of Auto arrange (the one-click one stays on the ribbon). Group,
+    // Ungroup and the stacking order sit in the Object menu itself.
     let mut arrange = vec![align_menu, distribute, Entry::Separator];
     arrange.extend(
         GroupId::Arrange
@@ -749,6 +749,11 @@ fn object_menu(inp: &MenuInput) -> Sub {
         Entry::Separator,
         tool_item("group", inp),
         tool_item("ungroup", inp),
+        Entry::Separator,
+        tool_item("order.front", inp),
+        tool_item("order.forward", inp),
+        tool_item("order.backward", inp),
+        tool_item("order.back", inp),
         Entry::Separator,
         item(
             Cmd::LinkCopies,

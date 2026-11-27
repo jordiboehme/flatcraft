@@ -232,6 +232,10 @@ fn every_prepare_key_does_what_the_sheet_says() {
             // One object: nothing to group or ungroup, nothing changes
             // (tests/groups.rs presses them on a real group).
             Key::G => assert_eq!(common::undo_len(&sess), undo_before, "{who}"),
+            // The selected object is the one at the back: front and
+            // forward move it (one step), back and backward change nothing.
+            Key::CloseBracket => assert_eq!(common::undo_len(&sess), undo_before + 1, "{who}"),
+            Key::OpenBracket => assert_eq!(common::undo_len(&sess), undo_before, "{who}"),
             other => panic!("no check for {other:?}"),
         }
     }

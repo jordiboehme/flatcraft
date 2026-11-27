@@ -789,6 +789,7 @@ fn id_call(cmd: &str, id: u64) -> Option<Value> {
         | "object.reload"
         | "object.unlink"
         | "arrange.auto" => json!({ "ids": [id] }),
+        "object.reorder" => json!({ "ids": [id], "to": "front" }),
         "object.set_visible" => json!({ "ids": [id], "visible": true }),
         "object.set_cut" => json!({ "ids": [id], "cut": true }),
         "object.rename" => json!({ "id": id, "name": "x" }),

@@ -89,7 +89,7 @@ pub fn mode_hint(m: CutMode) -> &'static str {
             "Welds overlapping shapes into one piece: one cut around all of them, none where they overlap. Every overlapping object must use this mode and the same Keep choice. The weld belongs to the object furthest back. Use it for joined script letters or a badge made of several shapes."
         }
         CutMode::VisibleOutline => {
-            "Cuts only what you can see: where an object in front covers this one, that part is not cut. An edge two shapes share is cut once. Objects added later lie in front of earlier ones, and a skipped object still covers. Use it for layered stickers and knockouts."
+            "Cuts only what you can see: where an object in front covers this one, that part is not cut. An edge two shapes share is cut once. Objects lower in the Objects list lie in front (Bring to front and Send to back in Arrange change that), and a skipped object still covers. Use it for layered stickers and knockouts."
         }
     }
 }

@@ -80,6 +80,12 @@ pub enum Icon {
     /// The Group and Ungroup actions.
     Group,
     Ungroup,
+    /// The stacking-order actions: Bring to front, Bring forward, Send
+    /// backward, Send to back.
+    BringToFront,
+    BringForward,
+    SendBackward,
+    SendToBack,
     /// "Auto arrange...", the panel (the one-click one uses Arrange).
     AutoArrangePanel,
     /// "Transform" group: a frame with four handles.
@@ -128,7 +134,7 @@ macro_rules! svg {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 86] = [
+    pub const ALL: [Icon; 90] = [
         Icon::Import,
         Icon::Trace,
         Icon::Duplicate,
@@ -193,6 +199,10 @@ impl Icon {
         Icon::AsGroup,
         Icon::Group,
         Icon::Ungroup,
+        Icon::BringToFront,
+        Icon::BringForward,
+        Icon::SendBackward,
+        Icon::SendToBack,
         Icon::AutoArrangePanel,
         Icon::Transform,
         Icon::Warning,
@@ -302,6 +312,10 @@ impl Icon {
             Icon::AsGroup => svg!("square-dashed"),
             Icon::Group => svg!("group"),
             Icon::Ungroup => svg!("ungroup"),
+            Icon::BringToFront => svg!("bring-to-front"),
+            Icon::BringForward => svg!("move-up"),
+            Icon::SendBackward => svg!("move-down"),
+            Icon::SendToBack => svg!("send-to-back"),
             Icon::AutoArrangePanel => svg!("layout-dashboard"),
             Icon::Transform => svg!("vector-square"),
             Icon::Warning => svg!("triangle-exclamation-point"),

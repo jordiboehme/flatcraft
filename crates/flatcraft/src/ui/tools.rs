@@ -21,6 +21,7 @@ use super::icons::Icon;
 use super::prepare::{PrepareState, RibbonTab, Snapshot};
 use super::rails::SidePanel;
 use super::{Action, ribbon};
+use flatcraft_engine::commands::group::ReorderTo;
 
 /// A group of the ribbon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -236,6 +237,8 @@ pub enum Act {
     DistributeVertical,
     Group,
     Ungroup,
+    /// Bring to front, Bring forward, Send backward, Send to back.
+    Order(ReorderTo),
     RectangularPattern,
     CircularPattern,
     AutoArrangePanel,
@@ -266,6 +269,7 @@ pub enum Section {
     Align,
     Distribute,
     Group,
+    Order,
 }
 
 impl Section {
@@ -275,6 +279,7 @@ impl Section {
             Section::Align => "Align",
             Section::Distribute => "Distribute",
             Section::Group => "Groups",
+            Section::Order => "Order",
         }
     }
 
@@ -284,6 +289,7 @@ impl Section {
             Section::Align => Icon::Align,
             Section::Distribute => Icon::DistributeHorizontal,
             Section::Group => Icon::Group,
+            Section::Order => Icon::BringToFront,
         }
     }
 }
@@ -358,7 +364,7 @@ use Style::{Big, Small};
 
 /// Every action, in the order of the ribbon and of the lists. The ids are
 /// `flatcraft_engine::prefs::RIBBON_PIN_IDS`, in the same order.
-pub const TOOLS: [Tool; 41] = [
+pub const TOOLS: [Tool; 45] = [
     tool(
         "import",
         Act::Import,
@@ -662,6 +668,54 @@ pub const TOOLS: [Tool; 41] = [
         ),
         Section::Group,
     ),
+    in_section(
+        tool(
+            "order.front",
+            Act::Order(ReorderTo::Front),
+            "Bring to front",
+            Icon::BringToFront,
+            G::Arrange,
+            Small,
+            "Put the selection in front of every other object. Front and back matter where objects overlap: the canvas draws the front one on top, and an object behind in Visible outline is not cut where the front one covers it. A group moves as one.",
+        ),
+        Section::Order,
+    ),
+    in_section(
+        tool(
+            "order.forward",
+            Act::Order(ReorderTo::Forward),
+            "Bring forward",
+            Icon::BringForward,
+            G::Arrange,
+            Small,
+            "Move the selection one step toward the front: in front of the next object, or of the next whole group. Use it to sort a few overlapping layers, one step at a time.",
+        ),
+        Section::Order,
+    ),
+    in_section(
+        tool(
+            "order.backward",
+            Act::Order(ReorderTo::Backward),
+            "Send backward",
+            Icon::SendBackward,
+            G::Arrange,
+            Small,
+            "Move the selection one step toward the back: behind the object, or the whole group, right behind it.",
+        ),
+        Section::Order,
+    ),
+    in_section(
+        tool(
+            "order.back",
+            Act::Order(ReorderTo::Back),
+            "Send to back",
+            Icon::SendToBack,
+            G::Arrange,
+            Small,
+            "Put the selection behind every other object, like the bottom layer of a layered sticker.",
+        ),
+        Section::Order,
+    ),
     tool(
         "zoom.fit",
         Act::ZoomFit,
@@ -742,7 +796,7 @@ pub const TOOLS: [Tool; 41] = [
 /// the one accent part that tells what happens, in the accent colour.
 /// Every other child is ink. Every icon of an action, a group or a
 /// switch has an entry; the framed Align icons use their base icon's.
-pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 49] = [
+pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 53] = [
     (Icon::Import, &[2], &[0, 1]),
     (Icon::Trace, &[], &[2]),
     (Icon::TestPatterns, &[0], &[1]),
@@ -786,6 +840,12 @@ pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 49] = [
     (Icon::AsGroup, &[], &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
     (Icon::Group, &[4, 5], &[0, 1, 2, 3]),
     (Icon::Ungroup, &[1], &[0]),
+    // The square that moves is the accent, the other two are paper.
+    (Icon::BringToFront, &[1, 2], &[0]),
+    (Icon::SendToBack, &[0, 1], &[2, 3]),
+    // The arrow head shows the way.
+    (Icon::BringForward, &[], &[0]),
+    (Icon::SendBackward, &[], &[0]),
     (Icon::AutoArrangePanel, &[0, 2], &[1, 3]),
     // The four handles of the frame.
     (Icon::Transform, &[], &[4, 5, 6, 7]),
@@ -919,6 +979,7 @@ impl Tool {
             Act::DistributeHorizontal | Act::DistributeVertical => "arrange.distribute",
             Act::Group => "object.group",
             Act::Ungroup => "object.ungroup",
+            Act::Order(_) => "object.reorder",
             Act::CircularPattern => "object.circular_copies",
             Act::AutoArrangePanel | Act::AutoArrange => "arrange.auto",
             _ => return None,
@@ -1011,6 +1072,13 @@ impl Tool {
                 (n < 3).then_some("Select 3 or more objects first.")
             }
             Act::Group => flatcraft_engine::commands::group::group_refusal(n),
+            Act::Order(to) => {
+                if n == 0 {
+                    Some(SELECT)
+                } else {
+                    order_refusal(snap, ids, to)
+                }
+            }
             Act::Ungroup => ungroup_plan(snap, ids)
                 .is_empty()
                 .then_some(flatcraft_engine::commands::group::UNGROUP_REFUSAL),
@@ -1119,6 +1187,7 @@ impl Tool {
             }
             Act::Group => push(actions, group_action(doc_id, &ids)),
             Act::Ungroup => push(actions, ungroup_action(doc_id, &ids)),
+            Act::Order(to) => push(actions, reorder_action(doc_id, &ids, to)),
             Act::AutoArrange => push(actions, auto_arrange_action(snap)),
             Act::ZoomFit => st.fit_pending = true,
             Act::Zoom100 => {
@@ -1180,6 +1249,31 @@ pub fn group_action(doc_id: u64, ids: &[u64]) -> Action {
 /// Shift+Cmd+G).
 pub fn ungroup_action(doc_id: u64, ids: &[u64]) -> Action {
     Action::run(doc_id, "object.ungroup", json!({ "ids": ids }))
+}
+
+/// Why the order action `to` changes nothing for the objects `ids` (they
+/// are already in front, or at the back), or `None` when it moves them.
+/// The same rule as `object.reorder`.
+pub fn order_refusal(snap: &Snapshot, ids: &[u64], to: ReorderTo) -> Option<&'static str> {
+    use flatcraft_core::document::ObjectId;
+    let order: Vec<ObjectId> = snap.objects.iter().map(|o| ObjectId(o.id)).collect();
+    let leaves: Vec<ObjectId> = ids
+        .iter()
+        .flat_map(|id| snap.leaves_of(*id))
+        .map(ObjectId)
+        .collect();
+    let moved = flatcraft_engine::commands::group::reordered(&order, &snap.tree, &leaves, to);
+    (moved == order).then_some(to.refusal())
+}
+
+/// The `object.reorder` of the order actions (the ribbon, the context
+/// menu, Cmd+] and Cmd+[).
+pub fn reorder_action(doc_id: u64, ids: &[u64], to: ReorderTo) -> Action {
+    Action::run(
+        doc_id,
+        "object.reorder",
+        json!({ "ids": ids, "to": to.key() }),
+    )
 }
 
 /// Why Auto arrange cannot run when every selected object is hidden.

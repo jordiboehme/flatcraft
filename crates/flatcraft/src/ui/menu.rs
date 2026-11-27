@@ -60,6 +60,8 @@ pub fn code_of(key: egui::Key) -> Option<Code> {
         K::Y => Code::KeyY,
         K::Z => Code::KeyZ,
         K::Comma => Code::Comma,
+        K::OpenBracket => Code::BracketLeft,
+        K::CloseBracket => Code::BracketRight,
         _ => return None,
     })
 }

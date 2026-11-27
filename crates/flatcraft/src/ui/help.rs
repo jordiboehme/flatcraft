@@ -143,6 +143,11 @@ pub enum PrepareKey {
     Duplicate,
     Group,
     Ungroup,
+    /// The stacking order: Shift+Cmd+], Cmd+], Cmd+[ and Shift+Cmd+[.
+    BringToFront,
+    BringForward,
+    SendBackward,
+    SendToBack,
     /// One row per arrow key; Shift and Alt change the step.
     Nudge,
     Delete,
@@ -399,7 +404,7 @@ const fn while_dragging(what: &'static str, action: PrepareKey) -> Shortcut {
 /// Every shortcut the app has. The key handler runs the entries with a
 /// `run`, in this order (a Shift variant before its plain key), and the
 /// shortcuts sheet lists all of them.
-pub const SHORTCUTS: [Shortcut; 27] = [
+pub const SHORTCUTS: [Shortcut; 31] = [
     global(
         CMD_SHIFT,
         Key::S,
@@ -440,6 +445,35 @@ pub const SHORTCUTS: [Shortcut; 27] = [
     )
     .for_tool("ungroup"),
     prepare(CMD, Key::G, "Group the selection", PrepareKey::Group).for_tool("group"),
+    // The stacking order, Shift variants first.
+    prepare(
+        CMD_SHIFT,
+        Key::CloseBracket,
+        "Bring the selection to the front",
+        PrepareKey::BringToFront,
+    )
+    .for_tool("order.front"),
+    prepare(
+        CMD_SHIFT,
+        Key::OpenBracket,
+        "Send the selection to the back",
+        PrepareKey::SendToBack,
+    )
+    .for_tool("order.back"),
+    prepare(
+        CMD,
+        Key::CloseBracket,
+        "Bring the selection forward one step",
+        PrepareKey::BringForward,
+    )
+    .for_tool("order.forward"),
+    prepare(
+        CMD,
+        Key::OpenBracket,
+        "Send the selection backward one step",
+        PrepareKey::SendBackward,
+    )
+    .for_tool("order.backward"),
     prepare(
         Modifiers::NONE,
         Key::ArrowLeft,
@@ -543,7 +577,7 @@ pub fn pressed(ctx: &egui::Context, action: PrepareKey) -> bool {
             let Some(want) = s.key() else { continue };
             let at = i.events.iter().position(|e| {
                 matches!(e, egui::Event::Key { key, pressed: true, modifiers, .. }
-                    if *key == want && modifiers.matches_exact(s.modifiers))
+                    if same_key(*key, want, s.modifiers.shift) && modifiers.matches_exact(s.modifiers))
             });
             if let Some(at) = at {
                 i.events.remove(at);
@@ -552,6 +586,19 @@ pub fn pressed(ctx: &egui::Context, action: PrepareKey) -> bool {
         }
         hit
     })
+}
+
+/// Whether the pressed `key` is the key `want` of a row. With Shift held,
+/// some keyboards report Shift+] as "}" and Shift+[ as "{": those count as
+/// the bracket keys.
+fn same_key(key: Key, want: Key, shift: bool) -> bool {
+    key == want
+        || (shift
+            && matches!(
+                (key, want),
+                (Key::CloseCurlyBracket, Key::CloseBracket)
+                    | (Key::OpenCurlyBracket, Key::OpenBracket)
+            ))
 }
 
 /// Whether `key` is one of the nudge keys of the table.
@@ -597,6 +644,8 @@ impl Shortcut {
         };
         s.push_str(match key {
             Key::Comma => ",",
+            Key::OpenBracket => "[",
+            Key::CloseBracket => "]",
             Key::ArrowLeft => "Left",
             Key::ArrowRight => "Right",
             Key::ArrowUp => "Up",

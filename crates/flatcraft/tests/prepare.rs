@@ -1489,6 +1489,116 @@ fn distribute_buttons_need_three_objects_and_are_one_step() {
 }
 
 /// Opens the Arrange drop-down of the Layout tab.
+fn doc_order(s: &SharedSession) -> Vec<u64> {
+    s.lock()
+        .unwrap()
+        .doc()
+        .document
+        .objects
+        .iter()
+        .map(|o| o.id.0)
+        .collect()
+}
+
+/// The Objects panel rows of the objects, top to bottom.
+fn panel_rows(h: &AppHarness, names: &[&str]) -> Vec<String> {
+    let mut rows: Vec<(f32, String)> = names
+        .iter()
+        .map(|n| {
+            // The row comes first; the details below repeat the name.
+            let y = h
+                .query_all_by_label(n)
+                .map(|node| node.rect().min.y)
+                .fold(f32::INFINITY, f32::min);
+            (y, n.to_string())
+        })
+        .collect();
+    rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+    rows.into_iter().map(|(_, n)| n).collect()
+}
+
+#[test]
+fn the_order_actions_are_in_the_arrange_list_dimmed_with_reasons() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = square_at(&s, 0.0);
+    let b = square_at(&s, 60.0);
+    for (id, name) in [(a, "first"), (b, "second")] {
+        s.lock()
+            .unwrap()
+            .execute(
+                "object.rename",
+                json!({ "id": id, "name": name }),
+                Origin::User,
+            )
+            .unwrap();
+    }
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    h.get_by_role_and_label(Role::Tab, "Layout").click();
+    h.run_plan();
+    select(&s, &[a]);
+    h.run_plan();
+    open_arrange(&mut h);
+    // The back object: it can only come forward.
+    assert!(disabled(&h, "Send to back (Arrange)"));
+    assert!(disabled(&h, "Send backward (Arrange)"));
+    assert!(!disabled(&h, "Bring to front (Arrange)"));
+    assert!(!disabled(&h, "Bring forward (Arrange)"));
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    assert_eq!(
+        flatcraft::ui::tools::by_id("order.back")
+            .unwrap()
+            .blocked(&snap),
+        Some("Already at the back: nothing lies behind the selection.")
+    );
+    assert_eq!(panel_rows(&h, &["first", "second"]), ["first", "second"]);
+    let before = undo_len(&s);
+    h.get_by_label("Bring to front (Arrange)").click();
+    h.run_plan();
+    wait_for_workers(&mut h);
+    assert_eq!(undo_len(&s), before + 1);
+    assert_eq!(doc_order(&s), [b, a]);
+    // The Objects panel follows the document order: the front is last.
+    assert_eq!(panel_rows(&h, &["first", "second"]), ["second", "first"]);
+    if h.query_by_label("Bring to front (Arrange)").is_none() {
+        open_arrange(&mut h);
+    }
+    assert!(disabled(&h, "Bring to front (Arrange)"));
+    // Nothing selected: every order action says to select first.
+    select(&s, &[]);
+    h.run_plan();
+    assert!(disabled(&h, "Send to back (Arrange)"));
+}
+
+#[test]
+fn the_order_keys_move_the_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = square_at(&s, 0.0);
+    let b = square_at(&s, 60.0);
+    let c = square_at(&s, 120.0);
+    select(&s, &[a]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let cmd = egui::Modifiers::COMMAND;
+    let cmd_shift = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+    h.key_press_modifiers(cmd, egui::Key::CloseBracket);
+    h.run_plan();
+    assert_eq!(doc_order(&s), [b, a, c]);
+    h.key_press_modifiers(cmd_shift, egui::Key::CloseBracket);
+    h.run_plan();
+    assert_eq!(doc_order(&s), [b, c, a]);
+    h.key_press_modifiers(cmd, egui::Key::OpenBracket);
+    h.run_plan();
+    assert_eq!(doc_order(&s), [b, a, c]);
+    // Some keyboards report Shift+[ as "{".
+    h.key_press_modifiers(cmd_shift, egui::Key::OpenCurlyBracket);
+    h.run_plan();
+    assert_eq!(doc_order(&s), [a, b, c]);
+}
+
 fn open_arrange(h: &mut AppHarness) {
     h.get_by_role_and_label(Role::Button, "Arrange").click();
     h.run_plan();

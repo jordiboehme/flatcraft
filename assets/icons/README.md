@@ -100,6 +100,10 @@ except the two files below.
 | Pick on the mat (Keep) | pipette |
 | Simulate (Cut stage) | play |
 | Send (Cut stage) | send |
+| Bring to front | bring-to-front |
+| Bring forward | move-up |
+| Send backward | move-down |
+| Send to back | send-to-back |
 
 The Align directions "to the cutting area" use the Align icons above. The app draws
 them smaller inside a dashed frame at render time; the files are not changed.

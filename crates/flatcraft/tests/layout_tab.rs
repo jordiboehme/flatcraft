@@ -124,6 +124,10 @@ fn each_action_is_in_its_group_in_order() {
         "auto_arrange.panel",
         "group",
         "ungroup",
+        "order.front",
+        "order.forward",
+        "order.backward",
+        "order.back",
     ] {
         arrange.push(id.to_string());
     }

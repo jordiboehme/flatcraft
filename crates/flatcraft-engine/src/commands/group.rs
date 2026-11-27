@@ -199,3 +199,160 @@ command!(
     run: run_move_to_group,
     description: "Puts objects or groups into the group group_id, or at the top level when group_id is left out, in one undo step (the Objects panel does this when a row is dragged in or out of a group). Nothing moves on the mat. A group cannot go into itself or a group inside it. A group left with fewer than 2 members dissolves. An empty ids list means the current selection. Returns {ids (what moved), group_id}.",
 );
+
+// ---------------------------------------------------------------- order
+
+/// Where `object.reorder` moves objects in the stacking order (document
+/// order: later objects lie in front, as the canvas draws them and as the
+/// visible outline cut mode reads them).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReorderTo {
+    /// In front of everything.
+    Front,
+    /// One step forward: in front of the next object (or whole group).
+    Forward,
+    /// One step back: behind the object (or whole group) right behind.
+    Backward,
+    /// Behind everything.
+    Back,
+}
+
+impl ReorderTo {
+    /// Its name in `object.reorder`.
+    pub fn key(self) -> &'static str {
+        match self {
+            ReorderTo::Front => "front",
+            ReorderTo::Forward => "forward",
+            ReorderTo::Backward => "backward",
+            ReorderTo::Back => "back",
+        }
+    }
+
+    /// Why moving this way changes nothing for a selection: it is already
+    /// in front (or at the back).
+    pub fn refusal(self) -> &'static str {
+        match self {
+            ReorderTo::Front | ReorderTo::Forward => {
+                "Already in front: nothing lies in front of the selection."
+            }
+            ReorderTo::Backward | ReorderTo::Back => {
+                "Already at the back: nothing lies behind the selection."
+            }
+        }
+    }
+}
+
+/// The document order `order` after moving the objects `leaves` to `to`.
+/// What moves as one is a unit of `tree` (a whole group, or an object
+/// picked on its own): its objects end up next to each other, in their
+/// order. A step forward or back passes one other object, or a whole
+/// group with all of its objects that are not moving. Equal to `order`
+/// when nothing can move that way.
+pub fn reordered(
+    order: &[ObjectId],
+    tree: &flatcraft_core::nodes::Tree,
+    leaves: &[ObjectId],
+    to: ReorderTo,
+) -> Vec<ObjectId> {
+    let chosen: std::collections::BTreeSet<ObjectId> = leaves.iter().copied().collect();
+    let (picked, rest): (Vec<ObjectId>, Vec<ObjectId>) =
+        order.iter().partition(|id| chosen.contains(id));
+    match to {
+        ReorderTo::Front => return rest.into_iter().chain(picked).collect(),
+        ReorderTo::Back => return picked.into_iter().chain(rest).collect(),
+        ReorderTo::Forward | ReorderTo::Backward => {}
+    }
+    let forward = to == ReorderTo::Forward;
+    let mut order = order.to_vec();
+    let at = |order: &[ObjectId], id: ObjectId| order.iter().position(|x| *x == id);
+    let mut blocks: Vec<Vec<ObjectId>> = tree
+        .units(leaves)
+        .into_iter()
+        .map(|u| {
+            tree.leaves_of(u)
+                .into_iter()
+                .filter(|l| chosen.contains(l))
+                .collect::<Vec<_>>()
+        })
+        .filter(|b| !b.is_empty())
+        .collect();
+    // The block nearest the way it moves goes first, so blocks keep
+    // their order among themselves.
+    let edge = |order: &[ObjectId], b: &[ObjectId]| {
+        let p = b.iter().filter_map(|id| at(order, *id));
+        if forward { p.max() } else { p.min() }
+    };
+    blocks.sort_by_key(|b| edge(&order, b));
+    if forward {
+        blocks.reverse();
+    }
+    for block in blocks {
+        let Some(end) = edge(&order, &block) else {
+            continue;
+        };
+        let next = if forward {
+            order[end + 1..].iter().find(|o| !chosen.contains(o))
+        } else {
+            order[..end].iter().rev().find(|o| !chosen.contains(o))
+        };
+        let Some(&next) = next else {
+            continue;
+        };
+        // The whole unit of the object passed, without what moves.
+        let other: Vec<ObjectId> = tree
+            .leaves_of(tree.top(next))
+            .into_iter()
+            .filter(|l| !chosen.contains(l))
+            .collect();
+        let mut block_sorted = block.clone();
+        block_sorted.sort_by_key(|id| at(&order, *id));
+        order.retain(|id| !block.contains(id));
+        let positions = other.iter().filter_map(|id| at(&order, *id));
+        let insert = if forward {
+            positions.max().map_or(order.len(), |p| p + 1)
+        } else {
+            positions.min().unwrap_or(0)
+        };
+        for (k, id) in block_sorted.into_iter().enumerate() {
+            order.insert(insert + k, id);
+        }
+    }
+    order
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReorderParams {
+    /// Object or group ids; empty means the current selection.
+    #[serde(default)]
+    pub ids: Vec<u64>,
+    /// front, forward (one step), backward (one step) or back.
+    pub to: ReorderTo,
+}
+
+fn run_reorder(s: &mut Session, p: ReorderParams, _: Origin) -> Result<Value, CommandError> {
+    let leaves = super::resolve_ids(s, &p.ids)?;
+    let doc = &s.doc().document;
+    let order: Vec<ObjectId> = doc.objects.iter().map(|o| o.id).collect();
+    let new = reordered(&order, &doc.tree(), &leaves, p.to);
+    let changed = new != order;
+    if changed {
+        let doc = &mut s.doc_mut().document;
+        let place: std::collections::BTreeMap<ObjectId, usize> =
+            new.iter().enumerate().map(|(k, id)| (*id, k)).collect();
+        doc.objects
+            .sort_by_key(|o| place.get(&o.id).copied().unwrap_or(usize::MAX));
+    }
+    Ok(json!({ "ids": ids_json(&leaves), "order": ids_json(&new), "changed": changed }))
+}
+
+command!(
+    ObjectReorder,
+    id: "object.reorder",
+    title: "Arrange order",
+    mutates: true,
+    params: ReorderParams,
+    run: run_reorder,
+    description: "Changes which objects lie in front, in one undo step (the window's Bring to front Shift+Cmd+], Bring forward Cmd+], Send backward Cmd+[ and Send to back Shift+Cmd+[, Ctrl on Windows and Linux). The stacking order is the document order (document.state lists objects in it): later objects lie in front. It decides what the visible_outline cut mode covers, and how the canvas draws overlaps. to: front puts them in front of everything, back behind everything, forward one step in front of the next object, backward one step behind the object right behind. A whole group moves as one block and is passed as one block; its objects end up next to each other. Objects picked inside a group move on their own. Nothing moves on the mat. Already in front (or at the back) changes nothing and records no undo step. An empty ids list means the current selection. Returns {ids (the objects moved), order (every object id in the new order, back to front), changed}.",
+);

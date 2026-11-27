@@ -72,6 +72,7 @@ static ALL: &[&dyn Command] = &[
     &group::ObjectGroup,
     &group::ObjectUngroup,
     &group::ObjectMoveToGroup,
+    &group::ObjectReorder,
     &arrange::ArrangeAlign,
     &arrange::ArrangeDistribute,
     &arrange::ArrangeAuto,

@@ -1047,3 +1047,138 @@ fn a_covered_object_keeps_the_box_of_its_outlines() {
         + (b.y1 - want.y1).abs();
     assert!(off < 1e-9, "{b:?}");
 }
+
+// ---------------------------------------------------------------- order
+
+fn order(s: &Session) -> Vec<u64> {
+    s.doc().document.objects.iter().map(|o| o.id.0).collect()
+}
+
+fn reorder(s: &mut Session, ids: &[u64], to: &str) -> Value {
+    run(s, "object.reorder", json!({ "ids": ids, "to": to }))
+}
+
+#[test]
+fn reordering_changes_the_visible_outline() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let back = square(&mut s, 20.0, 20.0, 40.0, "back");
+    let front = square(&mut s, 40.0, 40.0, 40.0, "front");
+    set_mode(&mut s, &[back, front], "visible_outline");
+    let open = |s: &Session, id: u64| {
+        let g = s.cut_geometry().unwrap();
+        !closed(&g.pieces(ObjectId(id))[0].path)
+    };
+    assert!(open(&s, back) && !open(&s, front));
+    let before = s.doc().undo.undo_len();
+    let r = reorder(&mut s, &[back], "front");
+    assert_eq!(r["changed"], true);
+    assert_eq!(r["order"], json!([front, back]));
+    assert_eq!(s.doc().undo.undo_len(), before + 1, "one undo step");
+    assert!(
+        !open(&s, back) && open(&s, front),
+        "the old back is in front now"
+    );
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(order(&s), [back, front]);
+    assert!(open(&s, back) && !open(&s, front));
+}
+
+#[test]
+fn reorder_steps_one_object_and_changes_nothing_at_the_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = square(&mut s, 10.0, 10.0, 10.0, "a");
+    let b = square(&mut s, 30.0, 10.0, 10.0, "b");
+    let c = square(&mut s, 50.0, 10.0, 10.0, "c");
+    reorder(&mut s, &[a], "forward");
+    assert_eq!(order(&s), [b, a, c]);
+    reorder(&mut s, &[a], "forward");
+    assert_eq!(order(&s), [b, c, a]);
+    let before = s.doc().undo.undo_len();
+    let r = reorder(&mut s, &[a], "front");
+    assert_eq!(r["changed"], false);
+    assert_eq!(s.doc().undo.undo_len(), before, "no step for no change");
+    reorder(&mut s, &[a], "backward");
+    assert_eq!(order(&s), [b, a, c]);
+    reorder(&mut s, &[c], "back");
+    assert_eq!(order(&s), [c, b, a]);
+    // Two picked together keep their order and step together.
+    reorder(&mut s, &[c, b], "forward");
+    assert_eq!(order(&s), [a, c, b]);
+}
+
+#[test]
+fn a_group_moves_and_is_passed_as_one_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = square(&mut s, 10.0, 10.0, 10.0, "a");
+    let c = square(&mut s, 30.0, 10.0, 10.0, "c");
+    let b = square(&mut s, 50.0, 10.0, 10.0, "b");
+    let d = square(&mut s, 70.0, 10.0, 10.0, "d");
+    let g = run(&mut s, "object.group", json!({ "ids": [a, b] }))["group_id"]
+        .as_u64()
+        .unwrap();
+    // The group goes to the front as one block, in its own order.
+    reorder(&mut s, &[g], "front");
+    assert_eq!(order(&s), [c, d, a, b]);
+    // A step forward of d passes the whole group.
+    reorder(&mut s, &[d], "forward");
+    assert_eq!(order(&s), [c, a, b, d]);
+    // A step back of the group passes c.
+    reorder(&mut s, &[g], "backward");
+    assert_eq!(order(&s), [a, b, c, d]);
+    // A member picked on its own moves on its own.
+    reorder(&mut s, &[a], "forward");
+    assert_eq!(order(&s), [b, a, c, d]);
+    let st = run(&mut s, "document.state", json!({}));
+    let listed: Vec<u64> = st["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["id"].as_u64().unwrap())
+        .collect();
+    assert_eq!(listed, order(&s), "document.state lists the stacking order");
+}
+
+// ---------------------------------------------------------------- scale
+
+/// `n` squares of 8 mm on a grid, each overlapping its right and lower
+/// neighbours by 1 mm, all in `mode`.
+fn sheet(n: usize, mode: CutMode) -> Document {
+    let mut doc = Document::new(job_settings());
+    let side = (n as f64).sqrt().ceil() as usize;
+    for k in 0..n {
+        let (x, y) = ((k % side) as f64 * 7.0, (k / side) as f64 * 7.0);
+        add(
+            &mut doc,
+            &format!("s{k}"),
+            vec![filled(rect(x, y, x + 8.0, y + 8.0))],
+            mode,
+        );
+    }
+    doc
+}
+
+#[test]
+#[ignore = "timing table; run with --ignored --nocapture"]
+fn cross_object_pass_timing() {
+    for mode in [CutMode::MergedOutline, CutMode::VisibleOutline] {
+        for n in [100, 200, 400] {
+            let doc = sheet(n, mode);
+            let start = std::time::Instant::now();
+            let first = build(&doc, None);
+            eprintln!("TIMING {mode:?} n={n}: first build {:?}", start.elapsed());
+            // Move one object: the cross pass runs again on cached solos.
+            let mut moved = doc.clone();
+            moved.objects[0].transform.center_mm.x += 0.5;
+            let start = std::time::Instant::now();
+            let again = build(&moved, Some(&first));
+            let t = start.elapsed();
+            eprintln!(
+                "TIMING {mode:?} n={n}: cross pass {t:?} ({} pieces on 0)",
+                again.pieces(moved.objects[0].id).len()
+            );
+        }
+    }
+}

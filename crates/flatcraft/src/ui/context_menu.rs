@@ -24,6 +24,7 @@ use super::help::{self, PrepareKey};
 use super::prepare::{PrepareState, RenameDialog, Snapshot};
 use super::tools::{self, Act, AlignTo, Tool};
 use super::{Action, arrange, objects, ribbon};
+use flatcraft_engine::commands::group::ReorderTo;
 
 /// One item of the menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +43,10 @@ pub enum Item {
     Distribute,
     Group,
     Ungroup,
+    BringToFront,
+    BringForward,
+    SendBackward,
+    SendToBack,
     Hide,
     Show,
     SkipCutting,
@@ -78,6 +83,10 @@ impl Item {
             Item::MirrorVertical => Act::MirrorVertical,
             Item::Group => Act::Group,
             Item::Ungroup => Act::Ungroup,
+            Item::BringToFront => Act::Order(ReorderTo::Front),
+            Item::BringForward => Act::Order(ReorderTo::Forward),
+            Item::SendBackward => Act::Order(ReorderTo::Backward),
+            Item::SendToBack => Act::Order(ReorderTo::Back),
             Item::Delete => Act::Delete,
             Item::Import => Act::Import,
             Item::AutoArrange => Act::AutoArrange,
@@ -317,6 +326,12 @@ pub fn items(snap: &Snapshot, st: &PrepareState, ids: &[u64]) -> Vec<Vec<Item>> 
 
     groups.push(vec![Item::Align, Item::Distribute]);
     groups.push(vec![Item::Group, Item::Ungroup]);
+    groups.push(vec![
+        Item::BringToFront,
+        Item::BringForward,
+        Item::SendBackward,
+        Item::SendToBack,
+    ]);
 
     let mut g = vec![if objs.iter().any(|o| o.visible) {
         Item::Hide
@@ -492,6 +507,11 @@ pub fn run_item(
         }
         Item::Group => actions.push(tools::group_action(doc_id, ids)),
         Item::Ungroup => actions.push(tools::ungroup_action(doc_id, ids)),
+        Item::BringToFront | Item::BringForward | Item::SendBackward | Item::SendToBack => {
+            if let Some(Act::Order(to)) = item.tool().map(|t| t.act) {
+                actions.push(tools::reorder_action(doc_id, ids, to));
+            }
+        }
         Item::TraceAgain => {
             if let Some(id) = ribbon::single_raster_of(snap, ids) {
                 actions.push(Action::TraceDialog { doc_id, id });
