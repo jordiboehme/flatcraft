@@ -484,9 +484,15 @@ fn button_size(ui: &Ui) -> egui::Vec2 {
 }
 
 /// The icon of a small button, fitting [`button_size`].
-fn icon_image(ui: &Ui, icon: Icon, name: &str) -> egui::Image<'static> {
+/// A dimmed one is drawn faint, so it reads as not available.
+fn icon_image(ui: &Ui, icon: Icon, name: &str, dimmed: bool) -> egui::Image<'static> {
     let size = (ui.spacing().interact_size.y - 4.0).clamp(12.0, 16.0);
-    groups::image(ui, icon, size).alt_text(name.to_string())
+    let image = groups::image(ui, icon, size).alt_text(name.to_string());
+    if dimmed {
+        image.tint(egui::Color32::WHITE.gamma_multiply(0.35))
+    } else {
+        image
+    }
 }
 
 /// A small icon button named `name`, with its card (and why it is
@@ -504,7 +510,7 @@ fn icon_button(
             ui.spacing_mut().button_padding = vec2(2.0, 2.0);
             ui.add_sized(
                 button_size(ui),
-                egui::Button::image(icon_image(ui, icon, name)),
+                egui::Button::image(icon_image(ui, icon, name, why.is_some())),
             )
         })
         .inner;
@@ -531,7 +537,7 @@ fn tool_button(
             ui.spacing_mut().button_padding = vec2(2.0, 2.0);
             ui.add_sized(
                 button_size(ui),
-                egui::Button::image(icon_image(ui, tool.icon, tool.title)),
+                egui::Button::image(icon_image(ui, tool.icon, tool.title, why.is_some())),
             )
         })
         .inner;
