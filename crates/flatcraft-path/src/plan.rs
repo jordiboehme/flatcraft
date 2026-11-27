@@ -292,6 +292,10 @@ pub struct CutPlan {
     /// The job's kept material, as the knife stage judged every waste move
     /// against it: one source of truth for the simulator and the canvas.
     pub kept: std::sync::Arc<KeptMaterial>,
+    /// What rounding the host runs to the device units did
+    /// ([`crate::quantize::round_runs`]); the default when they are not
+    /// rounded.
+    pub rounding: crate::quantize::RoundReport,
 }
 
 /// The pipeline setting an [`PlanError::InvalidSettings`] is about.
@@ -604,7 +608,7 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
     // Ruling F3: `from_toolpaths` reads `lap()` of pass 1, never `points`,
     // so chained laps and passes never cancel a ring.
     let kept = KeptMaterial::from_toolpaths(&toolpaths, mode_of, s.cutting_area);
-    let compensation = knife::apply(&mut toolpaths, s, &kept, s.start_heading);
+    let (compensation, rounding) = knife::apply_rounded(&mut toolpaths, s, &kept, s.start_heading);
     let (end, end_heading) = knife::end_state(&toolpaths, s.home, s.start_heading);
 
     // Blade-down axis length: the points themselves without host
@@ -627,6 +631,7 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
         dropped_weed_boxes: weeds.dropped_boxes,
         blocked_weed_boxes: weeds.blocked_boxes,
         kept: std::sync::Arc::new(kept),
+        rounding,
     })
 }
 

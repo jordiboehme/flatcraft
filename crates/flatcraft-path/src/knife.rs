@@ -127,6 +127,17 @@ pub fn apply(
     kept: &KeptMaterial,
     start_heading: Vec2,
 ) -> AppliedCompensation {
+    apply_rounded(paths, s, kept, start_heading).0
+}
+
+/// [`apply`], with what the rounding to the device units did (the
+/// default report when the runs are not rounded).
+pub fn apply_rounded(
+    paths: &mut Vec<Toolpath>,
+    s: &PipelineSettings,
+    kept: &KeptMaterial,
+    start_heading: Vec2,
+) -> (AppliedCompensation, quantize::RoundReport) {
     if let Some(stroke) = s.alignment_stroke {
         let source = paths.first().map_or(
             PathRef {
@@ -138,7 +149,7 @@ pub fn apply(
         paths.insert(0, stroke_toolpath(&stroke, source));
     }
     let Compensation::Host(hs) = s.compensation else {
-        return AppliedCompensation::Tip;
+        return (AppliedCompensation::Tip, quantize::RoundReport::default());
     };
     let knife = Knife {
         d: hs.offset_mm,
@@ -159,14 +170,20 @@ pub fn apply(
         t.axis = Some(runs);
         heading = heading_after(t, heading);
     }
-    if let Some(grid) = hs.device_grid {
-        // A push it keeps (to hold the cut within `MAX_DROP_MM`) is not
-        // silent: the simulator's device mode reports it as pushed.
-        let _ = quantize::round_runs(paths, &grid, hs.offset_mm, start_heading, kept);
-    }
-    AppliedCompensation::Host {
-        offset_mm: hs.offset_mm,
-    }
+    // A push it keeps (to hold the cut within `MAX_DROP_MM`) and a waste
+    // move it cannot keep out of kept material are counted in the report:
+    // the plan carries it and the job warns.
+    let report = hs
+        .device_grid
+        .map_or_else(quantize::RoundReport::default, |grid| {
+            quantize::round_runs(paths, &grid, hs.offset_mm, start_heading, kept)
+        });
+    (
+        AppliedCompensation::Host {
+            offset_mm: hs.offset_mm,
+        },
+        report,
+    )
 }
 
 /// The head position and the blade heading after `paths`, starting at

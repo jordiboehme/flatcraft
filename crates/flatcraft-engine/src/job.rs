@@ -196,6 +196,24 @@ pub(crate) fn dropped_short_warning(n: usize) -> String {
     }
 }
 
+/// The warnings of rounding host runs to plotter steps: blade starts or
+/// overshoots it could not keep fully out of a kept piece, and moves that
+/// still push the blade. Each once per job, only when it happened.
+pub(crate) fn rounding_warnings(r: &flatcraft_path::quantize::RoundReport) -> Vec<String> {
+    let mut out = Vec::new();
+    match r.kept_left {
+        0 => {}
+        1 => out.push("1 blade start could not be kept fully out of a kept piece after rounding to plotter steps. Run the simulation to see where.".to_string()),
+        n => out.push(format!("{n} blade starts could not be kept fully out of a kept piece after rounding to plotter steps. Run the simulation to see where.")),
+    }
+    match r.pushes_kept {
+        0 => {}
+        1 => out.push("1 blade move still pushes the blade from behind after rounding to plotter steps. Run the simulation to see where.".to_string()),
+        n => out.push(format!("{n} blade moves still push the blade from behind after rounding to plotter steps. Run the simulation to see where.")),
+    }
+    out
+}
+
 /// The warning when the emitter left out paths whose points all round to
 /// one plotter step.
 pub(crate) fn collapsed_warning(n: usize) -> String {
@@ -986,6 +1004,7 @@ pub(crate) fn build_planned(input: &JobInput, units: PlanUnits) -> Result<JobRes
     if cut_plan.dropped_short > 0 {
         warnings.push(dropped_short_warning(cut_plan.dropped_short));
     }
+    warnings.extend(rounding_warnings(&cut_plan.rounding));
 
     if cut_plan.dropped_weed_boxes > 0 {
         warnings.push(weed_box_warning(
@@ -1456,6 +1475,53 @@ mod tests {
         assert!(weed_box_blocked_warning(2).starts_with("2 weed boxes would cut"));
         assert!(weed_box_warning(1, false).starts_with("The weed box does not fit"));
         assert!(weed_box_warning(3, true).starts_with("3 weed boxes do not fit"));
+    }
+
+    #[test]
+    fn rounding_warnings_say_what_the_rounding_left() {
+        use flatcraft_path::quantize::RoundReport;
+        assert!(rounding_warnings(&RoundReport::default()).is_empty());
+        // Points it moved out of kept material need no warning.
+        let moved = RoundReport {
+            kept_moved: 4,
+            ..RoundReport::default()
+        };
+        assert!(rounding_warnings(&moved).is_empty());
+        let one = rounding_warnings(&RoundReport {
+            kept_left: 1,
+            ..RoundReport::default()
+        });
+        assert_eq!(
+            one,
+            [
+                "1 blade start could not be kept fully out of a kept piece after rounding to plotter steps. Run the simulation to see where."
+            ]
+        );
+        let both = rounding_warnings(&RoundReport {
+            kept_left: 3,
+            pushes_kept: 2,
+            ..RoundReport::default()
+        });
+        assert_eq!(both.len(), 2, "{both:?}");
+        assert!(both[0].starts_with("3 blade starts could not be kept fully out of a kept piece after rounding to plotter steps."));
+        assert!(both[1].starts_with(
+            "2 blade moves still push the blade from behind after rounding to plotter steps."
+        ));
+        assert!(both.iter().all(|w| !w.contains('\u{2014}')));
+    }
+
+    /// The tile plans of an offset series merge into one report: one
+    /// warning with the sum, not one per tile.
+    #[test]
+    fn a_merged_rounding_report_counts_each_job_once() {
+        use flatcraft_path::quantize::RoundReport;
+        let r = RoundReport {
+            kept_left: 1,
+            ..RoundReport::default()
+        };
+        let w = rounding_warnings(&r.merge(r));
+        assert_eq!(w.len(), 1);
+        assert!(w[0].starts_with("2 blade starts"), "{w:?}");
     }
 
     const SQUARE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><rect x="20" y="20" width="30" height="30"/></svg>"#;

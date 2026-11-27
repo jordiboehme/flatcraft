@@ -300,6 +300,9 @@ fn merge(tiles: &[Tile], area: Rect) -> CutPlan {
         dropped_weed_boxes: 0,
         blocked_weed_boxes: 0,
         kept: Arc::new(kept),
+        rounding: tiles
+            .iter()
+            .fold(Default::default(), |r, t| r.merge(t.plan.rounding)),
     }
 }
 
@@ -377,6 +380,7 @@ pub fn build(input: &SeriesInput) -> Result<Series, CommandError> {
     if merged.dropped_short > 0 {
         warnings.push(job::dropped_short_warning(merged.dropped_short));
     }
+    warnings.extend(job::rounding_warnings(&merged.rounding));
     let not_cut = job::paths_not_cut(&merged, &emitted.collapsed);
     if not_cut > 0 {
         warnings.push(job::collapsed_warning(not_cut));
