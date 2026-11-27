@@ -396,6 +396,7 @@ pub fn build(input: &SeriesInput) -> Result<Series, CommandError> {
                 offsets_mm: input.offsets_mm.clone(),
             }),
             strategy: job_input.job.strategy,
+            simulation_only: false,
         },
         tiles,
     })

@@ -73,7 +73,14 @@ pub struct JobResult {
     /// The cut strategy the job was planned with; its cut log entry
     /// names it.
     pub strategy: flatcraft_core::document::CutStrategy,
+    /// Planned in exact floats for the float simulation
+    /// ([`PlanUnits::Float`]): not a real job. Its `job.bytes` are empty
+    /// and [`send_built`] refuses it.
+    pub simulation_only: bool,
 }
+
+/// The failure when a job planned only for the float simulation is sent.
+pub const SIMULATION_ONLY: &str = "internal: this job was planned only for the float simulation, in exact numbers the plotter cannot take, so it is not sent. Build the job again.";
 
 /// The failure when a built job is sent with another plotter profile than
 /// it was built for, or with the same one after its settings changed.
@@ -991,7 +998,15 @@ pub(crate) fn build_planned(input: &JobInput, units: PlanUnits) -> Result<JobRes
     }
 
     let settings = cut_settings(input);
-    let emitted = emit_plan(&cut_plan, objects, &cut, plotter, &media_id, &settings)?;
+    let mut emitted = emit_plan(&cut_plan, objects, &cut, plotter, &media_id, &settings)?;
+    let simulation_only = units == PlanUnits::Float;
+    if simulation_only {
+        // Emitted only to learn which paths collapse, so the float run
+        // simulates the same paths as the device run. No bytes are kept:
+        // a float plan is never a job.
+        emitted.bytes.clear();
+        emitted.listing.clear();
+    }
     let not_cut = paths_not_cut(&cut_plan, &emitted.collapsed);
     if not_cut > 0 {
         warnings.push(collapsed_warning(not_cut));
@@ -1023,6 +1038,7 @@ pub(crate) fn build_planned(input: &JobInput, units: PlanUnits) -> Result<JobRes
         built_for: plotter.clone(),
         calibration: None,
         strategy: job.strategy,
+        simulation_only,
     })
 }
 
@@ -1208,6 +1224,9 @@ pub fn send_built(
     name: String,
     origin: Origin,
 ) -> Result<Value, CommandError> {
+    if result.simulation_only {
+        return Err(CommandError::Failed(SIMULATION_ONLY.into()));
+    }
     if result.built_for != *plotter {
         return Err(CommandError::Failed(BUILT_FOR_OTHER_PLOTTER.into()));
     }

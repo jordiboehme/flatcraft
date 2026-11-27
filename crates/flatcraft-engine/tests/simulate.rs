@@ -867,3 +867,33 @@ fn float_simulation_plans_in_floats() {
         m.max_hausdorff_mm
     );
 }
+
+/// A float run's job is planned in exact numbers the plotter cannot take:
+/// it has no bytes and `send_built` refuses it before the gate, while the
+/// device run's job is a real one.
+#[test]
+fn a_float_run_job_is_never_sent() {
+    let d = dirs();
+    let mut s = plotter_session(&d, "host", HOST, 0.3);
+    import(&mut s, r#"<circle cx="120" cy="60" r="20"/>"#);
+    let plotter = s.profiles.plotter("host").unwrap();
+    let float = simulate::compute(simulate::snapshot(&s, None, SimGrid::Float).unwrap()).unwrap();
+    assert!(float.job.simulation_only);
+    assert!(float.job.job.bytes.is_empty());
+    let err = flatcraft_engine::job::send_built(
+        &mut s,
+        &plotter,
+        float.job.clone(),
+        "float".into(),
+        Origin::User,
+    )
+    .unwrap_err();
+    assert_eq!(
+        err,
+        CommandError::Failed(flatcraft_engine::job::SIMULATION_ONLY.into())
+    );
+    assert!(!flatcraft_engine::job::SIMULATION_ONLY.contains('\u{2014}'));
+    let device = simulate::compute(simulate::snapshot(&s, None, SimGrid::Device).unwrap()).unwrap();
+    assert!(!device.job.simulation_only);
+    assert!(!device.job.job.bytes.is_empty());
+}
