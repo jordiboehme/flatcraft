@@ -1061,3 +1061,72 @@ fn a_counter_comes_before_every_cut_that_closes_its_outline() {
     );
     assert_eq!(plan.freed_early, 0);
 }
+
+/// A plate in visible outline lies in a background ring; the front ring
+/// that clips its bottom crosses that background ring. The counter comes
+/// before every cut that closes the plate, also the front ring with its
+/// other container, on a mat and without one (where the feed stays
+/// monotonic).
+fn straddling_case(no_mat: bool) {
+    let d = dirs();
+    let mut s = session(&d);
+    if no_mat {
+        run(&mut s, "job.set_media", json!({ "id": "no-mat" }));
+    }
+    let background = import(&mut s, r#"<rect x="20" y="20" width="100" height="100"/>"#);
+    let plate = import(
+        &mut s,
+        r#"<path fill-rule="evenodd" d="M40 40h60v70h-60z M60 70h10v10h-10z"/>"#,
+    );
+    let front = import(&mut s, r#"<rect x="30" y="100" width="80" height="40"/>"#);
+    run(
+        &mut s,
+        "object.set_cut_options",
+        json!({ "ids": [plate], "mode": "visible_outline" }),
+    );
+    let input = flatcraft_engine::job::JobInput::of(&s).unwrap();
+    let plan = flatcraft_engine::job::build_input(&input).unwrap().plan;
+    let cuts: Vec<&flatcraft_path::Toolpath> = plan
+        .toolpaths
+        .iter()
+        .filter(|t| t.kind == flatcraft_path::ToolpathKind::Cut && t.pass == 1)
+        .collect();
+    let at = |f: &dyn Fn(&flatcraft_path::Toolpath) -> bool| -> Vec<usize> {
+        cuts.iter()
+            .enumerate()
+            .filter(|(_, t)| f(t))
+            .map(|(k, _)| k)
+            .collect()
+    };
+    let counter = at(&|t| t.source.object.0 == plate && t.closed);
+    let outline = at(&|t| t.source.object.0 == plate && !t.closed);
+    let front_ring = at(&|t| t.source.object.0 == front);
+    let back_ring = at(&|t| t.source.object.0 == background);
+    assert_eq!(
+        (counter.len(), front_ring.len(), back_ring.len()),
+        (1, 1, 1),
+        "{cuts:?}"
+    );
+    assert!(!outline.is_empty());
+    for c in outline.iter().chain(&front_ring) {
+        assert!(counter[0] < *c, "counter {counter:?} before {c} ({cuts:?})");
+    }
+    assert!(
+        outline.iter().all(|o| o < &back_ring[0]),
+        "the plate before its background"
+    );
+    assert_eq!(plan.freed_early, 0);
+    if no_mat {
+        let bands: Vec<usize> = cuts
+            .iter()
+            .map(|t| flatcraft_path::feed::band_of(t))
+            .collect();
+        assert!(bands.windows(2).all(|w| w[0] <= w[1]), "{bands:?}");
+    }
+}
+
+#[test]
+fn a_front_ring_across_the_background_also_waits_for_the_counter() {
+    straddling_case(false);
+    straddling_case(true);
+}

@@ -352,19 +352,53 @@ pub fn adopt_regions(
                     )
                     .then(b.cmp(&a))
             });
-            // Only cuts with the same container as the last one are
-            // chained, so no cut loses the container it must come before.
+            // The chain ends in the deepest of the closing cuts'
+            // containers that lies in all the others (a cut in a ring the
+            // piece lies in, and a front ring that crosses that ring, meet
+            // there): no cut loses a container it must come before.
             let Some(&last) = closing.last() else {
                 continue;
             };
-            let container = tree.parent[last];
-            closing.retain(|&j| tree.parent[j] == container);
-            for w in closing.windows(2) {
+            // `a` is `b` or holds it (no container holds everything).
+            let holds = |a: Option<usize>, b: Option<usize>| match (a, b) {
+                (None, _) => true,
+                (Some(_), None) => false,
+                (Some(x), Some(y)) => is_ancestor(tree, x, y, n_paths),
+            };
+            let containers: Vec<Option<usize>> = closing.iter().map(|&j| tree.parent[j]).collect();
+            let end = containers
+                .iter()
+                .copied()
+                .find(|&t| containers.iter().all(|&c| holds(c, t)))
+                .unwrap_or(tree.parent[last]);
+            // With a monotonic feed a cut in a later band than the end is
+            // made after everything inside anyway; chaining it would pull
+            // it into an earlier band.
+            let later = |j: usize| {
+                monotonic_feed && end.is_some_and(|t| band(j) > crate::feed::band_of(&paths[t]))
+            };
+            let (chain, rest): (Vec<usize>, Vec<usize>) = closing
+                .iter()
+                .partition(|&&j| holds(tree.parent[j], end) && !later(j));
+            // A closing cut whose container lies apart from the others':
+            // the paths inside may come after it (counted below).
+            let apart = rest.iter().any(|&j| !later(j));
+            let Some((&first, _)) = chain.split_first() else {
+                continue;
+            };
+            for w in chain.windows(2) {
                 if !is_ancestor(tree, w[0], w[1], n_paths) {
                     tree.parent[w[0]] = Some(w[1]);
                 }
             }
-            let stand = closing[0];
+            if let (Some(&tail), Some(t)) = (chain.last(), end)
+                && tree.parent[tail] != end
+                && !is_ancestor(tree, tail, t, n_paths)
+            {
+                tree.parent[tail] = Some(t);
+            }
+            let closing = chain;
+            let stand = first;
             let inside = |j: usize| -> bool {
                 let t = &paths[j];
                 if t.closed {
@@ -391,6 +425,9 @@ pub fn adopt_regions(
             let within: Vec<bool> = (0..paths.len())
                 .map(|j| !closing.contains(&j) && !on_outline(j) && !closes(j) && inside(j))
                 .collect();
+            if apart {
+                freed_early += within.iter().filter(|w| **w).count();
+            }
             for j in (0..paths.len()).filter(|&j| within[j]) {
                 tree.depth[j] += 1;
                 if paths[j].source.object == *object {
