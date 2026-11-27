@@ -361,7 +361,10 @@ Planned for `d`, cut by a blade of 0.9 `d` or 1.1 `d`:
 
 A 10 % wrong offset costs ten times the algorithm limit, and a blade with a
 smaller real offset cuts into the kept piece at corners. That is why the
-offset calibration series exists: know your blade.
+offset calibration series exists: know your blade. (This table is the
+single shapes of the Task 10 sweep in float; the next section is the whole
+test sheet on the device grid, where it is the larger blade that swings
+into a kept piece.)
 
 ## If the blade offset is wrong
 
@@ -396,8 +399,8 @@ distance of the cut from the drawn line, in mm, per pattern of the sheet
 In plain words:
 
 - With the right offset every pattern stays within 0.036 mm.
-- 10 % off, squares and lines are about twice as far off, and sharp star
-  tips three to four times: up to 0.12 mm.
+- 10 % off, squares, curves and lines are two to seven times as far off,
+  and sharp star tips up to four times: up to 0.12 mm.
 - 10 % off, the blade can also get pushed from behind once in a while
   (star-30 at 0.27, star-170 at 0.33), which can tear thin material.
 - A blade that trails more than you told FlatCraft (0.33 here) can swing
