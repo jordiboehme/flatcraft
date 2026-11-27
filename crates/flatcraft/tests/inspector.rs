@@ -1669,3 +1669,76 @@ fn with_two_stopped_checks_winding_down_the_newest_starts_when_one_ends() {
     open(vec![b, c]);
     wait_stopped(&mut h);
 }
+
+#[test]
+fn an_idle_window_starts_the_waiting_check_when_a_stopped_one_ends() {
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    let dir = tempfile::tempdir().unwrap();
+    let ids = std::cell::Cell::new((0, 0, 0));
+    let (s, mut h) = window(&dir, 1400.0, |s| ids.set(three_squares(s)));
+    let (a, b, c) = ids.get();
+    let gates: Arc<Mutex<BTreeMap<Vec<u64>, Arc<AtomicBool>>>> = Default::default();
+    for set in [vec![a, b, c], vec![a, b], vec![b, c]] {
+        gates
+            .lock()
+            .unwrap()
+            .insert(set, Arc::new(AtomicBool::new(false)));
+    }
+    let g = gates.clone();
+    app_mut(&mut h)
+        .ui
+        .prepare
+        .object_hints
+        .set_checker(Arc::new(move |input, ids, stop| {
+            let key: Vec<u64> = ids.iter().map(|i| i.0).collect();
+            let gate = g.lock().unwrap().get(&key).cloned();
+            if let Some(gate) = gate {
+                while !gate.load(Ordering::SeqCst) {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                return None;
+            }
+            flatcraft_engine::report::check_selection_until(input, ids, stop)
+        }));
+    for set in [vec![a, b, c], vec![a, b], vec![b, c]] {
+        run(&s, "object.select", json!({ "ids": set }));
+        for _ in 0..3 {
+            h.step();
+        }
+    }
+    run(&s, "object.select", json!({ "ids": [a] }));
+    for _ in 0..3 {
+        h.step();
+    }
+    let started = app(&h).ui.prepare.object_hints.started;
+    assert_eq!(started, 3, "the newest waits for a slot");
+    // The window goes idle: no frame is asked for.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while h.ctx.has_requested_repaint() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the window never went idle"
+        );
+        h.step();
+    }
+    // A stopped check ends: it asks for a frame itself, and that frame
+    // starts the waiting check. No input comes meanwhile.
+    gates.lock().unwrap()[&vec![a, b, c]].store(true, Ordering::SeqCst);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !h.ctx.has_requested_repaint() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the ended check asked for no frame"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    h.step();
+    assert_eq!(app(&h).ui.prepare.object_hints.started, started + 1);
+    for set in [vec![a, b], vec![b, c]] {
+        gates.lock().unwrap()[&set].store(true, Ordering::SeqCst);
+    }
+    h.run_plan();
+    wait_stopped(&mut h);
+}

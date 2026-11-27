@@ -1058,15 +1058,17 @@ impl Hints {
             std::thread::Builder::new()
                 .name("flatcraft-hints".into())
                 .spawn(move || {
-                    // Says it ended also when the check panics, so its
-                    // slot among the stopping checks frees.
-                    struct Ended(std::sync::Arc<std::sync::atomic::AtomicBool>);
+                    // Says it ended, then asks for a frame, also when the
+                    // check panics: its slot among the stopping checks
+                    // frees and an idle window starts a waiting check.
+                    struct Ended(std::sync::Arc<std::sync::atomic::AtomicBool>, egui::Context);
                     impl Drop for Ended {
                         fn drop(&mut self) {
                             self.0.store(true, Ordering::SeqCst);
+                            self.1.request_repaint();
                         }
                     }
-                    let _ended = Ended(ended2);
+                    let _ended = Ended(ended2, repaint);
                     let ids: Vec<flatcraft_core::document::ObjectId> =
                         k.3.iter()
                             .map(|i| flatcraft_core::document::ObjectId(*i))
@@ -1077,7 +1079,6 @@ impl Hints {
                             (whole && input.built_cut_geometry().is_some()).then_some(input);
                         let _ = tx.send(((k, Outcome::Issues(report.issues)), input));
                     }
-                    repaint.request_repaint();
                 })
                 .map(|_| ())
         };
