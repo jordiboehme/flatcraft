@@ -167,6 +167,9 @@ pub enum Unsaved {
     Close(u64),
     /// Quitting while an agent waits for the person's OK to send a cut.
     PendingSend,
+    /// Quitting while a long command of the window (an import, a trace,
+    /// an export) still runs.
+    Busy,
 }
 
 /// The answer in the unsaved-changes dialog.
@@ -417,6 +420,9 @@ pub struct FlatCraftApp {
     /// The window's long commands (import, trace, reload, relink, open,
     /// export), run off the session lock on a worker, one at a time.
     pub long: long::LongJobs,
+    /// The wait budget of the frame being drawn (see
+    /// [`FlatCraftApp::frame_deadline`]); `None` between frames.
+    pub frame_deadline: Option<Instant>,
     /// Rolls the maker quote and the rare "Punch it." toast. Seeded with
     /// [`rng::DEFAULT_SEED`]; `main` seeds it from the clock and tests with
     /// [`FlatCraftApp::with_seed`].
@@ -485,6 +491,7 @@ impl FlatCraftApp {
             source_check: std::sync::Arc::new(flatcraft_engine::commands::sources::check_unlocked),
             source_check_job: None,
             long: long::LongJobs::new(ctx),
+            frame_deadline: None,
             rng: rng::XorShift::default(),
             injected: Vec::new(),
             title_bar: cfg!(target_os = "macos"),
@@ -861,6 +868,14 @@ impl FlatCraftApp {
         }
     }
 
+    /// Until when this frame may still wait for work it starts: one budget
+    /// of [`long::LONG_WAIT`] per frame, shared by the long commands and
+    /// the Cut plan. Outside a frame, a fresh budget.
+    pub fn frame_deadline(&self) -> Instant {
+        self.frame_deadline
+            .unwrap_or_else(|| Instant::now() + long::LONG_WAIT)
+    }
+
     /// Queues a long command and runs what is ready (see [`long`]).
     fn run_long(&mut self, job: long::LongJob) {
         self.long.push(job);
@@ -870,7 +885,8 @@ impl FlatCraftApp {
     /// Starts the next long command and takes the ones that finished.
     /// Every frame calls it.
     pub fn pump_long(&mut self) {
-        while let Some((job, result)) = self.long.poll(&self.session) {
+        let deadline = self.frame_deadline();
+        while let Some((job, result)) = self.long.poll(&self.session, deadline) {
             self.finish_long(job, result);
         }
     }
@@ -882,6 +898,10 @@ impl FlatCraftApp {
         let v = match result {
             Err(e) if e == flatcraft_engine::unlocked::not_active() => {
                 self.toast(Toast::warning(flatcraft_engine::unlocked::NOT_ACTIVE));
+                return;
+            }
+            Err(e) if e == flatcraft_engine::unlocked::closed(command) => {
+                self.toast(Toast::warning(person_text(&e)));
                 return;
             }
             Err(e) => {
@@ -1493,6 +1513,8 @@ impl FlatCraftApp {
                         asking: dirty[0],
                         answered: Vec::new(),
                     });
+                } else if self.long.busy() {
+                    self.ui.unsaved = Some(Unsaved::Busy);
                 } else if self.send_waiting() {
                     self.ui.unsaved = Some(Unsaved::PendingSend);
                 } else {
@@ -1603,7 +1625,7 @@ impl FlatCraftApp {
         let closing = matches!(asked, Unsaved::Close(_));
         match (asked, choice) {
             (_, UnsavedChoice::Cancel) => self.ui.close_queue.clear(),
-            (Unsaved::PendingSend, _) => self.close_window(ctx),
+            (Unsaved::PendingSend | Unsaved::Busy, _) => self.close_window(ctx),
             (Unsaved::Close(doc_id), UnsavedChoice::Discard) => {
                 self.execute(
                     "document.close",
@@ -2185,7 +2207,14 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     app.ui.number_documents(&open);
     guard_close(&ctx, app);
     refresh_prefs(&ctx, app);
+    // One wait budget for the whole frame (long commands and the plan).
+    app.frame_deadline = Some(Instant::now() + long::LONG_WAIT);
     app.pump_long();
+    // A quit that waited for a long command goes on once it is done.
+    if matches!(app.ui.unsaved, Some(Unsaved::Busy)) && !app.long.busy() {
+        app.ui.unsaved = None;
+        app.apply(&ctx, vec![Action::Quit]);
+    }
     app.ui.prepare.panels.window_w = ctx.content_rect().width();
     // A dialog keeps the keys: Escape closes or cancels it, and Delete or
     // Cmd+Z must not change the document behind it.
@@ -2241,7 +2270,8 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     if let Some(snap) = &snap {
         // A plan that landed this frame was built on the worker; its cut
         // geometry goes back into the document's cache.
-        if let Some((doc, rev, input)) = app.ui.cut.update(&ctx, snap) {
+        let deadline = app.frame_deadline();
+        if let Some((doc, rev, input)) = app.ui.cut.update_until(&ctx, snap, deadline) {
             lock(&app.session).offer_cut_geometry(doc, rev, &input);
         }
         app.ui.prepare.sheet_kept = cut::sheet_kept_now(&app.ui.cut, snap);
@@ -2411,6 +2441,7 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
         // Keeps the agent pill current.
         ctx.request_repaint_after(Duration::from_secs(1));
     }
+    app.frame_deadline = None;
 }
 
 impl FlatCraftApp {
@@ -2466,13 +2497,18 @@ pub fn guard_close(ctx: &egui::Context, app: &mut FlatCraftApp) {
     }
     let dirty = app.dirty_docs();
     let waiting = app.send_waiting();
-    if dirty.is_empty() && !waiting {
+    let busy = app.long.busy();
+    if dirty.is_empty() && !waiting && !busy {
         return;
     }
     ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
     if dirty.is_empty() {
         if app.ui.unsaved.is_none() {
-            app.ui.unsaved = Some(Unsaved::PendingSend);
+            app.ui.unsaved = Some(if busy {
+                Unsaved::Busy
+            } else {
+                Unsaved::PendingSend
+            });
         }
     } else if !matches!(app.ui.unsaved, Some(Unsaved::Quit { .. })) {
         app.ui.unsaved = Some(Unsaved::Quit {
@@ -2487,6 +2523,10 @@ pub const SAVE_HINT: &str = "Save the changes to the project file, then go on.";
 pub const DONT_SAVE_HINT: &str =
     "Throw away the changes since the last save and go on. This cannot be undone.";
 pub const KEEP_OPEN_HINT: &str = "Stop here and keep the document open with its changes.";
+/// The cards of "Quit while FlatCraft is still working?".
+pub const QUIT_BUSY_HINT: &str =
+    "Quit FlatCraft now. The import, trace or export that runs is lost.";
+pub const STAY_BUSY_HINT: &str = "Keep FlatCraft open and go on working. Nothing quits.";
 /// The cards of "Quit while an agent waits?".
 pub const QUIT_ANYWAY_HINT: &str =
     "Quit FlatCraft and drop the agent's cut request. Nothing is sent.";
@@ -2526,6 +2566,19 @@ pub fn unsaved_dialog(app: &FlatCraftApp, asked: &Unsaved) -> dialog::Dialog {
                 .secondary("Quit anyway", false)
                 .secondary_hint(QUIT_ANYWAY_HINT)
                 .cancel_hint(STAY_WAITING_HINT);
+        }
+        Unsaved::Busy => {
+            let note = app.long.note().unwrap_or_else(|| "Working...".into());
+            return Dialog::new(
+                "unsaved",
+                Kind::Warning,
+                "Quit while FlatCraft is still working?",
+            )
+            .body(format!("FlatCraft is still at it: {note}"))
+            .body("FlatCraft quits by itself when it is done. If you quit now, that work is lost: an import is not added and an export is not written.")
+            .secondary("Quit anyway", false)
+            .secondary_hint(QUIT_BUSY_HINT)
+            .cancel_hint(STAY_BUSY_HINT);
         }
         Unsaved::Close(doc_id) => *doc_id,
         Unsaved::Quit { asking, .. } => *asking,

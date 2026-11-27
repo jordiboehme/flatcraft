@@ -236,6 +236,19 @@ impl CutState {
     /// document and revision, so the caller can offer its cut geometry
     /// to the document's cache.
     pub fn update(&mut self, ctx: &egui::Context, snap: &Snapshot) -> Option<(u64, u64, JobInput)> {
+        self.update_until(ctx, snap, std::time::Instant::now() + PLAN_WAIT)
+    }
+
+    /// [`Self::update`] that waits for a plan it starts at most until
+    /// `deadline`: the frame's one wait budget, shared with the window's
+    /// long commands, so a frame never waits more than [`PLAN_WAIT`] in
+    /// all.
+    pub fn update_until(
+        &mut self,
+        ctx: &egui::Context,
+        snap: &Snapshot,
+        deadline: std::time::Instant,
+    ) -> Option<(u64, u64, JobInput)> {
         self.transport = snap.plotter.as_ref().map(|p| p.transport.clone());
         match &snap.job_input {
             None => {}
@@ -273,12 +286,16 @@ impl CutState {
                 self.worker.queued = None;
             }
         }
-        self.pump(ctx)
+        self.pump(ctx, deadline)
     }
 
     /// Starts the queued plan when the worker is free, and takes a plan it
-    /// finished: waits [`PLAN_WAIT`] for one it just started.
-    fn pump(&mut self, ctx: &egui::Context) -> Option<(u64, u64, JobInput)> {
+    /// finished: waits until `deadline` for one it just started.
+    fn pump(
+        &mut self,
+        ctx: &egui::Context,
+        deadline: std::time::Instant,
+    ) -> Option<(u64, u64, JobInput)> {
         let mut landed = None;
         loop {
             let mut started = false;
@@ -308,7 +325,8 @@ impl CutState {
                 return landed;
             };
             let got = if started {
-                rx.recv_timeout(PLAN_WAIT).ok()
+                rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                    .ok()
             } else {
                 match rx.try_recv() {
                     Ok(b) => Some(b),

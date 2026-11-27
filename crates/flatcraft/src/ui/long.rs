@@ -163,9 +163,10 @@ impl LongJobs {
     }
 
     /// Starts the next command when none runs, and gives back the one that
-    /// finished, if any: waits [`LONG_WAIT`] for one it just started. Call
-    /// it again after handling a result, until it gives `None`.
-    pub fn poll(&mut self, session: &SharedSession) -> Option<Done> {
+    /// finished, if any: waits until `deadline` (the frame's one wait
+    /// budget) for one it just started. Call it again after handling a
+    /// result, until it gives `None`.
+    pub fn poll(&mut self, session: &SharedSession, deadline: std::time::Instant) -> Option<Done> {
         let mut started = false;
         if self.running.is_none() {
             let job = self.queue.pop_front()?;
@@ -189,7 +190,8 @@ impl LongJobs {
         }
         let (_, rx) = self.running.as_ref()?;
         let result = if started {
-            rx.recv_timeout(LONG_WAIT).ok()
+            rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .ok()
         } else {
             match rx.try_recv() {
                 Ok(r) => Some(r),

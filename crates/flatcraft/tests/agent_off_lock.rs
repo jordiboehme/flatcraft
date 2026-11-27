@@ -348,3 +348,126 @@ fn the_window_draws_while_its_own_import_runs() {
     drop(st);
     assert!(!texts(&h).iter().any(|t| t.starts_with("Importing...")));
 }
+
+/// A window import of `png` held by the gate in the document active now:
+/// returns that document's id once the import is in its compute step.
+fn held_import(h: &mut common::AppHarness, s: &SharedSession, g: &Gate) -> u64 {
+    use flatcraft::ui::Action;
+    let doc_id = s.lock().unwrap().doc().id();
+    let ctx = h.ctx.clone();
+    common::app_mut(h).apply(&ctx, vec![Action::Import { doc_id }]);
+    assert_eq!(
+        g.entered.recv_timeout(WORKER_TIMEOUT).unwrap(),
+        "object.import"
+    );
+    doc_id
+}
+
+/// A harness whose file picker answers `square.png` (written to `dir`)
+/// `n` times.
+fn import_harness(dir: &tempfile::TempDir, s: &SharedSession, n: usize) -> common::AppHarness {
+    let png = dir.path().join("square.png");
+    write_square(&png);
+    let picker = common::FakePicker::answering(std::iter::repeat_n(png, n));
+    let mut h = common::harness_with(dir, s.clone(), move |a| a.with_file_picker(picker));
+    common::app_mut(&mut h).ui.workspace = flatcraft::ui::Workspace::Prepare;
+    common::settle(&mut h);
+    h
+}
+
+#[test]
+fn a_tab_switch_never_drops_the_windows_import() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = common::session(&dir);
+    let mut h = import_harness(&dir, &s, 1);
+    let g = gate(&s);
+    let a = held_import(&mut h, &s, &g);
+    // The person opens a new tab while the import traces.
+    s.lock()
+        .unwrap()
+        .execute("document.new", json!({}), Origin::User)
+        .unwrap();
+    for _ in 0..3 {
+        h.step();
+    }
+    let b = s.lock().unwrap().doc().id();
+    assert_ne!(a, b);
+    g.release.send(()).unwrap();
+    common::settle(&mut h);
+    let st = s.lock().unwrap();
+    assert_eq!(st.doc().id(), b, "the new tab stays active");
+    let ia = st.doc_index(a).unwrap();
+    assert_eq!(st.docs[ia].document.objects.len(), 1, "it landed in a");
+    assert_eq!(st.docs[ia].undo.undo_len(), 1, "one undo step there");
+    assert!(st.doc().document.objects.is_empty(), "b is untouched");
+}
+
+#[test]
+fn closing_the_document_drops_the_import_with_a_plain_toast() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = common::session(&dir);
+    s.lock()
+        .unwrap()
+        .execute("document.new", json!({}), Origin::User)
+        .unwrap();
+    let mut h = import_harness(&dir, &s, 1);
+    let g = gate(&s);
+    let b = held_import(&mut h, &s, &g);
+    s.lock()
+        .unwrap()
+        .execute("document.close", json!({ "doc_id": b }), Origin::User)
+        .unwrap();
+    h.step();
+    g.release.send(()).unwrap();
+    common::settle(&mut h);
+    let texts: Vec<String> = common::app(&h)
+        .ui
+        .toasts
+        .iter()
+        .map(|t| t.text.clone())
+        .collect();
+    assert!(
+        texts
+            .iter()
+            .any(|t| t == "The import was not added: its document was closed."),
+        "{texts:?}"
+    );
+    let st = s.lock().unwrap();
+    assert_eq!(st.docs.len(), 1);
+    assert!(st.doc().document.objects.is_empty());
+}
+
+#[test]
+fn quitting_while_an_import_runs_asks_and_then_waits_for_it() {
+    use egui_kittest::kittest::Queryable as _;
+    use flatcraft::ui::{Action, Unsaved};
+    let dir = tempfile::tempdir().unwrap();
+    let s = common::session(&dir);
+    let mut h = import_harness(&dir, &s, 1);
+    let g = gate(&s);
+    held_import(&mut h, &s, &g);
+    let ctx = h.ctx.clone();
+    common::app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
+    h.step();
+    assert_eq!(common::app(&h).ui.unsaved, Some(Unsaved::Busy));
+    h.step();
+    assert!(
+        h.query_by_label_contains("Quit while FlatCraft is still working?")
+            .is_some(),
+        "the dialog asks"
+    );
+    assert!(!common::app(&h).ui.closing);
+    g.release.send(()).unwrap();
+    // Once the import is done the quit goes on: the document has the
+    // import now, so it asks about the unsaved change first.
+    let start = std::time::Instant::now();
+    while common::app(&h).long.busy() || common::app(&h).ui.unsaved == Some(Unsaved::Busy) {
+        assert!(start.elapsed() < WORKER_TIMEOUT);
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(matches!(
+        common::app(&h).ui.unsaved,
+        Some(Unsaved::Quit { .. })
+    ));
+}
