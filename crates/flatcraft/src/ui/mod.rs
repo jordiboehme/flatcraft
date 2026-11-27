@@ -168,8 +168,9 @@ pub enum Unsaved {
     /// Quitting while an agent waits for the person's OK to send a cut.
     PendingSend,
     /// Quitting while a long command of the window (an import, a trace,
-    /// an export) still runs.
-    Busy,
+    /// an export) still runs, with the documents this Quit round answered
+    /// already (as in `Quit`).
+    Busy { answered: Vec<(u64, u64)> },
 }
 
 /// The answer in the unsaved-changes dialog.
@@ -910,17 +911,22 @@ impl FlatCraftApp {
             }
             Ok(v) => v,
         };
+        // The document the result landed in (the engine says so), which
+        // is not the active one when the person switched tabs meanwhile.
+        let active = lock(&self.session).doc().id();
+        let landed = v["doc_id"].as_u64();
         match job.then {
-            long::Then::Command { doc_id } => {
-                let active = lock(&self.session).doc().id();
-                if doc_id.is_none_or(|d| d == active) {
+            long::Then::Command { doc_id } => match landed.or(doc_id) {
+                Some(d) if d != active => self.landed_elsewhere(command, d),
+                _ => self.after_command(command, &v),
+            },
+            long::Then::ImportToPrepare => match landed {
+                Some(d) if d != active => self.landed_elsewhere(command, d),
+                _ => {
                     self.after_command(command, &v);
+                    self.ui.workspace = Workspace::Prepare;
                 }
-            }
-            long::Then::ImportToPrepare => {
-                self.after_command(command, &v);
-                self.ui.workspace = Workspace::Prepare;
-            }
+            },
             long::Then::Export(path) => self.exported(&path, &v),
             long::Then::Open { path, replaces } => {
                 self.opened(&path, &v);
@@ -940,6 +946,22 @@ impl FlatCraftApp {
                 self.ui.workspace = Workspace::Prepare;
             }
         }
+    }
+
+    /// A long command landed in the document `doc_id`, which is not the
+    /// active one now: its report card and selection belong to that tab,
+    /// so only a toast names where it went. Nothing touches the active
+    /// document.
+    fn landed_elsewhere(&mut self, command: &str, doc_id: u64) {
+        let name = self.doc_name(doc_id);
+        let what = match command {
+            "object.import" | "object.import_svg" => format!("Imported into {name}."),
+            "object.retrace" => format!("Traced the picture in {name}."),
+            "object.reload" => format!("Read the files again in {name}."),
+            "object.relink" => format!("Linked the file in {name}."),
+            _ => format!("Done in {name}."),
+        };
+        self.toast(Toast::info(what).with_detail("Open its tab to see the result."));
     }
 
     /// Opens the stencil hint card (`stencil_island`) for the Stencil
@@ -1514,7 +1536,9 @@ impl FlatCraftApp {
                         answered: Vec::new(),
                     });
                 } else if self.long.busy() {
-                    self.ui.unsaved = Some(Unsaved::Busy);
+                    self.ui.unsaved = Some(Unsaved::Busy {
+                        answered: Vec::new(),
+                    });
                 } else if self.send_waiting() {
                     self.ui.unsaved = Some(Unsaved::PendingSend);
                 } else {
@@ -1625,7 +1649,7 @@ impl FlatCraftApp {
         let closing = matches!(asked, Unsaved::Close(_));
         match (asked, choice) {
             (_, UnsavedChoice::Cancel) => self.ui.close_queue.clear(),
-            (Unsaved::PendingSend | Unsaved::Busy, _) => self.close_window(ctx),
+            (Unsaved::PendingSend | Unsaved::Busy { .. }, _) => self.close_window(ctx),
             (Unsaved::Close(doc_id), UnsavedChoice::Discard) => {
                 self.execute(
                     "document.close",
@@ -1688,6 +1712,9 @@ impl FlatCraftApp {
             .find(|d| !self.still_answered(&answered, *d));
         match next {
             Some(asking) => self.ui.unsaved = Some(Unsaved::Quit { asking, answered }),
+            // Never quit straight away while a long command still runs:
+            // ask first. A document it changes is asked about after it.
+            None if self.long.busy() => self.ui.unsaved = Some(Unsaved::Busy { answered }),
             None => self.close_window(ctx),
         }
     }
@@ -2211,9 +2238,12 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     app.frame_deadline = Some(Instant::now() + long::LONG_WAIT);
     app.pump_long();
     // A quit that waited for a long command goes on once it is done.
-    if matches!(app.ui.unsaved, Some(Unsaved::Busy)) && !app.long.busy() {
+    if let Some(Unsaved::Busy { answered }) = &app.ui.unsaved
+        && !app.long.busy()
+    {
+        let answered = answered.clone();
         app.ui.unsaved = None;
-        app.apply(&ctx, vec![Action::Quit]);
+        app.ask_next_or_quit(&ctx, answered);
     }
     app.ui.prepare.panels.window_w = ctx.content_rect().width();
     // A dialog keeps the keys: Escape closes or cancels it, and Delete or
@@ -2505,7 +2535,9 @@ pub fn guard_close(ctx: &egui::Context, app: &mut FlatCraftApp) {
     if dirty.is_empty() {
         if app.ui.unsaved.is_none() {
             app.ui.unsaved = Some(if busy {
-                Unsaved::Busy
+                Unsaved::Busy {
+                    answered: Vec::new(),
+                }
             } else {
                 Unsaved::PendingSend
             });
@@ -2567,7 +2599,7 @@ pub fn unsaved_dialog(app: &FlatCraftApp, asked: &Unsaved) -> dialog::Dialog {
                 .secondary_hint(QUIT_ANYWAY_HINT)
                 .cancel_hint(STAY_WAITING_HINT);
         }
-        Unsaved::Busy => {
+        Unsaved::Busy { .. } => {
             let note = app.long.note().unwrap_or_else(|| "Working...".into());
             return Dialog::new(
                 "unsaved",

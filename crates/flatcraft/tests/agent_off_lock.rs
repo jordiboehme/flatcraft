@@ -449,7 +449,12 @@ fn quitting_while_an_import_runs_asks_and_then_waits_for_it() {
     let ctx = h.ctx.clone();
     common::app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
     h.step();
-    assert_eq!(common::app(&h).ui.unsaved, Some(Unsaved::Busy));
+    assert_eq!(
+        common::app(&h).ui.unsaved,
+        Some(Unsaved::Busy {
+            answered: Vec::new()
+        })
+    );
     h.step();
     assert!(
         h.query_by_label_contains("Quit while FlatCraft is still working?")
@@ -461,7 +466,9 @@ fn quitting_while_an_import_runs_asks_and_then_waits_for_it() {
     // Once the import is done the quit goes on: the document has the
     // import now, so it asks about the unsaved change first.
     let start = std::time::Instant::now();
-    while common::app(&h).long.busy() || common::app(&h).ui.unsaved == Some(Unsaved::Busy) {
+    while common::app(&h).long.busy()
+        || matches!(common::app(&h).ui.unsaved, Some(Unsaved::Busy { .. }))
+    {
         assert!(start.elapsed() < WORKER_TIMEOUT);
         h.step();
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -470,4 +477,128 @@ fn quitting_while_an_import_runs_asks_and_then_waits_for_it() {
         common::app(&h).ui.unsaved,
         Some(Unsaved::Quit { .. })
     ));
+}
+
+#[test]
+fn a_dropped_import_that_lands_in_another_tab_leaves_the_active_one_alone() {
+    use flatcraft::ui::Action;
+    let dir = tempfile::tempdir().unwrap();
+    let s = common::session(&dir);
+    let mut h = import_harness(&dir, &s, 0);
+    let png = dir.path().join("square.png");
+    let g = gate(&s);
+    let a = s.lock().unwrap().doc().id();
+    let ctx = h.ctx.clone();
+    common::app_mut(&mut h).apply(&ctx, vec![Action::Dropped(vec![png])]);
+    assert_eq!(
+        g.entered.recv_timeout(WORKER_TIMEOUT).unwrap(),
+        "object.import"
+    );
+    // The person opens tab B and draws on it while A's import traces.
+    let b = s
+        .lock()
+        .unwrap()
+        .execute("document.new", json!({}), Origin::User)
+        .unwrap();
+    let b = b["doc_id"]
+        .as_u64()
+        .unwrap_or_else(|| s.lock().unwrap().doc().id());
+    let mine = s
+        .lock()
+        .unwrap()
+        .execute(
+            "object.import_svg",
+            json!({ "svg": r#"<svg xmlns="http://www.w3.org/2000/svg" width="50mm" height="50mm" viewBox="0 0 50 50"><rect x="10" y="10" width="20" height="20"/></svg>"#, "name": "mine" }),
+            Origin::User,
+        )
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    s.lock()
+        .unwrap()
+        .execute("object.select", json!({ "ids": [] }), Origin::User)
+        .ok();
+    h.step();
+    let undo_b = s.lock().unwrap().doc().undo.undo_len();
+    let selection_b = s.lock().unwrap().doc().selection.clone();
+    g.release.send(()).unwrap();
+    common::settle(&mut h);
+    let app = common::app(&h);
+    // No card of A's objects on B, and B's state is untouched.
+    assert!(
+        app.ui.prepare.report.as_ref().is_none_or(|c| c.doc_id != b),
+        "{:?}",
+        app.ui.prepare.report.as_ref().map(|c| c.doc_id)
+    );
+    let toasts: Vec<String> = app.ui.toasts.iter().map(|t| t.text.clone()).collect();
+    let name = app.doc_name(a);
+    assert!(
+        toasts.contains(&format!("Imported into {name}.")),
+        "{toasts:?}"
+    );
+    let st = s.lock().unwrap();
+    assert_eq!(st.doc().id(), b);
+    assert_eq!(st.doc().document.objects.len(), 1, "only b's own object");
+    assert!(
+        st.doc()
+            .document
+            .get(flatcraft_core::document::ObjectId(mine))
+            .is_some()
+    );
+    assert_eq!(st.doc().undo.undo_len(), undo_b);
+    assert_eq!(st.doc().selection, selection_b);
+    let ia = st.doc_index(a).unwrap();
+    assert_eq!(st.docs[ia].document.objects.len(), 1, "A got the import");
+    assert_eq!(st.docs[ia].undo.undo_len(), 1);
+}
+
+#[test]
+fn quitting_with_unsaved_changes_still_asks_about_the_running_import() {
+    use flatcraft::ui::{Action, Unsaved, UnsavedChoice};
+    let dir = tempfile::tempdir().unwrap();
+    let s = common::session(&dir);
+    s.lock()
+        .unwrap()
+        .execute(
+            "object.import_svg",
+            json!({ "svg": r#"<svg xmlns="http://www.w3.org/2000/svg" width="50mm" height="50mm" viewBox="0 0 50 50"><rect x="10" y="10" width="20" height="20"/></svg>"#, "name": "mine" }),
+            Origin::User,
+        )
+        .unwrap();
+    let mut h = import_harness(&dir, &s, 1);
+    let g = gate(&s);
+    let a = held_import(&mut h, &s, &g);
+    let ctx = h.ctx.clone();
+    common::app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
+    let asked = common::app(&h).ui.unsaved.clone().expect("asks");
+    assert!(
+        matches!(asked, Unsaved::Quit { asking, .. } if asking == a),
+        "{asked:?}"
+    );
+    // Don't Save: the import still runs, so it asks about that next
+    // instead of quitting.
+    common::app_mut(&mut h).apply(&ctx, vec![Action::Unsaved(asked, UnsavedChoice::Discard)]);
+    h.step();
+    assert!(
+        matches!(common::app(&h).ui.unsaved, Some(Unsaved::Busy { .. })),
+        "{:?}",
+        common::app(&h).ui.unsaved
+    );
+    assert!(!common::app(&h).ui.closing);
+    g.release.send(()).unwrap();
+    let start = std::time::Instant::now();
+    while common::app(&h).long.busy()
+        || matches!(common::app(&h).ui.unsaved, Some(Unsaved::Busy { .. }))
+    {
+        assert!(start.elapsed() < WORKER_TIMEOUT);
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // The import changed the document after its answer: it asks again.
+    assert!(
+        matches!(common::app(&h).ui.unsaved, Some(Unsaved::Quit { asking, .. }) if asking == a),
+        "{:?}",
+        common::app(&h).ui.unsaved
+    );
+    assert!(!common::app(&h).ui.closing);
 }
