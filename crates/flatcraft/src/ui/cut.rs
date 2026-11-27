@@ -489,8 +489,8 @@ enum Status {
     /// The simulation's grade with its short reason ("Poor · cuts into
     /// kept") and its long one, and the share of the line on target.
     Graded(String, Option<String>, u32),
-    /// Firmware mode: the knife is not simulated.
-    NotSimulated,
+    /// Firmware mode: the plotter compensates the knife, nothing is graded.
+    NotGraded,
     /// The simulation of the latest change runs.
     Simulating,
     /// Not simulated yet: Simulate was not opened for this state.
@@ -572,7 +572,7 @@ impl Status {
             Status::Planning => PLANNING.into(),
             Status::Graded(short, None, score) => format!("{short} · {score} % on target"),
             Status::Graded(short, Some(_), _) => short.clone(),
-            Status::NotSimulated => "Not simulated".into(),
+            Status::NotGraded => "Not graded".into(),
             Status::Simulating => super::simulate::SIMULATING.into(),
             Status::NotRun => "Not run yet".into(),
             Status::SimFailed => "Could not simulate".into(),
@@ -609,7 +609,7 @@ impl Status {
                     ),
                 }
             }
-            Status::NotSimulated => "The plotter's firmware steers the blade, so the knife is not simulated or graded. Simulate plays the sent path.".into(),
+            Status::NotGraded => "The plotter's firmware steers the blade, so the knife is not simulated or graded. Simulate plays the sent path.".into(),
             Status::Simulating => "FlatCraft is simulating the cut for your latest change.".into(),
             Status::NotRun => format!("Open {} to play the cut and grade it.", stage.name()),
             Status::SimFailed => "The simulation failed. Simulate says why.".into(),
@@ -619,13 +619,13 @@ impl Status {
     }
 }
 
-/// The Simulate status: "Not simulated" in firmware mode, else the grade
+/// The Simulate status: "Not graded" in firmware mode, else the grade
 /// of the current state's simulation, "Simulating..." while it runs (never
 /// the grade of the run before, which may be of another state).
 fn sim_status(st: &CutState, snap: &Snapshot) -> Status {
     use flatcraft_engine::simulate::SimMode;
     if super::simulate::mode_of(snap) == Some(SimMode::Firmware) {
-        return Status::NotSimulated;
+        return Status::NotGraded;
     }
     let graded = |run: &flatcraft_engine::simulate::SimRun| {
         run.result.as_ref().map(|r| {
@@ -638,7 +638,7 @@ fn sim_status(st: &CutState, snap: &Snapshot) -> Status {
         })
     };
     match st.sim.current(snap) {
-        Some(Ok(c)) => graded(&c.run).unwrap_or(Status::NotSimulated),
+        Some(Ok(c)) => graded(&c.run).unwrap_or(Status::NotGraded),
         Some(Err(_)) => Status::SimFailed,
         // Never the grade of the run before: it may be of another state.
         None if st.sim.simulating() => Status::Simulating,
@@ -1255,7 +1255,9 @@ fn stage_body(
                     }
                 }
                 (_, Some(Err(e))) => error_card(ui, &e, &t),
-                (_, None) if cut.sim.simulating() => super::simulate::running_panel(ui, &t),
+                (_, None) if cut.sim.simulating() => {
+                    super::simulate::running(ui, &mut cut.sim, snap, &t, actions)
+                }
                 (_, None) => {}
             }
         }

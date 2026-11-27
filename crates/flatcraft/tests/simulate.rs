@@ -121,7 +121,7 @@ fn firmware_mode_shows_commanded_path_note() {
     assert!(h.query_by_label(sim::FIRMWARE_LINE).is_some());
     assert!(h.query_by_label("Commanded path").is_some());
     assert!(painted_texts(&h).contains(&sim::FIRMWARE_CANVAS.to_string()));
-    assert_eq!(simulate_status(&mut h), "Not simulated");
+    assert_eq!(simulate_status(&mut h), "Not graded");
     // The sent path plays: the timeline is enabled.
     use egui_kittest::kittest::NodeT as _;
     assert!(!h.get_by_label("Time").accesskit_node().is_disabled());
@@ -165,6 +165,29 @@ fn firmware_mode_plays_the_sent_path() {
     app_mut(&mut h).ui.cut.sim.clock.t_mm = c.travel_mm.min(clock.total_mm) / 4.0;
     h.step();
     assert!(app(&h).ui.cut.sim.drawn_down.0 < total);
+    // The end of the slider is the end of the last move: 100 % drawn
+    // exactly there, and not a hair before.
+    let total_mm = app(&h).ui.cut.sim.clock.total_mm;
+    app_mut(&mut h).ui.cut.sim.clock.t_mm = total_mm;
+    h.step();
+    assert_eq!(app(&h).ui.cut.sim.drawn_down, (total, total));
+    app_mut(&mut h).ui.cut.sim.clock.t_mm = total_mm - 0.01;
+    h.step();
+    assert_eq!(app(&h).ui.cut.sim.drawn_down.0, total - 1);
+    // Played to the end, it stops with all of it drawn.
+    app_mut(&mut h).ui.cut.sim.clock.speed = 4.0;
+    h.get_by_label("Play").click();
+    let start = Instant::now();
+    loop {
+        h.step();
+        let clock = app(&h).ui.cut.sim.clock;
+        if clock.playing.is_none() && clock.t_mm >= clock.total_mm {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(20), "playback stuck");
+    }
+    h.step();
+    assert_eq!(app(&h).ui.cut.sim.drawn_down, (total, total));
     // No grade and no deviation colours: nothing green on the mat.
     let mat = flatcraft::ui::canvas::mat_rgb(&snap);
     let colours: Vec<_> = (0..3)
@@ -604,4 +627,43 @@ fn a_comparison_kept_on_home_is_dropped_when_the_document_changed() {
     assert!(app(&h).ui.cut.sim.compared(&snap).is_none());
     // The button asks again.
     h.get_by_label(sim::COMPARE);
+}
+
+/// Where the Simulate sections' headers are.
+fn section_rects(h: &AppHarness) -> Vec<egui::Rect> {
+    ["Numbers", "Hints", "Worst spots", "Strategies", "Legend"]
+        .iter()
+        .map(|t| h.get_by_role_and_label(Role::Button, t).rect())
+        .collect()
+}
+
+#[test]
+fn the_sections_stay_in_place_while_a_run_goes() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = plotter_session(&dir, "host", HOST);
+    let id = common::import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_simulate(&mut h);
+    let landed = section_rects(&h);
+    let (release, entered) = gate_with_entry(&s);
+    // An edit: the run of the new state waits at the gate.
+    run(
+        &s,
+        "object.move",
+        json!({ "ids": [id], "dx_mm": 5.0, "dy_mm": 0.0 }),
+    );
+    h.step();
+    assert_eq!(section_rects(&h), landed, "the edit");
+    entered.recv_timeout(Duration::from_secs(10)).unwrap();
+    for _ in 0..4 {
+        h.step();
+        assert!(app(&h).ui.cut.sim.simulating());
+        // The run before, faded, under "Simulating...".
+        assert!(painted_texts(&h).contains(&sim::SIMULATING.to_string()));
+        assert_eq!(section_rects(&h), landed, "the run");
+    }
+    release.send(()).unwrap();
+    h.run_plan();
+    assert!(!app(&h).ui.cut.sim.simulating());
+    assert_eq!(section_rects(&h), landed, "landed");
 }

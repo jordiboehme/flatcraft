@@ -221,7 +221,7 @@ fn status_lines_say_what_is_set_or_missing() {
         [
             "File Output · Copy paper",
             "Quality · 1 pass",
-            "Not simulated",
+            "Not graded",
             "File · ready"
         ]
     );
@@ -234,7 +234,7 @@ fn status_lines_say_what_is_set_or_missing() {
         [
             "Cameo 2 · Copy paper",
             "Quality · 2 passes · weed",
-            "Not simulated",
+            "Not graded",
             "USB · ready"
         ]
     );
@@ -1117,4 +1117,65 @@ fn playback_bar_hidden_in_device_step() {
     assert!(h.query_by_label("Time").is_some());
     stage(&mut h, "Send");
     assert!(h.query_by_label("Toolpath").is_some());
+}
+
+#[test]
+fn send_notes_start_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    run(
+        &s,
+        "document.set_notes",
+        json!({ "notes": "Tape the corners down." }),
+    );
+    // Nobody folded it yet.
+    assert!(
+        !s.lock()
+            .unwrap()
+            .prefs
+            .panel_sections
+            .contains_key(flatcraft::ui::cut::NOTES)
+    );
+    let mut h = harness(&dir, s, false);
+    to_cut(&mut h);
+    stage(&mut h, "Send");
+    let notes = h.get_by_role_and_label(Role::Button, "Notes");
+    assert_eq!(notes.accesskit_node().data().is_expanded(), Some(true));
+    assert!(h.query_by_label("Tape the corners down.").is_some());
+}
+
+#[test]
+fn the_stage_panel_scrolls_long_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    {
+        // Every section of the Job panel open: taller than the window.
+        let mut g = s.lock().unwrap();
+        for (id, _) in flatcraft::ui::inspector::job::SECTIONS {
+            g.prefs.panel_sections.insert(id.into(), true);
+        }
+    }
+    let mut h = common::harness_sized(&dir, s, [1400.0, 600.0], 8, |a| a);
+    to_cut(&mut h);
+    let header = |h: &AppHarness| {
+        h.get_by_role_and_label(Role::Button, "Machine and material")
+            .rect()
+    };
+    let before = header(&h);
+    h.hover_at(before.center() + egui::vec2(0.0, 120.0));
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, -200.0),
+        phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Trackpad,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run_plan();
+    let after = header(&h);
+    assert!(after.top() < before.top() - 50.0, "{before:?} {after:?}");
+    // The job line and the heading stay on top.
+    let line = h.get_by_label_contains("Job: ").rect();
+    assert!(line.top() < 200.0, "{line:?}");
 }

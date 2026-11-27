@@ -10,6 +10,7 @@ use flatcraft_engine::troubleshoot::Item;
 use serde_json::json;
 
 use super::Action;
+use super::inspector::blocks::HintButton;
 use super::prepare::Snapshot;
 use super::theme::Tokens;
 
@@ -391,28 +392,45 @@ pub fn iron_on_reminder(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut 
     show_reminder(ui, &item, snap.doc_id, t, actions);
 }
 
+/// The reminder as a hint card: its title, the message, the mirror
+/// button, and the same button dimmed with its reason where the fix is
+/// blocked.
 fn show_reminder(ui: &mut Ui, item: &Item, doc_id: u64, t: &Tokens, actions: &mut Vec<Action>) {
+    // The registry's own id: a fix names a real command.
+    let fixes: Vec<Action> = item
+        .fixes
+        .iter()
+        .filter_map(|fix| {
+            let command = flatcraft_engine::registry::get(&fix.command)?;
+            Some(Action::run(doc_id, command.id(), fix.args.clone()))
+        })
+        .collect();
+    let mut buttons: Vec<HintButton> = item
+        .fixes
+        .iter()
+        .filter(|fix| flatcraft_engine::registry::get(&fix.command).is_some())
+        .map(|fix| HintButton {
+            label: MIRROR_BUTTON,
+            card: &fix.description,
+            why: None,
+        })
+        .collect();
+    buttons.extend(item.blocked.iter().map(|bl| HintButton {
+        label: MIRROR_BUTTON,
+        card: &item.hint,
+        why: Some(&bl.reason),
+    }));
     ui.add_space(metrics::SPACE_4);
-    let r = ui.label(
-        RichText::new(MIRROR_TITLE)
-            .font(metrics::section_title())
-            .color(t.warn_text),
-    );
-    super::groups::card(&r, MIRROR_TITLE, &item.hint, None, false);
-    ui.add(egui::Label::new(&item.message).wrap());
-    for fix in &item.fixes {
-        // The registry's own id: a fix names a real command.
-        let Some(command) = flatcraft_engine::registry::get(&fix.command) else {
-            continue;
-        };
-        let b = ui.button(MIRROR_BUTTON);
-        super::groups::card(&b, MIRROR_BUTTON, &fix.description, None, false);
-        if b.clicked() {
-            actions.push(Action::run(doc_id, command.id(), fix.args.clone()));
-        }
+    if let Some(i) = super::inspector::blocks::hint_card(
+        ui,
+        t,
+        None,
+        Some((MIRROR_TITLE, &item.hint)),
+        &item.message,
+        &buttons,
+    ) && let Some(action) = fixes.get(i)
+    {
+        actions.push(action.clone());
     }
-    for bl in &item.blocked {
-        let b = ui.add_enabled(false, egui::Button::new(MIRROR_BUTTON));
-        super::groups::card(&b, MIRROR_BUTTON, &item.hint, Some(&bl.reason), false);
-    }
+    ui.add_space(metrics::SPACE_4);
 }

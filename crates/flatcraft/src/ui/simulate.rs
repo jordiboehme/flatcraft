@@ -160,6 +160,8 @@ pub struct SimState {
     running: Option<(SimKey, Receiver<Simulated>)>,
     queued: Option<SimInput>,
     compare: Compare,
+    /// The run before as the panel shows it while a newer one runs.
+    faded: Option<Current>,
     /// The timeline of the simulation.
     pub clock: SimClock,
     /// How many simulations finished, for tests.
@@ -179,6 +181,7 @@ impl Default for SimState {
             running: None,
             queued: None,
             compare: Compare::default(),
+            faded: None,
             clock: SimClock::default(),
             computed: 0,
             drawn_down: (0, 0),
@@ -272,6 +275,20 @@ impl SimState {
             .as_ref()
             .filter(|(k, _)| *k == key)
             .map(|(_, r)| r)
+    }
+
+    /// The run before, with its worst spots, for the panel while a newer
+    /// run goes; derived once per run.
+    pub fn faded(&mut self) -> Option<Current> {
+        let prev = self.previous.clone()?;
+        if !self
+            .faded
+            .as_ref()
+            .is_some_and(|c| Arc::ptr_eq(&c.run, &prev))
+        {
+            self.faded = Some(Current::new(prev));
+        }
+        self.faded.clone()
     }
 
     /// Asks for the strategy comparison of the current state.
@@ -858,8 +875,10 @@ pub fn draw(painter: &egui::Painter, run: &SimRun, d: &DrawInput) -> (usize, usi
 /// and true when the whole line fits.
 fn advance(a: kurbo::Point, b: kurbo::Point, left: &mut f64) -> (kurbo::Point, bool) {
     let len = a.distance(b);
-    if *left >= len {
-        *left -= len;
+    // The total is summed in another order: a rounding error of the
+    // last bit must not leave the last move short.
+    if *left >= len - 1e-9 {
+        *left = (*left - len).max(0.0);
         (b, true)
     } else {
         let f = if len > 0.0 {
@@ -1184,6 +1203,41 @@ fn grade_line_ui(
     });
 }
 
+/// "..." where the grade goes while a run goes, as tall as the grade line
+/// `like` would be, so the sections below keep their place.
+fn grade_placeholder(ui: &mut Ui, like: &str) {
+    // The grade line laid out unseen takes the room; "..." is painted in.
+    let rect = ui
+        .scope(|ui| {
+            ui.set_invisible();
+            grade_line_ui(ui, like, None, ("Grade", GRADE_CARD), None);
+        })
+        .response
+        .rect;
+    let text = Rect::from_min_max(
+        rect.min + Vec2::new(metrics::SPACE_16, 0.0),
+        Pos2::new(
+            rect.right(),
+            rect.min.y + metrics::line_height(ui, &metrics::heading()),
+        ),
+    );
+    let dim = ui.visuals().weak_text_color();
+    ui.painter().text(
+        text.left_top(),
+        egui::Align2::LEFT_TOP,
+        "...",
+        metrics::heading(),
+        dim,
+    );
+    let r = ui.interact(
+        text,
+        ui.scope_id().with("flatcraft-grade-wait"),
+        Sense::hover(),
+    );
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, false, "..."));
+    super::groups::card(&r, "Grade", GRADE_CARD, Some(SIMULATING_CARD), false);
+}
+
 /// The stage panel of Simulate for a finished run: the grade and its
 /// note, then the sections Numbers, Hints, Worst spots, Strategies and
 /// Legend. In firmware mode nothing is graded: no grade colour, no worst
@@ -1196,11 +1250,56 @@ pub fn panel(
     t: &Tokens,
     actions: &mut Vec<Action>,
 ) -> Option<kurbo::Point> {
+    panel_with(ui, st, cur, snap, t, actions, false)
+}
+
+/// The panel while the simulation of the latest change runs: the run
+/// before faded and inert, with "Simulating..." in the Numbers header, so
+/// no section moves; without a run before, [`running_panel`].
+pub fn running(
+    ui: &mut Ui,
+    st: &mut SimState,
+    snap: &Snapshot,
+    t: &Tokens,
+    actions: &mut Vec<Action>,
+) {
+    match st.faded() {
+        Some(cur) => {
+            ui.scope(|ui| {
+                ui.multiply_opacity(0.5);
+                ui.disable();
+                panel_with(ui, st, &cur, snap, t, actions, true);
+            });
+        }
+        None => running_panel(ui, t),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn panel_with(
+    ui: &mut Ui,
+    st: &mut SimState,
+    cur: &Current,
+    snap: &Snapshot,
+    t: &Tokens,
+    actions: &mut Vec<Action>,
+    running: bool,
+) -> Option<kurbo::Point> {
     use super::inspector::blocks;
     let run = &cur.run;
     let mut centre = None;
     let firmware = run.result.is_none();
     match &run.result {
+        // The run before never shows its grade: the new state may grade
+        // differently. "..." in the room its grade took, so nothing moves.
+        Some(r) if running => {
+            grade_placeholder(ui, &grade_line(&r.metrics));
+            blocks::status_line(ui, "", t.text_dim);
+        }
+        None if running => {
+            grade_placeholder(ui, NOT_GRADED);
+            blocks::status_line(ui, "", t.text_dim);
+        }
         Some(r) => {
             let m = &r.metrics;
             // The grade and why first; the score after it, as what it is.
@@ -1239,22 +1338,18 @@ pub fn panel(
     } else {
         NUMBERS_CARD
     };
-    blocks::section(
-        ui,
-        NUMBERS,
-        "Numbers",
-        card,
-        &summary,
-        true,
-        |ui| {
-            let names: Vec<&str> = rows.iter().map(|r| r.0).collect();
-            blocks::labels(ui, &names);
-            for (name, card, value) in &rows {
-                blocks::data_row(ui, name, card, value, None);
-            }
-        },
-        None,
-    );
+    let (summary, live) = if running {
+        (SIMULATING.to_string(), SIMULATING)
+    } else {
+        (summary, "")
+    };
+    blocks::section_live(ui, NUMBERS, "Numbers", card, &summary, live, true, |ui| {
+        let names: Vec<&str> = rows.iter().map(|r| r.0).collect();
+        blocks::labels(ui, &names);
+        for (name, card, value) in &rows {
+            blocks::data_row(ui, name, card, value, None);
+        }
+    });
     let n = run.warnings.len();
     blocks::section(
         ui,
@@ -1365,19 +1460,13 @@ pub fn panel(
     centre
 }
 
-/// The panel while a simulation runs: the grade with "...", and the
-/// Numbers section with "Simulating..." in its header and its rows
-/// dimmed with "..." (so nothing jumps).
+/// The panel while the first simulation of this document runs: the
+/// grade with "...", and every section of a finished run in its place,
+/// dimmed: Numbers with "Simulating..." in its header and its rows with
+/// "...", the others with "..." and the reason in their cards.
 pub fn running_panel(ui: &mut Ui, t: &Tokens) {
     use super::inspector::blocks;
-    ui.horizontal(|ui| {
-        ui.spinner();
-        let r = ui.add_enabled(
-            false,
-            egui::Label::new(RichText::new("...").font(metrics::heading())),
-        );
-        super::groups::card(&r, "Grade", GRADE_CARD, Some(SIMULATING_CARD), false);
-    });
+    grade_placeholder(ui, "...");
     let note = blocks::status_line(ui, "", t.text_dim);
     super::groups::card(&note, SIMULATING, SIMULATING_CARD, None, false);
     let names = [
@@ -1403,6 +1492,27 @@ pub fn running_panel(ui: &mut Ui, t: &Tokens) {
             }
         },
     );
+    for (id, title, card) in [
+        (HINTS, "Hints", HINTS_CARD),
+        (SPOTS, "Worst spots", SPOTS_CARD),
+        (STRATEGIES, "Strategies", STRATEGIES_CARD),
+        (LEGEND, "Legend", LEGEND_CARD),
+    ] {
+        blocks::section(
+            ui,
+            id,
+            title,
+            &format!("{card} {SIMULATING_CARD}"),
+            "...",
+            true,
+            |ui| {
+                let r = ui.add_enabled(false, egui::Label::new("..."));
+                super::groups::card(&r, title, card, Some(SIMULATING_CARD), false);
+                ui.add_space(metrics::ROW_GAP);
+            },
+            None,
+        );
+    }
 }
 
 /// The legend rows of the Simulate stage: name and hover card.
