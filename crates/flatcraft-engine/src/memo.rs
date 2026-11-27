@@ -9,8 +9,8 @@
 //! Every step is looked up by its whole input (a file by its path, bytes
 //! by their content). A replay that needs a step the record did not make
 //! (the target object's bytes or settings changed, or the blade offset)
-//! computes it anyway and notes the miss, so the caller can drop that
-//! result and try again. Without a memo (the normal case) each step simply
+//! never computes it under the lock: it gives a plain error instead and
+//! notes the miss, so the caller drops that result and tries again. Without a memo (the normal case) each step simply
 //! runs.
 
 use std::cell::RefCell;
@@ -105,25 +105,39 @@ fn run<T>(mode: Mode, memo: Memo, f: impl FnOnce() -> T) -> (T, Memo) {
 fn step<T: Clone>(
     find: impl Fn(&Memo) -> Option<T>,
     compute: impl FnOnce() -> T,
+    missing: impl FnOnce() -> T,
     store: impl FnOnce(&mut Memo, T),
 ) -> T {
     let mode = ACTIVE.with(|a| a.borrow().as_ref().map(|(m, _)| *m));
     if let Some(found) = ACTIVE.with(|a| a.borrow().as_ref().and_then(|(_, m)| find(m))) {
         return found;
     }
-    // The step runs without the memo borrowed: it may not take long, but
-    // it must never hold the cell.
-    let value = compute();
-    ACTIVE.with(|a| {
-        if let Some((_, m)) = a.borrow_mut().as_mut() {
-            match mode {
-                Some(Mode::Record) => store(m, value.clone()),
-                Some(Mode::Replay) => m.missed = true,
-                None => {}
+    if mode == Some(Mode::Replay) {
+        // The replay runs under the session lock: a missing step is never
+        // computed there. The caller drops this result and tries again.
+        ACTIVE.with(|a| {
+            if let Some((_, m)) = a.borrow_mut().as_mut() {
+                m.missed = true;
             }
-        }
-    });
+        });
+        return missing();
+    }
+    // The step runs without the memo borrowed.
+    let value = compute();
+    if mode == Some(Mode::Record) {
+        ACTIVE.with(|a| {
+            if let Some((_, m)) = a.borrow_mut().as_mut() {
+                store(m, value.clone());
+            }
+        });
+    }
     value
+}
+
+/// What a missing step gives in a replay: an error, whose result is
+/// dropped anyway.
+fn missing_import() -> ImportError {
+    ImportError::Parse("not recorded".into())
 }
 
 fn same(a: &Arc<[u8]>, b: &[u8]) -> bool {
@@ -140,6 +154,7 @@ pub(crate) fn read(path: &Path) -> Result<SourceFile, ReadError> {
                 .map(|(_, r)| r.clone())
         },
         || crate::commands::sources::read_capped(path),
+        || Err(ReadError::NotFound),
         |m, r| m.reads.push((path.to_path_buf(), r)),
     )
 }
@@ -154,6 +169,7 @@ pub(crate) fn sha(bytes: &[u8]) -> String {
                 .map(|(_, h)| h.clone())
         },
         || crate::commands::sources::sha256_hex(bytes),
+        String::new,
         |m, h| m.hashes.push((Arc::from(bytes), h)),
     )
 }
@@ -177,6 +193,7 @@ pub(crate) fn svg(bytes: &[u8], which: Fonts) -> Result<Svg, ImportError> {
                 (Arc::new(i), paths)
             })
         },
+        || Err(missing_import()),
         |m, r| m.svgs.push((Arc::from(bytes), which, r)),
     )
 }
@@ -201,6 +218,7 @@ pub(crate) fn trace(
                 (Arc::new(t), paths)
             })
         },
+        || Err(missing_import()),
         |m, r| {
             m.traces
                 .push((Arc::from(bytes), settings.clone(), blade, r))

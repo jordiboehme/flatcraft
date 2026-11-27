@@ -136,6 +136,10 @@ pub struct DocState {
     cut_cache: Mutex<Option<(CacheKey, Arc<CutGeometry>)>>,
 }
 
+/// The document revision of a cut geometry seed's key: no document ever
+/// reaches it, so no reader takes the seed as it is.
+const SEED_REVISION: u64 = u64::MAX;
+
 /// What a document's cached cut geometry was built for: the document's
 /// revision, the profiles' revision, the plotter and material, and the
 /// flatten tolerance and minimum feature width taken from them.
@@ -455,7 +459,7 @@ impl DocState {
         // A key no reader asks for: the merged geometry is only ever a
         // seed for the next build, never read as it is.
         let key = CacheKey {
-            doc_revision: u64::MAX,
+            doc_revision: SEED_REVISION,
             profiles_revision: u64::MAX,
             plotter_id: String::new(),
             material_id: String::new(),
@@ -521,7 +525,12 @@ impl DocState {
         // The cache is what the command left in it, as if it had run
         // here: it is checked object by object on every read, so an entry
         // built half way through the command is as good here as there.
-        if entry.is_some() {
+        // A seed (`seed_cut_geometry`) the command never built from stays
+        // out: it would push out the live document's own entry.
+        let seed = entry
+            .as_ref()
+            .is_some_and(|(k, _)| k.doc_revision == SEED_REVISION);
+        if entry.is_some() && !seed {
             *self
                 .cut_cache
                 .get_mut()
@@ -738,13 +747,14 @@ impl Session {
         s
     }
 
-    /// A private session that holds only a twin of the active document
-    /// ([`DocState::twin`]) and copies of the profiles and preferences, for
-    /// a command run off the session lock (`crate::unlocked`). It never
-    /// reads the preferences file, never sends and never saves.
-    pub(crate) fn scratch(&self) -> Session {
+    /// A private session that holds only a twin of the open document at
+    /// `index` ([`DocState::twin`]), active in it, and copies of the
+    /// profiles and preferences, for a command run off the session lock
+    /// (`crate::unlocked`). It never reads the preferences file, never
+    /// sends and never saves.
+    pub(crate) fn scratch_of(&self, index: usize) -> Session {
         Session {
-            docs: vec![self.doc().twin()],
+            docs: vec![self.docs[index].twin()],
             active: 0,
             profiles: self.profiles.clone(),
             prefs: self.prefs.clone(),

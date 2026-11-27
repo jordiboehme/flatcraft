@@ -606,9 +606,138 @@ fn open_runs_again_when_the_profiles_change() {
     });
     let docs = s.lock().unwrap().docs.len();
     let r = unlocked_run(&s, "project.open", json!({ "path": file }));
-    assert_eq!(r, Err(changed_error("the project was opened")));
+    assert_eq!(r, Err(unlocked::profiles_changed("the project was opened")));
+    let text = r.unwrap_err().to_string();
+    assert!(text.contains("profiles changed"), "{text}");
     assert_eq!(tries.load(Ordering::SeqCst), 2);
     assert_eq!(s.lock().unwrap().docs.len(), docs, "nothing was opened");
+    // A sample (bytes built into the window) is never stale: it opens.
+    tries.store(0, Ordering::SeqCst);
+    let bytes: Arc<[u8]> = std::fs::read(&file).unwrap().into();
+    let r = unlocked::open_bytes(&s, bytes, "Sample", Origin::User);
+    assert!(r.is_ok(), "{r:?}");
+    assert_eq!(tries.load(Ordering::SeqCst), 1, "one try");
+    assert_eq!(s.lock().unwrap().docs.len(), docs + 1);
+}
+
+/// Two documents: the first with an SVG object, the second new and
+/// active. Returns their ids.
+fn two_docs(s: &Shared) -> (u64, u64) {
+    add_svg(s);
+    let a = s.lock().unwrap().doc().id();
+    locked_run(s, "document.new", json!({})).unwrap();
+    let b = s.lock().unwrap().doc().id();
+    (a, b)
+}
+
+#[test]
+fn a_window_import_lands_in_its_document_after_a_tab_switch() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = shared(dir.path());
+    let (a, b) = two_docs(&s);
+    locked_run(&s, "document.switch", json!({ "doc_id": a })).unwrap();
+    // The person switches to b while a's import traces.
+    set_hook(&s, move |s, _| {
+        s.lock()
+            .unwrap()
+            .execute("document.switch", json!({ "doc_id": b }), Origin::User)
+            .unwrap();
+    });
+    let png = square_png(dir.path());
+    let undo_a = s.lock().unwrap().doc().undo.undo_len();
+    let r = unlocked::execute_in(&s, a, "object.import", json!({ "path": png }), Origin::User);
+    assert!(r.is_ok(), "{r:?}");
+    let g = s.lock().unwrap();
+    assert_eq!(g.doc().id(), b, "b stays active");
+    let ia = g.doc_index(a).unwrap();
+    let ib = g.doc_index(b).unwrap();
+    assert_eq!(g.docs[ia].document.objects.len(), 2, "it landed in a");
+    assert_eq!(g.docs[ia].undo.undo_len(), undo_a + 1, "one undo step in a");
+    assert!(g.docs[ib].document.objects.is_empty(), "b is untouched");
+    assert_eq!(g.docs[ib].undo.undo_len(), 0);
+}
+
+#[test]
+fn an_agent_import_stays_in_the_document_it_began_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = shared(dir.path());
+    let (a, b) = two_docs(&s);
+    locked_run(&s, "document.switch", json!({ "doc_id": a })).unwrap();
+    set_hook(&s, move |s, _| {
+        s.lock()
+            .unwrap()
+            .execute("document.switch", json!({ "doc_id": b }), Origin::User)
+            .unwrap();
+    });
+    let png = square_png(dir.path());
+    unlocked_run(&s, "object.import", json!({ "path": png })).unwrap();
+    let g = s.lock().unwrap();
+    let ia = g.doc_index(a).unwrap();
+    let ib = g.doc_index(b).unwrap();
+    assert_eq!(g.docs[ia].document.objects.len(), 2);
+    assert!(g.docs[ib].document.objects.is_empty());
+}
+
+#[test]
+fn an_import_whose_document_was_closed_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = shared(dir.path());
+    let (a, b) = two_docs(&s);
+    // The person closes b (the active, empty one) while its import traces.
+    set_hook(&s, move |s, _| {
+        s.lock()
+            .unwrap()
+            .execute("document.close", json!({ "doc_id": b }), Origin::User)
+            .unwrap();
+    });
+    let png = square_png(dir.path());
+    let r = unlocked::execute_in(&s, b, "object.import", json!({ "path": png }), Origin::User);
+    assert_eq!(r, Err(unlocked::closed("object.import")));
+    assert_eq!(
+        unlocked::closed("object.import").to_string(),
+        "Refused: The import was not added: its document was closed."
+    );
+    let g = s.lock().unwrap();
+    assert_eq!(g.docs.len(), 1);
+    assert_eq!(g.doc().id(), a);
+    assert_eq!(g.doc().document.objects.len(), 1, "nothing landed in a");
+}
+
+#[test]
+fn a_rebased_command_never_leaves_a_seed_as_the_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = shared(dir.path());
+    let id = add_svg(&s);
+    s.lock().unwrap().cut_geometry().unwrap();
+    set_hook(&s, move |s, _| nudge(s, id));
+    // Fails on both runs (no such file): the replay never reads the cut
+    // geometry, so its cache would be the seed.
+    let r = unlocked_run(
+        &s,
+        "object.import",
+        json!({ "path": dir.path().join("gone.png") }),
+    );
+    assert!(matches!(r, Err(CommandError::NotFound(_))), "{r:?}");
+    let key = s.lock().unwrap().doc().cut_cache_key();
+    assert!(
+        key.as_ref().is_none_or(|k| k.doc_revision != u64::MAX),
+        "{key:?}"
+    );
+}
+
+#[test]
+fn an_agent_export_still_refuses_the_config_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = shared(dir.path());
+    add_svg(&s);
+    let inside = dir.path().join("config").join("cut.svg");
+    let r = unlocked_run(
+        &s,
+        "document.export",
+        json!({ "path": inside, "format": "svg" }),
+    );
+    assert!(matches!(r, Err(CommandError::Refused(_))), "{r:?}");
+    assert!(!inside.exists(), "nothing was written there");
 }
 
 #[test]
@@ -681,28 +810,48 @@ fn a_save_that_finishes_meanwhile_leaves_the_import_unsaved() {
 }
 
 #[test]
-fn a_window_command_runs_only_in_the_document_it_was_meant_for() {
+fn a_window_command_runs_in_the_document_it_was_meant_for() {
     let dir = tempfile::tempdir().unwrap();
     let s = shared(dir.path());
     let first = s.lock().unwrap().doc().id();
     locked_run(&s, "document.new", json!({})).unwrap();
-    for id in ["object.import_svg", "object.move"] {
-        let params = match id {
-            "object.move" => json!({ "ids": [1], "dx_mm": 1.0 }),
-            _ => json!({ "svg": SVG, "name": "rect" }),
-        };
-        let r = unlocked::execute_in(&s, first, id, params, Origin::User);
-        assert_eq!(r, Err(unlocked::not_active()), "{id}");
-    }
     let active = s.lock().unwrap().doc().id();
+    // Off the lock and under it, in the first document while the second
+    // stays active.
     let r = unlocked::execute_in(
         &s,
-        active,
+        first,
         "object.import_svg",
         json!({ "svg": SVG, "name": "rect" }),
         Origin::User,
     );
     assert!(r.is_ok(), "{r:?}");
+    let r = unlocked::execute_in(
+        &s,
+        first,
+        "object.move",
+        json!({ "ids": [1], "dx_mm": 1.0 }),
+        Origin::User,
+    );
+    assert!(r.is_ok(), "{r:?}");
+    let g = s.lock().unwrap();
+    assert_eq!(g.doc().id(), active);
+    let i = g.doc_index(first).unwrap();
+    assert_eq!(g.docs[i].document.objects.len(), 1);
+    assert_eq!(g.docs[i].undo.undo_len(), 2);
+    assert!(g.doc().document.objects.is_empty());
+    drop(g);
+    // A document that is no longer open.
+    locked_run(
+        &s,
+        "document.close",
+        json!({ "doc_id": first, "discard_changes": true }),
+    )
+    .unwrap();
+    for id in ["object.import_svg", "object.move"] {
+        let r = unlocked::execute_in(&s, first, id, json!({}), Origin::User);
+        assert_eq!(r, Err(unlocked::closed(id)), "{id}");
+    }
 }
 
 #[test]

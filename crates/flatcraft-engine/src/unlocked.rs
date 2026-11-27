@@ -5,17 +5,20 @@
 //! The pattern is the one of `project.save` and `document.check_sources`:
 //!
 //! 1. Under the lock: the agent activity, the preferences, and a snapshot
-//!    of the active document (a twin with the same id and revision, see
-//!    `Session::scratch`) with copies of the profiles and preferences.
+//!    of the document the command runs in (the active one, or the one the
+//!    window started it for): a twin with the same id and revision (see
+//!    `Session::scratch_of`), with copies of the profiles and preferences.
 //! 2. Without the lock: the command itself runs on the snapshot, the same
 //!    code [`Session::execute`] runs, so the result and the errors are the
 //!    same for the same document.
-//! 3. Under the lock again: if the document is still the active one at
-//!    the same revision, with the same path and profiles, the result is
-//!    stored (`DocState::adopt`): the same undo step, dirty flag,
-//!    selection, last job and caches the command left. Otherwise nothing
-//!    is stored, and the command runs once more on a new snapshot; when
-//!    the document changed again it fails with [`changed_error`].
+//! 3. Under the lock again: if the document is still open at the same
+//!    revision, with the same path and profiles, the result is stored
+//!    (`DocState::adopt`): the same undo step, dirty flag, selection, last
+//!    job and caches the command left. Otherwise an import, trace, reload
+//!    or relink is applied to the document as it is now ([`rebase`]), and
+//!    any other command runs once more on a new snapshot; when the
+//!    document changed again it fails with [`changed_error`]. A closed
+//!    document fails with [`closed`].
 //!
 //! `document.export` makes its bytes on the snapshot and writes the file
 //! only after that check, without the lock. `project.open` reads no
@@ -98,8 +101,9 @@ struct Key {
 }
 
 impl Key {
-    fn of(s: &Session) -> Self {
-        let st = s.doc();
+    /// The key of the open document at `index`.
+    fn of(s: &Session, index: usize) -> Self {
+        let st = &s.docs[index];
         Self {
             doc_id: st.id(),
             revision: st.revision(),
@@ -149,16 +153,35 @@ pub fn execute(
 /// What [`execute_in`] says when the document is no longer the active one.
 pub const NOT_ACTIVE: &str = "Another document became active, so nothing was changed.";
 
-/// The error of [`execute_in`] for a document that is not active.
+/// The error of a command that must run in the active document when
+/// another one is active (a command the window runs under the lock).
 pub fn not_active() -> CommandError {
     CommandError::Refused(NOT_ACTIVE.into())
 }
 
-/// [`execute`] in the open document `doc_id`, only while it is the
-/// active one: for a command the window started on the document the
-/// person saw. Fails with [`not_active`] when another document is active
-/// when the command begins (or, for a slow command, when a second try
-/// begins after the person switched).
+/// The error of a command whose document was closed (or replaced, as a
+/// pristine document is by an open) before its result could be stored.
+pub fn closed(id: &str) -> CommandError {
+    CommandError::Refused(
+        match id {
+            "object.import" | "object.import_svg" => {
+                "The import was not added: its document was closed."
+            }
+            "object.retrace" => "The trace was not applied: its document was closed.",
+            "object.reload" => "The files were not read again: their document was closed.",
+            "object.relink" => "The file was not linked: its document was closed.",
+            "document.export" => "The export was not written: its document was closed.",
+            _ => "Nothing was changed: the document was closed.",
+        }
+        .into(),
+    )
+}
+
+/// [`execute`] in the open document `doc_id`, active or not, and the
+/// active document stays as it is (like [`Session::execute_in`]): for a
+/// command the window started on the document the person saw. A tab
+/// switch meanwhile never drops it. Fails with [`closed`] when the
+/// document was closed before the result could be stored.
 pub fn execute_in(
     session: &Mutex<Session>,
     doc_id: u64,
@@ -167,6 +190,15 @@ pub fn execute_in(
     origin: Origin,
 ) -> Result<Value, CommandError> {
     execute_on(session, Some(doc_id), id, params, origin)
+}
+
+/// The index of the document a command runs in: `doc` while it is open,
+/// else the active one when no document was given.
+fn target(s: &Session, doc: Option<u64>, id: &str) -> Result<usize, CommandError> {
+    match doc {
+        Some(d) => s.doc_index(d).map_err(|_| closed(id)),
+        None => Ok(s.active),
+    }
 }
 
 fn execute_on(
@@ -178,10 +210,11 @@ fn execute_on(
 ) -> Result<Value, CommandError> {
     let Some(what) = stale_policy(id) else {
         let mut s = lock(session);
-        if doc.is_some_and(|d| s.doc().id() != d) {
-            return Err(not_active());
-        }
-        return s.execute(id, params, origin);
+        return match doc {
+            Some(d) if s.doc_index(d).is_err() => Err(closed(id)),
+            Some(d) => s.execute_in(d, id, params, origin),
+            None => s.execute(id, params, origin),
+        };
     };
     match id {
         "project.open" => {
@@ -247,17 +280,19 @@ fn rebase(
     origin: Origin,
     what: &str,
 ) -> Result<Value, CommandError> {
+    // The document it runs in is pinned at the first snapshot, also for
+    // an agent: a tab switch meanwhile never moves it to another one.
+    let mut doc = doc;
     for _ in 0..TRIES {
         let (mut scratch, key, base, hook) = {
             let mut s = lock(session);
             begin(&mut s, origin);
-            if doc.is_some_and(|d| s.doc().id() != d) {
-                return Err(not_active());
-            }
+            let index = target(&s, doc, id)?;
+            doc = Some(s.docs[index].id());
             (
-                s.scratch(),
-                Key::of(&s),
-                s.doc().twin_base(),
+                s.scratch_of(index),
+                Key::of(&s, index),
+                s.docs[index].twin_base(),
                 s.unlocked_hook.clone(),
             )
         };
@@ -272,27 +307,27 @@ fn rebase(
             .docs
             .pop()
             .expect("a scratch session has one document");
-        if Key::of(&s) == key {
-            s.doc_mut().adopt(&base, twin);
+        let Ok(index) = s.doc_index(key.doc_id) else {
+            s.prune_pending();
+            return Err(closed(id));
+        };
+        if Key::of(&s, index) == key {
+            s.docs[index].adopt(&base, twin);
             s.prune_pending();
             return result;
-        }
-        if doc.is_some_and(|d| s.doc().id() != d) {
-            s.prune_pending();
-            return Err(not_active());
         }
         let Some(memo) = memo else {
             // The snapshot run panicked: its error stands.
             s.prune_pending();
             return result;
         };
-        // Apply on the current document, with the cut pieces the snapshot
-        // run built (its new object's among them) as a seed.
-        let mut current = s.scratch();
+        // Apply on the document as it is now, with the cut pieces the
+        // snapshot run built (its new object's among them) as a seed.
+        let mut current = s.scratch_of(index);
         if let Some(g) = twin.cached_cut_geometry() {
             current.docs[0].seed_cut_geometry(&g);
         }
-        let current_base = s.doc().twin_base();
+        let current_base = s.docs[index].twin_base();
         let mut missed = false;
         let applied = compute(id, None, || {
             let (r, m) = crate::memo::replay(memo, || current.execute(id, params.clone(), origin));
@@ -304,7 +339,7 @@ fn rebase(
                 .docs
                 .pop()
                 .expect("a scratch session has one document");
-            s.doc_mut().adopt(&current_base, twin);
+            s.docs[index].adopt(&current_base, twin);
             s.prune_pending();
             return applied;
         }
@@ -344,26 +379,33 @@ fn split<T>(
         let (mut scratch, key, base, hook) = {
             let mut s = lock(session);
             begin(&mut s, origin);
-            if doc.is_some_and(|d| s.doc().id() != d) {
-                return Err(not_active());
-            }
+            let index = target(&s, doc, id)?;
             (
-                s.scratch(),
-                Key::of(&s),
-                s.doc().twin_base(),
+                s.scratch_of(index),
+                Key::of(&s, index),
+                s.docs[index].twin_base(),
                 s.unlocked_hook.clone(),
             )
         };
         let result = compute(id, hook, || run(&mut scratch));
         {
             let mut s = lock(session);
-            let fresh = Key::of(&s) == key;
+            let Ok(index) = s.doc_index(key.doc_id) else {
+                s.prune_pending();
+                if doc.is_some() {
+                    return Err(closed(id));
+                }
+                continue;
+            };
+            // An agent's command reads the active document: another one
+            // active now is a change too.
+            let fresh = Key::of(&s, index) == key && (doc.is_some() || index == s.active);
             if fresh {
                 let twin = scratch
                     .docs
                     .pop()
                     .expect("a scratch session has one document");
-                s.doc_mut().adopt(&base, twin);
+                s.docs[index].adopt(&base, twin);
             }
             s.prune_pending();
             if !fresh {
@@ -406,7 +448,10 @@ fn open(
             Load::Bytes(bytes, name) => load_open_bytes(&profiles, bytes, name),
         });
         let mut s = lock(session);
-        if s.profiles.revision() != profiles.revision() {
+        // A file's rebuild is stale when the profiles changed (the blade
+        // offset of its traces). A sample built into the window opens
+        // anyway: it is never stale, the person asked for that sample.
+        if matches!(load, Load::File(_)) && s.profiles.revision() != profiles.revision() {
             s.prune_pending();
             continue;
         }
@@ -426,7 +471,14 @@ fn open(
         };
         return s.run_prepared(&install, origin);
     }
-    Err(changed_error(changed))
+    Err(profiles_changed(changed))
+}
+
+/// The error of an open whose profiles changed on both tries.
+pub fn profiles_changed(what: &str) -> CommandError {
+    CommandError::Failed(format!(
+        "The plotter or material profiles changed while {what}, so the result was dropped. Try again."
+    ))
 }
 
 /// A project read and rebuilt off the lock: its file (none for bytes),
