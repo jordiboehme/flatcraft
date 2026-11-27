@@ -433,3 +433,44 @@ fn play_draws_the_cut_as_it_goes() {
     assert_eq!(app(&h).ui.cut.sim.clock.t_mm, at);
     assert!(app(&h).ui.cut.sim.clock.playing.is_none());
 }
+
+/// Where the stage tabs are, left to right.
+fn tab_rects(h: &AppHarness) -> Vec<egui::Rect> {
+    Stage::ALL
+        .iter()
+        .map(|s| h.get_by_role_and_label(Role::Tab, s.name()).rect())
+        .collect()
+}
+
+#[test]
+fn the_bar_keeps_its_layout_while_simulating() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = plotter_session(&dir, "host", HOST);
+    let id = common::import_square(&s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_simulate(&mut h);
+    let good = simulate_status(&mut h);
+    assert!(good.starts_with("Good"), "{good}");
+    let before = tab_rects(&h);
+    let release = gate(&s);
+    run(
+        &s,
+        "object.move",
+        json!({ "ids": [id], "dx_mm": 5.0, "dy_mm": 0.0 }),
+    );
+    // Every frame of the run: "Simulating..." in the width of the line
+    // before, so no step moves.
+    let mut simulating = 0;
+    for _ in 0..6 {
+        h.step();
+        if painted_texts(&h).contains(&sim::SIMULATING.to_string()) {
+            simulating += 1;
+        }
+        assert_eq!(tab_rects(&h), before);
+    }
+    assert!(simulating > 0, "the run was never shown as running");
+    release.send(()).unwrap();
+    h.run_plan();
+    assert_eq!(simulate_status(&mut h), good);
+    assert_eq!(tab_rects(&h), before);
+}

@@ -182,6 +182,9 @@ pub struct CutState {
     /// The Simulate stage: the simulation, its timeline and the strategy
     /// comparison.
     pub sim: super::simulate::SimState,
+    /// The last Simulate status line that was not "Simulating...": its
+    /// width is kept while a run goes, so the bar does not jump.
+    sim_line: Option<String>,
 }
 
 impl Default for CutState {
@@ -205,6 +208,7 @@ impl Default for CutState {
             kept: super::kept::KeptCache::default(),
             notes_open: true,
             sim: super::simulate::SimState::default(),
+            sim_line: None,
         }
     }
 }
@@ -656,6 +660,8 @@ struct Bar<'a> {
     status: [String; 4],
     /// The same as sentences, for the cards of folded steps.
     sentences: [String; 4],
+    /// The Simulate line whose width the step keeps while a run goes.
+    reserve: Option<String>,
     t: Tokens,
 }
 
@@ -689,11 +695,27 @@ pub fn stage_bar(
     let mut rest = full;
     rest.set_right((debug.left() - gap).max(full.left()));
     let status = Stage::ALL.map(|s| stage_status(s, st, snap));
-    // The status lines set the widths: a new text measures again.
+    // While a simulation runs, the Simulate step keeps the width of the
+    // line before it, so the bar does not jump (see `Bar::reserve`).
+    let sim_i = Stage::Simulate.number() - 1;
+    // The step is always at least as wide as "Simulating...", so the run
+    // starting does not widen it either.
+    let reserve = if status[sim_i] == super::simulate::SIMULATING {
+        st.sim_line.clone()
+    } else {
+        st.sim_line = Some(status[sim_i].clone());
+        Some(super::simulate::SIMULATING.to_string())
+    };
+    // The status lines set the widths: a new text measures again. A line
+    // shown in a reserved width measures as the reserved one.
     let sig = {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        status.hash(&mut h);
+        let mut laid = status.clone();
+        if let Some(line) = &st.sim_line {
+            laid[sim_i] = line.clone();
+        }
+        laid.hash(&mut h);
         h.finish()
     };
     let sentences = Stage::ALL.map(|s| stage_status_sentence(s, st, snap));
@@ -701,6 +723,7 @@ pub fn stage_bar(
         st,
         status,
         sentences,
+        reserve,
         t: *t,
     };
     ui.scope_builder(
@@ -771,6 +794,7 @@ fn stages(ui: &mut Ui, mode: Mode, bar: &mut Bar) {
                     &pal,
                     &title,
                     detail,
+                    bar.reserve.as_deref().filter(|_| stage == Stage::Simulate),
                     stage.name(),
                     true,
                     on,

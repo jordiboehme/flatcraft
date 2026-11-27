@@ -261,6 +261,8 @@ fn paint_state(ui: &Ui, rect: egui::Rect, resp: &Response, selected: Option<bool
 /// under that `detail` in the small dim font (left out when `None`), so
 /// the title reads first. It is a tab named `name`; `selected` gets the
 /// selection fill. A dimmed one (`enabled` off) does nothing when clicked.
+/// `reserve` is a detail text whose width the step keeps, so a shorter
+/// passing line ("Simulating...") does not make the bar jump.
 #[allow(clippy::too_many_arguments)]
 pub fn step_button(
     ui: &mut Ui,
@@ -268,6 +270,7 @@ pub fn step_button(
     pal: &icons::Palette,
     title: &str,
     detail: Option<&str>,
+    reserve: Option<&str>,
     name: &str,
     enabled: bool,
     selected: bool,
@@ -283,9 +286,13 @@ pub fn step_button(
         };
         let title_g = layout(title, egui::TextStyle::Body);
         let detail_g = detail.map(|d| layout(d, egui::TextStyle::Small));
+        let reserve_w = reserve
+            .filter(|_| detail.is_some())
+            .map_or(0.0, |r| layout(r, egui::TextStyle::Small).size().x);
         let text_w = detail_g
             .as_ref()
-            .map_or(title_g.size().x, |d| d.size().x.max(title_g.size().x));
+            .map_or(title_g.size().x, |d| d.size().x.max(title_g.size().x))
+            .max(reserve_w);
         let width = (text_w + 16.0).max(BIG_HEIGHT);
         let (rect, resp) =
             ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), egui::Sense::click());
