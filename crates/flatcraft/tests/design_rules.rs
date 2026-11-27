@@ -308,12 +308,14 @@ const CALLS: [&str; 16] = [
 /// Calls that take a size: a number in a `vec2` or an array given to
 /// them is a layout size (`allocate_exact_size(vec2(18.0, h), ..)`).
 const SIZED: [&str; 2] = ["allocate_exact_size(", "add_sized("];
-const SIZE_ARGS: [&str; 5] = [
+const SIZE_ARGS: [&str; 7] = [
     "[",
     "vec2(",
     "egui::vec2(",
     "Vec2::new(",
     "egui::Vec2::new(",
+    "Vec2::splat(",
+    "egui::Vec2::splat(",
 ];
 const ASSIGNED: [&str; 3] = ["item_spacing", "button_padding", "interact_size"];
 
@@ -467,7 +469,7 @@ fn layout_literals(src: &str) -> Vec<String> {
                 .find(|c: char| !(c == '.' || c == 'x' || c == 'y'))
                 .unwrap_or(0);
             let after = rest[field..].trim_start();
-            let op = ["+=", "-=", "="]
+            let op = ["+=", "-=", "*=", "="]
                 .into_iter()
                 .find(|op| after.starts_with(op) && !after.starts_with("=="));
             if let Some(op) = op {
@@ -542,6 +544,8 @@ fn the_guard_finds_layout_literals() {
                ui.allocate_exact_size(egui::vec2(w, 18.0), sense);\n\
                ui.allocate_exact_size(Vec2::new(14.0, 20.0), sense);\n\
                ui.allocate_exact_size(egui::Vec2::new(10.0, 18.0), sense);\n\
+               ui.allocate_exact_size(Vec2::splat(16.0), sense);\n\
+               ui.add_sized(egui::Vec2::splat(24.0), widget);\n\
                ui.add_sized(\n    [120.0, h],\n    widget,\n);\n\
                ui.add_sized(egui::vec2(120.0, h), widget);\n\
                egui::Margin { left: 4, ..m };\n\
@@ -549,6 +553,8 @@ fn the_guard_finds_layout_literals() {
                ui.spacing_mut().item_spacing.x += 2.0;\n\
                ui.spacing_mut().button_padding.y -= 1.0;\n\
                ui.spacing_mut().interact_size.y = 20.0;\n\
+               ui.spacing_mut().item_spacing *= 2.0;\n\
+               ui.spacing_mut().button_padding.x *= 1.5;\n\
                // not found:\n\
                ui.add_space(metrics::SPACE_8); // add_space(9.0)\n\
                /* ui.add_space(5.0); */\n\
@@ -556,6 +562,8 @@ fn the_guard_finds_layout_literals() {
                ui.spacing_mut().item_spacing.y = 0.0;\n\
                ui.allocate_exact_size(vec2(w, metrics::ROW), sense);\n\
                ui.allocate_exact_size(galley.size() + vec2(2.0, 0.0), sense);\n\
+               ui.allocate_exact_size(Vec2::splat(metrics::ICON), sense);\n\
+               ui.spacing_mut().item_spacing *= scale;\n\
                egui::Margin { left: metrics::SPACE_8 as i8, ..m };\n\
                pub fn semibold(size: f32) -> FontId {}\n";
     assert_eq!(
@@ -583,12 +591,16 @@ fn the_guard_finds_layout_literals() {
             "allocate_exact_size(egui::vec2(w, 18.0), sense)",
             "allocate_exact_size(Vec2::new(14.0, 20.0), sense)",
             "allocate_exact_size(egui::Vec2::new(10.0, 18.0), sense)",
+            "allocate_exact_size(Vec2::splat(16.0), sense)",
+            "add_sized(egui::Vec2::splat(24.0), widget)",
             "add_sized( [120.0, h], widget, )",
             "add_sized(egui::vec2(120.0, h), widget)",
             "Margin { left: 4, ..m }",
             "item_spacing = vec2(metrics::SPACE_4, 2.0 * pad)",
             "item_spacing.x += 2.0",
+            "item_spacing *= 2.0",
             "button_padding.y -= 1.0",
+            "button_padding.x *= 1.5",
             "interact_size.y = 20.0",
         ]
     );
