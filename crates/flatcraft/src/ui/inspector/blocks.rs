@@ -840,11 +840,12 @@ pub fn hint_card(
     issue: &str,
     actions: &[HintButton<'_>],
 ) -> Option<usize> {
-    hint_card_with(ui, t, dismiss, title, issue, None, actions)
+    hint_card_with(ui, t, dismiss, title, issue, None, false, actions)
 }
 
 /// [`hint_card`] with a dimmed line under the text (`detail`: what to do
-/// when no button fixes it).
+/// when no button fixes it); a `blocking` one (it stops the cut) is red.
+#[allow(clippy::too_many_arguments)]
 pub fn hint_card_with(
     ui: &mut Ui,
     t: &Tokens,
@@ -852,16 +853,22 @@ pub fn hint_card_with(
     title: Option<(&str, &str)>,
     issue: &str,
     detail: Option<&str>,
+    blocking: bool,
     actions: &[HintButton<'_>],
 ) -> Option<usize> {
+    let (accent, title_ink) = if blocking {
+        (t.danger, t.danger)
+    } else {
+        (t.warn, t.warn_text)
+    };
     if dismiss.is_some_and(|id| tip_hidden(ui.ctx(), id)) {
         return None;
     }
     let mut clicked = None;
     let mut hide = false;
     egui::Frame::new()
-        .fill(t.warn.gamma_multiply(0.10))
-        .stroke(egui::Stroke::new(1.0, t.warn.gamma_multiply(0.6)))
+        .fill(accent.gamma_multiply(0.10))
+        .stroke(egui::Stroke::new(1.0, accent.gamma_multiply(0.6)))
         .corner_radius(t.radius)
         .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
@@ -872,7 +879,7 @@ pub fn hint_card_with(
                         let r = ui.label(
                             RichText::new(title)
                                 .font(fonts::semibold(13.0))
-                                .color(t.warn_text),
+                                .color(title_ink),
                         );
                         groups::card(&r, title, card, None, false);
                     }

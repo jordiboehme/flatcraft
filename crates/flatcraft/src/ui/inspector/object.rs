@@ -869,6 +869,8 @@ fn hints(
                     Some((title, &issue.hint)),
                     &issue.message,
                     detail,
+                    // An error stops the cut: red, like the import card.
+                    issue.severity == flatcraft_engine::report::Severity::Error,
                     &buttons,
                 ) {
                     actions.push(fixes[i].1.clone());
