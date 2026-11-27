@@ -146,14 +146,19 @@ fn steps(dir: &std::path::Path, out: &std::path::Path) -> Vec<(&'static str, Val
 }
 
 /// What a step returned, without the paths that differ between the two
-/// runs.
+/// runs. A result is JSON text, so its paths are JSON-escaped (on Windows
+/// every `\` is doubled); an error message has the plain path.
 fn comparable(r: Result<Value, CommandError>, dir: &std::path::Path) -> String {
-    let text = match r {
-        Ok(v) => without_doc(v).to_string(),
-        Err(e) => format!("error: {e}"),
-    };
-    let dir = serde_json::to_string(&dir.display().to_string()).unwrap();
-    text.replace(dir.trim_matches('"'), "<dir>")
+    let plain = dir.display().to_string();
+    match r {
+        Ok(v) => {
+            let escaped = serde_json::to_string(&plain).unwrap();
+            without_doc(v)
+                .to_string()
+                .replace(escaped.trim_matches('"'), "<dir>")
+        }
+        Err(e) => format!("error: {e}").replace(&plain, "<dir>"),
+    }
 }
 
 /// `v` without `doc_id`: two sessions give their documents other ids.
