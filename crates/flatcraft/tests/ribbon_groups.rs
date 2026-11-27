@@ -538,6 +538,18 @@ fn the_pin_toggle_is_reachable_by_keyboard() {
     assert!(stored(&h).contains(&"pattern.circular".to_string()));
 }
 
+/// Opens the Auto arrange card for the selection of now.
+fn reopen(h: &mut AppHarness) {
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(h), &ctx);
+    flatcraft::ui::arrange::open(
+        &mut app_mut(h).ui.prepare,
+        &snap,
+        flatcraft::ui::arrange::PanelKind::AutoArrange,
+    );
+    h.run_plan();
+}
+
 #[test]
 fn auto_arrange_panel_says_what_it_packs_and_shows_what_stays() {
     let dir = tempfile::tempdir().unwrap();
@@ -573,7 +585,10 @@ fn auto_arrange_panel_says_what_it_packs_and_shows_what_stays() {
     // Nothing selected: all of them, nothing fixed.
     select(&s, &[]);
     h.run_plan();
-    // The title, and the card still open over it.
+    // Another selection cancels the card: open it again for this one.
+    assert!(app(&h).ui.prepare.panel.is_none());
+    reopen(&mut h);
+    // The title says what it packs now.
     assert!(
         h.query_all_by_label("Auto arrange all objects")
             .next()
@@ -586,7 +601,10 @@ fn auto_arrange_panel_says_what_it_packs_and_shows_what_stays() {
     // One selected.
     select(&s, &ids[..1]);
     h.run_plan();
-    // The title, and the card still open over it.
+    // Another selection cancels the card: open it again for this one.
+    assert!(app(&h).ui.prepare.panel.is_none());
+    reopen(&mut h);
+    // The title says what it packs now.
     assert!(
         h.query_all_by_label("Auto arrange 1 selected object")
             .next()
@@ -607,6 +625,9 @@ fn auto_arrange_panel_says_what_it_packs_and_shows_what_stays() {
     set_visible(&ids[2..3], false);
     select(&s, &ids[..3]);
     h.run_plan();
+    // Another selection cancels the card: open it again for this one.
+    assert!(app(&h).ui.prepare.panel.is_none());
+    reopen(&mut h);
     assert!(
         h.query_all_by_label("Auto arrange 2 selected objects")
             .next()
@@ -617,6 +638,9 @@ fn auto_arrange_panel_says_what_it_packs_and_shows_what_stays() {
     // Only hidden ones selected: nothing to pack, OK is dimmed and says why.
     select(&s, &ids[2..3]);
     h.run_plan();
+    // Another selection cancels the card: open it again for this one.
+    assert!(app(&h).ui.prepare.panel.is_none());
+    reopen(&mut h);
     h.get_by_label(
         "The selected objects are hidden, so there is nothing to pack. Show them, or select nothing to pack every visible object.",
     );
@@ -635,6 +659,9 @@ fn auto_arrange_panel_says_what_it_packs_and_shows_what_stays() {
         .unwrap();
     select(&s, &ids[..1]);
     h.run_plan();
+    // Another selection cancels the card: open it again for this one.
+    assert!(app(&h).ui.prepare.panel.is_none());
+    reopen(&mut h);
     let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
     let o = snap.object(pic).unwrap();
     assert!(o.bounds().is_none() && o.arrange_bounds().is_some());

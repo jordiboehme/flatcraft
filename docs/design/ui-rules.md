@@ -68,7 +68,7 @@ These widths and heights stay where they are used, on purpose. Each sizes one su
 - Menus and cards: hover cards at most 280 (`groups::card_ui`); the context menu at least 190, a tab's menu 180, the ribbon's fold menu 220; the calculator hint at most 320.
 - Home: `home::MAX_WIDTH` 1080, `NEW_CARD_HEIGHT` 76, `NEW_CARD_MIN` 230, `ROW_HEIGHT` 60, `THUMB_BOX` 44, `SAMPLE_PICTURE` 170, `SAMPLE_CARD_MIN` 260.
 - Switcher list: `switcher::LIST_WIDTH` 380, `ROW_HEIGHT` 76.
-- Shell: `rails::ARRANGE_W` 270, `RAIL_W` 28; `app_bar::BAR_HEIGHT` 32 and its tab sizes; `canvas::RULER` 18.
+- Shell: `rails::RAIL_W` 28; `app_bar::BAR_HEIGHT` 32 and its tab sizes; `canvas::RULER` 18.
 - Debug panel: `debug::TIME_W` 70, `DIR_W` 30, `HEX_W` 330.
 
 Drawing inside a hand-painted row or card (an icon's offset, a badge's padding, a dot's radius) stays next to its drawing.

@@ -61,6 +61,10 @@ pub const INDENT: f32 = SPACE_16;
 pub const RIGHT_PANEL_W: f32 = 296.0;
 pub const LEFT_PANEL_W: f32 = 224.0;
 
+/// The most of the window's height the fields of a tool card take; more
+/// fields scroll inside the card, so its title and buttons stay in sight.
+pub const TOOL_CARD_FIELDS_SHARE: f32 = 0.5;
+
 /// The inner margin of a side panel.
 pub fn panel_margin() -> egui::Margin {
     egui::Margin {

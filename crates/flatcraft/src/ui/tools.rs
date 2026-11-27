@@ -1249,7 +1249,16 @@ impl Tool {
             Act::Rulers => st.show_rulers = !st.show_rulers,
             Act::KeptWaste => st.show_kept_waste = !st.show_kept_waste,
             Act::ObjectsPanel => st.panels.toggle(SidePanel::Objects),
-            Act::SettingsPanel => st.panels.toggle(SidePanel::Settings),
+            Act::SettingsPanel => {
+                // An open tool card holds the panel open: hiding the
+                // panel cancels the card.
+                let shown = !st.panels.collapsed(SidePanel::Settings);
+                if shown {
+                    st.panel = None;
+                    st.panels.card_open = false;
+                }
+                st.panels.set_collapsed(SidePanel::Settings, shown);
+            }
             Act::DebugPanel => *show_debug = !*show_debug,
         }
     }
@@ -1826,6 +1835,135 @@ impl Setting {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------- tool cards
+
+/// The hover cards of the fields of the tool cards (see
+/// `inspector::tool_card`), in plain words for beginners. A command's
+/// parameter is keyed by the command id and the parameter's path; a
+/// window-only field by its card and its own id. The label, the unit and
+/// the range come from the engine (`commands::meta` and the schema).
+pub const FIELD_CARDS: &[(&str, &str, &str)] = &[
+    (
+        "object.move",
+        "dx_mm",
+        "How far the selection moves to the right. A minus number moves it to the left. With Copy on, each copy sits this far from the one before.",
+    ),
+    (
+        "object.move",
+        "dy_mm",
+        "How far the selection moves down. A minus number moves it up. With Copy on, each copy sits this far from the one before.",
+    ),
+    (
+        "object.duplicate",
+        "offset_mm[0]",
+        "How far each copy sits to the right of the one before. A minus number puts it to the left.",
+    ),
+    (
+        "object.duplicate",
+        "offset_mm[1]",
+        "How far each copy sits below the one before. A minus number puts it above.",
+    ),
+    (
+        "object.duplicate",
+        "count",
+        "How many copies to add of each object. Copy 2 sits two offsets away, copy 3 three, like footprints in the sand.",
+    ),
+    (
+        "move_copy",
+        "copy",
+        "On: the originals stay where they are and copies are added, each one offset further. Off: the selection itself moves.",
+    ),
+    (
+        "object.rotate",
+        "degrees",
+        "How far to turn. A positive angle turns clockwise, like the hands of a clock; a minus angle turns the other way.",
+    ),
+    (
+        "object.rotate",
+        "about",
+        "As one group: the selection turns about its common centre, like Voltron, so the layout turns with it. Each about its own centre: every object spins where it is. OK also sets the Each object switch on the ribbon.",
+    ),
+    (
+        "object.copies",
+        "count",
+        "How many copies to add next to the original.",
+    ),
+    (
+        "object.copies",
+        "layout.grid.columns",
+        "How many cells sit side by side in each row. The original is the top-left cell.",
+    ),
+    (
+        "pattern.rectangular",
+        "rows",
+        "How many rows of cells. Columns times rows is the whole pattern, the original included.",
+    ),
+    (
+        "object.copies",
+        "gap_x_mm",
+        "The gap between two neighbours side by side, from edge to edge. 0 makes them touch.",
+    ),
+    (
+        "object.copies",
+        "gap_y_mm",
+        "The gap between two rows, from edge to edge. 0 makes them touch.",
+    ),
+    (
+        "object.copies",
+        "linked",
+        "One design, many bodies, like the Clone Army: the copies share the source, the cut options, the keep mode and the scale. Each keeps its own place, rotation and mirror.",
+    ),
+    (
+        "object.circular_copies",
+        "count",
+        "How many objects sit around the circle, the original included. 12 makes the numbers on a clock.",
+    ),
+    (
+        "object.circular_copies",
+        "total_deg",
+        "How far around the circle the copies spread. Only a full turn (360 deg) shares them out evenly. A smaller angle puts the last copy at the end of the arc.",
+    ),
+    (
+        "pattern.circular",
+        "centre",
+        "What the circle turns about: the centre of the selection, or a point you type in Centre X and Centre Y.",
+    ),
+    (
+        "object.circular_copies",
+        "center_mm[0]",
+        "Where the centre of the circle is, measured from the left edge of the mat's printed grid.",
+    ),
+    (
+        "object.circular_copies",
+        "center_mm[1]",
+        "Where the centre of the circle is, measured down from the top edge of the mat's printed grid.",
+    ),
+    (
+        "object.circular_copies",
+        "rotate_copies",
+        "On: each copy turns with the circle, like the spokes of a wheel. Off: they all keep the original's angle.",
+    ),
+    (
+        "object.circular_copies",
+        "linked",
+        "The copies share the source, the cut options, the keep mode and the scale with their original. Each keeps its own place, rotation and mirror.",
+    ),
+    (
+        "arrange.auto",
+        "spacing_mm",
+        "The gap left between packed objects, and between them and the objects that stay. A pinned Auto arrange uses it too.",
+    ),
+];
+
+/// The hover card of the tool card field `key` of `owner` (a command id,
+/// or a card's own id for a window-only field).
+pub fn field_card(owner: &str, key: &str) -> Option<&'static str> {
+    FIELD_CARDS
+        .iter()
+        .find(|(o, k, _)| *o == owner && *k == key)
+        .map(|(_, _, c)| *c)
 }
 
 #[cfg(test)]

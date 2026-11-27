@@ -71,7 +71,7 @@ pub const PARAMS: &[ParamMeta] = &[
     p("object.duplicate", "offset_mm[0]", "X offset", Unit::Mm),
     p("object.duplicate", "offset_mm[1]", "Y offset", Unit::Mm),
     p("object.duplicate", "count", "Number of copies", Unit::Count),
-    p("object.rotate", "degrees", "Angle", Unit::Deg),
+    p("object.rotate", "degrees", "Turn by", Unit::Deg),
     ParamMeta {
         choices: &[
             ("group", "As one group"),

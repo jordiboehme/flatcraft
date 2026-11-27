@@ -2527,9 +2527,9 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     app_bar::show(ui, app, &mut actions);
     if let (Some(snap), Workspace::Prepare) = (&snap, workspace) {
         // Before the ribbon draws: its Settings panel toggle needs to know
-        // whether an Arrange panel takes room.
+        // whether a tool card holds the panel open.
         arrange::keep_or_close(&mut app.ui.prepare, snap);
-        app.ui.prepare.panels.arrange_open = app.ui.prepare.panel.is_some();
+        app.ui.prepare.panels.card_open = app.ui.prepare.panel.is_some();
     }
     switcher::ribbon(ui, app, snap.as_ref(), &mut actions);
     if workspace != Workspace::Prepare {

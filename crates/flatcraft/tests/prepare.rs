@@ -2047,6 +2047,16 @@ fn move_copy_moves_or_copies_in_one_step() {
     assert!((object_centre(&s, copies[2]) - (c + kurbo::Vec2::new(0.0, 90.0))).hypot() < 1e-9);
 }
 
+/// Picks "Each about its own centre" in the Rotate card's Turn about
+/// combo.
+fn pick_each(h: &mut AppHarness) {
+    h.get_by_label("Turn about").click();
+    h.run_plan();
+    h.get_by_label("Each about its own centre").click();
+    h.run_plan();
+    assert!(values(h).rotate.each);
+}
+
 #[test]
 fn rotate_panel_turns_in_one_step() {
     let dir = tempfile::tempdir().unwrap();
@@ -2067,8 +2077,7 @@ fn rotate_panel_turns_in_one_step() {
     // its preference stay as they were.
     let rev = revision(&s);
     open_panel(&mut h, "Rotate...");
-    h.get_by_label("Each about its own centre").click();
-    h.run_plan();
+    pick_each(&mut h);
     h.get_by_role_and_label(Role::Button, &cancel_name())
         .click();
     h.run_plan();
@@ -2080,8 +2089,7 @@ fn rotate_panel_turns_in_one_step() {
     assert_eq!(revision(&s), rev);
     // OK turns each about its own centre and stores the switch.
     open_panel(&mut h, "Rotate...");
-    h.get_by_label("Each about its own centre").click();
-    h.run_plan();
+    pick_each(&mut h);
     let (na, nb) = (object_centre(&s, a), object_centre(&s, b));
     click_ok(&mut h);
     assert_eq!((object_centre(&s, a), object_centre(&s, b)), (na, nb));

@@ -335,17 +335,17 @@ pub struct PrepareState {
     /// shows it at once and a quick switch does not check again.
     pub source_memory: HashMap<u64, SourceStatus>,
     pub cache: ShapeCache,
-    /// The Arrange panel docked on the right, if one is open.
+    /// The tool card open on top of the inspector, if one is.
     pub panel: Option<ArrangePanel>,
-    /// The values of the last panel that ran, for the next one.
+    /// The values of the last card that ran, for the next one.
     pub panel_last: PanelValues,
-    /// The Auto arrange panel's last plan (see `arrange::AutoPlanCache`).
+    /// The Auto arrange card's last plan (see `arrange::AutoPlanCache`).
     pub auto_plan: super::arrange::AutoPlanCache,
     /// Open this group's list on the next frame (search asked for it).
     pub open_group: Option<super::tools::GroupId>,
-    /// The screen area of the open Arrange panel, last frame.
+    /// The screen area of the open tool card, last frame.
     pub panel_rect: Option<Rect>,
-    /// At the end of the last frame a text field outside the Arrange panel
+    /// At the end of the last frame a text field outside the tool card
     /// (the search box, a size field) had the keys. egui drops the focus on
     /// Escape before the key handler runs, so this is how the handler knows
     /// that the Escape only leaves that field.
@@ -1538,7 +1538,7 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
     if let Some(pick) = &mut app.ui.prepare.keep_pick {
         pick.refresh(snap);
     }
-    app.ui.prepare.panels.arrange_open = app.ui.prepare.panel.is_some();
+    app.ui.prepare.panels.card_open = app.ui.prepare.panel.is_some();
     if app.ui.prepare.panels.collapsed(SidePanel::Objects) {
         let filter = objects::filter_text(&app.ui.prepare, snap);
         let summary = rails::objects_summary_filtered(snap, filter);
@@ -1564,22 +1564,9 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
             });
     }
 
-    if app.ui.prepare.panel.is_some() {
-        let shown = egui::Panel::right("flatcraft-arrange-panel")
-            .resizable(false)
-            .exact_size(rails::ARRANGE_W)
-            .frame(
-                egui::Frame::new()
-                    .fill(t.panel)
-                    .inner_margin(metrics::panel_margin()),
-            )
-            .show(ui, |ui| {
-                arrange::panel_ui(ui, &mut app.ui.prepare, snap, &t, actions);
-            });
-        app.ui.prepare.panel_rect = Some(shown.response.rect);
-    } else {
-        app.ui.prepare.panel_rect = None;
-    }
+    // The tool card sits in the inspector; until it is drawn this frame,
+    // there is none.
+    app.ui.prepare.panel_rect = None;
 
     if app.ui.prepare.panels.collapsed(SidePanel::Settings) {
         let summary = rails::settings_summary(snap, rails::job_dot(snap, Some(&app.ui.cut)));

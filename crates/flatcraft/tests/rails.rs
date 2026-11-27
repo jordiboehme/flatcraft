@@ -402,15 +402,26 @@ fn the_choices_round_trip_in_the_preferences() {
 }
 
 #[test]
-fn an_open_arrange_panel_makes_the_settings_panel_give_way() {
-    use rails::auto_collapsed as auto;
-    assert!(!auto(SidePanel::Settings, 1200.0, false));
-    assert!(auto(SidePanel::Settings, 1200.0, true));
-    assert!(!auto(SidePanel::Settings, 1400.0, true));
-    assert!(auto(SidePanel::Settings, 900.0, true));
+fn an_open_tool_card_holds_the_settings_panel_open() {
+    let mut p = rails::Panels::default();
+    p.window_w = 900.0;
+    assert!(p.collapsed(SidePanel::Settings), "a rail at 900 pt");
+    p.card_open = true;
+    assert!(!p.collapsed(SidePanel::Settings), "open for the card");
+    // Even when the person folded it; their choice stays as it was.
+    p.card_open = false;
+    p.window_w = 1400.0;
+    p.set_collapsed(SidePanel::Settings, true);
+    p.card_open = true;
+    assert!(!p.collapsed(SidePanel::Settings));
+    assert_eq!(p.user(SidePanel::Settings), PanelUser::Collapsed);
+    p.card_open = false;
+    assert!(p.collapsed(SidePanel::Settings));
     // The others do not care.
-    assert!(!auto(SidePanel::Objects, 1000.0, true));
-    assert!(!auto(SidePanel::Stage, 1100.0, true));
+    p.card_open = true;
+    p.window_w = 900.0;
+    assert!(p.collapsed(SidePanel::Objects));
+    assert!(rails::auto_collapsed(SidePanel::Stage, 1000.0));
 }
 
 fn rotated(h: &AppHarness) -> Vec<TextShape> {
@@ -515,7 +526,7 @@ fn a_long_summary_ends_in_dots_and_never_runs_past_the_rail() {
 }
 
 #[test]
-fn an_open_arrange_panel_keeps_the_canvas_usable_at_900() {
+fn an_open_tool_card_keeps_the_canvas_usable_at_900() {
     let (_d, _s, mut h, _) = four(900.0);
     let sn = snap(&mut h);
     flatcraft::ui::arrange::open(
@@ -525,23 +536,24 @@ fn an_open_arrange_panel_keeps_the_canvas_usable_at_900() {
     );
     h.run_plan();
     assert!(app(&h).ui.prepare.panel.is_some());
-    assert!(rail_open(&h, "Objects") && rail_open(&h, "Cut and Job"));
+    // The card sits on top of the inspector: the Cut and Job panel opens
+    // for it, and no third column takes the canvas' room.
+    assert!(rail_open(&h, "Objects") && collapse_button(&h, "Cut and Job"));
     let w = app(&h).ui.prepare.canvas_rect.width();
     assert!(w > 450.0, "the canvas is {w} pt wide");
-    // At 1200 pt the Cut and Job panel gives way to the Arrange panel too.
     resize(&mut h, 1200.0);
-    assert!(rail_open(&h, "Cut and Job"));
-    assert!(app(&h).ui.prepare.canvas_rect.width() > 450.0);
+    assert!(collapse_button(&h, "Cut and Job"));
+    assert!(app(&h).ui.prepare.canvas_rect.width() > 600.0);
 }
 
 #[test]
-fn the_ribbon_toggle_knows_about_an_open_arrange_panel_in_the_same_frame() {
-    let (_d, _s, mut h, _) = four(1200.0);
+fn the_ribbon_toggle_knows_about_an_open_tool_card_in_the_same_frame() {
+    let (_d, _s, mut h, _) = four(1000.0);
     let tool = flatcraft::ui::tools::TOOLS
         .iter()
         .find(|t| t.id == "panel.settings")
         .unwrap();
-    assert_eq!(tool.selected(&app(&h).ui.prepare, false), Some(true));
+    assert_eq!(tool.selected(&app(&h).ui.prepare, false), Some(false));
     let sn = snap(&mut h);
     flatcraft::ui::arrange::open(
         &mut app_mut(&mut h).ui.prepare,
@@ -549,9 +561,9 @@ fn the_ribbon_toggle_knows_about_an_open_arrange_panel_in_the_same_frame() {
         flatcraft::ui::arrange::PanelKind::MoveCopy,
     );
     h.step();
-    // The frame has set arrange_open before the ribbon asked.
-    assert!(app(&h).ui.prepare.panels.arrange_open);
-    assert_eq!(tool.selected(&app(&h).ui.prepare, false), Some(false));
+    // The frame has set card_open before the ribbon asked.
+    assert!(app(&h).ui.prepare.panels.card_open);
+    assert_eq!(tool.selected(&app(&h).ui.prepare, false), Some(true));
 }
 
 const THIN_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="200mm" viewBox="0 0 200 200"><rect x="100" y="20" width="50" height="0.0001"/></svg>"#;

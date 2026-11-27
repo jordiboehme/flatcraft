@@ -33,10 +33,6 @@ pub const RAIL_W: f32 = 28.0;
 pub const RIGHT_BELOW: f32 = 1100.0;
 /// The Objects panel collapses on its own below this window width.
 pub const LEFT_BELOW: f32 = 960.0;
-/// The width of a docked Arrange panel. While one is open, the Cut and Job
-/// panel collapses on its own below [`RIGHT_BELOW`] plus this width, so the
-/// canvas keeps its room (about 570 pt at 900 pt, where it had about 100).
-pub const ARRANGE_W: f32 = 270.0;
 
 /// Which side panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,13 +75,11 @@ impl SidePanel {
 }
 
 /// Whether the window is too narrow for the panel, so it collapses on its
-/// own. `arrange_open`: a docked Arrange panel takes [`ARRANGE_W`] on the
-/// right, so the Cut and Job panel gives way earlier.
-pub fn auto_collapsed(kind: SidePanel, window_w: f32, arrange_open: bool) -> bool {
+/// own.
+pub fn auto_collapsed(kind: SidePanel, window_w: f32) -> bool {
     match kind {
         SidePanel::Objects => window_w < LEFT_BELOW,
-        SidePanel::Settings => window_w < RIGHT_BELOW + if arrange_open { ARRANGE_W } else { 0.0 },
-        SidePanel::Stage => window_w < RIGHT_BELOW,
+        SidePanel::Settings | SidePanel::Stage => window_w < RIGHT_BELOW,
     }
 }
 
@@ -97,8 +91,10 @@ pub struct Panels {
     saved: [PanelUser; 3],
     /// The window width of this frame, in points.
     pub window_w: f32,
-    /// A docked Arrange panel is open (Prepare).
-    pub arrange_open: bool,
+    /// A tool card is open (Prepare). It sits on top of the inspector, so
+    /// the Cut and Job panel shows while it is open, whatever the width
+    /// and the person's choice. Never stored: the choice stays as it was.
+    pub card_open: bool,
 }
 
 impl Default for Panels {
@@ -107,7 +103,7 @@ impl Default for Panels {
             users: [PanelUser::None; 3],
             saved: [PanelUser::None; 3],
             window_w: 1400.0,
-            arrange_open: false,
+            card_open: false,
         }
     }
 }
@@ -129,10 +125,13 @@ impl Panels {
 
     /// Whether the panel shows as a rail now.
     pub fn collapsed(&self, kind: SidePanel) -> bool {
+        if kind == SidePanel::Settings && self.card_open {
+            return false;
+        }
         match self.user(kind) {
             PanelUser::Collapsed => true,
             PanelUser::Open => false,
-            PanelUser::None => auto_collapsed(kind, self.window_w, self.arrange_open),
+            PanelUser::None => auto_collapsed(kind, self.window_w),
         }
     }
 
@@ -142,7 +141,7 @@ impl Panels {
     pub fn set_collapsed(&mut self, kind: SidePanel, collapsed: bool) {
         // A choice the window width would make anyway is no choice: the
         // panel follows the width again.
-        let auto = auto_collapsed(kind, self.window_w, self.arrange_open);
+        let auto = auto_collapsed(kind, self.window_w);
         self.users[kind.index()] = if collapsed == auto {
             PanelUser::None
         } else if collapsed {

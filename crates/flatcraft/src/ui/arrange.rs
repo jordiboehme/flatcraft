@@ -1,29 +1,31 @@
-//! The Arrange command panels docked on the right (Move / Copy, Rotate,
-//! the patterns and Auto arrange) with their ghost preview, and the big
-//! button the ribbon pins them with.
+//! The tool cards of the Arrange tools (Move / Copy, Rotate, the patterns
+//! and Auto arrange): their fields, built from the commands' parameters
+//! (see `inspector::tool_card`), and their ghost preview. A card opens on
+//! top of the inspector.
 //!
-//! A panel works on the current selection. While it is open, the canvas
+//! A card works on the selection it was opened for; another selection
+//! cancels it. While it is open, the canvas
 //! draws the would-be result faintly ([`ghosts`]), built with the same
 //! pure functions of `flatcraft_engine::placement` that the commands use,
 //! so the preview and the result cannot differ. OK runs one command (one
 //! undo step); Cancel, the close button and Escape change nothing.
 
-use crate::ui::metrics;
-use egui::{RichText, Ui};
+use std::collections::BTreeSet;
+
+use egui::Ui;
 use flatcraft_core::document::ObjectId;
-use flatcraft_core::numexpr::{Field, Kind};
+use flatcraft_engine::commands::meta::Unit;
 use flatcraft_engine::commands::object::MAX_COPIES;
 use flatcraft_engine::placement;
 use kurbo::{Affine, Point, Rect, Vec2};
 use serde_json::json;
 
-use super::calc::{self, Number};
-use super::help::{self, PrepareKey};
-use super::icons::{self, Icon};
+use super::inspector::tool_card::{
+    self, CardField, Outcome, Slot, ToolCard, WindowField, WindowKind,
+};
 use super::prepare::{ObjView, PrepareState, Snapshot};
-use super::settings::{painted_label, set_name};
 use super::theme::Tokens;
-use super::tools::{self, Act, Setting, Tool};
+use super::tools::{self, Act, Tool};
 use super::{Action, ribbon};
 
 // ---------------------------------------------------------------- panels
@@ -143,22 +145,25 @@ impl Default for PanelValues {
     }
 }
 
-/// The open panel: its document, its kind and the values so far.
+/// The open card: its document, the selection it was opened for, its
+/// kind and the values so far.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArrangePanel {
     pub doc_id: u64,
+    /// The selection when it opened; another selection cancels it.
+    pub selection: BTreeSet<u64>,
     pub kind: PanelKind,
     pub values: PanelValues,
 }
 
-/// Opens the panel `kind` with the values used last, and the "Each
-/// object" switch as it is now.
+/// Opens the card `kind` with the values used last, and the fields with
+/// a Preferences key as they are stored now.
 pub fn open(st: &mut PrepareState, snap: &Snapshot, kind: PanelKind) {
     let mut values = st.panel_last.clone();
-    values.rotate.each = st.fields.each;
-    values.spacing_mm = snap.auto_spacing_mm;
+    load_prefs(&mut values, st, snap);
     st.panel = Some(ArrangePanel {
         doc_id: snap.doc_id,
+        selection: snap.selection.clone(),
         kind,
         values,
     });
@@ -549,319 +554,316 @@ pub fn ghosts_with(
     out
 }
 
-/// A number field in the panel's grid, with its accessible name and a
-/// hover card. It takes a calculation (see [`calc`]); the unit follows
-/// `suffix`.
-fn number(
-    ui: &mut Ui,
-    name: &str,
-    value: &mut f64,
-    range: std::ops::RangeInclusive<f64>,
-    suffix: &str,
-    enabled: bool,
-) {
-    painted_label(ui, name);
-    let kind = match suffix.trim() {
-        "mm" => Kind::Length,
-        "deg" => Kind::Angle,
-        _ => Kind::Plain,
-    };
-    let (lo, hi) = (*range.start(), *range.end());
-    let spec = Number::new(Field::new(kind).range(lo, hi))
-        .decimals(2, 3)
-        .unit(suffix.trim_start());
-    let (r, _) = calc::number(ui, ("flatcraft-arrange", name), enabled, value, &spec);
-    set_name(ui, &r, name);
-    let text = format!("From {lo}{suffix} to {hi}{suffix}. {}", calc::hint(kind));
-    // Only the centre fields are ever dimmed.
-    let why = (!enabled).then_some("Choose Centre at X and Y first.");
-    super::groups::card(&r, name, &text, why, false);
-    ui.end_row();
+// ---------------------------------------------------------------- cards
+
+/// A [`Slot`] binding to one place in the values.
+macro_rules! bind {
+    ($kind:ident, $($path:tt)+) => {{
+        fn bind(v: &mut PanelValues) -> Slot<'_> {
+            Slot::$kind(&mut v.$($path)+)
+        }
+        bind
+    }};
 }
 
-/// A whole-number field in the panel's grid, with its hover card.
-fn count(
-    ui: &mut Ui,
-    name: &str,
-    value: &mut u32,
-    range: std::ops::RangeInclusive<u32>,
-    enabled: bool,
-) {
-    painted_label(ui, name);
-    let (lo, hi) = (*range.start(), *range.end());
-    let spec = Number::new(Field::plain().range(f64::from(lo), f64::from(hi)));
-    let (r, _) = calc::number(ui, ("flatcraft-arrange", name), enabled, value, &spec);
-    set_name(ui, &r, name);
-    let text = format!(
-        "A whole number from {lo} to {hi}. {}",
-        calc::hint(Kind::Plain)
-    );
-    let why = (!enabled).then_some("Turn on Copy first.");
-    super::groups::card(&r, name, &text, why, false);
-    ui.end_row();
+/// Why the number of copies does not apply.
+fn needs_copy(v: &PanelValues, _: &Snapshot) -> Option<&'static str> {
+    (!v.move_copy.copy).then_some("Turn on Copy first. Without it the selection only moves.")
 }
 
-/// The panel's fields.
-fn fields(ui: &mut Ui, p: &mut ArrangePanel, snap: &Snapshot, each_now: bool) {
-    let spacing = ui.spacing().item_spacing;
-    let v = &mut p.values;
-    match p.kind {
-        PanelKind::MoveCopy => {
-            let m = &mut v.move_copy;
-            egui::Grid::new("flatcraft-move-grid")
-                .num_columns(2)
-                .spacing(spacing)
-                .show(ui, |ui| {
-                    number(
-                        ui,
-                        "X offset",
-                        &mut m.dx_mm,
-                        -10_000.0..=10_000.0,
-                        " mm",
-                        true,
-                    );
-                    number(
-                        ui,
-                        "Y offset",
-                        &mut m.dy_mm,
-                        -10_000.0..=10_000.0,
-                        " mm",
-                        true,
-                    );
-                });
-            ui.checkbox(&mut m.copy, "Copy").on_hover_text(
-                "Leave the originals where they are and add copies, each one offset further",
-            );
-            egui::Grid::new("flatcraft-move-count")
-                .num_columns(2)
-                .spacing(spacing)
-                .show(ui, |ui| {
-                    count(ui, "Number of copies", &mut m.count, 1..=MAX_COPIES, m.copy);
-                });
+/// Why the choice of group or each does not apply.
+fn needs_two(_: &PanelValues, snap: &Snapshot) -> Option<&'static str> {
+    (snap.units().len() < 2)
+        .then_some("Select 2 or more objects first. One object always turns about its own centre.")
+}
+
+/// Why the centre fields do not apply.
+fn needs_own_centre(v: &PanelValues, _: &Snapshot) -> Option<&'static str> {
+    (!v.circular.own_centre).then_some(
+        "Choose Centre at X and Y first. Until then the circle turns about the centre of the selection.",
+    )
+}
+
+const COPY: WindowField = WindowField {
+    owner: "move_copy",
+    id: "copy",
+    label: "Copy",
+    unit: Unit::None,
+    kind: WindowKind::Switch,
+};
+
+const ROWS: WindowField = WindowField {
+    owner: "pattern.rectangular",
+    id: "rows",
+    label: "Rows",
+    unit: Unit::Count,
+    kind: WindowKind::Count {
+        min: 1,
+        max: MAX_COPIES + 1,
+    },
+};
+
+const CENTRE: WindowField = WindowField {
+    owner: "pattern.circular",
+    id: "centre",
+    label: "Centre",
+    unit: Unit::None,
+    kind: WindowKind::Choice(&["Selection centre", "Centre at X and Y"]),
+};
+
+const MOVE_COPY_FIELDS: &[CardField] = &[
+    CardField::param("object.move", "dx_mm", bind!(Number, move_copy.dx_mm)),
+    CardField::param("object.move", "dy_mm", bind!(Number, move_copy.dy_mm)),
+    CardField::window(COPY, bind!(Switch, move_copy.copy)),
+    CardField::param("object.duplicate", "count", bind!(Count, move_copy.count)).dimmed(needs_copy),
+];
+
+const ROTATE_FIELDS: &[CardField] = &[
+    CardField::param("object.rotate", "degrees", bind!(Number, rotate.degrees)),
+    CardField::param("object.rotate", "about", bind!(Pair, rotate.each))
+        .dimmed(needs_two)
+        .pref(PREF_EACH),
+];
+
+const RECT_FIELDS: &[CardField] = &[
+    CardField::param(
+        "object.copies",
+        "layout.grid.columns",
+        bind!(Count, rect.columns),
+    ),
+    CardField::window(ROWS, bind!(Count, rect.rows)),
+    CardField::param("object.copies", "gap_x_mm", bind!(Number, rect.gap_x_mm)),
+    CardField::param("object.copies", "gap_y_mm", bind!(Number, rect.gap_y_mm)),
+    CardField::param("object.copies", "linked", bind!(Switch, rect.linked)),
+];
+
+const CIRCULAR_FIELDS: &[CardField] = &[
+    CardField::param(
+        "object.circular_copies",
+        "count",
+        bind!(Count, circular.count),
+    ),
+    CardField::param(
+        "object.circular_copies",
+        "total_deg",
+        bind!(Number, circular.total_deg),
+    ),
+    CardField::window(CENTRE, bind!(Pair, circular.own_centre)).special("pattern_centre"),
+    CardField::param(
+        "object.circular_copies",
+        "center_mm[0]",
+        bind!(Number, circular.center_mm[0]),
+    )
+    .dimmed(needs_own_centre),
+    CardField::param(
+        "object.circular_copies",
+        "center_mm[1]",
+        bind!(Number, circular.center_mm[1]),
+    )
+    .dimmed(needs_own_centre),
+    CardField::param(
+        "object.circular_copies",
+        "rotate_copies",
+        bind!(Switch, circular.rotate_copies),
+    ),
+    CardField::param(
+        "object.circular_copies",
+        "linked",
+        bind!(Switch, circular.linked),
+    ),
+];
+
+const AUTO_FIELDS: &[CardField] =
+    &[
+        CardField::param("arrange.auto", "spacing_mm", bind!(Number, spacing_mm))
+            .pref(PREF_SPACING),
+    ];
+
+/// The Preferences key of the "Each object" switch (`rotate_each`).
+pub const PREF_EACH: &str = "rotate_each";
+/// The Preferences key of the Auto arrange spacing.
+pub const PREF_SPACING: &str = "auto_arrange_spacing_mm";
+
+/// Every card, for the tests.
+pub const KINDS: [PanelKind; 5] = [
+    PanelKind::MoveCopy,
+    PanelKind::Rotate,
+    PanelKind::RectangularPattern,
+    PanelKind::CircularPattern,
+    PanelKind::AutoArrange,
+];
+
+impl PanelKind {
+    /// The fields of its card.
+    pub fn fields(self) -> &'static [CardField] {
+        match self {
+            PanelKind::MoveCopy => MOVE_COPY_FIELDS,
+            PanelKind::Rotate => ROTATE_FIELDS,
+            PanelKind::RectangularPattern => RECT_FIELDS,
+            PanelKind::CircularPattern => CIRCULAR_FIELDS,
+            PanelKind::AutoArrange => AUTO_FIELDS,
         }
-        PanelKind::Rotate => {
-            egui::Grid::new("flatcraft-rotate-grid")
-                .num_columns(2)
-                .spacing(spacing)
-                .show(ui, |ui| {
-                    number(
-                        ui,
-                        "Angle",
-                        &mut v.rotate.degrees,
-                        -360.0..=360.0,
-                        " deg",
-                        true,
-                    );
-                });
-            ui.label(RichText::new("Positive turns clockwise.").weak());
-            let several = snap.selection.len() > 1;
-            let each = &mut v.rotate.each;
-            ui.add_enabled_ui(several, |ui| {
-                ui.radio_value(each, false, "As one group")
-                    .on_hover_text("The selection turns about its common centre, like Voltron");
-                ui.radio_value(each, true, "Each about its own centre");
-            });
-            if *each != each_now {
-                ui.label(
-                    RichText::new("OK also sets the Each object switch on the ribbon.").weak(),
-                );
+    }
+
+    /// The dimmed lines under the card's title.
+    pub fn description(self) -> &'static str {
+        match self {
+            PanelKind::MoveCopy => "Moves the selection by exact amounts, or adds copies in a row.",
+            PanelKind::Rotate => "Turns the selection by an exact angle. Positive turns clockwise.",
+            PanelKind::RectangularPattern => {
+                "Spacing is the gap between neighbours. The original is the top-left cell."
+            }
+            PanelKind::CircularPattern => {
+                "Instances count the original. Only a full turn (360 deg) shares the copies out evenly."
+            }
+            PanelKind::AutoArrange => {
+                "Hidden objects stay where they are. Objects that do not fit stay too."
             }
         }
-        PanelKind::RectangularPattern => {
-            let r = &mut v.rect;
-            egui::Grid::new("flatcraft-rect-grid")
-                .num_columns(2)
-                .spacing(spacing)
-                .show(ui, |ui| {
-                    count(ui, "Columns", &mut r.columns, 1..=MAX_COPIES + 1, true);
-                    count(ui, "Rows", &mut r.rows, 1..=MAX_COPIES + 1, true);
-                    number(ui, "Spacing X", &mut r.gap_x_mm, 0.0..=1000.0, " mm", true);
-                    number(ui, "Spacing Y", &mut r.gap_y_mm, 0.0..=1000.0, " mm", true);
-                });
-            ui.label(
-                RichText::new(
-                    "Spacing is the gap between neighbours. The original is the top-left cell.",
-                )
-                .weak(),
-            );
-            ui.checkbox(&mut r.linked, "Linked copies").on_hover_text(
-                "One design, many bodies, like the Clone Army: the copies share the source, the cut options, the keep mode and the scale. Each keeps its own place, rotation and mirror.",
-            );
-        }
-        PanelKind::CircularPattern => {
-            let centre = circular_centre(
-                snap,
-                &CircularValues {
-                    own_centre: false,
-                    ..v.circular.clone()
-                },
-            );
-            let c = &mut v.circular;
-            egui::Grid::new("flatcraft-circular-grid")
-                .num_columns(2)
-                .spacing(spacing)
-                .show(ui, |ui| {
-                    count(ui, "Instances", &mut c.count, 2..=MAX_COPIES + 1, true);
-                    number(
-                        ui,
-                        "Total angle",
-                        &mut c.total_deg,
-                        -360.0..=360.0,
-                        " deg",
-                        true,
-                    );
-                });
-            ui.label(
-                RichText::new(
-                    "Instances count the original. Only a full turn (360 deg) shares the copies out evenly; a smaller angle puts the last copy at the end of the arc.",
-                )
-                .weak(),
-            );
-            ui.radio_value(&mut c.own_centre, false, "Selection centre");
-            ui.radio_value(&mut c.own_centre, true, "Centre at X and Y");
-            // The fields follow the selection until they are the centre,
-            // so switching starts from where the preview was.
-            if !c.own_centre
-                && let Some(p) = centre
-            {
-                c.center_mm = [p.x, p.y];
-            }
-            let own = c.own_centre;
-            egui::Grid::new("flatcraft-circular-centre")
-                .num_columns(2)
-                .spacing(spacing)
-                .show(ui, |ui| {
-                    let [x, y] = &mut c.center_mm;
-                    number(ui, "Centre X", x, -10_000.0..=10_000.0, " mm", own);
-                    number(ui, "Centre Y", y, -10_000.0..=10_000.0, " mm", own);
-                });
-            ui.checkbox(&mut c.rotate_copies, "Rotate copies")
-                .on_hover_text("Each copy turns with the circle, like spokes. Off: they all keep the original's angle.");
-            ui.checkbox(&mut c.linked, "Linked copies").on_hover_text(
-                "The copies share the source, the cut options, the keep mode and the scale with their original. Each keeps its own place, rotation and mirror.",
-            );
-        }
-        PanelKind::AutoArrange => {
-            egui::Grid::new("flatcraft-auto-grid")
-                .num_columns(2)
-                .spacing(spacing)
-                .show(ui, |ui| {
-                    number(
-                        ui,
-                        "Spacing",
-                        &mut v.spacing_mm,
-                        flatcraft_engine::prefs::AUTO_SPACING_RANGE_MM,
-                        " mm",
-                        true,
-                    );
-                });
-            ui.label(RichText::new(Setting::AutoArrangeSpacing.card()).weak());
-            ui.label(RichText::new(AUTO_ARRANGE_CARD).weak());
-            ui.label(
-                RichText::new(
-                    "Hidden objects stay where they are. Objects that do not fit stay too.",
-                )
-                .weak(),
-            );
+    }
+
+    /// The title's hover card.
+    pub fn title_card(self) -> &'static str {
+        match self {
+            PanelKind::AutoArrange => AUTO_ARRANGE_CARD,
+            _ => self.tool().description,
         }
     }
 }
 
-/// The docked panel: title, close button, fields, Cancel and OK. Closes
-/// itself when its document is no longer shown.
-pub fn panel_ui(
-    ui: &mut Ui,
+/// The values the fields with a Preferences key open with.
+fn load_prefs(values: &mut PanelValues, st: &PrepareState, snap: &Snapshot) {
+    for f in KINDS.iter().flat_map(|k| k.fields()) {
+        match f.pref {
+            Some(PREF_EACH) => values.rotate.each = st.fields.each,
+            Some(PREF_SPACING) => values.spacing_mm = snap.auto_spacing_mm,
+            _ => {}
+        }
+    }
+}
+
+/// OK stores the fields with a Preferences key that changed.
+fn store_prefs(
+    p: &ArrangePanel,
     st: &mut PrepareState,
     snap: &Snapshot,
-    t: &Tokens,
     actions: &mut Vec<Action>,
 ) {
-    let Some(p) = st.panel.as_mut() else {
-        return;
-    };
-    let mut close = false;
-    let mut ok = None;
-    // The side panels' rules: CONTROL-tall fields, ROW apart.
-    super::inspector::blocks::panel_spacing(ui);
-    ui.spacing_mut().item_spacing.y = metrics::ROW_GAP;
-    ui.horizontal_top(|ui| {
-        // The close button first, from the right, so a long title
-        // ("Auto arrange 12 selected objects") wraps before it.
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-            if super::icon_button(ui, Icon::Close, "Close panel", true).clicked() {
-                close = true;
+    for f in p.kind.fields() {
+        match f.pref {
+            Some(PREF_EACH) if p.values.rotate.each != st.fields.each => {
+                st.fields.each = p.values.rotate.each;
+                actions.push(Action::RememberEach(st.fields.each));
             }
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
-                let tex = icons::texture(ui.ctx(), p.kind.tool().icon, metrics::ICON_COMPACT);
-                ui.image(egui::load::SizedTexture::new(
-                    tex.id(),
-                    egui::Vec2::splat(metrics::ICON_COMPACT),
-                ));
-                let title = panel_title(snap, p);
-                let r =
-                    ui.add(egui::Label::new(RichText::new(&title).font(metrics::heading())).wrap());
-                if p.kind == PanelKind::AutoArrange {
-                    super::groups::card(&r, &title, AUTO_ARRANGE_CARD, None, false);
-                }
-            });
-        });
-    });
-    ui.separator();
-    fields(ui, p, snap, st.fields.each);
-    ui.add_space(metrics::SPACE_8);
-    let why = not_ready(snap, p);
-    if let Some(why) = &why {
-        ui.label(RichText::new(why.as_str()).color(t.text_dim));
-    } else if let Some(n) = st
+            Some(PREF_SPACING) if p.values.spacing_mm != snap.auto_spacing_mm => {
+                actions.push(Action::RememberSpacing(p.values.spacing_mm));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The special widget "pattern_centre": the choice of the circle's centre.
+/// While it is the selection's centre, the Centre X and Y fields follow
+/// the selection, so switching starts from where the preview was.
+pub fn centre_choice(
+    ui: &mut Ui,
+    spec: &tool_card::FieldSpec,
+    v: &mut PanelValues,
+    snap: &Snapshot,
+    enabled: bool,
+) -> egui::Response {
+    let c = &mut v.circular;
+    if !c.own_centre
+        && let Some(p) = circular_centre(
+            snap,
+            &CircularValues {
+                own_centre: false,
+                ..c.clone()
+            },
+        )
+    {
+        c.center_mm = [p.x, p.y];
+    }
+    tool_card::pair_widget(ui, spec, &mut c.own_centre, enabled)
+}
+
+/// The note over the buttons: why OK cannot run, what does not fit, or
+/// where the copies of a pattern land.
+fn note(st: &mut PrepareState, snap: &Snapshot, p: &ArrangePanel) -> Option<String> {
+    if let Some(why) = not_ready(snap, p) {
+        return Some(why);
+    }
+    if let Some(n) = st
         .auto_plan
         .get(snap, p)
         .map(|plan| plan.did_not_fit.len())
         .filter(|n| *n > 0)
     {
-        ui.label(RichText::new(did_not_fit_note(n)).color(t.text_dim));
-    } else if matches!(
+        return Some(did_not_fit_note(n));
+    }
+    matches!(
         p.kind,
         PanelKind::RectangularPattern | PanelKind::CircularPattern
-    ) {
-        ui.label(
-            RichText::new(
-                "Copies that land off the mat still arrive. The red pill tells you how many.",
-            )
-            .color(t.text_dim),
-        );
-    }
-    ui.add_space(metrics::SPACE_4);
-    ui.horizontal(|ui| {
-        let r = ui.add_enabled(why.is_none(), egui::Button::new("OK"));
-        if calc::click(ui, &r) {
-            ok = ok_action(snap, p);
-        }
-        let cancel =
-            egui::Button::new("Cancel").shortcut_text(help::hint(PrepareKey::ClearSelection));
-        if ui.add(cancel).clicked() {
-            close = true;
-        }
-    });
-    if let Some(a) = ok {
-        actions.push(a);
-        if p.kind == PanelKind::Rotate && p.values.rotate.each != st.fields.each {
-            st.fields.each = p.values.rotate.each;
-            actions.push(Action::RememberEach(st.fields.each));
-        }
-        if p.kind == PanelKind::AutoArrange && p.values.spacing_mm != snap.auto_spacing_mm {
-            actions.push(Action::RememberSpacing(p.values.spacing_mm));
-        }
-        st.panel_last = p.values.clone();
-        close = true;
-    }
-    if close {
-        st.panel = None;
-    }
+    )
+    .then(|| "Copies that land off the mat still arrive. The red pill tells you how many.".into())
 }
 
-/// Closes the panel when its document is no longer the shown one.
+/// The open tool's card on top of the inspector: title, close button,
+/// fields, Cancel and OK. OK runs one command (one undo step) and closes
+/// it; Cancel and the close button change nothing. Returns the card's
+/// rect, `None` when no card is open.
+pub fn card_ui(
+    ui: &mut Ui,
+    st: &mut PrepareState,
+    snap: &Snapshot,
+    t: &Tokens,
+    actions: &mut Vec<Action>,
+) -> Option<egui::Rect> {
+    let p = st.panel.clone()?;
+    let title = panel_title(snap, &p);
+    let note = note(st, snap, &p);
+    let why = not_ready(snap, &p);
+    let mut values = p.values.clone();
+    let card = ToolCard {
+        icon: p.kind.tool().icon,
+        title: &title,
+        title_card: p.kind.title_card(),
+        description: p.kind.description(),
+        fields: p.kind.fields(),
+        note: note.as_deref(),
+        ok_why: why.as_deref(),
+    };
+    let (outcome, rect) = tool_card::show(ui, &card, &mut values, snap, t);
+    let Some(open) = st.panel.as_mut() else {
+        return Some(rect);
+    };
+    open.values = values;
+    match outcome {
+        Some(Outcome::Ok) => {
+            let p = open.clone();
+            if let Some(a) = ok_action(snap, &p) {
+                actions.push(a);
+                store_prefs(&p, st, snap, actions);
+                st.panel_last = p.values.clone();
+                st.panel = None;
+            }
+        }
+        Some(Outcome::Cancel) => st.panel = None,
+        None => {}
+    }
+    Some(rect)
+}
+
+/// Cancels the card when its document is no longer the shown one, or the
+/// selection changed since it opened: a card never runs on objects it was
+/// not opened for.
 pub fn keep_or_close(st: &mut PrepareState, snap: &Snapshot) {
-    if st.panel.as_ref().is_some_and(|p| p.doc_id != snap.doc_id) {
+    if st
+        .panel
+        .as_ref()
+        .is_some_and(|p| p.doc_id != snap.doc_id || p.selection != snap.selection)
+    {
         st.panel = None;
     }
 }

@@ -13,6 +13,7 @@
 pub mod blocks;
 pub mod job;
 pub mod object;
+pub mod tool_card;
 
 use egui::Ui;
 
@@ -106,6 +107,10 @@ pub fn show(
         .inner;
     let clicked = line.job.clicked();
     if line.collapse.clicked() {
+        // An open tool card holds the panel open: folding it cancels the
+        // card.
+        st.panel = None;
+        st.panels.card_open = false;
         st.panels.set_collapsed(SidePanel::Settings, true);
     }
     // With nothing selected the Job panel is below anyway: the line does
@@ -117,6 +122,16 @@ pub fn show(
         };
     }
     ui.add_space(metrics::SPACE_8);
+    // A tool card on top of the inspector, the inspector scrolls below it.
+    st.panel_rect = ui
+        .scope(|ui| {
+            ui.set_max_width(w);
+            super::arrange::card_ui(ui, st, snap, t, actions)
+        })
+        .inner;
+    if st.panel_rect.is_some() {
+        ui.add_space(metrics::SPACE_8);
+    }
     let objects = shows_objects(st, snap);
     // A bar that fits the panel's right padding: 2 pt from the content,
     // 6 pt wide, 4 pt from the panel's edge.
