@@ -1018,3 +1018,46 @@ fn a_tall_visible_outline_keeps_the_feed_monotonic() {
         "counter {counter:?}, outline {outline:?}, fronts {fronts:?}"
     );
 }
+
+/// A front ring that only touches the plate at a corner does not close
+/// it: on a mat the counter comes before every cut that does (the plate's
+/// own outline and the ring that clips its left edge).
+#[test]
+fn a_counter_comes_before_every_cut_that_closes_its_outline() {
+    let d = dirs();
+    let mut s = session(&d);
+    let back = import(
+        &mut s,
+        r#"<path fill-rule="evenodd" d="M30 10h40v140h-40z M45 130h10v10h-10z"/>"#,
+    );
+    let f1 = import(&mut s, r#"<rect x="25" y="60" width="10" height="10"/>"#);
+    let f2 = import(&mut s, r#"<rect x="70" y="150" width="40" height="50"/>"#);
+    run(
+        &mut s,
+        "object.set_cut_options",
+        json!({ "ids": [back], "mode": "visible_outline" }),
+    );
+    let input = flatcraft_engine::job::JobInput::of(&s).unwrap();
+    let plan = flatcraft_engine::job::build_input(&input).unwrap().plan;
+    let cuts: Vec<&flatcraft_path::Toolpath> = plan
+        .toolpaths
+        .iter()
+        .filter(|t| t.kind == flatcraft_path::ToolpathKind::Cut && t.pass == 1)
+        .collect();
+    let at = |f: &dyn Fn(&flatcraft_path::Toolpath) -> bool| -> Vec<usize> {
+        cuts.iter()
+            .enumerate()
+            .filter(|(_, t)| f(t))
+            .map(|(k, _)| k)
+            .collect()
+    };
+    let counter = at(&|t| t.source.object.0 == back && t.closed);
+    let closing = at(&|t| (t.source.object.0 == back && !t.closed) || t.source.object.0 == f1);
+    assert_eq!(counter.len(), 1, "{cuts:?}");
+    assert_eq!(at(&|t| t.source.object.0 == f2).len(), 1);
+    assert!(
+        closing.iter().all(|c| counter[0] < *c),
+        "counter {counter:?}, closing cuts {closing:?}"
+    );
+    assert_eq!(plan.freed_early, 0);
+}

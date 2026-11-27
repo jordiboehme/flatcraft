@@ -213,8 +213,25 @@ pub(crate) fn plan_warnings(plan: &CutPlan, per_object: bool) -> Vec<String> {
     if plan.blocked_weed_boxes > 0 {
         out.push(weed_box_blocked_warning(plan.blocked_weed_boxes));
     }
+    if plan.freed_early > 0 {
+        out.push(freed_early_warning(plan.freed_early));
+    }
     out.extend(rounding_warnings(&plan.rounding));
     out
+}
+
+/// The warning that `n` holes or inner pieces of a visible outline are cut
+/// after their piece comes free: without a mat the sheet only feeds
+/// forward, and every cut around the piece lies further up.
+pub(crate) fn freed_early_warning(n: usize) -> String {
+    let what = if n == 1 {
+        "1 hole or inner piece of a visible outline is".to_string()
+    } else {
+        format!("{n} holes or inner pieces of a visible outline are")
+    };
+    format!(
+        "{what} cut after the piece around it is already free: without a mat the sheet only feeds forward, so the cuts are made top to bottom. The free piece can shift before its holes are cut. Use a mat for this design, or let a front object cover less of the piece's lower edge."
+    )
 }
 
 /// The warnings of rounding host runs to plotter steps: blade moves at a

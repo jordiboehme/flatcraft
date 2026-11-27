@@ -299,6 +299,7 @@ fn merge(tiles: &[Tile], area: Rect) -> CutPlan {
         dropped_short: tiles.iter().map(|t| t.plan.dropped_short).sum(),
         dropped_weed_boxes: 0,
         blocked_weed_boxes: 0,
+        freed_early: 0,
         kept: Arc::new(kept),
         rounding: tiles
             .iter()

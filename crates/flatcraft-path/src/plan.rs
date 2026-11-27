@@ -289,6 +289,11 @@ pub struct CutPlan {
     pub dropped_weed_boxes: usize,
     /// Weed boxes left out because their outline would cut kept material.
     pub blocked_weed_boxes: usize,
+    /// Holes or inner pieces of a visible outline that are cut after the
+    /// piece around them comes free, because a monotonic feed cut every
+    /// cut that closes the piece in an earlier band
+    /// ([`containment::adopt_regions`]).
+    pub freed_early: usize,
     /// The job's kept material, as the knife stage judged every waste move
     /// against it: one source of truth for the simulator and the canvas.
     pub kept: std::sync::Arc<KeptMaterial>,
@@ -594,7 +599,7 @@ pub fn plan_with_regions(
     let mode_of = |o: ObjectId| s.keep_mode(o);
     let mut tree = containment::build(&toolpaths);
     // A clipped visible outline: its seen outline stands in for its ring.
-    containment::adopt_regions(&mut tree, &toolpaths, regions);
+    let freed_early = containment::adopt_regions(&mut tree, &toolpaths, regions, s.monotonic_feed);
     for (i, t) in toolpaths.iter_mut().enumerate() {
         t.keep = containment::keep_side(&tree, i, t.closed, mode_of(t.source.object));
     }
@@ -652,6 +657,7 @@ pub fn plan_with_regions(
         dropped_short,
         dropped_weed_boxes: weeds.dropped_boxes,
         blocked_weed_boxes: weeds.blocked_boxes,
+        freed_early,
         kept: std::sync::Arc::new(kept),
         rounding,
     })

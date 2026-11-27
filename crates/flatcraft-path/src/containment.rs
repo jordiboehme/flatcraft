@@ -278,8 +278,14 @@ pub fn build(paths: &[Toolpath]) -> ContainmentTree {
 /// band. The
 /// ring depths count the outline too, so keep sides (and the depth of the
 /// object's own rings) are those of a closed outline.
-pub fn adopt_regions(tree: &mut ContainmentTree, paths: &[Toolpath], regions: &Regions) {
+pub fn adopt_regions(
+    tree: &mut ContainmentTree,
+    paths: &[Toolpath],
+    regions: &Regions,
+    monotonic_feed: bool,
+) -> usize {
     let n_paths = paths.len();
+    let mut freed_early = 0;
     for (object, rings) in regions {
         let rings: Vec<&[Point]> = rings
             .iter()
@@ -322,35 +328,43 @@ pub fn adopt_regions(tree: &mut ContainmentTree, paths: &[Toolpath], regions: &R
             }
             // The cuts that close the outline: the object's open paths on
             // it, and the rings of other objects that run along it (the
-            // shapes in front).
+            // shapes in front), sharing a run longer than the tolerance.
+            // A ring that only touches it at a corner does not close it.
             let region_box = |t: &Toolpath| bbox(&t.points).is_some_and(|b| b.overlaps(grown));
             let closes = |j: usize| {
                 let t = &paths[j];
-                t.closed
-                    && t.source.object != *object
-                    && region_box(t)
-                    && ring.iter().any(|p| near_ring(*p, t.lap(), ON_OUTLINE_MM))
+                t.closed && t.source.object != *object && region_box(t) && runs_along(ring, t.lap())
             };
-            // The cut that stands for the outline: of those that reach the
-            // latest feed band, the object's own open path first, then the
-            // longest. With a monotonic feed the paths inside are cut in
-            // their own band, before the cut that frees the piece, and the
-            // feed never goes back.
-            let Some(stand) = (0..paths.len())
+            // In the order of their feed bands (then the object's own path
+            // last, then the longest last): each comes before the next, and
+            // the paths inside come before the first one they may (see
+            // below), so before every cut that closes the outline.
+            let band = |j: usize| crate::feed::band_of(&paths[j]);
+            let mut closing: Vec<usize> = (0..paths.len())
                 .filter(|&j| on_outline(j) || closes(j))
-                .max_by(|&a, &b| {
-                    let key = |j: usize| (crate::feed::band_of(&paths[j]), on_outline(j));
-                    key(a)
-                        .cmp(&key(b))
-                        .then(
-                            crate::clean::length(&paths[a].points)
-                                .total_cmp(&crate::clean::length(&paths[b].points)),
-                        )
-                        .then(b.cmp(&a))
-                })
-            else {
+                .collect();
+            closing.sort_by(|&a, &b| {
+                (band(a), on_outline(a))
+                    .cmp(&(band(b), on_outline(b)))
+                    .then(
+                        crate::clean::length(&paths[a].points)
+                            .total_cmp(&crate::clean::length(&paths[b].points)),
+                    )
+                    .then(b.cmp(&a))
+            });
+            // Only cuts with the same container as the last one are
+            // chained, so no cut loses the container it must come before.
+            let Some(&last) = closing.last() else {
                 continue;
             };
+            let container = tree.parent[last];
+            closing.retain(|&j| tree.parent[j] == container);
+            for w in closing.windows(2) {
+                if !is_ancestor(tree, w[0], w[1], n_paths) {
+                    tree.parent[w[0]] = Some(w[1]);
+                }
+            }
+            let stand = closing[0];
             let inside = |j: usize| -> bool {
                 let t = &paths[j];
                 if t.closed {
@@ -375,25 +389,32 @@ pub fn adopt_regions(tree: &mut ContainmentTree, paths: &[Toolpath], regions: &R
                 }
             };
             let within: Vec<bool> = (0..paths.len())
-                .map(|j| j != stand && !on_outline(j) && inside(j))
+                .map(|j| !closing.contains(&j) && !on_outline(j) && !closes(j) && inside(j))
                 .collect();
             for j in (0..paths.len()).filter(|&j| within[j]) {
                 tree.depth[j] += 1;
                 if paths[j].source.object == *object {
                     tree.own_depth[j] += 1;
                 }
-                // A container inside the outline stays the parent. Never
-                // a loop: the stand must not lie inside `j`.
-                let mut at = Some(stand);
-                let mut guard = n_paths;
-                let mut loops = false;
-                while let Some(a) = at.filter(|_| guard > 0) {
-                    loops |= a == j;
-                    at = tree.parent[a];
-                    guard -= 1;
+                // A container inside the outline stays the parent.
+                if tree.parent[j].is_some_and(|p| within[p]) {
+                    continue;
                 }
-                if tree.parent[j].is_none_or(|p| !within[p]) && !loops {
-                    tree.parent[j] = Some(stand);
+                // Before the first closing cut. With a monotonic feed, the
+                // first one in its own band or later: a cut in an earlier
+                // band is made before it anyway, and pulling it into that
+                // band would make the feed go back. When every closing cut
+                // lies in an earlier band, the feed wins: the piece comes
+                // free before this path is cut, and the plan counts it.
+                let at = if monotonic_feed {
+                    closing.iter().copied().find(|&c| band(c) >= band(j))
+                } else {
+                    Some(stand)
+                };
+                match at {
+                    Some(c) if !is_ancestor(tree, j, c, n_paths) => tree.parent[j] = Some(c),
+                    Some(_) => {}
+                    None => freed_early += 1,
                 }
             }
         }
@@ -407,6 +428,38 @@ pub fn adopt_regions(tree: &mut ContainmentTree, paths: &[Toolpath], regions: &R
             None => tree.roots.push(j),
         }
     }
+    freed_early
+}
+
+/// True when `a` is `b` or one of its ancestors in `tree` (so making `a`
+/// the child of `b` would close a loop). The walk stops after `limit`
+/// steps.
+fn is_ancestor(tree: &ContainmentTree, a: usize, b: usize, limit: usize) -> bool {
+    let mut at = Some(b);
+    let mut guard = limit + 1;
+    while let Some(x) = at.filter(|_| guard > 0) {
+        if x == a {
+            return true;
+        }
+        at = tree.parent[x];
+        guard -= 1;
+    }
+    false
+}
+
+/// True when the closed `lap` runs along the closed `ring` for more than
+/// the tolerance: two neighbouring vertices of `ring` more than
+/// [`ON_OUTLINE_MM`] apart, and the middle between them, lie on it. A
+/// ring that only touches `ring` at a corner does not.
+fn runs_along(ring: &[Point], lap: &[Point]) -> bool {
+    let n = ring.len();
+    (0..n).any(|k| {
+        let (a, b) = (ring[k], ring[(k + 1) % n]);
+        a.distance(b) > ON_OUTLINE_MM
+            && near_ring(a, lap, ON_OUTLINE_MM)
+            && near_ring(b, lap, ON_OUTLINE_MM)
+            && near_ring(a.midpoint(b), lap, ON_OUTLINE_MM)
+    })
 }
 
 /// How far a cut may lie from a region's outline and still be on it, in
@@ -1250,16 +1303,48 @@ mod tests {
         let mut tree = build(&design);
         assert_eq!(tree.parent[1], None, "no ring holds the counter");
         let regions = Regions::from([(ObjectId(1), vec![region, counter])]);
-        adopt_regions(&mut tree, &design, &regions);
-        assert_eq!(tree.parent[1], Some(0), "the counter comes first");
-        assert_eq!(tree.parent[2], None, "the front ring is not inside");
-        assert_eq!(tree.children[0], vec![1]);
-        assert_eq!(tree.roots, vec![0, 2]);
+        assert_eq!(adopt_regions(&mut tree, &design, &regions, false), 0);
+        // The front ring closes the outline too: the counter comes before
+        // it, and it before the open path.
+        assert_eq!(tree.parent[1], Some(2), "the counter comes first");
+        assert_eq!(tree.parent[2], Some(0), "then the front ring");
+        assert_eq!(tree.children[0], vec![2]);
+        assert_eq!(tree.roots, vec![0]);
         assert_eq!(tree.own_depth[1], 1);
         assert_eq!(
             keep_side(&tree, 1, true, KeepMode::Pieces),
             KeepSide::Outside
         );
+    }
+
+    /// A ring that only touches the outline at a corner does not close it;
+    /// with a monotonic feed a hole is never pulled into an earlier band,
+    /// and when every closing cut lies in an earlier band it is counted.
+    #[test]
+    fn a_touching_corner_does_not_close_and_the_feed_wins() {
+        let region: Vec<Point> = [(0.0, 0.0), (20.0, 0.0), (20.0, 200.0), (0.0, 200.0)]
+            .map(Point::from)
+            .to_vec();
+        let regions = Regions::from([(ObjectId(1), vec![region])]);
+        // The object's open path runs along the top only (band 0), a
+        // corner of object 2 touches the outline at (20, 200), and the
+        // counter lies in band 3.
+        let design = vec![
+            tpo(
+                1,
+                &[(0.0, 40.0), (0.0, 0.0), (20.0, 0.0), (20.0, 40.0)],
+                false,
+            ),
+            sqo(1, 5.0, 150.0, 15.0, 160.0),
+            sqo(2, 20.0, 200.0, 40.0, 220.0),
+        ];
+        let mut tree = build(&design);
+        assert_eq!(adopt_regions(&mut tree, &design, &regions, false), 0);
+        assert_eq!(tree.parent[1], Some(0), "on a mat: before the open path");
+        assert_eq!(tree.parent[2], None, "a touching corner closes nothing");
+        let mut tree = build(&design);
+        assert_eq!(adopt_regions(&mut tree, &design, &regions, true), 1);
+        assert_eq!(tree.parent[1], None, "never pulled into band 0");
     }
 
     /// A square ring of object `id`.
