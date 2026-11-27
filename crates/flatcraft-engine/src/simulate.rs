@@ -140,6 +140,19 @@ pub struct SimRun {
     input: JobInput,
 }
 
+/// What stays of a [`SimRun`] once it is stale: the numbers, without the
+/// trace, the samples and the job.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SimSummary {
+    pub key: SimKey,
+    pub mode: SimMode,
+    pub strategy: CutStrategy,
+    /// The job metrics without the per-path list; `None` in firmware mode.
+    pub metrics: Option<flatcraft_sim::JobMetrics>,
+    pub estimate_s: f64,
+    pub commanded: Commanded,
+}
+
 /// The commanded path of the toolpaths that are really cut, without any
 /// knife model: what firmware mode can report.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -475,6 +488,21 @@ impl SimRun {
     fn note_of(&self, i: usize) -> String {
         let (p, _) = self.number(i);
         self.notes.get(p).cloned().unwrap_or_default()
+    }
+
+    /// The numbers of this run without its trace, samples and job.
+    pub fn summary(&self) -> SimSummary {
+        SimSummary {
+            key: self.key.clone(),
+            mode: self.mode,
+            strategy: self.strategy,
+            metrics: self.result.as_ref().map(|r| flatcraft_sim::JobMetrics {
+                per_path: Vec::new(),
+                ..r.metrics.clone()
+            }),
+            estimate_s: self.estimate_s,
+            commanded: self.commanded,
+        }
     }
 
     /// The score, `None` in firmware mode.

@@ -24,7 +24,7 @@ use thiserror::Error;
 use crate::cutgeom::CutGeometry;
 use crate::prefs::Preferences;
 use crate::registry;
-use crate::simulate::SimRun;
+use crate::simulate::{SimRun, SimSummary};
 
 /// Who started a command. Agents get a few extra limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,8 +123,11 @@ pub struct DocState {
     /// The job last sent from this document, kept apart from previews.
     last_sent: Option<Arc<JobResult>>,
     /// The last simulation (`job.simulate`), valid only while its key
-    /// matches (see [`Session::last_sim`]).
+    /// matches (see [`Session::last_sim`]). Dropped as soon as the key no
+    /// longer matches, so a stale trace never holds memory.
     last_sim: Option<Arc<SimRun>>,
+    /// The summary of the last simulation, kept after its run was dropped.
+    sim_summary: Option<Arc<SimSummary>>,
     /// How many jobs were sent from this document.
     last_sent_rev: u64,
     /// Counts changes of `document`, so work done outside the session lock
@@ -230,6 +233,7 @@ impl Clone for DocState {
             last_job: self.last_job.clone(),
             last_sent: self.last_sent.clone(),
             last_sim: self.last_sim.clone(),
+            sim_summary: self.sim_summary.clone(),
             last_sent_rev: self.last_sent_rev,
             revision: self.revision,
             bounds_cache: self.bounds_cache.clone(),
@@ -256,6 +260,7 @@ impl DocState {
             last_job: None,
             last_sent: None,
             last_sim: None,
+            sim_summary: None,
             last_sent_rev: 0,
             revision: 0,
             bounds_cache: HashMap::new(),
@@ -379,6 +384,7 @@ impl DocState {
     /// Notes a change of the document.
     pub(crate) fn touch(&mut self) {
         self.revision += 1;
+        self.drop_stale_sim(None);
     }
 
     /// Ends the burst of coalescing moves, so the next move records a step
@@ -412,7 +418,29 @@ impl DocState {
 
     /// Stores a simulation of this document (see `simulate::store`).
     pub(crate) fn set_last_sim(&mut self, run: Arc<SimRun>) {
+        self.sim_summary = Some(Arc::new(run.summary()));
         self.last_sim = Some(run);
+    }
+
+    /// The summary of the last simulation of this document, also after
+    /// its run (trace, samples and job) was dropped as stale. Its key says
+    /// what it was run for.
+    pub fn sim_summary(&self) -> Option<&Arc<SimSummary>> {
+        self.sim_summary.as_ref()
+    }
+
+    /// Drops the last simulation's run when its key no longer matches the
+    /// document's revision (or `profiles_revision`, when given), keeping
+    /// only its summary.
+    pub(crate) fn drop_stale_sim(&mut self, profiles_revision: Option<u64>) {
+        let stale = self.last_sim.as_ref().is_some_and(|r| {
+            r.key.doc_id != self.id
+                || r.key.doc_revision != self.revision
+                || profiles_revision.is_some_and(|p| p != r.key.profiles_revision)
+        });
+        if stale {
+            self.last_sim = None;
+        }
     }
 
     /// A built (previewed) job.
@@ -454,6 +482,7 @@ impl DocState {
             last_job: self.last_job.clone(),
             last_sent: self.last_sent.clone(),
             last_sim: self.last_sim.clone(),
+            sim_summary: self.sim_summary.clone(),
             last_sent_rev: self.last_sent_rev,
             revision: self.revision,
             bounds_cache: self.bounds_cache.clone(),
@@ -543,7 +572,9 @@ impl DocState {
         };
         if !same_sim {
             self.last_sim = twin.last_sim;
+            self.sim_summary = twin.sim_summary;
         }
+        self.drop_stale_sim(None);
         self.bounds_cache.extend(twin.bounds_cache);
         let entry = twin
             .cut_cache
@@ -1213,7 +1244,17 @@ impl Session {
             registry::get(id).ok_or_else(|| CommandError::UnknownCommand(id.to_string()))?;
         let result = self.run_command(command, params, origin);
         self.prune_pending();
+        self.drop_stale_sims();
         result
+    }
+
+    /// Drops every stale simulation run (see [`DocState::drop_stale_sim`]),
+    /// also those a profile change made stale.
+    pub fn drop_stale_sims(&mut self) {
+        let profiles = self.profiles.revision();
+        for st in &mut self.docs {
+            st.drop_stale_sim(Some(profiles));
+        }
     }
 
     /// Runs a registry command in the open document `doc_id`, active or
@@ -1484,6 +1525,7 @@ impl Session {
                     last_job: d.last_job,
                     last_sent: d.last_sent,
                     last_sim: None,
+                    sim_summary: None,
                     last_sent_rev: d.last_sent_rev,
                     revision: d.revision + 1,
                     bounds_cache: HashMap::new(),

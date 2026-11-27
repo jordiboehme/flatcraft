@@ -225,20 +225,47 @@ pub fn render_document_png_seeded(
     seed: Option<&std::sync::Arc<crate::cutgeom::CutGeometry>>,
     max_px: u32,
 ) -> Result<Vec<u8>, CommandError> {
+    check_px(max_px)?;
+    let cut = document_cut_geometry(plotter, doc, seed);
+    draw(plotter, doc, View::Canvas(&cut), max_px)
+}
+
+/// [`render_document_png`] with the cut geometry `cut` of `doc` (see
+/// [`document_cut_geometry`]).
+pub fn render_document_png_cut(
+    plotter: &flatcraft_device::PlotterProfile,
+    doc: &flatcraft_core::document::Document,
+    cut: &crate::cutgeom::CutGeometry,
+    max_px: u32,
+) -> Result<Vec<u8>, CommandError> {
+    check_px(max_px)?;
+    draw(plotter, doc, View::Canvas(cut), max_px)
+}
+
+/// The cut geometry of `doc`'s objects for `plotter`, with the same
+/// tolerance and narrowest feature as a job input
+/// (`JobInput::tolerance_mm`, `JobInput::min_width_mm`), from `seed`
+/// where it still fits.
+pub fn document_cut_geometry(
+    plotter: &flatcraft_device::PlotterProfile,
+    doc: &flatcraft_core::document::Document,
+    seed: Option<&std::sync::Arc<crate::cutgeom::CutGeometry>>,
+) -> std::sync::Arc<crate::cutgeom::CutGeometry> {
+    crate::cutgeom::objects_cut_geometry(
+        &crate::job::JobInput::objects_of(doc),
+        plotter.flatten_tolerance_mm,
+        crate::report::min_width_mm(plotter.blade_offset_mm),
+        seed,
+    )
+}
+
+fn check_px(max_px: u32) -> Result<(), CommandError> {
     if !(MIN_PX..=MAX_PX).contains(&max_px) {
         return Err(CommandError::InvalidParams(format!(
             "max_px must be between {MIN_PX} and {MAX_PX}, not {max_px}"
         )));
     }
-    // The same tolerance and narrowest feature as a job input
-    // (`JobInput::tolerance_mm`, `JobInput::min_width_mm`).
-    let cut = crate::cutgeom::objects_cut_geometry(
-        &crate::job::JobInput::objects_of(doc),
-        plotter.flatten_tolerance_mm,
-        crate::report::min_width_mm(plotter.blade_offset_mm),
-        seed,
-    );
-    draw(plotter, doc, View::Canvas(&cut), max_px)
+    Ok(())
 }
 
 /// The canvas, path or simulation view of `doc`.
@@ -353,7 +380,7 @@ fn draw(
                 mat,
                 px_mm: px(1.0) as f32,
                 line: [lr, lg, lb],
-                cut: flatcraft_core::colour::cut_colour(media.color),
+                mat_colour: media.color,
             };
             draw_simulation(canvas, run);
         }
@@ -442,21 +469,23 @@ struct Canvas<'a> {
     px_mm: f32,
     /// The mat's contrast colour.
     line: [u8; 3],
-    /// The cut colour on this mat.
-    cut: [u8; 3],
+    /// The mat colour.
+    mat_colour: [u8; 3],
 }
 
-/// The tip colour of a sample with `deviation_mm`: green within the
-/// end-to-end limit, amber within twice that, red beyond.
-pub fn deviation_colour(deviation_mm: f32) -> [u8; 3] {
+/// The tip colour on `mat` of a sample with `deviation_mm`: green within
+/// the end-to-end limit, amber within twice that, red beyond
+/// ([`flatcraft_core::colour::deviation_colours`], 3:1 on the mat).
+pub fn deviation_colour(mat: [u8; 3], deviation_mm: f32) -> [u8; 3] {
+    let [green, amber, red] = flatcraft_core::colour::deviation_colours(mat);
     let d = f64::from(deviation_mm);
     let limit = flatcraft_sim::END_TO_END_LIMIT_MM;
     if d.is_nan() || d <= limit {
-        [0x1f, 0x9d, 0x55]
+        green
     } else if d <= 2.0 * limit {
-        [0xe0, 0x9b, 0x00]
+        amber
     } else {
-        [0xd6, 0x28, 0x28]
+        red
     }
 }
 
@@ -486,7 +515,7 @@ fn draw_simulation(c: Canvas<'_>, run: &crate::simulate::SimRun) {
         mat,
         px_mm,
         line,
-        cut,
+        mat_colour,
     } = c;
     let [lr, lg, lb] = line;
     let travel = paint(Color::from_rgba8(lr, lg, lb, 120));
@@ -496,8 +525,10 @@ fn draw_simulation(c: Canvas<'_>, run: &crate::simulate::SimRun) {
         ..Stroke::default()
     };
     let Some(result) = &run.result else {
-        // Firmware mode: the commanded path, as the plotter gets it.
-        let ink = paint(color(cut[0], cut[1], cut[2]));
+        // Firmware mode: the commanded path, as the plotter gets it, in
+        // the mat's neutral contrast colour: nothing here is graded, so
+        // nothing may look like the green, amber or red of a grade.
+        let ink = paint(color(lr, lg, lb));
         let stroke = Stroke {
             width: 1.5 * px_mm,
             line_join: LineJoin::Round,
@@ -579,7 +610,7 @@ fn draw_simulation(c: Canvas<'_>, run: &crate::simulate::SimRun) {
         let ink = if b.waste {
             Ink::Waste(WASTE_INK)
         } else {
-            Ink::Tip(deviation_colour(b.deviation_mm))
+            Ink::Tip(deviation_colour(mat_colour, b.deviation_mm))
         };
         if current != Some(ink) {
             flush(pm, current, std::mem::take(&mut pb));

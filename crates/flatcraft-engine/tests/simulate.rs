@@ -117,6 +117,9 @@ fn svg(body: &str) -> String {
     )
 }
 
+/// The mat colour of the presets.
+const PAPER: [u8; 3] = [0xFB, 0xF4, 0xE4];
+
 const SQUARE_50: &str = r#"<rect x="20" y="20" width="50" height="50"/>"#;
 
 fn import(s: &mut Session, body: &str) -> u64 {
@@ -490,7 +493,7 @@ fn simulation_preview_decodes() {
         let png = render_png(&s, PreviewKind::Simulation, 512).unwrap();
         let img = image::load_from_memory(&png).unwrap().to_rgb8();
         assert_eq!(img.width().max(img.height()), 512);
-        let green = flatcraft_engine::preview::deviation_colour(0.0);
+        let green = flatcraft_engine::preview::deviation_colour(PAPER, 0.0);
         let has_green = img.pixels().any(|p| [p[0], p[1], p[2]] == green);
         if knife == FIRMWARE {
             assert!(!has_green, "firmware draws the commanded path only");
@@ -501,7 +504,7 @@ fn simulation_preview_decodes() {
             // The red corners are short: look at them big.
             let big = render_png(&s, PreviewKind::Simulation, 4096).unwrap();
             let big = image::load_from_memory(&big).unwrap().to_rgb8();
-            let red = flatcraft_engine::preview::deviation_colour(1.0);
+            let red = flatcraft_engine::preview::deviation_colour(PAPER, 1.0);
             assert!(
                 big.pixels().any(|p| [p[0], p[1], p[2]] == red),
                 "uncompensated corners are red"
@@ -640,6 +643,112 @@ fn grid_lines_stop_at_the_grid_edge() {
         for y_mm in [bottom + 1.0, bottom + 5.0, media.height_mm - 1.0] {
             let y = (y_mm * scale) as u32;
             assert_eq!(pixel(&png, x.min(1023), y), margin, "x {x_mm} y {y_mm}");
+        }
+    }
+}
+
+/// A stale run is dropped at once (its trace holds memory); its summary
+/// stays.
+#[test]
+fn a_stale_run_is_dropped_and_its_summary_kept() {
+    let d = dirs();
+    let mut s = plotter_session(&d, "host", HOST, 0.3);
+    let id = import(&mut s, SQUARE_50);
+    run(&mut s, "job.simulate", json!({}));
+    let run_ = s.last_sim().unwrap().clone();
+    let summary = s.doc().sim_summary().unwrap().clone();
+    assert_eq!(summary.key, run_.key);
+    assert_eq!(
+        summary.metrics.as_ref().unwrap().score,
+        run_.result.as_ref().unwrap().metrics.score
+    );
+    assert!(summary.metrics.as_ref().unwrap().per_path.is_empty());
+    run(&mut s, "object.move", json!({ "ids": [id], "dx_mm": 2.0 }));
+    assert!(s.doc().stored_sim().is_none(), "the stale run is dropped");
+    assert_eq!(s.doc().sim_summary().unwrap().key, run_.key);
+    // Undo also moves the revision on: nothing stale comes back.
+    run(&mut s, "job.simulate", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    assert!(s.doc().stored_sim().is_none());
+    // A profile change drops it at the next command.
+    run(&mut s, "job.simulate", json!({}));
+    assert!(s.doc().stored_sim().is_some());
+    s.profiles.reload().unwrap();
+    run(&mut s, "document.state", json!({}));
+    assert!(s.doc().stored_sim().is_none(), "the profiles changed");
+}
+
+/// A big host job keeps its samples to draw near DISPLAY_POINTS: lead-ins
+/// and other waste moves are no problems that must stay.
+#[test]
+fn big_host_job_display_stays_near_the_cap() {
+    let d = dirs();
+    let mut s = plotter_session(&d, "host", HOST, 0.3);
+    // Cardstock lifts at sharp corners and overshoots into the waste.
+    run(&mut s, "job.set_material", json!({ "id": "cardstock" }));
+    s.execute(
+        "object.import_svg",
+        json!({ "svg": many_squares(), "name": "grid" }),
+        Origin::User,
+    )
+    .unwrap();
+    let run_ = simulate::current(&mut s, None).unwrap();
+    let res = run_.result.as_ref().unwrap();
+    let samples = res.trace.samples.len();
+    assert!(samples > 4 * simulate::DISPLAY_POINTS, "{samples}");
+    // Waste samples far from any line: the old rule kept every one.
+    let far_waste = res
+        .trace
+        .samples
+        .iter()
+        .zip(&res.deviation_mm)
+        .filter(|(x, d)| {
+            x.down && x.seg == flatcraft_path::WASTE_SEG && f64::from(**d) > END_TO_END_LIMIT_MM
+        })
+        .count();
+    eprintln!(
+        "samples {samples}, far waste {far_waste}, shown {}",
+        run_.display.len()
+    );
+    assert!(
+        run_.display.len() <= simulate::DISPLAY_POINTS + 2,
+        "{} shown",
+        run_.display.len()
+    );
+    assert!(run_.display.len() >= simulate::DISPLAY_POINTS * 9 / 10);
+}
+
+/// Firmware mode draws the commanded path in the mat's neutral contrast
+/// colour, never in a colour of the grade or the cut orange, on a light
+/// and on a dark mat.
+#[test]
+fn firmware_preview_draws_the_commanded_path_neutral() {
+    for mat in ["#FBF4E4", "#202226"] {
+        let d = dirs();
+        let media = format!(
+            "media = [{{ id = \"mat-12x12\", name = \"Mat 12x12\", kind = \"Mat\", color = \"{mat}\", width_mm = 304.8, height_mm = 330.2, calibrated = false, grid = {{ origin_x_mm = 0.0, origin_y_mm = 0.0, width_mm = 304.8, height_mm = 304.8 }} }}]\n"
+        );
+        user_plotter(
+            d.config.path(),
+            "fw",
+            &format!("knife_compensation = {FIRMWARE}\nblade_offset_mm = 0.25\n{media}"),
+        );
+        let mut s = session(&d);
+        run(&mut s, "job.set_plotter", json!({ "id": "fw" }));
+        run(&mut s, "job.set_media", json!({ "id": "mat-12x12" }));
+        import(&mut s, SQUARE_50);
+        let png = render_png(&s, PreviewKind::Simulation, 4096).unwrap();
+        let img = image::load_from_memory(&png).unwrap().to_rgb8();
+        let colour = {
+            let plotter = s.profiles.plotter("fw").unwrap();
+            plotter.media_or_first("mat-12x12").unwrap().0.color
+        };
+        let neutral = flatcraft_core::colour::contrast_colour(colour);
+        let has = |c: [u8; 3]| img.pixels().any(|p| [p[0], p[1], p[2]] == c);
+        assert!(has(neutral), "{mat}: the commanded path");
+        assert!(!has(flatcraft_core::colour::cut_colour(colour)), "{mat}");
+        for c in flatcraft_core::colour::deviation_colours(colour) {
+            assert!(!has(c), "{mat}: {c:?}");
         }
     }
 }

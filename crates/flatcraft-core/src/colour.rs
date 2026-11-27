@@ -56,6 +56,25 @@ pub fn cut_colour(mat: [u8; 3]) -> [u8; 3] {
     }
 }
 
+/// The simulated blade tip's colours on `mat`, as [within the limit,
+/// within twice the limit, beyond]: green, amber and red, deep ones on
+/// light mats and bright ones on dark mats, whichever set reads better
+/// (each at least 3:1 on the light paper and the dark mat).
+pub fn deviation_colours(mat: [u8; 3]) -> [[u8; 3]; 3] {
+    const DEEP: [[u8; 3]; 3] = [[0x1A, 0x7F, 0x45], [0xA8, 0x6A, 0x00], [0xD6, 0x28, 0x28]];
+    const BRIGHT: [[u8; 3]; 3] = [[0x4A, 0xDE, 0x80], [0xFB, 0xBF, 0x24], [0xFF, 0x6B, 0x6B]];
+    let worst = |set: &[[u8; 3]; 3]| {
+        set.iter()
+            .map(|&c| contrast_ratio(c, mat))
+            .fold(f64::INFINITY, f64::min)
+    };
+    if worst(&DEEP) >= worst(&BRIGHT) {
+        DEEP
+    } else {
+        BRIGHT
+    }
+}
+
 /// The colour of the selection box, its handles, the selection frame and
 /// the Arrange ghosts on `mat`: a teal that reads on light mats (the
 /// lighter teal on dark ones), and never the colour of the object outlines.
@@ -136,6 +155,24 @@ mod tests {
         }
         assert_eq!(cut_colour([0xFB, 0xF4, 0xE4]), [0xB8, 0x4A, 0x00]);
         assert_eq!(cut_colour([0x20, 0x22, 0x26]), [0xFF, 0x9A, 0x3C]);
+    }
+
+    #[test]
+    fn deviation_colours_read_on_paper_and_dark() {
+        for mat in [[0xFB, 0xF4, 0xE4], [0x20, 0x22, 0x26]] {
+            let set = deviation_colours(mat);
+            for c in set {
+                assert!(contrast_ratio(c, mat) >= 3.0, "{c:?} on {mat:?}");
+                // Never the colours that mean something else on the mat.
+                assert_ne!(c, cut_colour(mat));
+                assert_ne!(c, contrast_colour(mat));
+            }
+            assert!(set[0] != set[1] && set[1] != set[2] && set[0] != set[2]);
+        }
+        assert_ne!(
+            deviation_colours([0xFB, 0xF4, 0xE4]),
+            deviation_colours([0x20, 0x22, 0x26])
+        );
     }
 
     #[test]

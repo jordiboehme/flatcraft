@@ -32,14 +32,24 @@ pub struct DisplaySample {
 /// one straight move, so a sample between them is not a vertex.
 const STRAIGHT: f64 = 1e-9;
 
-/// At most about `max_points` samples of `r`, for drawing. Kept always,
-/// whatever `max_points` says: the first and the last sample, every run
-/// vertex (where the axis turns, and where the blade, the toolpath, the
-/// run or the intended segment changes), every bad sample (deviation above
-/// [`END_TO_END_LIMIT_MM`]), every pushed sample and both samples at each
-/// edge between waste and path moves. So a job with more of these than
-/// `max_points` gets them all, and more points than asked. The other
-/// samples are thinned evenly to fill the rest.
+/// At most about `max_points` samples of `r`, for drawing.
+///
+/// Kept always, whatever `max_points` says, are only the real problems: a
+/// path sample farther than [`END_TO_END_LIMIT_MM`] from its line, a
+/// pushed sample and the sample of every worst spot (a waste move into
+/// kept material is one of them), plus the first and the last sample.
+/// Only a job with more problems than `max_points` gets more points than
+/// asked. The budget left is then spent in this order, each group thinned
+/// evenly once it no longer fits:
+///
+/// 1. where the blade, the toolpath or the run changes (so travel is never
+///    drawn as a cut),
+/// 2. run vertices (where the axis turns or the intended segment changes)
+///    and the edges between waste and path moves,
+/// 3. every other sample.
+///
+/// A waste move's deviation (its distance to the nearest line) is not a
+/// problem by itself: it lies in waste on purpose.
 pub fn decimate(r: &SimResult, max_points: usize) -> Vec<DisplaySample> {
     let samples = &r.trace.samples;
     let n = samples.len();
@@ -48,15 +58,23 @@ pub fn decimate(r: &SimResult, max_points: usize) -> Vec<DisplaySample> {
     }
     let waste = |i: usize| samples[i].down && samples[i].seg == WASTE_SEG;
     let deviation = |i: usize| r.deviation_mm.get(i).copied().unwrap_or(f32::NAN);
-    let keep: Vec<bool> = (0..n)
+    let spots: Vec<Point> = r.metrics.worst_spots.iter().map(|s| s.at).collect();
+    // 0: must keep, 1 to 3: the groups of the doc comment.
+    let tier: Vec<u8> = (0..n)
         .map(|i| {
             if i == 0 || i + 1 == n {
-                return true;
+                return 0;
             }
             let (a, x, b) = (&samples[i - 1], &samples[i], &samples[i + 1]);
-            let bad = f64::from(deviation(i)) > END_TO_END_LIMIT_MM;
-            let changes =
-                x.down != b.down || x.toolpath != b.toolpath || x.run != b.run || x.seg != b.seg;
+            let path = x.down && !waste(i);
+            let bad = path && f64::from(deviation(i)) > END_TO_END_LIMIT_MM;
+            let spot = spots.iter().any(|p| p.distance(x.tip) < 1e-9);
+            if bad || x.pushed || spot {
+                return 0;
+            }
+            if x.down != b.down || x.toolpath != b.toolpath || x.run != b.run {
+                return 1;
+            }
             let edge = waste(i) != waste(i - 1) || waste(i) != waste(i + 1);
             let (u, v) = (x.axis - a.axis, b.axis - x.axis);
             let turns = {
@@ -65,26 +83,34 @@ pub fn decimate(r: &SimResult, max_points: usize) -> Vec<DisplaySample> {
                     && lv > 0.0
                     && ((u.cross(v) / (lu * lv)).abs() > STRAIGHT || u.dot(v) < 0.0)
             };
-            bad || x.pushed || changes || edge || turns
+            if x.seg != b.seg || edge || turns {
+                2
+            } else {
+                3
+            }
         })
         .collect();
-    let required = keep.iter().filter(|k| **k).count();
-    let others = n - required;
-    let budget = max_points.saturating_sub(required);
-    // Every `stride`-th other sample: `others / stride <= budget`.
-    let stride = if budget == 0 {
-        usize::MAX
-    } else {
-        others.div_ceil(budget).max(1)
-    };
-    let mut seen_others = 0usize;
+    let mut count = [0usize; 4];
+    for &t in &tier {
+        count[usize::from(t)] += 1;
+    }
+    // Per group: how many of its samples are kept, spread evenly.
+    let mut take = [0usize; 4];
+    take[0] = count[0];
+    let mut budget = max_points.saturating_sub(count[0]);
+    for t in 1..4 {
+        take[t] = count[t].min(budget);
+        budget -= take[t];
+    }
+    let mut seen = [0usize; 4];
     (0..n)
         .filter(|&i| {
-            if keep[i] {
-                return true;
-            }
-            seen_others += 1;
-            stride != usize::MAX && seen_others.is_multiple_of(stride)
+            let t = usize::from(tier[i]);
+            let k = seen[t];
+            seen[t] += 1;
+            // The k-th of `count` is kept when the even spread of `take`
+            // steps over it: exactly `take` of them, the last one always.
+            (k + 1) * take[t] / count[t].max(1) > k * take[t] / count[t].max(1)
         })
         .map(|i| {
             let x = &samples[i];
@@ -128,6 +154,16 @@ mod tests {
         )
     }
 
+    /// Path samples (blade down, not waste) farther than the limit.
+    fn path_bad(r: &SimResult) -> usize {
+        r.trace
+            .samples
+            .iter()
+            .zip(&r.deviation_mm)
+            .filter(|(x, d)| x.down && x.seg != WASTE_SEG && f64::from(**d) > END_TO_END_LIMIT_MM)
+            .count()
+    }
+
     #[test]
     fn decimate_keeps_bad_and_pushed_samples() {
         // An uncompensated square: the tip cuts the corners (bad samples)
@@ -152,16 +188,16 @@ mod tests {
         )
         .unwrap();
         let n = r.trace.samples.len();
-        let bad = |s: &DisplaySample| f64::from(s.deviation_mm) > END_TO_END_LIMIT_MM;
-        let all_bad = r
-            .deviation_mm
-            .iter()
-            .filter(|d| f64::from(**d) > END_TO_END_LIMIT_MM)
-            .count();
+        let bad = |s: &DisplaySample| {
+            s.down && !s.waste && f64::from(s.deviation_mm) > END_TO_END_LIMIT_MM
+        };
+        let all_bad = path_bad(&r);
         assert!(all_bad > 0, "an uncompensated square has bad samples");
         let all_pushed = r.trace.samples.iter().filter(|s| s.pushed).count();
         assert!(all_pushed > 0, "the line that doubles back pushes");
-        let shown = decimate(&r, 200);
+        // The uncompensated corners give about 1250 bad samples: a
+        // budget above that keeps the vertices too.
+        let shown = decimate(&r, 2000);
         assert!(shown.len() < n, "{} of {n}", shown.len());
         assert_eq!(shown.iter().filter(|s| bad(s)).count(), all_bad);
         assert_eq!(shown.iter().filter(|s| s.pushed).count(), all_pushed);
@@ -195,14 +231,10 @@ mod tests {
         )
         .unwrap();
         let shown = decimate(&r, 1);
-        let all_bad = r
-            .deviation_mm
-            .iter()
-            .filter(|d| f64::from(**d) > END_TO_END_LIMIT_MM)
-            .count();
+        let all_bad = path_bad(&r);
         let bad = shown
             .iter()
-            .filter(|s| f64::from(s.deviation_mm) > END_TO_END_LIMIT_MM)
+            .filter(|s| s.down && !s.waste && f64::from(s.deviation_mm) > END_TO_END_LIMIT_MM)
             .count();
         assert_eq!(bad, all_bad);
         assert!(shown.len() > 1);

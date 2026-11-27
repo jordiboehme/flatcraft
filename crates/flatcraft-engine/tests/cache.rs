@@ -715,3 +715,27 @@ fn the_command_box_is_the_cut_geometry_box() {
         "the sliver does not count: {cached:?}"
     );
 }
+
+/// A save with a cold cut cache builds the geometry for its thumbnail
+/// once and gives it to the cache: the next reader does not cut again.
+#[test]
+fn a_save_fills_a_cold_cut_cache() {
+    let d = dirs();
+    let mut s = session(&d);
+    import(&mut s, &svg(SQUARE), "square");
+    let doc = s.doc().document.clone();
+    s.docs[0] = flatcraft_engine::session::DocState::new(doc);
+    assert!(s.doc().cached_cut_geometry().is_none(), "cold");
+    let path = d.out.path().join("cold.flatcraft");
+    run(&mut s, "project.save", json!({ "path": path }));
+    let built = s.doc().cached_cut_geometry().expect("the save filled it");
+    let key = s.doc().cut_cache_key().unwrap();
+    assert_eq!(key.doc_revision, s.doc().revision());
+    let read = s.cut_geometry().unwrap();
+    assert!(Arc::ptr_eq(&built, &read), "the same build");
+    assert_eq!(
+        s.doc().cut_cache_key().unwrap(),
+        key,
+        "its key was the reader's"
+    );
+}

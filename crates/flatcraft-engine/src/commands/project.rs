@@ -444,6 +444,11 @@ pub struct SaveJob {
     hook: Option<crate::session::SaveWriteHook>,
     /// The document's cached cut geometry, to draw the thumbnail from.
     cut_seed: Option<std::sync::Arc<crate::cutgeom::CutGeometry>>,
+    /// The profiles' revision when the save began.
+    profiles_revision: u64,
+    /// The cut geometry the thumbnail was drawn from, given to the
+    /// document's cache when it was built here (see [`finish_save`]).
+    built_cut: std::sync::OnceLock<std::sync::Arc<crate::cutgeom::CutGeometry>>,
 }
 
 /// The first step of a save: checks the target, refreshes the paths of
@@ -469,6 +474,7 @@ pub fn begin_save(s: &mut Session, p: SaveParams, origin: Origin) -> Result<Save
     // Linked files: refresh their paths for the new place of the project.
     // Only metadata, so it is not an undo step; a failed save puts it back.
     let hook = s.save_write_hook.clone();
+    let profiles_revision = s.profiles.revision();
     let st = &mut s.docs[index];
     let previous = relink_for_save(&mut st.document, st.path.as_deref(), &path);
     if !previous.is_empty() {
@@ -488,6 +494,8 @@ pub fn begin_save(s: &mut Session, p: SaveParams, origin: Origin) -> Result<Save
         previous,
         hook,
         cut_seed: st.cached_cut_geometry(),
+        profiles_revision,
+        built_cut: std::sync::OnceLock::new(),
     })
 }
 
@@ -496,10 +504,17 @@ impl SaveJob {
     /// writes the archive crash-safely.
     pub fn write(&self) -> Result<(), CommandError> {
         let thumbnail = self.plotter.as_ref().and_then(|plotter| {
-            crate::preview::render_document_png_seeded(
+            let cut = self.built_cut.get_or_init(|| {
+                crate::preview::document_cut_geometry(
+                    plotter,
+                    &self.document,
+                    self.cut_seed.as_ref(),
+                )
+            });
+            crate::preview::render_document_png_cut(
                 plotter,
                 &self.document,
-                self.cut_seed.as_ref(),
+                cut,
                 project::THUMBNAIL_PX,
             )
             .ok()
@@ -539,6 +554,29 @@ pub fn finish_save(
         st.path = Some(job.path.clone());
         // Changed while it was written: the file holds the older state.
         st.dirty = !unchanged;
+        // The cut geometry the thumbnail built goes into the cache, so the
+        // next preview or job does not cut it again. Only while the
+        // document and the profiles are as they were.
+        if let (Some(cut), Some(plotter)) = (job.built_cut.get(), job.plotter.as_ref())
+            && unchanged
+            && s.profiles.revision() == job.profiles_revision
+            && !job
+                .cut_seed
+                .as_ref()
+                .is_some_and(|seed| std::sync::Arc::ptr_eq(seed, cut))
+        {
+            let key = crate::session::CacheKey {
+                doc_revision: job.revision,
+                profiles_revision: job.profiles_revision,
+                plotter_id: plotter.id.clone(),
+                material_id: job.document.job.material_id.clone(),
+                tol: plotter.flatten_tolerance_mm,
+                min_width_mm: crate::report::min_width_mm(plotter.blade_offset_mm),
+            };
+            if let Some(st) = s.docs.iter().find(|d| d.id() == job.doc_id) {
+                st.store_cut_geometry(key, cut.clone());
+            }
+        }
     }
     Ok(json!({ "path": job.path }))
 }
