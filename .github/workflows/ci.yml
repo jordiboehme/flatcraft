@@ -235,7 +235,21 @@ jobs:
           rustup toolchain install
           rustup show active-toolchain
 
-      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+      # The action runs bash, and a runner sometimes fails to start it
+      # ("bash startup failure", actions/partner-runner-images#169) before
+      # anything is installed. That first try may fail; the second one runs
+      # only then and must pass. Only the install is retried, never a test.
+      - name: Install nextest
+        id: nextest
+        continue-on-error: true
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: nextest@0.9.148
+          fallback: none
+
+      - name: Install nextest (second try)
+        if: ${{ steps.nextest.outcome == 'failure' }}
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: nextest@0.9.148
           fallback: none

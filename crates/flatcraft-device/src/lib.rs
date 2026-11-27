@@ -12,10 +12,13 @@ pub mod store;
 pub mod transport;
 
 pub use bytelog::{ByteLog, Dir, LogEntry};
+/// The direction closed shapes are cut in (a plotter setting).
+pub use flatcraft_core::geometry::RingDirection;
 pub use profile::{
-    AxisMapping, Capabilities, DEFAULT_MAT_COLOR, DEFAULT_NO_MAT_COLOR, GpglDialect, Grid,
-    KnifeCompensation, MaterialOverride, MaterialProfile, Media, MediaError, MediaField, MediaKind,
-    PlotterProfile, Protocol, TransportSpec, UNCALIBRATED_MARGIN_MM,
+    AxisMapping, Capabilities, CornerModeSpec, DEFAULT_MAT_COLOR_DARK, DEFAULT_MAT_COLOR_LIGHT,
+    GpglDialect, Grid, KnifeCompensation, MatTack, MaterialGroup, MaterialOverride,
+    MaterialProfile, Media, MediaError, MediaField, MediaKind, PlotterProfile, Protocol,
+    TransportSpec, UNCALIBRATED_MARGIN_MM, hex_colour, parse_hex_colour,
 };
-pub use store::{PresetDiagnostic, PresetInfo, ProfileError, ProfileStore};
+pub use store::{PRESET_NOTES_FILE, PresetDiagnostic, PresetInfo, ProfileError, ProfileStore};
 pub use transport::{FileTransport, SendReport, Transport, TransportError};

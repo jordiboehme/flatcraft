@@ -6,25 +6,27 @@
 
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use flatcraft_core::document::{Document, ObjectId, Source, SourceLink};
+use flatcraft_core::document::{Document, GroupId, ObjectId, Source, SourceLink};
 use flatcraft_core::geometry::CutPath;
-use flatcraft_import::svg::import_svg;
-use flatcraft_import::{ImportError, fonts};
+use flatcraft_import::ImportError;
 use kurbo::Rect;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use super::object::{blade_offset_mm, trace_report, warning_text};
+use super::object::{
+    Found, blade_offset_mm, report_of, trace_findings, trace_report, warning_text,
+};
 use super::project::lexical;
-use super::{NoParams, check_exists, command, ids_json, resolve_ids};
+use super::{NoParams, check_exists, command, expand_ids, ids_json, resolve_ids};
+use crate::report::Issue;
 use crate::session::{CommandError, Origin, Session};
 
 /// Largest file that is imported or reloaded.
-pub(crate) const MAX_SOURCE_BYTES: u64 = 50 * 1024 * 1024;
+pub(crate) const MAX_SOURCE_BYTES: u64 = flatcraft_core::limits::MAX_SOURCE_BYTES;
 
 // ---------------------------------------------------------------- files
 
@@ -50,9 +52,23 @@ impl ReadError {
     }
 }
 
+impl Clone for ReadError {
+    /// An I/O error is kept by its kind and text, which is all that is
+    /// ever shown of it.
+    fn clone(&self) -> Self {
+        match self {
+            ReadError::NotFound => ReadError::NotFound,
+            ReadError::NotAFile => ReadError::NotAFile,
+            ReadError::TooLarge => ReadError::TooLarge,
+            ReadError::Io(e) => ReadError::Io(std::io::Error::new(e.kind(), e.to_string())),
+        }
+    }
+}
+
 /// A file read with the import size cap, plus its modification time.
+#[derive(Debug, Clone)]
 pub(crate) struct SourceFile {
-    pub bytes: Vec<u8>,
+    pub bytes: Arc<[u8]>,
     pub modified: Option<String>,
 }
 
@@ -82,7 +98,7 @@ pub(crate) fn read_capped(path: &Path) -> Result<SourceFile, ReadError> {
         return Err(ReadError::TooLarge);
     }
     Ok(SourceFile {
-        bytes,
+        bytes: bytes.into(),
         modified: meta.modified().ok().and_then(rfc3339),
     })
 }
@@ -284,6 +300,36 @@ fn candidates(link: &SourceLink, project: Option<&Path>, kind: FileKind) -> Vec<
         .collect()
 }
 
+thread_local! {
+    static FIND_LINKED_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How often [`find_linked_file`] looked at the disk on this thread, for
+/// tests that check the window does not do it every frame. Per thread,
+/// so tests running side by side do not count each other's calls.
+pub fn find_linked_calls() -> usize {
+    FIND_LINKED_CALLS.with(std::cell::Cell::get)
+}
+
+/// Where the linked file of an object is now (`raster`: a picture, else
+/// an SVG), as Reload
+/// reads it: the path relative to the project file `project` while the
+/// project is in the folder it was made for, else the absolute path.
+/// `None` when it is in neither place.
+pub fn find_linked_file(
+    link: &SourceLink,
+    raster: bool,
+    project: Option<&Path>,
+) -> Option<PathBuf> {
+    FIND_LINKED_CALLS.with(|c| c.set(c.get() + 1));
+    let kind = if raster {
+        FileKind::Raster
+    } else {
+        FileKind::Svg
+    };
+    locate(link, project, kind)
+}
+
 /// Where a linked file is now: the first candidate that is a regular file,
 /// so a folder or FIFO with the file's name is never taken for it.
 pub(crate) fn locate(link: &SourceLink, project: Option<&Path>, kind: FileKind) -> Option<PathBuf> {
@@ -308,7 +354,7 @@ pub(crate) fn new_link(file: &Path, project: Option<&Path>, f: &SourceFile) -> O
     Some(SourceLink {
         path: file.to_path_buf(),
         relative: project_dir(project).and_then(|dir| relative_to(file, &dir)),
-        sha256: sha256_hex(&f.bytes),
+        sha256: crate::memo::sha(&f.bytes),
         modified: f.modified.clone(),
         anchor_dir: project_dir(project),
     })
@@ -372,7 +418,7 @@ pub(crate) fn compact_utc(t: SystemTime) -> Option<String> {
 
 /// Year, month and day of a day count since 1970-01-01 (Howard Hinnant's
 /// days-to-civil algorithm, proleptic Gregorian calendar).
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
+pub(crate) fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
@@ -389,10 +435,13 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 
 /// Geometry built from source bytes.
 pub(crate) struct Rebuilt {
-    pub paths: Vec<CutPath>,
+    /// Shared, so a replay (`crate::memo`) gives the same `Arc`.
+    pub paths: Arc<Vec<CutPath>>,
     /// The page frame in local mm (SVG page, image pixel frame).
     pub frame: Rect,
     pub warnings: Vec<String>,
+    /// The same findings, typed, for the report.
+    pub found: Found,
 }
 
 /// Builds the geometry of `source`'s kind from `bytes`: an SVG import, or a
@@ -404,19 +453,22 @@ pub(crate) fn rebuild(
 ) -> Result<Rebuilt, ImportError> {
     match source {
         Source::Svg { .. } => {
-            let import = import_svg(bytes, fonts::system_fonts())?;
+            let (import, paths) = crate::memo::svg(bytes, crate::memo::Fonts::ForDocument)?;
             Ok(Rebuilt {
                 frame: import.page_frame_mm,
                 warnings: import.warnings.iter().map(warning_text).collect(),
-                paths: import.paths,
+                found: Found::Svg(import.warnings.clone()),
+                paths,
             })
         }
         Source::Raster { trace, .. } => {
-            let t = flatcraft_import::trace::trace(bytes, trace, blade_offset_mm)?;
+            let (t, paths) = crate::memo::trace(bytes, trace, blade_offset_mm)?;
             let (warnings, _) = trace_report(&t, trace.invert);
+            let found = Found::Trace(trace_findings(&t, trace.invert));
             Ok(Rebuilt {
+                found,
                 frame: Rect::new(0.0, 0.0, t.size_mm.0, t.size_mm.1),
-                paths: t.paths,
+                paths,
                 warnings,
             })
         }
@@ -450,6 +502,7 @@ fn reload_one(
     id: ObjectId,
     path: Option<PathBuf>,
     warnings: &mut Vec<String>,
+    found: &mut Vec<Issue>,
 ) -> Outcome {
     let blade = blade_offset_mm(s);
     let project = s.doc().path.clone();
@@ -468,7 +521,7 @@ fn reload_one(
     else {
         return Outcome::Missing;
     };
-    let file = match read_capped(&path) {
+    let file = match crate::memo::read(&path) {
         Ok(f) => f,
         Err(ReadError::NotFound) => return Outcome::Missing,
         Err(e) => {
@@ -487,15 +540,18 @@ fn reload_one(
         ));
         return Outcome::Failed;
     };
-    if link.sha256 == sha256_hex(embedded_bytes(&o.source)) {
+    if link.sha256 == crate::memo::sha(embedded_bytes(&o.source)) {
         let moved = o
             .link
             .as_ref()
             .map(|l| (&l.path, &l.relative, &l.anchor_dir))
             != Some((&link.path, &link.relative, &link.anchor_dir));
-        if let Some(o) = s.doc_mut().document.get_mut(id) {
+        let doc = &mut s.doc_mut().document;
+        if let Some(o) = doc.get_mut(id) {
             o.link = Some(link);
         }
+        // Linked copies share the link.
+        doc.spread_shared(id);
         return Outcome::Unchanged(moved);
     }
     let rebuilt = match rebuild(&o.source, &file.bytes, blade) {
@@ -509,17 +565,22 @@ fn reload_one(
             return Outcome::Failed;
         }
     };
-    let Some(o) = s.doc_mut().document.get_mut(id) else {
-        return Outcome::Failed;
-    };
     for w in rebuilt.warnings {
         warnings.push(format!("{who}: {w}"));
     }
+    let members = s.doc().document.members(id);
+    found.extend(rebuilt.found.issues(id, &members));
+    let Some(o) = s.doc_mut().document.get_mut(id) else {
+        return Outcome::Failed;
+    };
     match &mut o.source {
-        Source::Svg { bytes, .. } | Source::Raster { bytes, .. } => *bytes = file.bytes.into(),
+        Source::Svg { bytes, .. } | Source::Raster { bytes, .. } => *bytes = file.bytes,
     }
-    o.set_geometry_anchored(rebuilt.paths, rebuilt.frame);
+    let local_bounds = flatcraft_core::geometry::bounds(&rebuilt.paths).unwrap_or(Rect::ZERO);
+    o.share_geometry_anchored(rebuilt.paths, local_bounds, rebuilt.frame);
     o.link = Some(link);
+    // Linked copies share the source: rebuilt once, given to all members.
+    s.doc_mut().document.spread_shared(id);
     Outcome::Reloaded
 }
 
@@ -531,7 +592,11 @@ pub struct ReloadParams {
     pub ids: Vec<u64>,
 }
 
-fn run_reload(s: &mut Session, p: ReloadParams, _: Origin) -> Result<Value, CommandError> {
+fn run_reload(s: &mut Session, p: ReloadParams, origin: Origin) -> Result<Value, CommandError> {
+    run_reload_here(s, p, origin).map(|v| super::landed(s, v))
+}
+
+fn run_reload_here(s: &mut Session, p: ReloadParams, _: Origin) -> Result<Value, CommandError> {
     let ids: Vec<ObjectId> = if p.ids.is_empty() {
         let doc = &s.doc().document;
         doc.objects
@@ -540,28 +605,29 @@ fn run_reload(s: &mut Session, p: ReloadParams, _: Origin) -> Result<Value, Comm
             .map(|o| o.id)
             .collect()
     } else {
-        let mut out = Vec::new();
-        for &raw in &p.ids {
-            let id = ObjectId(raw);
-            check_exists(&s.doc().document, id)?;
-            if !out.contains(&id) {
-                out.push(id);
-            }
-        }
-        out
+        // A group id reloads every object of the group.
+        expand_ids(&s.doc().document, &p.ids)?
     };
     let (mut reloaded, mut unchanged, mut missing, mut failed) = (vec![], vec![], vec![], vec![]);
     let mut warnings = Vec::new();
+    let mut found = Vec::new();
     let mut moved_any = false;
+    let mut done: Vec<ObjectId> = Vec::new();
     for id in ids {
-        match reload_one(s, id, None, &mut warnings) {
-            Outcome::Reloaded => reloaded.push(id),
+        // A group of linked copies is read once, for all its members.
+        if done.contains(&id) {
+            continue;
+        }
+        let members = s.doc().document.members(id);
+        done.extend(&members);
+        match reload_one(s, id, None, &mut warnings, &mut found) {
+            Outcome::Reloaded => reloaded.extend(members),
             Outcome::Unchanged(moved) => {
                 moved_any |= moved;
-                unchanged.push(id);
+                unchanged.extend(members);
             }
-            Outcome::Missing => missing.push(id),
-            Outcome::Failed => failed.push(id),
+            Outcome::Missing => missing.extend(members),
+            Outcome::Failed => failed.extend(members),
             Outcome::NoLink => {}
         }
     }
@@ -570,12 +636,14 @@ fn run_reload(s: &mut Session, p: ReloadParams, _: Origin) -> Result<Value, Comm
         // and is saved with the next real change.
         s.mark_no_user_change();
     }
+    let report = report_of(s, &reloaded, found);
     Ok(json!({
         "reloaded": ids_json(&reloaded),
         "unchanged": ids_json(&unchanged),
         "missing": ids_json(&missing),
         "failed": ids_json(&failed),
         "warnings": warnings,
+        "report": report.to_json(),
     }))
 }
 
@@ -586,7 +654,7 @@ command!(
     mutates: true,
     params: ReloadParams,
     run: run_reload,
-    description: "Reads linked files again after they were changed in another app and rebuilds the objects (SVG import, or a trace with the object's stored trace settings). Position, scale, rotation, mirror, cut options, name and visibility stay; the object stays anchored to the file's page (SVG page, image frame), so unchanged shapes keep their place on the mat. A file is looked for relative to the project file first (while the project is in the folder that path was made for), then at its absolute path; only files of the object's type (.svg/.svgz or an image type) count. ids: objects to reload; empty (default) means every linked object. One undo step for the whole call; a call that changed nothing (all unchanged, missing or failed) records no undo step and does not mark the document as changed. The call never fails because of a file: a file that is gone is listed in missing, a file that cannot be read or is broken is listed in failed with a warning, and those objects keep their embedded copy unchanged. Returns {reloaded: [id], unchanged: [id] (same content), missing: [id], failed: [id], warnings: [text]}.",
+    description: "Reads linked files again after they were changed in another app and rebuilds the objects (SVG import, or a trace with the object's stored trace settings). Position, scale, rotation, mirror, cut options, name and visibility stay; the object stays anchored to the file's page (SVG page, image frame), so unchanged shapes keep their place on the mat. A file is looked for relative to the project file first (while the project is in the folder that path was made for), then at its absolute path; only files of the object's type (.svg/.svgz or an image type) count. ids: objects to reload; empty (default) means every linked object. Linked copies (see object.copies) share one source: reloading one reloads all members of its group, and all of them are listed. One undo step for the whole call; a call that changed nothing (all unchanged, missing or failed) records no undo step and does not mark the document as changed. The call never fails because of a file: a file that is gone is listed in missing, a file that cannot be read or is broken is listed in failed with a warning, and those objects keep their embedded copy unchanged. Returns {reloaded: [id], unchanged: [id] (same content), missing: [id], failed: [id], warnings: [text], report: {shapes, issues}}; the report is the import report of the reloaded objects (what the new files have, and the geometry checks), see document.check for the codes. The result also has doc_id and document_name (null for a document never saved): the document it landed in, which is the one active when the call began, even if another one became active while it ran.",
 );
 
 // ---------------------------------------------------------------- relink
@@ -618,6 +686,7 @@ fn relink_one(
     id: ObjectId,
     path: &Path,
     warnings: &mut Vec<String>,
+    found: &mut Vec<Issue>,
 ) -> Result<bool, CommandError> {
     check_exists(&s.doc().document, id)?;
     let kind = file_kind(path)?;
@@ -654,7 +723,8 @@ fn relink_one(
         });
     }
     let mut own = Vec::new();
-    let outcome = reload_one(s, id, Some(path.clone()), &mut own);
+    let mut own_found = Vec::new();
+    let outcome = reload_one(s, id, Some(path.clone()), &mut own, &mut own_found);
     let result = match outcome {
         Outcome::Reloaded => Ok(true),
         Outcome::Unchanged(_) => Ok(false),
@@ -668,11 +738,16 @@ fn relink_one(
         }
     } else {
         warnings.extend(own);
+        found.extend(own_found);
     }
     result
 }
 
-fn run_relink(s: &mut Session, p: RelinkParams, _: Origin) -> Result<Value, CommandError> {
+fn run_relink(s: &mut Session, p: RelinkParams, origin: Origin) -> Result<Value, CommandError> {
+    run_relink_here(s, p, origin).map(|v| super::landed(s, v))
+}
+
+fn run_relink_here(s: &mut Session, p: RelinkParams, _: Origin) -> Result<Value, CommandError> {
     // `items` reports per item and never fails because of one; id and path
     // is one relink that fails like any command.
     let single = p.items.is_empty();
@@ -690,11 +765,29 @@ fn run_relink(s: &mut Session, p: RelinkParams, _: Origin) -> Result<Value, Comm
         }
     };
     let mut warnings = Vec::new();
+    let mut found = Vec::new();
     let (mut reloaded, mut unchanged, mut failed) = (vec![], vec![], vec![]);
+    // Objects relinked so far, linked copies included.
+    let mut moved: Vec<ObjectId> = Vec::new();
     for (id, path) in &items {
-        match relink_one(s, *id, path, &mut warnings) {
-            Ok(true) => reloaded.push(*id),
-            Ok(false) => unchanged.push(*id),
+        if moved.contains(id) {
+            // Its group was relinked by an earlier item; a second path for
+            // the same shared link would undo that one.
+            let e = CommandError::InvalidParams(format!(
+                "object {} is a linked copy of an object this call relinked already",
+                id.0
+            ));
+            failed.push(json!({ "id": id.0, "path": path, "reason": e.to_string() }));
+            continue;
+        }
+        let outcome = relink_one(s, *id, path, &mut warnings, &mut found);
+        if outcome.is_ok() {
+            moved.extend(s.doc().document.members(*id));
+        }
+        match outcome {
+            // Linked copies share the link, so all members moved.
+            Ok(true) => reloaded.extend(s.doc().document.members(*id)),
+            Ok(false) => unchanged.extend(s.doc().document.members(*id)),
             Err(e) if single => return Err(e),
             Err(e) => failed.push(json!({ "id": id.0, "path": path, "reason": e.to_string() })),
         }
@@ -714,11 +807,13 @@ fn run_relink(s: &mut Session, p: RelinkParams, _: Origin) -> Result<Value, Comm
             }
         }
     }
+    let report = report_of(s, &reloaded, found);
     let mut out = json!({
         "reloaded": ids_json(&reloaded),
         "unchanged": ids_json(&unchanged),
         "also_found": also_found,
         "warnings": warnings,
+        "report": report.to_json(),
     });
     if !single {
         out["failed"] = Value::Array(failed);
@@ -733,11 +828,11 @@ fn siblings(s: &Session, except: ObjectId, path: &Path) -> Vec<Value> {
         return Vec::new();
     };
     let project = s.doc().path.as_deref();
-    s.doc()
-        .document
-        .objects
+    let doc = &s.doc().document;
+    let group = doc.get(except).and_then(|o| o.link_group);
+    doc.objects
         .iter()
-        .filter(|o| o.id != except)
+        .filter(|o| o.id != except && (group.is_none() || o.link_group != group))
         .filter_map(|o| {
             let link = o.link.as_ref()?;
             let kind = source_kind(&o.source);
@@ -758,7 +853,7 @@ command!(
     mutates: true,
     params: RelinkParams,
     run: run_relink,
-    description: "Points an object's link to a file at a new location (after it was moved or renamed) and reloads it from there, keeping position, scale, rotation, mirror, cut options, name and visibility. An unlinked object gets a link. The file must exist and match the object's kind (.svg/.svgz for SVG objects, .png/.jpg/.jpeg/.webp/.gif for traced images); a file that cannot be read or parsed fails the call and changes nothing. One undo step. items: [{id, path}] instead of id and path relinks several objects in one undo step (for example the also_found list); an item that fails changes nothing and is listed in failed: [{id, path, reason}], the others are still relinked, and the call never fails because of an item (with one item too). Returns {reloaded: [id] (the content changed), unchanged: [id] (same content, only the link moved), also_found: [{id, path}] (other objects whose file is missing but whose file name exists in the new folder; relink them too, in one call with items), warnings: [text]}, plus failed with items.",
+    description: "Points an object's link to a file at a new location (after it was moved or renamed) and reloads it from there, keeping position, scale, rotation, mirror, cut options, name and visibility. An unlinked object gets a link. Linked copies (see object.copies) share the link, so relinking one relinks all members of its group, and all of them are listed; with items, a later item for another member of a group relinked earlier in the call is listed in failed. The file must exist and match the object's kind (.svg/.svgz for SVG objects, .png/.jpg/.jpeg/.webp/.gif for traced images); a file that cannot be read or parsed fails the call and changes nothing. One undo step. items: [{id, path}] instead of id and path relinks several objects in one undo step (for example the also_found list); an item that fails changes nothing and is listed in failed: [{id, path, reason}], the others are still relinked, and the call never fails because of an item (with one item too). Returns {reloaded: [id] (the content changed), unchanged: [id] (same content, only the link moved), also_found: [{id, path}] (other objects whose file is missing but whose file name exists in the new folder; relink them too, in one call with items), warnings: [text], report: {shapes, issues} (the import report of the reloaded objects, see document.check)}, plus failed with items. The result also has doc_id and document_name (null for a document never saved): the document it landed in, which is the one active when the call began, even if another one became active while it ran.",
 );
 
 // ---------------------------------------------------------------- unlink
@@ -778,6 +873,8 @@ fn run_unlink(s: &mut Session, p: UnlinkParams, _: Origin) -> Result<Value, Comm
         if let Some(o) = doc.get_mut(*id) {
             o.link = None;
         }
+        // Linked copies share the link.
+        doc.spread_shared(*id);
     }
     Ok(json!({ "ids": ids_json(&ids) }))
 }
@@ -789,7 +886,7 @@ command!(
     mutates: true,
     params: UnlinkParams,
     run: run_unlink,
-    description: "Forgets the file an object was imported from. The object keeps its embedded copy and stays as it is; it just no longer reloads or reports changes. One undo step. An empty ids list means the current selection. Returns {ids}.",
+    description: "Forgets the file an object was imported from. The object keeps its embedded copy and stays as it is; it just no longer reloads or reports changes. Linked copies (see object.copies) share the link, so all members of the group forget the file; to make a copy independent of its linked copies use object.unlink_copies. One undo step. An empty ids list means the current selection. Returns {ids}.",
 );
 
 // ---------------------------------------------------------------- check
@@ -870,7 +967,9 @@ fn probe(link: &SourceLink, source: &Source, project: Option<&Path>) -> Probe {
 pub struct SourceCheck {
     doc_id: u64,
     revision: u64,
-    probes: Vec<(ObjectId, Probe)>,
+    /// One probe per file link: linked copies share one, so their file is
+    /// looked at once and the result names all of them.
+    probes: Vec<(Vec<ObjectId>, Probe)>,
 }
 
 /// What a change check found, for the document `doc_id` at `revision`.
@@ -898,11 +997,18 @@ impl CheckResult {
 pub fn plan_check(s: &Session) -> SourceCheck {
     let st = s.doc();
     let project = st.path.as_deref();
-    let probes = st
-        .document
+    let doc = &st.document;
+    let leads = doc.group_leads();
+    let probes = doc
         .objects
         .iter()
-        .filter_map(|o| Some((o.id, probe(o.link.as_ref()?, &o.source, project))))
+        .filter(|o| o.link_group.is_none() || leads.contains(&o.id))
+        .filter_map(|o| {
+            Some((
+                doc.members(o.id),
+                probe(o.link.as_ref()?, &o.source, project),
+            ))
+        })
         .collect();
     SourceCheck {
         doc_id: st.id(),
@@ -922,7 +1028,7 @@ impl SourceCheck {
             missing: Vec::new(),
             unreadable: Vec::new(),
         };
-        for (id, probe) in self.probes {
+        for (ids, probe) in self.probes {
             let check = match probe {
                 Probe::Known(c) => c,
                 Probe::Hash { path, expected } => {
@@ -939,9 +1045,9 @@ impl SourceCheck {
             };
             match check {
                 Check::Same => {}
-                Check::Changed => out.changed.push(id),
-                Check::Missing => out.missing.push(id),
-                Check::Unreadable => out.unreadable.push(id),
+                Check::Changed => out.changed.extend(ids),
+                Check::Missing => out.missing.extend(ids),
+                Check::Unreadable => out.unreadable.extend(ids),
             }
         }
         out
@@ -1024,8 +1130,18 @@ pub(crate) fn relink_for_save(
     };
     let old_dir = project_dir(old_project);
     let mut previous = Vec::new();
+    // Linked copies share one link: it is worked out once per group, so
+    // the members never disagree, even when the file system changes while
+    // this runs.
+    let mut groups: Vec<(GroupId, SourceLink)> = Vec::new();
     for o in &mut doc.objects {
         let Some(link) = &o.link else { continue };
+        if let Some((_, next)) = groups.iter().find(|(g, _)| Some(*g) == o.link_group) {
+            if next != link {
+                previous.push((o.id, o.link.replace(next.clone())));
+            }
+            continue;
+        }
         let mut next = link.clone();
         if let Some(found) = locate(link, old_project, source_kind(&o.source)) {
             next.relative = relative_to(&found, &new_dir);
@@ -1039,6 +1155,9 @@ pub(crate) fn relink_for_save(
             next.relative = relative_to(&candidate, &new_dir);
         }
         next.anchor_dir = Some(new_dir.clone());
+        if let Some(g) = o.link_group {
+            groups.push((g, next.clone()));
+        }
         if &next != link {
             previous.push((o.id, o.link.replace(next)));
         }

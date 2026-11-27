@@ -4,7 +4,17 @@ Lucide icons (https://github.com/lucide-icons/lucide), tag 1.79.0.
 Licensed under the ISC License, see LICENSE (copied from the same tag).
 
 Each file is icons/<name>.svg from
-https://raw.githubusercontent.com/lucide-icons/lucide/1.79.0/icons/<name>.svg, unchanged.
+https://raw.githubusercontent.com/lucide-icons/lucide/1.79.0/icons/<name>.svg, unchanged,
+except the two files below.
+
+- `plotter.svg` is FlatCraft's own icon, not a Lucide icon: a cutting plotter (a carriage
+  on a rail over a sheet, with a small blade tip), drawn in the Lucide style (24 grid,
+  2 px round strokes). Lucide has no plotter. It is under the project licence (MPL-2.0).
+- `route-travel.svg` is derived from Lucide "route" (ISC, lucide-static v1.81.0). Its
+  middle segment is dotted (cut, travel, cut, like the Cut canvas): three round dots
+  in place of the solid line. The dots are drawn as round-capped zero-length segments,
+  because the renderer leaves out the last dot of a `stroke-dasharray` and the app's
+  crisp style would turn round dash caps square.
 
 | App icon | Lucide name |
 | --- | --- |
@@ -15,7 +25,7 @@ https://raw.githubusercontent.com/lucide-icons/lucide/1.79.0/icons/<name>.svg, u
 | Scale | scaling |
 | Rotate | rotate-cw |
 | Mirror | square-axis-dashed-vertical (formerly flip-horizontal) |
-| Align | align-center-horizontal |
+| Align, Align middle | align-center-horizontal |
 | Arrange | layout-grid |
 | Undo | undo-2 |
 | Redo | redo-2 |
@@ -45,8 +55,74 @@ https://raw.githubusercontent.com/lucide-icons/lucide/1.79.0/icons/<name>.svg, u
 | Test patterns | flask-conical |
 | Objects panel | panel-left |
 | Settings panel | panel-right |
+| Collapse the right panel | panel-right-close |
+| Collapse the left panel | panel-left-close |
+| Unlink file | file-x |
 | Rotate left | rotate-ccw |
 | Zoom 100% | percent |
+| Copies | copy-plus |
+| Distribute horizontally | align-horizontal-distribute-center |
+| Distribute vertically | align-vertical-distribute-center |
+| Linked copy | link |
+| Heart (About dialog) | heart |
+| Move / Copy | move |
+| Rectangular pattern | grid-2x2-plus |
+| Circular pattern | circle-dot |
+| Pin to the ribbon | pin |
+| Unpin from the ribbon | pin-off |
+| Drop-down | chevron-down |
+| Chevron left (collapse or open a side panel) | chevron-left |
+| Chevron right (collapse or open a side panel) | chevron-right |
+| Align left | align-start-vertical |
+| Align centre | align-center-vertical |
+| Align right | align-end-vertical |
+| Align top | align-start-horizontal |
+| Align bottom | align-end-horizontal |
+| Edit group | pencil |
+| Zoom group | zoom-in |
+| Panels group | panels-top-left |
+| Each object on (each on its own) | shapes |
+| Each object off (the selection as one piece) | square-dashed |
+| Group | group |
+| Ungroup | ungroup |
+| Auto arrange... (panel) | layout-dashboard |
+| Transform (group) | vector-square |
+| Warning (dialog badge) | triangle-exclamation-point |
+| Info (dialog badge) | info |
+| Error (dialog badge) | circle-x |
+| Appearance (Settings) | palette |
+| Agents (Settings) | bot |
+| Shortcuts (Settings) | keyboard |
+| Materials (Settings) | layers |
+| New project (Home) | file-plus |
+| Open (Home) | folder-open |
+| Thumbs up (How did it go?) | thumbs-up |
+| Thumbs down (How did it go?) | thumbs-down |
+| Device & Material (Cut stage), Plotters (Settings) | plotter (FlatCraft's own, MPL-2.0) |
+| Path (Cut stage) | route-travel (derived from route) |
+| Pick on the mat (Keep) | pipette |
+| Select tool | mouse-pointer-2 |
+| Lasso tool | lasso |
+| Simulate (Cut stage) | play |
+| Send (Cut stage) | send |
+| Bring to front | bring-to-front |
+| Bring forward | move-up |
+| Send backward | move-down |
+| Send to back | send-to-back |
 
-The SVGs draw with currentColor. The app replaces it with the theme's text colour before
-resvg renders them.
+The Align directions "to the cutting area" use the Align icons above. The app draws
+them smaller inside a dashed frame at render time; the files are not changed.
+
+The SVGs draw with currentColor. The files stay unchanged; the app colours them at render
+time in the "Paper (crisp)" style (`crates/flatcraft/src/ui/icons.rs`, `styled_svg`):
+
+- Line caps are square and joins are miter, so the icons look crisp.
+- Each icon has a colour role entry (`ICON_ROLES` in `crates/flatcraft/src/ui/tools.rs`):
+  the paper children (the things that get cut) are filled with the theme's paper colour
+  and outlined in the cut colour, one accent part (what happens) uses the accent colour,
+  and the rest uses the ink colour. Paper children are drawn first, so no fill covers a line.
+- The colours are theme tokens (`icon_paper`, `icon_cut`, `icon_accent`, `icon_ink`) for
+  light and dark.
+- At 20 px and less the 2-unit stroke is snapped to a whole number of pixels.
+- Icons without a role entry (app bar, pin, chevron) are drawn in the ink colour, and a
+  tinted icon uses one colour.

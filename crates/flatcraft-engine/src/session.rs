@@ -2,12 +2,15 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// A command result that `project.open` would refuse to place.
-const TOO_LARGE: &str = "That would make the object too large (over 1 km). Undo or scale it down.";
+const TOO_LARGE: &str = "That would put an object more than 1 km from the mat, or make it over 1 km in size. Undo it, or move or scale it back.";
+
+/// A command result whose linked copies no longer match (a bug).
+const LINKS_DRIFTED: &str = "That would make linked copies differ from each other, so nothing was changed. This is a bug, please report it.";
 
 use flatcraft_core::document::{CutOptions, Document, JobSettings, Object, ObjectId};
 use flatcraft_core::geometry::CutPath;
@@ -18,8 +21,10 @@ use flatcraft_device::{ByteLog, ProfileStore, TransportSpec};
 use kurbo::Rect;
 use thiserror::Error;
 
+use crate::cutgeom::CutGeometry;
 use crate::prefs::Preferences;
 use crate::registry;
+use crate::simulate::{SimRun, SimSummary};
 
 /// Who started a command. Agents get a few extra limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +59,7 @@ pub struct JobSummary {
     pub warnings: Vec<String>,
     pub speed: u8,
     pub force: u8,
+    /// The highest pass number: a ring of chained laps counts each lap.
     pub passes: u32,
 }
 
@@ -73,6 +79,9 @@ pub struct PendingSend {
     /// Checked when the agent asked, so only safe bytes ever wait.
     pub job: CheckedJob,
     pub summary: JobSummary,
+    /// The cut log entry, made when the agent asked; a confirmed send logs
+    /// it with the time and the target of the send.
+    pub log: crate::cutlog::CutEntry,
 }
 
 /// A send that waits for confirmation expires after this long.
@@ -89,6 +98,10 @@ impl PendingSend {
         now.saturating_duration_since(self.requested_at) >= PENDING_TTL
     }
 }
+
+/// What the cached cut log was read at: this session's revision, and the
+/// file's length and modification time.
+type CutLogKey = (u64, Option<u64>, Option<std::time::SystemTime>);
 
 /// Media new documents start on when the plotter lists it (see
 /// [`Session::default_media`]).
@@ -109,6 +122,12 @@ pub struct DocState {
     last_job: Option<Arc<JobResult>>,
     /// The job last sent from this document, kept apart from previews.
     last_sent: Option<Arc<JobResult>>,
+    /// The last simulation (`job.simulate`), valid only while its key
+    /// matches (see [`Session::last_sim`]). Dropped as soon as the key no
+    /// longer matches, so a stale trace never holds memory.
+    last_sim: Option<Arc<SimRun>>,
+    /// The summary of the last simulation, kept after its run was dropped.
+    sim_summary: Option<Arc<SimSummary>>,
     /// How many jobs were sent from this document.
     last_sent_rev: u64,
     /// Counts changes of `document`, so work done outside the session lock
@@ -116,6 +135,47 @@ pub struct DocState {
     revision: u64,
     /// `placed_bounds` of each object, for `document.state`.
     bounds_cache: HashMap<ObjectId, BoundsEntry>,
+    /// The burst of coalescing moves whose undo step is the newest one.
+    burst: Option<Burst>,
+    /// The cut geometry last built for this document, with its key (see
+    /// [`DocState::cut_geometry`]). Behind a lock so a reader that holds
+    /// the session only for reading can fill it.
+    cut_cache: Mutex<Option<(CacheKey, Arc<CutGeometry>)>>,
+}
+
+/// The document revision of a cut geometry seed's key: no document ever
+/// reaches it, so no reader takes the seed as it is.
+const SEED_REVISION: u64 = u64::MAX;
+
+/// What a document's cached cut geometry was built for: the document's
+/// revision, the profiles' revision, the plotter and material, and the
+/// flatten tolerance and minimum feature width taken from them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CacheKey {
+    pub doc_revision: u64,
+    pub profiles_revision: u64,
+    pub plotter_id: String,
+    pub material_id: String,
+    pub tol: f64,
+    pub min_width_mm: f64,
+}
+
+/// A run of `object.move` calls with one `coalesce_key` that share one
+/// undo step (see [`Session::coalesce_with`]).
+#[derive(Debug, Clone)]
+struct Burst {
+    key: String,
+    ids: Vec<ObjectId>,
+    /// The document revision after the burst's last move. Any other
+    /// command, undo or redo raises it and ends the burst. A save ends it
+    /// through [`DocState::end_burst`], since it leaves the revision alone.
+    revision: u64,
+    /// `dirty` before the burst's first move, for a burst that ends where
+    /// it started.
+    dirty_before: bool,
+    /// The redo steps the burst's first move cleared, given back when the
+    /// burst ends where it started.
+    redo_before: Vec<Document>,
 }
 
 /// Everything `placed_bounds` of an object depends on.
@@ -125,6 +185,9 @@ struct BoundsKey {
     transform: Transform,
     local_bounds: Rect,
     cut: CutOptions,
+    /// The knife's tolerance and narrowest feature, as bits (slivers do
+    /// not count).
+    knife: [u64; 2],
 }
 
 /// A cached bounding box. The geometry `Arc` is kept so its address cannot
@@ -137,12 +200,16 @@ struct BoundsEntry {
 }
 
 impl BoundsKey {
-    fn of(o: &Object) -> Self {
+    fn of(o: &Object, min_width: crate::cutgeom::Knife) -> Self {
         Self {
             geometry: Arc::as_ptr(&o.geometry) as usize,
             transform: o.transform,
             local_bounds: o.local_bounds,
             cut: o.cut,
+            knife: [
+                min_width.tolerance_mm.to_bits(),
+                min_width.min_width_mm.to_bits(),
+            ],
         }
     }
 }
@@ -165,9 +232,13 @@ impl Clone for DocState {
             dirty: self.dirty,
             last_job: self.last_job.clone(),
             last_sent: self.last_sent.clone(),
+            last_sim: self.last_sim.clone(),
+            sim_summary: self.sim_summary.clone(),
             last_sent_rev: self.last_sent_rev,
             revision: self.revision,
             bounds_cache: self.bounds_cache.clone(),
+            burst: self.burst.clone(),
+            cut_cache: Mutex::new(self.cut_cache_entry()),
         }
     }
 }
@@ -188,10 +259,89 @@ impl DocState {
             dirty: false,
             last_job: None,
             last_sent: None,
+            last_sim: None,
+            sim_summary: None,
             last_sent_rev: 0,
             revision: 0,
             bounds_cache: HashMap::new(),
+            burst: None,
+            cut_cache: Mutex::default(),
         }
+    }
+
+    /// Replaces the document (undo, redo, a restored state) and notes the
+    /// change, so everything keyed on the revision is built again.
+    pub fn set_document(&mut self, document: Document) {
+        self.document = document;
+        self.touch();
+    }
+
+    /// Puts back the document a failed command started from. The revision
+    /// stays: the document is the one it names again. The cut geometry
+    /// cache cannot go stale by this, since it is checked object by object
+    /// (see [`DocState::cut_geometry`]).
+    pub(crate) fn restore_document(&mut self, document: Document) {
+        self.document = document;
+    }
+
+    fn cut_cache_entry(&self) -> Option<(CacheKey, Arc<CutGeometry>)> {
+        self.cut_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The cut geometry for `key`: the cached one when it was built for
+    /// this key and still fits the document's objects, else `build`, which
+    /// gets the cached one to take unchanged objects from (C2: the cache is
+    /// keyed, never cleared by a flag, so undo, redo and profile edits
+    /// cannot leave it stale). The object check also covers a command that
+    /// reads the geometry half way, before its change raised the revision.
+    /// `objects` are this document's objects as a job input reads them.
+    pub fn cut_geometry(
+        &self,
+        key: CacheKey,
+        objects: &[crate::job::JobObject],
+        build: impl FnOnce(Option<&Arc<CutGeometry>>) -> Arc<CutGeometry>,
+    ) -> Arc<CutGeometry> {
+        let mut cache = self
+            .cut_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((k, g)) = cache.as_ref()
+            && *k == key
+            && g.is_for(objects, key.tol, key.min_width_mm)
+        {
+            return g.clone();
+        }
+        let built = build(cache.as_ref().map(|(_, g)| g));
+        *cache = Some((key, built.clone()));
+        built
+    }
+
+    /// The cached cut geometry, whatever it was built for: a seed for a
+    /// build outside the session lock (see `JobInput::with_seed`).
+    pub fn cached_cut_geometry(&self) -> Option<Arc<CutGeometry>> {
+        self.cut_cache_entry().map(|(_, g)| g)
+    }
+
+    /// The key of the cached cut geometry, if any.
+    pub fn cut_cache_key(&self) -> Option<CacheKey> {
+        self.cut_cache_entry().map(|(k, _)| k)
+    }
+
+    /// Stores cut geometry built outside the session lock, but only if the
+    /// document is still at the revision of `key`: work done on an older
+    /// state is never stored.
+    pub fn store_cut_geometry(&self, key: CacheKey, geometry: Arc<CutGeometry>) -> bool {
+        if key.doc_revision != self.revision {
+            return false;
+        }
+        *self
+            .cut_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((key, geometry));
+        true
     }
 
     /// Counts changes of the document. Commands that change it, undo, redo
@@ -200,21 +350,22 @@ impl DocState {
         self.revision
     }
 
-    /// `commands::placed_bounds` of every object, in document order. Only
-    /// objects whose geometry, transform or cut options changed since the
+    /// `commands::placed_bounds` of every object, in document order, for a
+    /// knife whose narrowest feature is `min_width`. Only objects whose
+    /// geometry, transform or cut options (or the width) changed since the
     /// last call are computed again.
-    pub fn placed_bounds_all(&mut self) -> Vec<Option<Rect>> {
+    pub fn placed_bounds_all(&mut self, min_width: crate::cutgeom::Knife) -> Vec<Option<Rect>> {
         let cache = &mut self.bounds_cache;
         let objects = &self.document.objects;
         cache.retain(|id, _| objects.iter().any(|o| o.id == *id));
         objects
             .iter()
             .map(|o| {
-                let key = BoundsKey::of(o);
+                let key = BoundsKey::of(o, min_width);
                 match cache.get(&o.id) {
                     Some(e) if e.key == key => e.bounds,
                     _ => {
-                        let bounds = crate::commands::placed_bounds(o);
+                        let bounds = crate::commands::placed_bounds(o, min_width);
                         cache.insert(
                             o.id,
                             BoundsEntry {
@@ -233,6 +384,14 @@ impl DocState {
     /// Notes a change of the document.
     pub(crate) fn touch(&mut self) {
         self.revision += 1;
+        self.drop_stale_sim(None);
+    }
+
+    /// Ends the burst of coalescing moves, so the next move records a step
+    /// of its own. A save calls it: the saved file is the new reference
+    /// for `dirty`, so the burst can no longer give back its old flag.
+    pub(crate) fn end_burst(&mut self) {
+        self.burst = None;
     }
 
     /// The job last built by `job.preview` or `job.send`.
@@ -249,6 +408,39 @@ impl DocState {
     /// new send without comparing bytes.
     pub fn last_sent_rev(&self) -> u64 {
         self.last_sent_rev
+    }
+
+    /// The last simulation stored in this document, whatever it was run
+    /// on: [`Session::last_sim`] gives it only while it is still valid.
+    pub fn stored_sim(&self) -> Option<&Arc<SimRun>> {
+        self.last_sim.as_ref()
+    }
+
+    /// Stores a simulation of this document (see `simulate::store`).
+    pub(crate) fn set_last_sim(&mut self, run: Arc<SimRun>) {
+        self.sim_summary = Some(Arc::new(run.summary()));
+        self.last_sim = Some(run);
+    }
+
+    /// The summary of the last simulation of this document, also after
+    /// its run (trace, samples and job) was dropped as stale. Its key says
+    /// what it was run for.
+    pub fn sim_summary(&self) -> Option<&Arc<SimSummary>> {
+        self.sim_summary.as_ref()
+    }
+
+    /// Drops the last simulation's run when its key no longer matches the
+    /// document's revision (or `profiles_revision`, when given), keeping
+    /// only its summary.
+    pub(crate) fn drop_stale_sim(&mut self, profiles_revision: Option<u64>) {
+        let stale = self.last_sim.as_ref().is_some_and(|r| {
+            r.key.doc_id != self.id
+                || r.key.doc_revision != self.revision
+                || profiles_revision.is_some_and(|p| p != r.key.profiles_revision)
+        });
+        if stale {
+            self.last_sim = None;
+        }
     }
 
     /// A built (previewed) job.
@@ -275,11 +467,149 @@ impl DocState {
             && !self.undo.can_redo()
     }
 
+    /// A copy for a command run off the session lock (`crate::unlocked`):
+    /// the same id, revision, document, selection, jobs and caches, but no
+    /// undo history (it is not needed and not cheap to copy). Only commands
+    /// that never read the undo history or the burst run on it.
+    pub(crate) fn twin(&self) -> DocState {
+        DocState {
+            id: self.id,
+            document: self.document.clone(),
+            selection: self.selection.clone(),
+            undo: UndoStack::default(),
+            path: self.path.clone(),
+            dirty: self.dirty,
+            last_job: self.last_job.clone(),
+            last_sent: self.last_sent.clone(),
+            last_sim: self.last_sim.clone(),
+            sim_summary: self.sim_summary.clone(),
+            last_sent_rev: self.last_sent_rev,
+            revision: self.revision,
+            bounds_cache: self.bounds_cache.clone(),
+            burst: None,
+            cut_cache: Mutex::new(self.cut_cache_entry()),
+        }
+    }
+
+    /// Adds the pieces of `extra` (cut geometry a command built on an
+    /// older snapshot) to the cached cut geometry, for the objects it does
+    /// not hold: a seed only, checked object by object when it is read.
+    pub(crate) fn seed_cut_geometry(&self, extra: &Arc<CutGeometry>) {
+        let mut cache = self
+            .cut_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let seed = match cache.take() {
+            Some((_, g)) => crate::cutgeom::merged_seed(&g, extra),
+            None => extra.clone(),
+        };
+        // A key no reader asks for: the merged geometry is only ever a
+        // seed for the next build, never read as it is.
+        let key = CacheKey {
+            doc_revision: SEED_REVISION,
+            profiles_revision: u64::MAX,
+            plotter_id: String::new(),
+            material_id: String::new(),
+            tol: f64::NAN,
+            min_width_mm: f64::NAN,
+        };
+        *cache = Some((key, seed));
+    }
+
+    /// What a twin started from, so [`DocState::adopt`] can tell what the
+    /// command changed from what changed here meanwhile.
+    pub(crate) fn twin_base(&self) -> TwinBase {
+        TwinBase {
+            selection: self.selection.clone(),
+            dirty: self.dirty,
+            last_job: self.last_job.clone(),
+            last_sim: self.last_sim.clone(),
+        }
+    }
+
+    /// Takes over what a command did on `twin`, a [`DocState::twin`] of
+    /// this document taken at `base`, while the document is still at the
+    /// revision the twin started from (the caller checks). The result is
+    /// the same as if the command had run here: the new document with one
+    /// undo step (when the command recorded one), the revision, the dirty
+    /// flag, the selection and the job it built, and the caches it filled.
+    /// A selection or dirty flag the command left alone keeps the value it
+    /// has here, which the window may have changed meanwhile.
+    pub(crate) fn adopt(&mut self, base: &TwinBase, twin: DocState) {
+        debug_assert_eq!(self.id, twin.id);
+        let mut recorded = false;
+        if twin.revision != self.revision {
+            // `run_command` records at most one step on the empty history.
+            if let Some(before) = twin.undo.last() {
+                self.undo.record(before.clone());
+                self.burst = None;
+                recorded = true;
+            }
+            self.document = twin.document;
+            self.revision = twin.revision;
+        }
+        // A recorded change always leaves the document dirty, even when a
+        // save finished meanwhile: that file holds the state before it.
+        if recorded || twin.dirty != base.dirty {
+            self.dirty = twin.dirty;
+        }
+        if twin.selection != base.selection {
+            self.selection = twin.selection;
+        }
+        self.prune_selection();
+        let same_job = match (&twin.last_job, &base.last_job) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same_job {
+            self.last_job = twin.last_job;
+        }
+        let same_sim = match (&twin.last_sim, &base.last_sim) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same_sim {
+            self.last_sim = twin.last_sim;
+            self.sim_summary = twin.sim_summary;
+        }
+        self.drop_stale_sim(None);
+        self.bounds_cache.extend(twin.bounds_cache);
+        let entry = twin
+            .cut_cache
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The cache is what the command left in it, as if it had run
+        // here: it is checked object by object on every read, so an entry
+        // built half way through the command is as good here as there.
+        // A seed (`seed_cut_geometry`) the command never built from stays
+        // out: it would push out the live document's own entry.
+        let seed = entry
+            .as_ref()
+            .is_some_and(|(k, _)| k.doc_revision == SEED_REVISION);
+        if entry.is_some() && !seed {
+            *self
+                .cut_cache
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = entry;
+        }
+    }
+
     /// Drops selected ids that no longer exist in the document.
     pub fn prune_selection(&mut self) {
         let doc = &self.document;
         self.selection.retain(|id| doc.get(*id).is_some());
     }
+}
+
+/// The selection, dirty flag and last job a [`DocState::twin`] started
+/// from.
+pub(crate) struct TwinBase {
+    selection: BTreeSet<ObjectId>,
+    dirty: bool,
+    last_job: Option<Arc<JobResult>>,
+    last_sim: Option<Arc<SimRun>>,
 }
 
 /// Compares embedded sources, the expensive part (up to 50 MB of bytes;
@@ -296,17 +626,26 @@ fn same_source(a: &flatcraft_core::document::Source, b: &flatcraft_core::documen
 fn same_except_links(a: &Document, b: &Document) -> bool {
     let pairs = || a.objects.iter().zip(&b.objects);
     a.job == b.job
+        && a.description == b.description
+        && a.notes == b.notes
         && a.next_id == b.next_id
         && a.format_version == b.format_version
         && a.objects.len() == b.objects.len()
+        && a.groups == b.groups
+        && a.ignored_pairs == b.ignored_pairs
+        && a.ignored_groups == b.ignored_groups
         && pairs().all(|(x, y)| {
             x.id == y.id
+                && x.parent == y.parent
                 && x.name == y.name
                 && x.visible == y.visible
+                && x.cut_enabled == y.cut_enabled
                 && x.transform == y.transform
                 && x.cut == y.cut
+                && x.keep == y.keep
                 && x.frame == y.frame
                 && x.local_bounds == y.local_bounds
+                && x.link_group == y.link_group
         })
         && pairs().all(|(x, y)| {
             std::sync::Arc::ptr_eq(&x.geometry, &y.geometry) || x.geometry == y.geometry
@@ -322,6 +661,30 @@ fn same_document(a: &Document, b: &Document) -> bool {
             .zip(&b.objects)
             .all(|(x, y)| x.link == y.link)
         && same_except_links(a, b)
+}
+
+/// What a command that changes session state may change in one open
+/// document, kept to undo a panic (see [`Session::roll_back`]).
+struct DocSnapshot {
+    id: u64,
+    document: Document,
+    selection: BTreeSet<ObjectId>,
+    undo: UndoStack<Document>,
+    path: Option<PathBuf>,
+    dirty: bool,
+    /// Only for a document the command removed: the rest of its state.
+    revision: u64,
+    last_job: Option<Arc<JobResult>>,
+    last_sent: Option<Arc<JobResult>>,
+    last_sent_rev: u64,
+}
+
+/// The open documents, the active one and the send that waits for
+/// confirmation, before a command.
+pub(crate) struct SessionSnapshot {
+    docs: Vec<DocSnapshot>,
+    active: usize,
+    pending_send: Option<PendingSend>,
 }
 
 /// The engine state shared by the GUI, the MCP server and tests.
@@ -343,18 +706,70 @@ pub struct Session {
     /// Set by a mutating command that ended up changing nothing the user
     /// would undo (see `mark_no_user_change`). Reset before every command.
     no_user_change: bool,
+    /// Set by a move that may join the undo step of the burst before it
+    /// (see `coalesce_with`). Reset before every command.
+    coalesce: Option<(String, Vec<ObjectId>)>,
     /// Set by [`Session::watch_prefs_file`] (headless MCP).
     prefs_watch: Option<PrefsWatch>,
+    /// The last warning about a broken or unreadable preferences file that
+    /// nobody showed yet (see [`Session::take_prefs_warning`]).
+    prefs_warning: Option<String>,
+    /// One save at a time (see [`Session::save_gate`]).
+    save_gate: Arc<Mutex<()>>,
+    /// Counts the lines this session added to the cut log.
+    cut_log_rev: u64,
+    /// The cut log as read at a revision and file stamp (see
+    /// [`Session::cut_log`]).
+    cut_log_cache: Mutex<Option<(CutLogKey, Arc<crate::cutlog::CutLog>)>>,
+    /// Tests only: runs in the write step of every save, without the
+    /// session lock, with the file the save replaces.
+    #[doc(hidden)]
+    pub save_write_hook: Option<SaveWriteHook>,
+    /// Tests only: runs in the compute step of every command that runs off
+    /// the session lock (`crate::unlocked`), without the lock, with the
+    /// command id.
+    #[doc(hidden)]
+    pub unlocked_hook: Option<UnlockedHook>,
+}
+
+/// A test hook for the compute step of a command that runs off the
+/// session lock (see [`Session::unlocked_hook`]).
+#[derive(Clone)]
+pub struct UnlockedHook(pub Arc<dyn Fn(&str) + Send + Sync>);
+
+impl std::fmt::Debug for UnlockedHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("UnlockedHook")
+    }
+}
+
+/// A test hook for the write step of a save (see
+/// [`Session::save_write_hook`]).
+#[derive(Clone)]
+pub struct SaveWriteHook(pub Arc<dyn Fn(&std::path::Path) + Send + Sync>);
+
+impl std::fmt::Debug for SaveWriteHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SaveWriteHook")
+    }
 }
 
 /// How often a headless session looks at the preferences file.
 pub const PREFS_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Modification time and size of the preferences file (see
+/// [`Preferences::stamp`]).
+type PrefsStamp = Option<(Option<std::time::SystemTime>, u64)>;
+
 /// What a headless session knows about the preferences file.
 #[derive(Debug, Clone)]
 struct PrefsWatch {
     last_check: Option<Instant>,
-    stamp: Option<(Option<std::time::SystemTime>, u64)>,
+    /// The file as it was at the last successful read.
+    stamp: PrefsStamp,
+    /// The file as it was when a failed read was last reported, so a file
+    /// that stays broken is reported once, not every second.
+    warned: Option<PrefsStamp>,
 }
 
 impl Session {
@@ -378,10 +793,69 @@ impl Session {
             pending_send: None,
             next_pending_id: 1,
             no_user_change: false,
+            coalesce: None,
             prefs_watch: None,
+            prefs_warning: None,
+            save_gate: Arc::default(),
+            cut_log_rev: 0,
+            cut_log_cache: Mutex::default(),
+            save_write_hook: None,
+            unlocked_hook: None,
         };
         s.docs.push(s.new_doc_state());
         s
+    }
+
+    /// A private session that holds only a twin of the open document at
+    /// `index` ([`DocState::twin`]), active in it, and copies of the
+    /// profiles and preferences, for a command run off the session lock
+    /// (`crate::unlocked`). It never reads the preferences file, never
+    /// sends and never saves.
+    pub(crate) fn scratch_of(&self, index: usize) -> Session {
+        Session {
+            docs: vec![self.docs[index].twin()],
+            active: 0,
+            profiles: self.profiles.clone(),
+            prefs: self.prefs.clone(),
+            has_ui: self.has_ui,
+            config_dir: self.config_dir.clone(),
+            last_agent_activity: None,
+            byte_log: ByteLog::new(),
+            pending_send: None,
+            next_pending_id: 1,
+            no_user_change: false,
+            coalesce: None,
+            prefs_watch: None,
+            prefs_warning: None,
+            save_gate: Arc::default(),
+            cut_log_rev: self.cut_log_rev,
+            cut_log_cache: Mutex::default(),
+            save_write_hook: None,
+            unlocked_hook: None,
+        }
+    }
+
+    /// Runs `command`, a command whose slow part already ran off the
+    /// session lock, with the same bookkeeping as [`Session::execute`]
+    /// (undo step, rollback after a panic, linked copies), but without
+    /// reading the preferences again: the caller did that when it took
+    /// its snapshot.
+    pub(crate) fn run_prepared(
+        &mut self,
+        command: &dyn registry::Command,
+        origin: Origin,
+    ) -> Result<serde_json::Value, CommandError> {
+        let result = self.run_command(command, serde_json::Value::Null, origin);
+        self.prune_pending();
+        result
+    }
+
+    /// The gate every save of this session passes, so two saves never
+    /// write at the same time and one finishes before the next begins
+    /// (`commands::project::save_unlocked`). Take it before the session
+    /// lock, never while holding it.
+    pub fn save_gate(&self) -> Arc<Mutex<()>> {
+        Arc::clone(&self.save_gate)
     }
 
     /// The mat new documents on `plotter_id` start on: [`DEFAULT_MEDIA`]
@@ -408,6 +882,8 @@ impl Session {
             speed: None,
             force: None,
             passes: None,
+            strategy: self.prefs.default_strategy,
+            weed: Default::default(),
         }))
     }
 
@@ -417,6 +893,76 @@ impl Session {
 
     pub fn doc_mut(&mut self) -> &mut DocState {
         &mut self.docs[self.active]
+    }
+
+    /// The cut geometry of the active document for its plotter and
+    /// material, from the document's cache when it still fits. The job
+    /// build, the preview, the export, the report and the window all read
+    /// this one copy.
+    pub fn cut_geometry(&self) -> Result<Arc<CutGeometry>, CommandError> {
+        Ok(crate::job::JobInput::of(self)?.cut_geometry())
+    }
+
+    /// The key of the cut geometry of `input`, taken from the open
+    /// document `st`.
+    fn cut_key(&self, st: &DocState, input: &crate::job::JobInput) -> CacheKey {
+        CacheKey {
+            doc_revision: st.revision(),
+            profiles_revision: self.profiles.revision(),
+            plotter_id: input.plotter.id.clone(),
+            material_id: input.material.id.clone(),
+            tol: input.tolerance_mm(),
+            min_width_mm: input.min_width_mm(),
+        }
+    }
+
+    /// The cut geometry of `input`, an input of the active document, from
+    /// and into the document's cache.
+    pub(crate) fn cut_geometry_of(&self, input: &crate::job::JobInput) -> Arc<CutGeometry> {
+        let st = self.doc();
+        let key = self.cut_key(st, input);
+        let (tol, min_width) = (key.tol, key.min_width_mm);
+        st.cut_geometry(key, &input.objects, |prev| {
+            crate::cutgeom::objects_cut_geometry(&input.objects, tol, min_width, prev)
+        })
+    }
+
+    /// Stores the cut geometry a window built outside the session lock
+    /// from `input`, an input of the open document `doc_id` taken at
+    /// `doc_revision`. Nothing is stored when the document changed since,
+    /// is closed, or the geometry was not built. Returns true if stored.
+    pub fn offer_cut_geometry(
+        &self,
+        doc_id: u64,
+        doc_revision: u64,
+        input: &crate::job::JobInput,
+    ) -> bool {
+        let (Ok(index), Some(geometry)) = (self.doc_index(doc_id), input.built_cut_geometry())
+        else {
+            return false;
+        };
+        let st = &self.docs[index];
+        if st.revision() != doc_revision
+            || st
+                .cached_cut_geometry()
+                .is_some_and(|g| Arc::ptr_eq(&g, &geometry))
+        {
+            return false;
+        }
+        st.store_cut_geometry(self.cut_key(st, input), geometry)
+    }
+
+    /// The last simulation of the active document (`job.simulate`), only
+    /// while it is valid: run on this document at its current revision,
+    /// with the profiles at their current revision. Any edit, undo, redo
+    /// or profile change makes it stale.
+    pub fn last_sim(&self) -> Option<&Arc<SimRun>> {
+        let st = self.doc();
+        st.stored_sim().filter(|r| {
+            r.key.doc_id == st.id()
+                && r.key.doc_revision == st.revision()
+                && r.key.profiles_revision == self.profiles.revision()
+        })
     }
 
     /// Index of the open document with this stable id.
@@ -436,14 +982,31 @@ impl Session {
         self.prefs_watch = Some(PrefsWatch {
             last_check: None,
             stamp: Preferences::stamp(&self.config_dir),
+            warned: None,
         });
+    }
+
+    /// Keeps a warning about the preferences file for the window to show
+    /// (`main` hands over the one from loading at start). A newer warning
+    /// replaces an older one nobody showed yet.
+    pub fn note_prefs_warning(&mut self, text: String) {
+        self.prefs_warning = Some(text);
+    }
+
+    /// The warning about a broken or unreadable preferences file that was
+    /// not shown yet, if any. The window shows it as a toast.
+    pub fn take_prefs_warning(&mut self) -> Option<String> {
+        self.prefs_warning.take()
     }
 
     /// Reloads the preferences when the file changed since the last look,
     /// at most once per [`PREFS_CHECK_INTERVAL`] at `now`. A file that cannot
     /// be read or parsed keeps the preferences as they are, except that
-    /// agent cuts turn off (fail closed) until the file is fixed. Returns
-    /// true if it reloaded them. Never writes the file.
+    /// agent cuts turn off (fail closed) until the file is fixed; it is
+    /// read again at the next check, so a passing error heals by itself,
+    /// and reported once per change of the file (stderr and
+    /// [`Session::take_prefs_warning`]). Returns true if it reloaded them.
+    /// Never writes the file.
     pub fn refresh_prefs(&mut self, now: Instant) -> bool {
         let Some(w) = &mut self.prefs_watch else {
             return false;
@@ -455,22 +1018,31 @@ impl Session {
         }
         w.last_check = Some(now);
         let stamp = Preferences::stamp(&self.config_dir);
-        if stamp == w.stamp {
+        // After a failed read the file is read again even when it looks
+        // like the last good one: an exact restore (`cp -p`) has the same
+        // time and size.
+        if stamp == w.stamp && w.warned.is_none() {
             return false;
         }
-        // Once per change of the file, also a broken one: fixing it changes
-        // the time or size again.
-        w.stamp = stamp;
+        // The stamp is taken before the read: a change in between only
+        // means one more read at the next check, never a missed one.
         match Preferences::read(&self.config_dir) {
             Ok(prefs) => {
+                w.stamp = stamp;
+                w.warned = None;
                 self.prefs = prefs;
                 true
             }
             Err(e) => {
-                eprintln!(
-                    "warning: {e}. Keeping the preferences read before, with agent cuts off until the file is fixed."
-                );
+                // The old stamp stays, so the next check reads again.
                 self.prefs.allow_agent_cuts = false;
+                if w.warned != Some(stamp) {
+                    w.warned = Some(stamp);
+                    self.prefs_warning = Some(crate::prefs::warning(
+                        &e,
+                        "Keeping the preferences read before, with agent cuts off until the file is fixed.",
+                    ));
+                }
                 false
             }
         }
@@ -488,7 +1060,71 @@ impl Session {
             // Our own write is no news.
             w.stamp = Preferences::stamp(&self.config_dir);
         }
-        written
+        // A broken file was kept as a copy: the window says so.
+        written.map(|warning| {
+            if let Some(w) = warning {
+                self.note_prefs_warning(w);
+            }
+        })
+    }
+
+    /// The cut log in the config dir. Read again after this session adds
+    /// to it and when the file's length or modification time changed (a
+    /// send from another FlatCraft), so the window can ask every frame.
+    pub fn cut_log(&self) -> Arc<crate::cutlog::CutLog> {
+        let meta = std::fs::metadata(crate::cutlog::path(&self.config_dir)).ok();
+        let key: CutLogKey = (
+            self.cut_log_rev,
+            meta.as_ref().map(std::fs::Metadata::len),
+            meta.and_then(|m| m.modified().ok()),
+        );
+        let mut cache = self
+            .cut_log_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((k, log)) = cache.as_ref()
+            && *k == key
+        {
+            return log.clone();
+        }
+        let log = Arc::new(crate::cutlog::read(&self.config_dir));
+        *cache = Some((key, log.clone()));
+        log
+    }
+
+    /// Appends a completed send to the cut log.
+    pub(crate) fn log_cut(&mut self, entry: &crate::cutlog::CutEntry) -> std::io::Result<()> {
+        let result = crate::cutlog::append(&self.config_dir, entry);
+        self.cut_log_rev += 1;
+        result
+    }
+
+    /// The person said how the cut `entry` went: appends it to the cut
+    /// log. GUI only, not a registry command: agents read the log
+    /// (`job.history`) but never write it. An entry that is not in the
+    /// log is refused, and so is a calibration cut
+    /// ([`crate::cutlog::CALIBRATION_NOT_RATED`]).
+    pub fn record_outcome(
+        &mut self,
+        entry: &str,
+        verdict: crate::cutlog::Verdict,
+        note: &str,
+    ) -> Result<(), String> {
+        match self.cut_log().get(entry) {
+            None => return Err(format!("the cut log has no cut {entry}")),
+            Some(e) if e.is_calibration() => {
+                return Err(crate::cutlog::CALIBRATION_NOT_RATED.to_string());
+            }
+            Some(_) => {}
+        }
+        let outcome = crate::cutlog::Outcome {
+            verdict,
+            note: note.trim().to_string(),
+            date: crate::cutlog::now(),
+        };
+        let result = crate::cutlog::append_outcome(&self.config_dir, entry, &outcome);
+        self.cut_log_rev += 1;
+        result.map_err(|e| format!("the cut log could not be written: {e}"))
     }
 
     /// The send that waits for confirmation in the GUI, if any.
@@ -505,6 +1141,7 @@ impl Session {
         transport: TransportSpec,
         job: CheckedJob,
         summary: JobSummary,
+        log: crate::cutlog::CutEntry,
     ) -> u64 {
         let id = self.next_pending_id;
         self.next_pending_id += 1;
@@ -517,13 +1154,14 @@ impl Session {
             transport,
             job,
             summary,
+            log,
         });
         id
     }
 
     /// Drops the pending send when its document is no longer open (closed,
     /// or replaced by another document in its slot).
-    fn prune_pending(&mut self) {
+    pub(crate) fn prune_pending(&mut self) {
         if let Some(p) = &self.pending_send
             && !self.docs.iter().any(|d| d.id() == p.doc)
         {
@@ -589,7 +1227,9 @@ impl Session {
             &pending.name,
             Origin::User,
         )?;
-        Ok(crate::job::sent_json(&report, &pending.summary))
+        let mut value = crate::job::sent_json(&report, &pending.summary);
+        crate::job::log_sent(self, pending.log, &pending.transport, &report, &mut value);
+        Ok(value)
     }
 
     /// Runs a registry command. Commands that change the document record an
@@ -609,6 +1249,36 @@ impl Session {
             registry::get(id).ok_or_else(|| CommandError::UnknownCommand(id.to_string()))?;
         let result = self.run_command(command, params, origin);
         self.prune_pending();
+        self.drop_stale_sims();
+        result
+    }
+
+    /// Drops every stale simulation run (see [`DocState::drop_stale_sim`]),
+    /// also those a profile change made stale.
+    pub fn drop_stale_sims(&mut self) {
+        let profiles = self.profiles.revision();
+        for st in &mut self.docs {
+            st.drop_stale_sim(Some(profiles));
+        }
+    }
+
+    /// Runs a registry command in the open document `doc_id`, active or
+    /// not, and leaves the active document as it was. For a value typed
+    /// into the window for one document and applied after another became
+    /// active. Only for commands that change one document's objects
+    /// (`object.move`, `object.scale`), never ones that open, close or
+    /// switch documents.
+    pub fn execute_in(
+        &mut self,
+        doc_id: u64,
+        id: &str,
+        params: serde_json::Value,
+        origin: Origin,
+    ) -> Result<serde_json::Value, CommandError> {
+        let index = self.doc_index(doc_id)?;
+        let active = std::mem::replace(&mut self.active, index);
+        let result = self.execute(id, params, origin);
+        self.active = active.min(self.docs.len().saturating_sub(1));
         result
     }
 
@@ -624,31 +1294,93 @@ impl Session {
         self.no_user_change = true;
     }
 
+    /// Called by a move with a `coalesce_key`: if the newest undo step is a
+    /// burst of moves with this key and these ids, and nothing changed the
+    /// document since, this move joins that step instead of recording its
+    /// own. A burst that ends where it started leaves no step at all.
+    pub(crate) fn coalesce_with(&mut self, key: String, ids: Vec<ObjectId>) {
+        self.coalesce = Some((key, ids));
+    }
+
     fn run_command(
         &mut self,
         command: &dyn registry::Command,
         params: serde_json::Value,
         origin: Origin,
     ) -> Result<serde_json::Value, CommandError> {
+        // The ranges of the schema hold for every caller.
+        if let Some(schema) = crate::commands::meta::schema_of(command.id())
+            && let Some(why) = crate::commands::meta::out_of_range(&schema, &params)
+        {
+            return Err(CommandError::InvalidParams(why));
+        }
         if !command.mutates_document() {
-            return run_caught(command, self, params, origin)
-                .unwrap_or_else(|()| Err(internal_error()));
+            let snapshot = command.changes_session().then(|| self.snapshot());
+            let result = run_caught(command, self, params, origin);
+            return match (result, snapshot) {
+                // Linked copies in every open document still agree.
+                (Ok(Ok(_)), Some(snapshot)) if !self.links_agree() => {
+                    self.roll_back(snapshot);
+                    Err(CommandError::Failed(LINKS_DRIFTED.into()))
+                }
+                (Ok(result), _) => result,
+                // A panic: put the open documents back as they were.
+                (Err(()), snapshot) => {
+                    if let Some(snapshot) = snapshot {
+                        self.roll_back(snapshot);
+                    }
+                    Err(internal_error(command.id()))
+                }
+            };
         }
         let index = self.active;
         let doc_id = self.docs[index].id();
         let before = self.docs[index].document.clone();
+        // The other documents, to put back should the command break their
+        // linked copies. Cheap: shapes and sources are shared `Arc`s.
+        let others: Vec<(u64, Document)> = self
+            .docs
+            .iter()
+            .filter(|d| d.id() != doc_id)
+            .map(|d| (d.id(), d.document.clone()))
+            .collect();
         self.no_user_change = false;
+        self.coalesce = None;
         let caught = run_caught(command, self, params, origin);
         let no_user_change = std::mem::take(&mut self.no_user_change);
+        let coalesce = self.coalesce.take();
         let Ok(result) = caught else {
             // A panic: the command may have stopped half way. Put the
             // document back, if it is still open.
             if let Some(state) = self.docs.iter_mut().find(|d| d.id() == doc_id) {
-                state.document = before;
+                state.restore_document(before);
                 state.prune_selection();
             }
-            return Err(internal_error());
+            return Err(internal_error(command.id()));
         };
+        if result.is_ok() {
+            // A group of one is no group, and members never drift apart:
+            // the one place every document change passes. Every open
+            // document is checked, not only the active one.
+            self.docs[index].document.dissolve_lonely_groups();
+            // The same for groups of objects: a group of one dissolves.
+            self.docs[index].document.normalize_groups();
+            // An ignored pair whose object is gone is forgotten, in the
+            // same undo step as the delete.
+            self.docs[index].document.prune_ignored_pairs();
+            debug_assert!(self.docs[index].document.groups_valid());
+            if !self.links_agree() {
+                for d in &mut self.docs {
+                    if d.id() == doc_id {
+                        d.restore_document(before.clone());
+                    } else if let Some((_, doc)) = others.iter().find(|(id, _)| *id == d.id()) {
+                        d.restore_document(doc.clone());
+                    }
+                    d.prune_selection();
+                }
+                return Err(CommandError::Failed(LINKS_DRIFTED.into()));
+            }
+        }
         let state = &mut self.docs[index];
         match result {
             Ok(value) if no_user_change => {
@@ -674,19 +1406,67 @@ impl Session {
             {
                 // project.open would refuse this placement, so it could
                 // never be saved and reopened.
-                state.document = before;
+                state.restore_document(before);
                 state.prune_selection();
                 Err(CommandError::Refused(TOO_LARGE.into()))
             }
             Ok(value) => {
+                // A save after the burst's last move ends it (`end_burst`);
+                // a clean document never joins a burst either way.
+                let joined = match (&coalesce, state.burst.take()) {
+                    (Some((key, ids)), Some(b))
+                        if b.key == *key
+                            && b.ids == *ids
+                            && b.revision == state.revision
+                            && state.dirty =>
+                    {
+                        Some(b)
+                    }
+                    _ => None,
+                };
+                let joining = joined.is_some();
+                let (dirty_before, redo_before) = match joined {
+                    Some(b) => (b.dirty_before, b.redo_before),
+                    None => {
+                        // A burst's first step: keep what it may give back.
+                        let redo = if coalesce.is_some() {
+                            state.undo.redo_states().to_vec()
+                        } else {
+                            Vec::new()
+                        };
+                        let dirty = state.dirty;
+                        state.undo.record(before);
+                        (dirty, redo)
+                    }
+                };
                 state.touch();
-                state.undo.record(before);
                 state.dirty = true;
+                if joining
+                    && state
+                        .undo
+                        .last()
+                        .is_some_and(|start| same_document(start, &state.document))
+                {
+                    // Back where the burst started: nothing to undo, the
+                    // redo steps it cleared are good again, and nothing
+                    // more to save than before it.
+                    state.undo.discard_last();
+                    state.undo.restore_redo(redo_before);
+                    state.dirty = dirty_before;
+                } else {
+                    state.burst = coalesce.map(|(key, ids)| Burst {
+                        key,
+                        ids,
+                        revision: state.revision,
+                        dirty_before,
+                        redo_before,
+                    });
+                }
                 state.prune_selection();
                 Ok(value)
             }
             Err(e) => {
-                state.document = before;
+                state.restore_document(before);
                 state.prune_selection();
                 Err(e)
             }
@@ -694,12 +1474,105 @@ impl Session {
     }
 }
 
-/// What a command that panicked returns.
-fn internal_error() -> CommandError {
-    CommandError::Failed(
-        "FlatCraft hit an internal error, so this command changed nothing. Please report it at https://github.com/jordiboehme/flatcraft/issues."
-            .into(),
-    )
+impl Session {
+    /// True if the linked copies of every open document agree
+    /// ([`Document::link_groups_agree`]).
+    fn links_agree(&self) -> bool {
+        self.docs.iter().all(|d| d.document.link_groups_agree())
+    }
+
+    /// The open documents as they are, for [`Session::roll_back`]. Never a
+    /// `DocState::clone`, which would give new ids.
+    pub(crate) fn snapshot(&self) -> SessionSnapshot {
+        SessionSnapshot {
+            docs: self
+                .docs
+                .iter()
+                .map(|d| DocSnapshot {
+                    id: d.id,
+                    document: d.document.clone(),
+                    selection: d.selection.clone(),
+                    undo: d.undo.clone(),
+                    path: d.path.clone(),
+                    dirty: d.dirty,
+                    revision: d.revision,
+                    last_job: d.last_job.clone(),
+                    last_sent: d.last_sent.clone(),
+                    last_sent_rev: d.last_sent_rev,
+                })
+                .collect(),
+            active: self.active,
+            pending_send: self.pending_send.clone(),
+        }
+    }
+
+    /// Puts the open documents back as `snapshot` saw them, after a command
+    /// panicked half way. A document that is still open gets its contents
+    /// back in place, so its id, its caches and a pending send on it stay;
+    /// one the command removed or replaced comes back with its old id;
+    /// documents the command added are dropped. Every restored document
+    /// gets a new revision, so work started on any state meanwhile is not
+    /// stored.
+    pub(crate) fn roll_back(&mut self, snapshot: SessionSnapshot) {
+        let mut current = std::mem::take(&mut self.docs);
+        for d in snapshot.docs {
+            let st = match current.iter().position(|c| c.id == d.id) {
+                Some(i) => {
+                    let mut st = current.swap_remove(i);
+                    st.set_document(d.document);
+                    st.selection = d.selection;
+                    st.undo = d.undo;
+                    st.path = d.path;
+                    st.dirty = d.dirty;
+                    st
+                }
+                None => DocState {
+                    id: d.id,
+                    document: d.document,
+                    selection: d.selection,
+                    undo: d.undo,
+                    path: d.path,
+                    dirty: d.dirty,
+                    last_job: d.last_job,
+                    last_sent: d.last_sent,
+                    last_sim: None,
+                    sim_summary: None,
+                    last_sent_rev: d.last_sent_rev,
+                    revision: d.revision + 1,
+                    bounds_cache: HashMap::new(),
+                    burst: None,
+                    cut_cache: Mutex::default(),
+                },
+            };
+            self.docs.push(st);
+        }
+        // What is left in `current` was added by the command.
+        self.active = snapshot.active.min(self.docs.len().saturating_sub(1));
+        // A send the failed command asked for never waits.
+        self.pending_send = snapshot.pending_send;
+    }
+}
+
+/// What the command `id` returns when it panicked. The session state is
+/// put back, but a file a command wrote may stay, so those commands do not
+/// claim that nothing changed.
+pub(crate) fn internal_error(id: &str) -> CommandError {
+    const REPORT: &str = "Please report it at https://github.com/jordiboehme/flatcraft/issues.";
+    let written = match id {
+        "project.save" | "tools.test_patterns" | "document.export" => {
+            Some("the file may have been written")
+        }
+        "job.send" => Some("the job may have been written or sent"),
+        _ => None,
+    };
+    CommandError::Failed(match written {
+        Some(w) => format!(
+            "FlatCraft hit an internal error: {w}; the document state was restored. {REPORT}"
+        ),
+        None => {
+            format!("FlatCraft hit an internal error, so this command changed nothing. {REPORT}")
+        }
+    })
 }
 
 /// Runs a command; `Err(())` if it panicked. The caller turns that into
@@ -712,7 +1585,12 @@ fn run_caught(
     origin: Origin,
 ) -> Result<Result<serde_json::Value, CommandError>, ()> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        command.run(s, params, origin)
+        let result = command.run(s, params, origin);
+        #[cfg(test)]
+        if tests::PANIC_AFTER.with(std::cell::Cell::get) == Some(command.id()) {
+            panic!("test: {} panics after it ran", command.id());
+        }
+        result
     }))
     .map_err(|_| ())
 }
@@ -725,6 +1603,194 @@ mod tests {
 
     thread_local! {
         pub(super) static SOURCE_COMPARES: Cell<usize> = const { Cell::new(0) };
+        /// The command that panics right after it ran (it did all its work).
+        pub(super) static PANIC_AFTER: Cell<Option<&'static str>> = const { Cell::new(None) };
+    }
+
+    const SQUARE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><rect x="20" y="20" width="30" height="30"/></svg>"#;
+
+    /// Runs `id` as the user; it panics after it did its work.
+    fn panicking(s: &mut Session, id: &'static str, params: serde_json::Value) {
+        PANIC_AFTER.with(|p| p.set(Some(id)));
+        let e = s.execute(id, params, Origin::User).unwrap_err();
+        PANIC_AFTER.with(|p| p.set(None));
+        assert!(e.to_string().contains("internal error"), "{id}: {e}");
+    }
+
+    fn ok(s: &mut Session, id: &str, params: serde_json::Value) -> serde_json::Value {
+        s.execute(id, params, Origin::User)
+            .unwrap_or_else(|e| panic!("{id}: {e}"))
+    }
+
+    /// A window session on the Cameo 2 (USB) with one square in document
+    /// A and an agent's cut waiting for confirmation, and a pristine
+    /// document B, active.
+    fn with_pending(dir: &tempfile::TempDir) -> Session {
+        let profiles = flatcraft_device::ProfileStore::load(dir.path()).unwrap();
+        let prefs = Preferences {
+            output_dir: Some(dir.path().join("output")),
+            ..Preferences::default()
+        };
+        let mut s = Session::new(profiles, prefs, true, dir.path().to_path_buf());
+        ok(
+            &mut s,
+            "object.import_svg",
+            serde_json::json!({ "svg": SQUARE, "name": "sq" }),
+        );
+        ok(
+            &mut s,
+            "job.set_plotter",
+            serde_json::json!({ "id": "silhouette-cameo-2" }),
+        );
+        let e = s
+            .execute(
+                "job.send",
+                serde_json::json!({ "name": "wait" }),
+                Origin::Agent,
+            )
+            .unwrap_err();
+        assert!(e.to_string().contains("Waiting for confirmation"), "{e}");
+        ok(&mut s, "document.new", serde_json::json!({}));
+        s
+    }
+
+    fn ids(s: &Session) -> Vec<u64> {
+        s.docs.iter().map(DocState::id).collect()
+    }
+
+    #[test]
+    fn panicking_open_keeps_doc_ids_and_pending_send() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = with_pending(&dir);
+        let file = dir.path().join("p.flatcraft");
+        flatcraft_core::project::save(&s.docs[0].document, &file).unwrap();
+        let pending = s.pending_send().unwrap().id;
+        let before = ids(&s);
+        let revision = s.docs[1].revision();
+        // B is pristine: open replaces it in its slot, then panics.
+        assert!(s.doc().is_pristine());
+        panicking(&mut s, "project.open", serde_json::json!({ "path": file }));
+        assert_eq!(ids(&s), before, "the same documents, same ids");
+        assert_eq!(s.active, 1);
+        assert!(s.doc().is_pristine());
+        assert!(s.doc().revision() > revision, "a restored document is news");
+        assert_eq!(s.pending_send().map(|p| p.id), Some(pending));
+        // A is active and not pristine: open pushes a document, then panics.
+        ok(&mut s, "document.switch", serde_json::json!({ "index": 0 }));
+        let a = s.docs[0].document.clone();
+        panicking(&mut s, "project.open", serde_json::json!({ "path": file }));
+        assert_eq!(ids(&s), before, "the pushed document is gone");
+        assert_eq!(s.active, 0);
+        assert!(same_document(&s.docs[0].document, &a));
+        assert_eq!(s.pending_send().map(|p| p.id), Some(pending));
+    }
+
+    #[test]
+    fn panicking_close_and_undo_put_the_documents_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = with_pending(&dir);
+        let pending = s.pending_send().unwrap().id;
+        let before = ids(&s);
+        let a = s.docs[0].document.clone();
+        let revision = s.docs[0].revision();
+        assert!(s.docs[0].dirty);
+        panicking(
+            &mut s,
+            "document.close",
+            serde_json::json!({ "index": 0, "discard_changes": true }),
+        );
+        assert_eq!(ids(&s), before);
+        assert_eq!(s.active, 1);
+        let st = &s.docs[0];
+        assert!(same_document(&st.document, &a));
+        assert!(st.dirty && st.undo.can_undo());
+        assert!(st.revision() > revision);
+        assert_eq!(s.pending_send().map(|p| p.id), Some(pending));
+        // Undo in A, by id, from B.
+        let id = before[0];
+        let revision = s.docs[0].revision();
+        panicking(&mut s, "edit.undo", serde_json::json!({ "doc_id": id }));
+        let st = &s.docs[0];
+        assert!(same_document(&st.document, &a), "the undo is undone");
+        assert!(st.undo.can_undo() && !st.undo.can_redo());
+        assert!(st.revision() > revision);
+        assert_eq!(ids(&s), before);
+        assert_eq!(s.pending_send().map(|p| p.id), Some(pending));
+    }
+
+    /// A job.send that panics after it stored a pending send leaves no
+    /// pending send behind: nothing waits for a request that failed.
+    #[test]
+    fn a_panicking_send_leaves_no_pending_send() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = with_pending(&dir);
+        ok(&mut s, "document.switch", serde_json::json!({ "index": 0 }));
+        s.deny_pending(s.pending_send().unwrap().id);
+        PANIC_AFTER.with(|p| p.set(Some("job.send")));
+        let e = s
+            .execute(
+                "job.send",
+                serde_json::json!({ "name": "boom" }),
+                Origin::Agent,
+            )
+            .unwrap_err();
+        PANIC_AFTER.with(|p| p.set(None));
+        assert!(e.to_string().contains("internal error"), "{e}");
+        assert!(s.pending_send().is_none(), "{:?}", s.pending_send());
+    }
+
+    /// A panic after a command wrote a file does not claim that nothing
+    /// changed.
+    #[test]
+    fn a_panic_after_a_write_says_the_file_may_be_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = with_pending(&dir);
+        let file = dir.path().join("p.flatcraft");
+        PANIC_AFTER.with(|p| p.set(Some("project.save")));
+        let e = s
+            .execute(
+                "project.save",
+                serde_json::json!({ "path": file }),
+                Origin::User,
+            )
+            .unwrap_err();
+        PANIC_AFTER.with(|p| p.set(None));
+        let text = e.to_string();
+        assert!(file.exists());
+        assert!(!text.contains("changed nothing"), "{text}");
+        assert!(text.contains("the file may have been written"), "{text}");
+        assert!(text.contains("the document state was restored"), "{text}");
+        assert!(s.doc().path.is_none(), "the path is rolled back");
+    }
+
+    /// Every command that does not change the document either changes no
+    /// session state at all, or is rolled back after a panic. A new
+    /// command must pick one.
+    #[test]
+    fn non_mutating_commands_declare_session_changes() {
+        let read_only: Vec<&str> = registry::all()
+            .iter()
+            .filter(|c| !c.mutates_document() && !c.changes_session())
+            .map(|c| c.id())
+            .collect();
+        assert_eq!(
+            read_only,
+            [
+                "document.state",
+                "document.notes",
+                "document.check_sources",
+                "document.check",
+                "profiles.list",
+                "profiles.get",
+                "job.preview",
+                "job.simulate",
+                "job.compare_strategies",
+                "job.history",
+                "job.troubleshoot",
+                "document.preview",
+                "document.export",
+            ]
+        );
     }
 
     /// A mutating command that changes the document and then panics.
@@ -787,6 +1853,157 @@ mod tests {
         assert!(!s.doc().undo.can_undo());
     }
 
+    /// A mutating command that changes a shared field of one linked copy
+    /// only (a bug the session must catch).
+    struct Drifts;
+
+    impl registry::Command for Drifts {
+        fn id(&self) -> &'static str {
+            "test.drifts"
+        }
+        fn title(&self) -> &'static str {
+            "Drifts"
+        }
+        fn description(&self) -> &'static str {
+            "Changes the cut options of the first object only."
+        }
+        fn params_schema(&self) -> schemars::Schema {
+            schemars::json_schema!({})
+        }
+        fn mutates_document(&self) -> bool {
+            true
+        }
+        fn run(
+            &self,
+            s: &mut Session,
+            _: serde_json::Value,
+            _: Origin,
+        ) -> Result<serde_json::Value, CommandError> {
+            s.doc_mut().document.objects[0].cut.auto_threshold_mm = 2.0;
+            Ok(serde_json::json!({}))
+        }
+    }
+
+    #[test]
+    fn linked_copies_that_would_drift_apart_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles = flatcraft_device::ProfileStore::load(dir.path()).unwrap();
+        let prefs = Preferences {
+            output_dir: Some(dir.path().join("output")),
+            ..Preferences::default()
+        };
+        let mut s = Session::new(profiles, prefs, false, dir.path().to_path_buf());
+        let id = ok(
+            &mut s,
+            "object.import_svg",
+            serde_json::json!({ "svg": SQUARE, "name": "sq" }),
+        )["id"]
+            .as_u64()
+            .unwrap();
+        ok(
+            &mut s,
+            "object.copies",
+            serde_json::json!({ "id": id, "count": 1, "linked": true }),
+        );
+        let undo = s.doc().undo.undo_len();
+        let revision = s.doc().revision();
+        let e = s
+            .run_command(&Drifts, serde_json::json!({}), Origin::Agent)
+            .unwrap_err();
+        assert_eq!(e, CommandError::Failed(LINKS_DRIFTED.into()));
+        assert!(s.doc().document.link_groups_agree());
+        assert_eq!(s.doc().document.objects[0].cut, CutOptions::default());
+        assert_eq!(s.doc().undo.undo_len(), undo);
+        assert_eq!(s.doc().revision(), revision);
+    }
+
+    /// Like [`Drifts`], but in the first open document, not the active one.
+    struct DriftsElsewhere;
+
+    impl registry::Command for DriftsElsewhere {
+        fn id(&self) -> &'static str {
+            "test.drifts_elsewhere"
+        }
+        fn title(&self) -> &'static str {
+            "Drifts elsewhere"
+        }
+        fn description(&self) -> &'static str {
+            "Changes the cut options of the first object of the first document only."
+        }
+        fn params_schema(&self) -> schemars::Schema {
+            schemars::json_schema!({})
+        }
+        fn mutates_document(&self) -> bool {
+            true
+        }
+        fn run(
+            &self,
+            s: &mut Session,
+            _: serde_json::Value,
+            _: Origin,
+        ) -> Result<serde_json::Value, CommandError> {
+            s.docs[0].document.objects[0].cut.auto_threshold_mm = 2.0;
+            Ok(serde_json::json!({}))
+        }
+    }
+
+    #[test]
+    fn linked_copies_of_another_document_are_checked_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles = flatcraft_device::ProfileStore::load(dir.path()).unwrap();
+        let prefs = Preferences {
+            output_dir: Some(dir.path().join("output")),
+            ..Preferences::default()
+        };
+        let mut s = Session::new(profiles, prefs, false, dir.path().to_path_buf());
+        let id = ok(
+            &mut s,
+            "object.import_svg",
+            serde_json::json!({ "svg": SQUARE, "name": "sq" }),
+        )["id"]
+            .as_u64()
+            .unwrap();
+        ok(
+            &mut s,
+            "object.copies",
+            serde_json::json!({ "id": id, "count": 1, "linked": true }),
+        );
+        ok(&mut s, "document.new", serde_json::json!({}));
+        assert_eq!(s.active, 1);
+        let e = s
+            .run_command(&DriftsElsewhere, serde_json::json!({}), Origin::Agent)
+            .unwrap_err();
+        assert_eq!(e, CommandError::Failed(LINKS_DRIFTED.into()));
+        assert!(s.docs[0].document.link_groups_agree());
+        assert_eq!(s.docs[0].document.objects[0].cut, CutOptions::default());
+    }
+
+    #[test]
+    fn a_change_of_the_link_group_alone_is_a_change() {
+        let mut a = Document::new(JobSettings {
+            plotter_id: "p".into(),
+            material_id: "m".into(),
+            media_id: "x".into(),
+            speed: None,
+            force: None,
+            passes: None,
+            strategy: Default::default(),
+            weed: Default::default(),
+        });
+        a.add(
+            "a".into(),
+            Source::Svg {
+                name: "a.svg".into(),
+                bytes: Vec::new().into(),
+            },
+            Vec::new(),
+        );
+        let mut b = a.clone();
+        b.objects[0].link_group = Some(flatcraft_core::document::GroupId(1));
+        assert!(!same_document(&a, &b));
+        assert!(!same_except_links(&a, &b));
+    }
+
     #[test]
     fn documents_differ_by_cheap_fields_before_any_bytes_are_compared() {
         let mut a = Document::new(JobSettings {
@@ -796,6 +2013,8 @@ mod tests {
             speed: None,
             force: None,
             passes: None,
+            strategy: Default::default(),
+            weed: Default::default(),
         });
         for name in ["one", "two"] {
             a.add(

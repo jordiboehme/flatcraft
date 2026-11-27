@@ -1,17 +1,17 @@
 //! Document and project file commands.
 
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
-use flatcraft_core::document::{CutOptions, Object, Source};
+use flatcraft_core::document::{CutOptions, GroupId, Object, Source};
+use flatcraft_core::geometry::{CutPath, bounds};
 use flatcraft_core::project::{self, ProjectError};
 use flatcraft_device::MediaKind;
-use flatcraft_import::fonts;
-use flatcraft_import::svg::import_svg;
 use kurbo::Rect;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::object::{blade_offset_for, warning_text};
+use super::object::blade_offset_in;
 use super::sources::{project_dir, relink_for_save, restore_links};
 use super::{NoParams, command, cutting_area, ids_json, point_arr, rect_json};
 use crate::session::{CommandError, DocState, Origin, Session};
@@ -29,6 +29,7 @@ fn object_json(o: &Object, bounds: Option<Rect>) -> Value {
         "name": o.name,
         "kind": kind,
         "visible": o.visible,
+        "cut_enabled": o.cut_enabled,
         "bounds_mm": bounds.map(rect_json).unwrap_or(Value::Null),
         "transform": {
             "center_mm": point_arr(t.center_mm),
@@ -38,8 +39,32 @@ fn object_json(o: &Object, bounds: Option<Rect>) -> Value {
             "mirror": t.mirror,
         },
         "cut": super::object::cut_json(&o.cut),
+        "keep": o.keep.key(),
         "link": o.link.as_ref().map(|l| json!({ "path": l.path, "relative": l.relative })),
+        "link_group": o.link_group.map(|g| g.0),
+        "group": o.parent.map(|g| g.0),
     })
+}
+
+/// The groups of a document for `document.state`: each with its name,
+/// parent, own angle, direct members and every object in it.
+fn groups_json(doc: &flatcraft_core::document::Document) -> Value {
+    let tree = doc.tree();
+    Value::Array(
+        doc.groups
+            .iter()
+            .map(|g| {
+                json!({
+                    "id": g.id.0,
+                    "name": g.name,
+                    "parent": g.parent.map(|p| p.0),
+                    "rotation_deg": g.rotation_deg,
+                    "members": ids_json(&tree.children(Some(g.id))),
+                    "objects": ids_json(&tree.leaves_of(g.id)),
+                })
+            })
+            .collect(),
+    )
 }
 
 /// The mat the document uses (see `effective_media`) and the warning when
@@ -52,6 +77,7 @@ fn mat_json(s: &Session) -> (Value, Option<String>) {
     let Ok((m, warning)) = super::effective_media(&plotter, job) else {
         return (Value::Null, None);
     };
+    let shown = crate::prefs::resolved_mat_colour(m, &s.prefs, false);
     let mat = json!({
         "id": m.id,
         "name": m.name,
@@ -68,7 +94,8 @@ fn mat_json(s: &Session) -> (Value, Option<String>) {
             "height_mm": m.grid.height_mm,
         },
         "calibrated": m.calibrated,
-        "color": format!("#{:02X}{:02X}{:02X}", m.color[0], m.color[1], m.color[2]),
+        "color": format!("#{:02X}{:02X}{:02X}", shown[0], shown[1], shown[2]),
+        "custom_color": m.color.is_some(),
     });
     (mat, warning)
 }
@@ -76,7 +103,8 @@ fn mat_json(s: &Session) -> (Value, Option<String>) {
 fn run_state(s: &mut Session, _: NoParams, _: Origin) -> Result<Value, CommandError> {
     let (mat, mat_warning) = mat_json(s);
     let area = cutting_area(s).ok().map(rect_json).unwrap_or(Value::Null);
-    let bounds = s.doc_mut().placed_bounds_all();
+    let mw = super::knife_of(s);
+    let bounds = s.doc_mut().placed_bounds_all(mw);
     let st = s.doc();
     let job = &st.document.job;
     let selection: Vec<_> = st.selection.iter().copied().collect();
@@ -92,6 +120,7 @@ fn run_state(s: &mut Session, _: NoParams, _: Origin) -> Result<Value, CommandEr
             .zip(bounds)
             .map(|(o, b)| object_json(o, b))
             .collect::<Vec<_>>(),
+        "groups": groups_json(&st.document),
         "selection": ids_json(&selection),
         "job": {
             "plotter_id": job.plotter_id,
@@ -100,9 +129,13 @@ fn run_state(s: &mut Session, _: NoParams, _: Origin) -> Result<Value, CommandEr
             "speed": job.speed,
             "force": job.force,
             "passes": job.passes,
+            "strategy": job.strategy,
+            "weed": super::profiles::weed_json(&job.weed),
         },
         "mat": mat,
         "cutting_area_mm": area,
+        "description": st.document.description,
+        "notes": st.document.notes,
         "dirty": st.dirty,
         "path": st.path,
         "can_undo": st.undo.can_undo(),
@@ -118,7 +151,7 @@ command!(
     mutates: false,
     params: NoParams,
     run: run_state,
-    description: "Describes the active document. All lengths are mm; the origin is the 0,0 of the grid printed on the mat, x right, y down; rotation is degrees clockwise. Returns {index, documents, doc_id (stable id of the active document), doc_ids (stable ids of all open documents, in index order), objects: [{id, name, kind: svg|raster, visible, bounds_mm: {x0,y0,x1,y1} of what is cut (the cut geometry per the cut options, stroke outlines included), transform: {center_mm: [x,y], scale_x, scale_y, rotation_deg, mirror}, cut: {mode: all_lines|object_outlines, strokes: auto|centre_line|outline, auto_threshold_mm} (see object.set_cut_options), link: {path (last known absolute path of the imported file), relative (to the project file, or null)} or null when the object has no linked file}], selection: [id], job: {plotter_id, material_id, media_id, speed, force, passes} (null overrides mean the material value), mat: {id, name, kind: mat|no_mat, width_mm, height_mm (physical), grid: {origin_x_mm, origin_y_mm, width_mm, height_mm}, calibrated, color: \"#RRGGBB\"} (null when unknown; when the plotter no longer lists job.media_id, hidden or deleted, this is the plotter's first mat, which jobs then use too), cutting_area_mm: {x0,y0,x1,y1} (the grid, minus a 5 mm safety margin while the mat is not calibrated; objects must stay inside it), dirty, path, can_undo, can_redo, warnings: [text] (for example a mat that is no longer available)}.",
+    description: "Describes the active document. All lengths are mm; the origin is the 0,0 of the grid printed on the mat, x right, y down; rotation is degrees clockwise. Returns {index, documents, doc_id (stable id of the active document), doc_ids (stable ids of all open documents, in index order), objects: [{id, name, kind: svg|raster, visible, cut_enabled (false: the object is skipped and not cut, see object.set_cut), bounds_mm: {x0,y0,x1,y1} of what is cut (the cut geometry per the cut options, stroke outlines included), transform: {center_mm: [x,y], scale_x, scale_y, rotation_deg, mirror}, cut: {mode: all_lines|object_outlines|merged_outline|visible_outline, strokes: auto|centre_line|outline, auto_threshold_mm} (see object.set_cut_options), keep: pieces|stencil|both (what is kept after cutting, see object.set_keep), link: {path (last known absolute path of the imported file), relative (to the project file, or null)} or null when the object has no linked file, link_group (its linked copies, or null), group (the group it is in, or null)}], groups: [{id, name, parent (the group it is in, or null), rotation_deg (its own angle, 0 when made), members: [id] (objects and groups right in it), objects: [id] (every object in it, at any depth)}] (see object.group; a group id works wherever object ids do), selection: [id] (objects; a selected group lists all its objects), job: {plotter_id, material_id, media_id, speed, force, passes, strategy, weed: {box, margin_mm, per_object, lines, spacing_mm}} (null overrides mean the material value), mat: {id, name, kind: mat|no_mat, width_mm, height_mm (physical), grid: {origin_x_mm, origin_y_mm, width_mm, height_mm}, calibrated, color: \"#RRGGBB\" (the mat's own colour, else the light theme default from Settings, white unless changed: the colour the previews draw), custom_color (true when the mat has a colour of its own, false when it follows the Settings default)} (null when unknown; when the plotter no longer lists job.media_id, hidden or deleted, this is the plotter's first mat, which jobs then use too), cutting_area_mm: {x0,y0,x1,y1} (the grid, minus a 5 mm safety margin while the mat is not calibrated; objects must stay inside it), description (one line, empty when none), notes (the person's project notes, empty when none; see document.notes), dirty, path, can_undo, can_redo, warnings: [text] (for example a mat that is no longer available)}.",
 );
 
 // ---------------------------------------------------------------- document.new / switch / close
@@ -135,6 +168,7 @@ command!(
     id: "document.new",
     title: "New document",
     mutates: false,
+    session: true,
     params: NoParams,
     run: run_new,
     description: "Opens a new empty document with the default plotter, material and the 12x12 inch mat, and makes it the active document. Returns {index, documents}.",
@@ -182,6 +216,7 @@ command!(
     id: "document.switch",
     title: "Switch document",
     mutates: false,
+    session: true,
     params: IndexParams,
     run: run_switch,
     description: "Makes an open document the active one, named by index (starting at 0) or by its stable doc_id; give exactly one. Commands work on the active document. Returns {index, documents}.",
@@ -222,6 +257,7 @@ command!(
     id: "document.close",
     title: "Close document",
     mutates: false,
+    session: true,
     params: CloseParams,
     run: run_close,
     description: "Closes an open document, named by index (starting at 0) or by its stable doc_id; give exactly one. A document with unsaved changes is only closed with discard_changes: true. Closing the last document opens a new empty one. Returns {index (the active document), documents}.",
@@ -247,7 +283,9 @@ pub(crate) fn lexical(path: &Path) -> PathBuf {
 /// The path with symlinks resolved as far as the file system allows: a link
 /// at the path itself is followed even when it dangles, because a save
 /// writes through it (`fsio::write_atomic`); then the longest part that
-/// exists is resolved and the rest is appended.
+/// exists is resolved and the rest is appended. Lenient: what cannot be
+/// resolved stays lexical. Only for the config dir itself; paths an agent
+/// writes to go through [`resolve_strict`].
 pub(crate) fn resolved(path: &Path) -> PathBuf {
     let linked = flatcraft_device::fsio::resolve_links(path).unwrap_or_else(|_| path.to_path_buf());
     let mut base = linked.as_path();
@@ -267,12 +305,96 @@ pub(crate) fn resolved(path: &Path) -> PathBuf {
     }
 }
 
-/// True if `path` is the config dir or lies inside it.
-pub(crate) fn inside(path: &Path, config_dir: &Path) -> bool {
-    let abs = |p: &Path| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
-    let path = abs(path);
-    let cfg = abs(config_dir);
-    resolved(&path).starts_with(resolved(&cfg)) || lexical(&path).starts_with(lexical(&cfg))
+/// The path with the links at it followed and the folders above resolved
+/// by the file system. The part that does not exist yet must be plain
+/// names, at most `missing` of them: a `..` after a folder that does not
+/// exist, or a link loop, is an error, never a lexical guess (which could
+/// walk through a linked folder somewhere else).
+pub(crate) fn resolve_strict(path: &Path, missing: usize) -> std::io::Result<PathBuf> {
+    resolve_strict_linked(&flatcraft_device::fsio::resolve_links(path)?, missing)
+}
+
+fn resolve_strict_linked(linked: &Path, missing: usize) -> std::io::Result<PathBuf> {
+    let mut base = linked;
+    let mut tail = Vec::new();
+    loop {
+        match base.canonicalize() {
+            Ok(mut p) => {
+                p.extend(tail.iter().rev());
+                return Ok(p);
+            }
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            Err(_) => {}
+        }
+        match (base.parent(), base.file_name()) {
+            (Some(parent), Some(name)) if tail.len() < missing => {
+                tail.push(name);
+                base = parent;
+            }
+            (Some(_), Some(_)) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "the folder does not exist",
+                ));
+            }
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "the path cannot be resolved (a '..' after a folder that does not exist)",
+                ));
+            }
+        }
+    }
+}
+
+fn absolute(p: &Path) -> PathBuf {
+    std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// True if the resolved `target` or the `given` path (both absolute) lies
+/// in the config dir.
+pub(crate) fn in_config(target: &Path, given: &Path, config_dir: &Path) -> bool {
+    let cfg = absolute(config_dir);
+    target.starts_with(resolved(&cfg)) || lexical(given).starts_with(lexical(&cfg))
+}
+
+/// The file a command's write to `path` replaces, resolved once (links at
+/// the path followed, folders resolved by the file system; its folder must
+/// exist), and checked against the agent limit. The command writes to
+/// exactly this target without following links again
+/// (`fsio::write_atomic_at`), so a link planted after the check cannot
+/// redirect the write.
+pub(crate) fn write_target(
+    path: &Path,
+    config_dir: &Path,
+    origin: Origin,
+) -> Result<PathBuf, CommandError> {
+    let given = absolute(path);
+    let refused = || {
+        CommandError::Refused(format!(
+            "agents may not write into the FlatCraft config directory ({})",
+            config_dir.display()
+        ))
+    };
+    let target = match resolve_strict(&given, 1) {
+        Ok(target) => target,
+        // Never written, but an agent aiming at the config dir hears why.
+        Err(_) if origin == Origin::Agent && in_config(&resolved(&given), &given, config_dir) => {
+            return Err(refused());
+        }
+        Err(e) => {
+            return Err(CommandError::Failed(format!(
+                "cannot write {}: {e}",
+                path.display()
+            )));
+        }
+    };
+    if origin == Origin::Agent && in_config(&target, &given, config_dir) {
+        return Err(refused());
+    }
+    #[cfg(test)]
+    tests::between_check_and_write();
+    Ok(target)
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -285,6 +407,57 @@ pub struct SaveParams {
 }
 
 fn run_save(s: &mut Session, p: SaveParams, origin: Origin) -> Result<Value, CommandError> {
+    // The session lock is held: never wait for the gate here, an unlocked
+    // save that holds it needs the lock to finish.
+    let gate = s.save_gate();
+    let _turn = match gate.try_lock() {
+        Ok(turn) => turn,
+        Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            return Err(CommandError::Refused(
+                "another save is still being written. Try again in a moment.".into(),
+            ));
+        }
+    };
+    let job = begin_save(s, p, origin)?;
+    let written = job.write();
+    finish_save(s, job, written)
+}
+
+/// A save in three steps, so the slow middle (drawing the thumbnail,
+/// packing and writing the archive) can run without the session lock:
+/// [`begin_save`] under the lock, [`SaveJob::write`] without it,
+/// [`finish_save`] under it again. [`save_unlocked`] does all three.
+#[derive(Debug)]
+pub struct SaveJob {
+    doc_id: u64,
+    path: PathBuf,
+    target: PathBuf,
+    /// The document as it is saved (shapes and sources are shared `Arc`s).
+    document: flatcraft_core::document::Document,
+    plotter: Option<flatcraft_device::PlotterProfile>,
+    /// The light theme's default mat colour (preferences), for the thumbnail.
+    mat_light: [u8; 3],
+    /// The document's revision when the save began.
+    revision: u64,
+    /// The links before `relink_for_save`, to put back if the save fails.
+    previous: Vec<(
+        flatcraft_core::document::ObjectId,
+        Option<flatcraft_core::document::SourceLink>,
+    )>,
+    hook: Option<crate::session::SaveWriteHook>,
+    /// The document's cached cut geometry, to draw the thumbnail from.
+    cut_seed: Option<std::sync::Arc<crate::cutgeom::CutGeometry>>,
+    /// The profiles' revision when the save began.
+    profiles_revision: u64,
+    /// The cut geometry the thumbnail was drawn from, given to the
+    /// document's cache when it was built here (see [`finish_save`]).
+    built_cut: std::sync::OnceLock<std::sync::Arc<crate::cutgeom::CutGeometry>>,
+}
+
+/// The first step of a save: checks the target, refreshes the paths of
+/// linked files for the new place of the project and takes a snapshot.
+pub fn begin_save(s: &mut Session, p: SaveParams, origin: Origin) -> Result<SaveJob, CommandError> {
     let index = match p.doc_id {
         Some(id) => s.doc_index(id)?,
         None => s.active,
@@ -297,26 +470,196 @@ fn run_save(s: &mut Session, p: SaveParams, origin: Origin) -> Result<Value, Com
                 "no path: this document was never saved, so give a path".into(),
             )
         })?;
-    if origin == Origin::Agent && inside(&path, &s.config_dir) {
-        return Err(CommandError::Refused(format!(
-            "agents may not write into the FlatCraft config directory ({})",
-            s.config_dir.display()
-        )));
-    }
+    let target = write_target(&path, &s.config_dir, origin)?;
+    let plotter = s
+        .profiles
+        .plotter(&s.docs[index].document.job.plotter_id)
+        .ok();
     // Linked files: refresh their paths for the new place of the project.
     // Only metadata, so it is not an undo step; a failed save puts it back.
+    let hook = s.save_write_hook.clone();
+    let profiles_revision = s.profiles.revision();
     let st = &mut s.docs[index];
     let previous = relink_for_save(&mut st.document, st.path.as_deref(), &path);
-    if let Err(e) = project::save(&st.document, &path) {
-        restore_links(&mut st.document, previous);
-        return Err(CommandError::Failed(e.to_string()));
-    }
     if !previous.is_empty() {
         st.touch();
     }
-    st.path = Some(path.clone());
-    st.dirty = false;
-    Ok(json!({ "path": path }))
+    // The snapshot is the new reference: a nudge while it is written is a
+    // step of its own and never gives back the old dirty flag.
+    st.end_burst();
+    let revision = st.revision();
+    Ok(SaveJob {
+        doc_id: st.id(),
+        path,
+        target,
+        document: st.document.clone(),
+        plotter,
+        mat_light: s.prefs.mat_color_light,
+        revision,
+        previous,
+        hook,
+        cut_seed: st.cached_cut_geometry(),
+        profiles_revision,
+        built_cut: std::sync::OnceLock::new(),
+    })
+}
+
+impl SaveJob {
+    /// The slow step, without the session lock: draws the thumbnail and
+    /// writes the archive crash-safely.
+    pub fn write(&self) -> Result<(), CommandError> {
+        let thumbnail = self.plotter.as_ref().and_then(|plotter| {
+            let cut = self.built_cut.get_or_init(|| {
+                crate::preview::document_cut_geometry(
+                    plotter,
+                    &self.document,
+                    self.cut_seed.as_ref(),
+                )
+            });
+            crate::preview::render_document_png_cut(
+                plotter,
+                &self.document,
+                cut,
+                project::THUMBNAIL_PX,
+                self.mat_light,
+            )
+            .ok()
+        });
+        if let Some(hook) = &self.hook {
+            (hook.0)(&self.target);
+        }
+        project::save_at(&self.document, &self.target, thumbnail.as_deref())
+            .map_err(|e| CommandError::Failed(e.to_string()))
+    }
+}
+
+/// The last step of a save: the document gets its path and, if nothing
+/// changed it while it was written, is no longer dirty. A failed write
+/// puts the old links back (unless the document changed meanwhile).
+pub fn finish_save(
+    s: &mut Session,
+    job: SaveJob,
+    written: Result<(), CommandError>,
+) -> Result<Value, CommandError> {
+    let st = s.docs.iter_mut().find(|d| d.id() == job.doc_id);
+    let unchanged = st.as_ref().is_some_and(|d| d.revision() == job.revision);
+    if let Err(e) = written {
+        if let Some(st) = st
+            && unchanged
+        {
+            let relinked = !job.previous.is_empty();
+            restore_links(&mut st.document, job.previous);
+            if relinked {
+                // Views keyed on the revision show the old links again.
+                st.touch();
+            }
+        }
+        return Err(e);
+    }
+    if let Some(st) = st {
+        st.path = Some(job.path.clone());
+        // Changed while it was written: the file holds the older state.
+        st.dirty = !unchanged;
+        // The cut geometry the thumbnail built goes into the cache, so the
+        // next preview or job does not cut it again. Only while the
+        // document and the profiles are as they were.
+        if let (Some(cut), Some(plotter)) = (job.built_cut.get(), job.plotter.as_ref())
+            && unchanged
+            && s.profiles.revision() == job.profiles_revision
+            && !job
+                .cut_seed
+                .as_ref()
+                .is_some_and(|seed| std::sync::Arc::ptr_eq(seed, cut))
+        {
+            let key = crate::session::CacheKey {
+                doc_revision: job.revision,
+                profiles_revision: job.profiles_revision,
+                plotter_id: plotter.id.clone(),
+                material_id: job.document.job.material_id.clone(),
+                tol: plotter.flatten_tolerance_mm,
+                min_width_mm: crate::report::min_width_mm(plotter.blade_offset_mm),
+            };
+            if let Some(st) = s.docs.iter().find(|d| d.id() == job.doc_id) {
+                st.store_cut_geometry(key, cut.clone());
+            }
+        }
+    }
+    Ok(json!({ "path": job.path }))
+}
+
+/// `project.save` with the slow part outside the lock: an agent's or the
+/// window's save does not hold up the other while the thumbnail is drawn
+/// and the file written. `params` as for `project.save`.
+pub fn save_unlocked(
+    session: &std::sync::Mutex<Session>,
+    params: Value,
+    origin: Origin,
+) -> Result<Value, CommandError> {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    let p: SaveParams =
+        serde_json::from_value(params).map_err(|e| CommandError::InvalidParams(e.to_string()))?;
+    let lock = || session.lock().unwrap_or_else(|e| e.into_inner());
+    // One save at a time, taken before the session lock and never while
+    // holding it; other commands go on while the file is written.
+    let gate = lock().save_gate();
+    let _turn = gate.lock().unwrap_or_else(|e| e.into_inner());
+    // A panic in any step is a plain error, never a dead window or server:
+    // the session goes back to how it was before that step.
+    let caught =
+        |s: &mut Session, step: &mut dyn FnMut(&mut Session) -> Result<Value, CommandError>| {
+            let snapshot = s.snapshot();
+            match catch_unwind(AssertUnwindSafe(|| step(s))) {
+                Ok(r) => r,
+                Err(_) => {
+                    s.roll_back(snapshot);
+                    Err(crate::session::internal_error("project.save"))
+                }
+            }
+        };
+    let mut job = None;
+    {
+        let mut s = lock();
+        if origin == Origin::Agent {
+            s.last_agent_activity = Some(std::time::Instant::now());
+        }
+        s.refresh_prefs(std::time::Instant::now());
+        let mut p = Some(p);
+        let begun = caught(&mut s, &mut |s| {
+            let p = p.take().expect("runs once");
+            job = Some(begin_save(s, p, origin)?);
+            Ok(Value::Null)
+        });
+        s.prune_pending();
+        begun?;
+    }
+    let job = job.expect("begun");
+    let written = catch_unwind(AssertUnwindSafe(|| job.write()))
+        .unwrap_or_else(|_| Err(crate::session::internal_error("project.save")));
+    let mut s = lock();
+    let mut job = Some(job);
+    let mut written = Some(written);
+    let result = caught(&mut s, &mut |s| {
+        finish_save(
+            s,
+            job.take().expect("runs once"),
+            written.take().expect("runs once"),
+        )
+    });
+    s.prune_pending();
+    result
+}
+
+/// The picture a project file carries (`thumbnail.png`): the canvas view
+/// of the mat with its objects, drawn by the same renderer as
+/// `document.preview`. `None` when it cannot be drawn (an unknown plotter):
+/// the project is still saved, without a picture.
+pub fn thumbnail_png(
+    profiles: &flatcraft_device::ProfileStore,
+    doc: &flatcraft_core::document::Document,
+    mat_light: [u8; 3],
+) -> Option<Vec<u8>> {
+    let plotter = profiles.plotter(&doc.job.plotter_id).ok()?;
+    crate::preview::render_document_png(&plotter, doc, project::THUMBNAIL_PX, mat_light).ok()
 }
 
 command!(
@@ -324,9 +667,10 @@ command!(
     id: "project.save",
     title: "Save project",
     mutates: false,
+    session: true,
     params: SaveParams,
     run: run_save,
-    description: "Saves an open document (the active one, or the one with doc_id) as a project file (JSON with the original SVG sources embedded). Without path it uses the document's current path; a document that was never saved needs a path. Linked files (see object.reload) keep pointing at the same files; their paths relative to the project file are updated. Agents may not write inside the FlatCraft config directory. Returns {path}.",
+    description: "Saves an open document (the active one, or the one with doc_id) as a project file: a zip archive with project.json (the readable project), the original imported files under sources/ and thumbnail.png (a 512 px picture of the mat). Without path it uses the document's current path; a document that was never saved needs a path. Linked files (see object.reload) keep pointing at the same files; their paths relative to the project file are updated. Agents may not write inside the FlatCraft config directory. Returns {path}.",
 );
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -347,70 +691,194 @@ fn bounds_differ(a: Rect, b: Rect) -> bool {
 }
 
 fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandError> {
-    let mut document = project::load(&p.path).map_err(|e| match e {
+    let (document, warnings) = load_open(&s.profiles, &p.path)?;
+    Ok(install_open(s, Some(p.path), document, warnings))
+}
+
+/// The slow part of `project.open`, which needs no session: reads the
+/// file and rebuilds its shapes (an SVG import or a trace per source)
+/// with the blade offset of the document's plotter in `profiles`.
+/// Returns the document, ready to open, and the warnings.
+pub(crate) fn load_open(
+    profiles: &flatcraft_device::ProfileStore,
+    path: &Path,
+) -> Result<(flatcraft_core::document::Document, Vec<String>), CommandError> {
+    let (mut document, unlinked) = project::load_report(path).map_err(|e| match e {
         ProjectError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => {
-            CommandError::NotFound(format!("file {}", p.path.display()))
+            CommandError::NotFound(format!("file {}", path.display()))
+        }
+        // Say which file: the person may have several open.
+        other => CommandError::Failed(format!(
+            "cannot open {}: {other}",
+            path.file_name().map_or_else(
+                || path.display().to_string(),
+                |n| n.to_string_lossy().into_owned()
+            )
+        )),
+    })?;
+    let blade = blade_offset_in(profiles, &document.job.plotter_id);
+    let warnings = rebuild_loaded(&mut document, &unlinked, blade, &path.display().to_string())?;
+    // A relative path in a project file is relative to that file.
+    let anchor = project_dir(Some(path));
+    for link in document.objects.iter_mut().filter_map(|o| o.link.as_mut()) {
+        link.anchor_dir = anchor.clone();
+    }
+    Ok((document, warnings))
+}
+
+/// The quick part of `project.open`: the loaded document becomes the
+/// active one. It replaces the active document only if that one is
+/// pristine at this moment. A document from bytes ([`open_bytes`]) has
+/// no path, and its result names none.
+pub(crate) fn install_open(
+    s: &mut Session,
+    path: Option<PathBuf>,
+    document: flatcraft_core::document::Document,
+    warnings: Vec<String>,
+) -> Value {
+    let objects = document.objects.len();
+    let mut st = DocState::new(document);
+    st.path = path.clone();
+    if s.doc().is_pristine() {
+        *s.doc_mut() = st;
+    } else {
+        s.docs.push(st);
+        s.active = s.docs.len() - 1;
+    }
+    let mut out = json!({
+        "index": s.active,
+        "objects": objects,
+        "warnings": warnings,
+    });
+    if let Some(path) = path {
+        out["path"] = json!(path);
+    }
+    out
+}
+
+/// Opens a project file's bytes that are not a file (a sample built into
+/// the window) as a new untitled document, like `project.open` does with a
+/// file: it replaces the active document only if that one is pristine.
+/// The document has no path, so a save asks where to put it and the
+/// bytes themselves are never written. `what` names it in errors. Not a
+/// registry command: only the window offers samples. Returns {index,
+/// objects, warnings} like `project.open`.
+pub fn open_bytes(s: &mut Session, bytes: &[u8], what: &str) -> Result<Value, CommandError> {
+    let (document, warnings) = load_open_bytes(&s.profiles, bytes, what)?;
+    Ok(install_open(s, None, document, warnings))
+}
+
+/// The slow part of [`open_bytes`], which needs no session.
+pub(crate) fn load_open_bytes(
+    profiles: &flatcraft_device::ProfileStore,
+    bytes: &[u8],
+    what: &str,
+) -> Result<(flatcraft_core::document::Document, Vec<String>), CommandError> {
+    let (mut document, unlinked) =
+        project::load_report_bytes(bytes).map_err(|e| CommandError::Failed(e.to_string()))?;
+    let blade = blade_offset_in(profiles, &document.job.plotter_id);
+    let warnings = rebuild_loaded(&mut document, &unlinked, blade, what)?;
+    Ok((document, warnings))
+}
+
+/// Loads a project file and rebuilds its shapes without opening it, for
+/// a picture of it (the Home page's thumbnails). Warnings are dropped.
+pub fn load_rebuilt(
+    profiles: &flatcraft_device::ProfileStore,
+    path: &Path,
+) -> Result<flatcraft_core::document::Document, CommandError> {
+    let (document, unlinked) = project::load_report(path).map_err(|e| match e {
+        ProjectError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => {
+            CommandError::NotFound(format!("file {}", path.display()))
         }
         other => CommandError::Failed(other.to_string()),
     })?;
+    rebuilt(profiles, document, &unlinked, &path.display().to_string())
+}
+
+/// [`load_rebuilt`] for a project file's bytes. `what` names it in errors.
+pub fn load_rebuilt_bytes(
+    profiles: &flatcraft_device::ProfileStore,
+    bytes: &[u8],
+    what: &str,
+) -> Result<flatcraft_core::document::Document, CommandError> {
+    let (document, unlinked) =
+        project::load_report_bytes(bytes).map_err(|e| CommandError::Failed(e.to_string()))?;
+    rebuilt(profiles, document, &unlinked, what)
+}
+
+fn rebuilt(
+    profiles: &flatcraft_device::ProfileStore,
+    mut document: flatcraft_core::document::Document,
+    unlinked: &[flatcraft_core::document::ObjectId],
+    what: &str,
+) -> Result<flatcraft_core::document::Document, CommandError> {
+    let blade = profiles
+        .plotter(&document.job.plotter_id)
+        .map(|p| p.blade_offset_mm)
+        .unwrap_or(0.25);
+    rebuild_loaded(&mut document, unlinked, blade, what)?;
+    Ok(document)
+}
+
+/// Rebuilds the shapes of a loaded document from its embedded sources and
+/// checks its placement. `unlinked` are the linked copies loading split
+/// off; `what` names the project in errors. Returns the warnings.
+fn rebuild_loaded(
+    document: &mut flatcraft_core::document::Document,
+    unlinked: &[flatcraft_core::document::ObjectId],
+    blade: f64,
+    what: &str,
+) -> Result<Vec<String>, CommandError> {
     for o in &document.objects {
         if !o.transform.is_valid() {
             return Err(CommandError::Failed(format!(
-                "cannot open {}: the transform of '{}' is broken (its position, scale or rotation is not a usable number, or beyond 1 km). Fix or remove that object in the project file.",
-                p.path.display(),
+                "cannot open {what}: the transform of '{}' is broken (its position, scale or rotation is not a usable number, or beyond 1 km). Fix or remove that object in the project file.",
                 o.name
             )));
         }
     }
-    let mut warnings = Vec::new();
+    let mut warnings: Vec<String> = unlinked
+        .iter()
+        .filter_map(|id| document.get(*id))
+        .map(|o| project::unlinked_warning(&o.name))
+        .collect();
+    // Linked copies share one source: it is rebuilt once per group, and the
+    // members share the geometry `Arc`.
+    let mut groups: Vec<(GroupId, Option<Shared>)> = Vec::new();
     for o in &mut document.objects {
+        let known = o
+            .link_group
+            .and_then(|g| groups.iter().find(|(id, _)| *id == g).cloned());
+        // Members after the first say nothing the first did not say.
+        let first = known.is_none();
         if !o.cut.is_valid() {
             o.cut = CutOptions::default();
-            warnings.push(format!(
-                "{}: the cut options were broken and are back to the defaults",
-                o.name
-            ));
+            if first {
+                warnings.push(format!(
+                    "{}: the cut options were broken and are back to the defaults",
+                    o.name
+                ));
+            }
         }
-        let rebuilt = match &o.source {
-            Source::Svg { bytes, .. } => match import_svg(bytes, fonts::system_fonts()) {
-                Ok(import) => {
-                    for w in &import.warnings {
-                        warnings.push(format!("{}: {}", o.name, warning_text(w)));
-                    }
-                    Some((import.paths, import.page_frame_mm))
+        let rebuilt = match known {
+            Some((_, shared)) => shared,
+            None => {
+                let shared = rebuild_shared(o, blade, &mut warnings);
+                if let Some(g) = o.link_group {
+                    groups.push((g, shared.clone()));
                 }
-                Err(e) => {
-                    warnings.push(format!(
-                        "{}: cannot rebuild the shape: {}",
-                        o.name,
-                        joined(&e.to_string())
-                    ));
-                    None
-                }
-            },
-            Source::Raster { bytes, trace, .. } => {
-                let blade = blade_offset_for(s, &document.job.plotter_id);
-                match flatcraft_import::trace::trace(bytes, trace, blade) {
-                    Ok(t) => Some((t.paths, Rect::new(0.0, 0.0, t.size_mm.0, t.size_mm.1))),
-                    Err(e) => {
-                        warnings.push(format!(
-                            "{}: cannot trace the image: {}",
-                            o.name,
-                            joined(&e.to_string())
-                        ));
-                        None
-                    }
-                }
+                shared
             }
         };
-        if let Some((paths, frame)) = rebuilt {
+        if let Some((geometry, local_bounds, frame)) = rebuilt {
             let saved = o.local_bounds != Rect::ZERO || o.frame != Rect::ZERO;
             let mut anchored = None;
             if saved && rect_is_sane(o.local_bounds) && rect_is_sane(o.frame) {
                 // The saved bounds and frame are what the transform was
                 // made against: keep the frame in place, as reload does.
                 let mut a = o.clone();
-                a.set_geometry_anchored(paths.clone(), frame);
+                a.share_geometry_anchored(geometry.clone(), local_bounds, frame);
                 let c = a.transform.center_mm;
                 if c.x.is_finite() && c.y.is_finite() {
                     anchored = Some(a);
@@ -421,7 +889,11 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
                     // Text in an SVG is set with the fonts of this
                     // computer; other fonts give other shapes.
                     let svg = matches!(o.source, Source::Svg { .. });
-                    if svg
+                    // A member unlinked on load was edited by hand; its
+                    // saved bounds may belong to another source.
+                    if first
+                        && svg
+                        && !unlinked.contains(&o.id)
                         && o.local_bounds != Rect::ZERO
                         && bounds_differ(o.local_bounds, a.local_bounds)
                     {
@@ -433,7 +905,7 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
                     *o = a;
                 }
                 None => {
-                    if saved {
+                    if saved && first {
                         warnings.push(format!(
                             "{}: the saved position data is broken; the object is placed by its shapes, as in older projects",
                             o.name
@@ -441,39 +913,66 @@ fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandE
                     }
                     // A project from before the saved bounds: the
                     // transform was made against the rebuilt bounds.
-                    o.set_geometry(paths);
+                    o.geometry = geometry;
+                    o.local_bounds = local_bounds;
                     o.frame = frame;
                 }
             }
         }
     }
+    // Loading already unlinked members whose own fields differ, so the
+    // members agree. Should the rebuild still leave one apart, it is
+    // unlinked too and keeps its own design: open never overwrites it.
+    for id in document.unlink_mismatched() {
+        if let Some(o) = document.get(id) {
+            warnings.push(project::unlinked_warning(&o.name));
+        }
+    }
     if let Some(o) = document.objects.iter().find(|o| !o.placement_is_valid()) {
         return Err(CommandError::Failed(format!(
-            "cannot open {}: '{}' is placed beyond 1 km. Fix or remove that object in the project file.",
-            p.path.display(),
+            "cannot open {what}: '{}' is placed beyond 1 km. Fix or remove that object in the project file.",
             o.name
         )));
     }
-    // A relative path in a project file is relative to that file.
-    let anchor = project_dir(Some(&p.path));
-    for link in document.objects.iter_mut().filter_map(|o| o.link.as_mut()) {
-        link.anchor_dir = anchor.clone();
+    Ok(warnings)
+}
+
+/// Geometry rebuilt from a source: the paths, their local bounds and the
+/// page frame.
+type Shared = (Arc<Vec<CutPath>>, Rect, Rect);
+
+/// Rebuilds the geometry of `o` from its embedded source. A failure is a
+/// warning and `None`: the object opens without shapes.
+fn rebuild_shared(o: &Object, blade: f64, warnings: &mut Vec<String>) -> Option<Shared> {
+    let (svg, bytes) = match &o.source {
+        Source::Svg { bytes, .. } => (true, bytes),
+        Source::Raster { bytes, .. } => (false, bytes),
+    };
+    // The same build as a reload: an SVG import, or a trace with the
+    // stored settings.
+    match super::sources::rebuild(&o.source, bytes, blade) {
+        Ok(r) => {
+            // Import warnings depend on this computer (fonts), so they are
+            // said again; trace warnings describe settings the owner saw
+            // when tracing, and would repeat on every open.
+            if svg {
+                for w in r.warnings {
+                    warnings.push(format!("{}: {w}", o.name));
+                }
+            }
+            let local_bounds = bounds(&r.paths).unwrap_or(Rect::ZERO);
+            Some((r.paths, local_bounds, r.frame))
+        }
+        Err(e) => {
+            let what = if svg {
+                "cannot rebuild the shape"
+            } else {
+                "cannot trace the image"
+            };
+            warnings.push(format!("{}: {what}: {}", o.name, joined(&e.to_string())));
+            None
+        }
     }
-    let objects = document.objects.len();
-    let mut st = DocState::new(document);
-    st.path = Some(p.path.clone());
-    if s.doc().is_pristine() {
-        *s.doc_mut() = st;
-    } else {
-        s.docs.push(st);
-        s.active = s.docs.len() - 1;
-    }
-    Ok(json!({
-        "index": s.active,
-        "path": p.path,
-        "objects": objects,
-        "warnings": warnings,
-    }))
 }
 
 /// A sentence joined after a colon: its first letter in lower case.
@@ -499,15 +998,103 @@ command!(
     id: "project.open",
     title: "Open project",
     mutates: false,
+    session: true,
     params: OpenParams,
     run: run_open,
     description: "Opens a project file and makes it the active document. It replaces the active document only if that one is empty and untouched; otherwise it opens as an extra document. The cut shapes are rebuilt from the embedded sources, so a project opens even when the imported files are gone; use document.check_sources to see which linked files changed or are missing. Returns {index, path, objects (count), warnings: [text]}.",
 );
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::cutgeom::tests::CUT_BOUNDS_CALLS;
+    use std::cell::RefCell;
+
+    thread_local! {
+        /// Runs once between the agent path check and the write.
+        static BETWEEN: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+    }
+
+    /// Runs `f` once between the next agent path check and its write.
+    pub(crate) fn set_between(f: impl FnOnce() + 'static) {
+        BETWEEN.with(|b| *b.borrow_mut() = Some(Box::new(f)));
+    }
+
+    pub(crate) fn between_check_and_write() {
+        if let Some(f) = BETWEEN.with(|b| b.borrow_mut().take()) {
+            f();
+        }
+    }
+
+    fn session(config: &Path) -> Session {
+        let profiles = flatcraft_device::ProfileStore::load(config).unwrap();
+        let prefs = crate::prefs::Preferences {
+            output_dir: Some(config.join("output")),
+            ..Default::default()
+        };
+        Session::new(profiles, prefs, false, config.to_path_buf())
+    }
+
+    /// A link loop at the file name still leaves the folder links above it
+    /// resolved, so a linked folder into the config dir is seen.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_loop_below_a_linked_folder_is_inside() {
+        let config = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let folder = elsewhere.path().join("folder");
+        std::os::unix::fs::symlink(config.path(), &folder).unwrap();
+        let looped = config.path().join("x");
+        std::os::unix::fs::symlink(&looped, &looped).unwrap();
+        let mut s = session(config.path());
+        let e = s
+            .execute(
+                "project.save",
+                json!({ "path": folder.join("x") }),
+                Origin::Agent,
+            )
+            .unwrap_err();
+        assert!(matches!(e, CommandError::Refused(_)), "{e}");
+        assert!(std::fs::symlink_metadata(&looped).unwrap().is_symlink());
+    }
+
+    /// A link planted at the target after the check but before the write
+    /// is not followed: the write goes to the file that was checked.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_planted_after_the_check_is_not_followed() {
+        let config = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let prefs = config.path().join("preferences.toml");
+        std::fs::write(&prefs, "theme = \"Light\"\n").unwrap();
+        let mut s = session(config.path());
+        for (id, file, params) in [
+            ("project.save", "x.flatcraft", "path"),
+            ("tools.test_patterns", "x.svg", "svg_path"),
+        ] {
+            let target = elsewhere.path().join(file);
+            let (link_to, at) = (prefs.clone(), target.clone());
+            BETWEEN.with(|b| {
+                *b.borrow_mut() = Some(Box::new(move || {
+                    std::os::unix::fs::symlink(link_to, at).unwrap();
+                }));
+            });
+            let r = s.execute(id, json!({ params: target }), Origin::Agent);
+            assert!(r.is_ok(), "{id}: {r:?}");
+            assert_eq!(
+                std::fs::read_to_string(&prefs).unwrap(),
+                "theme = \"Light\"\n",
+                "{id} wrote through the planted link"
+            );
+            assert!(
+                !std::fs::symlink_metadata(&target)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink(),
+                "{id}: the write replaced the link"
+            );
+        }
+    }
 
     const SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20mm" height="20mm" viewBox="0 0 20 20"><rect x="2" y="2" width="5" height="5"/></svg>"#;
 

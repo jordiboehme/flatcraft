@@ -9,8 +9,9 @@
 //! painted area, with real counters kept as holes. A filled path with an
 //! outline stroke is cut along the edge of fill united with stroke. A
 //! subpath whose fill is hidden under its thin stroke is cut as a line.
-//! All booleans stay inside one path of one object; merging across objects is
-//! milestone 2.
+//! In all lines and object outlines every boolean stays inside one path of
+//! one object. Merged outline and visible outline look across objects and
+//! paths; they are worked out for the whole document in [`cross`].
 //!
 //! Error budget per cut path (tolerance `t`, the plotter's flatten
 //! tolerance, default 0.01 mm): stroker `t/4` plus flattening `t/4`, or
@@ -19,19 +20,26 @@
 //! 1e-7 mm for 100 mm). The pipeline then flattens the straight lines
 //! without error, but its cleaning merges nearly collinear points within
 //! up to `t`. Worst case about `1.5 t` (0.015 mm by default), below the
-//! 0.05 mm device step.
+//! 0.05 mm plotter step.
 //!
 //! Traced raster images are fills, so in object outlines they go through
 //! the fill boolean too; for their simple outlines this only normalises
 //! direction and start point.
 
-use flatcraft_core::document::{CutMode, CutOptions, Object, StrokeMode};
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use flatcraft_core::document::{CutMode, CutOptions, KeepMode, Object, ObjectId, StrokeMode};
 use flatcraft_core::geometry::{Cap, CutPath, FillRule, Join, Paint};
+use flatcraft_core::transform::Transform;
 use i_overlay::core::fill_rule::FillRule as OverlayFill;
 use i_overlay::core::overlay_rule::OverlayRule;
 use i_overlay::core::solver::Solver;
 use i_overlay::float::overlay::{FloatOverlay, OverlayOptions};
 use kurbo::{Affine, BezPath, PathEl, Point, Rect, Shape, Stroke, StrokeOpts};
+
+use crate::job::{JobInput, JobObject};
+use flatcraft_core::document::Document;
 
 /// Smallest tolerance used for stroking and flattening, mm. Guards the
 /// stroker against a zero or broken profile value; the pipeline refuses
@@ -42,52 +50,745 @@ const MIN_TOLERANCE_MM: f64 = 1e-4;
 /// tolerance), mm.
 pub const CLOSE_TOLERANCE_MM: f64 = 0.01;
 
-/// A closed line whose fill is on average narrower than this is cut once,
-/// along its spine, mm. Two device steps of 0.05 mm: two cuts that close
-/// together tear the material. Wider ones are real slots and keep both
-/// sides.
+/// The reach of the spine helpers of a closed hairline ([`spine`],
+/// [`hairline_ends`], [`ring_samples`]), mm: two plotter steps of 0.05 mm.
+/// Which closed lines are hairlines is decided by [`hairline_mm`], from the
+/// minimum feature size.
 pub const HAIRLINE_MM: f64 = 0.1;
 
 /// Stroker tolerance for bounds of the cut geometry, mm (the default
 /// flatten tolerance).
 pub const BOUNDS_TOLERANCE_MM: f64 = 0.01;
 
-type Contour = Vec<[f64; 2]>;
+/// A flattened closed contour (or an open polyline), mat mm.
+pub type Contour = Vec<[f64; 2]>;
+
+mod cross;
+pub use cross::painted_area;
+pub(crate) use cross::{painted, would_weld};
+
+/// One cut path of an object, in mat mm: what the job, the export, the
+/// report and the window read. `source` is the index of the object's
+/// source path it came from (`None` for a path made of several source
+/// paths, such as a welded outline), `label` that path's label. Listing
+/// notes and labels come from here, never from a piece's index.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CutPiece {
+    pub source: Option<usize>,
+    pub label: Option<String>,
+    pub path: BezPath,
+}
+
+/// What an object's cut left out.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PieceFacts {
+    /// Filled source paths without stroke that give nothing to cut: no
+    /// area, or thinner than the cut tolerance. Paths left out only as
+    /// slivers are counted in `slivers` instead.
+    pub no_area: usize,
+    /// Filled shapes dropped as slivers (see [`fill_edges`]).
+    pub slivers: usize,
+}
+
+/// Everything an object's own cut depends on. The geometry `Arc` is held,
+/// so its address cannot be reused by other geometry while the key names
+/// it.
+#[derive(Debug, Clone)]
+struct PieceKey {
+    geometry: Arc<Vec<CutPath>>,
+    transform: Transform,
+    local_bounds: Rect,
+    cut: CutOptions,
+    name: String,
+}
+
+impl PieceKey {
+    fn of(o: &JobObject) -> Self {
+        Self {
+            geometry: o.geometry.clone(),
+            transform: o.transform,
+            local_bounds: o.local_bounds,
+            cut: o.cut,
+            name: o.name.clone(),
+        }
+    }
+
+    fn fits(&self, o: &JobObject) -> bool {
+        Arc::ptr_eq(&self.geometry, &o.geometry)
+            && self.transform == o.transform
+            && self.local_bounds == o.local_bounds
+            && self.cut == o.cut
+            && self.name == o.name
+    }
+}
+
+/// What the cross-object modes read of an object besides its own cut:
+/// whether it is shown and cut, and what is kept of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Flags {
+    visible: bool,
+    cut_enabled: bool,
+    keep: KeepMode,
+}
+
+impl Flags {
+    fn of(o: &JobObject) -> Self {
+        Self {
+            visible: o.visible,
+            cut_enabled: o.cut_enabled,
+            keep: o.keep,
+        }
+    }
+}
+
+/// The first layer of the cut geometry: what one object gives on its own,
+/// kept per object while its [`PieceKey`] fits. For the cross-object modes
+/// these are the object's pieces as if it were alone; the second layer
+/// ([`cross::apply`]) works out the final pieces from them on every build.
+#[derive(Debug, Clone)]
+pub(crate) struct Solo {
+    key: PieceKey,
+    pieces: Arc<Vec<CutPiece>>,
+    facts: PieceFacts,
+    bounds: Option<Rect>,
+    /// True if a visible outline left out what its own later paths cover.
+    clipped: bool,
+    /// The painted parts of each source path, worked out the first time a
+    /// cross-object mode asks (shared by every build that keeps this solo).
+    painted: Arc<std::sync::OnceLock<Vec<cross::Painted>>>,
+}
+
+impl Solo {
+    fn cut(o: &JobObject, tol: f64, min_width_mm: f64) -> Self {
+        #[cfg(test)]
+        tests::OBJECT_CUTS.with(|n| n.set(n.get() + 1));
+        let affine = o.transform.affine(o.local_bounds);
+        let (pieces, facts, bounds, clipped) =
+            object_pieces_clipped(&o.geometry, &o.cut, affine, tol, min_width_mm);
+        Self {
+            key: PieceKey::of(o),
+            pieces: Arc::new(pieces),
+            facts,
+            bounds,
+            clipped,
+            painted: Default::default(),
+        }
+    }
+
+    /// The painted parts of each source path of `o` (whose key this is).
+    pub(crate) fn painted(&self, o: &JobObject, tol: f64, min_width_mm: f64) -> &[cross::Painted] {
+        self.painted.get_or_init(|| {
+            let affine = o.transform.affine(o.local_bounds);
+            o.geometry
+                .iter()
+                .map(|p| cross::painted(p, &o.cut, affine, tol, min_width_mm))
+                .collect()
+        })
+    }
+}
+
+/// The cut geometry of a whole document: the pieces of every object
+/// (hidden and skipped ones too, which the report checks), what each cut
+/// left out, and the warnings about it in document order. Built by
+/// [`document_cut_geometry`] and cached per document
+/// (`DocState::cut_geometry`); the job, the export, the report and the
+/// window all read this one copy.
+///
+/// Objects in a cross-object mode ([`CutMode::is_cross_object`]) are cut
+/// together, see [`cross`]: a welded group's pieces all belong to its
+/// backmost object (`merged_into` names it for the others, which have no
+/// pieces), and a visible outline leaves out what objects in front cover
+/// (`covered` lists the objects with nothing left).
+#[derive(Debug, Clone, Default)]
+pub struct CutGeometry {
+    pub per_object: BTreeMap<ObjectId, Arc<Vec<CutPiece>>>,
+    pub facts: BTreeMap<ObjectId, PieceFacts>,
+    /// The box of what is cut of each object (see [`path_box`]): slivers
+    /// that are not cut never count. Every check that measures an object
+    /// reads it here. For the cross-object modes it is the box of the
+    /// object's own outlines, which holds every piece it keeps; a welded
+    /// group's backmost object holds the box of the whole weld as well.
+    pub bounds: BTreeMap<ObjectId, Option<Rect>>,
+    pub warnings: Vec<String>,
+    /// The flatten tolerance it was built with, mm.
+    pub tolerance_mm: f64,
+    /// The minimum feature width it was built with, mm.
+    pub min_width_mm: f64,
+    /// Objects welded into another object's merged outline: the object
+    /// that holds the pieces (the backmost of the group).
+    pub merged_into: BTreeMap<ObjectId, ObjectId>,
+    /// Objects in visible outline whose every outline is covered by
+    /// objects in front of them, so nothing of them is cut.
+    pub covered: std::collections::BTreeSet<ObjectId>,
+    /// The outline of what is seen of each shown, cut object in visible
+    /// outline whose pieces were clipped (see [`CutGeometry::kept_regions`]).
+    pub regions: BTreeMap<ObjectId, Arc<Vec<Contour>>>,
+    /// What is seen of each clipped object in visible outline, shape by
+    /// shape: its mean width (mm) and its box. The report warns about seen
+    /// strips too thin to cut cleanly.
+    pub seen_shapes: BTreeMap<ObjectId, Vec<(f64, Option<Rect>)>>,
+    solo: BTreeMap<ObjectId, Solo>,
+    /// Object ids in document order, with what the cross-object modes
+    /// read of them.
+    order: Vec<(ObjectId, Flags)>,
+    /// True if an object is in a cross-object mode: then the flags count.
+    cross: bool,
+}
+
+impl CutGeometry {
+    /// The pieces of object `id` (empty for an unknown id).
+    pub fn pieces(&self, id: ObjectId) -> &[CutPiece] {
+        self.per_object.get(&id).map_or(&[], |p| p.as_slice())
+    }
+
+    /// The box of what is cut of object `id`.
+    pub fn bounds(&self, id: ObjectId) -> Option<Rect> {
+        self.bounds.get(&id).copied().flatten()
+    }
+
+    /// What the cut of object `id` left out.
+    pub fn facts(&self, id: ObjectId) -> PieceFacts {
+        self.facts.get(&id).copied().unwrap_or_default()
+    }
+
+    /// The kept-material outlines of the objects `wanted` says are cut:
+    /// a clipped visible outline is no ring, so the plan reads what is
+    /// seen of it as its rings (see
+    /// `flatcraft_path::KeptMaterial::from_toolpaths_and_regions`).
+    pub fn kept_regions(&self, wanted: impl Fn(ObjectId) -> bool) -> flatcraft_path::Regions {
+        self.regions
+            .iter()
+            .filter(|(id, _)| wanted(**id))
+            .map(|(id, rings)| {
+                let rings = rings
+                    .iter()
+                    .map(|c| c.iter().map(|p| Point::new(p[0], p[1])).collect())
+                    .collect();
+                (*id, rings)
+            })
+            .collect()
+    }
+
+    /// True if this is the geometry of exactly `objects` (same ids in the
+    /// same order, each with the same geometry `Arc`, placement, cut
+    /// options and name, and, when an object is in a cross-object mode,
+    /// the same visibility, cut flag and keep mode) at this tolerance and
+    /// width. Cheap: nothing is walked but the list.
+    pub fn is_for(&self, objects: &[JobObject], tolerance_mm: f64, min_width_mm: f64) -> bool {
+        same_f64(self.tolerance_mm, tolerance_mm)
+            && same_f64(self.min_width_mm, min_width_mm)
+            && self.order.len() == objects.len()
+            && self.order.iter().zip(objects).all(|((id, flags), o)| {
+                *id == o.id
+                    && self.solo.get(id).is_some_and(|s| s.key.fits(o))
+                    && (!self.cross || *flags == Flags::of(o))
+            })
+    }
+}
+
+fn same_f64(a: f64, b: f64) -> bool {
+    a.to_bits() == b.to_bits()
+}
+
+/// The cut geometry of `doc` at the flatten tolerance `tol` and the
+/// minimum feature width `min_width_mm`: the document-level entry.
+pub fn document_cut_geometry(doc: &Document, tol: f64, min_width_mm: f64) -> CutGeometry {
+    let objects = JobInput::objects_of(doc);
+    (*objects_cut_geometry(&objects, tol, min_width_mm, None)).clone()
+}
+
+/// The cut geometry of `objects`. `previous` is an earlier build: when it
+/// is for exactly these objects it is returned as it is, else what every
+/// object gives on its own is taken over from it while the object is
+/// unchanged, and only the others are cut again. The cross-object modes
+/// are then worked out again from those, over the whole list, so a change
+/// to one object always reaches the objects that depend on it. A stale
+/// `previous` costs nothing but time and can never give a wrong piece.
+pub fn objects_cut_geometry(
+    objects: &[JobObject],
+    tol: f64,
+    min_width_mm: f64,
+    previous: Option<&Arc<CutGeometry>>,
+) -> Arc<CutGeometry> {
+    if let Some(p) = previous
+        && p.is_for(objects, tol, min_width_mm)
+    {
+        return p.clone();
+    }
+    let reuse = previous
+        .filter(|p| same_f64(p.tolerance_mm, tol) && same_f64(p.min_width_mm, min_width_mm));
+    let mut out = CutGeometry {
+        tolerance_mm: tol,
+        min_width_mm,
+        ..CutGeometry::default()
+    };
+    for o in objects {
+        let solo = reuse
+            .and_then(|p| p.solo.get(&o.id).filter(|s| s.key.fits(o)).cloned())
+            .unwrap_or_else(|| Solo::cut(o, tol, min_width_mm));
+        out.per_object.insert(o.id, solo.pieces.clone());
+        out.facts.insert(o.id, solo.facts);
+        out.bounds.insert(o.id, solo.bounds);
+        out.solo.insert(o.id, solo);
+        out.order.push((o.id, Flags::of(o)));
+        out.cross |= o.cut.mode.is_cross_object();
+    }
+    if out.cross {
+        cross::apply(objects, &mut out, tol, min_width_mm);
+    }
+    for o in objects {
+        let slivers = out.facts(o.id).slivers;
+        if slivers > 0 {
+            out.warnings
+                .push(sliver_warning(&o.name, slivers, min_width_mm));
+        }
+    }
+    Arc::new(out)
+}
+
+/// `primary` with what the objects of `extra` give on their own added for
+/// the objects `primary` does not hold, as a seed for
+/// [`objects_cut_geometry`]: a command that ran on a snapshot built the
+/// pieces of its new object there, and the current document's build takes
+/// them over. Only the first layer is ever taken, and only while its key
+/// still fits, so a seed never gives a wrong piece.
+pub(crate) fn merged_seed(
+    primary: &Arc<CutGeometry>,
+    extra: &Arc<CutGeometry>,
+) -> Arc<CutGeometry> {
+    if !same_f64(primary.tolerance_mm, extra.tolerance_mm)
+        || !same_f64(primary.min_width_mm, extra.min_width_mm)
+    {
+        return primary.clone();
+    }
+    let mut out = (**primary).clone();
+    for (id, solo) in &extra.solo {
+        out.solo.entry(*id).or_insert_with(|| solo.clone());
+    }
+    Arc::new(out)
+}
+
+/// The warning about `n` filled slivers of the object `name` that are
+/// thinner than `width_mm` and not cut.
+pub fn sliver_warning(name: &str, n: usize, width_mm: f64) -> String {
+    let name: String = name
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let (what, verb) = if n == 1 {
+        ("1 filled sliver is".to_string(), "is")
+    } else {
+        (format!("{n} filled slivers are"), "are")
+    };
+    format!("'{name}': {what} thinner than {width_mm} mm and {verb} not cut.")
+}
+
+/// The pieces of one object's source paths placed with `affine`, what the
+/// cut left out, and the box of what is cut ([`path_box`] of each path).
+/// The cross-object modes are cut as if the object were alone: a merged
+/// outline welds the object's own paths, a visible outline leaves out what
+/// its later paths cover. Their box is the box of the object outlines,
+/// which holds every piece.
+pub fn object_pieces(
+    geometry: &[CutPath],
+    options: &CutOptions,
+    affine: Affine,
+    tol: f64,
+    min_width_mm: f64,
+) -> (Vec<CutPiece>, PieceFacts, Option<Rect>) {
+    let (pieces, facts, bounds, _) =
+        object_pieces_clipped(geometry, options, affine, tol, min_width_mm);
+    (pieces, facts, bounds)
+}
+
+/// [`object_pieces`], and whether a visible outline left out what its own
+/// later paths cover.
+fn object_pieces_clipped(
+    geometry: &[CutPath],
+    options: &CutOptions,
+    affine: Affine,
+    tol: f64,
+    min_width_mm: f64,
+) -> (Vec<CutPiece>, PieceFacts, Option<Rect>, bool) {
+    match options.mode {
+        CutMode::AllLines | CutMode::ObjectOutlines => {
+            let (pieces, facts, bounds) =
+                outline_pieces(geometry, options, affine, tol, min_width_mm);
+            (pieces, facts, bounds, false)
+        }
+        CutMode::MergedOutline => {
+            let painted: Vec<cross::Painted> = geometry
+                .iter()
+                .map(|p| cross::painted(p, options, affine, tol, min_width_mm))
+                .collect();
+            let (pieces, facts) = cross::weld(&[(geometry, &painted[..])], tol, min_width_mm);
+            let bounds = cut_bounds_of(
+                geometry,
+                options,
+                affine,
+                Knife {
+                    tolerance_mm: tol,
+                    min_width_mm,
+                },
+            );
+            (pieces, facts, bounds, false)
+        }
+        CutMode::VisibleOutline => {
+            let outlines = CutOptions {
+                mode: CutMode::ObjectOutlines,
+                ..*options
+            };
+            let (pieces, facts, bounds) =
+                outline_pieces(geometry, &outlines, affine, tol, min_width_mm);
+            let painted: Vec<cross::Painted> = geometry
+                .iter()
+                .map(|p| cross::painted(p, options, affine, tol, min_width_mm))
+                .collect();
+            let (pieces, clipped) = cross::visible_alone(&pieces, &painted, tol);
+            (pieces, facts, bounds, clipped)
+        }
+    }
+}
+
+/// [`object_pieces`] for the modes that cut every path on its own.
+fn outline_pieces(
+    geometry: &[CutPath],
+    options: &CutOptions,
+    affine: Affine,
+    tol: f64,
+    min_width_mm: f64,
+) -> (Vec<CutPiece>, PieceFacts, Option<Rect>) {
+    let mut pieces = Vec::new();
+    let mut facts = PieceFacts::default();
+    let mut bounds: Option<Rect> = None;
+    for (i, p) in geometry.iter().enumerate() {
+        let (cut, slivers) = cut_path_counted(p, options, affine, tol, min_width_mm);
+        facts.slivers += slivers;
+        if let Some(b) = path_box(p, options, affine, &cut, slivers) {
+            bounds = Some(bounds.map_or(b, |a| a.union(b)));
+        }
+        // A stroke-less fill that gives nothing, not even a sliver: no
+        // area, or thinner than the tolerance. It is not visible.
+        if cut.is_empty()
+            && slivers == 0
+            && p.paint.stroke.is_none()
+            && !p.path.elements().is_empty()
+        {
+            facts.no_area += 1;
+        }
+        pieces.extend(cut.into_iter().map(|path| CutPiece {
+            source: Some(i),
+            label: p.label.clone(),
+            path,
+        }));
+    }
+    (pieces, facts, bounds)
+}
 
 /// The cut paths of `object` placed with `placed_affine`, in mat mm.
-pub fn cut_paths(object: &Object, placed_affine: Affine, tolerance_mm: f64) -> Vec<BezPath> {
+pub fn cut_paths(
+    object: &Object,
+    placed_affine: Affine,
+    tolerance_mm: f64,
+    min_width_mm: f64,
+) -> Vec<BezPath> {
     object
         .geometry
         .iter()
-        .flat_map(|p| cut_path(p, &object.cut, placed_affine, tolerance_mm))
+        .flat_map(|p| cut_path(p, &object.cut, placed_affine, tolerance_mm, min_width_mm))
         .collect()
 }
 
-/// Bounding box of the object's cut paths in mat mm; `None` if the object
-/// has no paths. Cheap: the box of a union is the union of the boxes of
-/// its parts, so no booleans run. A fill-only path with no area (cut as
-/// nothing) still counts with its centre line.
-pub fn cut_bounds(object: &Object) -> Option<Rect> {
+/// What a box of what is cut is measured with: the plotter's flatten
+/// tolerance and the knife's narrowest feature (`report::min_width_mm`),
+/// the same two the cut geometry is built with, so a command's box and
+/// the cached one ([`CutGeometry::bounds`]) are equal.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Knife {
+    pub tolerance_mm: f64,
+    pub min_width_mm: f64,
+}
+
+impl Default for Knife {
+    /// The default plotter: 0.01 mm tolerance, a 0.25 mm blade offset.
+    fn default() -> Self {
+        Self {
+            tolerance_mm: BOUNDS_TOLERANCE_MM,
+            min_width_mm: 0.125,
+        }
+    }
+}
+
+/// Bounding box of what is cut of the object in mat mm, cut with `knife`;
+/// `None` if the object has no paths. The same rule as the boxes of the
+/// cut geometry ([`CutGeometry::bounds`]): a fill is cut, so a sliver that
+/// is not cut never counts (see [`path_box`]). Each box is kept per
+/// shape, scale, turn and cut options (not position), so asking again is
+/// cheap. A fill-only path with no area (cut as nothing) still counts with
+/// its centre line.
+pub fn cut_bounds(object: &Object, knife: Knife) -> Option<Rect> {
     #[cfg(test)]
     tests::CUT_BOUNDS_CALLS.with(|n| n.set(n.get() + 1));
-    let affine = object.transform.affine(object.local_bounds);
-    object
-        .geometry
+    let mut centred = object.transform;
+    centred.center_mm = Point::ORIGIN;
+    let t = &centred;
+    let key = BoundsMemoKey {
+        geometry: Arc::as_ptr(&object.geometry) as usize,
+        numbers: [
+            t.scale_x,
+            t.scale_y,
+            t.rotation_deg,
+            object.local_bounds.x0,
+            object.local_bounds.y0,
+            object.local_bounds.x1,
+            object.local_bounds.y1,
+            object.cut.auto_threshold_mm,
+            knife.min_width_mm,
+            knife.tolerance_mm,
+        ]
+        .map(f64::to_bits),
+        mirror: t.mirror,
+        mode: object.cut.mode as u8,
+        strokes: object.cut.strokes as u8,
+    };
+    let memo = BOUNDS_MEMO.get_or_init(Default::default);
+    let found = memo
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key, &object.geometry);
+    let at_origin = match found {
+        Some(b) => b,
+        None => {
+            let affine = centred.affine(object.local_bounds);
+            let b = cut_bounds_of(&object.geometry, &object.cut, affine, knife);
+            memo.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .put(key, &object.geometry, b);
+            b
+        }
+    };
+    at_origin.map(|b| b + object.transform.center_mm.to_vec2())
+}
+
+/// A box that holds everything the object can cut, without cutting it:
+/// its drawn paths placed, grown by the furthest a stroke reaches past
+/// them (half its miter limit, at least one width, so caps and round
+/// joins fit too). Never smaller than [`cut_bounds`]; cheap, for finding
+/// the objects near another.
+pub fn loose_bounds(o: &JobObject) -> Option<Rect> {
+    let affine = o.transform.affine(o.local_bounds);
+    let mut drawn: Option<Rect> = None;
+    let mut widest = 0.0_f64;
+    for p in o.geometry.iter() {
+        let b = p.path.bounding_box();
+        drawn = Some(drawn.map_or(b, |d| d.union(b)));
+        if let Some(s) = p.paint.stroke {
+            // How far past the path a corner of the stroke reaches, in
+            // stroke widths: half, or half the miter limit.
+            let reach = match s.join {
+                flatcraft_core::geometry::Join::Miter { limit } => (limit / 2.0).max(1.0),
+                _ => 1.0,
+            };
+            widest = widest.max(s.width_mm * reach);
+        }
+    }
+    let d = drawn?;
+    let placed = [
+        Point::new(d.x0, d.y0),
+        Point::new(d.x1, d.y0),
+        Point::new(d.x0, d.y1),
+        Point::new(d.x1, d.y1),
+    ]
+    .map(|p| affine * p);
+    let mut b = Rect::from_points(placed[0], placed[1]);
+    for p in &placed[2..] {
+        b = b.union_pt(*p);
+    }
+    let scale = o.transform.scale_x.abs().max(o.transform.scale_y.abs());
+    let grow = widest * scale + 0.01;
+    Some(b.inflate(grow, grow))
+}
+
+/// What a box of [`cut_bounds`] depends on, but the position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct BoundsMemoKey {
+    geometry: usize,
+    numbers: [u64; 10],
+    mirror: bool,
+    mode: u8,
+    strokes: u8,
+}
+
+/// The boxes [`cut_bounds`] worked out, the most recently used ones. Each
+/// holds its geometry weakly: it never keeps a closed document's shapes
+/// alive, and a box whose geometry is gone (or whose address now belongs
+/// to other geometry) is never used. At most [`BOUNDS_MEMO_SIZE`] boxes.
+#[derive(Debug, Default)]
+struct BoundsMemo {
+    entries: std::collections::HashMap<BoundsMemoKey, MemoEntry>,
+    clock: u64,
+}
+
+#[derive(Debug)]
+struct MemoEntry {
+    geometry: std::sync::Weak<Vec<CutPath>>,
+    bounds: Option<Rect>,
+    used: u64,
+}
+
+impl BoundsMemo {
+    fn get(&mut self, key: &BoundsMemoKey, geometry: &Arc<Vec<CutPath>>) -> Option<Option<Rect>> {
+        self.clock += 1;
+        let clock = self.clock;
+        let e = self.entries.get_mut(key)?;
+        if !e
+            .geometry
+            .upgrade()
+            .is_some_and(|g| Arc::ptr_eq(&g, geometry))
+        {
+            self.entries.remove(key);
+            return None;
+        }
+        e.used = clock;
+        Some(e.bounds)
+    }
+
+    fn put(&mut self, key: BoundsMemoKey, geometry: &Arc<Vec<CutPath>>, bounds: Option<Rect>) {
+        if self.entries.len() >= BOUNDS_MEMO_SIZE {
+            self.entries.retain(|_, e| e.geometry.strong_count() > 0);
+        }
+        while self.entries.len() >= BOUNDS_MEMO_SIZE {
+            let Some(oldest) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, e)| e.used)
+                .map(|(k, _)| *k)
+            else {
+                break;
+            };
+            self.entries.remove(&oldest);
+        }
+        self.clock += 1;
+        self.entries.insert(
+            key,
+            MemoEntry {
+                geometry: Arc::downgrade(geometry),
+                bounds,
+                used: self.clock,
+            },
+        );
+    }
+}
+
+/// The memo of [`cut_bounds`], for every session of the process.
+static BOUNDS_MEMO: std::sync::OnceLock<std::sync::Mutex<BoundsMemo>> = std::sync::OnceLock::new();
+
+/// At most this many boxes are kept; the least recently used goes first.
+const BOUNDS_MEMO_SIZE: usize = 256;
+
+#[cfg(test)]
+pub(crate) fn bounds_memo_len() -> usize {
+    BOUNDS_MEMO
+        .get()
+        .map_or(0, |m| m.lock().unwrap().entries.len())
+}
+
+/// [`cut_bounds`] of geometry placed with `affine` and cut with `options`,
+/// worked out every time. The cross-object modes take the box of the
+/// object outlines: it holds every piece they cut, whatever the other
+/// objects do.
+pub fn cut_bounds_of(
+    geometry: &[CutPath],
+    options: &CutOptions,
+    affine: Affine,
+    knife: Knife,
+) -> Option<Rect> {
+    let outlines = CutOptions {
+        mode: CutMode::ObjectOutlines,
+        ..*options
+    };
+    let options = if options.mode.is_cross_object() {
+        &outlines
+    } else {
+        options
+    };
+    geometry
         .iter()
-        .filter_map(|p| path_bounds(p, &object.cut, affine))
+        .filter_map(|p| {
+            if cuts_its_fill(p, options, affine) {
+                let (cut, slivers) =
+                    cut_path_counted(p, options, affine, knife.tolerance_mm, knife.min_width_mm);
+                path_box(p, options, affine, &cut, slivers)
+            } else {
+                shape_bounds(p, options, affine)
+            }
+        })
         .reduce(|a, b| a.union(b))
 }
 
-fn path_bounds(path: &CutPath, options: &CutOptions, affine: Affine) -> Option<Rect> {
+/// True if the cut of `path` is the edge of its fill (an outline mode,
+/// a fill, no outline stroke): only such a cut can drop slivers.
+fn cuts_its_fill(path: &CutPath, options: &CutOptions, affine: Affine) -> bool {
+    options.mode.cuts_outlines()
+        && path.paint.fill.is_some()
+        && outline_style(path.paint, options, affine).is_none()
+}
+
+/// The box of what is cut of `path`, given its cut `cut` and how many
+/// slivers it dropped: the pieces themselves when slivers were dropped (so
+/// they never count), else the box of the drawn shape ([`shape_bounds`]),
+/// which follows curves exactly and holds every piece.
+pub(crate) fn path_box(
+    path: &CutPath,
+    options: &CutOptions,
+    affine: Affine,
+    cut: &[BezPath],
+    slivers: usize,
+) -> Option<Rect> {
+    if slivers > 0 {
+        return cut
+            .iter()
+            .map(Shape::bounding_box)
+            .reduce(|a, b| a.union(b));
+    }
+    shape_bounds(path, options, affine)
+}
+
+/// The placed width of the stroke of `paint` when the stroke mode Auto
+/// cuts it once, along its middle, because it is thinner than the
+/// object's threshold, else `None`.
+pub fn auto_centre_line_width(paint: Paint, options: &CutOptions, affine: Affine) -> Option<f64> {
+    let s = paint.stroke?;
+    let width = placed_width(s.width_mm, affine);
+    (options.mode.cuts_outlines()
+        && options.strokes == StrokeMode::Auto
+        && width.is_finite()
+        && width < options.auto_threshold_mm)
+        .then_some(width)
+}
+
+/// The placed width of the stroke of `paint` when it is cut around its
+/// outline (both edges), else `None`.
+pub fn outline_width(paint: Paint, options: &CutOptions, affine: Affine) -> Option<f64> {
+    if !options.mode.cuts_outlines() {
+        return None;
+    }
+    outline_style(paint, options, affine).map(|s| s.width)
+}
+
+/// The box of the drawn shape of `path` as it is cut: the stroke outline
+/// for an outlined stroke, else the centre line (a fill's edge lies on it).
+fn shape_bounds(path: &CutPath, options: &CutOptions, affine: Affine) -> Option<Rect> {
     let placed = affine * &path.path;
     if !flatcraft_core::geometry::has_segments(&placed) {
         return None;
     }
     let centre = placed.bounding_box();
-    let style = match options.mode {
-        CutMode::AllLines => None,
-        CutMode::ObjectOutlines => outline_style(path.paint, options, affine),
-    };
+    let style = options
+        .mode
+        .cuts_outlines()
+        .then(|| outline_style(path.paint, options, affine))
+        .flatten();
     let Some(style) = style.filter(|_| is_finite(&placed)) else {
         return Some(centre);
     };
@@ -113,17 +814,43 @@ pub fn cut_path(
     options: &CutOptions,
     placed_affine: Affine,
     tolerance_mm: f64,
+    min_width_mm: f64,
 ) -> Vec<BezPath> {
+    cut_path_counted(path, options, placed_affine, tolerance_mm, min_width_mm).0
+}
+
+/// [`cut_path`], and how many filled slivers it dropped. The cross-object
+/// modes cut one path as object outlines do: what other paths change is
+/// worked out by [`object_pieces`] and [`objects_cut_geometry`].
+pub fn cut_path_counted(
+    path: &CutPath,
+    options: &CutOptions,
+    placed_affine: Affine,
+    tolerance_mm: f64,
+    min_width_mm: f64,
+) -> (Vec<BezPath>, usize) {
     let placed = placed_affine * &path.path;
     match options.mode {
-        CutMode::AllLines => vec![placed],
-        CutMode::ObjectOutlines => {
+        CutMode::AllLines => (vec![placed], 0),
+        CutMode::ObjectOutlines | CutMode::MergedOutline | CutMode::VisibleOutline => {
             let tolerance = if tolerance_mm.is_finite() {
                 tolerance_mm.max(MIN_TOLERANCE_MM)
             } else {
                 MIN_TOLERANCE_MM
             };
-            object_outlines(placed, path.paint, options, placed_affine, tolerance)
+            let min_width = if min_width_mm.is_finite() {
+                min_width_mm.max(0.0)
+            } else {
+                0.0
+            };
+            object_outlines(
+                placed,
+                path.paint,
+                options,
+                placed_affine,
+                tolerance,
+                min_width,
+            )
         }
     }
 }
@@ -164,56 +891,70 @@ fn object_outlines(
     options: &CutOptions,
     affine: Affine,
     tolerance: f64,
-) -> Vec<BezPath> {
+    min_width: f64,
+) -> (Vec<BezPath>, usize) {
     if !is_finite(&placed) {
         // Booleans need finite coordinates; the pipeline refuses the rest.
-        return vec![placed];
+        return (vec![placed], 0);
     }
     let style = outline_style(paint, options, affine);
     let shapes = match (paint.fill, style) {
         // Stroke-only paths with a centre-line stroke and unpainted paths:
         // the path itself.
-        (None, None) => return vec![placed],
+        (None, None) => return (vec![placed], 0),
         // A fill with no stroke or a centre-line stroke.
         (Some(rule), None) => {
             let stroke_width = paint
                 .stroke
                 .map(|s| placed_width(s.width_mm, affine))
                 .filter(|w| w.is_finite());
-            return fill_edges(&placed, fill_rule(rule), stroke_width, tolerance);
+            return fill_edges(&placed, fill_rule(rule), stroke_width, tolerance, min_width);
         }
-        (fill, Some(style)) => {
-            let closed = close_meeting_ends(&placed);
-            let outline = kurbo::stroke(
-                closed.iter(),
-                &style,
-                &StrokeOpts::default(),
-                tolerance / 4.0,
-            );
-            let outline = contours(outline.iter(), tolerance / 4.0);
-            let outline = boolean(&outline, &[], OverlayFill::NonZero, tolerance);
-            let outline: Vec<Contour> = outline.into_iter().flatten().collect();
-            let bands = bands(&closed, style.width / 2.0, tolerance / 2.0);
-            let stroke = boolean(&outline, &bands, OverlayFill::NonZero, tolerance);
-            let stroke: Vec<Contour> = stroke.into_iter().flatten().collect();
-            match fill {
-                // Fill first, as its own rule, then united with the stroke.
-                Some(rule) => {
-                    let fill = contours(placed.iter(), tolerance / 2.0);
-                    let fill = boolean(&fill, &[], fill_rule(rule), tolerance);
-                    let fill: Vec<Contour> = fill.into_iter().flatten().collect();
-                    boolean(&fill, &stroke, OverlayFill::NonZero, tolerance)
-                }
-                None => stroke.into_iter().map(|c| vec![c]).collect(),
-            }
-        }
+        (fill, Some(style)) => outlined_area(&placed, fill, &style, tolerance),
     };
-    shapes
+    let rings = shapes
         .iter()
         .flatten()
         .filter(|c| c.len() >= 3)
         .map(|c| ring(c))
-        .collect()
+        .collect();
+    (rings, 0)
+}
+
+/// The painted area of the placed path `placed` with an outline stroke
+/// `style`: the stroke's outline, united with the fill (under its own
+/// rule) if it has one. Shapes of oriented contours (outer edges one way,
+/// holes the other), so a later boolean may read them with the non-zero
+/// rule.
+pub(crate) fn outlined_area(
+    placed: &BezPath,
+    fill: Option<FillRule>,
+    style: &Stroke,
+    tolerance: f64,
+) -> Vec<Vec<Contour>> {
+    let closed = close_meeting_ends(placed);
+    let outline = kurbo::stroke(
+        closed.iter(),
+        style,
+        &StrokeOpts::default(),
+        tolerance / 4.0,
+    );
+    let outline = contours(outline.iter(), tolerance / 4.0);
+    let outline = boolean(&outline, &[], OverlayFill::NonZero, tolerance);
+    let outline: Vec<Contour> = outline.into_iter().flatten().collect();
+    let bands = bands(&closed, style.width / 2.0, tolerance / 2.0);
+    let stroke = boolean(&outline, &bands, OverlayFill::NonZero, tolerance);
+    let stroke: Vec<Contour> = stroke.into_iter().flatten().collect();
+    match fill {
+        // Fill first, as its own rule, then united with the stroke.
+        Some(rule) => {
+            let fill = contours(placed.iter(), tolerance / 2.0);
+            let fill = boolean(&fill, &[], fill_rule(rule), tolerance);
+            let fill: Vec<Contour> = fill.into_iter().flatten().collect();
+            boolean(&fill, &stroke, OverlayFill::NonZero, tolerance)
+        }
+        None => stroke.into_iter().map(|c| vec![c]).collect(),
+    }
 }
 
 /// The cut paths of a fill with no stroke (`stroke_width` is `None`) or
@@ -231,21 +972,25 @@ fn object_outlines(
 /// of the fill (`mean_width`) with the stroke width, at least the
 /// tolerance. An open subpath has no stroke along its implicit
 /// closing chord, so there the bound is half the stroke width; it is
-/// cut as drawn. A closed line is a thin slot: with a mean width of
-/// `HAIRLINE_MM` or more it is cut as drawn, a ring with both sides.
-/// Below that it is a hairline that runs back along itself, and it is
-/// cut once, along its `spine`. Without a stroke a fill thinner than
-/// the tolerance is not visible and no knife can cut it, so it is
-/// dropped.
+/// cut as drawn. A stroked subpath narrower than `min_width` (half the
+/// blade offset) is a line as well, whatever its stroke. A closed line
+/// is a thin slot: with a mean width of [`hairline_mm`] or more it is cut
+/// as drawn, a ring with both sides. Below that it is a hairline that
+/// runs back along itself, and it is cut once, along its `spine`.
+/// Without a stroke a fill thinner than the tolerance is not visible and
+/// no knife can cut it, so it is dropped; one thinner than `min_width`
+/// is a sliver the blade cannot follow, so it is dropped and counted
+/// (the second value). A sliver the boolean makes of a stroked path (a
+/// thin even-odd frame) is cut once, along its middle ([`sliver_once`]),
+/// never along both edges.
 ///
-/// Known gaps until the milestone 2 booleans: a stroked spur inside
-/// a subpath that does enclose area (a closed shape with a tail
-/// drawn in the same subpath) is lost; only the fill edge is cut.
-/// A stroked subpath without area that lies inside a filled area of
-/// the same path is cut into the piece. Fill-only hairline slivers
-/// wider than the tolerance but below the knife's smallest feature
-/// are still cut as tiny loops; milestone 2 ties a smallest feature
-/// size to the blade offset. The ends of a closed hairline are looked
+/// The stroked centre line of a subpath that makes the fill is cut too
+/// where it leaves the fill's edge ([`spurs`]): a closed shape with a tail
+/// drawn in the same subpath keeps its tail.
+///
+/// Known gaps: a stroked subpath without area that lies inside a filled
+/// area of the same path is cut into the piece. The ends of a closed
+/// hairline are looked
 /// for over a reach of 0.2 mm, which can pick the apex of a narrow "V"
 /// instead of an end; such a ring is then cut as drawn, with both sides.
 /// Milestone 2 improves the end detection together with the medial axis.
@@ -254,9 +999,13 @@ fn fill_edges(
     rule: OverlayFill,
     stroke_width: Option<f64>,
     tolerance: f64,
-) -> Vec<BezPath> {
+    min_width: f64,
+) -> (Vec<BezPath>, usize) {
     let mut fill: Vec<Contour> = Vec::new();
     let mut lines: Vec<BezPath> = Vec::new();
+    // The stroked centre lines of the subpaths that make the fill, for
+    // their spurs.
+    let mut centre: Vec<Contour> = Vec::new();
     // The fill of the last subpath that is not a line: the result if it
     // is the only one.
     let mut last = Vec::new();
@@ -266,15 +1015,17 @@ fn fill_edges(
             Some(c) => boolean(std::slice::from_ref(c), &[], rule, tolerance),
             None => Vec::new(),
         };
+        // A stroked fill below the knife's narrowest feature is a line
+        // too: cut once, never dropped, since its stroke shows.
         let hidden_below = match stroke_width {
-            Some(w) if sub.ends_meet() => w,
-            Some(w) => w / 2.0,
+            Some(w) if sub.ends_meet() => w.max(min_width),
+            Some(w) => (w / 2.0).max(min_width),
             None => 0.0,
         };
         let width = mean_width(&own);
         if width < hidden_below.max(tolerance) {
             if stroke_width.is_some() && !sub.segments.is_empty() {
-                let hairline = sub.ends_meet() && width < HAIRLINE_MM.max(tolerance);
+                let hairline = sub.ends_meet() && width < hairline_mm(tolerance, min_width);
                 lines.push(
                     match hairline.then(|| spine(&sub.points(tolerance / 2.0))) {
                         Some(Some(spine)) => spine,
@@ -283,6 +1034,15 @@ fn fill_edges(
                 );
             }
         } else if let Some(c) = contour {
+            if stroke_width.is_some() {
+                let mut line = sub.points(tolerance / 2.0);
+                if sub.closed
+                    && let Some(first) = line.first().copied()
+                {
+                    line.push(first);
+                }
+                centre.push(line);
+            }
             fill.push(c);
             last = own;
         }
@@ -292,15 +1052,348 @@ fn fill_edges(
     } else {
         boolean(&fill, &[], rule, tolerance)
     };
-    let mut out: Vec<BezPath> = edges
+    // The spurs first, against every shape of the fill: a centre line on
+    // the edge of a band that is dropped or cut once below is that band's
+    // edge, never a spur.
+    let spur_cuts = spurs(&centre, &edges, tolerance);
+    // Thinner than the tolerance: not visible, dropped without a word.
+    // Thinner than the knife's narrowest feature: a sliver, whose two
+    // edges both lie inside the blade's swing, so they are never both
+    // cut. A stroked sliver shows through its stroke: it is cut once,
+    // along its middle ([`sliver_once`]). A fill-only one is dropped and
+    // counted.
+    let mut slivers = 0;
+    let mut once: Vec<BezPath> = Vec::new();
+    let mut kept: Vec<Vec<Contour>> = Vec::new();
+    for shape in edges {
+        let w = mean_width(std::slice::from_ref(&shape));
+        if w < tolerance {
+            continue;
+        }
+        if w < min_width {
+            match stroke_width {
+                Some(_) => once.extend(sliver_once(&shape, &centre, min_width)),
+                None => slivers += 1,
+            }
+            continue;
+        }
+        kept.push(shape);
+    }
+    let mut out: Vec<BezPath> = kept
         .iter()
-        .filter(|shape| mean_width(std::slice::from_ref(shape)) >= tolerance)
         .flatten()
         .filter(|c| c.len() >= 3)
         .map(|c| ring(c))
         .collect();
     out.extend(lines);
+    out.extend(once);
+    out.extend(spur_cuts);
+    (out, slivers)
+}
+
+/// The one cut of a stroked sliver `shape` (an outer contour and its
+/// holes, from the fill boolean): never both of its edges.
+///
+/// - A band between two rings (one hole, like a thin frame): the middle
+///   ring, each point halfway between a point of the outer ring and the
+///   nearest point of the hole ([`mid_ring`]).
+/// - A strip with no hole (a crescent): its spine ([`spine`]).
+/// - When neither can be built and checked: the longest of the stroked
+///   centre lines `centre` that runs along the shape, else the shape's
+///   outer contour. One line either way.
+pub(crate) fn sliver_once(
+    shape: &[Contour],
+    centre: &[Contour],
+    min_width: f64,
+) -> Option<BezPath> {
+    let reach = 4.0 * min_width.max(HAIRLINE_MM);
+    let built = match shape {
+        [outer, hole] => mid_ring(outer, hole, reach),
+        [outer] => spine(outer),
+        _ => None,
+    };
+    if built.is_some() {
+        return built;
+    }
+    let edges: Vec<Contour> = shape
+        .iter()
+        .filter_map(|c| {
+            let mut c = c.clone();
+            c.push(*c.first()?);
+            Some(c)
+        })
+        .collect();
+    let edge_refs: Vec<&[[f64; 2]]> = edges.iter().map(Vec::as_slice).collect();
+    let index = NearIndex::new(&edge_refs, reach);
+    let length = |c: &Contour| -> f64 {
+        c.windows(2)
+            .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+            .sum()
+    };
+    let polyline = |c: &Contour, closed: bool| {
+        let mut path = BezPath::new();
+        path.move_to(Point::new(c[0][0], c[0][1]));
+        for q in &c[1..] {
+            path.line_to(Point::new(q[0], q[1]));
+        }
+        if closed {
+            path.close_path();
+        }
+        path
+    };
+    let line = centre
+        .iter()
+        .filter(|c| c.len() >= 2 && c.iter().all(|p| index.near(*p)))
+        .max_by(|a, b| length(a).total_cmp(&length(b)));
+    match line {
+        Some(c) => Some(polyline(c, false)),
+        None => shape
+            .first()
+            .filter(|c| c.len() >= 3)
+            .map(|c| polyline(c, true)),
+    }
+}
+
+/// The ring halfway between the ring `outer` and the ring `hole` inside
+/// it: for points along `outer` (its vertices and points at most a
+/// quarter `reach` apart), the midpoint to the nearest point of `hole`.
+/// `None` unless it is proven to run inside the band: every such pair at
+/// most `reach` apart, and the middle about as long as the two rings on
+/// average.
+fn mid_ring(outer: &[[f64; 2]], hole: &[[f64; 2]], reach: f64) -> Option<BezPath> {
+    if outer.len() < 3 || hole.len() < 3 {
+        return None;
+    }
+    let ring_len = |r: &[[f64; 2]]| -> f64 {
+        (0..r.len())
+            .map(|k| {
+                let (a, b) = (r[k], r[(k + 1) % r.len()]);
+                (b[0] - a[0]).hypot(b[1] - a[1])
+            })
+            .sum()
+    };
+    let nearest = |p: [f64; 2]| -> [f64; 2] {
+        let mut best = (f64::INFINITY, hole[0]);
+        for k in 0..hole.len() {
+            let (a, b) = (hole[k], hole[(k + 1) % hole.len()]);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let len2 = dx * dx + dy * dy;
+            let t = if len2 > 0.0 {
+                (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let q = [a[0] + dx * t, a[1] + dy * t];
+            let d = (p[0] - q[0]).hypot(p[1] - q[1]);
+            if d < best.0 {
+                best = (d, q);
+            }
+        }
+        best.1
+    };
+    let step = (reach / 4.0).max(1e-3);
+    let n = outer.len();
+    let mut mids: Vec<Point> = Vec::new();
+    for k in 0..n {
+        let (a, b) = (outer[k], outer[(k + 1) % n]);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let parts = (dx.hypot(dy) / step).ceil().max(1.0) as usize;
+        for m in 0..parts {
+            let t = m as f64 / parts as f64;
+            let p = [a[0] + dx * t, a[1] + dy * t];
+            let q = nearest(p);
+            if (p[0] - q[0]).hypot(p[1] - q[1]) > reach {
+                return None;
+            }
+            let mid = Point::new((p[0] + q[0]) / 2.0, (p[1] + q[1]) / 2.0);
+            // A point on the straight run of the two before it says
+            // nothing new.
+            if mids.len() >= 2 {
+                let (u, v) = (mids[mids.len() - 2], mids[mids.len() - 1]);
+                if (v - u).cross(mid - v).abs() < 1e-12 * (1.0 + (v - u).hypot2()) {
+                    mids.pop();
+                }
+            }
+            if mids.last() != Some(&mid) {
+                mids.push(mid);
+            }
+        }
+    }
+    if mids.len() < 3 {
+        return None;
+    }
+    let mid_len: f64 = mids.windows(2).map(|w| w[0].distance(w[1])).sum::<f64>()
+        + mids[mids.len() - 1].distance(mids[0]);
+    let average = (ring_len(outer) + ring_len(hole)) / 2.0;
+    if (mid_len - average).abs() > (0.05 * average).max(4.0 * reach) {
+        return None;
+    }
+    let mut path = BezPath::new();
+    path.move_to(mids[0]);
+    for p in &mids[1..] {
+        path.line_to(*p);
+    }
+    path.close_path();
+    Some(path)
+}
+
+/// The parts of the stroked centre lines `centre` that do not lie on the
+/// edge of the fill `fill` (spurs and tails drawn in a subpath that also
+/// encloses area), cut as open pieces. The parts on the edge are cut by
+/// the fill's ring already, so they are left out.
+///
+/// Outside the fill every part is cut: there the stroke is all that shows.
+/// Inside it only a tail is cut, a part with an end inside the fill. A
+/// loop or a chord from edge to edge inside the fill is the edge of a
+/// subpath hidden under the fill (a square nested in a square of the same
+/// direction is one filled square); cutting it would cut the piece apart.
+///
+/// Rounding of the booleans can leave a part a hair off the edge; one
+/// whose every vertex and segment middle lies within `tolerance` of the
+/// edge is the edge too.
+fn spurs(centre: &[Contour], fill: &[Vec<Contour>], tolerance: f64) -> Vec<BezPath> {
+    use i_overlay::float::clip::FloatClip;
+    use i_overlay::string::clip::ClipRule;
+    if centre.is_empty() || fill.is_empty() {
+        return Vec::new();
+    }
+    let centre = centre.to_vec();
+    let shapes = fill.to_vec();
+    let edges: Vec<Contour> = fill
+        .iter()
+        .flatten()
+        .filter_map(|c| {
+            let mut c = c.clone();
+            c.push(*c.first()?);
+            Some(c)
+        })
+        .collect();
+    let edges: Vec<&[[f64; 2]]> = edges.iter().map(Vec::as_slice).collect();
+    // Built once: every part asks it.
+    let index = NearIndex::new(&edges, tolerance);
+    // A segment whose ends and middle all lie on the edge is the edge.
+    // Looked at segment by segment: i_overlay hands back a tail and the
+    // stretch of edge it runs into as one string.
+    let on_edge = |a: [f64; 2], b: [f64; 2]| {
+        index.near(a) && index.near(b) && index.near([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0])
+    };
+    let clip = |invert: bool| {
+        // The edge is never part of the result. With `invert`, i_overlay
+        // turns `boundary_included` around (true leaves the edge out of
+        // the outside part; pinned by a test).
+        let rule = ClipRule {
+            invert,
+            boundary_included: invert,
+        };
+        let segments: Vec<Contour> = centre
+            .clip_by_as::<i64>(&shapes, OverlayFill::NonZero, rule)
+            .iter()
+            .flat_map(|p| p.windows(2))
+            .filter(|w| !on_edge(w[0], w[1]))
+            .map(|w| w.to_vec())
+            .collect();
+        chain_once(&segments)
+    };
+    let free_end = |p: &Contour| {
+        let (first, last) = (p[0], p[p.len() - 1]);
+        first != last && (!index.near(first) || !index.near(last))
+    };
+    let inside = clip(false).into_iter().filter(free_end);
+    clip(true)
+        .into_iter()
+        .chain(inside)
+        .filter(|p| {
+            let length: f64 = p
+                .windows(2)
+                .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+                .sum();
+            length >= tolerance
+        })
+        .map(|p| {
+            let mut path = BezPath::new();
+            path.move_to(Point::new(p[0][0], p[0][1]));
+            for q in &p[1..] {
+                path.line_to(Point::new(q[0], q[1]));
+            }
+            path
+        })
+        .collect()
+}
+
+/// The segments of `parts`, each cut once (a line drawn out and back
+/// along itself gives its segments twice), joined again into polylines:
+/// a polyline runs on through every point where exactly two segments
+/// meet. Points are matched to 1e-6 mm, far below the booleans' rounding
+/// that the clip kept apart anyway.
+fn chain_once(parts: &[Contour]) -> Vec<Contour> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let key = |p: [f64; 2]| ((p[0] * 1e6).round() as i64, (p[1] * 1e6).round() as i64);
+    let mut points: BTreeMap<(i64, i64), [f64; 2]> = BTreeMap::new();
+    let mut segments: BTreeSet<((i64, i64), (i64, i64))> = BTreeSet::new();
+    for part in parts {
+        for w in part.windows(2) {
+            let (a, b) = (key(w[0]), key(w[1]));
+            if a == b {
+                continue;
+            }
+            points.entry(a).or_insert(w[0]);
+            points.entry(b).or_insert(w[1]);
+            segments.insert((a.min(b), a.max(b)));
+        }
+    }
+    let mut ends: BTreeMap<(i64, i64), Vec<(i64, i64)>> = BTreeMap::new();
+    for &(a, b) in &segments {
+        ends.entry(a).or_default().push(b);
+        ends.entry(b).or_default().push(a);
+    }
+    let mut used: BTreeSet<((i64, i64), (i64, i64))> = BTreeSet::new();
+    let mut out = Vec::new();
+    // Start at the points where a polyline must end, then at what is left
+    // (closed loops).
+    let starts: Vec<(i64, i64)> = ends
+        .iter()
+        .filter(|(_, n)| n.len() != 2)
+        .map(|(k, _)| *k)
+        .chain(ends.keys().copied())
+        .collect();
+    for start in starts {
+        while let Some(&next) = ends[&start]
+            .iter()
+            .find(|n| !used.contains(&(start.min(**n), start.max(**n))))
+        {
+            let mut line = vec![points[&start]];
+            let (mut at, mut to) = (start, next);
+            loop {
+                used.insert((at.min(to), at.max(to)));
+                line.push(points[&to]);
+                let n = &ends[&to];
+                if n.len() != 2 {
+                    break;
+                }
+                match n
+                    .iter()
+                    .find(|m| !used.contains(&(to.min(**m), to.max(**m))))
+                {
+                    Some(&m) => {
+                        at = to;
+                        to = m;
+                    }
+                    None => break,
+                }
+            }
+            out.push(line);
+        }
+    }
     out
+}
+
+/// A closed line whose fill is on average narrower than this is a
+/// hairline and cut once, along its spine, mm: the knife's narrowest
+/// feature (`min_width`, half the blade offset, see
+/// [`crate::report::min_width_mm`]), at least the tolerance. Ruling M2-P3:
+/// the hairline limit follows the minimum feature size.
+pub fn hairline_mm(tolerance: f64, min_width: f64) -> f64 {
+    min_width.max(tolerance)
 }
 
 /// One rectangle per flattened segment of `path`, `half` to each side, all
@@ -537,46 +1630,89 @@ fn ring_samples(ring: &[[f64; 2]]) -> impl Iterator<Item = [f64; 2]> + '_ {
 /// `line`. The line's segments are sorted into a grid of cells two
 /// `reach` wide, so each point is compared only with the segments near it.
 fn all_near(points: impl IntoIterator<Item = [f64; 2]>, line: &[[f64; 2]], reach: f64) -> bool {
-    let cell = 2.0 * reach;
-    let key = |x: f64, y: f64| ((x / cell).floor() as i64, (y / cell).floor() as i64);
-    let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> =
-        std::collections::HashMap::new();
-    for (k, w) in line.windows(2).enumerate() {
-        let (dx, dy) = (w[1][0] - w[0][0], w[1][1] - w[0][1]);
-        // A mark every half cell: the nearest mark to any point of the
-        // segment is a quarter cell away, so a point within `reach` of
-        // the segment finds it in its own cell or a neighbour.
-        let marks = (dx.hypot(dy) / (cell / 2.0)).ceil().max(1.0) as usize;
-        for m in 0..=marks {
-            let t = m as f64 / marks as f64;
-            let cells = grid
-                .entry(key(w[0][0] + dx * t, w[0][1] + dy * t))
-                .or_default();
-            if cells.last() != Some(&k) {
-                cells.push(k);
+    all_near_lines(points, &[line], reach)
+}
+
+/// [`all_near`] for several polylines: every point lies within `reach` of
+/// one of `lines`.
+fn all_near_lines(
+    points: impl IntoIterator<Item = [f64; 2]>,
+    lines: &[&[[f64; 2]]],
+    reach: f64,
+) -> bool {
+    let index = NearIndex::new(lines, reach);
+    points.into_iter().all(|p| index.near(p))
+}
+
+/// The segments of some polylines sorted into a grid of cells two `reach`
+/// wide, built once, for asking of many points whether they lie within
+/// `reach` of a line.
+struct NearIndex<'a> {
+    lines: &'a [&'a [[f64; 2]]],
+    reach: f64,
+    cell: f64,
+    grid: std::collections::HashMap<(i64, i64), Vec<(usize, usize)>>,
+}
+
+impl<'a> NearIndex<'a> {
+    fn new(lines: &'a [&'a [[f64; 2]]], reach: f64) -> Self {
+        let cell = 2.0 * reach;
+        let mut index = Self {
+            lines,
+            reach,
+            cell,
+            grid: std::collections::HashMap::new(),
+        };
+        for (l, line) in lines.iter().enumerate() {
+            for (k, w) in line.windows(2).enumerate() {
+                let (dx, dy) = (w[1][0] - w[0][0], w[1][1] - w[0][1]);
+                // A mark every half cell: the nearest mark to any point of
+                // the segment is a quarter cell away, so a point within
+                // `reach` of the segment finds it in its own cell or a
+                // neighbour.
+                let marks = (dx.hypot(dy) / (cell / 2.0)).ceil().max(1.0) as usize;
+                for m in 0..=marks {
+                    let t = m as f64 / marks as f64;
+                    let key = index.key(w[0][0] + dx * t, w[0][1] + dy * t);
+                    let cells = index.grid.entry(key).or_default();
+                    if cells.last() != Some(&(l, k)) {
+                        cells.push((l, k));
+                    }
+                }
             }
         }
+        index
     }
-    let distance = |p: &[f64; 2], k: usize| {
-        let (a, b) = (line[k], line[k + 1]);
-        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-        let len2 = dx * dx + dy * dy;
-        let t = if len2 > 0.0 {
-            (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0)
-        } else {
-            0.0
+
+    fn key(&self, x: f64, y: f64) -> (i64, i64) {
+        (
+            (x / self.cell).floor() as i64,
+            (y / self.cell).floor() as i64,
+        )
+    }
+
+    /// True if `p` lies within `reach` of one of the lines.
+    fn near(&self, p: [f64; 2]) -> bool {
+        let distance = |(l, k): (usize, usize)| {
+            let (a, b) = (self.lines[l][k], self.lines[l][k + 1]);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let len2 = dx * dx + dy * dy;
+            let t = if len2 > 0.0 {
+                (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            (p[0] - a[0] - dx * t).hypot(p[1] - a[1] - dy * t)
         };
-        (p[0] - a[0] - dx * t).hypot(p[1] - a[1] - dy * t)
-    };
-    points.into_iter().all(|p| {
-        let (cx, cy) = key(p[0], p[1]);
+        let (cx, cy) = self.key(p[0], p[1]);
         (-1..=1).any(|ox| {
             (-1..=1).any(|oy| {
-                grid.get(&(cx + ox, cy + oy))
-                    .is_some_and(|near| near.iter().any(|&k| distance(&p, k) <= reach))
+                self.grid
+                    .get(&(cx + ox, cy + oy))
+                    .is_some_and(|near| near.iter().any(|&k| distance(k) <= self.reach))
             })
         })
-    })
+    }
 }
 
 /// Indices of the two ends of a closed hairline: the two vertices where
@@ -841,9 +1977,12 @@ pub(crate) mod tests {
     thread_local! {
         /// How often `cut_bounds` ran on this thread.
         pub(crate) static CUT_BOUNDS_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        /// How often an object was cut (not taken over) on this thread.
+        pub(crate) static OBJECT_CUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
 
     use super::*;
+    use kurbo::ParamCurveArclen as _;
 
     #[test]
     fn a_path_without_segments_has_no_cut_bounds() {
@@ -860,7 +1999,7 @@ pub(crate) mod tests {
                     ..CutOptions::default()
                 };
                 assert_eq!(
-                    path_bounds(&path, &options, Affine::IDENTITY),
+                    shape_bounds(&path, &options, Affine::IDENTITY),
                     None,
                     "{stray}"
                 );
@@ -1027,6 +2166,104 @@ pub(crate) mod tests {
             [20.0, 0.02],
         ];
         assert!(spine(&ring).is_none(), "{:?}", spine(&ring));
+    }
+
+    /// Pins the clip rules: a line on the fill's edge gives nothing, a
+    /// line across it gives its part inside and its parts outside.
+    #[test]
+    fn spurs_keep_both_sides_and_leave_the_edge() {
+        let square = vec![vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]];
+        let on_edge = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]];
+        assert!(spurs(&[on_edge], std::slice::from_ref(&square), 0.01).is_empty());
+        // Along the edge, then away from it: only the part away is cut.
+        let edge_then_tail = vec![[0.0, 10.0], [0.0, 0.0], [-5.0, -5.0]];
+        let parts = spurs(&[edge_then_tail], std::slice::from_ref(&square), 0.01);
+        assert_eq!(parts.len(), 1, "{parts:?}");
+        let length: f64 = parts[0].segments().map(|s| s.arclen(1e-9)).sum();
+        assert!((length - 50f64.sqrt()).abs() < 1e-6, "{parts:?}");
+        // Across: the two parts outside are cut; the chord inside runs
+        // from edge to edge, so it is hidden under the fill.
+        let across = vec![[-5.0, 5.0], [15.0, 5.0]];
+        let parts = spurs(&[across], std::slice::from_ref(&square), 0.01);
+        let lengths: Vec<f64> = parts
+            .iter()
+            .map(|p| p.segments().map(|s| s.arclen(1e-9)).sum::<f64>())
+            .collect();
+        assert_eq!(lengths.len(), 2, "{parts:?}");
+        assert!(
+            lengths.iter().all(|l| (l - 5.0).abs() < 1e-6),
+            "{lengths:?}"
+        );
+        // A tail into the fill has a free end inside: it is cut.
+        let tail = vec![[0.0, 0.0], [4.0, 4.0]];
+        let parts = spurs(&[tail], std::slice::from_ref(&square), 0.01);
+        assert_eq!(parts.len(), 1, "{parts:?}");
+        // A loop inside is a hidden edge.
+        let inner = vec![[2.0, 2.0], [8.0, 2.0], [8.0, 8.0], [2.0, 8.0], [2.0, 2.0]];
+        assert!(spurs(&[inner], &[square], 0.01).is_empty());
+    }
+
+    #[test]
+    fn chain_once_cuts_a_there_and_back_line_once() {
+        let out = chain_once(&[
+            vec![[0.0, 0.0], [5.0, 5.0], [0.0, 0.0]],
+            vec![[5.0, 5.0], [9.0, 5.0]],
+        ]);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].len(), 3, "{out:?}");
+    }
+
+    /// The box memo stays within its size, and never keeps geometry alive.
+    #[test]
+    fn the_box_memo_is_bounded_and_holds_no_geometry() {
+        let mut objects = Vec::new();
+        for k in 0..(BOUNDS_MEMO_SIZE + 60) {
+            let x = k as f64;
+            let path = kurbo::Rect::new(x, 0.0, x + 5.0, 5.0).to_path(0.01);
+            let geometry = vec![CutPath {
+                path: path.clone(),
+                color: None,
+                label: None,
+                paint: Default::default(),
+            }];
+            let o = Object::shape_only(
+                Arc::new(geometry),
+                path.bounding_box(),
+                Default::default(),
+                CutOptions::default(),
+            );
+            let _ = cut_bounds(&o, Knife::default());
+            assert_eq!(Arc::strong_count(&o.geometry), 1, "held only weakly");
+            assert!(
+                bounds_memo_len() <= BOUNDS_MEMO_SIZE,
+                "{}",
+                bounds_memo_len()
+            );
+            objects.push(o);
+        }
+        assert_eq!(bounds_memo_len(), BOUNDS_MEMO_SIZE);
+        // A second ask of a recent box is served from the memo.
+        let last = objects.last().unwrap();
+        assert_eq!(
+            cut_bounds(last, Knife::default()),
+            cut_bounds(last, Knife::default())
+        );
+        // Closed documents leave dead boxes; the next one clears them.
+        objects.clear();
+        let path = kurbo::Rect::new(0.0, 0.0, 1.0, 1.0).to_path(0.01);
+        let o = Object::shape_only(
+            Arc::new(vec![CutPath {
+                path: path.clone(),
+                color: None,
+                label: None,
+                paint: Default::default(),
+            }]),
+            path.bounding_box(),
+            Default::default(),
+            CutOptions::default(),
+        );
+        let _ = cut_bounds(&o, Knife::default());
+        assert_eq!(bounds_memo_len(), 1);
     }
 
     #[test]

@@ -22,7 +22,18 @@ Objects must stay inside the cutting area, which the document tool (document.sta
 Use list_commands to find commands, describe_command for the parameters of one, execute to run it, \
 document to read the state and preview to see the result as a PNG. \
 A USB cut started by an agent goes ahead only if the person turned on 'Allow agents to start cuts'. \
-Otherwise, with a window open the person confirms it; without a window it is refused. File Output is always allowed.";
+Otherwise, with a window open the person confirms it; without a window it is refused. File Output is always allowed. \
+Problems come as issues you can act on: object.import and object.import_svg return report.issues, document.check checks objects again, \
+and job.preview returns issues (with ready false instead of an error) when nothing can be cut or objects are off the mat. \
+Each issue has a stable code, a severity (info, warning or error), object_ids, paths, message (the text the person sees), hint, \
+and fixes: a list of {label, description, command, args}; run a fix with execute {command, params: args}. No fix means: follow the hint. \
+Codes: open_paths, hairline, below_min_feature, fill_ignored, thin_slivers, outside_area, larger_than_area, missing_font, clip_ignored, images_skipped, \
+dashes_ignored, no_paths, nothing_traced, trace_downscaled, dpi_ignored, shapes_dropped, stencil_island, strokes_cut_once, objects_close, objects_overlap, group_objects_close (import report and document.check; the last three are hints \
+about close objects, never blocking, with \"Ignore for this object pair\" (document.ignore_issue) or \"Ignore for this group\" (document.ignore_group_hint)); \
+empty_document, hidden, skipped, too_small (job.preview, nothing to cut). describe_command document.check explains each code. \
+When a cut went wrong, run job.troubleshoot {symptom: not_through, tore_or_dragged, pieces_moved or wrong_place_or_size}: it returns the checklist \
+the window's \"It didn't cut right...\" helper shows, in order, so give the same advice in the same order. Its items have fixes in the same shape; \
+speed, force and passes fixes change only this job's overrides, never the presets. Propose them to the person: you may run them, but you cannot confirm a USB cut.";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListArgs {
@@ -46,13 +57,14 @@ pub struct ExecuteArgs {
     pub params: Option<Value>,
 }
 
-/// What to draw. "canvas": media, cutting area and objects. "path": planned toolpaths in cut order.
+/// What to draw. "canvas": media, cutting area and what is cut of the objects. "path": planned toolpaths in cut order. "simulation": the simulated blade tip coloured by deviation (job.simulate).
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 #[schemars(inline)]
 pub enum PreviewKind {
     Canvas,
     Path,
+    Simulation,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -126,6 +138,48 @@ impl FlatcraftMcp {
             Ok(v) => text_ok(&v),
             Err(_) => text_err("The call stopped with an internal error"),
         }
+    }
+
+    /// `project.save` with the thumbnail drawn and the file written
+    /// without the session lock, so the window keeps drawing meanwhile.
+    async fn save(&self, params: Value) -> CallToolResult {
+        let session = Arc::clone(&self.session);
+        let on_change = Arc::clone(&self.on_change);
+        let done = tokio::task::spawn_blocking(move || {
+            let r =
+                flatcraft_engine::commands::project::save_unlocked(&session, params, Origin::Agent);
+            on_change();
+            r
+        })
+        .await;
+        match done {
+            Ok(Ok(v)) => text_ok(&v),
+            Ok(Err(e)) => error_result(&e),
+            Err(_) => text_err("The call stopped with an internal error"),
+        }
+    }
+
+    /// Runs the command `id` with its slow part off the session lock
+    /// ([`flatcraft_engine::unlocked::execute`]) on tokio's blocking pool,
+    /// so the window keeps drawing while an agent imports, traces, opens,
+    /// plans or draws. Tells the GUI afterwards only if `notify`.
+    async fn unlocked(
+        &self,
+        notify: bool,
+        id: String,
+        params: Value,
+    ) -> Result<Result<Value, CommandError>, CallToolResult> {
+        let session = Arc::clone(&self.session);
+        let on_change = Arc::clone(&self.on_change);
+        tokio::task::spawn_blocking(move || {
+            let r = flatcraft_engine::unlocked::execute(&session, &id, params, Origin::Agent);
+            if notify {
+                on_change();
+            }
+            r
+        })
+        .await
+        .map_err(|_| text_err("The call stopped with an internal error"))
     }
 
     /// Runs `f` on the session on tokio's blocking pool. The lock is never held
@@ -230,6 +284,16 @@ impl FlatcraftMcp {
         if command == "document.check_sources" && params.as_object().is_some_and(|o| o.is_empty()) {
             return self.check_sources().await;
         }
+        if command == "project.save" {
+            return self.save(params).await;
+        }
+        if flatcraft_engine::unlocked::runs_unlocked(&command) {
+            return match self.unlocked(true, command, params).await {
+                Ok(Ok(v)) => text_ok(&v),
+                Ok(Err(e)) => error_result(&e),
+                Err(e) => e,
+            };
+        }
         match self
             .with_session(true, move |s| s.execute(&command, params, Origin::Agent))
             .await
@@ -255,17 +319,15 @@ impl FlatcraftMcp {
     }
 
     #[tool(
-        description = "Draw the active document as a PNG image. Input: kind ('canvas' or 'path'), optional max_px (64 to 4096, default 1024)."
+        description = "Draw the active document as a PNG image. Input: kind ('canvas', 'path' or 'simulation'), optional max_px (64 to 4096, default 1024)."
     )]
     async fn preview(&self, Parameters(args): Parameters<PreviewArgs>) -> CallToolResult {
-        let mut params = json!({ "kind": match args.kind { PreviewKind::Canvas => "canvas", PreviewKind::Path => "path" } });
+        let mut params = json!({ "kind": match args.kind { PreviewKind::Canvas => "canvas", PreviewKind::Path => "path", PreviewKind::Simulation => "simulation" } });
         if let Some(px) = args.max_px {
             params["max_px"] = json!(px);
         }
         let r = match self
-            .with_session(false, move |s| {
-                s.execute("document.preview", params, Origin::Agent)
-            })
+            .unlocked(false, "document.preview".into(), params)
             .await
         {
             Ok(r) => r,

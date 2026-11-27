@@ -28,8 +28,56 @@ const STAR_ROW_Y_MM: [f64; 2] = [150.0, 190.0];
 /// Circle radii, mm.
 const CIRCLE_RADII: [f64; 6] = [0.5, 1.0, 2.0, 5.0, 10.0, 25.0];
 
+/// Side of the square with a hole in the sheet and of the test shape, mm.
+pub const TEST_SQUARE_MM: f64 = 30.0;
+/// Side of the hole in that square, mm.
+pub const TEST_HOLE_MM: f64 = 10.0;
+
+/// Name of the object `tools.test_shape` adds.
+pub const TEST_SHAPE_NAME: &str = "Test shape";
+/// The group id (and so the path label) of the test shape's paths. It
+/// tells the test shape from an object the person named "Test shape".
+pub const TEST_SHAPE_LABEL: &str = "flatcraft-test-shape";
+
 fn group(out: &mut String, id: &str, body: &str) {
     let _ = writeln!(out, r#"<g id="{id}">{body}</g>"#);
+}
+
+/// A square of [`TEST_SQUARE_MM`] with a centred hole of [`TEST_HOLE_MM`],
+/// its top-left corner at `x`, `y`: the sheet's `hole-in-square` and the
+/// test shape.
+fn hole_in_square(x: f64, y: f64) -> String {
+    let inset = (TEST_SQUARE_MM - TEST_HOLE_MM) / 2.0;
+    format!(
+        r#"<rect x="{x}" y="{y}" width="{TEST_SQUARE_MM}" height="{TEST_SQUARE_MM}"/><rect x="{}" y="{}" width="{TEST_HOLE_MM}" height="{TEST_HOLE_MM}"/>"#,
+        x + inset,
+        y + inset
+    )
+}
+
+/// The test shape as SVG text: the sheet's square with a hole, alone on a
+/// page of its own size. It shows whether the knife cuts through (the
+/// square comes out), cleanly (the hole drops out) and true to size (30
+/// and 10 mm).
+pub fn test_shape_svg() -> String {
+    let mut s = String::new();
+    let _ = writeln!(
+        s,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{TEST_SQUARE_MM}mm" height="{TEST_SQUARE_MM}mm" viewBox="0 0 {TEST_SQUARE_MM} {TEST_SQUARE_MM}" fill="none" stroke="#000000" stroke-width="0.1">"##
+    );
+    group(&mut s, TEST_SHAPE_LABEL, &hole_in_square(0.0, 0.0));
+    s.push_str("</svg>\n");
+    s
+}
+
+/// True for the object `tools.test_shape` made: its name, and paths that
+/// all carry the test shape's label.
+pub fn is_test_shape(name: &str, geometry: &[flatcraft_core::geometry::CutPath]) -> bool {
+    name == TEST_SHAPE_NAME
+        && !geometry.is_empty()
+        && geometry
+            .iter()
+            .all(|p| p.label.as_deref() == Some(TEST_SHAPE_LABEL))
 }
 
 /// The sheet as SVG text.
@@ -88,11 +136,7 @@ pub fn sheet_svg() -> String {
     }
     group(&mut s, "circles", &circles);
 
-    group(
-        &mut s,
-        "hole-in-square",
-        r#"<rect x="80" y="10" width="30" height="30"/><rect x="90" y="20" width="10" height="10"/>"#,
-    );
+    group(&mut s, "hole-in-square", &hole_in_square(80.0, 10.0));
     group(&mut s, "open-line", r#"<path d="M130 25 H170"/>"#);
     group(
         &mut s,

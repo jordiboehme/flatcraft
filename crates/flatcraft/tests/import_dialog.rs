@@ -1,6 +1,7 @@
 //! Import, drag-and-drop and the Trace dialog, driven through egui_kittest.
 
 mod common;
+use common::RunPlan;
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -8,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use common::{
-    AppHarness, FakePicker, app, app_mut, harness, harness_with, import_square, session,
-    wait_for_source_check,
+    AppHarness, FakePicker, app, harness, harness_with, import_square, session, to_prepare,
+    undo_len, wait_for_source_check,
 };
 use egui::accesskit::Role;
 use egui_kittest::kittest::Queryable as _;
@@ -18,15 +19,6 @@ use flatcraft_core::document::{ObjectId, Source, TraceSettings};
 use flatcraft_engine::session::Origin;
 use flatcraft_mcp::SharedSession;
 use serde_json::json;
-
-fn undo_len(s: &SharedSession) -> usize {
-    s.lock().unwrap().doc().undo.undo_len()
-}
-
-fn to_prepare(h: &mut AppHarness) {
-    app_mut(h).ui.workspace = Workspace::Prepare;
-    wait_for_source_check(h);
-}
 
 /// A black ring (outer radius 80 px, hole 40 px) on white, 200 x 200 px.
 fn write_ring(path: &Path) {
@@ -95,7 +87,7 @@ fn stored_settings(s: &SharedSession, id: u64) -> TraceSettings {
 /// so this steps a fixed number of frames instead of `run`.
 fn click_trace(h: &mut AppHarness) {
     h.get_by_role_and_label(Role::Button, "Trace").click();
-    h.run_steps(3);
+    h.run_steps(3); // run: the dialog opens in the click frame
     assert!(app(h).ui.trace.is_some(), "the Trace dialog did not open");
 }
 
@@ -116,7 +108,7 @@ fn step_until(h: &mut AppHarness, what: &str, done: impl Fn(&AppHarness) -> bool
         h.step();
         std::thread::sleep(Duration::from_millis(5));
     }
-    h.run();
+    h.run_plan();
 }
 
 fn has_preview(h: &AppHarness) -> bool {
@@ -147,9 +139,9 @@ fn trace_dialog_apply_retraces() {
     to_prepare(&mut h);
     open_trace(&mut h);
     h.get_by_label("Invert").click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Apply").click();
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.toasts.is_empty(), "{:?}", app(&h).ui.toasts);
     assert!(app(&h).ui.trace.is_none(), "Apply closes the dialog");
     assert_eq!(undo_len(&s), undo + 1);
@@ -174,9 +166,9 @@ fn trace_dialog_cancel_keeps_geometry() {
     to_prepare(&mut h);
     open_trace(&mut h);
     h.get_by_label("Invert").click();
-    h.run();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Cancel").click();
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.trace.is_none());
     assert_eq!(undo_len(&s), undo);
     assert_eq!(geometry(&s, id), before);
@@ -194,9 +186,9 @@ fn trace_dialog_escape_changes_nothing() {
     to_prepare(&mut h);
     open_trace(&mut h);
     h.get_by_label("Invert").click();
-    h.run();
+    h.run_plan();
     h.key_press(egui::Key::Escape);
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.trace.is_none());
     assert_eq!(undo_len(&s), undo);
     assert_eq!(geometry(&s, id), before);
@@ -274,7 +266,7 @@ fn trace_preview_runs_off_the_lock() {
         .expect("the preview trace did not start");
     // The trace is running: the session is free and the window keeps drawing.
     assert!(s.try_lock().is_ok(), "the session is locked during a trace");
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.trace.as_ref().unwrap().busy());
     release_tx.send(()).unwrap();
     step_until(&mut h, "preview after release", has_preview);
@@ -304,12 +296,12 @@ fn trace_preview_drops_stale_results() {
     assert_eq!(started_rx.recv_timeout(Duration::from_secs(10)), Ok(false));
     // A change while the first trace runs.
     h.get_by_label("Invert").click();
-    h.run();
+    h.run_plan();
     h.step(); // past the 200 ms debounce
     release_tx.send(()).unwrap();
     assert_eq!(started_rx.recv_timeout(Duration::from_secs(10)), Ok(true));
     // The first result is stale and is never shown.
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.trace.as_ref().unwrap().preview.is_none());
     release_tx.send(()).unwrap();
     step_until(&mut h, "fresh preview", has_preview);
@@ -344,7 +336,7 @@ fn trace_needs_exactly_one_image() {
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Button, "Trace").click();
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.trace.is_none(), "an SVG cannot be traced");
 }
 
@@ -360,7 +352,7 @@ fn import_uses_the_file_picker() {
     let mut h = harness_with(&dir, s.clone(), |a| a.with_file_picker(picker.clone()));
     to_prepare(&mut h);
     h.get_by_role_and_label(Role::Button, "Import").click();
-    h.run();
+    h.run_plan();
     assert_eq!(s.lock().unwrap().doc().document.objects.len(), 1);
     let reqs = picker.requests.lock().unwrap();
     let names: Vec<&str> = reqs[0].filters.iter().map(|f| f.0.as_str()).collect();
@@ -539,7 +531,7 @@ fn unchecking_auto_starts_from_the_otsu_threshold() {
     };
     assert_eq!(app(&h).ui.trace.as_ref().unwrap().manual_threshold, used);
     h.get_by_label("Automatic threshold").click();
-    h.run();
+    h.run_plan();
     assert_eq!(
         app(&h).ui.trace.as_ref().unwrap().settings.threshold,
         Some(used)
@@ -574,7 +566,7 @@ fn trace_status_says_when_a_newer_preview_is_coming() {
     to_prepare(&mut h);
     open_trace(&mut h);
     h.get_by_label("Invert").click();
-    h.run();
+    h.run_plan();
     h.step(); // past the 200 ms debounce
     let status = app(&h).ui.trace.as_ref().unwrap().status();
     assert!(status.ends_with(" (updating...)"), "{status}");
@@ -602,9 +594,106 @@ fn trace_dialog_closes_when_the_image_changes() {
         )
         .unwrap();
     let undo = undo_len(&s);
-    h.run();
+    h.run_plan();
     assert!(app(&h).ui.trace.is_none());
     let toasts: Vec<&str> = app(&h).ui.toasts.iter().map(|t| t.text.as_str()).collect();
     assert_eq!(toasts, ["The image changed, open Trace again."]);
     assert_eq!(undo_len(&s), undo);
+}
+
+#[test]
+fn trace_dialog_says_it_retraces_every_linked_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let id = import_ring(&dir, &s);
+    let copy = s
+        .lock()
+        .unwrap()
+        .execute(
+            "object.copies",
+            json!({ "id": id, "count": 1, "linked": true }),
+            Origin::User,
+        )
+        .unwrap()["ids"][0]
+        .as_u64()
+        .unwrap();
+    s.lock()
+        .unwrap()
+        .execute("object.select", json!({ "ids": [id] }), Origin::User)
+        .unwrap();
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    open_trace(&mut h);
+    h.get_by_label("Retraces all 2 linked copies");
+    h.get_by_label("Invert").click();
+    h.run_plan();
+    h.get_by_role_and_label(Role::Button, "Apply").click();
+    h.run_plan();
+    assert!(stored_settings(&s, id).invert);
+    assert!(stored_settings(&s, copy).invert, "the linked copy follows");
+}
+
+#[test]
+fn a_slider_value_field_follows_the_click_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_ring(&dir, &s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    open_trace(&mut h);
+    common::check_click_rules(&mut h, "Smoothing value");
+    assert!(
+        app(&h).ui.trace.is_some(),
+        "Esc in the field keeps the dialog"
+    );
+}
+
+/// Types `text` into the Smoothing value field and clicks Apply without
+/// leaving the field first.
+fn apply_with_smoothing(h: &mut AppHarness, text: &str) {
+    use egui::Modifiers;
+    h.get_by_label("Smoothing value").click();
+    h.run_plan();
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+    h.run_plan();
+    h.event(egui::Event::Text(text.into()));
+    h.run_plan();
+    h.get_by_role_and_label(Role::Button, "Apply").click();
+    for _ in 0..4 {
+        h.run_plan();
+    }
+}
+
+#[test]
+fn apply_counts_a_typed_value_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let id = import_ring(&dir, &s);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    open_trace(&mut h);
+    apply_with_smoothing(&mut h, "2*2");
+    assert!(app(&h).ui.trace.is_none(), "Apply closes the dialog");
+    assert_eq!(stored_settings(&s, id).smoothing, 4);
+}
+
+#[test]
+fn apply_with_a_text_it_cannot_read_keeps_the_old_value_and_says_why() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let id = import_ring(&dir, &s);
+    let before = stored_settings(&s, id).smoothing;
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    open_trace(&mut h);
+    apply_with_smoothing(&mut h, "2*");
+    assert!(app(&h).ui.trace.is_none());
+    assert_eq!(stored_settings(&s, id).smoothing, before);
+    let toasts: Vec<String> = app(&h).ui.toasts.iter().map(|t| t.text.clone()).collect();
+    assert!(
+        toasts.contains(
+            &"Can't read '2*': something is missing after *. Nothing changed.".to_string()
+        ),
+        "{toasts:?}"
+    );
 }

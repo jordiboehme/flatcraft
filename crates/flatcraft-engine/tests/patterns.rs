@@ -683,3 +683,51 @@ fn test_sheet_cuts_the_hole_before_its_square() {
     assert!(inner.1 < 12.0 && outer.1 > 29.0, "{rings:?}");
     assert!(inner.0 < outer.0, "the hole must be cut first: {rings:?}");
 }
+
+#[test]
+fn preview_draws_a_skipped_object_dimmed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let r = run(
+        &mut s,
+        "object.import_svg",
+        json!({
+            "svg": r##"<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="40mm" viewBox="0 0 40 40"><rect x="5" y="5" width="30" height="30" fill="none" stroke="#000" stroke-width="1"/></svg>"##,
+            "name": "box"
+        }),
+    );
+    let id = r["id"].as_u64().unwrap();
+    // The ink of the object: the darkest pixel sum over the image.
+    let ink = |s: &Session| -> (u64, Vec<u8>) {
+        let png = render_png(s, PreviewKind::Canvas, 600).unwrap();
+        let pm = tiny_skia::Pixmap::decode_png(&png).unwrap();
+        let dark = pm
+            .pixels()
+            .iter()
+            .map(|p| 3 * 255 - u64::from(p.red()) - u64::from(p.green()) - u64::from(p.blue()))
+            .sum::<u64>();
+        (dark, png)
+    };
+    let (cut_ink, cut_png) = ink(&s);
+    run(
+        &mut s,
+        "object.set_cut",
+        json!({ "ids": [id], "cut": false }),
+    );
+    let (skip_ink, skip_png) = ink(&s);
+    assert_ne!(cut_png, skip_png);
+    // Dimmed and dashed: clearly less ink than the cut object, but still drawn.
+    let empty_ink = {
+        run(
+            &mut s,
+            "object.set_visible",
+            json!({ "ids": [id], "visible": false }),
+        );
+        ink(&s).0
+    };
+    assert!(skip_ink > empty_ink, "{skip_ink} {empty_ink}");
+    assert!(
+        skip_ink - empty_ink < (cut_ink - empty_ink) * 3 / 4,
+        "{cut_ink} {skip_ink} {empty_ink}"
+    );
+}

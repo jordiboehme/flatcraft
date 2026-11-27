@@ -1,6 +1,9 @@
 //! Command registry. The GUI, the MCP server and tests call the same commands.
 
-use crate::commands::{arrange, edit, job, object, profiles, project, sources, tools};
+use crate::commands::{
+    arrange, check, edit, export, group, job, notes, object, profiles, project, selection, sources,
+    tools,
+};
 use crate::session::{CommandError, Origin, Session};
 
 /// One registry command.
@@ -15,6 +18,13 @@ pub trait Command: Send + Sync {
     fn params_schema(&self) -> schemars::Schema;
     /// True if the command changes the active document (one undo step).
     fn mutates_document(&self) -> bool;
+    /// True if a command that does not mutate the document still changes
+    /// session state: open documents, the active one, their selection,
+    /// undo history, path or dirty flag. After a panic such a command is
+    /// rolled back (see `Session::execute`).
+    fn changes_session(&self) -> bool {
+        false
+    }
     fn run(
         &self,
         s: &mut Session,
@@ -30,7 +40,13 @@ static ALL: &[&dyn Command] = &[
     &project::DocumentClose,
     &project::ProjectSave,
     &project::ProjectOpen,
+    &notes::DocumentNotes,
+    &notes::DocumentAppendNotes,
+    &notes::DocumentSetNotes,
     &sources::DocumentCheckSources,
+    &check::DocumentCheck,
+    &check::DocumentIgnoreIssue,
+    &check::DocumentIgnoreGroupHint,
     &object::ObjectImport,
     &object::ObjectImportSvg,
     &object::ObjectRetrace,
@@ -38,15 +54,29 @@ static ALL: &[&dyn Command] = &[
     &sources::ObjectRelink,
     &sources::ObjectUnlink,
     &object::ObjectSelect,
+    &selection::SelectionSetInPolygon,
     &object::ObjectSetVisible,
+    &object::ObjectSetCut,
+    &object::ObjectRename,
     &object::ObjectDelete,
     &object::ObjectDuplicate,
+    &object::ObjectCopies,
+    &object::ObjectCircularCopies,
+    &object::ObjectLink,
+    &object::ObjectUnlinkCopies,
     &object::ObjectMove,
     &object::ObjectScale,
     &object::ObjectRotate,
     &object::ObjectMirror,
     &object::ObjectSetCutOptions,
+    &object::ObjectSetKeep,
+    &object::ObjectKeepAt,
+    &group::ObjectGroup,
+    &group::ObjectUngroup,
+    &group::ObjectMoveToGroup,
+    &group::ObjectReorder,
     &arrange::ArrangeAlign,
+    &arrange::ArrangeDistribute,
     &arrange::ArrangeAuto,
     &edit::EditUndo,
     &edit::EditRedo,
@@ -56,10 +86,19 @@ static ALL: &[&dyn Command] = &[
     &profiles::JobSetMaterial,
     &profiles::JobSetMedia,
     &profiles::JobSetOverrides,
+    &profiles::JobSetStrategy,
+    &profiles::JobSetWeeding,
     &job::JobPreview,
+    &job::JobSimulate,
+    &job::JobCompareStrategies,
     &job::JobSend,
+    &job::JobHistory,
+    &job::JobTroubleshoot,
     &tools::ToolsTestPatterns,
+    &tools::ToolsTestShape,
+    &tools::ToolsOffsetSeries,
     &tools::DocumentPreview,
+    &export::DocumentExport,
 ];
 
 /// Every command, in a stable order.

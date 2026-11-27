@@ -1,0 +1,16 @@
+# Starting values in our own words, from several public sources (see
+# docs/materials.md). Always check them with a test cut first.
+id = "stencil-film"
+name = "Stencil and masking film"
+group = "other"
+speed = 5
+force = 4
+passes = 1
+reverse_alternate_passes = false
+overcut_mm = 0.5
+track_enhancing = false
+corner_mode = "Arc"
+backing = true
+mat_tack = "standard"
+blade_depth_hint = "blade 1"
+tips = "Film side up, backing down. Press the stencil down well before you paint, and paint thin layers so nothing creeps under the edges."

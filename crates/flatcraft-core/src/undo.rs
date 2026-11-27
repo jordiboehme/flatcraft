@@ -45,6 +45,28 @@ impl<T: Clone> UndoStack<T> {
         Some(next)
     }
 
+    /// The state the next undo returns to.
+    pub fn last(&self) -> Option<&T> {
+        self.undo.last()
+    }
+
+    /// Forgets the newest undo step (a burst of changes that ended where
+    /// it started). Redo is left as it is.
+    pub fn discard_last(&mut self) {
+        self.undo.pop();
+    }
+
+    /// The redo steps, oldest redo last (the next redo is the last one).
+    pub fn redo_states(&self) -> &[T] {
+        &self.redo
+    }
+
+    /// Puts back redo steps that a change cleared, when that change turned
+    /// out to change nothing (see [`UndoStack::discard_last`]).
+    pub fn restore_redo(&mut self, redo: Vec<T>) {
+        self.redo = redo;
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }

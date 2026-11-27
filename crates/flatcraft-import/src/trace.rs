@@ -14,6 +14,11 @@ use crate::raster::decode;
 
 /// Resolution assumed when the file declares none.
 pub const DEFAULT_DPI: f64 = 300.0;
+
+/// The default minimum feature size is this many blade offsets: the
+/// smallest shape the knife cuts cleanly. The import report uses the same
+/// value, so both agree.
+pub const MIN_FEATURE_BLADE_OFFSETS: f64 = 6.0;
 /// Tolerance for flattening and for dropping collinear points, in mm.
 const TOLERANCE_MM: f64 = 0.01;
 /// The splice angle of the curve fitter, as in VTracer's default.
@@ -144,7 +149,10 @@ pub fn trace(
     } else {
         0.0
     };
-    let min_feature = s.min_feature_mm.unwrap_or(6.0 * blade_offset_mm).max(0.0);
+    let min_feature = s
+        .min_feature_mm
+        .unwrap_or(MIN_FEATURE_BLADE_OFFSETS * blade_offset_mm)
+        .max(0.0);
     let corner = s.corner_threshold_deg.clamp(0.0, 180.0).to_radians();
     // Smoothing 0..=10 maps to a curve-fitting length threshold of 3.5..=10 px.
     let segment_length = 3.5 + 0.65 * f64::from(s.smoothing.min(10));

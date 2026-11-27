@@ -164,6 +164,53 @@ fn hidden_objects_are_not_cut_and_named_in_warnings() {
 }
 
 #[test]
+fn skipped_objects_are_not_cut_and_named_in_warnings() {
+    let d = dirs();
+    let mut s = session(&d);
+    import_square(&mut s, "shown");
+    let skipped = import_square(&mut s, "spare");
+    run(
+        &mut s,
+        "object.set_cut",
+        json!({ "ids": [skipped], "cut": false }),
+    );
+    let r = run(&mut s, "job.preview", json!({}));
+    assert_eq!(r["toolpaths"], 1);
+    let w = r["warnings"].to_string();
+    assert!(w.contains("'spare' is skipped and will not be cut."), "{w}");
+    // Cut again: both are cut and the warning is gone.
+    run(
+        &mut s,
+        "object.set_cut",
+        json!({ "ids": [skipped], "cut": true }),
+    );
+    let r = run(&mut s, "job.preview", json!({}));
+    assert_eq!(r["toolpaths"], 2);
+    assert!(!r["warnings"].to_string().contains("skipped"));
+}
+
+#[test]
+fn only_skipped_objects_give_nothing_to_cut() {
+    let d = dirs();
+    let mut s = session(&d);
+    let id = import_square(&mut s, "square");
+    run(
+        &mut s,
+        "object.set_cut",
+        json!({ "ids": [id], "cut": false }),
+    );
+    let e = s.execute("job.send", json!({}), Origin::User).unwrap_err();
+    assert_eq!(
+        e,
+        CommandError::Refused(
+            "Nothing to cut: no visible object has cut paths. 'square' is skipped and will not be cut."
+                .into()
+        )
+    );
+    assert!(files(d.out.path()).is_empty());
+}
+
+#[test]
 fn send_empty_document_is_refused_and_writes_nothing() {
     let d = dirs();
     let mut s = session(&d);
@@ -216,6 +263,138 @@ fn send_out_of_area_names_object() {
 }
 
 #[test]
+fn a_line_below_half_a_step_is_dropped_with_a_warning() {
+    let d = dirs();
+    let mut s = session(&d);
+    import_square(&mut s, "square");
+    // 0.02 mm: under half a step of the Cameo 2 (0.025 mm).
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><path d="M60 60 L60.02 60" stroke="black" fill="none"/></svg>"#;
+    let id = run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": svg, "name": "speck" }),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    run(
+        &mut s,
+        "object.set_cut_options",
+        json!({ "ids": [id], "mode": "all_lines", "strokes": "centre_line", "auto_threshold_mm": 1.5 }),
+    );
+    let r = run(&mut s, "job.preview", json!({}));
+    assert_eq!(r["toolpaths"], 1);
+    let w = r["warnings"].to_string();
+    assert!(
+        w.contains("1 path is shorter than half a plotter step and is not cut."),
+        "{w}"
+    );
+    assert!(!w.contains('\u{2014}'));
+    assert_eq!(s.doc().last_job().unwrap().plan.dropped_short, 1);
+}
+
+#[test]
+fn a_line_inside_one_plotter_step_is_left_out_with_a_warning() {
+    let d = dirs();
+    let mut s = session(&d);
+    import_square(&mut s, "square");
+    // 0.03 mm: above half a step, so the planner keeps it, but from
+    // x = 9.98 mm both ends round to device unit 200 (9.98 * 20 = 199.6,
+    // 10.01 * 20 = 200.2), so the emitter leaves it out.
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><path d="M60 60 L60.03 60" stroke="black" fill="none"/></svg>"#;
+    let id = run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": svg, "name": "speck" }),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    run(
+        &mut s,
+        "object.set_cut_options",
+        json!({ "ids": [id], "mode": "all_lines", "strokes": "centre_line", "auto_threshold_mm": 1.5 }),
+    );
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [id], "x_mm": 9.98, "y_mm": 20.0 }),
+    );
+    let r = run(&mut s, "job.preview", json!({}));
+    let w = r["warnings"].to_string();
+    assert!(
+        w.contains("1 path fits inside one plotter step and is not cut."),
+        "{w}"
+    );
+    let job = s.doc().last_job().unwrap();
+    assert_eq!(job.plan.dropped_short, 0);
+    assert_eq!(job.job.collapsed.len(), 1);
+}
+
+#[test]
+fn a_job_of_only_too_short_lines_says_why_nothing_is_cut() {
+    let d = dirs();
+    let mut s = session(&d);
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><path d="M60 60 L60.02 60" stroke="black" fill="none"/></svg>"#;
+    let id = run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": svg, "name": "speck" }),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    run(
+        &mut s,
+        "object.set_cut_options",
+        json!({ "ids": [id], "mode": "all_lines", "strokes": "centre_line", "auto_threshold_mm": 1.5 }),
+    );
+    let err = s
+        .execute("job.send", json!({}), Origin::User)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains(
+            "Nothing to cut: the only cut path is shorter than half a plotter step (0.025 mm)."
+        ),
+        "{err}"
+    );
+    assert!(!err.contains('\u{2014}'));
+    // job.preview gives the same words as data, with the reasons.
+    let p = run(&mut s, "job.preview", json!({}));
+    assert_eq!(p["ready"], false);
+    assert_eq!(p["nothing_to_cut"], true);
+    assert_eq!(
+        p["reason"],
+        "Nothing to cut: the only cut path is shorter than half a plotter step (0.025 mm)."
+    );
+    assert_eq!(p["issues"][0]["code"], "too_small");
+}
+
+#[test]
+fn the_job_strategy_reaches_the_order() {
+    use flatcraft_core::document::CutStrategy;
+    // Two frames with a hole each, side by side.
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="100mm" viewBox="0 0 200 100"><path fill-rule="evenodd" d="M10 10 H60 V60 H10 Z M30 30 H40 V40 H30 Z M100 10 H150 V60 H100 Z M120 30 H130 V40 H120 Z"/></svg>"#;
+    let holes_first = |strategy: CutStrategy| {
+        let d = dirs();
+        let mut s = session(&d);
+        run(
+            &mut s,
+            "object.import_svg",
+            json!({ "svg": svg, "name": "frames" }),
+        );
+        s.doc_mut().document.job.strategy = strategy;
+        run(&mut s, "job.preview", json!({}));
+        let plan = &s.doc().last_job().unwrap().plan;
+        let keep: Vec<_> = plan.toolpaths.iter().map(|t| t.keep).collect();
+        assert_eq!(keep.len(), 4);
+        keep[..2]
+            .iter()
+            .all(|k| *k == flatcraft_path::KeepSide::Outside)
+    };
+    assert!(!holes_first(CutStrategy::Quality));
+    assert!(holes_first(CutStrategy::OutlinesLast));
+}
+
+#[test]
 fn overrides_reach_the_emitter() {
     let d = dirs();
     let mut s = session(&d);
@@ -233,9 +412,31 @@ fn overrides_reach_the_emitter() {
     let last = s.doc().last_job().unwrap();
     assert_eq!(last.settings.speed, 3);
     assert_eq!(last.settings.force, 20);
-    assert!(last.plan.toolpaths.iter().any(|t| t.pass == 2));
+    // The square's two passes are chained laps of one toolpath.
+    assert!(last.plan.toolpaths.iter().all(|t| t.laps == 2));
     let txt = std::fs::read_to_string(&sent_paths(&r)[1]).unwrap();
-    assert!(txt.contains("pass 2"), "{txt}");
+    assert!(txt.contains("passes 1-2"), "{txt}");
+}
+
+#[test]
+fn summary_reports_chained_passes() {
+    let d = dirs();
+    let mut s = session(&d);
+    import_square(&mut s, "square");
+    run(&mut s, "job.set_overrides", json!({ "passes": 3 }));
+    let r = run(&mut s, "job.preview", json!({}));
+    assert_eq!(r["settings"]["passes"], 3, "{r}");
+    let last = s.doc().last_job().unwrap();
+    assert_eq!(last.plan.toolpaths.len(), 1);
+    assert_eq!(flatcraft_engine::job::summary(last).passes, 3);
+    assert!(
+        r["listing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l["note"].as_str().unwrap().ends_with(", passes 1-3")),
+        "{r}"
+    );
 }
 
 #[test]
@@ -311,8 +512,10 @@ fn agent_job_names_never_reach_the_config_dir() {
         }
     }
     assert!(!d.config.path().join("mcp-token").exists());
-    assert!(
-        files(d.config.path()).is_empty(),
+    // Only FlatCraft's own cut log, which every completed send adds to.
+    assert_eq!(
+        files(d.config.path()),
+        [flatcraft_engine::cutlog::FILE],
         "{:?}",
         files(d.config.path())
     );
@@ -947,4 +1150,43 @@ fn travel_starts_at_the_media_corner_not_the_grid_origin() {
     let expected = kurbo::Point::new(-10.0, -20.0).distance(first);
     let travel = r["travel_mm"].as_f64().unwrap();
     assert!((travel - expected).abs() < 1e-6, "{travel} vs {expected}");
+}
+
+/// Two pieces that a plain nearest-neighbour order cuts low-then-high-then
+/// back: from the media corner the near one (feed band 1) comes first. With
+/// feed bands the one in band 0 comes first.
+const TWO_PIECES: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="100mm" viewBox="0 0 200 100"><rect x="0" y="60" width="5" height="5"/><rect x="150" y="10" width="5" height="5"/></svg>"#;
+
+/// The largest y of each toolpath of the job, in cut order.
+fn cut_order_tops(s: &mut Session, media: &str) -> Vec<f64> {
+    run(s, "job.set_media", json!({ "id": media }));
+    run(s, "job.preview", json!({}));
+    let plan = &s.doc().last_job().unwrap().plan;
+    plan.toolpaths
+        .iter()
+        .map(|t| t.points.iter().map(|p| p.y).fold(f64::MIN, f64::max))
+        .collect()
+}
+
+#[test]
+fn no_mat_media_turns_it_on() {
+    let d = dirs();
+    let mut s = session(&d);
+    run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": TWO_PIECES, "name": "two" }),
+    );
+    let on_mat = cut_order_tops(&mut s, "mat-12x12");
+    assert_eq!(on_mat.len(), 2);
+    assert!(
+        on_mat[0] > on_mat[1],
+        "a mat keeps the nearest order: {on_mat:?}"
+    );
+    let no_mat = cut_order_tops(&mut s, "no-mat");
+    assert_eq!(no_mat.len(), 2);
+    assert!(
+        no_mat[0] < no_mat[1],
+        "no mat cuts in feed bands: {no_mat:?}"
+    );
 }

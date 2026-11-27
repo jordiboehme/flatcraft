@@ -55,8 +55,19 @@ pub fn harness_steps(
     max_steps: u64,
     setup: impl FnOnce(FlatCraftApp) -> FlatCraftApp,
 ) -> AppHarness {
+    harness_sized(dir, s, [1400.0, 900.0], max_steps, setup)
+}
+
+/// Like [`harness_steps`], with a window of `size` points.
+pub fn harness_sized(
+    dir: &tempfile::TempDir,
+    s: SharedSession,
+    size: [f32; 2],
+    max_steps: u64,
+    setup: impl FnOnce(FlatCraftApp) -> FlatCraftApp,
+) -> AppHarness {
     let mut h = Harness::builder()
-        .with_size([1400.0, 900.0])
+        .with_size(size)
         .with_max_steps(max_steps)
         .with_context_setup(fonts::install)
         .build_ui_state(
@@ -69,7 +80,11 @@ pub fn harness_steps(
         );
     let ctx = h.ctx.clone();
     fonts::install(&ctx);
-    let mut app = FlatCraftApp::new(&ctx, s, dir.path().to_path_buf());
+    OutputLog::of(&ctx);
+    // Home's pictures are drawn within the frame: a worker that finishes
+    // at a random frame would make every test that starts on Home racy.
+    // The Home tests that check the worker turn this off.
+    let mut app = FlatCraftApp::new(&ctx, s, dir.path().to_path_buf()).with_inline_pictures(true);
     if !worker_delay().is_zero() {
         let repaint = ctx.clone();
         app = app.with_source_check(move |session| {
@@ -80,10 +95,137 @@ pub fn harness_steps(
             std::thread::sleep(worker_delay());
             ui::prepare::build_shape(input)
         });
+        let repaint = ctx.clone();
+        app.ui.cut.set_builder(move |input| {
+            slow_worker(&repaint);
+            flatcraft_engine::job::build_classified(input)
+        });
+        let repaint = ctx.clone();
+        app.ui.cut.sim.set_computer(move |input| {
+            slow_worker(&repaint);
+            flatcraft_engine::simulate::compute(input)
+        });
+        let repaint = ctx.clone();
+        app.ui
+            .prepare
+            .object_hints
+            .set_checker(std::sync::Arc::new(move |input, ids, stop| {
+                slow_worker(&repaint);
+                flatcraft_engine::report::check_selection_until(input, ids, stop)
+            }));
+        let repaint = ctx.clone();
+        app.long.set_runner(move |session, work| {
+            slow_worker(&repaint);
+            ui::long::run(session, work)
+        });
     }
     *h.state_mut() = Some(setup(app));
-    h.run();
+    settle(&mut h);
     h
+}
+
+/// Lets the window settle like `Harness::run`, but a worker that started
+/// in the first frames (Home's picture worker, a source check) may keep
+/// asking for repaints for a while: then it steps one frame at a time
+/// until the window settles. Fails after [`WORKER_TIMEOUT`], never after a
+/// count of frames, so a busy machine only makes it slower.
+pub fn settle(h: &mut AppHarness) {
+    let start = std::time::Instant::now();
+    // run: the event wait itself; a failed try only steps on
+    while h.run_ok().is_none() || landing(app(h)) {
+        assert!(
+            start.elapsed() < WORKER_TIMEOUT,
+            "the window did not settle within {WORKER_TIMEOUT:?} ({})",
+            report(h)
+        );
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// The workers that still run, by name: the source check, the shape
+/// worker, the Cut plan, the simulation, the kept mask, a long command,
+/// the object inspector's hints and Home's pictures. Each one asks for a
+/// frame when it ends, and the window takes its result on every frame,
+/// whatever workspace shows.
+pub fn workers(app: &FlatCraftApp) -> Vec<&'static str> {
+    [
+        ("source check", app.source_check_job.is_some()),
+        ("shapes", app.ui.prepare.cache.building() > 0),
+        ("plan", app.ui.cut.planning()),
+        ("simulation", app.ui.cut.sim.busy()),
+        ("kept", app.ui.cut.kept.pending()),
+        ("long command", app.long.busy()),
+        ("hints", app.ui.prepare.object_hints.busy()),
+        ("home pictures", app.ui.home.busy()),
+    ]
+    .into_iter()
+    .filter_map(|(name, busy)| busy.then_some(name))
+    .collect()
+}
+
+/// The workers whose results land in the window (the plan, the
+/// simulation, the kept mask, a long command, the hints): a test waits
+/// for them before it reads what they change.
+pub fn landing(app: &FlatCraftApp) -> bool {
+    app.ui.cut.planning()
+        || app.ui.cut.sim.busy()
+        || app.ui.cut.kept.pending()
+        || app.long.busy()
+        || app.ui.prepare.object_hints.busy()
+}
+
+/// Which workers run and why the last frame was painted, for a timeout.
+fn report(h: &AppHarness) -> String {
+    format!(
+        "busy {:?}, workspace {:?}, repaint causes {:?}",
+        workers(app(h)),
+        app(h).ui.workspace,
+        h.ctx.repaint_causes()
+    )
+}
+
+/// Selects nothing, so the inspector shows the Job panel (with a
+/// selection it shows the object inspector).
+pub fn select_none(s: &SharedSession) {
+    s.lock()
+        .unwrap()
+        .execute("object.select", json!({ "ids": [] }), Origin::User)
+        .unwrap();
+}
+
+/// Shows the Job panel over the selection: a click on the job line.
+pub fn show_job(h: &mut AppHarness) {
+    use egui_kittest::kittest::Queryable as _;
+    h.get_by_label_contains("Job: ").click();
+    h.run_plan();
+}
+
+/// Shows Prepare and waits for the source check it starts.
+pub fn to_prepare(h: &mut AppHarness) {
+    app_mut(h).ui.workspace = ui::Workspace::Prepare;
+    wait_for_source_check(h);
+}
+
+/// Steps the active document can undo.
+pub fn undo_len(s: &SharedSession) -> usize {
+    s.lock().unwrap().doc().undo.undo_len()
+}
+
+/// Every shape painted last frame, with nested lists flattened.
+pub fn painted(h: &AppHarness) -> Vec<egui::Shape> {
+    fn walk(shape: &egui::Shape, out: &mut Vec<egui::Shape>) {
+        match shape {
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+            other => out.push(other.clone()),
+        }
+    }
+    let mut out = Vec::new();
+    // output: what the last frame painted is the state to read
+    for c in &h.output().shapes {
+        walk(&c.shape, &mut out);
+    }
+    out
 }
 
 pub fn app(h: &AppHarness) -> &FlatCraftApp {
@@ -172,37 +314,275 @@ pub fn slow_worker(ctx: &egui::Context) {
 /// Longest wait for the source check and the shape worker.
 pub const WORKER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Runs frames until no source check is in flight and the shape worker has
-/// nothing left to build, then lets the window settle. See [`wait_until`].
+/// Runs frames until no worker runs (see [`workers`]), the shape worker
+/// included, then lets the window settle. See [`wait_until`].
 pub fn wait_for_workers(h: &mut AppHarness) {
-    wait_until(h, |app| {
-        app.source_check_job.is_some() || app.ui.prepare.cache.building() > 0
-    });
+    wait_until(h, |app| !workers(app).is_empty());
 }
 
-/// Runs frames until no source check is in flight, then lets the window
-/// settle. For frames that may start a check (entering Prepare, a new or
-/// switched document); the shape worker may stay busy.
+/// Runs frames until no source check and no long command is in flight and
+/// the workers that land in the window ended (see [`landing`]), then lets
+/// the window settle. For frames that may start a check (entering
+/// Prepare, a new or switched document). Opening a project or a sample is
+/// a long command on a worker that switches the document only when it
+/// lands, so it is waited for too. The shape worker may stay busy.
 pub fn wait_for_source_check(h: &mut AppHarness) {
-    wait_until(h, |app| app.source_check_job.is_some());
+    wait_until(h, |app| app.source_check_job.is_some() || landing(app));
 }
 
-/// Runs frames until `busy` is false and the window settled. While a worker
-/// is busy it steps one frame at a time (`Harness::step`), because
-/// `Harness::run` fails when the worker keeps asking for repaints. Fails
-/// after [`WORKER_TIMEOUT`].
+/// Runs frames until the long commands (import, trace, reload, open,
+/// export) the window queued have landed, then lets the window settle.
+/// `FlatCraftApp::apply` waits only [`flatcraft::ui::long::LONG_WAIT`] for
+/// one, so a test reads their result only after this.
+pub fn wait_for_long(h: &mut AppHarness) {
+    wait_until(h, |app| app.long.busy());
+}
+
+/// Runs frames until `busy` is false and the window settled. Every worker
+/// asks for a frame when it ends, so this waits for that event, frame by
+/// frame (`Harness::step`), because `Harness::run` fails while a worker
+/// keeps asking for repaints. [`WORKER_TIMEOUT`] only ends a wait that
+/// would never end; it then names the workers that still run.
 pub fn wait_until(h: &mut AppHarness, busy: impl Fn(&FlatCraftApp) -> bool) {
     let start = std::time::Instant::now();
     loop {
         h.step();
         // Settled, and settling started no new work.
+        // run: the event wait itself; a failed try only steps on
         if !busy(app(h)) && h.run_ok().is_some() && !busy(app(h)) {
             return;
         }
         assert!(
             start.elapsed() < WORKER_TIMEOUT,
-            "the source check or the shape worker did not finish within {WORKER_TIMEOUT:?}"
+            "the workers did not finish within {WORKER_TIMEOUT:?} ({})",
+            report(h)
         );
         std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// Records the files it is asked to show instead of starting the file
+/// manager.
+#[derive(Clone, Default)]
+pub struct FakeRevealer(pub Arc<Mutex<Vec<PathBuf>>>);
+
+impl flatcraft::ui::files::Revealer for FakeRevealer {
+    fn reveal(&mut self, file: &std::path::Path) -> Result<(), String> {
+        self.0.lock().unwrap().push(file.to_path_buf());
+        Ok(())
+    }
+}
+
+/// What the window asked of the platform over all frames: the output
+/// commands (open a URL, copy text) and the viewport commands (close). A
+/// harness keeps only the last frame's output, and a frame that a worker
+/// asks for in between would wipe a command the click sent. Every harness
+/// of [`harness_sized`] records from its first frame. A test never reads the
+/// log as a whole (an earlier command would let a check pass that the action
+/// under test did not earn); it reads what one action produced, with
+/// [`capture`].
+#[derive(Clone, Default)]
+struct OutputLog(Arc<Mutex<Captured>>);
+
+impl OutputLog {
+    /// The log of `ctx`; the first call starts recording.
+    fn of(ctx: &egui::Context) -> Self {
+        let id = egui::Id::NULL;
+        if let Some(log) = ctx.data(|d| d.get_temp::<Self>(id)) {
+            return log;
+        }
+        let log = Self::default();
+        ctx.add_plugin(OutputPlugin(log.clone()));
+        ctx.data_mut(|d| d.insert_temp(id, log.clone()));
+        log
+    }
+
+    fn mark(&self) -> (usize, usize) {
+        let g = self.0.lock().unwrap();
+        (g.commands.len(), g.viewport.len())
+    }
+
+    fn since(&self, (c, v): (usize, usize)) -> Captured {
+        let g = self.0.lock().unwrap();
+        Captured {
+            commands: g.commands[c..].to_vec(),
+            viewport: g.viewport[v..].to_vec(),
+        }
+    }
+}
+
+/// The output commands and viewport commands that one [`capture`] saw.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Captured {
+    pub commands: Vec<egui::OutputCommand>,
+    pub viewport: Vec<egui::ViewportCommand>,
+}
+
+impl Captured {
+    /// The URLs the window asked to open.
+    pub fn urls(&self) -> Vec<String> {
+        self.commands
+            .iter()
+            .filter_map(|c| match c {
+                egui::OutputCommand::OpenUrl(u) => Some(u.url.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The text the window last put on the clipboard.
+    pub fn copied(&self) -> Option<String> {
+        self.commands.iter().rev().find_map(|c| match c {
+            egui::OutputCommand::CopyText(t) => Some(t.clone()),
+            _ => None,
+        })
+    }
+
+    /// Whether the window asked its viewport to close.
+    pub fn closes(&self) -> bool {
+        self.viewport.contains(&egui::ViewportCommand::Close)
+    }
+
+    /// Whether nothing at all was asked.
+    pub fn is_empty(&self) -> bool {
+        self.commands.is_empty() && self.viewport.is_empty()
+    }
+}
+
+/// Runs `action` and returns only the commands the window sent while it
+/// ran, over every frame the action ran (and no earlier one). The action
+/// includes the waits that follow the click, so an extra frame under load
+/// cannot wipe the command.
+pub fn capture(h: &mut AppHarness, action: impl FnOnce(&mut AppHarness)) -> Captured {
+    let log = OutputLog::of(&h.ctx);
+    let mark = log.mark();
+    action(h);
+    log.since(mark)
+}
+
+struct OutputPlugin(OutputLog);
+
+impl egui::plugin::Plugin for OutputPlugin {
+    fn debug_name(&self) -> &'static str {
+        "OutputLog"
+    }
+
+    fn output_hook(&mut self, _ctx: &egui::Context, output: &mut egui::FullOutput) {
+        let mut g = (self.0).0.lock().unwrap();
+        g.commands
+            .extend(output.platform_output.commands.iter().cloned());
+        for v in output.viewport_output.values() {
+            g.viewport.extend(v.commands.iter().cloned());
+        }
+    }
+}
+
+/// The text a field shows (its accessible value).
+pub fn field_text(h: &AppHarness, label: &str) -> String {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    h.get_by_label(label)
+        .accesskit_node()
+        .value()
+        .unwrap_or_default()
+}
+
+/// Two clicks at `at` in a fixed number of frames: each press and
+/// release takes one frame (`Harness::step`), never a wait for workers in
+/// between. A test frame lasts a quarter second of egui time, and a wait
+/// steps as many frames as a busy worker needs, so the second click would
+/// come late on a slow machine. Set `max_double_click_delay` (about 2 s)
+/// and let the last click age out first.
+pub fn double_click_at(h: &mut AppHarness, at: egui::Pos2) {
+    for _ in 0..2 {
+        h.drag_at(at);
+        h.step();
+        h.drop_at(at);
+        h.step();
+    }
+}
+
+/// A click at `at`: the press and the release take one frame each, then
+/// the window settles and the workers that land in it end. egui counts a
+/// press longer than `max_click_duration` (0.8 s, about three test frames)
+/// as no click, so no wait for workers may come between the two.
+pub fn click_at(h: &mut AppHarness, at: egui::Pos2) {
+    h.drag_at(at);
+    h.step();
+    h.drop_at(at);
+    h.step();
+    wait_until(h, landing);
+}
+
+/// Checks the click rules of the number field `label` (see
+/// `ui::calc`): a single click places the cursor, a double-click and Tab
+/// (here Tab out and Shift-Tab back) select the whole value, so typing
+/// replaces it. Each step ends with Esc, so nothing changes.
+pub fn check_click_rules(h: &mut AppHarness, label: &str) {
+    use egui_kittest::kittest::Queryable as _;
+    let shown = field_text(h, label);
+    let esc = |h: &mut AppHarness| {
+        h.key_press(egui::Key::Escape);
+        wait_until(h, landing);
+        wait_until(h, landing);
+    };
+    // A single click past the end: the digit is added.
+    let r = h.get_by_label(label).rect();
+    let end = egui::pos2(r.right() - 2.0, r.center().y);
+    h.hover_at(end);
+    wait_until(h, landing);
+    click_at(h, end);
+    h.event(egui::Event::Text("5".into()));
+    wait_until(h, landing);
+    assert_eq!(
+        field_text(h, label),
+        format!("{shown}5"),
+        "{label}: single click"
+    );
+    esc(h);
+    assert_eq!(field_text(h, label), shown, "{label}: Esc");
+    // A double-click on the first digit: all of it is replaced.
+    let r = h.get_by_label(label).rect();
+    let start = egui::pos2(r.left() + 6.0, r.center().y);
+    h.hover_at(start);
+    h.ctx
+        .options_mut(|o| o.input_options.max_double_click_delay = 2.0);
+    for _ in 0..8 {
+        h.step();
+    }
+    double_click_at(h, start);
+    wait_until(h, landing);
+    h.event(egui::Event::Text("7".into()));
+    wait_until(h, landing);
+    assert_eq!(field_text(h, label), "7", "{label}: double-click");
+    esc(h);
+    h.ctx
+        .options_mut(|o| o.input_options.max_double_click_delay = 0.3);
+    for _ in 0..8 {
+        h.step();
+    }
+    // Tab out and Shift-Tab back in: all of it is replaced.
+    h.get_by_label(label).click();
+    wait_until(h, landing);
+    h.key_press(egui::Key::Tab);
+    wait_until(h, landing);
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Tab);
+    wait_until(h, landing);
+    h.event(egui::Event::Text("7".into()));
+    wait_until(h, landing);
+    assert_eq!(field_text(h, label), "7", "{label}: Tab");
+    esc(h);
+    assert_eq!(field_text(h, label), shown, "{label}: Esc");
+}
+
+/// Settling that also waits for the Cut plan worker.
+pub trait RunPlan {
+    /// Runs frames until the Cut plan of the current input landed and the
+    /// window settled, by the clock (see [`wait_until`]).
+    fn run_plan(&mut self);
+}
+
+impl RunPlan for AppHarness {
+    fn run_plan(&mut self) {
+        wait_until(self, landing);
     }
 }

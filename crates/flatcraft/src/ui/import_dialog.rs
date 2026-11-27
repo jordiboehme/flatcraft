@@ -7,6 +7,8 @@
 //! generation number, and results of older generations are dropped. Apply
 //! sends one `object.retrace` to the object's document.
 
+use super::tools::Setting;
+use crate::ui::metrics;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
@@ -14,11 +16,13 @@ use std::sync::{Arc, mpsc};
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Ui, vec2};
 use flatcraft_core::document::TraceSettings;
 use flatcraft_core::geometry::CutPath;
+use flatcraft_core::numexpr::{Field, Kind};
 use flatcraft_engine::commands::sources::{FileKind, IMPORT_TYPES, is_importable};
 use flatcraft_import::ImportError;
 use flatcraft_import::trace::TraceResult;
 use serde_json::json;
 
+use super::calc::{self, Number};
 use super::files::{FileRequest, filter};
 use super::prepare::Snapshot;
 use super::settings::set_name;
@@ -531,7 +535,9 @@ pub fn show(
     let now = ctx.input(|i| i.time);
     d.poll(ctx, now);
     let mut outcome = Outcome::Open;
+    // Esc in a number field only puts its value back.
     if !ctx.egui_wants_keyboard_input()
+        && calc::editing(ctx).is_none()
         && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
     {
         outcome = Outcome::Close;
@@ -551,10 +557,10 @@ pub fn show(
                         d.changed(now);
                     }
                 });
-                ui.add_space(t.spacing * 2.0);
+                ui.add_space(metrics::SPACE_16);
                 preview_box(ui, d, t);
             });
-            ui.add_space(t.spacing);
+            ui.add_space(metrics::SPACE_8);
             let status = d.status();
             let colour = if d.error.is_some() {
                 t.danger
@@ -562,13 +568,24 @@ pub fn show(
                 t.text_dim
             };
             ui.label(egui::RichText::new(status).color(colour));
-            ui.add_space(t.spacing);
+            // Linked copies share the trace settings: say that Apply
+            // retraces them all, though the preview shows one.
+            if let Some(n) = snap
+                .object(d.id)
+                .and_then(|o| o.link_group)
+                .map(|g| snap.group_size(g))
+            {
+                ui.label(
+                    egui::RichText::new(format!("Retraces all {n} linked copies"))
+                        .color(t.text_dim),
+                );
+            }
+            ui.add_space(metrics::SPACE_8);
             ui.horizontal(|ui| {
-                if ui
+                let apply = ui
                     .button("Apply")
-                    .on_hover_text("Trace the image with these settings")
-                    .clicked()
-                {
+                    .on_hover_text("Trace the image with these settings");
+                if calc::click(ui, &apply) {
                     outcome = Outcome::Apply;
                 }
                 if ui.button("Cancel").clicked() {
@@ -590,6 +607,32 @@ pub fn show(
     None
 }
 
+/// A slider, a number field for its value (a calculation works, a value
+/// outside `range` is refused) and its label, with hover cards. The slider
+/// is named `label`, the field "`label` value". True when the value
+/// changed.
+fn slider_row<T: egui::emath::Numeric>(
+    ui: &mut Ui,
+    enabled: bool,
+    value: &mut T,
+    range: std::ops::RangeInclusive<T>,
+    spec: Number,
+    label: &str,
+    setting: Setting,
+) -> bool {
+    let kind = spec.field.kind;
+    let (track, field, changed) =
+        calc::slider(ui, ("flatcraft-trace", label), enabled, value, range, &spec);
+    set_name(ui, &track, label);
+    set_name(ui, &field, &format!("{label} value"));
+    let card = calc::with_hint(setting.card(), kind);
+    super::groups::card(&track, label, setting.card(), None, false);
+    super::groups::card(&field, label, &card, None, false);
+    let l = ui.label(label);
+    super::groups::card(&l, label, setting.card(), None, false);
+    changed
+}
+
 /// The settings. Returns true when one changed.
 fn controls(ui: &mut Ui, d: &mut TraceDialog) -> bool {
     let mut changed = false;
@@ -597,74 +640,97 @@ fn controls(ui: &mut Ui, d: &mut TraceDialog) -> bool {
 
     ui.horizontal(|ui| {
         let mut auto = s.threshold.is_none();
-        let r = ui
-            .add_enabled(
-                !auto,
-                egui::Slider::new(&mut d.manual_threshold, 0..=255).text("Threshold"),
-            )
-            .on_hover_text("Pixels darker than this are cut");
-        set_name(ui, &r, "Threshold");
-        if r.changed() {
+        let threshold = slider_row(
+            ui,
+            !auto,
+            &mut d.manual_threshold,
+            0..=255,
+            Number::new(Field::plain()),
+            "Threshold",
+            Setting::Threshold,
+        );
+        if threshold {
             s.threshold = Some(d.manual_threshold);
             changed = true;
         }
-        let r = ui
-            .checkbox(&mut auto, "Auto")
-            .on_hover_text("Let Otsu's method pick the threshold");
+        let r = ui.checkbox(&mut auto, "Auto");
+        super::groups::card(&r, "Auto", Setting::AutoThreshold.card(), None, false);
         set_name(ui, &r, "Automatic threshold");
         if r.changed() {
             s.threshold = (!auto).then_some(d.manual_threshold);
             changed = true;
         }
     });
-    changed |= ui
-        .checkbox(&mut s.invert, "Invert")
-        .on_hover_text("Cut the light parts instead of the dark ones")
-        .changed();
+    let r = ui.checkbox(&mut s.invert, "Invert");
+    super::groups::card(&r, "Invert", Setting::Invert.card(), None, false);
+    changed |= r.changed();
     ui.horizontal(|ui| {
-        let r = ui.add(
-            egui::DragValue::new(&mut s.despeckle_mm2)
-                .range(0.0..=100.0)
-                .speed(0.05)
-                .max_decimals(2)
-                .suffix(" mm²"),
+        let (r, typed) = calc::number(
+            ui,
+            "flatcraft-trace-despeckle",
+            true,
+            &mut s.despeckle_mm2,
+            &Number::new(Field::plain().range(0.0, 100.0)).unit("mm²"),
         );
         set_name(ui, &r, "Despeckle (mm²)");
-        changed |= r.changed();
-        ui.label("Despeckle")
-            .on_hover_text("Specks smaller than this area vanish");
+        let card = calc::with_hint(Setting::Despeckle.card(), Kind::Plain);
+        super::groups::card(&r, "Despeckle", &card, None, false);
+        changed |= typed;
+        let l = ui.label("Despeckle");
+        super::groups::card(&l, "Despeckle", Setting::Despeckle.card(), None, false);
     });
-    let r = ui
-        .add(egui::Slider::new(&mut s.corner_threshold_deg, 0.0..=180.0).text("Corner threshold"))
-        .on_hover_text("Angles sharper than this stay corners (degrees)");
-    set_name(ui, &r, "Corner threshold (deg)");
-    changed |= r.changed();
-    let r = ui
-        .add(egui::Slider::new(&mut s.smoothing, 0..=10).text("Smoothing"))
-        .on_hover_text("0 follows the pixels, 10 gives the smoothest curves");
-    set_name(ui, &r, "Smoothing");
-    changed |= r.changed();
+    changed |= ui
+        .horizontal(|ui| {
+            slider_row(
+                ui,
+                true,
+                &mut s.corner_threshold_deg,
+                0.0..=180.0,
+                Number::new(Field::new(Kind::Angle)).unit("deg"),
+                "Corner threshold",
+                Setting::CornerThreshold,
+            )
+        })
+        .inner;
+    changed |= ui
+        .horizontal(|ui| {
+            slider_row(
+                ui,
+                true,
+                &mut s.smoothing,
+                0..=10,
+                Number::new(Field::plain()),
+                "Smoothing",
+                Setting::Smoothing,
+            )
+        })
+        .inner;
     ui.horizontal(|ui| {
         let mut auto = s.min_feature_mm.is_none();
-        let r = ui.add_enabled(
+        let (r, typed) = calc::number(
+            ui,
+            "flatcraft-trace-min-feature",
             !auto,
-            egui::DragValue::new(&mut d.manual_min_feature)
-                .range(0.0..=50.0)
-                .speed(0.05)
-                .max_decimals(2)
-                .suffix(" mm"),
+            &mut d.manual_min_feature,
+            &Number::new(Field::length().range(0.0, 50.0)).unit("mm"),
         );
         set_name(ui, &r, "Minimum feature (mm)");
-        if r.changed() {
+        if typed {
             s.min_feature_mm = Some(d.manual_min_feature);
             changed = true;
         }
-        ui.label("Minimum feature").on_hover_text(
-            "Shapes thinner than this are dropped. A blade cannot cut what it cannot turn in.",
+        let card = calc::with_hint(Setting::MinFeature.card(), Kind::Length);
+        super::groups::card(&r, "Minimum feature", &card, None, false);
+        let l = ui.label("Minimum feature");
+        super::groups::card(
+            &l,
+            "Minimum feature",
+            Setting::MinFeature.card(),
+            None,
+            false,
         );
-        let r = ui
-            .checkbox(&mut auto, "Auto")
-            .on_hover_text("6 times the blade offset of the plotter");
+        let r = ui.checkbox(&mut auto, "Auto");
+        super::groups::card(&r, "Auto", Setting::AutoMinFeature.card(), None, false);
         set_name(ui, &r, "Automatic minimum feature");
         if r.changed() {
             s.min_feature_mm = (!auto).then_some(d.manual_min_feature);

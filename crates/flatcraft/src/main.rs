@@ -33,8 +33,12 @@ fn main() -> anyhow::Result<()> {
 fn load_session(config_dir: PathBuf, has_ui: bool) -> anyhow::Result<SharedSession> {
     let profiles = ProfileStore::load(&config_dir.join("profiles"))
         .context("cannot load the plotter and material profiles")?;
-    let prefs = Preferences::load(&config_dir);
+    let (prefs, warning) = Preferences::load_reporting(&config_dir);
     let mut session = Session::new(profiles, prefs, has_ui, config_dir);
+    if let Some(w) = warning {
+        // Already on stderr in full (never stdout, the MCP channel).
+        session.note_prefs_warning(w);
+    }
     session.watch_prefs_file();
     Ok(Arc::new(Mutex::new(session)))
 }
@@ -80,11 +84,9 @@ fn run_window(
     config_dir: PathBuf,
     agent: Option<Arc<Mutex<Option<egui::Context>>>>,
 ) -> anyhow::Result<()> {
-    let mut viewport = egui::ViewportBuilder::default()
-        .with_title("FlatCraft")
-        .with_app_id(APP_ID)
-        .with_inner_size([1280.0, 800.0])
-        .with_min_inner_size([800.0, 520.0]);
+    // On macOS the app bar is the title bar (see `app_bar::viewport`).
+    let mut viewport =
+        flatcraft::ui::app_bar::viewport(cfg!(target_os = "macos")).with_app_id(APP_ID);
     match eframe::icon_data::from_png_bytes(ICON_PNG) {
         Ok(icon) => viewport = viewport.with_icon(icon),
         Err(e) => eprintln!("warning: cannot load the app icon: {e}"),
@@ -98,7 +100,8 @@ fn run_window(
         "FlatCraft",
         options,
         Box::new(move |cc| {
-            let mut app = FlatCraftApp::new(&cc.egui_ctx, session, config_dir);
+            let mut app = FlatCraftApp::new(&cc.egui_ctx, session, config_dir)
+                .with_seed(flatcraft::ui::rng::XorShift::clock_seed());
             #[cfg(target_os = "macos")]
             app.install_menu(&cc.egui_ctx);
             if let Some(slot) = agent {

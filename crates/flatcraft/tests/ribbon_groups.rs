@@ -1,0 +1,920 @@
+//! The ribbon's groups (Task 37): group buttons with their lists, pins for
+//! every group, hover cards, dimmed actions with their reason, the Align
+//! option, and the Auto arrange card.
+
+mod common;
+use common::RunPlan;
+
+use common::*;
+use egui::accesskit::Role;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
+use flatcraft::ui::groups::{FOOTER, PIN_TIP};
+use flatcraft::ui::icons::{self, Icon};
+use flatcraft::ui::tools::{self, Act};
+use flatcraft_engine::prefs::Preferences;
+use flatcraft_engine::session::Origin;
+use flatcraft_mcp::SharedSession;
+use serde_json::json;
+
+fn select(s: &SharedSession, ids: &[u64]) {
+    s.lock()
+        .unwrap()
+        .execute("object.select", json!({ "ids": ids }), Origin::User)
+        .unwrap();
+}
+
+fn pin(s: &SharedSession, pins: &[&str]) {
+    let pins: Vec<String> = pins.iter().map(|p| p.to_string()).collect();
+    s.lock()
+        .unwrap()
+        .update_prefs(|p| p.ribbon_pins = pins)
+        .unwrap();
+}
+
+fn stored(h: &AppHarness) -> Vec<String> {
+    Preferences::load(&app(h).config_dir).ribbon_pins
+}
+
+fn document_bytes(s: &SharedSession) -> String {
+    let g = s.lock().unwrap();
+    serde_json::to_string(&flatcraft_core::project::to_value(&g.doc().document).unwrap()).unwrap()
+}
+
+/// A harness in Prepare whose cards show without a delay.
+fn rig(dir: &tempfile::TempDir, s: SharedSession) -> AppHarness {
+    let mut h = harness(dir, s, false);
+    to_prepare(&mut h);
+    h.ctx
+        .global_style_mut(|st| st.interaction.tooltip_delay = 0.0);
+    h
+}
+
+fn show_tab(h: &mut AppHarness, tab: &str) {
+    h.get_by_role_and_label(Role::Tab, tab).click();
+    h.run_plan();
+}
+
+fn hover(h: &mut AppHarness, label: &str) {
+    let at = h.get_by_label(label).rect().center();
+    h.hover_at(egui::pos2(at.x, at.y));
+    h.run_plan();
+    h.run_plan();
+}
+
+fn disabled(h: &AppHarness, label: &str) -> bool {
+    h.get_by_label(label).accesskit_node().is_disabled()
+}
+
+/// The textures painted last frame (icons are image meshes or textured
+/// rects).
+fn textures(h: &AppHarness) -> Vec<egui::TextureId> {
+    painted(h)
+        .into_iter()
+        .filter_map(|s| match s {
+            egui::Shape::Mesh(m) => Some(m.texture_id),
+            egui::Shape::Rect(r) => r.brush.as_ref().map(|b| b.fill_texture_id),
+            _ => None,
+        })
+        .collect()
+}
+
+fn hover_button(h: &mut AppHarness, label: &str) {
+    let at = h.get_by_role_and_label(Role::Button, label).rect().center();
+    h.hover_at(egui::pos2(at.x, at.y));
+    h.run_plan();
+    h.run_plan();
+}
+
+#[test]
+fn the_chevron_group_button_opens_the_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = rig(&dir, s);
+    assert!(h.query_by_label(FOOTER).is_none());
+    h.get_by_role_and_label(Role::Button, "Edit").click();
+    h.run_plan();
+    h.get_by_label(FOOTER);
+    for t in tools::GroupId::Edit.tools() {
+        h.get_by_label(&t.row_name());
+    }
+    // The shortcut hint comes from the shortcut table.
+    let dup = h.get_by_label("Duplicate (Edit)");
+    assert!(dup.rect().width() > 100.0);
+    h.get_by_role_and_label(Role::Button, "Edit").click();
+    h.run_plan();
+    assert!(
+        h.query_by_label(FOOTER).is_none(),
+        "a second click closes it"
+    );
+}
+
+#[test]
+fn pinning_two_actions_in_a_row_keeps_the_list_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    let mut h = rig(&dir, s);
+    show_tab(&mut h, "Layout");
+    h.get_by_role_and_label(Role::Button, "Arrange").click();
+    h.run_plan();
+    for (row, toggle, button) in [
+        ("Ungroup (Arrange)", "Pin Ungroup", "Ungroup"),
+        (
+            "Distribute vertically (Arrange)",
+            "Pin Distribute vertically",
+            "Distribute vertically",
+        ),
+    ] {
+        hover(&mut h, row);
+        // The toggle says what it does.
+        hover(&mut h, toggle);
+        h.get_by_label(PIN_TIP);
+        h.get_by_label(toggle).click();
+        h.run_plan();
+        h.get_by_label(FOOTER);
+        // The ribbon shows it at once.
+        h.get_by_role_and_label(Role::Button, button);
+    }
+    let pins = stored(&h);
+    assert!(pins.contains(&"ungroup".to_string()), "{pins:?}");
+    assert!(
+        pins.contains(&"distribute.vertical".to_string()),
+        "{pins:?}"
+    );
+    // A pinned row keeps its (un)pin toggle visible without hovering.
+    h.hover_at(egui::pos2(1.0, 1.0));
+    h.run_plan();
+    h.get_by_label("Unpin Ungroup");
+}
+
+#[test]
+fn cards_show_the_description_of_actions_and_groups() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    let mut h = rig(&dir, s);
+    show_tab(&mut h, "Layout");
+    let rotate = tools::by_act(Act::RotateLeft);
+    hover(&mut h, "Rotate -90");
+    h.get_by_label(rotate.description);
+    for g in [tools::GroupId::Arrange, tools::GroupId::Transform] {
+        let group = g.def();
+        hover_button(&mut h, group.title);
+        h.get_by_label(group.description);
+    }
+    // A list row's card too.
+    h.get_by_role_and_label(Role::Button, "Transform").click();
+    h.run_plan();
+    let mirror = tools::by_act(Act::MirrorVertical);
+    hover(&mut h, &mirror.row_name());
+    h.get_by_label(mirror.description);
+}
+
+#[test]
+fn unpinning_the_last_pin_leaves_the_group_as_a_tile_that_opens_the_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = rig(&dir, s);
+    let reload = tools::by_act(Act::Reload);
+    h.get_by_role_and_label(Role::Button, "Reload");
+    h.get_by_role_and_label(Role::Button, "Linked files")
+        .click();
+    h.run_plan();
+    hover(&mut h, &reload.row_name());
+    h.get_by_label("Unpin Reload").click();
+    h.run_plan();
+    h.key_press(egui::Key::Escape);
+    h.run_plan();
+    assert!(
+        h.query_by_role_and_label(Role::Button, "Reload").is_none(),
+        "unpinned"
+    );
+    // The group never disappears: its tile opens the list.
+    h.get_by_role_and_label(Role::Button, "Linked files")
+        .click();
+    h.run_plan();
+    h.get_by_label(&reload.row_name());
+    h.get_by_label(FOOTER);
+}
+
+#[test]
+fn a_dimmed_row_says_why_and_does_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    let mut h = rig(&dir, s.clone());
+    show_tab(&mut h, "Layout");
+    h.get_by_role_and_label(Role::Button, "Arrange").click();
+    h.run_plan();
+    let row = "Distribute horizontally (Arrange)";
+    assert!(disabled(&h, row), "visible but dimmed");
+    hover(&mut h, row);
+    // The reason first, as a sentence, then what it does.
+    h.get_by_label("Select 3 or more objects first.");
+    h.get_by_label(tools::by_act(Act::DistributeHorizontal).description);
+    let before = document_bytes(&s);
+    h.get_by_label(row).click();
+    h.run_plan();
+    assert_eq!(document_bytes(&s), before, "nothing ran");
+    // The pin toggle of a dimmed row still works.
+    h.get_by_label("Pin Distribute horizontally").click();
+    h.run_plan();
+    assert!(stored(&h).contains(&"distribute.horizontal".to_string()));
+}
+
+#[test]
+fn a_pinned_dimmed_action_shows_its_reason_and_does_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    pin(&s, &["distribute.vertical"]);
+    let mut h = rig(&dir, s.clone());
+    show_tab(&mut h, "Layout");
+    let name = "Distribute vertically";
+    assert!(disabled(&h, name));
+    hover(&mut h, name);
+    h.get_by_label("Select 3 or more objects first.");
+    let before = document_bytes(&s);
+    h.get_by_role_and_label(Role::Button, name).click();
+    h.run_plan();
+    assert_eq!(document_bytes(&s), before);
+}
+
+#[test]
+fn the_align_option_switches_the_rows_and_their_icons() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let b = import_square(&s);
+    select(&s, &[a, b]);
+    let mut h = rig(&dir, s);
+    show_tab(&mut h, "Layout");
+    h.get_by_role_and_label(Role::Button, "Arrange").click();
+    h.run_plan();
+    let tex =
+        |h: &AppHarness, icon: Icon| icons::texture(&h.ctx, icon, flatcraft::ui::ICON_SIZE).id();
+    let plain = tex(&h, Icon::AlignLeft);
+    let framed = tex(&h, Icon::AlignLeftArea);
+    h.run_plan();
+    assert!(textures(&h).contains(&plain));
+    assert!(!textures(&h).contains(&framed));
+    hover(&mut h, "Align left (Arrange)");
+    h.get_by_label("Pin Align left · selection");
+    h.get_by_label("To the cutting area").click();
+    h.run_plan();
+    // At once: the rows are the cutting-area actions, with the framed icon.
+    assert!(textures(&h).contains(&framed));
+    hover(&mut h, "Align left (Arrange)");
+    // Its card names both parts.
+    h.get_by_label("Align left · cutting area");
+    h.get_by_label(
+        tools::by_act(Act::Align(tools::AlignMode::Left, tools::AlignTo::Area)).description,
+    );
+    h.get_by_label("Pin Align left · cutting area").click();
+    h.run_plan();
+    assert!(stored(&h).contains(&"align.left.area".to_string()));
+    // The pin is named with both parts on the ribbon.
+    h.get_by_role_and_label(Role::Button, "Align left · cutting area");
+}
+
+#[test]
+fn auto_arrange_spacing_round_trips_and_is_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let b = import_square(&s);
+    select(&s, &[a]);
+    let mut h = rig(&dir, s.clone());
+    show_tab(&mut h, "Layout");
+    h.get_by_role_and_label(Role::Button, "Arrange").click();
+    h.run_plan();
+    h.get_by_label("Auto arrange... (Arrange)").click();
+    h.run_plan();
+    let p = app(&h).ui.prepare.panel.clone().expect("the panel opens");
+    assert_eq!(p.kind, flatcraft::ui::arrange::PanelKind::AutoArrange);
+    assert_eq!(
+        p.card.f64("arrange.auto", "spacing_mm"),
+        Some(5.0),
+        "the schema's default"
+    );
+    app_mut(&mut h)
+        .ui
+        .prepare
+        .panel
+        .as_mut()
+        .unwrap()
+        .card
+        .set("arrange.auto", "spacing_mm", 2.5);
+    h.run_plan();
+    // The preview is where the objects land.
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    let panel = app(&h).ui.prepare.panel.clone().unwrap();
+    let ghosts = flatcraft::ui::arrange::ghosts(&snap, &panel);
+    // Only the selection is packed; the other one stays and is drawn fixed.
+    assert_eq!(ghosts.len(), 1);
+    assert_eq!(ghosts[0].0, a);
+    assert_eq!(flatcraft::ui::arrange::fixed(&snap, &panel), vec![b]);
+    let before = document_bytes(&s);
+    let undo = undo_len(&s);
+    h.get_by_role_and_label(Role::Button, "OK").click();
+    h.run_plan();
+    wait_for_workers(&mut h);
+    assert_eq!(undo_len(&s), undo + 1, "one step");
+    assert_eq!(
+        Preferences::load(&app(&h).config_dir).tool_cards["arrange.auto spacing_mm"],
+        "2.5"
+    );
+    let state = s
+        .lock()
+        .unwrap()
+        .execute("document.state", json!({}), Origin::User)
+        .unwrap();
+    for (id, aff) in ghosts {
+        let o = state["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["id"] == id)
+            .unwrap();
+        let c = &o["transform"]["center_mm"];
+        let ghost = aff * kurbo::Point::ZERO;
+        assert!(
+            (c[0].as_f64().unwrap() - ghost.x).abs() < 1e-9,
+            "{c} vs {ghost:?}"
+        );
+        assert!((c[1].as_f64().unwrap() - ghost.y).abs() < 1e-9);
+    }
+    // The pinned one-click Auto arrange runs with the stored spacing, and
+    // its card says which.
+    let arranged = document_bytes(&s);
+    s.lock()
+        .unwrap()
+        .execute("edit.undo", json!({}), Origin::User)
+        .unwrap();
+    assert_eq!(document_bytes(&s), before);
+    pin(&s, &["auto_arrange"]);
+    h.run_plan();
+    hover(&mut h, "Auto arrange");
+    h.get_by_label("Auto arrange · 2.5 mm");
+    let undo = undo_len(&s);
+    h.get_by_role_and_label(Role::Button, "Auto arrange")
+        .click();
+    h.run_plan();
+    wait_for_workers(&mut h);
+    assert_eq!(undo_len(&s), undo + 1);
+    assert_eq!(document_bytes(&s), arranged, "the same as the panel's OK");
+}
+
+#[test]
+fn escape_closes_a_group_list_and_keeps_the_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    let mut h = rig(&dir, s.clone());
+    show_tab(&mut h, "Layout");
+    h.get_by_role_and_label(Role::Button, "Arrange").click();
+    h.run_plan();
+    h.get_by_label(FOOTER);
+    h.key_press(egui::Key::Escape);
+    h.run_plan();
+    assert!(h.query_by_label(FOOTER).is_none(), "the list closed");
+    let selection: Vec<u64> = s
+        .lock()
+        .unwrap()
+        .doc()
+        .selection
+        .iter()
+        .map(|i| i.0)
+        .collect();
+    assert_eq!(selection, vec![a], "the selection stays");
+}
+
+#[test]
+fn without_a_cutting_area_the_actions_that_need_one_are_dimmed() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    // The plotter of the document is gone: no mat, no cutting area.
+    s.lock().unwrap().doc_mut().document.job.plotter_id = "gone".into();
+    pin(
+        &s,
+        &[
+            "auto_arrange",
+            "auto_arrange.panel",
+            "align.left.area",
+            "test_patterns",
+        ],
+    );
+    let mut h = rig(&dir, s.clone());
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    assert!(snap.area.is_none());
+    for act in [
+        Act::AutoArrange,
+        Act::AutoArrangePanel,
+        Act::TestPatterns,
+        Act::Align(tools::AlignMode::Left, tools::AlignTo::Area),
+    ] {
+        assert_eq!(
+            tools::by_act(act).blocked(&snap),
+            Some(tools::NO_AREA),
+            "{act:?}"
+        );
+    }
+    // To the selection still needs no area, only 2 objects.
+    assert_ne!(
+        tools::by_act(Act::Align(
+            tools::AlignMode::Left,
+            tools::AlignTo::Selection
+        ))
+        .blocked(&snap),
+        Some(tools::NO_AREA)
+    );
+    // On the ribbon: dimmed, the reason on hover, a click does nothing.
+    assert!(disabled(&h, "Test patterns"));
+    show_tab(&mut h, "Layout");
+    for name in [
+        "Auto arrange",
+        "Auto arrange...",
+        "Align left · cutting area",
+    ] {
+        assert!(disabled(&h, name), "{name}");
+    }
+    hover_button(&mut h, "Auto arrange");
+    h.get_by_label(tools::NO_AREA);
+    let before = document_bytes(&s);
+    h.get_by_role_and_label(Role::Button, "Auto arrange")
+        .click();
+    h.run_plan();
+    assert_eq!(document_bytes(&s), before);
+    // In the list too.
+    h.get_by_role_and_label(Role::Button, "Arrange").click();
+    h.run_plan();
+    assert!(disabled(&h, "Auto arrange (Arrange)"));
+}
+
+/// Whether a selected-looking fill is painted over `r`.
+fn looks_on(h: &AppHarness, r: egui::Rect) -> bool {
+    let on = h.ctx.global_style().visuals.selection.bg_fill;
+    painted(h).into_iter().any(|s| match s {
+        egui::Shape::Rect(x) => x.fill == on && x.rect.intersects(r.shrink(2.0)),
+        _ => false,
+    })
+}
+
+#[test]
+fn a_dimmed_switch_that_is_on_does_not_look_active() {
+    // Keep aspect is on and dimmed with 3 objects, one of them turned by
+    // 30 degrees; Each object on and dimmed with 1 object.
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let ids: Vec<u64> = (0..3).map(|_| import_square(&s)).collect();
+    s.lock()
+        .unwrap()
+        .execute(
+            "object.rotate",
+            serde_json::json!({ "ids": [ids[2]], "degrees": 30.0 }),
+            flatcraft_engine::session::Origin::User,
+        )
+        .unwrap();
+    select(&s, &ids);
+    let mut h = harness_sized(&dir, s.clone(), [1400.0, 900.0], 8, |app| app);
+    to_prepare(&mut h);
+    show_tab(&mut h, "Layout");
+    let keep = h.get_by_role_and_label(Role::CheckBox, "Keep aspect");
+    assert!(keep.accesskit_node().is_disabled());
+    assert_eq!(
+        keep.accesskit_node().toggled(),
+        Some(egui::accesskit::Toggled::True),
+        "it says it is on"
+    );
+    let r = keep.rect();
+    assert!(!looks_on(&h, r), "but does not look active");
+    select(&s, &[ids[0]]);
+    app_mut(&mut h).ui.prepare.fields.each = true;
+    h.run_plan();
+    let each = h.get_by_role_and_label(Role::CheckBox, "Each object");
+    assert!(each.accesskit_node().is_disabled());
+    let r = each.rect();
+    assert!(!looks_on(&h, r));
+    // Enabled and on, it does look on.
+    select(&s, &ids);
+    h.run_plan();
+    let r = h
+        .get_by_role_and_label(Role::CheckBox, "Each object")
+        .rect();
+    assert!(looks_on(&h, r), "an active switch keeps its look");
+}
+
+#[test]
+fn the_pin_toggle_is_reachable_by_keyboard() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    let mut h = rig(&dir, s);
+    show_tab(&mut h, "Layout");
+    h.get_by_role_and_label(Role::Button, "Edit").click();
+    h.run_plan();
+    // Nothing hovered: an unpinned row shows no toggle.
+    h.hover_at(egui::pos2(1.0, 1.0));
+    h.run_plan();
+    assert!(h.query_by_label("Pin Circular pattern").is_none());
+    h.get_by_label("Circular pattern... (Edit)").focus();
+    h.run_plan();
+    h.run_plan();
+    h.key_press(egui::Key::Tab);
+    h.run_plan();
+    let toggle = h.get_by_label("Pin Circular pattern");
+    assert!(
+        toggle.accesskit_node().is_focused(),
+        "Tab moved to the toggle"
+    );
+    h.key_press(egui::Key::Enter);
+    h.run_plan();
+    assert!(stored(&h).contains(&"pattern.circular".to_string()));
+}
+
+/// Opens the Auto arrange card for the selection of now.
+fn reopen(h: &mut AppHarness) {
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(h), &ctx);
+    flatcraft::ui::arrange::open(
+        &mut app_mut(h).ui.prepare,
+        &snap,
+        flatcraft::ui::arrange::PanelKind::AutoArrange,
+    );
+    h.run_plan();
+}
+
+#[test]
+fn auto_arrange_panel_says_what_it_packs_and_shows_what_stays() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let ids: Vec<u64> = (0..5).map(|_| import_square(&s)).collect();
+    select(&s, &ids[..3]);
+    let mut h = rig(&dir, s.clone());
+    show_tab(&mut h, "Layout");
+    h.get_by_role_and_label(Role::Button, "Arrange").click();
+    h.run_plan();
+    h.get_by_label("Auto arrange... (Arrange)").click();
+    h.run_plan();
+    let card = flatcraft::ui::arrange::AUTO_ARRANGE_CARD;
+    assert_eq!(
+        card,
+        "Select the objects you want packed. Everything else stays where you put it, and the packed objects fit around it."
+    );
+    // The card is in the panel and on its title.
+    let shown = h.query_all_by_label(card).count();
+    hover(&mut h, "Auto arrange 3 selected objects");
+    assert_eq!(h.query_all_by_label(card).count(), shown + 1);
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    let panel = app(&h).ui.prepare.panel.clone().unwrap();
+    let mut moved: Vec<u64> = flatcraft::ui::arrange::ghosts(&snap, &panel)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    moved.sort_unstable();
+    assert_eq!(moved, ids[..3]);
+    assert_eq!(flatcraft::ui::arrange::fixed(&snap, &panel), ids[3..]);
+
+    // Nothing selected: all of them, nothing fixed.
+    select(&s, &[]);
+    h.run_plan();
+    // Another selection cancels the card: open it again for this one.
+    assert!(app(&h).ui.prepare.panel.is_none());
+    reopen(&mut h);
+    // The title says what it packs now.
+    assert!(
+        h.query_all_by_label("Auto arrange all objects")
+            .next()
+            .is_some()
+    );
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    assert_eq!(flatcraft::ui::arrange::ghosts(&snap, &panel).len(), 5);
+    assert!(flatcraft::ui::arrange::fixed(&snap, &panel).is_empty());
+
+    // One selected.
+    select(&s, &ids[..1]);
+    h.run_plan();
+    // Another selection cancels the card: open it again for this one.
+    assert!(app(&h).ui.prepare.panel.is_none());
+    reopen(&mut h);
+    // The title says what it packs now.
+    assert!(
+        h.query_all_by_label("Auto arrange 1 selected object")
+            .next()
+            .is_some()
+    );
+
+    // A hidden selected object is not counted: it stays where it is.
+    let set_visible = |ids: &[u64], visible: bool| {
+        s.lock()
+            .unwrap()
+            .execute(
+                "object.set_visible",
+                json!({ "ids": ids, "visible": visible }),
+                Origin::User,
+            )
+            .unwrap();
+    };
+    set_visible(&ids[2..3], false);
+    select(&s, &ids[..3]);
+    h.run_plan();
+    // Another selection cancels the card: open it again for this one.
+    assert!(app(&h).ui.prepare.panel.is_none());
+    reopen(&mut h);
+    assert!(
+        h.query_all_by_label("Auto arrange 2 selected objects")
+            .next()
+            .is_some()
+    );
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    assert_eq!(flatcraft::ui::arrange::ghosts(&snap, &panel).len(), 2);
+    // Only hidden ones selected: nothing to pack, OK is dimmed and says why.
+    select(&s, &ids[2..3]);
+    h.run_plan();
+    // Another selection cancels the card: open it again for this one.
+    assert!(app(&h).ui.prepare.panel.is_none());
+    reopen(&mut h);
+    h.get_by_label(
+        "The selected objects are hidden, so there is nothing to pack. Show them, or select nothing to pack every visible object.",
+    );
+    assert!(disabled(&h, "OK"));
+    set_visible(&ids[2..3], true);
+
+    // A picture that is not traced yet stays by its image.
+    let png = dir.path().join("blank.png");
+    std::fs::write(&png, BLANK_PNG).unwrap();
+    let pic = s
+        .lock()
+        .unwrap()
+        .execute("object.import", json!({ "path": png }), Origin::User)
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    select(&s, &ids[..1]);
+    h.run_plan();
+    // Another selection cancels the card: open it again for this one.
+    assert!(app(&h).ui.prepare.panel.is_none());
+    reopen(&mut h);
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    let o = snap.object(pic).unwrap();
+    assert!(o.bounds().is_none() && o.arrange_bounds().is_some());
+    assert!(flatcraft::ui::arrange::fixed(&snap, &panel).contains(&pic));
+}
+
+/// A blank (all white) 8 x 8 px PNG: it traces to nothing.
+const BLANK_PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x08, 0x00, 0x00, 0x00, 0x00, 0xe1, 0x64, 0xe1,
+    0x57, 0x00, 0x00, 0x00, 0x0e, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0x0f, 0x05, 0x0c,
+    0x94, 0x31, 0x00, 0xf7, 0xc0, 0x3f, 0xc1, 0xb2, 0x34, 0x41, 0xbb, 0x00, 0x00, 0x00, 0x00, 0x49,
+    0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+];
+
+#[test]
+fn one_click_auto_arrange_is_dimmed_when_only_hidden_objects_are_selected() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let _b = import_square(&s);
+    s.lock()
+        .unwrap()
+        .execute(
+            "object.set_visible",
+            json!({ "ids": [a], "visible": false }),
+            Origin::User,
+        )
+        .unwrap();
+    select(&s, &[a]);
+    pin(&s, &["auto_arrange", "auto_arrange.panel"]);
+    let mut h = rig(&dir, s.clone());
+    show_tab(&mut h, "Layout");
+    for name in ["Auto arrange", "Auto arrange..."] {
+        assert!(disabled(&h, name), "{name}");
+    }
+    hover_button(&mut h, "Auto arrange");
+    h.get_by_label(tools::ONLY_HIDDEN_SELECTED);
+    let undo = undo_len(&s);
+    h.get_by_role_and_label(Role::Button, "Auto arrange")
+        .click();
+    h.run_plan();
+    wait_for_workers(&mut h);
+    assert_eq!(undo_len(&s), undo);
+    // In the list too.
+    h.get_by_role_and_label(Role::Button, "Arrange").click();
+    h.run_plan();
+    assert!(disabled(&h, "Auto arrange (Arrange)"));
+    assert!(disabled(&h, "Auto arrange... (Arrange)"));
+    // A visible one selected again: it runs.
+    let ctx = h.ctx.clone();
+    select(&s, &[_b]);
+    h.run_plan();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    assert_eq!(tools::by_act(Act::AutoArrange).blocked(&snap), None);
+}
+
+/// The centre of every object, by id.
+fn centres(s: &SharedSession) -> Vec<(u64, kurbo::Point)> {
+    let g = s.lock().unwrap();
+    g.doc()
+        .document
+        .objects
+        .iter()
+        .map(|o| (o.id.0, o.transform.center_mm))
+        .collect()
+}
+
+/// An imported `w` x `h` mm rectangle.
+fn import_rect(s: &SharedSession, w: f64, h: f64) -> u64 {
+    let svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="400mm" height="400mm" viewBox="0 0 400 400"><rect x="10" y="10" width="{w}" height="{h}"/></svg>"#
+    );
+    s.lock()
+        .unwrap()
+        .execute(
+            "object.import_svg",
+            json!({ "svg": svg, "name": "rect" }),
+            Origin::User,
+        )
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap()
+}
+
+#[test]
+fn the_auto_arrange_preview_matches_the_command_in_many_scenes() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let mut h = rig(&dir, s.clone());
+    let ctx = h.ctx.clone();
+    // A small fixed random generator: the same scenes every run.
+    let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+    let mut next = move |n: u64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed % n
+    };
+    for scene in 0..40 {
+        let all: Vec<u64> = centres(&s).into_iter().map(|(id, _)| id).collect();
+        if !all.is_empty() {
+            s.lock()
+                .unwrap()
+                .execute("object.delete", json!({ "ids": all }), Origin::User)
+                .unwrap();
+        }
+        // Equal nominal heights, different widths, odd scales and places.
+        let mut ids = Vec::new();
+        for _ in 0..3 + next(6) {
+            let w = 10.0 + next(60) as f64 * 1.7;
+            let id = import_rect(&s, w, 20.0);
+            let factor = [1.0, 0.352777, 1.3][next(3) as usize];
+            let mut g = s.lock().unwrap();
+            if factor != 1.0 {
+                g.execute(
+                    "object.scale",
+                    json!({ "ids": [id], "factor": factor }),
+                    Origin::User,
+                )
+                .unwrap();
+            }
+            g.execute(
+                "object.move",
+                json!({
+                    "ids": [id],
+                    "dx_mm": next(25_000) as f64 / 97.0,
+                    "dy_mm": next(25_000) as f64 / 89.0,
+                }),
+                Origin::User,
+            )
+            .unwrap();
+            ids.push(id);
+        }
+        let chosen: Vec<u64> = ids.iter().copied().filter(|_| next(4) != 0).collect();
+        select(&s, &chosen);
+        h.run_plan();
+        let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+        let plan = flatcraft::ui::arrange::auto_arrange_plan(&snap, 5.0).unwrap();
+        let ghosts: Vec<(u64, kurbo::Point)> = plan
+            .moves
+            .iter()
+            .map(|(id, d)| (*id, snap.object(*id).unwrap().transform.center_mm + *d))
+            .collect();
+        let r = s
+            .lock()
+            .unwrap()
+            .execute(
+                "arrange.auto",
+                json!({ "ids": chosen, "spacing_mm": 5.0 }),
+                Origin::User,
+            )
+            .unwrap();
+        let after = centres(&s);
+        for (id, ghost) in &ghosts {
+            let at = after.iter().find(|(i, _)| i == id).unwrap().1;
+            // To the last bit.
+            assert_eq!(at, *ghost, "scene {scene}, object {id}: {r}");
+        }
+    }
+}
+
+#[test]
+fn the_auto_arrange_preview_is_exactly_where_ok_puts_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    // Equal-height objects at odd places, some scaled by a px-to-mm like
+    // factor and one rotated, so float noise differs per object.
+    let mut ids = Vec::new();
+    for k in 0..7u32 {
+        let id = import_square(&s);
+        let mut g = s.lock().unwrap();
+        if k % 2 == 1 {
+            g.execute(
+                "object.scale",
+                json!({ "ids": [id], "factor": 0.352777 }),
+                Origin::User,
+            )
+            .unwrap();
+        }
+        if k == 5 {
+            g.execute(
+                "object.rotate",
+                json!({ "ids": [id], "degrees": 90.0 }),
+                Origin::User,
+            )
+            .unwrap();
+        }
+        g.execute(
+            "object.move",
+            json!({ "ids": [id], "dx_mm": 13.37 * f64::from(k) + 0.1, "dy_mm": 271.828 / f64::from(k + 3) }),
+            Origin::User,
+        )
+        .unwrap();
+        ids.push(id);
+    }
+    // Two stay where they are.
+    select(&s, &ids[..5]);
+    let mut h = rig(&dir, s.clone());
+    show_tab(&mut h, "Layout");
+    h.get_by_role_and_label(Role::Button, "Arrange").click();
+    h.run_plan();
+    h.get_by_label("Auto arrange... (Arrange)").click();
+    h.run_plan();
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    let panel = app(&h).ui.prepare.panel.clone().unwrap();
+    let ghosts: Vec<(u64, kurbo::Point)> = flatcraft::ui::arrange::ghosts(&snap, &panel)
+        .into_iter()
+        .map(|(id, aff)| (id, aff * kurbo::Point::ZERO))
+        .collect();
+    assert_eq!(ghosts.len(), 5);
+    let before = centres(&s);
+    h.get_by_role_and_label(Role::Button, "OK").click();
+    h.run_plan();
+    wait_for_workers(&mut h);
+    let after = centres(&s);
+    for (id, at) in &after {
+        match ghosts.iter().find(|(g, _)| g == id) {
+            // To the last bit.
+            Some((_, ghost)) => assert_eq!(at, ghost, "object {id}"),
+            None => assert!(before.contains(&(*id, *at)), "object {id} moved"),
+        }
+    }
+}
+
+#[test]
+fn the_panel_says_which_objects_do_not_fit() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    // A big object placed by hand leaves no room for the tall one.
+    let _wall = import_rect(&s, 280.0, 260.0);
+    let tall = import_rect(&s, 50.0, 60.0);
+    select(&s, &[tall]);
+    let mut h = rig(&dir, s.clone());
+    show_tab(&mut h, "Layout");
+    h.get_by_role_and_label(Role::Button, "Arrange").click();
+    h.run_plan();
+    h.get_by_label("Auto arrange... (Arrange)").click();
+    h.run_plan();
+    h.get_by_label(&flatcraft::ui::arrange::did_not_fit_note(1));
+    assert_eq!(
+        flatcraft::ui::arrange::did_not_fit_note(2),
+        "2 objects do not fit. They stay where they are, marked in red."
+    );
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    let panel = app(&h).ui.prepare.panel.clone().unwrap();
+    assert!(flatcraft::ui::arrange::ghosts(&snap, &panel).is_empty());
+    let plan = flatcraft::ui::arrange::auto_arrange_plan(&snap, panel.spacing_mm(&snap)).unwrap();
+    assert_eq!(plan.did_not_fit, vec![tall]);
+}

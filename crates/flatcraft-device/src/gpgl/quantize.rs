@@ -2,31 +2,34 @@
 //!
 //! Every absolute point is converted on its own, so rounding errors never add up.
 
-use kurbo::Point;
+use flatcraft_core::device_grid::DeviceGrid;
+use kurbo::{Point, Size, Vec2};
 
 use super::DevPoint;
 use crate::profile::{Media, PlotterProfile};
+
+/// The app-to-device transform of `plotter` on `media`: units per mm,
+/// the mat's grid origin, mirror inside the media rect and the calibration
+/// scale. The knife stage and the simulator round with the same grid.
+pub fn device_grid(plotter: &PlotterProfile, media: &Media) -> DeviceGrid {
+    DeviceGrid {
+        units_per_mm: plotter.units_per_mm,
+        origin: Point::new(media.grid.origin_x_mm, media.grid.origin_y_mm),
+        media_size: Size::new(media.width_mm, media.height_mm),
+        mirror_x: plotter.axis.mirror_x,
+        mirror_y: plotter.axis.mirror_y,
+        scale: Vec2::new(plotter.scale_x, plotter.scale_y),
+    }
+}
 
 /// The rounded device coordinates as `(y, x)` before any range check.
 ///
 /// Add the grid origin of the mat (app coordinates become device coordinates), mirror inside
 /// the physical media rect, multiply by the profile scale, multiply by units per mm,
-/// round half away from zero (`f64::round`).
+/// round half away from zero (`f64::round`): [`DeviceGrid::rounded_units`].
 pub(crate) fn to_device_f64(p: Point, plotter: &PlotterProfile, media: &Media) -> (f64, f64) {
-    let mut x = p.x + media.grid.origin_x_mm;
-    let mut y = p.y + media.grid.origin_y_mm;
-    if plotter.axis.mirror_x {
-        x = media.width_mm - x;
-    }
-    if plotter.axis.mirror_y {
-        y = media.height_mm - y;
-    }
-    x *= plotter.scale_x;
-    y *= plotter.scale_y;
-    (
-        (y * plotter.units_per_mm).round(),
-        (x * plotter.units_per_mm).round(),
-    )
+    let u = device_grid(plotter, media).rounded_units(p);
+    (u.y, u.x)
 }
 
 /// Converts an app point (mm, origin = the mat's grid 0,0) to device units.

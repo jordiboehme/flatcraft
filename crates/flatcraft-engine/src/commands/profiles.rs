@@ -1,5 +1,6 @@
 //! Profile queries and job settings of the active document.
 
+use flatcraft_core::document::{WeedLines, WeedSettings};
 use flatcraft_device::{PresetInfo, ProfileError};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -14,7 +15,19 @@ fn info_json(i: &PresetInfo) -> Value {
 fn run_list(s: &mut Session, _: NoParams, _: Origin) -> Result<Value, CommandError> {
     Ok(json!({
         "plotters": s.profiles.plotters().iter().map(info_json).collect::<Vec<_>>(),
-        "materials": s.profiles.materials().iter().map(info_json).collect::<Vec<_>>(),
+        "materials": s
+            .profiles
+            .materials()
+            .iter()
+            .map(|i| {
+                let mut v = info_json(i);
+                // A preset that cannot be read has no group; profiles.get
+                // says why.
+                let group = s.profiles.material_unchecked(&i.id).ok().map(|m| m.group);
+                v["group"] = json!(group);
+                v
+            })
+            .collect::<Vec<_>>(),
     }))
 }
 
@@ -25,7 +38,7 @@ command!(
     mutates: false,
     params: NoParams,
     run: run_list,
-    description: "Lists the plotter and material presets, built-in (system) and user-made. Returns {plotters: [{id, name, system, inherits}], materials: [{id, name, system, inherits}]}. Use profiles.get for the details.",
+    description: "Lists the plotter and material presets, built-in (system) and user-made. Returns {plotters: [{id, name, system, inherits}], materials: [{id, name, system, inherits, group}]}. group is vinyl, iron_on, paper_and_card or other (null when the preset cannot be read): the groups of the window's material picker. Use profiles.get for the values and the tips.",
 );
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -60,7 +73,7 @@ command!(
     mutates: false,
     params: IdParams,
     run: run_get,
-    description: "Returns one plotter or material preset with inheritance resolved, as JSON with an extra field kind (plotter or material). Plotters list their media (mm; each with kind, physical size, printed grid origin and size, calibrated), speed_range, force_range and passes_range; materials list speed, force, passes, overcut_mm and per-plotter overrides.",
+    description: "Returns one plotter or material preset with inheritance resolved, as JSON with an extra field kind (plotter or material). Plotters list their media (mm; each with kind, physical size, printed grid origin and size, calibrated), speed_range, force_range, passes_range, knife_compensation and ring_direction (ccw or cw: the way closed shapes are cut, as seen on the canvas); materials list speed, force, passes, overcut_mm, corner_mode (\"Arc\": the blade swivels at corners, or {LiftOvershoot: {overshoot_mm}}: it cuts past sharp corners into the waste, lifts and starts again; used with host knife compensation), min_radius_mm (curves tighter than this get a warning; left out means the plotter's blade_offset_mm), backing (true when it sits on a backing sheet), blade_depth_hint, group (vinyl, iron_on, paper_and_card or other), mat_tack (light, standard or strong: the mat grip to recommend, never sent), tips (built-in advice on which side goes up and how to weed; iron_on materials are cut mirrored) and per-plotter overrides. Both have notes when the person wrote some on that preset (left out when none): read them before a cut, they are the person's own experience. Agents cannot change notes or presets.",
 );
 
 fn run_set_plotter(s: &mut Session, p: IdParams, _: Origin) -> Result<Value, CommandError> {
@@ -247,4 +260,150 @@ command!(
     params: OverridesParams,
     run: run_set_overrides,
     description: "Overrides the material's speed, force or passes for the active document. Values are checked against the plotter's speed_range, force_range and passes_range (Cameo 2: speed 1-10, force 1-33, passes 1-20). Fields you leave out stay as they are; a field set to null removes that override, so the material value applies again; clear: true first removes all overrides. Returns {speed, force, passes}, where null means the material value.",
+);
+
+#[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StrategyParam {
+    /// Clean corners first: entries on waste-side corners, few blade turns, short travel.
+    Quality,
+    /// Short travel first: blade turns cost nothing.
+    Fast,
+    /// As quality, but every outline comes after every hole and inner piece, so the sheet holds together until the end.
+    OutlinesLast,
+}
+
+impl From<StrategyParam> for flatcraft_core::document::CutStrategy {
+    fn from(p: StrategyParam) -> Self {
+        use flatcraft_core::document::CutStrategy;
+        match p {
+            StrategyParam::Quality => CutStrategy::Quality,
+            StrategyParam::Fast => CutStrategy::Fast,
+            StrategyParam::OutlinesLast => CutStrategy::OutlinesLast,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StrategyParams {
+    /// quality, fast or outlines_last.
+    pub strategy: StrategyParam,
+}
+
+fn run_set_strategy(s: &mut Session, p: StrategyParams, _: Origin) -> Result<Value, CommandError> {
+    s.doc_mut().document.job.strategy = p.strategy.into();
+    Ok(json!({ "strategy": s.doc().document.job.strategy }))
+}
+
+command!(
+    JobSetStrategy,
+    id: "job.set_strategy",
+    title: "Set cut strategy",
+    mutates: true,
+    params: StrategyParams,
+    run: run_set_strategy,
+    description: "Sets the cut strategy of the active document, in one undo step: quality (clean corners first), fast (short travel first) or outlines_last (as quality, but every outline after every hole and inner piece, so the sheet holds together until the end: on a mat for the whole job; without a mat, per 50 mm feed band). Every strategy cuts the holes and inner pieces of a shape before its outline. New documents start with the strategy of the preferences. Returns {strategy}.",
+);
+
+#[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WeedLinesParam {
+    /// No weed lines.
+    Off,
+    /// Lines across the carriage (along x).
+    Horizontal,
+    /// Lines in the feed direction (along y).
+    Vertical,
+    /// Both directions: a grid.
+    Both,
+}
+
+impl From<WeedLinesParam> for WeedLines {
+    fn from(p: WeedLinesParam) -> Self {
+        match p {
+            WeedLinesParam::Off => WeedLines::Off,
+            WeedLinesParam::Horizontal => WeedLines::Horizontal,
+            WeedLinesParam::Vertical => WeedLines::Vertical,
+            WeedLinesParam::Both => WeedLines::Both,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WeedingParams {
+    /// Cut a weed box (a rectangle around the design).
+    #[serde(rename = "box")]
+    pub weed_box: Option<bool>,
+    /// How far the weed box stays from the design, mm (1 to 50).
+    pub margin_mm: Option<f64>,
+    /// One weed box per object instead of one around everything.
+    pub per_object: Option<bool>,
+    /// Weed lines: off, horizontal, vertical or both.
+    pub lines: Option<WeedLinesParam>,
+    /// The distance between weed lines, mm (5 to 300).
+    pub spacing_mm: Option<f64>,
+}
+
+/// The weed settings as `document.state` and `job.set_weeding` show them.
+pub(crate) fn weed_json(w: &WeedSettings) -> Value {
+    json!({
+        "box": w.weed_box,
+        "margin_mm": w.margin_mm,
+        "per_object": w.per_object,
+        "lines": w.lines,
+        "spacing_mm": w.spacing_mm,
+    })
+}
+
+fn check_mm(name: &str, v: f64, lo: f64, hi: f64) -> Result<f64, CommandError> {
+    if v.is_finite() && (lo..=hi).contains(&v) {
+        Ok(v)
+    } else {
+        Err(CommandError::InvalidParams(format!(
+            "{name} {v} is outside the range {lo} to {hi} mm"
+        )))
+    }
+}
+
+fn run_set_weeding(s: &mut Session, p: WeedingParams, _: Origin) -> Result<Value, CommandError> {
+    use flatcraft_core::limits::{
+        MAX_WEED_MARGIN_MM, MAX_WEED_SPACING_MM, MIN_WEED_MARGIN_MM, MIN_WEED_SPACING_MM,
+    };
+    let margin = p
+        .margin_mm
+        .map(|v| check_mm("margin_mm", v, MIN_WEED_MARGIN_MM, MAX_WEED_MARGIN_MM))
+        .transpose()?;
+    let spacing = p
+        .spacing_mm
+        .map(|v| check_mm("spacing_mm", v, MIN_WEED_SPACING_MM, MAX_WEED_SPACING_MM))
+        .transpose()?;
+    let w = &mut s.doc_mut().document.job.weed;
+    if let Some(v) = p.weed_box {
+        w.weed_box = v;
+    }
+    if let Some(v) = margin {
+        w.margin_mm = v;
+    }
+    if let Some(v) = p.per_object {
+        w.per_object = v;
+    }
+    if let Some(v) = p.lines {
+        w.lines = v.into();
+    }
+    if let Some(v) = spacing {
+        w.spacing_mm = v;
+    }
+    Ok(weed_json(&s.doc().document.job.weed))
+}
+
+command!(
+    JobSetWeeding,
+    id: "job.set_weeding",
+    title: "Set weed box and weed lines",
+    mutates: true,
+    params: WeedingParams,
+    run: run_set_weeding,
+    description: "Sets the weed box and weed lines of the active document, in one undo step. Weeding means peeling the waste off the backing after the cut; these extra cuts go through the waste only and make that easier. box: a rectangle around the design, margin_mm (1 to 50, default 3) away from it; per_object: one box per object instead of one around everything (boxes that would overlap or come closer than 5 mm become one). A box that does not fit inside the cutting area with 1 mm to spare, or whose outline would cut kept material, is left out with a warning. lines: off, horizontal, vertical or both, every spacing_mm (5 to 300, default 20), across the design plus margin_mm (also with the box off), and with per_object only inside the boxes; they stop more than 1 mm before every design cut, never cut inside a shape or a letter's counter, and pieces shorter than 5 mm are left out. Weed lines are cut after the design, the weed box last; without a mat the weed lines and the box outline are cut band by band after each feed band's design, so the roll never goes back for them, and the box pieces overlap by 0.5 mm at their joins. They are cut with the job's passes, shown in the path preview and included in document.export. Fields you leave out stay as they are. Returns {box, margin_mm, per_object, lines, spacing_mm}.",
 );

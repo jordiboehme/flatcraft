@@ -27,7 +27,14 @@ fn square_job() -> EmittedJob {
         force: 10,
         track_enhancing: false,
     };
-    emit_job(&[path], &file_output(), "mat-12x12", &settings).unwrap()
+    emit_job(
+        &[path],
+        GeometryKind::Tip,
+        &file_output(),
+        "mat-12x12",
+        &settings,
+    )
+    .unwrap()
 }
 
 fn names(dir: &std::path::Path) -> Vec<String> {
@@ -51,12 +58,14 @@ fn only_checked_jobs_reach_a_transport() {
         let job = EmittedJob {
             bytes: bad.to_vec(),
             listing: vec![],
+            collapsed: vec![],
         };
         assert!(CheckedJob::check(job).is_err());
     }
     let e = CheckedJob::check(EmittedJob {
         bytes: b"\x1b\x04!5\x03".to_vec(),
         listing: vec![],
+        collapsed: vec![],
     })
     .unwrap_err();
     assert_eq!(e, SafetyError::NotTerminated);

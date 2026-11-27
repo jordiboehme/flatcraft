@@ -1,6 +1,9 @@
 //! Cut geometry per cut mode and stroke treatment.
 
-use flatcraft_core::document::{CutMode, CutOptions, Document, JobSettings, Object, Source};
+use flatcraft_core::document::{
+    CutMode, CutOptions, DEFAULT_AUTO_THRESHOLD_MM, Document, JobSettings, Object, Source,
+    StrokeMode,
+};
 use flatcraft_core::geometry::{Cap, CutPath, FillRule, Join, Paint, StrokeInfo};
 use flatcraft_device::ProfileStore;
 use flatcraft_engine::cutgeom::cut_paths;
@@ -19,6 +22,8 @@ fn job() -> JobSettings {
         speed: None,
         force: None,
         passes: None,
+        strategy: Default::default(),
+        weed: Default::default(),
     }
 }
 
@@ -67,7 +72,12 @@ fn object(path: BezPath, paint: Paint, cut: CutOptions) -> Object {
 }
 
 fn cut(o: &Object) -> Vec<BezPath> {
-    cut_paths(o, o.transform.affine(o.local_bounds), TOL)
+    cut_paths(
+        o,
+        o.transform.affine(o.local_bounds),
+        TOL,
+        flatcraft_engine::report::min_width_mm(0.25),
+    )
 }
 
 /// Every subpath of `paths` as its own path, with whether it is closed.
@@ -362,12 +372,15 @@ fn object_scale_scales_the_stroke() {
     assert_eq!(subs.len(), 1);
     assert_size(subs[0].0.bounding_box(), 100.0, 6.0, 1e-6);
 
-    // A 0.3 mm stroke scaled by 2 is 0.6 mm wide and crosses the 0.5 mm
-    // auto threshold.
+    // A 0.3 mm stroke scaled by 2 is 0.6 mm wide and crosses an auto
+    // threshold of 0.5 mm.
     let mut thin = object(
         hline(),
         line_paint(0.3, MITER, Cap::Butt),
-        CutOptions::default(),
+        CutOptions {
+            auto_threshold_mm: 0.5,
+            ..CutOptions::default()
+        },
     );
     assert!(!subpaths(&cut(&thin))[0].1);
     thin.transform.scale_x = 2.0;
@@ -421,14 +434,14 @@ fn cut_options_roundtrip_and_undo() {
     let id = import_line(&mut s);
     assert_eq!(
         state_cut(&mut s, id),
-        json!({ "mode": "object_outlines", "strokes": "auto", "auto_threshold_mm": 0.5 })
+        json!({ "mode": "object_outlines", "strokes": "auto", "auto_threshold_mm": DEFAULT_AUTO_THRESHOLD_MM })
     );
     run(
         &mut s,
         "object.set_cut_options",
-        json!({ "ids": [id], "mode": "all_lines", "strokes": "centre_line", "auto_threshold_mm": 1.5 }),
+        json!({ "ids": [id], "mode": "all_lines", "strokes": "centre_line", "auto_threshold_mm": 1.0 }),
     );
-    let set = json!({ "mode": "all_lines", "strokes": "centre_line", "auto_threshold_mm": 1.5 });
+    let set = json!({ "mode": "all_lines", "strokes": "centre_line", "auto_threshold_mm": 1.0 });
     assert_eq!(state_cut(&mut s, id), set);
 
     // Only the given fields change.
@@ -437,7 +450,7 @@ fn cut_options_roundtrip_and_undo() {
         "object.set_cut_options",
         json!({ "ids": [id], "strokes": "outline" }),
     );
-    let set = json!({ "mode": "all_lines", "strokes": "outline", "auto_threshold_mm": 1.5 });
+    let set = json!({ "mode": "all_lines", "strokes": "outline", "auto_threshold_mm": 1.0 });
     assert_eq!(state_cut(&mut s, id), set);
 
     let path = dir.path().join("p.flatcraft");
@@ -449,12 +462,12 @@ fn cut_options_roundtrip_and_undo() {
     run(&mut s, "edit.undo", json!({}));
     assert_eq!(
         state_cut(&mut s, id),
-        json!({ "mode": "all_lines", "strokes": "centre_line", "auto_threshold_mm": 1.5 })
+        json!({ "mode": "all_lines", "strokes": "centre_line", "auto_threshold_mm": 1.0 })
     );
     run(&mut s, "edit.undo", json!({}));
     assert_eq!(
         state_cut(&mut s, id),
-        json!({ "mode": "object_outlines", "strokes": "auto", "auto_threshold_mm": 0.5 })
+        json!({ "mode": "object_outlines", "strokes": "auto", "auto_threshold_mm": DEFAULT_AUTO_THRESHOLD_MM })
     );
 }
 
@@ -466,7 +479,7 @@ fn set_cut_options_refuses_bad_input() {
     for params in [
         json!({ "ids": [id], "auto_threshold_mm": 0.01 }),
         json!({ "ids": [id], "auto_threshold_mm": 11.0 }),
-        json!({ "ids": [id], "mode": "merged_outline" }),
+        json!({ "ids": [id], "mode": "welded_outline" }),
         json!({ "ids": [id], "strokes": "hairline" }),
         json!({ "ids": [id], "colour": "red" }),
         json!({ "ids": [id] }),
@@ -480,7 +493,7 @@ fn set_cut_options_refuses_bad_input() {
     }
     assert_eq!(
         state_cut(&mut s, id),
-        json!({ "mode": "object_outlines", "strokes": "auto", "auto_threshold_mm": 0.5 })
+        json!({ "mode": "object_outlines", "strokes": "auto", "auto_threshold_mm": DEFAULT_AUTO_THRESHOLD_MM })
     );
 }
 
@@ -638,7 +651,10 @@ fn x_eye_polyline_keeps_eye_and_tip() {
         let o = object(
             p.clone(),
             line_paint(1.0, MITER, Cap::Butt),
-            CutOptions::default(),
+            CutOptions {
+                strokes: StrokeMode::Outline,
+                ..CutOptions::default()
+            },
         );
         let out = cut(&o);
         assert_eq!(subpaths(&out).len(), 2, "short edge {short}: {out:?}");
@@ -789,10 +805,10 @@ fn project_open_repairs_bad_cut_options() {
     let id = import_line(&mut s);
     let path = dir.path().join("p.flatcraft");
     run(&mut s, "project.save", json!({ "path": path }));
-    let text = std::fs::read_to_string(&path).unwrap();
-    let mut v: Value = serde_json::from_str(&text).unwrap();
-    v["objects"][0]["cut"]["auto_threshold_mm"] = json!(99.0);
-    std::fs::write(&path, v.to_string()).unwrap();
+    flatcraft_core::project::Archive::edit(&path, |a| {
+        a.project["objects"][0]["cut"]["auto_threshold_mm"] = json!(99.0);
+    })
+    .unwrap();
     let mut s2 = session(&dir);
     let r = run(&mut s2, "project.open", json!({ "path": path }));
     assert!(
@@ -805,7 +821,7 @@ fn project_open_repairs_bad_cut_options() {
     );
     assert_eq!(
         state_cut(&mut s2, id),
-        json!({ "mode": "object_outlines", "strokes": "auto", "auto_threshold_mm": 0.5 })
+        json!({ "mode": "object_outlines", "strokes": "auto", "auto_threshold_mm": DEFAULT_AUTO_THRESHOLD_MM })
     );
 }
 
@@ -860,7 +876,7 @@ fn cheap_bounds_match_the_cut_paths() {
             .map(Shape::bounding_box)
             .reduce(|a, b| a.union(b))
             .unwrap();
-        let cheap = cut_bounds(o).unwrap();
+        let cheap = cut_bounds(o, Default::default()).unwrap();
         for (a, b) in [
             (exact.x0, cheap.x0),
             (exact.y0, cheap.y0),

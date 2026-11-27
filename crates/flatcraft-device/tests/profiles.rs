@@ -20,7 +20,10 @@ fn store() -> (tempfile::TempDir, ProfileStore) {
 fn system_presets_load() {
     let (_d, s) = store();
     assert_eq!(s.plotters().len(), 2);
-    assert_eq!(s.materials().len(), 4);
+    assert_eq!(
+        s.materials().len(),
+        flatcraft_device::presets::MATERIALS.len()
+    );
     assert!(s.plotters().iter().all(|p| p.system));
 }
 
@@ -273,11 +276,12 @@ fn material_override_applies_per_plotter() {
          [overrides.silhouette-cameo-2]\nforce = 25\n",
     );
     let s = ProfileStore::load(d.path()).unwrap();
+    let card = s.material("cardstock").unwrap();
     let m = s.material("my-card").unwrap();
-    assert_eq!(m.force, 20);
+    assert_eq!(m.force, card.force);
     assert_eq!(m.for_plotter("silhouette-cameo-2").force, 25);
-    assert_eq!(m.for_plotter("other").force, 20);
-    assert_eq!(m.speed, 3);
+    assert_eq!(m.for_plotter("other").force, card.force);
+    assert_eq!(m.speed, card.speed);
 }
 
 #[test]
@@ -320,7 +324,10 @@ fn save_material_and_reject_system_id() {
     assert_eq!(s.modified_material_fields("my-vinyl"), vec!["force"]);
     let s2 = ProfileStore::load(d.path()).unwrap();
     assert_eq!(s2.material("my-vinyl").unwrap().force, 12);
-    assert_eq!(s2.materials().len(), 5);
+    assert_eq!(
+        s2.materials().len(),
+        flatcraft_device::presets::MATERIALS.len() + 1
+    );
 }
 
 #[test]
@@ -455,7 +462,7 @@ fn mat(id: &str) -> Media {
             height_mm: 300.0,
         },
         calibrated: false,
-        color: DEFAULT_MAT_COLOR,
+        color: None,
     }
 }
 
@@ -575,8 +582,8 @@ fn save_writes_only_changed_and_new_mats() {
 fn mat_color_defaults_roundtrips_and_validates() {
     let (_d, s) = store();
     let p = s.plotter("silhouette-cameo-2").unwrap();
-    assert_eq!(p.media[0].color, [0x8F, 0xA8, 0xB8]);
-    assert_eq!(p.media[2].color, [0xF4, 0xF1, 0xEA]);
+    assert_eq!(p.media[0].color, None);
+    assert_eq!(p.media[2].color, None);
 
     // old files without color get the default of their kind
     let d = tempdir().unwrap();
@@ -591,21 +598,21 @@ fn mat_color_defaults_roundtrips_and_validates() {
     let s = ProfileStore::load(d.path()).unwrap();
     let o = s.plotter("oldmedia").unwrap();
     let get = |id: &str| o.media.iter().find(|m| m.id == id).unwrap().color;
-    assert_eq!(get("a"), DEFAULT_MAT_COLOR);
-    assert_eq!(get("b"), DEFAULT_NO_MAT_COLOR);
+    assert_eq!(get("a"), None);
+    assert_eq!(get("b"), None);
 
     // save writes a changed colour as #RRGGBB and it comes back
     let (d, mut s) = store();
     let mut p = s.plotter("silhouette-cameo-2").unwrap();
     p.id = "tuned".into();
-    p.media[0].color = [0x12, 0xAB, 0xEF];
+    p.media[0].color = Some([0x12, 0xAB, 0xEF]);
     s.save_user_plotter(&p, "silhouette-cameo-2").unwrap();
     let text = fs::read_to_string(d.path().join("plotters/tuned.toml")).unwrap();
     assert!(text.contains("#12ABEF"), "{text}");
     let s2 = ProfileStore::load(d.path()).unwrap();
     assert_eq!(
         s2.plotter("tuned").unwrap().media[0].color,
-        [0x12, 0xAB, 0xEF]
+        Some([0x12, 0xAB, 0xEF])
     );
 }
 
@@ -1029,4 +1036,226 @@ fn the_device_home_is_the_media_corner_in_app_coordinates() {
     assert_eq!(home, kurbo::Point::new(m.width_mm - 10.0, -20.0));
     let dev = flatcraft_device::gpgl::quantize::to_device(home, &p, &m);
     assert_eq!((dev.x, dev.y), (0, 0));
+}
+
+#[test]
+fn built_in_mats_have_no_colour() {
+    let (_d, s) = store();
+    for info in s.plotters() {
+        let p = s.plotter(&info.id).unwrap();
+        for m in &p.media {
+            assert_eq!(m.color, None, "{} / {}", p.id, m.id);
+        }
+    }
+}
+
+#[test]
+fn a_stored_colour_is_custom_and_a_missing_one_is_default() {
+    let d = tempdir().unwrap();
+    write(
+        d.path(),
+        "plotters",
+        "mine",
+        "id = \"mine\"\nname = \"M\"\ninherits = \"silhouette-cameo-2\"\n\
+         media = [\n\
+         { id = \"a\", name = \"A\", width_mm = 10.0, height_mm = 10.0, color = \"#FBF4E4\" },\n\
+         { id = \"b\", name = \"B\", width_mm = 10.0, height_mm = 10.0 }]\n",
+    );
+    let s = ProfileStore::load(d.path()).unwrap();
+    let p = s.plotter("mine").unwrap();
+    let get = |id: &str| p.media.iter().find(|m| m.id == id).unwrap().color;
+    assert_eq!(get("a"), Some([0xFB, 0xF4, 0xE4]));
+    assert_eq!(get("b"), None);
+}
+
+#[test]
+fn a_user_plotter_that_inherits_follows_the_built_in_mat_colour() {
+    let d = tempdir().unwrap();
+    write(
+        d.path(),
+        "plotters",
+        "child",
+        "id = \"child\"\nname = \"Child\"\ninherits = \"silhouette-cameo-2\"\n",
+    );
+    let s = ProfileStore::load(d.path()).unwrap();
+    let parent = s.plotter("silhouette-cameo-2").unwrap();
+    let child = s.plotter("child").unwrap();
+    let colours = |p: &PlotterProfile| p.media.iter().map(|m| m.color).collect::<Vec<_>>();
+    assert_eq!(colours(&child), colours(&parent));
+    assert!(colours(&child).iter().all(Option::is_none));
+}
+
+#[test]
+fn old_plotter_toml_defaults_to_ccw() {
+    let d = tempdir().unwrap();
+    // A full plotter file of an older version, without ring_direction.
+    let cameo = presets::PLOTTERS
+        .iter()
+        .find(|(id, _)| *id == "silhouette-cameo-2")
+        .unwrap()
+        .1
+        .lines()
+        .filter(|l| !l.starts_with("ring_direction") && !l.contains("counter-clockwise"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace("silhouette-cameo-2", "old-plotter");
+    assert!(!cameo.contains("ring_direction"));
+    write(d.path(), "plotters", "old-plotter", &cameo);
+    let s = ProfileStore::load(d.path()).unwrap();
+    assert_eq!(
+        s.plotter("old-plotter").unwrap().ring_direction,
+        RingDirection::Ccw
+    );
+    assert_eq!(
+        s.plotter("silhouette-cameo-2").unwrap().ring_direction,
+        RingDirection::Ccw
+    );
+    // A user preset can turn it round.
+    write(
+        d.path(),
+        "plotters",
+        "clockwise",
+        "id = \"clockwise\"\nname = \"C\"\ninherits = \"silhouette-cameo-2\"\nring_direction = \"cw\"\n",
+    );
+    let s = ProfileStore::load(d.path()).unwrap();
+    assert_eq!(
+        s.plotter("clockwise").unwrap().ring_direction,
+        RingDirection::Cw
+    );
+    assert_eq!(
+        s.modified_plotter_fields("clockwise"),
+        vec!["ring_direction"]
+    );
+}
+
+#[test]
+fn corner_mode_reads_the_documented_toml_form() {
+    #[derive(serde::Deserialize)]
+    struct T {
+        corner_mode: CornerModeSpec,
+    }
+    let t: T = toml::from_str("corner_mode = { LiftOvershoot = { overshoot_mm = 0.1 } }").unwrap();
+    assert_eq!(
+        t.corner_mode,
+        CornerModeSpec::LiftOvershoot { overshoot_mm: 0.1 }
+    );
+    let t: T = toml::from_str("corner_mode = \"Arc\"").unwrap();
+    assert_eq!(t.corner_mode, CornerModeSpec::Arc);
+}
+
+#[test]
+fn material_override_sets_corner_mode_and_min_radius() {
+    let (_d, s) = store();
+    let mut m = s.material("vinyl").unwrap();
+    m.overrides.insert(
+        "silhouette-cameo-2".into(),
+        MaterialOverride {
+            corner_mode: Some(CornerModeSpec::LiftOvershoot { overshoot_mm: 0.3 }),
+            min_radius_mm: Some(0.8),
+            ..Default::default()
+        },
+    );
+    let c = m.for_plotter("silhouette-cameo-2");
+    assert_eq!(
+        c.corner_mode,
+        CornerModeSpec::LiftOvershoot { overshoot_mm: 0.3 }
+    );
+    assert_eq!(c.min_radius_mm, Some(0.8));
+    let f = m.for_plotter("file-output-gpgl-cameo2");
+    assert_eq!(f.corner_mode, CornerModeSpec::Arc);
+    assert_eq!(f.min_radius_mm, None);
+}
+
+#[test]
+fn corner_overshoot_and_min_radius_are_checked() {
+    let (_d, mut s) = store();
+    let base = s.material("vinyl").unwrap();
+    let bad_corner = [0.0, -0.1, 2.5, f64::NAN];
+    for v in bad_corner {
+        let mut m = base.clone();
+        m.id = "bad".into();
+        m.corner_mode = CornerModeSpec::LiftOvershoot { overshoot_mm: v };
+        let e = s.save_user_material(&m, "vinyl").unwrap_err();
+        assert!(e.to_string().contains("corner overshoot"), "{v}: {e}");
+        let mut m = base.clone();
+        m.id = "bad".into();
+        m.overrides.insert(
+            "silhouette-cameo-2".into(),
+            MaterialOverride {
+                corner_mode: Some(CornerModeSpec::LiftOvershoot { overshoot_mm: v }),
+                ..Default::default()
+            },
+        );
+        let e = s.save_user_material(&m, "vinyl").unwrap_err();
+        assert!(e.to_string().contains("corner overshoot"), "{v}: {e}");
+    }
+    for v in [0.0, -1.0, 51.0, f64::INFINITY, f64::NAN] {
+        let mut m = base.clone();
+        m.id = "bad".into();
+        m.min_radius_mm = Some(v);
+        let e = s.save_user_material(&m, "vinyl").unwrap_err();
+        assert!(e.to_string().contains("minimum radius"), "{v}: {e}");
+    }
+    let mut m = base.clone();
+    m.id = "fine".into();
+    m.corner_mode = CornerModeSpec::LiftOvershoot { overshoot_mm: 2.0 };
+    m.min_radius_mm = Some(0.5);
+    s.save_user_material(&m, "vinyl").unwrap();
+    assert_eq!(s.material("fine").unwrap().min_radius_mm, Some(0.5));
+}
+
+#[test]
+fn host_values_are_checked_on_save() {
+    let (_d, mut s) = store();
+    let mut p = s.plotter("silhouette-cameo-2").unwrap();
+    p.id = "host".into();
+    for (offset, pivot, word) in [
+        (0.0, 0.0, "offset"),
+        (2.5, 0.0, "offset"),
+        (f64::NAN, 0.0, "offset"),
+        (0.25, 91.0, "pivot threshold"),
+    ] {
+        p.knife_compensation = KnifeCompensation::Host {
+            offset_mm: offset,
+            pivot_threshold_deg: pivot,
+        };
+        let e = s.save_user_plotter(&p, "silhouette-cameo-2").unwrap_err();
+        assert!(e.to_string().contains(word), "{offset} {pivot}: {e}");
+    }
+    p.knife_compensation = KnifeCompensation::Host {
+        offset_mm: 0.3,
+        pivot_threshold_deg: 0.0,
+    };
+    s.save_user_plotter(&p, "silhouette-cameo-2").unwrap();
+}
+
+#[test]
+fn store_revision_bumps_on_save() {
+    let (_d, mut s) = store();
+    let r0 = s.revision();
+    let mut p = s.plotter("silhouette-cameo-2").unwrap();
+    p.id = "mine".into();
+    s.save_user_plotter(&p, "silhouette-cameo-2").unwrap();
+    let r1 = s.revision();
+    assert!(r1 > r0);
+    let mut m = s.material("vinyl").unwrap();
+    m.id = "my-vinyl".into();
+    s.save_user_material(&m, "vinyl").unwrap();
+    let r2 = s.revision();
+    assert!(r2 > r1);
+    s.set_material_notes("vinyl", "sharp blade").unwrap();
+    let r3 = s.revision();
+    assert!(r3 > r2, "notes are a save too");
+    s.delete_user_material("my-vinyl").unwrap();
+    let r4 = s.revision();
+    assert!(r4 > r3);
+    s.delete_user_plotter("mine").unwrap();
+    assert!(s.revision() > r4);
+    // A failed save changes nothing.
+    let r5 = s.revision();
+    let mut bad = s.material("vinyl").unwrap();
+    bad.id = "bad".into();
+    bad.overcut_mm = 99.0;
+    assert!(s.save_user_material(&bad, "vinyl").is_err());
+    assert_eq!(s.revision(), r5);
 }

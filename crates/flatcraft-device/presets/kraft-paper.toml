@@ -1,0 +1,17 @@
+# Starting values in our own words, from several public sources (see
+# docs/materials.md). Always check them with a test cut first.
+id = "kraft-paper"
+name = "Kraft paper"
+group = "paper_and_card"
+speed = 3
+force = 20
+passes = 1
+reverse_alternate_passes = false
+overcut_mm = 0.5
+track_enhancing = false
+corner_mode = "Arc"
+# No backing sheet: small loose parts fall out.
+backing = false
+mat_tack = "light"
+blade_depth_hint = "blade 3"
+tips = "Smooth side up. Kraft has long fibres that tear in fast cuts, so go slow, and blow the paper dust out of the blade cap now and then."

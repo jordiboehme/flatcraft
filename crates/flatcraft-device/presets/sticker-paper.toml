@@ -1,0 +1,16 @@
+# Starting values in our own words, from several public sources (see
+# docs/materials.md). Always check them with a test cut first.
+id = "sticker-paper"
+name = "Sticker paper"
+group = "paper_and_card"
+speed = 4
+force = 14
+passes = 1
+reverse_alternate_passes = false
+overcut_mm = 0.5
+track_enhancing = false
+corner_mode = "Arc"
+backing = true
+mat_tack = "light"
+blade_depth_hint = "blade 2"
+tips = "Print first, then cut with the printed side up. The cut goes through the sticker layer only, so the sheet stays in one piece: peel the waste around one sticker to check."

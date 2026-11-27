@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use flatcraft_core::geometry::RingDirection;
 use kurbo::{Point, Rect};
 use serde::{Deserialize, Serialize};
 
@@ -51,6 +52,34 @@ impl KnifeCompensation {
             KnifeCompensation::Firmware { fc } => *fc,
             KnifeCompensation::Host { .. } | KnifeCompensation::None => 0,
         }
+    }
+
+    /// Checks the values of host compensation: the offset is a number
+    /// above 0 and at most [`MAX_HOST_OFFSET_MM`], the pivot threshold 0
+    /// to [`MAX_PIVOT_THRESHOLD_DEG`]. Firmware and none always pass. The
+    /// text says what to fix.
+    ///
+    /// [`MAX_HOST_OFFSET_MM`]: flatcraft_core::limits::MAX_HOST_OFFSET_MM
+    /// [`MAX_PIVOT_THRESHOLD_DEG`]: flatcraft_core::limits::MAX_PIVOT_THRESHOLD_DEG
+    pub fn validate(&self) -> Result<(), String> {
+        use flatcraft_core::limits::{MAX_HOST_OFFSET_MM, MAX_PIVOT_THRESHOLD_DEG};
+        if let KnifeCompensation::Host {
+            offset_mm,
+            pivot_threshold_deg,
+        } = *self
+        {
+            if !(offset_mm.is_finite() && offset_mm > 0.0 && offset_mm <= MAX_HOST_OFFSET_MM) {
+                return Err(format!(
+                    "the host blade offset must be above 0 and at most {MAX_HOST_OFFSET_MM} mm (got {offset_mm})"
+                ));
+            }
+            if !(0.0..=MAX_PIVOT_THRESHOLD_DEG).contains(&pivot_threshold_deg) {
+                return Err(format!(
+                    "the pivot threshold must be 0 to {MAX_PIVOT_THRESHOLD_DEG} deg (got {pivot_threshold_deg})"
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -179,15 +208,39 @@ pub struct Media {
     pub grid: Grid,
     /// True once the grid origin was measured on the real mat.
     pub calibrated: bool,
-    /// The colour of the mat on the canvas, `#RRGGBB` in files.
-    #[serde(serialize_with = "hex_color::serialize")]
-    pub color: [u8; 3],
+    /// The mat's own colour on the canvas, `#RRGGBB` in files. `None` means
+    /// "use the default from Settings" for the theme in use; resolve it with
+    /// `resolved_mat_colour` (in the engine's preferences), never read it raw
+    /// to draw.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "hex_color::serialize_opt"
+    )]
+    pub color: Option<[u8; 3]>,
 }
 
-/// Default mat colour on the canvas.
-pub const DEFAULT_MAT_COLOR: [u8; 3] = [0x8F, 0xA8, 0xB8];
-/// Default colour of "No mat" on the canvas.
-pub const DEFAULT_NO_MAT_COLOR: [u8; 3] = [0xF4, 0xF1, 0xEA];
+impl Media {
+    /// The mat's own colour, or `default` when it has none.
+    pub fn color_or(&self, default: [u8; 3]) -> [u8; 3] {
+        self.color.unwrap_or(default)
+    }
+}
+
+/// Default mat colour in the light theme: white.
+pub const DEFAULT_MAT_COLOR_LIGHT: [u8; 3] = [0xFF, 0xFF, 0xFF];
+/// Default mat colour in the dark theme: a light grey, dimmed so it does not glare.
+pub const DEFAULT_MAT_COLOR_DARK: [u8; 3] = [0xE8, 0xE9, 0xEB];
+/// A colour from `#RRGGBB`, or the reason it is not one. The one parser
+/// of the app (the profile files, the preferences and the windows).
+pub fn parse_hex_colour(s: &str) -> Result<[u8; 3], String> {
+    hex_color::parse(s)
+}
+
+/// A colour as `#RRGGBB`.
+pub fn hex_colour(c: [u8; 3]) -> String {
+    format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2])
+}
 
 /// Colours as `#RRGGBB` strings.
 mod hex_color {
@@ -203,8 +256,11 @@ mod hex_color {
         Ok([(v >> 16) as u8, (v >> 8) as u8, v as u8])
     }
 
-    pub fn serialize<S: Serializer>(c: &[u8; 3], s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2]))
+    pub fn serialize_opt<S: Serializer>(c: &Option<[u8; 3]>, s: S) -> Result<S::Ok, S::Error> {
+        match c {
+            Some(c) => s.serialize_str(&super::hex_colour(*c)),
+            None => s.serialize_none(),
+        }
     }
 }
 
@@ -232,9 +288,8 @@ impl TryFrom<MediaFile> for Media {
 
     fn try_from(f: MediaFile) -> Result<Self, String> {
         let color = match &f.color {
-            Some(c) => hex_color::parse(c)?,
-            None if f.kind == MediaKind::NoMat => DEFAULT_NO_MAT_COLOR,
-            None => DEFAULT_MAT_COLOR,
+            Some(c) => Some(hex_color::parse(c)?),
+            None => None,
         };
         let grid = f.grid.unwrap_or(Grid {
             origin_x_mm: 0.0,
@@ -284,6 +339,10 @@ pub struct PlotterProfile {
     pub scale_x: f64,
     pub scale_y: f64,
     pub knife_compensation: KnifeCompensation,
+    /// The direction closed shapes are cut in. Files without the key get
+    /// counter-clockwise.
+    #[serde(default)]
+    pub ring_direction: RingDirection,
     pub blade_offset_mm: f64,
     pub speed_range: [u8; 2],
     pub force_range: [u8; 2],
@@ -292,6 +351,11 @@ pub struct PlotterProfile {
     pub passes_range: [u32; 2],
     pub capabilities: Capabilities,
     pub flatten_tolerance_mm: f64,
+    /// The person's notes on this plotter. Never inherited. A system
+    /// preset gets them from the user-side annotation file
+    /// ([`crate::store::PRESET_NOTES_FILE`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 /// Pass counts of a plotter preset that does not set `passes_range`.
@@ -331,23 +395,7 @@ impl PlotterProfile {
                 self.flatten_tolerance_mm
             ));
         }
-        if let KnifeCompensation::Host {
-            offset_mm,
-            pivot_threshold_deg,
-        } = self.knife_compensation
-        {
-            if !(offset_mm.is_finite() && offset_mm >= 0.0) {
-                return Err(format!(
-                    "the host blade offset must not be negative (got {offset_mm})"
-                ));
-            }
-            if !(0.0..=MAX_PIVOT_THRESHOLD_DEG).contains(&pivot_threshold_deg) {
-                return Err(format!(
-                    "the pivot threshold must be 0 to {MAX_PIVOT_THRESHOLD_DEG} deg (got {pivot_threshold_deg})"
-                ));
-            }
-        }
-        Ok(())
+        self.knife_compensation.validate()
     }
 
     /// The mat `media_id`, or the plotter's first mat when it no longer
@@ -407,6 +455,24 @@ pub struct MaterialOverride {
     pub passes: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overcut_mm: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corner_mode: Option<CornerModeSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_radius_mm: Option<f64>,
+}
+
+/// What host knife compensation does at a sharp corner of this material.
+/// In files: `corner_mode = "Arc"` or
+/// `corner_mode = { LiftOvershoot = { overshoot_mm = 0.1 } }`.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub enum CornerModeSpec {
+    /// The blade swivels around the corner point while it stays down.
+    #[default]
+    Arc,
+    /// The blade cuts `overshoot_mm` past the corner, lifts, and starts the
+    /// next line fresh. Only where the overshoot lands in waste; every other
+    /// corner gets the arc.
+    LiftOvershoot { overshoot_mm: f64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -421,23 +487,144 @@ pub struct MaterialProfile {
     pub reverse_alternate_passes: bool,
     pub overcut_mm: f64,
     pub track_enhancing: bool,
+    /// What host compensation does at sharp corners. Files without the key
+    /// get [`CornerModeSpec::Arc`]. It is always written, so a child of a
+    /// lift-and-overshoot preset can set it back to the arc.
+    #[serde(default)]
+    pub corner_mode: CornerModeSpec,
+    /// Curves tighter than this radius get a warning: the blade may round
+    /// or tear them. `None` uses the plotter's `blade_offset_mm`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_radius_mm: Option<f64>,
+    /// The material sits on a backing sheet, like vinyl: small loose
+    /// parts (the middle of a stencil's O) stay on it until transfer tape
+    /// lifts them. Paper and cardstock have none, so such parts fall out.
+    /// Files without the key get true. It is always written, so a child
+    /// of a preset without a backing sheet can set it back to true.
+    #[serde(default = "backing_default")]
+    pub backing: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blade_depth_hint: Option<String>,
+    /// Where the material picker lists it. Files without the key get
+    /// [`MaterialGroup::Other`].
+    #[serde(default)]
+    pub group: MaterialGroup,
+    /// How sticky a mat this material wants: a recommendation shown to
+    /// the person, never sent to the plotter. Files without the key get
+    /// [`MatTack::Standard`].
+    #[serde(default)]
+    pub mat_tack: MatTack,
+    /// Tips that ship with a built-in preset (which side up, how to weed).
+    /// Unlike [`MaterialProfile::notes`] they are inherited, and the
+    /// person does not edit them in the window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tips: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub overrides: BTreeMap<String, MaterialOverride>,
+    /// The person's notes on this material. Never inherited. A system
+    /// preset gets them from the user-side annotation file
+    /// ([`crate::store::PRESET_NOTES_FILE`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+fn backing_default() -> bool {
+    true
+}
+
+/// The groups of the material picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MaterialGroup {
+    /// Adhesive vinyl on a backing sheet.
+    Vinyl,
+    /// Heat transfer vinyl: cut from the back, so the design is mirrored.
+    IronOn,
+    /// Paper, cardstock, kraft, vellum and sticker paper.
+    PaperAndCard,
+    /// Films, clings, magnet sheets and every material without a group.
+    #[default]
+    Other,
+}
+
+impl MaterialGroup {
+    /// The picker order.
+    pub const ALL: [MaterialGroup; 4] = [
+        MaterialGroup::Vinyl,
+        MaterialGroup::IronOn,
+        MaterialGroup::PaperAndCard,
+        MaterialGroup::Other,
+    ];
+
+    /// The heading in the material picker.
+    pub fn label(self) -> &'static str {
+        match self {
+            MaterialGroup::Vinyl => "Vinyl",
+            MaterialGroup::IronOn => "Iron-on",
+            MaterialGroup::PaperAndCard => "Paper and card",
+            MaterialGroup::Other => "Film and other",
+        }
+    }
+}
+
+/// How sticky a cutting mat a material wants. A recommendation only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatTack {
+    /// A light grip: thin paper and vellum come off without tearing.
+    Light,
+    /// The everyday grip for vinyl, iron-on and most card.
+    #[default]
+    Standard,
+    /// A strong grip for heavy card and stiff sheets that would shift.
+    Strong,
+}
+
+impl MatTack {
+    pub const ALL: [MatTack; 3] = [MatTack::Light, MatTack::Standard, MatTack::Strong];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MatTack::Light => "Light",
+            MatTack::Standard => "Standard",
+            MatTack::Strong => "Strong",
+        }
+    }
 }
 
 impl MaterialProfile {
-    /// Checks the overcut, also of the per-plotter overrides, against
-    /// [`flatcraft_core::limits::MAX_OVERCUT_MM`].
+    /// Checks the overcut, the corner overshoot and the minimum radius,
+    /// also of the per-plotter overrides, against
+    /// [`flatcraft_core::limits`].
     pub fn validate_values(&self) -> Result<(), String> {
-        use flatcraft_core::limits::MAX_OVERCUT_MM;
-        let overcuts = std::iter::once(self.overcut_mm)
-            .chain(self.overrides.values().filter_map(|o| o.overcut_mm));
+        use flatcraft_core::limits::{MAX_CORNER_OVERSHOOT_MM, MAX_MIN_RADIUS_MM, MAX_OVERCUT_MM};
+        let o = || self.overrides.values();
+        let overcuts = std::iter::once(self.overcut_mm).chain(o().filter_map(|o| o.overcut_mm));
         for v in overcuts {
             if !(0.0..=MAX_OVERCUT_MM).contains(&v) {
                 return Err(format!(
                     "the overcut must be 0 to {MAX_OVERCUT_MM} mm (got {v})"
+                ));
+            }
+        }
+        let corners = std::iter::once(self.corner_mode).chain(o().filter_map(|o| o.corner_mode));
+        for c in corners {
+            if let CornerModeSpec::LiftOvershoot { overshoot_mm: v } = c
+                && !(v > 0.0 && v <= MAX_CORNER_OVERSHOOT_MM)
+            {
+                return Err(format!(
+                    "the corner overshoot must be above 0 and at most {MAX_CORNER_OVERSHOOT_MM} mm (got {v})"
+                ));
+            }
+        }
+        let radii = self
+            .min_radius_mm
+            .into_iter()
+            .chain(o().filter_map(|o| o.min_radius_mm));
+        for v in radii {
+            if !(v > 0.0 && v <= MAX_MIN_RADIUS_MM) {
+                return Err(format!(
+                    "the minimum radius must be above 0 and at most {MAX_MIN_RADIUS_MM} mm (got {v})"
                 ));
             }
         }
@@ -459,6 +646,12 @@ impl MaterialProfile {
             }
             if let Some(v) = o.overcut_mm {
                 out.overcut_mm = v;
+            }
+            if let Some(v) = o.corner_mode {
+                out.corner_mode = v;
+            }
+            if let Some(v) = o.min_radius_mm {
+                out.min_radius_mm = Some(v);
             }
         }
         out

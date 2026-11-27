@@ -1,0 +1,925 @@
+//! A group of the ribbon, drawn from the table in [`super::tools`].
+//!
+//! A group shows its pinned actions as buttons (big or small, see
+//! [`Style`]) and its inline settings, and under them a group button as
+//! wide as the group, with the group's title and a chevron. The group
+//! button opens the group's list: every action with its icon, title and
+//! shortcut, a pin toggle on hover, and the group's options (what Align
+//! lines up with). A group with no pins, or one the ribbon collapsed to
+//! save room, is only its tile: the group's icon as a big button with its
+//! title and a small chevron, which opens the same list. The group never
+//! disappears.
+//!
+//! Hovering an action or a group button shows its card: the title and
+//! the description of the table. An action that cannot run now stays
+//! visible but dimmed; its card starts with the reason.
+
+use egui::{Id, RectAlign, Response, RichText, Ui};
+
+use super::collapse::Mode;
+use super::help;
+use super::icons::{self, Icon};
+use super::prepare::{PrepareState, Snapshot};
+use super::settings::set_name;
+use super::tools::{Act, AlignTo, GroupDef, GroupId, Section, Style, Tool};
+use super::{Action, ICON_SIZE, metrics};
+
+// The ribbon's layout values live in `metrics`.
+use super::metrics::{
+    BIG_HEIGHT, BIG_MIN_WIDTH, BIG_PAD_X, BIG_PAD_Y, COMPACT_HEIGHT, GROUP_FOOTER, GROUP_GAP,
+    ICON_COMPACT as SMALL_ICON, SMALL_PADDING, TOOLS_ROW as ROW_HEIGHT,
+};
+
+/// The footer of every list.
+pub const FOOTER: &str = "Pinned actions show on the ribbon. Hover a row to pin or unpin it.";
+/// The tooltips of the pin toggle.
+pub const PIN_TIP: &str = "Add to toolbar";
+pub const UNPIN_TIP: &str = "Remove from toolbar";
+
+/// What the groups draw with and work on.
+pub struct Cx<'a> {
+    pub st: &'a mut PrepareState,
+    pub snap: &'a Snapshot,
+    pub show_debug: &'a mut bool,
+    pub actions: &'a mut Vec<Action>,
+}
+
+/// The accessible name of the toggle that pins `tool` (or unpins it).
+pub fn pin_name(tool: &Tool, pinned: bool) -> String {
+    let what = tool.pin_label();
+    if pinned {
+        format!("Unpin {what}")
+    } else {
+        format!("Pin {what}")
+    }
+}
+
+// ---------------------------------------------------------------- cards
+
+/// A hover card: the title, then the description. With a `reason` (the
+/// thing cannot run now), the reason comes first and the description is
+/// dimmed under it. `beside` puts the card next to a list row instead of
+/// under the widget. Shows after the normal tooltip delay, on enabled and
+/// on dimmed widgets.
+pub fn card(resp: &Response, title: &str, description: &str, reason: Option<&str>, beside: bool) {
+    for tip in [
+        egui::Tooltip::for_enabled(resp),
+        egui::Tooltip::for_disabled(resp),
+    ] {
+        let mut tip = tip;
+        if beside {
+            tip.popup = tip
+                .popup
+                .align(RectAlign::RIGHT_START)
+                .align_alternatives(&[RectAlign::LEFT_START, RectAlign::BOTTOM_START]);
+        }
+        tip.show(|ui| card_ui(ui, title, description, reason));
+    }
+}
+
+/// A card next to the pointer, for a part of a large widget (a handle on
+/// the canvas): a card placed by the widget's rect would sit far away.
+/// With `above` it opens above the pointer (at a top corner of the
+/// selection, so it does not cover it), else below.
+pub fn card_at_pointer(
+    resp: &Response,
+    title: &str,
+    description: &str,
+    reason: Option<&str>,
+    above: bool,
+) {
+    for tip in [
+        egui::Tooltip::for_enabled(resp),
+        egui::Tooltip::for_disabled(resp),
+    ] {
+        let mut tip = tip;
+        tip.popup = tip.popup.at_pointer();
+        if above {
+            tip.popup = tip
+                .popup
+                .align(RectAlign::TOP_START)
+                .align_alternatives(&[RectAlign::TOP_END, RectAlign::BOTTOM_START]);
+        }
+        tip.show(|ui| card_ui(ui, title, description, reason));
+    }
+}
+
+/// The contents of a card.
+pub fn card_ui(ui: &mut Ui, title: &str, description: &str, reason: Option<&str>) {
+    ui.set_max_width(280.0);
+    ui.label(RichText::new(title).strong());
+    match reason {
+        Some(why) => {
+            ui.label(why);
+            ui.label(RichText::new(description).weak());
+        }
+        None => {
+            ui.label(description);
+        }
+    }
+}
+
+/// The card of an action, with the reason when it cannot run now.
+pub fn tool_card(resp: &Response, tool: &Tool, snap: &Snapshot, beside: bool) {
+    let ids: Vec<u64> = snap.selection.iter().copied().collect();
+    // Ungroup names what it will do ("Remove 2 objects from group").
+    let title = match tool.act {
+        super::tools::Act::Ungroup => tool.live_title(snap, &ids),
+        _ => tool.card_title(snap),
+    };
+    card(
+        resp,
+        &title,
+        tool.live_description(snap, &ids),
+        tool.blocked(snap),
+        beside,
+    );
+}
+
+// ---------------------------------------------------------------- buttons
+
+/// The icon in the colours of `pal`, `size` points.
+pub(crate) fn image_with(
+    ui: &Ui,
+    icon: Icon,
+    size: f32,
+    pal: &icons::Palette,
+) -> egui::Image<'static> {
+    let tex = icons::texture_with(ui.ctx(), icon, size, pal);
+    egui::Image::from_texture(egui::load::SizedTexture::new(
+        tex.id(),
+        egui::Vec2::splat(size),
+    ))
+}
+
+pub(crate) fn image(ui: &Ui, icon: Icon, size: f32) -> egui::Image<'static> {
+    let tex = icons::texture(ui.ctx(), icon, size);
+    egui::Image::from_texture(egui::load::SizedTexture::new(
+        tex.id(),
+        egui::Vec2::splat(size),
+    ))
+}
+
+/// A big ribbon button: a 24 pt icon above a small label (only the icon
+/// when `show_label` is off), [`BIG_HEIGHT`] tall. Its accessible name is
+/// `name`. A dimmed one (`enabled` off) does nothing when clicked.
+/// `selected` makes it a toggle that shows whether it is on.
+pub fn big_button(
+    ui: &mut Ui,
+    icon: Icon,
+    label: &str,
+    name: &str,
+    show_label: bool,
+    enabled: bool,
+    selected: Option<bool>,
+) -> Response {
+    const ICON: f32 = metrics::ICON_BIG;
+    ui.add_enabled_ui(enabled, |ui| {
+        let font = egui::TextStyle::Small.resolve(ui.style());
+        let text = if show_label { label } else { "" };
+        let galley =
+            ui.painter()
+                .layout_no_wrap(text.to_string(), font, egui::Color32::PLACEHOLDER);
+        let width = if show_label {
+            (galley.size().x + 2.0 * BIG_PAD_X).max(BIG_MIN_WIDTH)
+        } else {
+            ICON + 2.0 * BIG_PAD_X
+        };
+        let (rect, resp) =
+            ui.allocate_exact_size(egui::vec2(width, BIG_HEIGHT), egui::Sense::click());
+        let on = ui.is_enabled();
+        resp.widget_info(|| match selected {
+            Some(sel) => egui::WidgetInfo::selected(egui::accesskit::Role::Button, on, sel, name),
+            None => egui::WidgetInfo::labeled(egui::accesskit::Role::Button, on, name),
+        });
+        if ui.is_rect_visible(rect) {
+            let visuals = ui.style().interact(&resp);
+            paint_state(ui, rect, &resp, selected, on);
+            let icon_y = if show_label {
+                rect.top() + BIG_PAD_Y + ICON / 2.0
+            } else {
+                rect.center().y
+            };
+            let icon_rect = egui::Rect::from_center_size(
+                egui::pos2(rect.center().x, icon_y),
+                egui::Vec2::splat(ICON),
+            );
+            // A disabled Ui fades what its painter draws.
+            image(ui, icon, ICON).paint_at(ui, icon_rect);
+            let at = egui::pos2(
+                rect.center().x - galley.size().x / 2.0,
+                rect.bottom() - BIG_PAD_Y - galley.size().y,
+            );
+            ui.painter().galley(at, galley, visuals.text_color());
+        }
+        resp
+    })
+    .inner
+}
+
+/// The background of a custom ribbon button: the hover fill, and the
+/// selection fill of a toggle that is on. A dimmed toggle that is on gets
+/// only a faint fill, so it does not look active.
+fn paint_state(ui: &Ui, rect: egui::Rect, resp: &Response, selected: Option<bool>, enabled: bool) {
+    let visuals = ui.style().interact(resp);
+    let sel = &ui.visuals().selection;
+    if selected == Some(true) {
+        let fill = if enabled {
+            sel.bg_fill
+        } else {
+            sel.bg_fill.gamma_multiply(0.3)
+        };
+        let stroke = if enabled {
+            sel.stroke
+        } else {
+            egui::Stroke::NONE
+        };
+        ui.painter().rect(
+            rect,
+            visuals.corner_radius,
+            fill,
+            stroke,
+            egui::StrokeKind::Inside,
+        );
+    } else if resp.hovered() || resp.has_focus() {
+        ui.painter().rect(
+            rect,
+            visuals.corner_radius,
+            visuals.weak_bg_fill,
+            visuals.bg_stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
+/// Room between a step's icon and its title.
+const STEP_GAP: f32 = 3.0;
+
+/// The height of one line of `style`.
+fn line_height(ui: &Ui, style: egui::TextStyle) -> f32 {
+    ui.painter()
+        .layout_no_wrap(
+            "Ag".into(),
+            style.resolve(ui.style()),
+            egui::Color32::PLACEHOLDER,
+        )
+        .size()
+        .y
+}
+
+/// Where the top of a step's detail line sits in a step whose row is
+/// centred on `center_y` (as [`step_button`] draws it). The workspace
+/// tile puts its own bottom line there.
+pub fn step_detail_top(ui: &Ui, center_y: f32) -> f32 {
+    let title = line_height(ui, egui::TextStyle::Body);
+    let detail = line_height(ui, egui::TextStyle::Small);
+    let icon = metrics::ICON_BIG;
+    let block = icon + STEP_GAP + title + detail;
+    center_y - block / 2.0 + icon + STEP_GAP + title
+}
+
+/// Where the top of a group footer's text sits in a footer centred on
+/// `center_y` (as the group button draws it).
+pub fn footer_text_top(ui: &Ui, center_y: f32) -> f32 {
+    center_y - line_height(ui, egui::TextStyle::Small) / 2.0
+}
+
+/// A step of the Cut bar, as tall as the ribbon's tools row
+/// ([`ROW_HEIGHT`]) and drawn like a big ribbon button: the 24 pt icon in
+/// the colours of `pal`, under it `title` in the ribbon tabs' font, and
+/// under that `detail` in the small dim font (left out when `None`), so
+/// the title reads first. It is a tab named `name`; `selected` gets the
+/// selection fill. A dimmed one (`enabled` off) does nothing when clicked.
+/// `reserve` is a detail text whose width the step keeps, so a shorter
+/// passing line ("Simulating...") does not make the bar jump.
+#[allow(clippy::too_many_arguments)]
+pub fn step_button(
+    ui: &mut Ui,
+    icon: Icon,
+    pal: &icons::Palette,
+    title: &str,
+    detail: Option<&str>,
+    reserve: Option<&str>,
+    name: &str,
+    enabled: bool,
+    selected: bool,
+) -> Response {
+    const ICON: f32 = metrics::ICON_BIG;
+    ui.add_enabled_ui(enabled, |ui| {
+        let layout = |text: &str, style: egui::TextStyle| {
+            ui.painter().layout_no_wrap(
+                text.to_string(),
+                style.resolve(ui.style()),
+                egui::Color32::PLACEHOLDER,
+            )
+        };
+        let title_g = layout(title, egui::TextStyle::Body);
+        let detail_g = detail.map(|d| layout(d, egui::TextStyle::Small));
+        let reserve_w = reserve
+            .filter(|_| detail.is_some())
+            .map_or(0.0, |r| layout(r, egui::TextStyle::Small).size().x);
+        let text_w = detail_g
+            .as_ref()
+            .map_or(title_g.size().x, |d| d.size().x.max(title_g.size().x))
+            .max(reserve_w);
+        // A little more room than a big button: its selection fill frames
+        // the larger title.
+        let width = (text_w + 3.0 * BIG_PAD_X).max(BIG_MIN_WIDTH);
+        let (rect, resp) =
+            ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), egui::Sense::click());
+        let on = ui.is_enabled();
+        resp.widget_info(|| {
+            egui::WidgetInfo::selected(egui::accesskit::Role::Tab, on, selected, name)
+        });
+        if ui.is_rect_visible(rect) {
+            let visuals = ui.style().interact(&resp);
+            paint_state(ui, rect, &resp, Some(selected), on);
+            let gap = STEP_GAP;
+            let block =
+                ICON + gap + title_g.size().y + detail_g.as_ref().map_or(0.0, |d| d.size().y);
+            let top = rect.center().y - block / 2.0;
+            let icon_rect = egui::Rect::from_center_size(
+                egui::pos2(rect.center().x, top + ICON / 2.0),
+                egui::Vec2::splat(ICON),
+            );
+            // A disabled Ui fades what its painter draws.
+            image_with(ui, icon, ICON, pal).paint_at(ui, icon_rect);
+            let mut y = icon_rect.bottom() + gap;
+            let p = ui.painter();
+            let h = title_g.size().y;
+            p.galley(
+                egui::pos2(rect.center().x - title_g.size().x / 2.0, y),
+                title_g,
+                visuals.text_color(),
+            );
+            y += h;
+            if let Some(d) = detail_g {
+                let dim = if on {
+                    ui.visuals().weak_text_color()
+                } else {
+                    visuals.text_color()
+                };
+                p.galley(egui::pos2(rect.center().x - d.size().x / 2.0, y), d, dim);
+            }
+        }
+        resp
+    })
+    .inner
+}
+
+/// A compact switch ("Each object", "Keep aspect"): a 16 pt icon, with
+/// its label at its right when `show_label` is on. It is a checkbox named
+/// `name` with its state, so it reads as a switch to a screen reader.
+pub fn compact_switch(
+    ui: &mut Ui,
+    icon: Icon,
+    name: &str,
+    show_label: bool,
+    enabled: bool,
+    on: bool,
+) -> Response {
+    ui.add_enabled_ui(enabled, |ui| {
+        let font = egui::TextStyle::Small.resolve(ui.style());
+        let text = if show_label { name } else { "" };
+        let galley =
+            ui.painter()
+                .layout_no_wrap(text.to_string(), font, egui::Color32::PLACEHOLDER);
+        // An icon-only toggle is as narrow as its icon allows.
+        let pad = if show_label { 4.0 } else { 2.0 };
+        let width = if show_label {
+            pad + SMALL_ICON + pad + galley.size().x + pad + 2.0
+        } else {
+            SMALL_ICON + 2.0 * pad
+        };
+        let (rect, resp) =
+            ui.allocate_exact_size(egui::vec2(width, COMPACT_HEIGHT), egui::Sense::click());
+        let live = ui.is_enabled();
+        resp.widget_info(|| {
+            egui::WidgetInfo::selected(egui::accesskit::Role::CheckBox, live, on, name)
+        });
+        if ui.is_rect_visible(rect) {
+            let visuals = ui.style().interact(&resp);
+            paint_state(ui, rect, &resp, Some(on), live);
+            let icon_rect = egui::Rect::from_center_size(
+                egui::pos2(rect.left() + pad + SMALL_ICON / 2.0, rect.center().y),
+                egui::Vec2::splat(SMALL_ICON),
+            );
+            image(ui, icon, SMALL_ICON).paint_at(ui, icon_rect);
+            ui.painter().galley(
+                egui::pos2(
+                    icon_rect.right() + pad,
+                    rect.center().y - galley.size().y / 2.0,
+                ),
+                galley,
+                visuals.text_color(),
+            );
+        }
+        resp
+    })
+    .inner
+}
+
+/// A small icon button for a pinned direction. Its accessible name is
+/// `name`.
+fn small_button(ui: &mut Ui, icon: Icon, name: &str, enabled: bool) -> Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding = SMALL_PADDING;
+        ui.add_enabled(
+            enabled,
+            egui::Button::image(image(ui, icon, SMALL_ICON).alt_text(name)),
+        )
+    })
+    .inner
+}
+
+/// A wide button: icon and text, or only the icon (`Mode::Icons`, the
+/// text stays its accessible name). `selected` makes it a toggle.
+pub fn wide_button(
+    ui: &mut Ui,
+    mode: Mode,
+    icon: Icon,
+    text: &str,
+    enabled: bool,
+    selected: Option<bool>,
+) -> Response {
+    let img = image(ui, icon, ICON_SIZE);
+    let mut b = match mode {
+        Mode::Icons | Mode::Collapsed => egui::Button::image(img.alt_text(text)),
+        Mode::Full | Mode::List => egui::Button::image_and_text(img, text),
+    };
+    match selected {
+        // A dimmed switch that is on must not look like an active one:
+        // only a faint fill says it is on.
+        Some(true) if !enabled => {
+            b = b.fill(ui.visuals().selection.bg_fill.gamma_multiply(0.3));
+        }
+        Some(on) => b = b.selected(on),
+        None => {}
+    }
+    ui.add_enabled(enabled, b)
+}
+
+/// The width of a group's tile: the same numbers [`tile`] sizes itself
+/// with, so the collapsing ribbon can count on it before it draws one.
+pub fn tile_width(ui: &Ui, title: &str) -> f32 {
+    let font = egui::TextStyle::Small.resolve(ui.style());
+    let galley = ui
+        .painter()
+        .layout_no_wrap(title.to_string(), font, egui::Color32::PLACEHOLDER);
+    (galley.size().x + 2.0 * BIG_PAD_X).max(BIG_MIN_WIDTH)
+}
+
+/// The id of a group's button and tile: one id, so the list stays open
+/// when the group switches between the two.
+fn group_id(group: GroupId) -> Id {
+    Id::unique(("flatcraft-group", group))
+}
+
+/// A group's tile: its icon, title and a small chevron, [`ROW_HEIGHT`]
+/// tall and [`tile_width`] wide.
+fn tile(ui: &mut Ui, def: &GroupDef) -> Response {
+    const ICON: f32 = metrics::ICON_BIG;
+    let width = tile_width(ui, def.title);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), egui::Sense::hover());
+    let resp = ui.interact(rect, group_id(def.id), egui::Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::accesskit::Role::Button, true, def.title));
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact(&resp);
+        if resp.hovered() || resp.has_focus() {
+            ui.painter().rect(
+                rect,
+                visuals.corner_radius,
+                visuals.weak_bg_fill,
+                visuals.bg_stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+        let font = egui::TextStyle::Small.resolve(ui.style());
+        let galley = ui
+            .painter()
+            .layout_no_wrap(def.title.to_string(), font, visuals.text_color());
+        // Icon, title and chevron, in the middle of the row.
+        let (gap, chevron) = (3.0, 12.0);
+        let block = ICON + gap + galley.size().y + chevron;
+        let top = rect.center().y - block / 2.0;
+        let icon_rect = egui::Rect::from_center_size(
+            egui::pos2(rect.center().x, top + ICON / 2.0),
+            egui::Vec2::splat(ICON),
+        );
+        image(ui, def.icon, ICON).paint_at(ui, icon_rect);
+        let text_top = icon_rect.bottom() + gap;
+        ui.painter().galley(
+            egui::pos2(rect.center().x - galley.size().x / 2.0, text_top),
+            galley.clone(),
+            visuals.text_color(),
+        );
+        let c = egui::Rect::from_center_size(
+            egui::pos2(rect.center().x, text_top + galley.size().y + chevron / 2.0),
+            egui::Vec2::splat(chevron),
+        );
+        image(ui, Icon::ChevronDown, chevron).paint_at(ui, c);
+    }
+    resp
+}
+
+/// The group button under the pinned buttons: the title and a chevron,
+/// `width` wide (at least as wide as its text). A quiet strip at the
+/// group's foot on the group's own background; hovered, a light fill
+/// shows it is a button.
+fn group_button(ui: &mut Ui, def: &GroupDef, width: f32) -> Response {
+    let font = egui::TextStyle::Small.resolve(ui.style());
+    let galley =
+        ui.painter()
+            .layout_no_wrap(def.title.to_string(), font, egui::Color32::PLACEHOLDER);
+    let chevron = metrics::ICON_SMALL;
+    let width = width.max(galley.size().x + chevron + 2.0 * BIG_PAD_X);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, GROUP_FOOTER), egui::Sense::hover());
+    let resp = ui.interact(rect, group_id(def.id), egui::Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::accesskit::Role::Button, true, def.title));
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact(&resp);
+        let lit = resp.hovered() || resp.has_focus();
+        if lit {
+            ui.painter()
+                .rect_filled(rect, visuals.corner_radius, visuals.weak_bg_fill);
+        }
+        // Quiet like the Position and size title until hovered.
+        let colour = if lit {
+            visuals.text_color()
+        } else {
+            ui.visuals().weak_text_color()
+        };
+        let text_w = galley.size().x + 2.0 + chevron;
+        let left = rect.center().x - text_w / 2.0;
+        let font = egui::TextStyle::Small.resolve(ui.style());
+        let galley = ui
+            .painter()
+            .layout_no_wrap(def.title.to_string(), font, colour);
+        ui.painter().galley(
+            egui::pos2(left, rect.center().y - galley.size().y / 2.0),
+            galley.clone(),
+            colour,
+        );
+        let c = egui::Rect::from_center_size(
+            egui::pos2(
+                left + galley.size().x + 2.0 + chevron / 2.0,
+                rect.center().y,
+            ),
+            egui::Vec2::splat(chevron),
+        );
+        image(ui, Icon::ChevronDown, chevron).paint_at(ui, c);
+    }
+    resp
+}
+
+// ---------------------------------------------------------------- group
+
+/// What a group adds to the ribbon besides its actions.
+#[derive(Clone, Copy, Default)]
+pub struct Extras {
+    /// Settings drawn after the pinned buttons ("Each object").
+    pub inline: Option<fn(&mut Ui, Mode, &mut Cx)>,
+    /// The same settings at the top of the list, while the group is a
+    /// tile and does not show them.
+    pub in_list: Option<fn(&mut Ui, &mut Cx)>,
+}
+
+/// Draws a group in `mode`: its pinned actions, its inline settings and
+/// its group button, or only its tile (collapsed, or nothing pinned).
+pub fn show(ui: &mut Ui, mode: Mode, group: GroupId, extras: Extras, cx: &mut Cx) {
+    let def = group.def();
+    let pins = super::tools::pinned(cx.snap, group);
+    let collapsed = mode == Mode::Collapsed || pins.is_empty();
+    let resp = if collapsed {
+        tile(ui, def)
+    } else {
+        let inner = ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = GROUP_GAP;
+            let top = pins_row(ui, |ui| {
+                pinned_buttons(ui, mode, &pins, cx);
+                if let Some(inline) = extras.inline {
+                    inline(ui, mode, cx);
+                }
+            });
+            group_button(ui, def, top.width())
+        });
+        inner.inner
+    };
+    card(&resp, def.title, def.description, None, false);
+    // Search can open the list (`reveal`).
+    let open = if cx.st.open_group == Some(group) {
+        cx.st.open_group = None;
+        Some(egui::SetOpenCommand::Bool(true))
+    } else {
+        resp.clicked().then_some(egui::SetOpenCommand::Toggle)
+    };
+    let config = egui::containers::menu::MenuConfig::new()
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+    // The list stays open while pinning, so several actions can be pinned
+    // in a row; a click on a row runs it and closes the list.
+    egui::Popup::menu(&resp)
+        .style(super::theme::tight_menu)
+        .open_memory(open)
+        .close_behavior(config.close_behavior)
+        .info(
+            egui::UiStackInfo::new(egui::UiKind::Menu)
+                .with_tag_value(egui::containers::menu::MenuConfig::MENU_CONFIG_TAG, config),
+        )
+        .show(|ui| {
+            if collapsed && let Some(f) = extras.in_list {
+                f(ui, cx);
+                ui.separator();
+            }
+            list(ui, group, cx);
+        });
+}
+
+/// A row [`BIG_HEIGHT`] tall whose widgets are centred in it, from the
+/// left. Returns the rect it used.
+pub fn pins_row(ui: &mut Ui, add: impl FnOnce(&mut Ui)) -> egui::Rect {
+    let width = ui.available_width();
+    let r = ui.allocate_ui_with_layout(
+        egui::vec2(width, BIG_HEIGHT),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_height(BIG_HEIGHT);
+            add(ui);
+        },
+    );
+    r.response.rect
+}
+
+/// The pinned actions: big buttons, then the small ones in one row, or
+/// two when there are more than three. Every action of every tab looks the
+/// same way, so a group's pins fill the row's height.
+fn pinned_buttons(ui: &mut Ui, mode: Mode, pins: &[&'static Tool], cx: &mut Cx) {
+    // Auto arrange runs now and has a card: one split button, wherever
+    // either of the two is pinned.
+    let mut split_drawn = false;
+    for t in pins.iter().filter(|t| t.style == Style::Big) {
+        if matches!(t.act, Act::AutoArrange | Act::AutoArrangePanel) {
+            if !split_drawn {
+                split_button(ui, mode, cx);
+                split_drawn = true;
+            }
+            continue;
+        }
+        let on = t.blocked(cx.snap).is_none();
+        let sel = t.selected(cx.st, *cx.show_debug);
+        let name = t.button_name();
+        let label = t.ribbon_label();
+        let show_label = mode == Mode::Full && !label.is_empty();
+        let r = big_button(ui, t.icon, label, &name, show_label, on, sel);
+        tool_card(&r, t, cx.snap, false);
+        if r.clicked() {
+            t.run(cx.snap, cx.st, cx.show_debug, cx.actions);
+        }
+    }
+    let small: Vec<&Tool> = pins
+        .iter()
+        .copied()
+        .filter(|t| t.style == Style::Small)
+        .collect();
+    if small.is_empty() {
+        return;
+    }
+    let rows = if small.len() > 3 { 2 } else { 1 };
+    let per_row = small.len().div_ceil(rows);
+    // The rows sit in the middle of the row of pins, like the big buttons.
+    const GAP: f32 = 4.0;
+    let row_height = SMALL_ICON + 2.0 * SMALL_PADDING.y;
+    let height = rows as f32 * row_height + (rows - 1) as f32 * GAP;
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = GAP;
+        ui.add_space(((BIG_HEIGHT - height) / 2.0).max(0.0));
+        for chunk in small.chunks(per_row) {
+            ui.horizontal(|ui| {
+                for t in chunk {
+                    let on = t.blocked(cx.snap).is_none();
+                    let r = small_button(ui, t.icon, &t.button_name(), on);
+                    tool_card(&r, t, cx.snap, false);
+                    if r.clicked() {
+                        t.run(cx.snap, cx.st, cx.show_debug, cx.actions);
+                    }
+                }
+            });
+        }
+    });
+}
+
+/// The split button of Auto arrange: the main part runs it at once with
+/// the stored gap, the chevron part on its right opens its tool card.
+/// Both keep the names, cards and dimmed reasons of their actions.
+fn split_button(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
+    let main = super::tools::by_act(Act::AutoArrange);
+    let more = super::tools::by_act(Act::AutoArrangePanel);
+    // The two parts touch: the main part is laid out without the button
+    // gap after it, the chevron part with it.
+    let gap = ui.spacing().item_spacing.x;
+    ui.spacing_mut().item_spacing.x = 0.0;
+    let on = main.blocked(cx.snap).is_none();
+    let r = big_button(
+        ui,
+        main.icon,
+        main.ribbon_label(),
+        &main.button_name(),
+        mode == Mode::Full,
+        on,
+        None,
+    );
+    ui.spacing_mut().item_spacing.x = gap;
+    tool_card(&r, main, cx.snap, false);
+    if r.clicked() {
+        main.run(cx.snap, cx.st, cx.show_debug, cx.actions);
+    }
+    let on = more.blocked(cx.snap).is_none();
+    let r = chevron_part(ui, &more.button_name(), on);
+    // A hairline between the two parts, so they read as one button with
+    // two halves.
+    let line = r.rect.shrink2(egui::vec2(0.0, metrics::SPACE_8));
+    let border = super::theme::Tokens::of(ui.visuals()).border;
+    ui.painter().vline(
+        line.left(),
+        line.y_range(),
+        egui::Stroke::new(metrics::HAIRLINE, border),
+    );
+    tool_card(&r, more, cx.snap, false);
+    if r.clicked() {
+        more.run(cx.snap, cx.st, cx.show_debug, cx.actions);
+    }
+}
+
+/// The narrow chevron part of a split button, [`BIG_HEIGHT`] tall.
+fn chevron_part(ui: &mut Ui, name: &str, enabled: bool) -> Response {
+    ui.add_enabled_ui(enabled, |ui| {
+        let (rect, resp) = ui.allocate_exact_size(
+            egui::vec2(metrics::SPLIT_CHEVRON, BIG_HEIGHT),
+            egui::Sense::click(),
+        );
+        let on = ui.is_enabled();
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::accesskit::Role::Button, on, name));
+        if ui.is_rect_visible(rect) {
+            paint_state(ui, rect, &resp, None, on);
+            let size = metrics::ICON_SMALL;
+            let at = egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(size));
+            image(ui, Icon::ChevronDown, size).paint_at(ui, at);
+        }
+        resp
+    })
+    .inner
+}
+
+/// The heading of a section of the list. Align also asks what to line up
+/// with; switching it switches the rows under it at once.
+fn heading(ui: &mut Ui, section: Section, st: &mut PrepareState) {
+    ui.add_space(metrics::SPACE_2);
+    ui.horizontal(|ui| {
+        ui.add(image(ui, section.icon(), ICON_SIZE));
+        ui.label(RichText::new(section.title()).strong());
+    });
+    if section == Section::Align {
+        ui.indent("flatcraft-align-to", |ui| {
+            let to_area = &mut st.fields.align_to_area;
+            ui.radio_value(to_area, false, AlignTo::Selection.label());
+            ui.radio_value(to_area, true, AlignTo::Area.label());
+        });
+    }
+}
+
+/// Width of a column of a list.
+const COLUMN: f32 = 270.0;
+
+/// The rows of a group's list. Each row runs its action; hovering it shows
+/// its card beside the list and its pin toggle. Align and Distribute get a
+/// column of their own and the other rows a second one, so a long list
+/// fits a small window; a list taller than the window scrolls.
+pub fn list(ui: &mut Ui, group: GroupId, cx: &mut Cx) {
+    let to = AlignTo::of(cx.st.fields.align_to_area);
+    // Rows with an option show the ones of the option picked above.
+    let rows: Vec<&'static Tool> = group
+        .tools()
+        .filter(|t| t.option().is_none_or(|o| o == to))
+        .collect();
+    // Align and Distribute, the longest sections, take a column of their
+    // own, first as in the table; the other rows go into the second.
+    let lines_up = |t: &Tool| matches!(t.section, Some(Section::Align | Section::Distribute));
+    let (mut left, mut right): (Vec<&'static Tool>, Vec<&'static Tool>) =
+        rows.iter().copied().partition(|t| lines_up(t));
+    if left.is_empty() {
+        std::mem::swap(&mut left, &mut right);
+    }
+    let room = ui.ctx().content_rect().bottom() - ui.next_widget_position().y - 48.0;
+    egui::ScrollArea::vertical()
+        .max_height(room.max(120.0))
+        .show(ui, |ui| {
+            ui.horizontal_top(|ui| {
+                column(ui, &left, cx);
+                if !right.is_empty() {
+                    ui.separator();
+                    column(ui, &right, cx);
+                }
+            });
+        });
+    ui.separator();
+    ui.label(RichText::new(FOOTER).weak().small());
+}
+
+/// One column of a list, with the section headings.
+fn column(ui: &mut Ui, rows: &[&'static Tool], cx: &mut Cx) {
+    ui.vertical(|ui| {
+        ui.set_width(COLUMN);
+        let mut last = None;
+        for t in rows {
+            if t.section != last
+                && let Some(s) = t.section
+            {
+                heading(ui, s, cx.st);
+            }
+            last = t.section;
+            row(ui, t, cx);
+        }
+    });
+}
+
+/// One row: the action's button (dimmed when it cannot run now) and its
+/// pin toggle.
+fn row(ui: &mut Ui, t: &'static Tool, cx: &mut Cx) {
+    let row_id = ui.make_persistent_id(("flatcraft-tool-row", t.id));
+    let last: Option<egui::Rect> = ui.data(|d| d.get_temp(row_id));
+    let hovered = last.is_some_and(|r| ui.rect_contains_pointer(r));
+    // The row or its pin toggle had the keyboard focus last frame: the
+    // toggle stays, so Tab reaches it.
+    let focus_id = row_id.with("focus");
+    let focused: bool = ui.data(|d| d.get_temp(focus_id)).unwrap_or(false);
+    // The Auto arrange split button shows when either of its two ids is
+    // pinned (old pin files may hold the card's id), so its row counts both.
+    let mut pin_ids: Vec<&'static str> = vec![t.id];
+    if t.act == Act::AutoArrange {
+        pin_ids.push(super::tools::by_act(Act::AutoArrangePanel).id);
+    }
+    let is_pinned = cx
+        .snap
+        .ribbon_pins
+        .iter()
+        .any(|p| pin_ids.contains(&p.as_str()));
+    let indent = t.section.is_some();
+    let mut has_focus = false;
+    let row = ui.horizontal(|ui| {
+        if indent {
+            ui.add_space(ICON_SIZE);
+        }
+        let main_width = ui.available_width() - ICON_SIZE - 3.0 * ui.spacing().item_spacing.x;
+        let ids: Vec<u64> = cx.snap.selection.iter().copied().collect();
+        let title = t.live_title(cx.snap, &ids);
+        let mut b = egui::Button::image_and_text(image(ui, t.icon, ICON_SIZE), title)
+            .min_size(egui::vec2(main_width, 0.0));
+        // The shortcut at the right; without one, an empty right part keeps
+        // the icon and title at the left.
+        b = match t.shortcut() {
+            Some(key) => b.shortcut_text(help::hint(key)),
+            None => b.right_text(""),
+        };
+        if let Some(on) = t.selected(cx.st, *cx.show_debug) {
+            b = b.selected(on);
+        }
+        let r = ui.add_enabled(t.blocked(cx.snap).is_none(), b);
+        set_name(ui, &r, &t.row_name());
+        tool_card(&r, t, cx.snap, true);
+        if r.clicked() {
+            t.run(cx.snap, cx.st, cx.show_debug, cx.actions);
+            ui.close();
+        }
+        has_focus = r.has_focus();
+        // Auto arrange's card is the chevron of the Auto arrange button:
+        // it has no button of its own to pin.
+        let pinnable = t.act != Act::AutoArrangePanel;
+        if pinnable && (hovered || is_pinned || focused || has_focus) {
+            let (icon, tip) = match (is_pinned, hovered) {
+                (true, true) => (Icon::PinOff, UNPIN_TIP),
+                (true, false) => (Icon::Pin, UNPIN_TIP),
+                (false, _) => (Icon::Pin, PIN_TIP),
+            };
+            let r = super::icon_button_hint(ui, icon, &pin_name(t, is_pinned), true, tip);
+            has_focus |= r.has_focus();
+            if r.clicked() {
+                // Pinning adds the action's own id; unpinning removes every
+                // id that shows its button.
+                let ids = if is_pinned {
+                    &pin_ids[..]
+                } else {
+                    &pin_ids[..1]
+                };
+                for &id in ids {
+                    cx.actions.push(Action::SetPin {
+                        id,
+                        pinned: !is_pinned,
+                    });
+                }
+            }
+        }
+    });
+    ui.data_mut(|d| {
+        d.insert_temp(row_id, row.response.rect);
+        d.insert_temp(focus_id, has_focus);
+    });
+}

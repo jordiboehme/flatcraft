@@ -87,6 +87,17 @@ mod svg_path {
     }
 }
 
+/// The direction a closed ring is cut in, as seen on the canvas (from above,
+/// y down). Counter-clockwise is a negative signed shoelace area in mat
+/// coordinates, clockwise a positive one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RingDirection {
+    #[default]
+    Ccw,
+    Cw,
+}
+
 /// True if `path` draws anything: it has at least one segment. A path of
 /// lone moves has none, and kurbo gives it an empty box at (0, 0).
 pub fn has_segments(path: &BezPath) -> bool {
@@ -107,6 +118,14 @@ pub fn bounds(paths: &[CutPath]) -> Option<Rect> {
 mod tests {
     use super::*;
     use kurbo::Point;
+
+    #[test]
+    fn ring_direction_defaults_to_ccw_and_uses_snake_case() {
+        assert_eq!(RingDirection::default(), RingDirection::Ccw);
+        assert_eq!(serde_json::to_string(&RingDirection::Cw).unwrap(), "\"cw\"");
+        let d: RingDirection = serde_json::from_str("\"ccw\"").unwrap();
+        assert_eq!(d, RingDirection::Ccw);
+    }
 
     fn square(x: f64, y: f64, s: f64) -> CutPath {
         let mut path = BezPath::new();

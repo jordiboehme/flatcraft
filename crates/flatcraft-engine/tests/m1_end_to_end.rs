@@ -118,6 +118,8 @@ fn m1_end_to_end() {
     let size = r["size_mm"].as_array().unwrap();
     assert!((size[0].as_f64().unwrap() - 20.32).abs() < 1e-6, "{r}");
 
+    // The import selected the ring; with nothing selected all are packed.
+    run(&mut s, "object.select", json!({ "ids": [] }));
     let r = run(&mut s, "arrange.auto", json!({}));
     let mut placed: Vec<u64> = r["placed"]
         .as_array()

@@ -28,9 +28,8 @@ fn run_undo(s: &mut Session, p: HistoryParams, _: Origin) -> Result<Value, Comma
         .undo
         .undo(current)
         .ok_or_else(|| CommandError::Refused("there is nothing to undo".into()))?;
-    st.document = previous;
+    st.set_document(previous);
     st.dirty = true;
-    st.touch();
     st.prune_selection();
     Ok(json!({ "can_undo": st.undo.can_undo(), "can_redo": st.undo.can_redo() }))
 }
@@ -40,6 +39,7 @@ command!(
     id: "edit.undo",
     title: "Undo",
     mutates: false,
+    session: true,
     params: HistoryParams,
     run: run_undo,
     description: "Undoes the last change to the active document, or to the one with doc_id (every object, arrange and job command is one step). Refused when there is nothing to undo. Returns {can_undo, can_redo}.",
@@ -52,9 +52,8 @@ fn run_redo(s: &mut Session, p: HistoryParams, _: Origin) -> Result<Value, Comma
         .undo
         .redo(current)
         .ok_or_else(|| CommandError::Refused("there is nothing to redo".into()))?;
-    st.document = next;
+    st.set_document(next);
     st.dirty = true;
-    st.touch();
     st.prune_selection();
     Ok(json!({ "can_undo": st.undo.can_undo(), "can_redo": st.undo.can_redo() }))
 }
@@ -64,6 +63,7 @@ command!(
     id: "edit.redo",
     title: "Redo",
     mutates: false,
+    session: true,
     params: HistoryParams,
     run: run_redo,
     description: "Redoes the last undone change of the active document, or of the one with doc_id. Refused when there is nothing to redo. Returns {can_undo, can_redo}.",

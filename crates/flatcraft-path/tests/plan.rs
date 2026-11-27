@@ -1,6 +1,8 @@
 use flatcraft_core::document::ObjectId;
 use flatcraft_path::clean::length;
-use flatcraft_path::{PathRef, PipelineSettings, PlacedPath, PlanError, SettingsField, plan};
+use flatcraft_path::{
+    KeepSide, PathRef, PipelineSettings, PlacedPath, PlanError, SettingsField, plan,
+};
 use kurbo::{BezPath, Circle, Point, Rect, Shape};
 use proptest::prelude::*;
 
@@ -17,13 +19,8 @@ fn point_at(ring: &[Point], mut d: f64) -> Point {
 
 fn settings() -> PipelineSettings {
     PipelineSettings {
-        cutting_area: Rect::new(5.0, 5.0, 295.0, 395.0),
-        flatten_tolerance_mm: 0.01,
-        join_tolerance_mm: 0.01,
         overcut_mm: 0.0,
-        passes: 1,
-        reverse_alternate_passes: false,
-        home: Point::ZERO,
+        ..PipelineSettings::with_defaults(Rect::new(5.0, 5.0, 295.0, 395.0), Point::ZERO)
     }
 }
 
@@ -171,7 +168,11 @@ fn overcut_extends_closed_square_in_plan() {
     let t = &out.toolpaths[0];
     assert!(t.closed);
     assert!((length(&t.points) - 40.5).abs() < 1e-9);
-    assert_eq!(*t.points.last().unwrap(), Point::new(10.5, 10.0));
+    // Counter-clockwise from the corner nearest the home: down the left
+    // side first, so the overcut runs down from (10, 10) too.
+    assert_eq!(t.points[0], Point::new(10.0, 10.0));
+    assert_eq!(t.points[1], Point::new(10.0, 20.0));
+    assert_eq!(*t.points.last().unwrap(), Point::new(10.0, 10.5));
     assert!((out.cut_mm - 40.5).abs() < 1e-9);
 }
 
@@ -196,11 +197,106 @@ fn travel_and_cut_totals() {
         placed(2, rect_path(40.0, 10.0, 10.0, 10.0)),
     ];
     let out = plan(&input, &s).unwrap();
-    assert_eq!(out.toolpaths.len(), 4);
+    // Each square is one toolpath with two chained laps.
+    assert_eq!(out.toolpaths.len(), 2);
+    assert!(out.toolpaths.iter().all(|t| t.laps == 2 && t.pass == 1));
     assert!((out.cut_mm - 160.0).abs() < 1e-9);
-    // origin -> (10,10); (10,10) -> (10,10); (10,10) -> (40,10); (40,10) -> (40,10)
-    let expected = Point::ZERO.distance(Point::new(10.0, 10.0)) + 30.0;
+    // The entry DP enters the first square at (20,20), so it ends heading
+    // +x and the second square, entered at (40,20), needs no blade turn:
+    // origin -> (20,20); (20,20) -> (40,20)
+    assert_eq!(out.toolpaths[0].points[0], Point::new(20.0, 20.0));
+    assert_eq!(out.toolpaths[1].points[0], Point::new(40.0, 20.0));
+    let expected = Point::ZERO.distance(Point::new(20.0, 20.0)) + 20.0;
     assert!((out.travel_mm - expected).abs() < 1e-9, "{}", out.travel_mm);
+}
+
+#[test]
+fn closed_passes_chain_in_the_plan() {
+    let mut s = settings();
+    s.overcut_mm = 0.5;
+    s.passes = 3;
+    let out = plan(&[placed(1, rect_path(10.0, 10.0, 10.0, 10.0))], &s).unwrap();
+    assert_eq!(out.toolpaths.len(), 1);
+    let t = &out.toolpaths[0];
+    assert_eq!((t.pass, t.laps), (1, 3));
+    assert!((out.cut_mm - 120.5).abs() < 1e-9, "{}", out.cut_mm);
+    assert!((length(t.lap()) - 40.0).abs() < 1e-9);
+}
+
+#[test]
+fn unchained_closed_passes_are_lifted_laps() {
+    // Ruling F6: with `chain_closed_passes` off, closed passes are separate
+    // lifted laps, each with its own overcut, as in M1.
+    let mut s = settings();
+    s.overcut_mm = 0.5;
+    s.passes = 3;
+    s.chain_closed_passes = false;
+    let out = plan(&[placed(1, rect_path(10.0, 10.0, 10.0, 10.0))], &s).unwrap();
+    assert_eq!(out.toolpaths.len(), 3);
+    assert_eq!(
+        out.toolpaths
+            .iter()
+            .map(|t| (t.pass, t.laps))
+            .collect::<Vec<_>>(),
+        [(1, 1), (2, 1), (3, 1)]
+    );
+    for t in &out.toolpaths {
+        assert!((length(&t.points) - 40.5).abs() < 1e-9);
+        assert_eq!(t.points[0], out.toolpaths[0].points[0]);
+    }
+    assert!((out.cut_mm - 121.5).abs() < 1e-9, "{}", out.cut_mm);
+}
+
+#[test]
+fn reversed_even_passes_exit_where_the_last_pass_really_ends() {
+    // The order predicts the exit of a ring cut with an even number of
+    // reversed passes: the entry, coming back along the first edge. This
+    // ties the prediction to the planned points, so moving the overcut in
+    // `passes` breaks it.
+    let mut s = settings();
+    s.overcut_mm = 0.5;
+    s.passes = 2;
+    s.reverse_alternate_passes = true;
+    let input = [
+        placed(1, rect_path(10.0, 10.0, 10.0, 10.0)),
+        placed(2, rect_path(40.0, 10.0, 10.0, 10.0)),
+    ];
+    let out = plan(&input, &s).unwrap();
+    assert_eq!(out.toolpaths.len(), 4);
+    let (first, last) = (&out.toolpaths[0], &out.toolpaths[1]);
+    assert_eq!(last.source, first.source);
+    assert_eq!((first.pass, last.pass), (1, 2));
+    let p0 = first.points[0];
+    let n = last.points.len();
+    let end = last.points[n - 1];
+    // The last pass ends at the entry P0, not at the overcut end.
+    assert_eq!(end, p0);
+    assert_ne!(end, *first.points.last().unwrap());
+    // The predicted exit is that real end, with the real last heading.
+    let unit = flatcraft_path::order::Unit::new(first, &s);
+    let entry = unit
+        .candidates
+        .iter()
+        .find(|e| e.at == p0)
+        .expect("the entry is a candidate");
+    assert_eq!(entry.exit, end);
+    let real = (end - last.points[n - 2]).normalize();
+    assert!(
+        (entry.exit_heading - real).hypot() < 1e-12,
+        "{:?} != {real:?}",
+        entry.exit_heading
+    );
+    // The travel to the next ring starts at that real end.
+    let next = &out.toolpaths[2];
+    assert_ne!(next.source, first.source);
+    let legs: Vec<f64> = out
+        .toolpaths
+        .windows(2)
+        .map(|w| w[0].points.last().unwrap().distance(w[1].points[0]))
+        .collect();
+    assert_eq!(legs[1], p0.distance(next.points[0]));
+    let travel = s.home.distance(p0) + legs.iter().sum::<f64>();
+    assert!((out.travel_mm - travel).abs() < 1e-9, "{}", out.travel_mm);
 }
 
 #[test]
@@ -306,7 +402,17 @@ fn zero_length_ring_is_dropped() {
     p.line_to((10.0005, 10.0));
     p.line_to((10.0, 10.0005));
     p.close_path();
-    assert_eq!(plan(&[placed(1, p)], &settings()), Err(PlanError::Empty));
+    assert_eq!(
+        plan(&[placed(1, p.clone())], &settings()),
+        Err(PlanError::TooShort {
+            dropped: 1,
+            min_cut_mm: 0.025
+        })
+    );
+    // With no shortest cut there is nothing to be shorter than.
+    let mut s = settings();
+    s.min_cut_mm = 0.0;
+    assert_eq!(plan(&[placed(1, p)], &s), Err(PlanError::Empty));
 }
 
 #[test]
@@ -440,7 +546,10 @@ fn overcut_larger_than_the_ring_is_one_lap() {
     let t = &out.toolpaths[0];
     assert!(t.closed);
     assert!((length(&t.points) - 2.0 * perimeter).abs() < 1e-6);
-    assert!(t.points.last().unwrap().distance(ring[0]) < 1e-9);
+    // The order may start the ring at another corner: one full lap of
+    // overcut ends where the cut started.
+    assert!(ring.contains(&t.points[0]));
+    assert!(t.points.last().unwrap().distance(t.points[0]) < 1e-9);
 }
 
 proptest! {
@@ -467,7 +576,6 @@ proptest! {
         path.close_path();
         let mut ring = pts.clone();
         ring.push(pts[0]);
-        let unmerged = ring.clone();
         // overcut up to 2.5x the first edge, so it often crosses a corner,
         // but never above the pipeline's limit (it refuses larger ones)
         let overcut = (overcut_factor * ring[0].distance(ring[1]))
@@ -483,15 +591,28 @@ proptest! {
         prop_assert_eq!(out.toolpaths.len(), 1);
         let t = &out.toolpaths[0];
         prop_assert!(t.closed);
-        prop_assert_eq!(t.points[0], ring[0]);
+        // The order turns the ring counter-clockwise and may start it at
+        // any source vertex, so the expectations follow its own lap.
+        let lap = t.lap();
+        prop_assert_eq!(lap.first(), lap.last());
+        prop_assert!(flatcraft_path::containment::signed_area(lap) < 0.0);
+        prop_assert!(pts.contains(&t.points[0]));
+        prop_assert!((length(lap) - perimeter).abs() < 1e-9);
         // the overcut is capped at one lap of the ring, and the generator can
         // ask for more than that on a small polygon
         prop_assert!(length(&t.points) >= perimeter + overcut.min(perimeter) - 1e-6);
-        let expect = point_at(&ring, overcut);
+        let expect = point_at(lap, overcut);
         prop_assert!(t.points.last().unwrap().distance(expect) < 1e-9);
-        // against the unmerged source ring
-        prop_assert_eq!(t.points[0], pts[0]);
-        let expect_src = point_at(&unmerged, overcut);
+        // against the unmerged source ring, in the same direction and from
+        // the same start
+        let mut src = pts.clone();
+        if flatcraft_path::containment::signed_area(&src) > 0.0 {
+            src[1..].reverse();
+        }
+        let at = src.iter().position(|p| *p == t.points[0]).unwrap();
+        src.rotate_left(at);
+        src.push(src[0]);
+        let expect_src = point_at(&src, overcut);
         prop_assert!(t.points.last().unwrap().distance(expect_src) <= 2.0 * 0.001);
     }
 
@@ -561,4 +682,398 @@ fn the_first_path_is_the_one_nearest_the_home() {
     )
     .unwrap();
     assert_eq!(out.toolpaths[0].source.object, ObjectId(2));
+}
+
+#[test]
+fn lap_is_the_first_ring_without_overcut_in_every_pass() {
+    let mut s = settings();
+    s.overcut_mm = 0.5;
+    for (passes, reverse) in [1, 2, 3].into_iter().flat_map(|n| [(n, false), (n, true)]) {
+        s.passes = passes;
+        s.reverse_alternate_passes = reverse;
+        let input = [
+            placed(1, rect_path(10.0, 10.0, 10.0, 10.0)),
+            placed(2, Circle::new((60.0, 60.0), 5.0).to_path(0.1)),
+        ];
+        let out = plan(&input, &s).unwrap();
+        // Without reverse each ring is one toolpath of chained laps.
+        let per_ring = if reverse { passes } else { 1 };
+        assert_eq!(out.toolpaths.len(), 2 * per_ring as usize);
+        for t in &out.toolpaths {
+            let lap = t.lap();
+            assert_eq!(
+                lap.first(),
+                lap.last(),
+                "reverse {reverse}, pass {}",
+                t.pass
+            );
+            assert_eq!(t.laps, passes / per_ring);
+            // the ring is one lap of the toolpath without the 0.5 mm overcut
+            assert!(
+                (f64::from(t.laps) * length(lap) - (length(&t.points) - 0.5)).abs() < 1e-9,
+                "reverse {reverse}, pass {}",
+                t.pass
+            );
+        }
+        let square = &out.toolpaths[0];
+        assert_eq!(square.lap().len(), 5);
+    }
+}
+
+#[test]
+fn lap_of_an_open_path_is_the_whole_path() {
+    let mut p = BezPath::new();
+    p.move_to((10.0, 10.0));
+    p.line_to((20.0, 10.0));
+    p.line_to((20.0, 30.0));
+    let mut s = settings();
+    s.passes = 2;
+    s.reverse_alternate_passes = true;
+    let out = plan(&[placed(1, p)], &s).unwrap();
+    for t in &out.toolpaths {
+        assert_eq!(t.lap(), &t.points[..]);
+    }
+}
+
+/// Structural: the default run restates `points` with `seg = [WASTE_SEG, 0, 1, ..]`.
+#[test]
+fn default_run_is_the_points_with_their_segments() {
+    let out = plan(&[placed(1, rect_path(10.0, 10.0, 10.0, 10.0))], &settings()).unwrap();
+    let t = &out.toolpaths[0];
+    assert_eq!(t.axis, None);
+    let runs = t.runs();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].points, t.points);
+    assert_eq!(
+        runs[0].seg,
+        vec![flatcraft_path::WASTE_SEG, 0, 1, 2, 3],
+        "moving to points[j] executes segment j - 1"
+    );
+    assert_eq!(out.compensation, flatcraft_path::AppliedCompensation::Tip);
+    assert_eq!(
+        (t.laps, t.keep, t.kind),
+        (
+            1,
+            // A lone closed ring is a piece (Ruling M2-P13).
+            flatcraft_path::KeepSide::Inside,
+            flatcraft_path::ToolpathKind::Cut
+        )
+    );
+}
+
+/// Structural: `runs()` returns explicit axis runs unchanged.
+#[test]
+fn explicit_axis_runs_are_returned_as_they_are() {
+    let mut out = plan(&[placed(1, rect_path(10.0, 10.0, 10.0, 10.0))], &settings()).unwrap();
+    let t = &mut out.toolpaths[0];
+    let runs = vec![
+        flatcraft_path::AxisRun {
+            points: vec![Point::new(10.0, 10.0), Point::new(20.0, 10.0)],
+            seg: vec![flatcraft_path::WASTE_SEG, 0],
+        },
+        flatcraft_path::AxisRun {
+            points: vec![Point::new(20.0, 10.0), Point::new(20.0, 20.0)],
+            seg: vec![flatcraft_path::WASTE_SEG, 1],
+        },
+    ];
+    t.axis = Some(runs.clone());
+    assert_eq!(t.runs(), runs);
+}
+
+#[test]
+fn plan_sets_the_keep_side_of_every_toolpath() {
+    // Object 1: an outline with a hole. Object 2: a piece on object 1's
+    // hole-free band, and an open line. Pieces is the default mode.
+    let mut frame = rect_path(10.0, 10.0, 100.0, 100.0);
+    frame.extend(rect_path(40.0, 40.0, 20.0, 20.0));
+    let mut line = BezPath::new();
+    line.move_to((200.0, 20.0));
+    line.line_to((220.0, 20.0));
+    let out = plan(
+        &[
+            placed(1, frame),
+            placed(2, rect_path(15.0, 15.0, 10.0, 10.0)),
+            placed(3, line),
+        ],
+        &settings(),
+    )
+    .unwrap();
+    let side = |x: f64, y: f64| {
+        out.toolpaths
+            .iter()
+            .find(|t| t.lap().contains(&Point::new(x, y)))
+            .map(|t| t.keep)
+            .unwrap()
+    };
+    assert_eq!(side(10.0, 10.0), KeepSide::Inside, "outline");
+    assert_eq!(side(40.0, 40.0), KeepSide::Outside, "hole");
+    assert_eq!(
+        side(15.0, 15.0),
+        KeepSide::Inside,
+        "piece of another object"
+    );
+    assert_eq!(side(200.0, 20.0), KeepSide::Both, "open line");
+}
+
+fn poly_path(pts: &[(f64, f64)]) -> BezPath {
+    let mut p = BezPath::new();
+    p.move_to(pts[0]);
+    for &q in &pts[1..] {
+        p.line_to(q);
+    }
+    p.close_path();
+    p
+}
+
+/// An L whose only concave corner is (60, 60).
+const L: [(f64, f64); 6] = [
+    (40.0, 40.0),
+    (80.0, 40.0),
+    (80.0, 60.0),
+    (60.0, 60.0),
+    (60.0, 80.0),
+    (40.0, 80.0),
+];
+
+#[test]
+fn all_rings_follow_direction() {
+    use flatcraft_core::geometry::RingDirection;
+    use flatcraft_path::containment::signed_area;
+    // An outline with a hole, a piece in the hole, a circle drawn the
+    // other way round and an L.
+    let mut frame = rect_path(10.0, 10.0, 100.0, 100.0);
+    frame.extend(rect_path(30.0, 30.0, 60.0, 60.0));
+    frame.extend(rect_path(50.0, 50.0, 10.0, 10.0));
+    let circle = Circle::new((200.0, 200.0), 20.0)
+        .to_path(0.01)
+        .reverse_subpaths();
+    let input = [
+        placed(1, frame),
+        placed(2, circle),
+        placed(3, poly_path(&L.map(|(x, y)| (x + 100.0, y + 200.0)))),
+    ];
+    for (dir, sign) in [(RingDirection::Ccw, -1.0), (RingDirection::Cw, 1.0)] {
+        let mut s = settings();
+        s.direction = dir;
+        s.overcut_mm = 0.5;
+        let out = plan(&input, &s).unwrap();
+        assert_eq!(out.toolpaths.len(), 5);
+        for t in &out.toolpaths {
+            assert!(t.closed);
+            assert!(signed_area(t.lap()) * sign > 0.0, "{dir:?}: {:?}", t.lap());
+        }
+    }
+}
+
+#[test]
+fn outline_starts_on_a_waste_side_corner() {
+    use flatcraft_path::rings::extension_in_waste;
+    // The home sits next to the L's concave corner, the nearest vertex by
+    // far; its extension runs into the piece, so the cut starts elsewhere.
+    let mut s = settings();
+    s.home = Point::new(62.0, 62.0);
+    let out = plan(&[placed(1, poly_path(&L))], &s).unwrap();
+    let t = &out.toolpaths[0];
+    assert_eq!(t.keep, KeepSide::Inside);
+    assert_ne!(t.points[0], Point::new(60.0, 60.0));
+    assert!(extension_in_waste(t.lap(), 0, KeepSide::Inside));
+    // Of the waste-side corners, the nearest by travel.
+    assert_eq!(t.points[0], Point::new(60.0, 80.0));
+}
+
+#[test]
+fn hole_avoids_kept_side_corner_when_possible() {
+    use flatcraft_path::rings::extension_in_waste;
+    // An L hole in a frame. Its convex corners point into the piece; only
+    // the concave corner (60, 60) runs out into the falling-out waste, and
+    // it is the farthest corner from the home.
+    let mut frame = rect_path(20.0, 20.0, 100.0, 100.0);
+    frame.extend(poly_path(&L));
+    let out = plan(&[placed(1, frame)], &settings()).unwrap();
+    let hole = &out.toolpaths[0];
+    assert_eq!(hole.keep, KeepSide::Outside);
+    assert_eq!(hole.points[0], Point::new(60.0, 60.0));
+    assert!(extension_in_waste(hole.lap(), 0, KeepSide::Outside));
+    assert_eq!(out.toolpaths[1].keep, KeepSide::Inside);
+}
+
+#[test]
+fn sub_resolution_line_is_dropped_and_counted() {
+    // 0.02 mm: longer than the join tolerance, shorter than half a step
+    // of a 20 units per mm plotter.
+    let mut short = BezPath::new();
+    short.move_to((50.0, 50.0));
+    short.line_to((50.02, 50.0));
+    let input = [
+        placed(1, short),
+        placed(2, rect_path(10.0, 10.0, 10.0, 10.0)),
+    ];
+    let s = settings();
+    assert_eq!(s.min_cut_mm, 0.025);
+    let out = plan(&input, &s).unwrap();
+    assert_eq!(out.dropped_short, 1);
+    assert_eq!(out.toolpaths.len(), 1);
+    assert_eq!(out.toolpaths[0].source.object, ObjectId(2));
+    // With no shortest cut the line stays.
+    let mut s = settings();
+    s.min_cut_mm = 0.0;
+    let out = plan(&input, &s).unwrap();
+    assert_eq!((out.dropped_short, out.toolpaths.len()), (0, 2));
+}
+
+#[test]
+fn only_short_paths_are_refused_with_their_count() {
+    let line = |x: f64| {
+        let mut p = BezPath::new();
+        p.move_to((x, 50.0));
+        p.line_to((x + 0.02, 50.0));
+        p
+    };
+    let err = plan(&[placed(1, line(50.0)), placed(2, line(60.0))], &settings()).unwrap_err();
+    assert_eq!(
+        err,
+        PlanError::TooShort {
+            dropped: 2,
+            min_cut_mm: 0.025
+        }
+    );
+    assert_eq!(
+        err.to_string(),
+        "there is nothing to cut: all 2 cut paths are shorter than 0.025 mm"
+    );
+    let one = plan(&[placed(1, line(50.0))], &settings()).unwrap_err();
+    assert_eq!(
+        one.to_string(),
+        "there is nothing to cut: the only cut path is shorter than 0.025 mm"
+    );
+}
+
+#[test]
+fn bad_min_cut_is_refused() {
+    for v in [-0.1, f64::NAN, f64::INFINITY] {
+        let mut s = settings();
+        s.min_cut_mm = v;
+        invalid(s, SettingsField::MinCut);
+    }
+}
+
+/// Structural: restates the spec defaults.
+#[test]
+fn with_defaults_uses_the_spec_defaults() {
+    use flatcraft_core::geometry::RingDirection;
+    let area = Rect::new(0.0, 0.0, 200.0, 300.0);
+    let s = PipelineSettings::with_defaults(area, Point::new(-3.0, -4.0));
+    assert_eq!(s.cutting_area, area);
+    assert_eq!(s.home, Point::new(-3.0, -4.0));
+    assert_eq!((s.flatten_tolerance_mm, s.join_tolerance_mm), (0.01, 0.01));
+    assert_eq!(
+        (s.overcut_mm, s.passes, s.reverse_alternate_passes),
+        (0.5, 1, false)
+    );
+    assert_eq!(s.direction, RingDirection::Ccw);
+    assert!(!s.monotonic_feed);
+    assert!(s.chain_closed_passes);
+    assert_eq!(s.strategy, flatcraft_path::StrategySettings::default());
+    assert_eq!(s.min_cut_mm, 0.025);
+}
+
+/// Wall-clock check (Ruling F30) of the whole pipeline on a large, dense
+/// job (20000 overlapping squares): run by hand or by the quality bench.
+/// The counters are the real check; this one only catches a gross slowdown.
+/// Measured 1.5 to 1.9 s with the improvement scoring crossings (Apple
+/// silicon, test profile, load about 50; 0.42 s on a quieter machine),
+/// with single runs up to 4.2 s at load 58, so the bound is about 3 times
+/// the busy measured time: 5.7 s.
+#[test]
+#[ignore = "wall-clock perf check, run by hand or by the quality bench"]
+fn plan_of_20000_squares_is_fast() {
+    let mut seed = 11u64;
+    let mut next = || {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let input: Vec<PlacedPath> = (0..20_000)
+        .map(|k| {
+            let (x, y) = (10.0 + next() * 270.0, 10.0 + next() * 370.0);
+            placed(k, rect_path(x, y, 0.5 + next() * 2.0, 0.5 + next() * 2.0))
+        })
+        .collect();
+    let t0 = std::time::Instant::now();
+    let out = plan(&input, &settings()).unwrap();
+    let secs = t0.elapsed().as_secs_f64();
+    eprintln!("plan of 20000 squares: {secs} s");
+    assert_eq!(out.toolpaths.len(), 20_000);
+    assert!(secs < 5.7, "{secs} s");
+}
+
+// ---------------------------------------------------------------- shape lines
+
+#[test]
+fn shape_lines_are_the_polylines_the_plan_cuts() {
+    // A circle and an open zig-zag: the export reads the same polylines as
+    // the cut, before the order, the overcut and the passes.
+    let mut zig = BezPath::new();
+    zig.move_to((20.0, 20.0));
+    zig.line_to((30.0, 25.0));
+    zig.line_to((40.0, 20.0));
+    let paths = [
+        Circle::new((100.0, 100.0), 20.0).to_path(0.1),
+        zig,
+        rect_path(150.0, 150.0, 30.0, 10.0),
+    ];
+    let s = settings();
+    let mut lines = Vec::new();
+    for p in &paths {
+        lines.extend(flatcraft_path::shape_lines(
+            p,
+            s.flatten_tolerance_mm,
+            s.join_tolerance_mm,
+        ));
+    }
+    let input: Vec<PlacedPath> = paths
+        .iter()
+        .enumerate()
+        .map(|(i, p)| placed(i as u64 + 1, p.clone()))
+        .collect();
+    let cut = plan(&input, &s).unwrap();
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines.iter().filter(|l| l.closed).count(), 2);
+    for line in &lines {
+        // Every line of the export is a lap of the cut, maybe rotated or
+        // reversed: the same set of points.
+        let mut ours: Vec<(i64, i64)> = line
+            .points
+            .iter()
+            .map(|p| ((p.x * 1e6) as i64, (p.y * 1e6) as i64))
+            .collect();
+        if line.closed {
+            ours.pop();
+        }
+        ours.sort();
+        let found = cut.toolpaths.iter().any(|t| {
+            let lap = t.lap();
+            let mut theirs: Vec<(i64, i64)> = lap
+                .iter()
+                .map(|p| ((p.x * 1e6) as i64, (p.y * 1e6) as i64))
+                .collect();
+            if t.closed {
+                theirs.pop();
+            }
+            theirs.sort();
+            theirs == ours
+        });
+        assert!(found, "{line:?}");
+    }
+}
+
+#[test]
+fn shape_lines_drop_a_ring_without_length() {
+    let mut dot = BezPath::new();
+    dot.move_to((10.0, 10.0));
+    dot.line_to((10.0, 10.0));
+    dot.line_to((10.0, 10.0));
+    dot.close_path();
+    assert!(flatcraft_path::shape_lines(&dot, 0.01, 0.01).is_empty());
 }

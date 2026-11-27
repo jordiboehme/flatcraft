@@ -1,0 +1,849 @@
+//! Tool cards: a tool with settings opens as a card on top of the
+//! inspector, its fields built from the command's parameters (see
+//! `ui::inspector::tool_card`). OK is one undo step, Cancel changes
+//! nothing, another selection cancels the card, and at 900 pt the card and
+//! the inspector share the right column.
+
+mod common;
+use common::RunPlan;
+
+use common::*;
+use egui::accesskit::Role;
+use egui::{Event, Modifiers};
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
+use flatcraft::ui::arrange::{self, KINDS, PanelKind};
+use flatcraft::ui::inspector::tool_card::{self, FieldKind};
+use flatcraft::ui::{prepare, tools};
+use flatcraft_engine::commands::meta;
+use flatcraft_engine::prefs::Preferences;
+use flatcraft_engine::session::Origin;
+use flatcraft_mcp::SharedSession;
+use serde_json::{Value, json};
+
+const EM_DASH: char = '\u{2014}';
+
+fn run(s: &SharedSession, id: &str, params: Value) -> Value {
+    s.lock().unwrap().execute(id, params, Origin::User).unwrap()
+}
+
+fn select(s: &SharedSession, ids: &[u64]) {
+    run(s, "object.select", json!({ "ids": ids }));
+}
+
+fn selection_ids(s: &SharedSession) -> Vec<u64> {
+    document(s).1
+}
+
+fn snap(h: &mut AppHarness) -> prepare::Snapshot {
+    let ctx = h.ctx.clone();
+    prepare::snapshot(app_mut(h), &ctx)
+}
+
+/// Imports the square and moves it by `dx`, `dy` mm.
+fn square_at(s: &SharedSession, dx: f64, dy: f64) -> u64 {
+    let id = import_square(s);
+    run(
+        s,
+        "object.move",
+        json!({ "ids": [id], "dx_mm": dx, "dy_mm": dy }),
+    );
+    id
+}
+
+/// Three squares, the first two overlapping a little, the third apart.
+fn three(s: &SharedSession) -> [u64; 3] {
+    [
+        square_at(s, 0.0, 0.0),
+        square_at(s, 30.0, 10.0),
+        square_at(s, 160.0, 40.0),
+    ]
+}
+
+/// The document as the project file stores it, plus the selection.
+fn document(s: &SharedSession) -> (String, Vec<u64>) {
+    let g = s.lock().unwrap();
+    let doc = flatcraft_core::project::to_value(&g.doc().document).unwrap();
+    let sel = g.doc().selection.iter().map(|i| i.0).collect();
+    (serde_json::to_string(&doc).unwrap(), sel)
+}
+
+fn centres(s: &SharedSession) -> Vec<(u64, f64, f64)> {
+    let g = s.lock().unwrap();
+    g.doc()
+        .document
+        .objects
+        .iter()
+        .map(|o| (o.id.0, o.transform.center_mm.x, o.transform.center_mm.y))
+        .collect()
+}
+
+fn open(h: &mut AppHarness, kind: PanelKind) {
+    let sn = snap(h);
+    arrange::open(&mut app_mut(h).ui.prepare, &sn, kind);
+    h.run_plan();
+}
+
+fn cancel_name() -> String {
+    let hint = flatcraft::ui::help::hint(flatcraft::ui::help::PrepareKey::ClearSelection);
+    format!("Cancel {hint}")
+}
+
+/// Types `text` into the number field `label` and leaves it with Enter.
+fn type_into(h: &mut AppHarness, label: &str, text: &str) {
+    h.get_by_label(label).click();
+    h.run_plan();
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+    h.run_plan();
+    h.event(Event::Text(text.into()));
+    h.run_plan();
+    h.key_press(egui::Key::Enter);
+    h.run_plan();
+}
+
+fn window(dir: &tempfile::TempDir, s: SharedSession, w: f32) -> AppHarness {
+    let mut h = harness_sized(dir, s, [w, 900.0], 8, |a| a);
+    to_prepare(&mut h);
+    wait_for_workers(&mut h);
+    h
+}
+
+/// The card text of the row labelled `label` of the open card.
+fn card_of(kind: PanelKind, label: &str) -> &'static str {
+    for c in kind.commands() {
+        for m in meta::fields_of(c) {
+            if m.label == label {
+                return tools::field_card(c, m.path).unwrap();
+            }
+        }
+    }
+    let own = [
+        (arrange::COPY.label, (arrange::COPY.owner, arrange::COPY.id)),
+        (
+            arrange::ROWS.label,
+            (arrange::ROWS.owner, arrange::ROWS.key),
+        ),
+        (
+            arrange::CENTRE.label,
+            (arrange::CENTRE.owner, arrange::CENTRE.key),
+        ),
+    ];
+    let (_, (o, k)) = own.iter().find(|(l, _)| *l == label).unwrap();
+    tools::field_card(o, k).unwrap()
+}
+
+#[test]
+fn every_tool_param_has_label_unit_range_and_card() {
+    let mut used: Vec<(&str, &str)> = Vec::new();
+    for kind in KINDS {
+        for text in [kind.description(), kind.title_card(), kind.title()] {
+            assert!(!text.is_empty() && !text.contains(EM_DASH), "{kind:?}");
+        }
+        for c in kind.commands() {
+            assert!(meta::fields_of(c).next().is_some(), "{kind:?} {c}");
+            for m in meta::fields_of(c) {
+                used.push((m.command, m.path));
+                let what = format!("{kind:?} {c} {}", m.path);
+                let s = tool_card::spec(c, m.path).unwrap_or_else(|| panic!("{what}"));
+                assert!(!s.label.is_empty() && !s.label.contains(EM_DASH), "{what}");
+                let card = s.card.unwrap_or_else(|| panic!("{what}: no card text"));
+                assert!(card.len() > 20, "{what}: a card in plain words");
+                assert!(!tool_card::card_text(&s).contains(EM_DASH), "{what}");
+                match &s.kind {
+                    FieldKind::Number { min, max } | FieldKind::Integer { min, max } => {
+                        assert!(min.is_some() && max.is_some(), "{what}: no range");
+                        assert_ne!(s.unit, meta::Unit::None, "{what}: no unit");
+                    }
+                    FieldKind::Choice(choices) => {
+                        assert!(choices.len() >= 2, "{what}");
+                        assert!(
+                            choices
+                                .iter()
+                                .all(|(_, l)| !l.is_empty() && !l.contains(EM_DASH))
+                        );
+                    }
+                    FieldKind::Switch => {}
+                }
+            }
+        }
+    }
+    // Every row of the table is shown by a card.
+    for m in meta::PARAMS {
+        assert!(
+            used.contains(&(m.command, m.path)),
+            "{} {}: no card shows it",
+            m.command,
+            m.path
+        );
+    }
+    // The specials draw parameters of their command, and their own rows
+    // have card texts.
+    for sp in tool_card::SPECIALS {
+        for p in sp.paths {
+            assert!(meta::meta(sp.command, p).is_some(), "{} {p}", sp.name);
+        }
+        assert!(tool_card::special(sp.name).is_some());
+        assert!(!sp.labels.is_empty());
+    }
+    for (label, kind) in [
+        (arrange::COPY.label, PanelKind::MoveCopy),
+        (arrange::ROWS.label, PanelKind::RectangularPattern),
+        (arrange::CENTRE.label, PanelKind::CircularPattern),
+    ] {
+        assert!(card_of(kind, label).len() > 20, "{label}");
+    }
+    // No card text without its field.
+    let own = [
+        (arrange::COPY.owner, arrange::COPY.id),
+        (arrange::ROWS.owner, arrange::ROWS.key),
+        (arrange::CENTRE.owner, arrange::CENTRE.key),
+    ];
+    for (owner, key, text) in tools::FIELD_CARDS {
+        assert!(!text.contains(EM_DASH), "{owner} {key}");
+        assert!(
+            meta::meta(owner, key).is_some() || own.contains(&(*owner, *key)),
+            "{owner} {key}: a card without its field"
+        );
+    }
+    for t in [
+        tool_card::CLOSE_CARD,
+        tool_card::OK_CARD,
+        tool_card::CANCEL_CARD,
+    ] {
+        assert!(!t.contains(EM_DASH));
+    }
+}
+
+/// A command listed in the meta table gets a working card from the
+/// table alone: its start values, and params that the command takes.
+#[test]
+fn a_command_in_the_table_gets_a_working_card_from_it_alone() {
+    let mut commands: Vec<&'static str> = meta::PARAMS.iter().map(|m| m.command).collect();
+    commands.dedup();
+    for c in commands {
+        let dir = tempfile::tempdir().unwrap();
+        let s = session(&dir);
+        let [a, _, _] = three(&s);
+        select(&s, &[a]);
+        let list: &'static [&'static str] = Box::leak(vec![c].into_boxed_slice());
+        let card = tool_card::CardState::new(list, None, &Default::default());
+        let params = card.params(&[a], Some(a));
+        for m in meta::fields_of(c) {
+            // Left out, the command takes its own default: the selection's
+            // centre, and Turn about as one group (the window opens it with
+            // the Each object switch).
+            if m.path.starts_with("center_mm") || m.path == "about" {
+                continue;
+            }
+            assert!(
+                card.get(c, m.path).is_some(),
+                "{c} {}: no start value",
+                m.path
+            );
+        }
+        let undo = undo_len(&s);
+        let out = s.lock().unwrap().execute(c, params.clone(), Origin::User);
+        assert!(out.is_ok(), "{c} {params}: {out:?}");
+        assert_eq!(undo_len(&s), undo + 1, "{c}");
+    }
+    // The paths nest: a field of an enum variant and items of an array.
+    let mut v = json!({});
+    tool_card::set_path(&mut v, "layout.grid.columns", json!(4));
+    tool_card::set_path(&mut v, "center_mm[1]", json!(7.0));
+    tool_card::set_path(&mut v, "center_mm[0]", json!(3.0));
+    assert_eq!(
+        v,
+        json!({ "layout": { "grid": { "columns": 4 } }, "center_mm": [3.0, 7.0] })
+    );
+}
+
+#[test]
+fn every_card_field_shows_with_its_card_and_dimmed_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let [a, b, _] = three(&s);
+    let mut h = window(&dir, s.clone(), 1400.0);
+    for kind in KINDS {
+        let ids = if kind == PanelKind::RectangularPattern {
+            vec![a]
+        } else {
+            vec![a, b]
+        };
+        select(&s, &ids);
+        h.run_plan();
+        open(&mut h, kind);
+        let labels = app(&h).ui.prepare.panel.as_ref().unwrap().card.labels();
+        assert!(!labels.is_empty());
+        for label in labels {
+            h.get_by_label(label).hover();
+            h.run_plan();
+            let card = card_of(kind, label);
+            assert!(
+                h.query_by_label_contains(&card[..20]).is_some(),
+                "{kind:?} {label}: its card shows"
+            );
+        }
+        h.get_by_role_and_label(Role::Button, &cancel_name())
+            .click();
+        h.run_plan();
+        assert!(app(&h).ui.prepare.panel.is_none());
+    }
+    // A field that does not apply is dimmed and says why.
+    select(&s, &[a]);
+    h.run_plan();
+    open(&mut h, PanelKind::CircularPattern);
+    assert!(h.get_by_label("Centre X").accesskit_node().is_disabled());
+    h.get_by_label("Centre X").hover();
+    h.run_plan();
+    assert!(
+        h.query_by_label_contains("Choose Centre at X and Y first")
+            .is_some()
+    );
+    open(&mut h, PanelKind::Rotate);
+    assert!(h.get_by_label("Turn about").accesskit_node().is_disabled());
+}
+
+/// Move / Copy shows one offset pair in both modes, and Number of copies,
+/// dimmed while Copy is off. Move sends the pair as object.move's dx/dy,
+/// Copy as object.duplicate's offset_mm.
+#[test]
+fn copy_shows_the_duplicate_commands_own_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let [a, _, _] = three(&s);
+    select(&s, &[a]);
+    let mut h = window(&dir, s.clone(), 1400.0);
+    open(&mut h, PanelKind::MoveCopy);
+    // One start value for the pair: the duplicate's schema default.
+    assert_eq!(field_text(&h, "X offset"), "10.00");
+    assert_eq!(field_text(&h, "Y offset"), "10.00");
+    assert_eq!(field_text(&h, "Number of copies"), "1");
+    assert!(
+        h.get_by_label("Number of copies")
+            .accesskit_node()
+            .is_disabled()
+    );
+    h.get_by_label("Number of copies").hover();
+    h.run_plan();
+    assert!(h.query_by_label_contains("Turn on Copy first").is_some());
+    type_into(&mut h, "Y offset", "-4");
+    let sn = snap(&mut h);
+    let p = app(&h).ui.prepare.panel.clone().unwrap();
+    let (command, params) = p.params(&sn);
+    assert_eq!(command, "object.move");
+    assert_eq!(
+        (params["dx_mm"].as_f64(), params["dy_mm"].as_f64()),
+        (Some(10.0), Some(-4.0))
+    );
+    h.get_by_label("Copy").click();
+    h.run_plan();
+    // The same pair, now the duplicate's offset.
+    assert_eq!(field_text(&h, "Y offset"), "-4.00");
+    assert!(
+        !h.get_by_label("Number of copies")
+            .accesskit_node()
+            .is_disabled()
+    );
+    let sn = snap(&mut h);
+    let p = app(&h).ui.prepare.panel.clone().unwrap();
+    let (command, params) = p.params(&sn);
+    assert_eq!(command, "object.duplicate");
+    assert_eq!(params["offset_mm"], json!([10.0, -4.0]));
+    h.get_by_label("Y offset").hover();
+    h.run_plan();
+    let text = tools::field_card("object.move", "dy_mm").unwrap();
+    assert!(h.query_by_label_contains(&text[..20]).is_some());
+    let undo = undo_len(&s);
+    h.get_by_role_and_label(Role::Button, "OK").click();
+    h.run_plan();
+    wait_for_workers(&mut h);
+    assert_eq!(undo_len(&s), undo + 1);
+    assert_eq!(s.lock().unwrap().doc().document.objects.len(), 4);
+}
+
+/// Toggling Copy changes neither the values shown nor the card's height.
+#[test]
+fn toggling_copy_does_not_move_the_card() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let [a, _, _] = three(&s);
+    select(&s, &[a]);
+    let mut h = window(&dir, s.clone(), 1400.0);
+    open(&mut h, PanelKind::MoveCopy);
+    type_into(&mut h, "X offset", "12.5");
+    let shown = |h: &AppHarness| {
+        (
+            field_text(h, "X offset"),
+            field_text(h, "Y offset"),
+            field_text(h, "Number of copies"),
+            app(h).ui.prepare.panel_rect.unwrap(),
+            h.get_by_role_and_label(Role::Button, "OK").rect(),
+        )
+    };
+    let before = shown(&h);
+    for _ in 0..2 {
+        h.get_by_label("Copy").click();
+        h.run_plan();
+        let now = shown(&h);
+        assert_eq!((&now.0, &now.1, &now.2), (&before.0, &before.1, &before.2));
+        assert!(
+            (now.3.height() - before.3.height()).abs() < 0.5,
+            "{now:?} {before:?}"
+        );
+        assert!((now.4.top() - before.4.top()).abs() < 0.5);
+    }
+}
+
+/// Columns and Rows at their largest: far more than 500 copies. OK is
+/// dimmed and says why; nothing overflows.
+#[test]
+fn huge_columns_and_rows_are_refused_with_a_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let [a, _, _] = three(&s);
+    select(&s, &[a]);
+    let mut h = window(&dir, s.clone(), 1400.0);
+    open(&mut h, PanelKind::RectangularPattern);
+    type_into(&mut h, "Columns", "501");
+    type_into(&mut h, "Rows", "501");
+    let card = &app(&h).ui.prepare.panel.as_ref().unwrap().card;
+    assert_eq!(card.u64("object.copies", "layout.grid.columns"), Some(501));
+    assert_eq!(card.u64("pattern.rectangular", "rows"), Some(501));
+    assert!(
+        h.get_by_role_and_label(Role::Button, "OK")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert!(h.query_by_label_contains("more than 500 copies").is_some());
+    // A value past the range is refused by the field itself.
+    type_into(&mut h, "Rows", "99999999999");
+    let card = &app(&h).ui.prepare.panel.as_ref().unwrap().card;
+    assert_eq!(card.u64("pattern.rectangular", "rows"), Some(501));
+    let sn = snap(&mut h);
+    let p = app(&h).ui.prepare.panel.clone().unwrap();
+    assert!(arrange::ok_action(&sn, &p).is_none());
+    assert!(arrange::ghosts(&sn, &p).is_empty());
+}
+
+/// The keep picker and a card can be open at once: Escape closes the
+/// picker first, then the card.
+#[test]
+fn escape_closes_the_keep_picker_before_the_card() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let [a, _, _] = three(&s);
+    select(&s, &[a]);
+    let mut h = window(&dir, s.clone(), 1400.0);
+    open(&mut h, PanelKind::Rotate);
+    let sn = snap(&mut h);
+    app_mut(&mut h).ui.prepare.keep_pick = flatcraft::ui::keep_pick::KeepPick::start(&sn, &[a]);
+    h.run_plan();
+    assert!(app(&h).ui.prepare.keep_pick.is_some());
+    assert!(app(&h).ui.prepare.panel.is_some());
+    h.key_press(egui::Key::Escape);
+    h.run_plan();
+    assert!(app(&h).ui.prepare.keep_pick.is_none(), "the picker first");
+    assert!(app(&h).ui.prepare.panel.is_some(), "the card stays");
+    h.key_press(egui::Key::Escape);
+    h.run_plan();
+    assert!(app(&h).ui.prepare.panel.is_none(), "then the card");
+    assert_eq!(selection_ids(&s), vec![a]);
+}
+
+/// Auto arrange from its card moves the objects exactly as `arrange.auto`
+/// with the same objects and spacing, as the old panel did.
+#[test]
+fn auto_arrange_card_matches_old_panel_result() {
+    // The same three squares in two sessions.
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let [a, b, _] = three(&s);
+    select(&s, &[a, b]);
+    let other_dir = tempfile::tempdir().unwrap();
+    let direct = session(&other_dir);
+    let [da, db, _] = three(&direct);
+    assert_eq!(centres(&s), centres(&direct));
+    run(
+        &direct,
+        "arrange.auto",
+        json!({ "ids": [da, db], "spacing_mm": 7.5 }),
+    );
+    let mut h = window(&dir, s.clone(), 1400.0);
+    open(&mut h, PanelKind::AutoArrange);
+    type_into(&mut h, "Spacing", "7.5");
+    assert_eq!(
+        app(&h)
+            .ui
+            .prepare
+            .panel
+            .as_ref()
+            .unwrap()
+            .card
+            .f64("arrange.auto", "spacing_mm"),
+        Some(7.5)
+    );
+    // The preview shows where they land: the moves of the direct run.
+    let sn = snap(&mut h);
+    let p = app(&h).ui.prepare.panel.clone().unwrap();
+    let ghosts = arrange::ghosts(&sn, &p);
+    assert_eq!(ghosts.len(), 2);
+    h.get_by_role_and_label(Role::Button, "OK").click();
+    h.run_plan();
+    wait_for_workers(&mut h);
+    assert!(app(&h).ui.prepare.panel.is_none());
+    assert_eq!(centres(&s), centres(&direct));
+    for (id, g) in ghosts {
+        let at = g * kurbo::Point::ZERO;
+        let c = centres(&s).into_iter().find(|c| c.0 == id).unwrap();
+        assert!((at.x - c.1).abs() < 1e-9 && (at.y - c.2).abs() < 1e-9);
+    }
+    // OK stored the spacing for the next Auto arrange.
+    assert_eq!(
+        Preferences::load(&app(&h).config_dir).tool_cards["arrange.auto spacing_mm"],
+        "7.5"
+    );
+}
+
+#[test]
+fn card_cancel_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let [a, b, _] = three(&s);
+    let mut h = window(&dir, s.clone(), 1400.0);
+    for kind in KINDS {
+        let ids = if kind == PanelKind::RectangularPattern {
+            vec![a]
+        } else {
+            vec![a, b]
+        };
+        select(&s, &ids);
+        h.run_plan();
+        let (before, undo) = (document(&s), undo_len(&s));
+        let stored = Preferences::load(&app(&h).config_dir);
+        for how in [cancel_name(), tool_card::CLOSE.to_string()] {
+            open(&mut h, kind);
+            // Change the first number field, as a person would.
+            let first = meta::fields_of(kind.commands()[0])
+                .filter_map(|m| tool_card::spec(m.command, m.path))
+                .find(|s| matches!(s.kind, FieldKind::Number { .. } | FieldKind::Integer { .. }))
+                .unwrap();
+            type_into(&mut h, first.label, "3");
+            assert!(app(&h).ui.prepare.panel.is_some(), "{kind:?}");
+            h.get_by_label(&how).click();
+            h.run_plan();
+            wait_for_workers(&mut h);
+            assert!(app(&h).ui.prepare.panel.is_none(), "{kind:?} {how}");
+            assert_eq!(document(&s), before, "{kind:?} {how}");
+            assert_eq!(undo_len(&s), undo, "{kind:?} {how}");
+            let now = Preferences::load(&app(&h).config_dir);
+            assert_eq!(
+                (now.rotate_each, &now.tool_cards),
+                (stored.rotate_each, &stored.tool_cards),
+                "{kind:?} {how}"
+            );
+        }
+    }
+}
+
+#[test]
+fn card_ok_is_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let [a, b, _] = three(&s);
+    let mut h = window(&dir, s.clone(), 1400.0);
+    for kind in KINDS {
+        let ids = if kind == PanelKind::RectangularPattern {
+            vec![a]
+        } else {
+            vec![a, b]
+        };
+        select(&s, &ids);
+        h.run_plan();
+        let (before, undo) = (document(&s).0, undo_len(&s));
+        open(&mut h, kind);
+        h.get_by_role_and_label(Role::Button, "OK").click();
+        h.run_plan();
+        wait_for_workers(&mut h);
+        assert!(app(&h).ui.prepare.panel.is_none(), "{kind:?}: OK closes it");
+        assert_eq!(undo_len(&s), undo + 1, "{kind:?}: one step");
+        assert_ne!(document(&s).0, before, "{kind:?} changed something");
+        run(&s, "edit.undo", json!({}));
+        h.run_plan();
+        assert_eq!(document(&s).0, before, "{kind:?}: one undo takes it back");
+    }
+}
+
+#[test]
+fn selection_change_with_card_open_never_applies_to_new_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let [a, b, c] = three(&s);
+    let mut h = window(&dir, s.clone(), 1400.0);
+    for kind in KINDS {
+        select(&s, &[a]);
+        h.run_plan();
+        open(&mut h, kind);
+        assert!(app(&h).ui.prepare.panel.is_some(), "{kind:?}");
+        let before = document(&s).0;
+        // An agent, a click on the canvas or the Objects list picks other
+        // objects: the card goes, nothing changes.
+        select(&s, &[b, c]);
+        h.run_plan();
+        assert!(app(&h).ui.prepare.panel.is_none(), "{kind:?}");
+        assert!(h.query_by_role_and_label(Role::Button, "OK").is_none());
+        h.key_press(egui::Key::Enter);
+        h.run_plan();
+        wait_for_workers(&mut h);
+        assert_eq!(document(&s).0, before, "{kind:?}");
+    }
+    // A click on another object on the canvas does the same.
+    select(&s, &[a]);
+    h.run_plan();
+    open(&mut h, PanelKind::Rotate);
+    let before = document(&s).0;
+    let at = centres(&s).into_iter().find(|o| o.0 == c).unwrap();
+    let view = app(&h).ui.prepare.view;
+    let p = view.mm_to_screen(kurbo::Point::new(at.1, at.2));
+    click_at(&mut h, p);
+    assert_eq!(selection_ids(&s), vec![c]);
+    assert!(app(&h).ui.prepare.panel.is_none());
+    assert_eq!(document(&s).0, before);
+}
+
+#[test]
+fn card_and_inspector_share_column_at_900() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let [a, b, _] = three(&s);
+    select(&s, &[a, b]);
+    let mut h = window(&dir, s.clone(), 900.0);
+    // At 900 pt the right panel is a rail until a card opens.
+    assert!(
+        h.query_by_label_contains("Open the Cut and Job panel")
+            .is_some()
+    );
+    for kind in KINDS {
+        let ids = if kind == PanelKind::RectangularPattern {
+            vec![a]
+        } else {
+            vec![a, b]
+        };
+        select(&s, &ids);
+        h.run_plan();
+        open(&mut h, kind);
+        assert!(
+            h.query_by_label("Collapse the Cut and Job panel").is_some(),
+            "{kind:?}: the panel opens for the card"
+        );
+        let card = app(&h).ui.prepare.panel_rect.expect("the card is drawn");
+        let canvas = app(&h).ui.prepare.canvas_rect;
+        // One column: the card sits right of the canvas, the inspector
+        // under it in the same column.
+        assert!(
+            card.left() >= canvas.right(),
+            "{kind:?}: {card:?} {canvas:?}"
+        );
+        let heading = h.get_by_label("Cut mode").rect();
+        assert!(
+            heading.top() >= card.bottom(),
+            "{kind:?}: the inspector below"
+        );
+        assert!(
+            heading.left() >= card.left() - 1.0 && heading.left() < card.right(),
+            "{kind:?}: one column"
+        );
+        let job = h.get_by_label_contains("Job: ").rect();
+        assert!(job.bottom() <= card.top(), "{kind:?}: the job line on top");
+        // The buttons are in sight.
+        let ok = h.get_by_role_and_label(Role::Button, "OK").rect();
+        assert!(ok.bottom() <= 900.0, "{kind:?}");
+        assert!(canvas.width() > 450.0, "{kind:?}: the canvas keeps room");
+        h.get_by_role_and_label(Role::Button, &cancel_name())
+            .click();
+        h.run_plan();
+    }
+    // The card gone, the panel folds back to its rail: the choice was
+    // never stored.
+    assert!(
+        h.query_by_label_contains("Open the Cut and Job panel")
+            .is_some()
+    );
+    let stored = Preferences::load(&app(&h).config_dir);
+    assert_eq!(stored.panel_settings, Preferences::default().panel_settings);
+}
+
+#[test]
+fn folding_the_panel_cancels_the_card() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let [a, b, _] = three(&s);
+    select(&s, &[a, b]);
+    let mut h = window(&dir, s.clone(), 1400.0);
+    let before = document(&s);
+    open(&mut h, PanelKind::Rotate);
+    h.get_by_label("Collapse the Cut and Job panel").click();
+    h.run_plan();
+    assert!(app(&h).ui.prepare.panel.is_none());
+    assert!(
+        h.query_by_label_contains("Open the Cut and Job panel")
+            .is_some()
+    );
+    assert_eq!(document(&s), before);
+}
+
+fn pin(s: &SharedSession, pins: &[&str]) {
+    let pins: Vec<String> = pins.iter().map(|p| p.to_string()).collect();
+    s.lock()
+        .unwrap()
+        .update_prefs(|p| p.ribbon_pins = pins)
+        .unwrap();
+}
+
+/// Auto arrange runs now and has a card: one split button. The main part
+/// runs it, the chevron part on its right opens the card, and there is no
+/// second, icon-only button beside it.
+#[test]
+fn auto_arrange_is_one_split_button() {
+    let main = tools::by_act(tools::Act::AutoArrange).button_name();
+    let more = tools::by_act(tools::Act::AutoArrangePanel).button_name();
+    for pins in [
+        &["auto_arrange"][..],
+        &["auto_arrange", "auto_arrange.panel"][..],
+        &["auto_arrange.panel"][..],
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let s = session(&dir);
+        let [a, b, _] = three(&s);
+        select(&s, &[a, b]);
+        pin(&s, pins);
+        let mut h = window(&dir, s.clone(), 1400.0);
+        h.get_by_role_and_label(Role::Tab, "Layout").click();
+        h.run_plan();
+        assert_eq!(
+            h.query_all_by_role_and_label(Role::Button, &main).count(),
+            1,
+            "{pins:?}"
+        );
+        assert_eq!(
+            h.query_all_by_role_and_label(Role::Button, &more).count(),
+            1,
+            "{pins:?}"
+        );
+        let m = h.get_by_role_and_label(Role::Button, &main).rect();
+        let c = h.get_by_role_and_label(Role::Button, &more).rect();
+        // One button: the chevron touches the main part and is as tall.
+        assert!((c.left() - m.right()).abs() < 0.5, "{pins:?}: {m:?} {c:?}");
+        assert!((c.top() - m.top()).abs() < 0.5 && (c.height() - m.height()).abs() < 0.5);
+        assert!(c.width() < m.width() / 2.0, "{pins:?}: a narrow chevron");
+        // A hairline divides the two parts.
+        let border = app(&h).tokens.border;
+        let divided = painted(&h).iter().any(|sh| {
+            matches!(sh, egui::Shape::LineSegment { points, stroke }
+                if stroke.color == border && (points[0].x - c.left()).abs() < 1.0
+                    && points[0].y > c.top() && points[1].y < c.bottom())
+        });
+        assert!(divided, "{pins:?}: no divider");
+        // The chevron opens the card and changes nothing.
+        let before = (document(&s), undo_len(&s));
+        click_at(&mut h, c.center());
+        let p = app(&h).ui.prepare.panel.as_ref().map(|p| p.kind);
+        assert_eq!(p, Some(PanelKind::AutoArrange), "{pins:?}");
+        assert_eq!((document(&s), undo_len(&s)), before);
+        h.get_by_role_and_label(Role::Button, &cancel_name())
+            .click();
+        h.run_plan();
+        // The main part runs Auto arrange at once: one step, no card.
+        click_at(&mut h, m.center());
+        wait_for_workers(&mut h);
+        assert!(app(&h).ui.prepare.panel.is_none(), "{pins:?}");
+        assert_eq!(undo_len(&s), before.1 + 1, "{pins:?}");
+    }
+}
+
+#[test]
+fn the_auto_arrange_card_row_has_no_pin_of_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    three(&s);
+    let mut h = window(&dir, s.clone(), 1400.0);
+    h.get_by_role_and_label(Role::Tab, "Layout").click();
+    h.run_plan();
+    h.get_by_role_and_label(Role::Button, "Arrange").click();
+    h.run_plan();
+    let t = tools::by_act(tools::Act::AutoArrangePanel);
+    h.get_by_label(&t.row_name()).hover();
+    h.run_plan();
+    let auto = tools::by_act(tools::Act::AutoArrange);
+    h.get_by_label(&auto.row_name()).hover();
+    h.run_plan();
+    assert!(h.query_by_label_contains("Pin Auto arrange...").is_none());
+    assert!(
+        h.query_all_by_label_contains("Pin Auto arrange").count() == 1
+            || h.query_all_by_label_contains("Unpin Auto arrange").count() == 1
+    );
+}
+
+/// The Auto arrange row unpins the split button whichever of its two ids
+/// an old pin file holds, and pinning adds only its own id.
+#[test]
+fn unpinning_auto_arrange_removes_the_split_button() {
+    let main = tools::by_act(tools::Act::AutoArrange);
+    let more = tools::by_act(tools::Act::AutoArrangePanel).button_name();
+    for pins in [
+        &["auto_arrange", "auto_arrange.panel", "group"][..],
+        &["auto_arrange.panel", "group"][..],
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let s = session(&dir);
+        three(&s);
+        pin(&s, pins);
+        let mut h = window(&dir, s.clone(), 1400.0);
+        h.get_by_role_and_label(Role::Tab, "Layout").click();
+        h.run_plan();
+        assert!(h.query_by_role_and_label(Role::Button, &more).is_some());
+        h.get_by_role_and_label(Role::Button, "Arrange").click();
+        h.run_plan();
+        h.get_by_label(&main.row_name()).hover();
+        h.run_plan();
+        h.get_by_label("Unpin Auto arrange").click();
+        h.run_plan();
+        let stored = s.lock().unwrap().prefs.ribbon_pins.clone();
+        assert_eq!(stored, vec!["group".to_string()], "{pins:?}");
+        h.key_press(egui::Key::Escape);
+        h.run_plan();
+        assert!(
+            h.query_by_role_and_label(Role::Button, &more).is_none(),
+            "{pins:?}"
+        );
+        // Pinning it again adds only its own id.
+        h.get_by_role_and_label(Role::Button, "Arrange").click();
+        h.run_plan();
+        h.get_by_label(&main.row_name()).hover();
+        h.run_plan();
+        h.get_by_label("Pin Auto arrange").click();
+        h.run_plan();
+        let stored = s.lock().unwrap().prefs.ribbon_pins.clone();
+        assert!(stored.contains(&"auto_arrange".to_string()), "{pins:?}");
+        assert!(
+            !stored.contains(&"auto_arrange.panel".to_string()),
+            "{pins:?}"
+        );
+    }
+}
+
+/// In a short window the card's fields scroll inside it, so its title
+/// and OK stay in sight.
+#[test]
+fn the_card_buttons_stay_in_sight_in_a_short_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let [a, b, _] = three(&s);
+    select(&s, &[a, b]);
+    let mut h = harness_sized(&dir, s.clone(), [900.0, 500.0], 8, |a| a);
+    to_prepare(&mut h);
+    wait_for_workers(&mut h);
+    open(&mut h, PanelKind::CircularPattern);
+    let ok = h.get_by_role_and_label(Role::Button, "OK").rect();
+    assert!(ok.bottom() <= 500.0, "{ok:?}");
+    let close = h.get_by_label(tool_card::CLOSE).rect();
+    assert!(close.top() >= 0.0, "{close:?}");
+}

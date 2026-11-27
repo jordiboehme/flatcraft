@@ -5,45 +5,57 @@
 //! under one short lock. Everything is drawn from the snapshot; changes go
 //! out as [`Action`]s that name the document they were made for.
 
+use crate::ui::metrics;
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use egui::{Rect, RichText, Ui};
-use flatcraft_core::document::{CutOptions, JobSettings, Object, Source};
+use egui::{Pos2, Rect, Ui};
+use flatcraft_core::document::{CutOptions, JobSettings, Object, ObjectId, Source};
 use flatcraft_core::geometry::CutPath;
+use flatcraft_core::nodes::Tree;
 use flatcraft_core::transform::Transform;
 use flatcraft_device::{MaterialProfile, Media, MediaKind, PlotterProfile, PresetInfo};
 use flatcraft_engine::commands::{placed_bounds, sources};
 use flatcraft_engine::job::JobInput;
 use serde_json::json;
 
+use super::arrange::{self, ArrangePanel};
 use super::canvas::{self, CanvasView};
+use super::rails::{self, Side, SidePanel};
 use super::theme::Tokens;
 use super::{Action, FlatCraftApp, lock, objects, settings};
 
 /// Linked files are checked at most this often.
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(2);
-/// Curves are drawn as polylines this close to the true curve, in mm.
-const DRAW_TOLERANCE_MM: f64 = 0.02;
+/// Curves are drawn as polylines this close to the true curve, in mm: the
+/// lasso tests the same lines (`selection.set_in_polygon` too).
+const DRAW_TOLERANCE_MM: f64 = flatcraft_engine::lasso::OUTLINE_TOLERANCE_MM;
+
+/// What a drag on the empty canvas draws: a selection box, or a lasso (the
+/// Select/Lasso toggle of the Layout tab, keys V and L).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SelectTool {
+    #[default]
+    Select,
+    Lasso,
+}
 
 /// The ribbon tabs of Prepare.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum RibbonTab {
     #[default]
-    Home,
-    Arrange,
+    Layout,
     View,
 }
 
 impl RibbonTab {
-    pub const ALL: [RibbonTab; 3] = [RibbonTab::Home, RibbonTab::Arrange, RibbonTab::View];
+    pub const ALL: [RibbonTab; 2] = [RibbonTab::Layout, RibbonTab::View];
 
     pub fn name(self) -> &'static str {
         match self {
-            RibbonTab::Home => "Home",
-            RibbonTab::Arrange => "Arrange",
+            RibbonTab::Layout => "Layout",
             RibbonTab::View => "View",
         }
     }
@@ -60,19 +72,76 @@ pub enum Drag {
         start: kurbo::Point,
         current: kurbo::Point,
     },
-    /// A corner handle of the selection box. Several objects scale as one
-    /// group (`object.scale` with `group`).
+    /// A handle of the selection box. Several objects scale as one group
+    /// (`object.scale` with `group`). See `canvas::Stretch`.
     Scale {
         doc_id: u64,
         ids: Vec<u64>,
-        /// 0 top-left, 1 top-right, 2 bottom-right, 3 bottom-left.
-        corner_index: usize,
-        corner: kurbo::Point,
-        /// The opposite corner, which stays where it is.
-        anchor: kurbo::Point,
+        /// 0..4 the corners (top-left, top-right, bottom-right,
+        /// bottom-left), 4..8 the middles of the sides (top, right,
+        /// bottom, left).
+        handle: usize,
+        /// The selection box when the drag began.
+        start: kurbo::Rect,
         current: kurbo::Point,
+        /// Keep aspect when the drag began.
+        keep: bool,
+        /// Width and height may change apart: one object, turned by a
+        /// multiple of 90 degrees.
+        free: bool,
+        /// Shift is held: the opposite of `keep` for this drag.
+        flip: bool,
+        /// Option (Alt) is held: it scales about the centre.
+        centre: bool,
+    },
+    /// A turn of the selection: from the rotate zone just outside a corner,
+    /// or a corner handle with Cmd (macOS) or Ctrl held. One object turns
+    /// about its own centre, several about the mean of their centres, as
+    /// `object.rotate` does. See `canvas::rotate_delta`.
+    Rotate {
+        doc_id: u64,
+        ids: Vec<u64>,
+        /// The point it turns about, in mm.
+        pivot: kurbo::Point,
+        /// The pointer when the drag began, and now, in mm.
+        start: kurbo::Point,
+        current: kurbo::Point,
+        /// The rotation of the one object turned (Shift snaps its angle),
+        /// `None` for several (Shift snaps the turn).
+        base: Option<f64>,
+        /// Shift is held: 15 degree steps.
+        snap: bool,
+    },
+    /// A selection box or lasso drawn from the empty canvas (see
+    /// `flatcraft_engine::lasso`). On release the box selects the shown
+    /// objects fully inside it, the lasso every one its line touches or
+    /// encloses; with `toggle` (Shift) each picked one flips in the
+    /// selection instead.
+    Frame {
+        doc_id: u64,
+        start: kurbo::Point,
+        current: kurbo::Point,
+        toggle: bool,
+        /// The lasso's points in mm, from `start`; `None` for a box.
+        lasso: Option<Vec<kurbo::Point>>,
     },
 }
+
+/// Arrow-key presses that share one undo step (`object.move` with a
+/// `coalesce_key`): a held key, or presses less than [`NUDGE_BURST`]
+/// apart, on the same document and the same objects.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Nudge {
+    pub doc_id: u64,
+    pub ids: Vec<u64>,
+    /// Numbers the bursts of this window; the coalesce key.
+    pub burst: u64,
+    /// When the last press of the burst came.
+    pub last: Instant,
+}
+
+/// Arrow-key presses closer than this join one undo step.
+pub const NUDGE_BURST: Duration = Duration::from_millis(500);
 
 /// What the last check of linked files found, for one document.
 #[derive(Debug, Clone, Default)]
@@ -111,34 +180,94 @@ impl SourceStatus {
     }
 }
 
-/// Edit buffers of the ribbon's number fields.
+/// A number field of the Position and size group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SizeField {
+    X,
+    Y,
+    Width,
+    Height,
+    Percent,
+    /// The rotation in degrees, clockwise.
+    Angle,
+}
+
+/// Where a Position and size field is drawn: the same fields, with the
+/// same rules, sit in the ribbon and in the object inspector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum FieldPlace {
+    #[default]
+    Ribbon,
+    Inspector,
+}
+
+/// The number field being edited: it applies when it loses the focus.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldEdit {
+    pub field: SizeField,
+    /// Where it is being edited.
+    pub place: FieldPlace,
+    /// The text it showed when the editing began. An unchanged text
+    /// applies nothing.
+    pub shown: String,
+    /// The document and the objects selected when the editing began.
+    pub doc_id: u64,
+    pub ids: Vec<u64>,
+    /// Width and height of those objects may change apart (see
+    /// `canvas::free_aspect`).
+    pub free: bool,
+    /// The value it showed, unrounded, for a relative edit (`+=10`);
+    /// `None` when there was no single value (Mixed).
+    pub value: Option<f64>,
+}
+
+/// Edit buffers of the Position and size fields (the ribbon's and the
+/// object inspector's share them: one field is edited at a time).
 #[derive(Debug, Clone)]
 pub struct Fields {
+    /// The top-left corner of the selection box, in mm from the grid's 0,0.
+    pub x: String,
+    pub y: String,
     pub width: String,
     pub height: String,
     pub percent: String,
-    pub rotate: String,
+    /// The rotation in degrees; empty while the selection is turned
+    /// different ways (the field says Mixed).
+    pub angle: String,
     pub keep_aspect: bool,
+    /// Rotate and mirror each object about its own centre instead of the
+    /// selection as one group.
+    pub each: bool,
     /// Align to the cutting area instead of the selection.
     pub align_to_area: bool,
     pub search: String,
+    /// The field being edited, if any.
+    pub editing: Option<FieldEdit>,
+    /// A field whose text could not be read, and why: it keeps the text
+    /// and the focus, with a red outline and this message under it.
+    pub error: Option<(SizeField, String)>,
 }
 
 impl Default for Fields {
     fn default() -> Self {
         Self {
+            x: String::new(),
+            y: String::new(),
             width: String::new(),
             height: String::new(),
             percent: String::new(),
-            rotate: "15".into(),
+            angle: String::new(),
             keep_aspect: true,
+            each: false,
             align_to_area: false,
             search: String::new(),
+            editing: None,
+            error: None,
         }
     }
 }
 
-/// Speed, force or passes while its drag value is being dragged.
+/// Speed, force or passes, the job settings a document can override.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Override {
     Speed,
@@ -150,6 +279,15 @@ pub enum Override {
 #[derive(Debug, Clone)]
 pub struct PrepareState {
     pub view: CanvasView,
+    /// Room for the test shape, per document revision (Job card hint).
+    pub test_cut_cache: super::materials::TestCutCache,
+    /// Where the import report card stood this frame, if it shows: the
+    /// notices go below it.
+    pub report_rect: Option<Rect>,
+    /// Where the status pills stood this frame: the notices go above.
+    pub pills_rect: Option<Rect>,
+    /// The material picker's entries (see `materials::CardsCache`).
+    pub cards_cache: super::materials::CardsCache,
     /// Fit the mat into the canvas on the next frame.
     pub fit_pending: bool,
     /// The document the view was fitted for.
@@ -157,45 +295,199 @@ pub struct PrepareState {
     /// The canvas area of the last frame, in points.
     pub canvas_rect: Rect,
     pub tab: RibbonTab,
-    pub show_objects: bool,
-    pub show_settings: bool,
+    /// Which side panels are collapsed (see `rails`).
+    pub panels: super::rails::Panels,
     pub show_grid: bool,
     pub show_rulers: bool,
+    /// The objects (document id, object id, material id) the stencil
+    /// hint was shown for (`stencil_island`): it shows once per object
+    /// and material.
+    pub stencil_told: std::collections::BTreeSet<(u64, u64, String)>,
+    /// The kept and waste overlay on the Prepare canvas (View, Show). Off
+    /// until switched on; the Cut workspace always shows it.
+    pub show_kept_waste: bool,
+    /// The shared sheet is kept (see `cut::sheet_kept_now`), for the
+    /// Weeding section. Set each frame.
+    pub sheet_kept: bool,
+    /// The keep picker on the canvas ("Pick what stays"), while it is on.
+    pub keep_pick: Option<super::keep_pick::KeepPick>,
     pub fields: Fields,
     /// The search hits stay open (see `ribbon::search_box`).
     pub search_open: bool,
+    /// What a drag on the canvas draws (see [`SelectTool`]).
+    pub select_tool: SelectTool,
     pub drag: Option<Drag>,
-    /// A drag value being dragged, and its value so far.
-    pub live_override: Option<(Override, f64)>,
-    /// Warnings of the last import, until dismissed.
-    pub notices: Vec<String>,
+    /// The burst of arrow-key nudges going on, if any.
+    pub nudge: Option<Nudge>,
+    /// A speed typed above the plotter's maximum (and clamped): the speed
+    /// field says "These go to eleven." while that clamped value is still
+    /// the document's speed override (see [`Eleven`]).
+    pub speed_eleven: Option<Eleven>,
+    /// The report of the last import, until dismissed or all fixed.
+    pub report: Option<super::report::ImportCard>,
+    /// Reports of imports that landed in a tab that was not active: each
+    /// shows when its tab becomes active.
+    pub waiting_reports: std::collections::BTreeMap<u64, super::report::ImportCard>,
+    /// Move the view to these objects on the next frame ("Show me").
+    pub center_on: Option<Vec<u64>>,
     pub sources: SourceStatus,
     /// The link status of the other open documents, so switching back
     /// shows it at once and a quick switch does not check again.
     pub source_memory: HashMap<u64, SourceStatus>,
     pub cache: ShapeCache,
+    /// The tool card open on top of the inspector, if one is.
+    pub panel: Option<ArrangePanel>,
+    /// The values the cards last ran with (`Preferences::tool_cards`),
+    /// for the next card.
+    pub panel_last: super::inspector::tool_card::Values,
+    /// The Auto arrange card's last plan (see `arrange::AutoPlanCache`).
+    pub auto_plan: super::arrange::AutoPlanCache,
+    /// Open this group's list on the next frame (search asked for it).
+    pub open_group: Option<super::tools::GroupId>,
+    /// The screen area of the open tool card, last frame.
+    pub panel_rect: Option<Rect>,
+    /// At the end of the last frame a text field outside the tool card
+    /// (the search box, a size field) had the keys. egui drops the focus on
+    /// Escape before the key handler runs, so this is how the handler knows
+    /// that the Escape only leaves that field.
+    pub text_focus_elsewhere: bool,
+    /// A popup (a ribbon group's list, a menu) was open at the end of the
+    /// last frame, so an Escape now only closed it.
+    pub popup_was_open: bool,
+    /// The objects the open context menu works on (see `context_menu`).
+    pub context: Option<Vec<u64>>,
+    /// The group the person went into (double-click or Cmd-click on a
+    /// member), with its document: clicks then pick its members one by
+    /// one. Escape or a click outside it leaves it (see `canvas::pick`).
+    pub entered: Option<(u64, u64)>,
+    /// The groups folded open in the Objects panel, with their document.
+    pub open_groups: BTreeSet<(u64, u64)>,
+    /// The row of the Objects panel a Shift+click selects a range from:
+    /// the last row clicked without Shift (document, object or group).
+    pub list_anchor: Option<(u64, u64)>,
+    /// The canvas's last hit test (see `canvas::HitMemo`).
+    pub hit_memo: super::canvas::HitMemo,
+    /// Where the canvas painted its rotate cursor last frame (egui has no
+    /// rotate cursor, so it hides the pointer and paints one), if it did.
+    pub rotate_cursor: Option<Pos2>,
+    /// The open Rename dialog.
+    pub rename: Option<RenameDialog>,
+    /// Where the ribbon drew its tab row, its panel and its tools row,
+    /// last frame (see `ribbon::show`).
+    pub ribbon_layout: Option<super::ribbon::Layout>,
+    /// The filter typed over the Objects list, with its document (UI
+    /// state only, never saved; another document starts unfiltered).
+    pub objects_filter: Option<(u64, String)>,
+    /// The Objects filter field had the keys at the end of the last
+    /// frame: an Escape now clears the filter.
+    pub objects_filter_keys: bool,
+    /// Counts the times a notes field got the keyboard: the typing of one
+    /// visit to a field is one undo step (see `objects::notes`).
+    pub notes_burst: u64,
+    /// What the inspector on the right shows (the job line toggles it).
+    /// UI state only: no undo step, never saved.
+    pub inspector: super::inspector::InspectorView,
+    /// The document and selection the inspector followed last frame: a
+    /// change takes it back to the selection.
+    pub inspector_key: Option<(u64, BTreeSet<u64>)>,
+    /// The object inspector drew its Position and size fields last frame
+    /// (their edit ends when they are gone, see `ribbon::finish_pending`).
+    pub inspector_fields: bool,
+    /// The hints of the selected objects, for the object inspector.
+    pub object_hints: super::inspector::object::Hints,
+}
+
+/// The Rename dialog: its object and the name typed so far.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameDialog {
+    pub doc_id: u64,
+    pub id: u64,
+    pub name: String,
+}
+
+/// The speed attempt above the maximum: the document, plotter and
+/// material it was made for and the clamped value it became.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Eleven {
+    pub doc_id: u64,
+    pub plotter_id: String,
+    pub material_id: String,
+    pub speed: u32,
+}
+
+impl Eleven {
+    /// The attempt is still what the snapshot shows: same document,
+    /// plotter and material, and the speed the job cuts at (the override,
+    /// else the material's speed) is still the clamped value.
+    pub fn current(&self, snap: &Snapshot) -> bool {
+        self.doc_id == snap.doc_id
+            && self.plotter_id == snap.job.plotter_id
+            && self.material_id == snap.job.material_id
+            && effective_speed(snap) == Some(self.speed)
+    }
+}
+
+/// The speed the job cuts at: the override, else the material's own.
+fn effective_speed(snap: &Snapshot) -> Option<u32> {
+    snap.job
+        .speed
+        .or(snap.material.as_ref().map(|m| m.speed))
+        .map(u32::from)
 }
 
 impl Default for PrepareState {
     fn default() -> Self {
         Self {
             view: CanvasView::default(),
+            test_cut_cache: Default::default(),
+            cards_cache: Default::default(),
+            report_rect: None,
+            pills_rect: None,
             fit_pending: true,
             view_doc: None,
             canvas_rect: Rect::NOTHING,
             tab: RibbonTab::default(),
-            show_objects: true,
-            show_settings: true,
+            panels: super::rails::Panels::default(),
             show_grid: true,
             show_rulers: true,
+            show_kept_waste: false,
+            keep_pick: None,
+            sheet_kept: false,
+            stencil_told: Default::default(),
             fields: Fields::default(),
             search_open: false,
+            select_tool: SelectTool::default(),
             drag: None,
-            live_override: None,
-            notices: Vec::new(),
+            nudge: None,
+            speed_eleven: None,
+            report: None,
+            waiting_reports: Default::default(),
+            center_on: None,
             sources: SourceStatus::default(),
             source_memory: HashMap::new(),
             cache: ShapeCache::default(),
+            panel: None,
+            panel_last: Default::default(),
+            auto_plan: arrange::AutoPlanCache::default(),
+            open_group: None,
+            panel_rect: None,
+            text_focus_elsewhere: false,
+            popup_was_open: false,
+            context: None,
+            entered: None,
+            open_groups: BTreeSet::new(),
+            list_anchor: None,
+            hit_memo: Default::default(),
+            rotate_cursor: None,
+            rename: None,
+            ribbon_layout: None,
+            objects_filter: None,
+            objects_filter_keys: false,
+            notes_burst: 0,
+            inspector: Default::default(),
+            inspector_key: None,
+            inspector_fields: false,
+            object_hints: Default::default(),
         }
     }
 }
@@ -208,6 +500,14 @@ pub struct Line {
     pub points: Vec<kurbo::Point>,
     pub closed: bool,
     pub colour: Option<[u8; 3]>,
+    /// The index of the object's path it comes from: the lines of one
+    /// path fill together.
+    pub path: usize,
+    /// How the source path is filled, `None` when it is not: a click
+    /// inside a filled area hits the object (see `canvas::object_at`).
+    pub fill: Option<flatcraft_core::geometry::FillRule>,
+    /// The width of the source path's stroke as placed, mm (0 without).
+    pub stroke_mm: f64,
 }
 
 /// An object's placed paths and engine bounds, relative to its centre.
@@ -217,6 +517,10 @@ pub struct Shape {
     pub lines: Vec<Line>,
     /// What `document.state` reports as `bounds_mm`, minus the centre.
     pub bounds: Option<kurbo::Rect>,
+    /// The box Auto arrange packs or packs around, minus the centre (for
+    /// an untraced picture its image): the engine's
+    /// `centred_arrange_bounds`, so the preview matches the command.
+    pub arrange: Option<kurbo::Rect>,
 }
 
 /// Everything a cached shape depends on, except the centre.
@@ -228,7 +532,11 @@ struct ShapeKey {
     rotation_deg: f64,
     mirror: bool,
     local_bounds: kurbo::Rect,
+    frame: kurbo::Rect,
     cut: CutOptions,
+    /// The knife's tolerance and narrowest feature, as bits: slivers do
+    /// not count for the bounds.
+    knife: [u64; 2],
 }
 
 /// A cached shape, its key and the geometry the key points to.
@@ -247,16 +555,24 @@ pub struct ShapeInput {
     pub geometry: Arc<Vec<CutPath>>,
     pub transform: Transform,
     pub local_bounds: kurbo::Rect,
+    /// The source's page frame in local mm (`Object::frame`).
+    pub frame: kurbo::Rect,
     pub cut: CutOptions,
+    /// The narrowest filled shape the knife cuts
+    /// (`commands::min_width_of`): slivers thinner are not cut and do not
+    /// count for the bounds.
+    pub min_width: flatcraft_engine::cutgeom::Knife,
 }
 
 impl ShapeInput {
-    fn of(o: &Object) -> Self {
+    fn of(o: &Object, min_width: flatcraft_engine::cutgeom::Knife) -> Self {
         Self {
             geometry: o.geometry.clone(),
             transform: o.transform,
             local_bounds: o.local_bounds,
+            frame: o.frame,
             cut: o.cut,
+            min_width,
         }
     }
 
@@ -269,7 +585,12 @@ impl ShapeInput {
             rotation_deg: t.rotation_deg,
             mirror: t.mirror,
             local_bounds: self.local_bounds,
+            frame: self.frame,
             cut: self.cut,
+            knife: [
+                self.min_width.tolerance_mm.to_bits(),
+                self.min_width.min_width_mm.to_bits(),
+            ],
         }
     }
 
@@ -279,21 +600,14 @@ impl ShapeInput {
 
     /// An object with only what drawing and bounds read.
     fn object(&self) -> Object {
-        Object {
-            id: flatcraft_core::document::ObjectId(0),
-            name: String::new(),
-            source: Source::Svg {
-                name: String::new(),
-                bytes: Vec::new().into(),
-            },
-            transform: self.transform,
-            visible: true,
-            cut: self.cut,
-            link: None,
-            geometry: self.geometry.clone(),
-            local_bounds: self.local_bounds,
-            frame: kurbo::Rect::ZERO,
-        }
+        let mut o = Object::shape_only(
+            self.geometry.clone(),
+            self.local_bounds,
+            self.transform,
+            self.cut,
+        );
+        o.frame = self.frame;
+        o
     }
 }
 
@@ -431,8 +745,9 @@ impl ShapeCache {
 
     /// Takes the shapes the worker finished. A worker that died is
     /// dropped with what it was building, so those shapes are asked for
-    /// again (and built inline, see `submit`).
-    fn collect(&mut self) {
+    /// again (and built inline, see `submit`). Prepare's snapshot calls
+    /// it, the window on Home.
+    pub fn collect(&mut self) {
         let Some(done) = &self.done else { return };
         loop {
             match done.try_recv() {
@@ -526,7 +841,21 @@ pub fn build_shape(input: &ShapeInput) -> Shape {
     let mut o = input.object();
     o.transform.center_mm = kurbo::Point::ORIGIN;
     let mut lines = Vec::new();
-    for p in o.placed_paths() {
+    let scale = o
+        .transform
+        .affine(o.local_bounds)
+        .determinant()
+        .abs()
+        .sqrt();
+    for (index, p) in o.placed_paths().into_iter().enumerate() {
+        let start_line = |pt: kurbo::Point| Line {
+            points: vec![pt],
+            closed: false,
+            colour: p.color,
+            path: index,
+            fill: p.paint.fill,
+            stroke_mm: p.paint.stroke.map_or(0.0, |st| st.width_mm * scale),
+        };
         let mut current: Option<Line> = None;
         kurbo::flatten(
             p.path.elements().iter().copied(),
@@ -538,11 +867,7 @@ pub fn build_shape(input: &ShapeInput) -> Shape {
                     {
                         lines.push(l);
                     }
-                    current = Some(Line {
-                        points: vec![pt],
-                        closed: false,
-                        colour: p.color,
-                    });
+                    current = Some(start_line(pt));
                 }
                 kurbo::PathEl::LineTo(pt) => {
                     // A repeated point draws nothing.
@@ -564,11 +889,7 @@ pub fn build_shape(input: &ShapeInput) -> Shape {
                         if l.points.len() > 1 {
                             lines.push(l);
                         }
-                        current = Some(Line {
-                            points: vec![start],
-                            closed: false,
-                            colour: p.color,
-                        });
+                        current = Some(start_line(start));
                     }
                 }
                 _ => {}
@@ -582,7 +903,8 @@ pub fn build_shape(input: &ShapeInput) -> Shape {
     }
     Shape {
         lines,
-        bounds: placed_bounds(&o),
+        bounds: placed_bounds(&o, input.min_width),
+        arrange: flatcraft_engine::commands::centred_arrange_bounds(&o, input.min_width),
     }
 }
 
@@ -593,18 +915,47 @@ pub struct ObjView {
     pub name: String,
     pub raster: bool,
     pub visible: bool,
+    /// False: shown, but left out of the cut.
+    pub cut_enabled: bool,
     pub transform: Transform,
     pub cut: CutOptions,
+    /// What is kept after cutting (shared by linked copies).
+    pub keep: flatcraft_core::document::KeepMode,
     /// Last known path of the linked file.
     pub link: Option<PathBuf>,
+    /// The whole link, to find the file where Reload would read it
+    /// ([`flatcraft_engine::commands::sources::find_linked_file`]).
+    pub source_link: Option<flatcraft_core::document::SourceLink>,
+    /// The group of linked copies the object belongs to.
+    pub link_group: Option<u64>,
+    /// The group of objects it is in (Group, Cmd+G), if any.
+    pub parent: Option<u64>,
+    /// The source bytes, shared with the document. See [`ObjView::same_source`].
+    pub source: Arc<[u8]>,
     pub shape: Arc<Shape>,
 }
 
 impl ObjView {
+    /// Same source, as `object.link` compares: the same allocation, else
+    /// the same length and bytes (copies, and two imports of one file).
+    pub fn same_source(&self, other: &ObjView) -> bool {
+        Arc::ptr_eq(&self.source, &other.source) || *self.source == *other.source
+    }
+
     /// The engine's bounds in mat mm, as `document.state` reports them.
     pub fn bounds(&self) -> Option<kurbo::Rect> {
         self.shape
             .bounds
+            .map(|b| b + self.transform.center_mm.to_vec2())
+    }
+
+    /// The box Auto arrange packs or packs around, built as the engine's
+    /// `arrange_bounds` (the cut geometry's box, or for an untraced
+    /// picture its image), so both agree to the last bit. `None` while the
+    /// shape is still being built.
+    pub fn arrange_bounds(&self) -> Option<kurbo::Rect> {
+        self.shape
+            .arrange
             .map(|b| b + self.transform.center_mm.to_vec2())
     }
 }
@@ -613,7 +964,18 @@ impl ObjView {
 #[derive(Debug, Clone)]
 pub struct Snapshot {
     pub doc_id: u64,
+    /// A long command of the window (import, trace, open, export) runs or
+    /// waits (`FlatCraftApp::long`): the actions that start one are dimmed.
+    pub busy: bool,
+    /// The document's revision (`DocState::revision`): it changes with
+    /// every change of the document, undo and redo included.
+    pub doc_rev: u64,
+    /// The profile store's revision (`ProfileStore::revision`): a
+    /// simulation is valid only for the profiles it was run with.
+    pub profiles_rev: u64,
     pub objects: Vec<ObjView>,
+    /// The groups of objects over `objects` (see `flatcraft_core::nodes`).
+    pub tree: Tree,
     pub selection: BTreeSet<u64>,
     pub job: JobSettings,
     pub plotter: Option<PlotterProfile>,
@@ -621,7 +983,20 @@ pub struct Snapshot {
     pub material: Option<MaterialProfile>,
     pub plotters: Vec<PresetInfo>,
     pub materials: Vec<PresetInfo>,
+    /// The material picker's entries, in picker order.
+    pub material_cards: Vec<super::materials::MaterialCard>,
+    /// Set when the document's material was never cut on this computer:
+    /// the Job card suggests a test cut.
+    pub test_cut: Option<super::materials::TestCut>,
+    /// Why the person's own preset file with the document's material id
+    /// was skipped at load, when it was.
+    pub material_skipped: Option<super::materials::Skipped>,
     pub mat: Option<Media>,
+    /// The colour the mat is drawn in: its own, else the Settings default of
+    /// the theme in use (`flatcraft_engine::prefs::resolved_mat_colour`).
+    /// Everything that draws on the mat or picks a contrast colour from it
+    /// reads this, never `Media::color`.
+    pub mat_colour: [u8; 3],
     /// The cutting area, in mm.
     pub area: Option<kurbo::Rect>,
     /// Set when the document's mat is gone and the plotter's first mat is
@@ -630,6 +1005,10 @@ pub struct Snapshot {
     /// Why the plotter or material preset cannot be used (a bad value).
     pub profile_problem: Option<String>,
     pub auto_reload: bool,
+    /// The ribbon actions pinned as buttons (preference ids).
+    pub ribbon_pins: Vec<String>,
+    /// The spacing of the one-click Auto arrange, in mm (preferences).
+    pub auto_spacing_mm: f64,
     /// The image or the trace settings of the Trace dialog's object
     /// changed since the dialog opened (an agent retraced or reloaded it).
     pub trace_source_changed: bool,
@@ -639,6 +1018,21 @@ pub struct Snapshot {
     /// The output folder of the preferences.
     pub output_pref: Option<PathBuf>,
     pub config_dir: PathBuf,
+    /// The document's project file, if it has one.
+    pub project: Option<PathBuf>,
+    /// The project's one-line description (empty when none).
+    pub description: String,
+    /// The project's notes (empty when none).
+    pub notes: String,
+    /// The cut the Job card recalls for the document's material (see
+    /// `CutLog::last_time`).
+    pub last_time: Option<flatcraft_engine::cutlog::CutEntry>,
+    /// The newest cut with the document's material nobody rated yet (see
+    /// `CutLog::to_rate`).
+    pub to_rate: Option<flatcraft_engine::cutlog::CutEntry>,
+    /// The newest cut with the document's material rated good (see
+    /// `CutLog::last_good`), for the "It didn't cut right..." helper.
+    pub last_good: Option<flatcraft_engine::cutlog::CutEntry>,
 }
 
 impl Snapshot {
@@ -662,22 +1056,117 @@ impl Snapshot {
         self.objects.iter().find(|o| o.id == id)
     }
 
-    /// Visible objects that are not inside the cutting area.
+    /// What moves as one in the selection: whole groups, and objects
+    /// picked inside a group or outside any (see `Tree::units`).
+    pub fn units(&self) -> Vec<u64> {
+        self.units_of(&self.selection.iter().copied().collect::<Vec<_>>())
+    }
+
+    /// What moves as one for the objects `ids`.
+    pub fn units_of(&self, ids: &[u64]) -> Vec<u64> {
+        let leaves: Vec<ObjectId> = ids.iter().map(|i| ObjectId(*i)).collect();
+        self.tree.units(&leaves).into_iter().map(|u| u.0).collect()
+    }
+
+    /// The objects of a unit: the object itself, or all of a group's.
+    pub fn leaves_of(&self, unit: u64) -> Vec<u64> {
+        self.tree
+            .leaves_of(ObjectId(unit))
+            .into_iter()
+            .map(|u| u.0)
+            .collect()
+    }
+
+    pub fn is_group(&self, id: u64) -> bool {
+        self.tree.is_group(ObjectId(id))
+    }
+
+    /// The common box of the objects `ids` (the engine's bounds).
+    /// Hidden objects do not count, unless all of them are hidden, as the
+    /// engine's `common_box`.
+    pub fn box_of(&self, ids: &[u64]) -> Option<kurbo::Rect> {
+        let objs: Vec<&ObjView> = ids.iter().filter_map(|id| self.object(*id)).collect();
+        let any_shown = objs.iter().any(|o| o.visible);
+        objs.into_iter()
+            .filter(|o| o.visible || !any_shown)
+            .filter_map(ObjView::bounds)
+            .reduce(|a, b| a.union(b))
+    }
+
+    /// The point a unit turns about on its own, as `object.rotate` has it:
+    /// an object's centre, a group's box centre.
+    pub fn unit_centre(&self, unit: u64) -> Option<kurbo::Point> {
+        match self.object(unit) {
+            Some(o) => Some(o.transform.center_mm),
+            None => self.box_of(&self.leaves_of(unit)).map(|b| b.center()),
+        }
+    }
+
+    /// The angle of a unit as the Angle field shows it: an object's
+    /// rotation, a group's own angle.
+    pub fn unit_angle(&self, unit: u64) -> Option<f64> {
+        match self.object(unit) {
+            Some(o) => Some(o.transform.rotation_deg),
+            None => self.tree.group(ObjectId(unit)).map(|g| g.rotation_deg),
+        }
+    }
+
+    /// The name of an object or a group.
+    pub fn name_of(&self, id: u64) -> Option<String> {
+        match self.object(id) {
+            Some(o) => Some(o.name.clone()),
+            None => self.tree.group(ObjectId(id)).map(|g| g.name.clone()),
+        }
+    }
+
+    /// How many different linked files the objects `ids` have: linked
+    /// copies, and plain copies of one import, share one file. An object
+    /// without a known file counts on its own.
+    pub fn files_of(&self, ids: &[u64]) -> usize {
+        let mut files: BTreeSet<&std::path::Path> = BTreeSet::new();
+        let mut others = 0;
+        for id in ids {
+            match self.object(*id).and_then(|o| o.link.as_deref()) {
+                Some(path) => {
+                    files.insert(path);
+                }
+                None => others += 1,
+            }
+        }
+        files.len() + others
+    }
+
+    /// How many objects are in the group of linked copies `group`.
+    pub fn group_size(&self, group: u64) -> usize {
+        self.objects
+            .iter()
+            .filter(|o| o.link_group == Some(group))
+            .count()
+    }
+
+    /// How many linked copies a change of a shared setting (cut options,
+    /// scale) of the selection changes: every member of the groups of the
+    /// selected objects. `None` when no selected object is a linked copy.
+    pub fn linked_reach(&self) -> Option<usize> {
+        let groups: BTreeSet<u64> = self.selected().filter_map(|o| o.link_group).collect();
+        (!groups.is_empty()).then(|| {
+            self.objects
+                .iter()
+                .filter(|o| o.link_group.is_some_and(|g| groups.contains(&g)))
+                .count()
+        })
+    }
+
+    /// Visible objects that are cut and not inside the cutting area.
     pub fn outside_area(&self) -> usize {
-        const SLACK: f64 = 1e-6;
         let Some(a) = self.area else {
             return 0;
         };
         self.objects
             .iter()
-            .filter(|o| o.visible)
+            .filter(|o| o.visible && o.cut_enabled)
             .filter_map(ObjView::bounds)
-            .filter(|b| {
-                b.x0 < a.x0 - SLACK
-                    || b.y0 < a.y0 - SLACK
-                    || b.x1 > a.x1 + SLACK
-                    || b.y1 > a.y1 + SLACK
-            })
+            .filter(|b| !flatcraft_engine::commands::inside(*b, a))
             .count()
     }
 
@@ -699,7 +1188,10 @@ pub fn snapshot(app: &mut FlatCraftApp, ctx: &egui::Context) -> Snapshot {
 /// thread; until one is ready the object shows its last shape (or none),
 /// and the window repaints when it arrives.
 pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool) -> Snapshot {
+    let busy = app.long.busy();
     let cache = &mut app.ui.prepare.cache;
+    let test_cut_cache = &mut app.ui.prepare.test_cut_cache;
+    let cards_cache = &mut app.ui.prepare.cards_cache;
     cache.collect();
     let trace = &mut app.ui.trace;
     let mut misses: Vec<(usize, ShapeInput)> = Vec::new();
@@ -737,6 +1229,12 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
             .zip(effective.as_ref())
             .and_then(|(p, (m, _))| p.cutting_area(&m.id));
         let (mat, mat_warning) = effective.unzip();
+        let dark = ctx.global_style().visuals.dark_mode;
+        let mat_colour = mat.as_ref().map_or_else(
+            || s.prefs.mat_default(dark),
+            |m| flatcraft_engine::prefs::resolved_mat_colour(m, &s.prefs, dark),
+        );
+        let cut_log = s.cut_log();
         let mat_warning = mat_warning.flatten();
         let trace_source_changed = trace.as_mut().is_some_and(|d| {
             d.doc_id == st.id()
@@ -751,8 +1249,9 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
                 }
         });
         let mut objects = Vec::with_capacity(st.document.objects.len());
+        let min_width = flatcraft_engine::commands::knife_of(&s);
         for (i, o) in st.document.objects.iter().enumerate() {
-            let input = ShapeInput::of(o);
+            let input = ShapeInput::of(o, min_width);
             let shape = match cache.current(doc_id, o.id.0, &input.key()) {
                 Some(shape) => shape,
                 None => {
@@ -766,33 +1265,89 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
                 name: o.name.clone(),
                 raster: matches!(o.source, Source::Raster { .. }),
                 visible: o.visible,
+                cut_enabled: o.cut_enabled,
                 transform: o.transform,
                 cut: o.cut,
+                keep: o.keep,
                 link: o.link.as_ref().map(|l| l.path.clone()),
+                source_link: o.link.clone(),
+                link_group: o.link_group.map(|g| g.0),
+                parent: o.parent.map(|g| g.0),
+                source: match &o.source {
+                    Source::Svg { bytes, .. } | Source::Raster { bytes, .. } => bytes.clone(),
+                },
                 shape,
             });
         }
         Snapshot {
             doc_id: st.id(),
+            busy,
+            doc_rev: st.revision(),
+            profiles_rev: s.profiles.revision(),
             objects,
+            tree: st.document.tree(),
             selection: st.selection.iter().map(|i| i.0).collect(),
             job,
             plotter: plotter.clone(),
             material: material.clone(),
             plotters: s.profiles.plotters(),
             materials: s.profiles.materials(),
+            material_cards: cards_cache.get(&s.profiles, &cut_log),
+            material_skipped: s
+                .profiles
+                .diagnostics()
+                .iter()
+                .find(|d| {
+                    d.id.as_deref() == Some(st.document.job.material_id.as_str())
+                        && d.path
+                            .parent()
+                            .and_then(|p| p.file_name())
+                            .is_some_and(|n| n == "materials")
+                })
+                .map(|d| super::materials::Skipped {
+                    reason: d.reason.clone(),
+                    shadows_system: d.shadows_system,
+                }),
+            test_cut: (!cut_log.has_cut(&st.document.job.material_id))
+                .then(|| {
+                    test_cut_cache.room(st.id(), st.revision(), &plotter, &material, || {
+                        match (&plotter, &material) {
+                            (Some(p), Some(m)) => {
+                                let input = JobInput::from_parts(&st.document, p.clone(), m);
+                                flatcraft_engine::troubleshoot::test_shape_spot(&input).is_some()
+                            }
+                            // Without a job the button says why when it runs.
+                            _ => true,
+                        }
+                    })
+                })
+                .map(|room| super::materials::TestCut { room }),
             mat,
+            mat_colour,
             area,
             mat_warning,
             profile_problem,
             auto_reload: s.prefs.auto_reload,
+            ribbon_pins: s.prefs.ribbon_pins.clone(),
+            auto_spacing_mm: arrange::remembered_spacing(&arrange::memory_from_prefs(
+                &s.prefs.tool_cards,
+            )),
             trace_source_changed,
             job_input: want_job.then(|| match (&plotter, &material) {
-                (Some(p), Some(m)) => Ok(JobInput::from_parts(&st.document, p.clone(), m)),
+                // The document's cached cut geometry seeds the build,
+                // which runs outside the lock (`CutState::update`).
+                (Some(p), Some(m)) => Ok(JobInput::from_parts(&st.document, p.clone(), m)
+                    .with_seed(st.cached_cut_geometry())),
                 _ => JobInput::of(&s),
             }),
             output_pref: s.prefs.output_dir.clone(),
             config_dir: s.config_dir.clone(),
+            project: st.path.clone(),
+            description: st.document.description.clone(),
+            notes: st.document.notes.clone(),
+            last_time: cut_log.last_time(&st.document.job.material_id).cloned(),
+            to_rate: cut_log.to_rate(&st.document.job.material_id).cloned(),
+            last_good: cut_log.last_good(&st.document.job.material_id).cloned(),
         }
     };
     let doc_id = snap.doc_id;
@@ -966,33 +1521,187 @@ impl FlatCraftApp {
 /// Draws the panels and the canvas of Prepare.
 pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut Vec<Action>) {
     let t = app.tokens;
-    let mut show_objects = app.ui.prepare.show_objects;
-    egui::Panel::left("flatcraft-objects")
-        .resizable(true)
-        .default_size(240.0)
-        .frame(egui::Frame::new().fill(t.panel).inner_margin(t.spacing))
-        .show_collapsible(ui, &mut show_objects, |ui| {
-            objects::show(ui, &app.ui.prepare, snap, &t, actions);
-        });
-    app.ui.prepare.show_objects = show_objects;
+    arrange::keep_or_close(&mut app.ui.prepare, snap);
+    super::inspector::follow_selection(&mut app.ui.prepare, snap);
+    // The object inspector says again this frame whether its fields show.
+    app.ui.prepare.inspector_fields = false;
+    // The filter field says again this frame whether it has the keys; it
+    // is not drawn while the Objects panel is a rail.
+    app.ui.prepare.objects_filter_keys = false;
+    // Another document or another selection cancels the keep picker.
+    if app
+        .ui
+        .prepare
+        .keep_pick
+        .as_ref()
+        .is_some_and(|k| !k.still_on(snap))
+    {
+        app.ui.prepare.keep_pick = None;
+    }
+    if let Some(pick) = &mut app.ui.prepare.keep_pick {
+        pick.refresh(snap);
+    }
+    app.ui.prepare.panels.card_open = app.ui.prepare.panel.is_some();
+    if app.ui.prepare.panels.collapsed(SidePanel::Objects) {
+        let filter = objects::filter_text(&app.ui.prepare, snap);
+        let summary = rails::objects_summary_filtered(snap, filter);
+        if rails::show_rail(ui, SidePanel::Objects, Side::Left, &t, &summary) {
+            app.ui
+                .prepare
+                .panels
+                .set_collapsed(SidePanel::Objects, false);
+        }
+    } else {
+        egui::Panel::left("flatcraft-objects")
+            .resizable(true)
+            .default_size(super::metrics::LEFT_PANEL_W)
+            .frame(
+                egui::Frame::new()
+                    .fill(t.panel)
+                    .inner_margin(super::metrics::panel_margin()),
+            )
+            .show(ui, |ui| {
+                rails::panel_body(ui, |ui| {
+                    objects::show(ui, &mut app.ui.prepare, snap, &t, actions);
+                });
+            });
+    }
 
-    let mut show_settings = app.ui.prepare.show_settings;
-    egui::Panel::right("flatcraft-settings")
-        .resizable(true)
-        .default_size(260.0)
-        .frame(egui::Frame::new().fill(t.panel).inner_margin(t.spacing))
-        .show_collapsible(ui, &mut show_settings, |ui| {
-            settings::show(ui, &mut app.ui.prepare, snap, &t, actions);
-        });
-    app.ui.prepare.show_settings = show_settings;
+    // The tool card sits in the inspector; until it is drawn this frame,
+    // there is none.
+    app.ui.prepare.panel_rect = None;
+
+    if app.ui.prepare.panels.collapsed(SidePanel::Settings) {
+        let summary = rails::settings_summary(snap, rails::job_dot(snap, Some(&app.ui.cut)));
+        if rails::show_rail(ui, SidePanel::Settings, Side::Right, &t, &summary) {
+            app.ui
+                .prepare
+                .panels
+                .set_collapsed(SidePanel::Settings, false);
+        }
+    } else {
+        egui::Panel::right("flatcraft-settings")
+            .resizable(true)
+            .default_size(super::metrics::RIGHT_PANEL_W)
+            // No right margin: the inspector keeps the panel's padding
+            // itself, and its scroll bar sits in it.
+            .frame(egui::Frame::new().fill(t.panel).inner_margin(egui::Margin {
+                right: 0,
+                ..super::metrics::panel_margin()
+            }))
+            .show(ui, |ui| {
+                let dot = rails::job_dot(snap, Some(&app.ui.cut));
+                rails::panel_body(ui, |ui| {
+                    super::inspector::show(
+                        ui,
+                        &mut app.ui.prepare,
+                        snap,
+                        dot,
+                        &t,
+                        &mut app.ui.show_debug,
+                        actions,
+                    );
+                });
+            });
+    }
 
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(t.bg))
         .show(ui, |ui| {
             let rect = ui.max_rect();
-            canvas::show(ui, rect, snap, &mut app.ui.prepare, &t, actions);
+            canvas::show(
+                ui,
+                rect,
+                snap,
+                &mut app.ui.prepare,
+                &mut app.ui.cut,
+                &t,
+                actions,
+            );
             pills(ui, rect, snap, &mut app.ui.prepare, &t, actions);
+            let job = app.ui.cut.job();
+            let p = &mut app.ui.prepare;
+            if let Some(pick) = &mut p.keep_pick {
+                let elsewhere = job.as_ref().is_some_and(|j| pick.sheet_kept_elsewhere(j));
+                match pick.bar(ui, rect, snap, job.is_some(), elsewhere, &t) {
+                    Some(super::keep_pick::Outcome::Done) => {
+                        actions.extend(pick.done_action(snap));
+                        p.keep_pick = None;
+                    }
+                    Some(super::keep_pick::Outcome::Cancel) => p.keep_pick = None,
+                    None => {}
+                }
+            }
+            let p = &mut app.ui.prepare;
+            p.report_rect = None;
+            if let Some(card) = p.report.as_ref().filter(|c| c.doc_id == snap.doc_id) {
+                let (keep, at) = super::report::import_card(ui, rect, card, &t, actions);
+                p.report_rect = keep.then_some(at);
+                if !keep {
+                    p.report = None;
+                }
+            }
         });
+    let p = &mut app.ui.prepare;
+    rename_window(ui.ctx(), &mut p.rename, snap, &t, actions);
+}
+
+/// The card of the Rename dialog's Rename button.
+pub const RENAME_HINT: &str = "Give the object the name in the field.";
+/// The card of its Cancel button.
+pub const RENAME_CANCEL_HINT: &str = "Keep the old name.";
+/// Why Rename is dimmed with an empty field.
+pub const RENAME_NEEDS_NAME: &str = "Type a name first. An object needs a name you can find again.";
+
+/// The Rename dialog (the shared [`super::dialog`]). It closes when its
+/// document is no longer shown or its object (or group) is gone. Enter or Rename
+/// sends `object.rename`; Escape, × and Cancel close it.
+fn rename_window(
+    ctx: &egui::Context,
+    slot: &mut Option<RenameDialog>,
+    snap: &Snapshot,
+    t: &Tokens,
+    actions: &mut Vec<Action>,
+) {
+    let Some(d) = slot else {
+        return;
+    };
+    // An object or a group.
+    if d.doc_id != snap.doc_id || snap.name_of(d.id).is_none() {
+        *slot = None;
+        return;
+    }
+    let dialog = super::dialog::Dialog::new("rename", super::dialog::Kind::Info, "Rename")
+        .body("A name you will find again in the Objects panel.")
+        .primary("Rename")
+        .primary_hint(RENAME_HINT)
+        .cancel_hint(RENAME_CANCEL_HINT);
+    // Whether Rename can run is decided after the field took this frame's
+    // typing, so the button and Enter see the name as it is now.
+    let answer = dialog.show_with(ctx, t, |ui| {
+        ui.add_space(metrics::SPACE_8);
+        let field = ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(f32::INFINITY));
+        settings::set_name(ui, &field, "Name");
+        if !field.has_focus() && !field.lost_focus() {
+            field.request_focus();
+        }
+        d.name
+            .trim()
+            .is_empty()
+            .then(|| RENAME_NEEDS_NAME.to_string())
+    });
+    match answer {
+        Some(super::dialog::Answer::Primary) => {
+            actions.push(Action::run(
+                d.doc_id,
+                "object.rename",
+                json!({ "id": d.id, "name": d.name }),
+            ));
+            *slot = None;
+        }
+        Some(_) => *slot = None,
+        None => {}
+    }
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {
@@ -1014,12 +1723,16 @@ fn pills(
     actions: &mut Vec<Action>,
 ) {
     let area = Rect::from_min_max(
-        rect.min + egui::vec2(canvas::RULER + t.spacing, canvas::RULER + t.spacing),
-        rect.max - egui::vec2(t.spacing, t.spacing),
+        rect.min
+            + egui::vec2(
+                canvas::RULER + metrics::SPACE_8,
+                canvas::RULER + metrics::SPACE_8,
+            ),
+        rect.max - egui::vec2(metrics::SPACE_8, metrics::SPACE_8),
     );
     let doc_id = snap.doc_id;
     let src = &mut st.sources;
-    ui.scope_builder(
+    let shown = ui.scope_builder(
         egui::UiBuilder::new()
             .max_rect(area)
             .layout(egui::Layout::bottom_up(egui::Align::Min)),
@@ -1029,7 +1742,7 @@ fn pills(
                     .fill(t.surface)
                     .stroke(egui::Stroke::new(1.0, colour))
                     .corner_radius(t.radius * 2)
-                    .inner_margin(egui::Margin::symmetric(t.spacing as i8 * 2, 4))
+                    .inner_margin(egui::Margin::symmetric(metrics::SPACE_16 as i8, metrics::SPACE_4 as i8))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| add(ui));
                     });
@@ -1063,23 +1776,12 @@ fn pills(
                         .on_hover_text("Even the Millennium Falcon needs a hangar. Move it onto the mat.");
                 });
             }
-            if !st.notices.is_empty() {
-                let first = st.notices[0].clone();
-                let more = st.notices.len() - 1;
-                let mut dismiss = false;
-                pill(ui, t.accent_cut, &mut |ui| {
-                    ui.label(first.as_str());
-                    if more > 0 {
-                        ui.label(RichText::new(format!("and {more} more")).color(t.text_dim));
-                    }
-                    dismiss = ui.button("Dismiss").clicked();
-                });
-                if dismiss {
-                    st.notices.clear();
-                }
-            }
             if !src.changed.is_empty() {
-                let text = plural(src.changed.len(), "source file changed", "source files changed");
+                let text = plural(
+                    snap.files_of(&src.changed),
+                    "source file changed",
+                    "source files changed",
+                );
                 let ids = src.changed.clone();
                 pill(ui, t.accent_prepare, &mut |ui| {
                     ui.label(text.as_str());
@@ -1104,7 +1806,7 @@ fn pills(
                 pill(ui, t.danger, &mut |ui| {
                     if !src.missing.is_empty() {
                         ui.label(plural(
-                            src.missing.len(),
+                            snap.files_of(&src.missing),
                             "source file not found",
                             "source files not found",
                         ))
@@ -1112,7 +1814,7 @@ fn pills(
                     }
                     if !src.unreadable.is_empty() {
                         ui.label(plural(
-                            src.unreadable.len(),
+                            snap.files_of(&src.unreadable),
                             "source file can't be read",
                             "source files can't be read",
                         ));
@@ -1150,6 +1852,8 @@ fn pills(
             }
         },
     );
+    // An empty bottom-up scope still reports a point: no pills then.
+    st.pills_rect = Some(shown.response.rect).filter(|r| r.height() >= 1.0);
 }
 
 #[cfg(test)]
@@ -1179,7 +1883,9 @@ mod tests {
             local_bounds: flatcraft_core::geometry::bounds(&geometry).unwrap(),
             geometry: Arc::new(geometry),
             transform: Transform::default(),
+            frame: kurbo::Rect::ZERO,
             cut: CutOptions::default(),
+            min_width: Default::default(),
         };
         let shape = build_shape(&input);
         assert_eq!(shape.lines.len(), 1);

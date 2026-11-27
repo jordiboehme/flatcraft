@@ -1,0 +1,20 @@
+# Starting values in our own words, from several public sources (see
+# docs/materials.md). Always check them with a test cut first.
+id = "cardstock-heavy"
+name = "Cardstock (heavy, about 250-300 g/m2)"
+group = "paper_and_card"
+speed = 2
+force = 33
+passes = 1
+reverse_alternate_passes = false
+overcut_mm = 0.5
+track_enhancing = false
+# Thick or dense: the blade turns badly while it is down, so it cuts
+# 0.1 mm past sharp corners in the waste, lifts and starts the next line
+# fresh (docs/materials.md, corner mode).
+corner_mode = { LiftOvershoot = { overshoot_mm = 0.1 } }
+# No backing sheet: small loose parts fall out.
+backing = false
+mat_tack = "strong"
+blade_depth_hint = "blade 7"
+tips = "Tape the edges down if the mat lets go. Before you unload, lift a corner: if it still hangs on, send the cut again without moving the mat, as a second pass."

@@ -7,7 +7,7 @@ pub mod svg;
 pub mod trace;
 
 /// Errors from importing a file.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum ImportError {
     #[error("{}", parse_text(.0))]
     Parse(String),

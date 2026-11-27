@@ -3,21 +3,29 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use flatcraft_core::document::{CutOptions, Document, JobSettings, ObjectId};
+use flatcraft_core::document::{CutOptions, Document, GroupId, JobSettings, KeepMode, ObjectId};
 use flatcraft_core::geometry::CutPath;
 use flatcraft_core::transform::Transform;
-use flatcraft_device::gpgl::{CheckedJob, CutSettings, EmitError, EmitPath, EmittedJob, emit_job};
-use flatcraft_device::{
-    FileTransport, MaterialProfile, PlotterProfile, SendReport, Transport, TransportError,
-    TransportSpec,
+use flatcraft_device::gpgl::{
+    CheckedJob, CutSettings, EmitError, EmitPath, EmittedJob, GeometryKind, emit_job,
 };
-use flatcraft_path::{CutPlan, PathRef, PipelineSettings, PlacedPath, PlanError, plan};
+use flatcraft_device::{
+    CornerModeSpec, FileTransport, KnifeCompensation, MaterialProfile, MediaKind, PlotterProfile,
+    SendReport, Transport, TransportError, TransportSpec,
+};
+use flatcraft_path::{
+    AppliedCompensation, Compensation, CornerMode, CutPlan, HostSettings, PathRef,
+    PipelineSettings, PlacedPath, PlanError, StrategySettings, Toolpath, ToolpathKind, knife,
+    plan_with_regions,
+};
 use serde_json::{Value, json};
 
 use crate::commands::profile_error;
-use crate::commands::project::{inside, lexical, resolved};
-use crate::cutgeom;
+use crate::commands::project::{in_config, lexical, resolve_strict, resolved};
+use crate::cutgeom::{self, CutGeometry, CutPiece, PieceFacts};
+use crate::cutlog;
 use crate::gate::{self, GateDecision};
+use crate::report::{self, BuildFacts, Issue};
 use crate::session::{CommandError, JobSummary, Origin, Session};
 
 /// Join tolerance of the pipeline: path ends closer than this are joined.
@@ -45,8 +53,39 @@ pub struct JobResult {
     pub job: EmittedJob,
     pub settings: CutSettings,
     pub warnings: Vec<String>,
+    /// How many of `warnings` only repeat the person's own choice (a hidden
+    /// or a skipped object). The others are real problems of the job (a
+    /// path outside the area, a mat that is not there, paths that are not
+    /// cut). The window's state dot counts only those.
+    pub choice_warnings: usize,
+    /// Problems of a job that does cut (filled shapes the cut mode cuts
+    /// nothing of), with their fixes. See `report`.
+    pub issues: Vec<Issue>,
+    /// The indexes of `warnings` that `issues` say again, with a fix: a
+    /// window that shows the issues leaves these warnings out.
+    pub covered_warnings: Vec<usize>,
     pub sent: Option<SendReport>,
+    /// The plotter profile the job was built for, with every setting as
+    /// it was then. [`send_built`] refuses to send it with another one.
+    pub built_for: PlotterProfile,
+    /// What a calibration job tests (an offset series); `None` for the
+    /// job of a design. Its cut log entry carries it.
+    pub calibration: Option<cutlog::Calibration>,
+    /// The cut strategy the job was planned with; its cut log entry
+    /// names it.
+    pub strategy: flatcraft_core::document::CutStrategy,
+    /// Planned in exact floats for the float simulation
+    /// ([`PlanUnits::Float`]): not a real job. Its `job.bytes` are empty
+    /// and [`send_built`] refuses it.
+    pub simulation_only: bool,
 }
+
+/// The failure when a job planned only for the float simulation is sent.
+pub const SIMULATION_ONLY: &str = "internal: this job was planned only for the float simulation, in exact numbers the plotter cannot take, so it is not sent. Build the job again.";
+
+/// The failure when a built job is sent with another plotter profile than
+/// it was built for, or with the same one after its settings changed.
+pub const BUILT_FOR_OTHER_PLOTTER: &str = "internal: the job was built for another plotter preset or for other settings of it, so it is not sent. Build the job again.";
 
 /// Replaces line breaks and other control characters with spaces, so a note
 /// stays on one listing line.
@@ -58,20 +97,247 @@ fn one_line(s: &str) -> String {
 
 /// Listing note of one toolpath. The File Output listing, `job.preview`
 /// and the Debug panel show it to people and agents, so keep the format
-/// stable.
-fn note(id: ObjectId, name: &str, path: usize, label: Option<&str>, pass: u32) -> String {
+/// stable. A single lap reads `pass {p}`; a ring of chained laps reads
+/// `passes {p}-{q}` (for example `passes 1-3`).
+fn note(
+    id: ObjectId,
+    name: &str,
+    path: usize,
+    label: Option<&str>,
+    pass: u32,
+    laps: u32,
+) -> String {
     let label = label
         .map(|l| format!(" [{}]", one_line(l)))
         .unwrap_or_default();
+    let passes = if laps > 1 {
+        format!("passes {pass}-{}", last_pass(pass, laps))
+    } else {
+        format!("pass {pass}")
+    };
     format!(
-        "object {} '{}', path {path}{label}, pass {pass}",
+        "object {} '{}', path {path}{label}, {passes}",
         id.0,
         one_line(name)
     )
 }
 
-/// Problems the person can fix (settings, placement, media) are refusals;
-/// broken profiles and internal errors are failures.
+/// Listing note of a weed toolpath, numbered from 1: `weed line {n},
+/// pass {p}`, `weed box {n}, passes {p}-{q}`, or `weed box {n} piece, pass
+/// {p}` for a band piece of a box (no mat).
+fn weed_note(t: &flatcraft_path::Toolpath, pass: u32, laps: u32) -> String {
+    let n = t.source.path_index + 1;
+    let what = match (
+        t.source.object == flatcraft_path::weed::WEED_BOX_OBJECT,
+        t.closed,
+    ) {
+        (true, true) => format!("weed box {n}"),
+        (true, false) => format!("weed box {n} piece"),
+        _ => format!("weed line {n}"),
+    };
+    format!("{what}, {}", passes_text(pass, laps))
+}
+
+fn passes_text(pass: u32, laps: u32) -> String {
+    if laps > 1 {
+        format!("passes {pass}-{}", last_pass(pass, laps))
+    } else {
+        format!("pass {pass}")
+    }
+}
+
+/// The warning when weed boxes do not fit inside the cutting area.
+pub(crate) fn weed_box_warning(dropped: usize, per_object: bool) -> String {
+    let what = if per_object && dropped > 1 {
+        format!("{dropped} weed boxes do not fit")
+    } else if per_object {
+        "1 weed box does not fit".to_string()
+    } else {
+        "The weed box does not fit".to_string()
+    };
+    let it = if dropped > 1 { "they are" } else { "it is" };
+    format!(
+        "{what} inside the cutting area with 1 mm to spare around the design, so {it} not cut. Move the design away from the edge or make the weed box margin smaller."
+    )
+}
+
+/// The warning when weed boxes would cut material that is kept.
+pub(crate) fn weed_box_blocked_warning(blocked: usize) -> String {
+    if blocked == 1 {
+        "A weed box would cut through material you keep, so it is not cut.".to_string()
+    } else {
+        format!("{blocked} weed boxes would cut through material you keep, so they are not cut.")
+    }
+}
+
+/// The number of the last pass in a toolpath of `laps` chained laps that
+/// starts with pass `pass`.
+fn last_pass(pass: u32, laps: u32) -> u32 {
+    pass.saturating_add(laps.max(1) - 1)
+}
+
+/// What the points of a plan are, for the emitter's compensation check.
+fn geometry_kind(c: AppliedCompensation) -> GeometryKind {
+    match c {
+        AppliedCompensation::Tip => GeometryKind::Tip,
+        AppliedCompensation::Host { offset_mm } => GeometryKind::HostAxis { offset_mm },
+        AppliedCompensation::HostCalibration => GeometryKind::HostCalibration,
+    }
+}
+
+/// The warning when the plan left out paths shorter than half a device
+/// step. With [`collapsed_warning`] it counts every path that is not cut
+/// for being too small, each path once: the plan drops these before the
+/// emitter sees them.
+pub(crate) fn dropped_short_warning(n: usize) -> String {
+    if n == 1 {
+        "1 path is shorter than half a plotter step and is not cut.".to_string()
+    } else {
+        format!("{n} paths are shorter than half a plotter step and are not cut.")
+    }
+}
+
+/// The warnings a plan itself gives, once per job, in this order: paths
+/// too short to cut, weed boxes left out (`per_object`: the job weeds a
+/// box per object) or blocked, and what rounding to plotter steps left
+/// ([`rounding_warnings`]). The job build and the offset series both use
+/// it.
+pub(crate) fn plan_warnings(plan: &CutPlan, per_object: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    if plan.dropped_short > 0 {
+        out.push(dropped_short_warning(plan.dropped_short));
+    }
+    if plan.dropped_weed_boxes > 0 {
+        out.push(weed_box_warning(plan.dropped_weed_boxes, per_object));
+    }
+    if plan.blocked_weed_boxes > 0 {
+        out.push(weed_box_blocked_warning(plan.blocked_weed_boxes));
+    }
+    if plan.freed_early > 0 {
+        out.push(freed_early_warning(plan.freed_early));
+    }
+    out.extend(rounding_warnings(&plan.rounding));
+    out
+}
+
+/// The warning that `n` holes or inner pieces of a visible outline are cut
+/// after their piece comes free: without a mat the sheet only feeds
+/// forward, and every cut around the piece lies further up.
+pub(crate) fn freed_early_warning(n: usize) -> String {
+    let what = if n == 1 {
+        "1 hole or inner piece of a visible outline is".to_string()
+    } else {
+        format!("{n} holes or inner pieces of a visible outline are")
+    };
+    format!(
+        "{what} cut after the piece around it is already free: without a mat the sheet only feeds forward, so the cuts are made top to bottom. The free piece can shift before its holes are cut. Use a mat for this design, or let a front object cover less of the piece's lower edge."
+    )
+}
+
+/// The warnings of rounding host runs to plotter steps: blade moves at a
+/// start or a corner (lead-ins, swivels, overshoots) it could not keep
+/// fully out of a piece you keep, and moves that still push the blade.
+/// Each once per job, only when it happened.
+pub(crate) fn rounding_warnings(r: &flatcraft_path::quantize::RoundReport) -> Vec<String> {
+    let mut out = Vec::new();
+    match r.kept_left {
+        0 => {}
+        1 => out.push("1 blade move at a start or a corner could not be kept fully out of a piece you keep after rounding to plotter steps. Run the simulation to see where.".to_string()),
+        n => out.push(format!("{n} blade moves at a start or a corner could not be kept fully out of a piece you keep after rounding to plotter steps. Run the simulation to see where.")),
+    }
+    match r.pushes_kept {
+        0 => {}
+        1 => out.push("1 blade move still pushes the blade from behind after rounding to plotter steps. Run the simulation to see where.".to_string()),
+        n => out.push(format!("{n} blade moves still push the blade from behind after rounding to plotter steps. Run the simulation to see where.")),
+    }
+    out
+}
+
+/// The warning when the emitter left out paths whose points all round to
+/// one plotter step.
+pub(crate) fn collapsed_warning(n: usize) -> String {
+    if n == 1 {
+        "1 path fits inside one plotter step and is not cut.".to_string()
+    } else {
+        format!("{n} paths fit inside one plotter step and are not cut.")
+    }
+}
+
+/// The warning for curves tighter than the material's minimum radius
+/// `r_mm`.
+pub(crate) fn tight_curves_warning(n: usize, r_mm: f64) -> String {
+    if n == 1 {
+        format!("1 curve is tighter than {r_mm} mm. It may come out rounded or torn.")
+    } else {
+        format!("{n} curves are tighter than {r_mm} mm. They may come out rounded or torn.")
+    }
+}
+
+/// The warning when host compensation steers with another offset than the
+/// plotter's blade offset.
+pub(crate) fn offset_mismatch_warning(host_mm: f64, blade_mm: f64) -> String {
+    format!(
+        "Host compensation uses {host_mm} mm, the blade offset is {blade_mm} mm. The simulator uses the blade offset."
+    )
+}
+
+/// How far apart the host offset and the blade offset may be before the
+/// job warns: closer is the same number typed twice.
+const OFFSET_SAME_MM: f64 = 1e-9;
+
+/// The places where the first pass of a `Cut` toolpath bends tighter than
+/// `min_radius_mm`, over the first lap only, so passes, chained laps and
+/// the overcut never count a curve twice. The same in every compensation
+/// mode: it reads the intended tip path.
+fn tight_curves(plan: &CutPlan, min_radius_mm: f64) -> usize {
+    plan.toolpaths
+        .iter()
+        .filter(|t| t.kind == ToolpathKind::Cut && t.pass == 1)
+        .map(|t| knife::min_radius_spots(t.lap(), min_radius_mm).len())
+        .sum()
+}
+
+/// Where the knife is steered for `plotter` on `media` with `strategy`:
+/// the tip path for firmware and no compensation; host compensation with
+/// the profile's offset, rounded to the plotter's device grid (so plan,
+/// preview, simulation and send share the points the plotter gets). The
+/// pivot threshold is the larger of the profile's and the strategy's, so
+/// a profile can only make it coarser.
+fn compensation(
+    plotter: &PlotterProfile,
+    media: &flatcraft_device::Media,
+    strategy: &StrategySettings,
+) -> Compensation {
+    match plotter.knife_compensation {
+        KnifeCompensation::Host {
+            offset_mm,
+            pivot_threshold_deg,
+        } => Compensation::Host(HostSettings {
+            device_grid: Some(flatcraft_device::gpgl::quantize::device_grid(
+                plotter, media,
+            )),
+            ..HostSettings::new(
+                offset_mm,
+                pivot_threshold_deg.max(strategy.host_pivot_threshold_deg),
+            )
+        }),
+        KnifeCompensation::Firmware { .. } | KnifeCompensation::None => Compensation::Tip,
+    }
+}
+
+/// The corner mode of a material, for the knife stage.
+fn corner_mode(spec: CornerModeSpec) -> CornerMode {
+    match spec {
+        CornerModeSpec::Arc => CornerMode::Arc,
+        CornerModeSpec::LiftOvershoot { overshoot_mm } => {
+            CornerMode::LiftOvershoot { overshoot_mm }
+        }
+    }
+}
+
+/// Problems the person can fix (settings, placement, media, a plan made
+/// for another knife compensation) are refusals; broken profiles and
+/// internal errors are failures.
 fn emit_error(e: EmitError) -> CommandError {
     let text = format!("cannot build the GPGL job: {e}");
     match e {
@@ -79,11 +345,173 @@ fn emit_error(e: EmitError) -> CommandError {
         | EmitError::CoordinateOutOfRange { .. }
         | EmitError::UnknownMedia { .. }
         | EmitError::EmptyJob => CommandError::Refused(text),
-        EmitError::HostCompensationNotYet
-        | EmitError::DialectNotSupported
+        EmitError::CompensationMismatch { profile, geometry } => {
+            let fix = if geometry == GeometryKind::HostCalibration.describe() {
+                "An offset test series needs Host knife compensation: set it in the plotter preset in the Profiles window."
+            } else if profile == "host" {
+                "Build the job again, so it is planned for this plotter preset."
+            } else {
+                "Build the job again, so it is planned for this plotter preset, or set Host knife compensation in the Profiles window."
+            };
+            CommandError::Refused(format!("{text}. {fix}"))
+        }
+        EmitError::DialectNotSupported
         | EmitError::EmptyDraw
         | EmitError::InvalidProfile { .. } => CommandError::Failed(text),
     }
+}
+
+/// The refusal of a plan whose axis runs do not fit its own compensation.
+pub const PLAN_MISMATCH: &str = "internal: compensation mismatch in the plan";
+
+/// The names of a job's objects and the source index and label of every
+/// cut piece, for the listing notes. A toolpath's `path_index` is the index
+/// of its piece in the object's [`CutPiece`] list; the note names the
+/// piece's source path.
+struct NoteNames<'a> {
+    names: std::collections::BTreeMap<ObjectId, &'a str>,
+    pieces: std::collections::BTreeMap<ObjectId, Arc<Vec<CutPiece>>>,
+}
+
+impl<'a> NoteNames<'a> {
+    fn of(objects: &'a [JobObject], cut: &CutGeometry) -> Self {
+        let names = objects.iter().map(|o| (o.id, o.name.as_str())).collect();
+        Self {
+            names,
+            pieces: cut.per_object.clone(),
+        }
+    }
+
+    /// The listing note of toolpath `t`, without a run number.
+    fn note(&self, t: &Toolpath) -> String {
+        match t.kind {
+            ToolpathKind::Weed => weed_note(t, t.pass, t.laps),
+            ToolpathKind::Alignment => "alignment stroke".to_string(),
+            ToolpathKind::Cut => {
+                let id = t.source.object;
+                let name = self.names.get(&id).copied().unwrap_or("");
+                let piece = self
+                    .pieces
+                    .get(&id)
+                    .and_then(|p| p.get(t.source.path_index));
+                // A piece of several source paths has no one index: it is
+                // named by its own.
+                let path = piece.and_then(|p| p.source).unwrap_or(t.source.path_index);
+                let label = piece.and_then(|p| p.label.as_deref());
+                note(id, name, path, label, t.pass, t.laps)
+            }
+        }
+    }
+}
+
+/// The listing note of every toolpath of `plan`, without run numbers:
+/// what `job.simulate` names a toolpath by.
+pub(crate) fn toolpath_notes(
+    plan: &CutPlan,
+    objects: &[JobObject],
+    cut: &CutGeometry,
+) -> Vec<String> {
+    let names = NoteNames::of(objects, cut);
+    plan.toolpaths.iter().map(|t| names.note(t)).collect()
+}
+
+/// For each toolpath of `result`'s plan, whether it is really cut (see
+/// [`JobResult::cut_toolpaths`]).
+pub(crate) fn cut_mask(result: &JobResult) -> Vec<bool> {
+    left_out(&result.plan, &result.job.collapsed)
+        .into_iter()
+        .map(|out| !out)
+        .collect()
+}
+
+/// How many blade-down runs toolpath `t` is emitted as.
+fn run_count(t: &Toolpath) -> usize {
+    t.axis.as_ref().map_or(1, Vec::len)
+}
+
+/// The paths a plan sends: one per blade-down run, the alignment stroke
+/// included, each with its listing note. A toolpath of several runs gets
+/// ` run {k}` (from 1) on each note.
+fn emit_paths(plan: &CutPlan, objects: &[JobObject], cut: &CutGeometry) -> Vec<EmitPath> {
+    let names = NoteNames::of(objects, cut);
+    plan.toolpaths
+        .iter()
+        .flat_map(|t| {
+            let text = names.note(t);
+            let several = run_count(t) > 1;
+            t.runs()
+                .into_iter()
+                .enumerate()
+                .map(move |(k, r)| EmitPath {
+                    points: r.points,
+                    note: if several {
+                        format!("{text} run {}", k + 1)
+                    } else {
+                        text.clone()
+                    },
+                })
+        })
+        .collect()
+}
+
+/// Emits a plan for `plotter`: the one way from a [`CutPlan`] to GPGL
+/// bytes. The geometry kind is what the plan says it applied, never a
+/// claim of the caller, and every toolpath must carry axis runs exactly
+/// when that compensation is host compensation: a plan that does not is
+/// refused before anything is emitted. The emitter then refuses geometry
+/// that does not fit the plotter's knife compensation. `objects` and the
+/// pieces of `cut` name the toolpaths in the listing.
+pub fn emit_plan(
+    plan: &CutPlan,
+    objects: &[JobObject],
+    cut: &CutGeometry,
+    plotter: &PlotterProfile,
+    media_id: &str,
+    settings: &CutSettings,
+) -> Result<EmittedJob, CommandError> {
+    let host = matches!(
+        plan.compensation,
+        AppliedCompensation::Host { .. } | AppliedCompensation::HostCalibration
+    );
+    // Every kind, not only cuts: under host compensation the knife stage
+    // gives weed lines and the alignment stroke axis runs too, and an axis
+    // run sent as a tip path would cut off the intended line.
+    if plan.toolpaths.iter().any(|t| t.axis.is_some() != host) {
+        return Err(CommandError::Failed(PLAN_MISMATCH.into()));
+    }
+    emit_job(
+        &emit_paths(plan, objects, cut),
+        geometry_kind(plan.compensation),
+        plotter,
+        media_id,
+        settings,
+    )
+    .map_err(emit_error)
+}
+
+/// For each toolpath of `plan`, whether the emitter left out every one of
+/// its runs because each rounds to one device point (`collapsed`, the
+/// indexes of the emitted runs, in order).
+fn left_out(plan: &CutPlan, collapsed: &[usize]) -> Vec<bool> {
+    let mut first = 0;
+    plan.toolpaths
+        .iter()
+        .map(|t| {
+            let runs = first..first + run_count(t);
+            first = runs.end;
+            runs.clone().all(|i| collapsed.binary_search(&i).is_ok())
+        })
+        .collect()
+}
+
+/// How many paths of `plan` the emitter left out. A path counts once:
+/// only its first pass is looked at, the alignment stroke never.
+pub(crate) fn paths_not_cut(plan: &CutPlan, collapsed: &[usize]) -> usize {
+    plan.toolpaths
+        .iter()
+        .zip(left_out(plan, collapsed))
+        .filter(|(t, out)| *out && t.pass == 1 && t.kind != ToolpathKind::Alignment)
+        .count()
 }
 
 /// One object as the job build reads it. The geometry `Arc` is shared with
@@ -93,10 +521,21 @@ pub struct JobObject {
     pub id: ObjectId,
     pub name: String,
     pub visible: bool,
+    /// False leaves the object out of the cut; it stays visible.
+    pub cut_enabled: bool,
     pub transform: Transform,
     pub local_bounds: kurbo::Rect,
     pub cut: CutOptions,
+    /// What is kept after cutting: the planner keeps lead-ins and
+    /// overshoots in the waste.
+    pub keep: KeepMode,
     pub geometry: Arc<Vec<CutPath>>,
+    /// The group of linked copies it belongs to: a fix of shared settings
+    /// changes every member.
+    pub link_group: Option<GroupId>,
+    /// What it counts as for the weed box per object: its top-level group
+    /// (see [`flatcraft_core::nodes`]), or itself.
+    pub unit: ObjectId,
 }
 
 /// Two inputs are equal when the same geometry `Arc` is placed the same
@@ -107,10 +546,14 @@ impl PartialEq for JobObject {
         self.id == other.id
             && self.name == other.name
             && self.visible == other.visible
+            && self.cut_enabled == other.cut_enabled
             && self.transform == other.transform
             && self.local_bounds == other.local_bounds
             && self.cut == other.cut
+            && self.keep == other.keep
             && Arc::ptr_eq(&self.geometry, &other.geometry)
+            && self.link_group == other.link_group
+            && self.unit == other.unit
     }
 }
 
@@ -123,26 +566,138 @@ pub struct JobInput {
     pub plotter: PlotterProfile,
     /// The material with the plotter's overrides applied.
     pub material: MaterialProfile,
+    /// The object pairs whose hints the person turned off
+    /// (`Document::ignored_pairs`).
+    pub ignored_pairs: Vec<flatcraft_core::document::IgnoredPair>,
+    /// The top-level groups whose close-members hint is turned off
+    /// (`Document::ignored_groups`).
+    pub ignored_groups: Vec<ObjectId>,
+    /// The name of every group, for the hints that name one.
+    pub group_names: std::collections::BTreeMap<ObjectId, String>,
+    /// The cut geometry of `objects` (see [`JobInput::cut_geometry`]).
+    pub cut: CutSeed,
+}
+
+/// The cut geometry of a [`JobInput`]: a cached build to start from (the
+/// document's, see `DocState::cut_geometry`), and the geometry once it was
+/// asked for. Two seeds are always equal: the geometry follows from the
+/// input's objects and profiles, and a seed only saves time (a stale seed
+/// is checked object by object and never gives a wrong piece). So a new
+/// seed never makes a window build its plan again.
+#[derive(Debug, Clone, Default)]
+pub struct CutSeed {
+    seed: Option<Arc<CutGeometry>>,
+    resolved: std::sync::OnceLock<Arc<CutGeometry>>,
+}
+
+impl CutSeed {
+    /// A seed that starts from `seed`.
+    pub fn new(seed: Option<Arc<CutGeometry>>) -> Self {
+        Self {
+            seed,
+            resolved: std::sync::OnceLock::new(),
+        }
+    }
+}
+
+impl CutSeed {
+    /// The cached build it starts from.
+    pub fn seed(&self) -> Option<Arc<CutGeometry>> {
+        self.seed.clone()
+    }
+}
+
+impl PartialEq for CutSeed {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 impl JobInput {
+    /// The flatten tolerance of the cut geometry, mm.
+    pub fn tolerance_mm(&self) -> f64 {
+        self.plotter.flatten_tolerance_mm
+    }
+
+    /// The minimum feature width of the cut geometry, mm (see
+    /// [`report::min_width_mm`]).
+    pub fn min_width_mm(&self) -> f64 {
+        report::min_width_mm(self.plotter.blade_offset_mm)
+    }
+
+    /// What the cut geometry is built with, for a box of what is cut.
+    pub fn knife(&self) -> cutgeom::Knife {
+        cutgeom::Knife {
+            tolerance_mm: self.tolerance_mm(),
+            min_width_mm: self.min_width_mm(),
+        }
+    }
+
+    /// The cut geometry of the objects: built once per input, from the
+    /// seed where it still fits. Every reader of the input (the build, the
+    /// export, the report) shares it.
+    pub fn cut_geometry(&self) -> Arc<CutGeometry> {
+        self.cut
+            .resolved
+            .get_or_init(|| {
+                cutgeom::objects_cut_geometry(
+                    &self.objects,
+                    self.tolerance_mm(),
+                    self.min_width_mm(),
+                    self.cut.seed.as_ref(),
+                )
+            })
+            .clone()
+    }
+
+    /// The cut geometry if it was built (or taken from the seed) already.
+    pub fn built_cut_geometry(&self) -> Option<Arc<CutGeometry>> {
+        self.cut.resolved.get().cloned()
+    }
+
     /// The objects of `doc` as the build reads them.
-    fn objects_of(doc: &Document) -> Vec<JobObject> {
+    pub(crate) fn objects_of(doc: &Document) -> Vec<JobObject> {
+        let tops = doc.tree().top_of_each();
         doc.objects
             .iter()
             .map(|o| JobObject {
                 id: o.id,
                 name: o.name.clone(),
                 visible: o.visible,
+                cut_enabled: o.cut_enabled,
                 transform: o.transform,
                 local_bounds: o.local_bounds,
                 cut: o.cut,
+                keep: o.keep,
                 geometry: o.geometry.clone(),
+                link_group: o.link_group,
+                unit: tops.get(&o.id).copied().unwrap_or(o.id),
             })
             .collect()
     }
 
-    /// The active document's objects, job settings and profiles.
+    /// The top-level group of every grouped object, for the weed box per
+    /// object: one box per group. Objects not listed are their own.
+    pub fn weed_units(&self) -> std::collections::BTreeMap<ObjectId, ObjectId> {
+        self.objects
+            .iter()
+            .filter(|o| o.unit != o.id)
+            .map(|o| (o.id, o.unit))
+            .collect()
+    }
+
+    /// The keep mode of every object that is not [`KeepMode::Pieces`]
+    /// (the default of objects not listed).
+    pub fn keep_modes(&self) -> std::collections::BTreeMap<ObjectId, KeepMode> {
+        self.objects
+            .iter()
+            .filter(|o| o.keep != KeepMode::Pieces)
+            .map(|o| (o.id, o.keep))
+            .collect()
+    }
+
+    /// The active document's objects, job settings and profiles, with
+    /// the document's cut geometry (`Session::cut_geometry`).
     pub fn of(session: &Session) -> Result<Self, CommandError> {
         let doc = &session.doc().document;
         let job = &doc.job;
@@ -154,7 +709,10 @@ impl JobInput {
             .profiles
             .material(&job.material_id)
             .map_err(profile_error)?;
-        Ok(Self::from_parts(doc, plotter, &material))
+        let input = Self::from_parts(doc, plotter, &material);
+        let cut = session.cut_geometry_of(&input);
+        let _ = input.cut.resolved.set(cut);
+        Ok(input)
     }
 
     /// The input of `doc` with profiles the caller already resolved: the
@@ -170,7 +728,18 @@ impl JobInput {
             job: doc.job.clone(),
             plotter,
             material,
+            ignored_pairs: doc.ignored_pairs.clone(),
+            ignored_groups: doc.ignored_groups.clone(),
+            group_names: doc.groups.iter().map(|g| (g.id, g.name.clone())).collect(),
+            cut: CutSeed::default(),
         }
+    }
+
+    /// The input with the cut geometry `seed` to start from (a window
+    /// passes the document's cached one, see `DocState::cached_cut_geometry`).
+    pub fn with_seed(mut self, seed: Option<Arc<CutGeometry>>) -> Self {
+        self.cut = CutSeed::new(seed);
+        self
     }
 }
 
@@ -181,15 +750,170 @@ pub fn build(session: &Session) -> Result<JobResult, CommandError> {
     build_input(&JobInput::of(session)?)
 }
 
+impl JobResult {
+    /// How many toolpaths are really cut: the plan's toolpaths without the
+    /// ones the emitter left out (too small for one plotter step). The
+    /// "Paths" count of `job.preview`, the send reply and the Cut stage.
+    pub fn toolpaths_cut(&self) -> usize {
+        self.cut_toolpaths().count()
+    }
+
+    /// The toolpaths that are really cut, in order: the plan's toolpaths
+    /// without the ones the emitter left out. Every count of cut paths
+    /// (all of them, the weed paths) reads them here.
+    pub fn cut_toolpaths(&self) -> impl Iterator<Item = &Toolpath> {
+        self.plan
+            .toolpaths
+            .iter()
+            .zip(left_out(&self.plan, &self.job.collapsed))
+            .filter(|(_, out)| !out)
+            .map(|(t, _)| t)
+    }
+
+    /// The warnings that are real problems, not the person's own choices.
+    pub fn problem_warnings(&self) -> usize {
+        self.warnings.len().saturating_sub(self.choice_warnings)
+    }
+}
+
+/// Why a job could not be built, for a caller that needs to tell "nothing
+/// to cut" from a real refusal without reading the text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildFailure {
+    pub error: CommandError,
+    /// No visible object has cut paths.
+    pub nothing_to_cut: bool,
+    /// Every reason the job cannot be cut that a person or an agent can
+    /// fix, with the fixes: the reasons there is nothing to cut, or the
+    /// objects outside the cutting area. Empty for other refusals.
+    pub issues: Vec<Issue>,
+    /// The warnings of the build so far (hidden and skipped objects, a
+    /// mat that is not there); empty for other refusals.
+    pub warnings: Vec<String>,
+}
+
+impl From<CommandError> for BuildFailure {
+    fn from(error: CommandError) -> Self {
+        Self {
+            error,
+            nothing_to_cut: false,
+            issues: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+}
+
 /// Builds a job from a [`JobInput`]. It does not need the session, so the
 /// GUI runs it without holding the session lock.
 pub fn build_input(input: &JobInput) -> Result<JobResult, CommandError> {
+    build_classified(input).map_err(|f| f.error)
+}
+
+/// The pipeline settings of `input` on `media`, whose cutting area is
+/// `area`: the material values for this plotter, then the job overrides.
+/// The job build and the offset series (`crate::calibrate`) both start
+/// from it. Refused when the passes do not fit the plotter.
+pub(crate) fn pipeline_settings(
+    input: &JobInput,
+    media: &flatcraft_device::Media,
+    area: kurbo::Rect,
+) -> Result<PipelineSettings, CommandError> {
+    let JobInput {
+        job,
+        plotter,
+        material,
+        ..
+    } = input;
+    let passes = job.passes.unwrap_or(material.passes);
+    let [lo, hi] = plotter.passes_range;
+    if passes < lo.max(1) || passes > hi {
+        let from = if job.passes.is_some() {
+            "The pass override"
+        } else {
+            "The material"
+        };
+        return Err(CommandError::Refused(format!(
+            "{from} asks for {passes} passes, but this plotter takes {} to {hi}. Set passes in the job settings or pick another material.",
+            lo.max(1)
+        )));
+    }
+    let strategy = StrategySettings::for_strategy(job.strategy);
+    Ok(PipelineSettings {
+        flatten_tolerance_mm: plotter.flatten_tolerance_mm,
+        join_tolerance_mm: JOIN_TOLERANCE_MM,
+        overcut_mm: material.overcut_mm,
+        passes,
+        reverse_alternate_passes: material.reverse_alternate_passes,
+        strategy,
+        direction: plotter.ring_direction,
+        compensation: compensation(plotter, media, &strategy),
+        corner_mode: corner_mode(material.corner_mode),
+        // M3 sets the alignment stroke.
+        alignment_stroke: None,
+        // Without a mat the feed motor moves the sheet: cut it in bands.
+        monotonic_feed: media.kind == MediaKind::NoMat,
+        // Half a plotter step: anything shorter moves no motor at all.
+        min_cut_mm: 0.5 / plotter.units_per_mm,
+        weed: job.weed,
+        weed_units: input.weed_units(),
+        keep_modes: input.keep_modes(),
+        ..PipelineSettings::with_defaults(area, plotter.home_mm(media))
+    })
+}
+
+/// Speed, force and track enhancing of `input`'s job: the job overrides,
+/// else the material's values.
+pub(crate) fn cut_settings(input: &JobInput) -> CutSettings {
+    let JobInput {
+        job,
+        plotter,
+        material,
+        ..
+    } = input;
+    CutSettings {
+        speed: job.speed.unwrap_or(material.speed),
+        force: job.force.unwrap_or(material.force),
+        track_enhancing: material.track_enhancing && plotter.capabilities.track_enhancing,
+    }
+}
+
+/// [`build_input`], and a failure says whether it was "nothing to cut".
+pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
+    build_planned(input, PlanUnits::Device)
+}
+
+/// What units host compensation plans for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlanUnits {
+    /// The plotter's device grid: what is sent.
+    Device,
+    /// Exact floats, no rounding: the algorithm alone. Only the float
+    /// simulation (`simulate::SimGrid::Float`) builds this; such a job is
+    /// never sent.
+    Float,
+}
+
+/// [`build_classified`], with host compensation planned for `units`.
+pub(crate) fn build_planned(input: &JobInput, units: PlanUnits) -> Result<JobResult, BuildFailure> {
+    build_planned_with(input, units, |_| {})
+}
+
+/// [`build_planned`], with `tweak` applied to the pipeline settings just
+/// before the plan: the benchmark's comparison variants (`crate::bench`)
+/// change settings the document cannot.
+pub(crate) fn build_planned_with(
+    input: &JobInput,
+    units: PlanUnits,
+    tweak: impl FnOnce(&mut PipelineSettings),
+) -> Result<JobResult, BuildFailure> {
     let JobInput {
         objects,
         job,
         plotter,
         material,
+        ..
     } = input;
+    let cut = input.cut_geometry();
     let (media, mat_warning) = crate::commands::effective_media(plotter, job)?;
     let media_id = media.id.clone();
     let area = plotter
@@ -199,39 +923,54 @@ pub fn build_input(input: &JobInput) -> Result<JobResult, CommandError> {
         objects.iter().map(|o| (o.id, o.name.as_str())).collect();
 
     let mut warnings: Vec<String> = mat_warning.into_iter().collect();
+    let mut choice_warnings = 0;
+    let mut facts = BuildFacts {
+        objects: objects.len(),
+        ..BuildFacts::default()
+    };
+    let mut issues = Vec::new();
+    let mut covered_warnings = Vec::new();
     let mut placed = Vec::new();
-    let mut labels = std::collections::BTreeMap::new();
     for o in objects {
         if !o.visible {
+            facts.hidden.push(o.id);
+            choice_warnings += 1;
             warnings.push(format!(
                 "'{}' is hidden and will not be cut.",
                 one_line(&o.name)
             ));
             continue;
         }
-        // One source path may give several cut paths (stroke outline
-        // rings); they all keep the source path's index.
-        let affine = o.transform.affine(o.local_bounds);
+        if !o.cut_enabled {
+            facts.skipped.push(o.id);
+            choice_warnings += 1;
+            warnings.push(format!(
+                "'{}' is skipped and will not be cut.",
+                one_line(&o.name)
+            ));
+            continue;
+        }
+        if cut.merged_into.contains_key(&o.id) {
+            // Welded into the merged outline of the group's backmost
+            // object, which holds the pieces and says what was left out.
+            continue;
+        }
+        if cut.covered.contains(&o.id) {
+            warnings.push(format!(
+                "'{}' is in visible outline and completely covered by objects in front of it, so nothing of it is cut.",
+                one_line(&o.name)
+            ));
+            continue;
+        }
         let before = placed.len();
-        let mut no_area = 0;
-        for (i, p) in o.geometry.iter().enumerate() {
-            if let Some(label) = &p.label {
-                labels.insert((o.id, i), label.clone());
-            }
-            let cut = cutgeom::cut_path(p, &o.cut, affine, plotter.flatten_tolerance_mm);
-            if cut.is_empty() && p.paint.stroke.is_none() && !p.path.elements().is_empty() {
-                // A stroke-less fill without area, or thinner than the
-                // tolerance, is not visible and gives nothing to cut.
-                no_area += 1;
-            }
-            for path in cut {
-                placed.push(PlacedPath {
-                    path,
-                    source: PathRef {
-                        object: o.id,
-                        path_index: i,
-                    },
-                });
+        place_pieces(o.id, cut.pieces(o.id), &mut placed);
+        let PieceFacts { no_area, slivers } = cut.facts(o.id);
+        if slivers > 0 {
+            warnings.push(cutgeom::sliver_warning(&o.name, slivers, cut.min_width_mm));
+            if placed.len() > before {
+                // The issue says the same as the warning just pushed.
+                covered_warnings.push(warnings.len() - 1);
+                issues.extend(report::thin_slivers_issue(input, o, slivers));
             }
         }
         if no_area > 0 {
@@ -248,6 +987,21 @@ pub fn build_input(input: &JobInput) -> Result<JobResult, CommandError> {
             ));
         }
         if placed.len() == before {
+            facts.nothing_placed.push((o.id, no_area));
+        } else {
+            facts.placed.push(o.id);
+            if no_area > 0 {
+                // The no-area warning just pushed says the same.
+                covered_warnings.push(warnings.len() - 1);
+                issues.extend(report::fill_ignored_issue(
+                    input,
+                    o,
+                    no_area,
+                    plotter.flatten_tolerance_mm,
+                ));
+            }
+        }
+        if placed.len() == before {
             warnings.push(format!(
                 "'{}' has no cut paths, so nothing of it is cut.",
                 one_line(&o.name)
@@ -255,36 +1009,49 @@ pub fn build_input(input: &JobInput) -> Result<JobResult, CommandError> {
         }
     }
 
-    let passes = job.passes.unwrap_or(material.passes);
-    let [lo, hi] = plotter.passes_range;
-    if passes < lo.max(1) || passes > hi {
-        let from = if job.passes.is_some() {
-            "The pass override"
-        } else {
-            "The material"
-        };
-        return Err(CommandError::Refused(format!(
-            "{from} asks for {passes} passes, but this plotter takes {} to {hi}. Set passes in the job settings or pick another material.",
-            lo.max(1)
-        )));
+    let mut pipeline = pipeline_settings(input, media, area)?;
+    if let (PlanUnits::Float, Compensation::Host(h)) = (units, &mut pipeline.compensation) {
+        h.device_grid = None;
     }
-    let pipeline = PipelineSettings {
-        cutting_area: area,
-        flatten_tolerance_mm: plotter.flatten_tolerance_mm,
-        join_tolerance_mm: JOIN_TOLERANCE_MM,
-        overcut_mm: material.overcut_mm,
-        passes,
-        reverse_alternate_passes: material.reverse_alternate_passes,
-        home: plotter.home_mm(media),
-    };
-    let cut_plan = plan(&placed, &pipeline).map_err(|e| match e {
+    tweak(&mut pipeline);
+    // A clipped visible outline is no ring: what is seen of it stands
+    // for its rings in the kept material and the weeds.
+    let placed_ids: std::collections::BTreeSet<ObjectId> =
+        placed.iter().map(|p| p.source.object).collect();
+    let regions = cut.kept_regions(|id| placed_ids.contains(&id));
+    let cut_plan = plan_with_regions(&placed, &pipeline, &regions).map_err(|e| match e {
         PlanError::Empty => {
+            let nothing_to_cut = true;
             let mut text = String::from("Nothing to cut: no visible object has cut paths.");
             for w in &warnings {
                 text.push(' ');
                 text.push_str(w);
             }
-            CommandError::Refused(text)
+            BuildFailure {
+                error: CommandError::Refused(text),
+                nothing_to_cut,
+                issues: report::nothing_to_cut(input, &facts, false),
+                warnings: warnings.clone(),
+            }
+        }
+        PlanError::TooShort {
+            dropped,
+            min_cut_mm,
+        } => {
+            let mut text = format!(
+                "Nothing to cut: {} shorter than half a plotter step ({min_cut_mm} mm).",
+                short_paths(dropped)
+            );
+            for w in &warnings {
+                text.push(' ');
+                text.push_str(w);
+            }
+            BuildFailure {
+                error: CommandError::Refused(text),
+                nothing_to_cut: true,
+                issues: report::nothing_to_cut(input, &facts, true),
+                warnings: warnings.clone(),
+            }
         }
         PlanError::OutOfArea { objects } => {
             let names: Vec<String> = objects
@@ -295,40 +1062,89 @@ pub fn build_input(input: &JobInput) -> Result<JobResult, CommandError> {
                         .map_or_else(|| format!("object {}", id.0), |n| one_line(n))
                 })
                 .collect();
-            CommandError::Refused(format!(
-                "These objects are outside the cutting area: {}. Move or scale them, or pick a bigger mat.",
-                names.join(", ")
-            ))
-        }
-        other @ PlanError::InvalidSettings { .. } => CommandError::Refused(other.to_string()),
-    })?;
-
-    let paths: Vec<EmitPath> = cut_plan
-        .toolpaths
-        .iter()
-        .map(|t| {
-            let id = t.source.object;
-            let name = names.get(&id).copied().unwrap_or("");
-            let label = labels.get(&(id, t.source.path_index)).map(String::as_str);
-            EmitPath {
-                points: t.points.clone(),
-                note: note(id, name, t.source.path_index, label, t.pass),
+            BuildFailure {
+                error: CommandError::Refused(format!(
+                    "These objects are outside the cutting area: {}. Move or scale them, or pick a bigger mat.",
+                    names.join(", ")
+                )),
+                nothing_to_cut: false,
+                issues: report::out_of_area(input, &objects),
+                warnings: warnings.clone(),
             }
-        })
-        .collect();
-    let settings = CutSettings {
-        speed: job.speed.unwrap_or(material.speed),
-        force: job.force.unwrap_or(material.force),
-        track_enhancing: material.track_enhancing && plotter.capabilities.track_enhancing,
-    };
-    let emitted = emit_job(&paths, plotter, &media_id, &settings).map_err(emit_error)?;
+        }
+        other @ PlanError::InvalidSettings { .. } => {
+            CommandError::Refused(other.to_string()).into()
+        }
+    })?;
+    warnings.extend(plan_warnings(&cut_plan, job.weed.per_object));
+
+    let settings = cut_settings(input);
+    let mut emitted = emit_plan(&cut_plan, objects, &cut, plotter, &media_id, &settings)?;
+    let simulation_only = units == PlanUnits::Float;
+    if simulation_only {
+        // Emitted only to learn which paths collapse, so the float run
+        // simulates the same paths as the device run. No bytes are kept:
+        // a float plan is never a job.
+        emitted.bytes.clear();
+        emitted.listing.clear();
+    }
+    let not_cut = paths_not_cut(&cut_plan, &emitted.collapsed);
+    if not_cut > 0 {
+        warnings.push(collapsed_warning(not_cut));
+    }
+    // Every mode: the blade rounds tight curves with or without host
+    // compensation.
+    let min_radius_mm = material.min_radius_mm.unwrap_or(plotter.blade_offset_mm);
+    let tight = tight_curves(&cut_plan, min_radius_mm);
+    if tight > 0 {
+        warnings.push(tight_curves_warning(tight, min_radius_mm));
+    }
+    // Plan decision (spec 8.5 vs 9): host compensation steers with the
+    // profile's offset, the value the offset series tunes; the simulator
+    // and the radius warning use the physical blade offset.
+    if let KnifeCompensation::Host { offset_mm, .. } = plotter.knife_compensation
+        && (offset_mm - plotter.blade_offset_mm).abs() > OFFSET_SAME_MM
+    {
+        warnings.push(offset_mismatch_warning(offset_mm, plotter.blade_offset_mm));
+    }
     Ok(JobResult {
         plan: cut_plan,
         job: emitted,
         settings,
         warnings,
+        choice_warnings,
+        issues,
+        covered_warnings,
         sent: None,
+        built_for: plotter.clone(),
+        calibration: None,
+        strategy: job.strategy,
+        simulation_only,
     })
+}
+
+/// Places the cut pieces of object `id` (in mat millimetres, the grid's
+/// 0,0, y down; see [`CutGeometry`]): what the cut and the export both
+/// start from. A placed path's `path_index` is the index of its piece.
+pub(crate) fn place_pieces(id: ObjectId, pieces: &[CutPiece], placed: &mut Vec<PlacedPath>) {
+    for (i, p) in pieces.iter().enumerate() {
+        placed.push(PlacedPath {
+            path: p.path.clone(),
+            source: PathRef {
+                object: id,
+                path_index: i,
+            },
+        });
+    }
+}
+
+/// "the only cut path is" or "all {n} cut paths are".
+fn short_paths(n: usize) -> String {
+    if n == 1 {
+        "the only cut path is".to_string()
+    } else {
+        format!("all {n} cut paths are")
+    }
 }
 
 /// `name` reduced to `[A-Za-z0-9._-]` (other characters become `_`),
@@ -392,17 +1208,16 @@ fn documents_dir() -> Option<PathBuf> {
     directories::UserDirs::new().and_then(|u| u.document_dir().map(Path::to_path_buf))
 }
 
-/// True if an agent may write File Output into `dir`: anywhere outside the
-/// config dir, and inside it only below `<config dir>/output`.
-fn agent_may_write(dir: &Path, config_dir: &Path) -> bool {
-    if !inside(dir, config_dir) {
+/// True if an agent may write File Output into the folder `given`, which
+/// resolves to `target` (see `resolve_strict`): anywhere outside the config
+/// dir, and inside it only below `<config dir>/output`.
+fn agent_may_write(target: &Path, given: &Path, config_dir: &Path) -> bool {
+    if !in_config(target, given, config_dir) {
         return true;
     }
-    let abs = |p: &Path| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
-    let dir = abs(dir);
-    let cfg = abs(config_dir);
-    resolved(&dir).starts_with(resolved(&cfg).join("output"))
-        && lexical(&dir).starts_with(lexical(&cfg).join("output"))
+    let cfg = std::path::absolute(config_dir).unwrap_or_else(|_| config_dir.to_path_buf());
+    target.starts_with(resolved(&cfg).join("output"))
+        && lexical(given).starts_with(lexical(&cfg).join("output"))
 }
 
 /// The job name: the given one, else the project file stem, else
@@ -428,17 +1243,18 @@ fn plotter(s: &Session) -> Result<PlotterProfile, CommandError> {
 /// workspace.
 pub fn summary(result: &JobResult) -> JobSummary {
     JobSummary {
-        toolpaths: result.plan.toolpaths.len(),
+        toolpaths: result.toolpaths_cut(),
         cut_mm: result.plan.cut_mm,
         travel_mm: result.plan.travel_mm,
         warnings: result.warnings.clone(),
         speed: result.settings.speed,
         force: result.settings.force,
+        // A ring of chained laps carries several passes in one toolpath.
         passes: result
             .plan
             .toolpaths
             .iter()
-            .map(|t| t.pass)
+            .map(|t| last_pass(t.pass, t.laps))
             .max()
             .unwrap_or(0),
     }
@@ -456,9 +1272,7 @@ pub(crate) fn sent_json(report: &SendReport, summary: &JobSummary) -> Value {
     })
 }
 
-/// Runs the gate, builds the active document's job and sends it. When the
-/// person has to confirm, the built job is stored as the pending send and
-/// nothing is sent; build errors come back right away.
+/// Builds the active document's job and sends it ([`send_built`]).
 pub(crate) fn send(
     s: &mut Session,
     name: Option<String>,
@@ -466,29 +1280,160 @@ pub(crate) fn send(
 ) -> Result<Value, CommandError> {
     let plotter = plotter(s)?;
     let name = job_name(s, name);
-    match gate::check_send(origin, &plotter.transport, &s.prefs, s.has_ui) {
-        GateDecision::Refuse(reason) => Err(CommandError::Refused(reason)),
-        GateDecision::NeedsConfirmation => {
-            let result = build(s)?;
-            let summary = summary(&result);
-            let job = checked(result.job)?;
-            s.request_confirmation(
-                name,
-                plotter.id.clone(),
-                plotter.transport.clone(),
-                job,
-                summary,
-            );
-            Err(CommandError::Refused(WAITING.into()))
-        }
-        GateDecision::Allow => {
-            let mut result = build(s)?;
-            let job = checked(result.job.clone())?;
-            let report = deliver_built(s, &plotter.transport, &job, &name, origin)?;
-            let value = sent_json(&report, &summary(&result));
-            result.sent = Some(report);
-            s.doc_mut().set_last_sent(result);
-            Ok(value)
+    // A send the gate refuses says so before any build error.
+    if let GateDecision::Refuse(reason) =
+        gate::check_send(origin, &plotter.transport, &s.prefs, s.has_ui)
+    {
+        return Err(CommandError::Refused(reason));
+    }
+    let result = build(s)?;
+    send_built(s, &plotter, result, name, origin)
+}
+
+/// Sends a built job of the active document: the one way a job leaves
+/// FlatCraft. It runs the send gate, then the safety check before anything
+/// waits or goes out. When the person has to confirm, the checked job is
+/// stored as the pending send (a snapshot: confirming sends exactly these
+/// bytes) and nothing is sent. Otherwise it is delivered through the
+/// plotter's transport, logged and kept as the document's last sent job.
+/// `result` must be built for `plotter` with its current settings (id and
+/// every value): anything else is an internal failure and nothing is sent.
+pub fn send_built(
+    s: &mut Session,
+    plotter: &PlotterProfile,
+    mut result: JobResult,
+    name: String,
+    origin: Origin,
+) -> Result<Value, CommandError> {
+    if result.simulation_only {
+        return Err(CommandError::Failed(SIMULATION_ONLY.into()));
+    }
+    if result.built_for != *plotter {
+        return Err(CommandError::Failed(BUILT_FOR_OTHER_PLOTTER.into()));
+    }
+    let decision = gate::check_send(origin, &plotter.transport, &s.prefs, s.has_ui);
+    if let GateDecision::Refuse(reason) = decision {
+        return Err(CommandError::Refused(reason));
+    }
+    // Only a checked job can be sent or wait for confirmation.
+    let job = checked(result.job.clone())?;
+    let sum = summary(&result);
+    let mut log = log_entry(s, &sum, result.job.bytes.len(), plotter, &name);
+    // The entry names what the job really cut: its own strategy, and for
+    // a calibration row only pieces (its tiles), never the document's
+    // keep modes.
+    log.strategy = result.strategy;
+    if result.calibration.is_some() {
+        log.keep_mode = Some(KeepMode::Pieces.key().to_string());
+    }
+    log.calibration = result.calibration.clone();
+    if decision == GateDecision::NeedsConfirmation {
+        s.request_confirmation(
+            name,
+            plotter.id.clone(),
+            plotter.transport.clone(),
+            job,
+            sum,
+            log,
+        );
+        return Err(CommandError::Refused(WAITING.into()));
+    }
+    let report = deliver_built(s, &plotter.transport, &job, &name, origin)?;
+    let mut value = sent_json(&report, &sum);
+    log_sent(s, log, &plotter.transport, &report, &mut value);
+    result.sent = Some(report);
+    s.doc_mut().set_last_sent(result);
+    Ok(value)
+}
+
+/// The cut log entry of the active document's job, without its id, time
+/// and target, which [`log_sent`] fills in once the job went out.
+fn log_entry(
+    s: &Session,
+    summary: &JobSummary,
+    bytes: usize,
+    plotter: &PlotterProfile,
+    name: &str,
+) -> cutlog::CutEntry {
+    let st = s.doc();
+    let job = &st.document.job;
+    let material = s.profiles.material(&job.material_id).ok();
+    let mat = crate::commands::effective_media(plotter, job)
+        .ok()
+        .map(|(m, _)| (m.id.clone(), m.name.clone()));
+    let (mat_id, mat) = mat.unwrap_or_else(|| (job.media_id.clone(), job.media_id.clone()));
+    cutlog::CutEntry {
+        id: String::new(),
+        date: String::new(),
+        document: st
+            .path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .map_or_else(|| name.to_string(), |n| n.to_string_lossy().into_owned()),
+        path: st.path.clone(),
+        plotter_id: plotter.id.clone(),
+        plotter: plotter.name.clone(),
+        material_id: job.material_id.clone(),
+        material: material.map_or_else(|| job.material_id.clone(), |m| m.name),
+        mat_id,
+        mat,
+        speed: summary.speed,
+        force: summary.force,
+        passes: summary.passes,
+        strategy: job.strategy,
+        keep_mode: keep_mode_of(&st.document),
+        size: cutlog::JobSize {
+            bytes,
+            toolpaths: summary.toolpaths,
+            cut_mm: summary.cut_mm,
+            travel_mm: summary.travel_mm,
+        },
+        target: cutlog::Target::Usb,
+        calibration: None,
+        outcome: None,
+    }
+}
+
+/// The keep mode of the objects a job cuts (visible, not skipped), for
+/// the cut log: its name when they all share it, "mixed" when they do
+/// not, `None` when nothing is cut.
+fn keep_mode_of(doc: &Document) -> Option<String> {
+    let mut modes = doc
+        .objects
+        .iter()
+        .filter(|o| o.visible && o.cut_enabled)
+        .map(|o| o.keep);
+    let first = modes.next()?;
+    Some(if modes.all(|m| m == first) {
+        first.key().to_string()
+    } else {
+        "mixed".to_string()
+    })
+}
+
+/// Appends a completed send to the cut log and says so in the reply
+/// (`cut_log_entry`). A log that cannot be written never fails the send:
+/// the reply says why instead (`cut_log_error`).
+pub(crate) fn log_sent(
+    s: &mut Session,
+    mut entry: cutlog::CutEntry,
+    transport: &TransportSpec,
+    report: &SendReport,
+    value: &mut Value,
+) {
+    entry.id = cutlog::new_id();
+    entry.date = cutlog::now();
+    entry.target = match transport {
+        TransportSpec::File { .. } => cutlog::Target::File {
+            files: report.files.clone(),
+        },
+        TransportSpec::Usb { .. } => cutlog::Target::Usb,
+    };
+    match s.log_cut(&entry) {
+        Ok(()) => value["cut_log_entry"] = entry.id.into(),
+        Err(e) => {
+            value["cut_log_error"] =
+                format!("The job was sent, but the cut log could not be written: {e}").into();
         }
     }
 }
@@ -532,13 +1477,39 @@ pub(crate) fn deliver_built(
                 s.prefs.output_dir.as_deref(),
                 &s.config_dir,
             );
-            if origin == Origin::Agent && !agent_may_write(&dir, &s.config_dir) {
+            // Resolved once: the check and the write see the same folder, so
+            // a link swapped in after the check cannot redirect the job. A
+            // folder that cannot be resolved (a `..` after a folder that does
+            // not exist) is never guessed: agents are refused, people get an
+            // error.
+            let target = match resolve_strict(&dir, usize::MAX) {
+                Ok(target) => target,
+                Err(_) if origin == Origin::Agent => {
+                    return Err(CommandError::Refused(format!(
+                        "agents may not write into the FlatCraft config directory ({}), and the output folder {} cannot be resolved",
+                        s.config_dir.display(),
+                        dir.display()
+                    )));
+                }
+                Err(e) => {
+                    return Err(CommandError::Failed(format!(
+                        "cannot use the output folder {}: {e}",
+                        dir.display()
+                    )));
+                }
+            };
+            if origin == Origin::Agent && !agent_may_write(&target, &dir, &s.config_dir) {
                 return Err(CommandError::Refused(format!(
                     "agents may not write into the FlatCraft config directory ({})",
                     s.config_dir.display()
                 )));
             }
-            FileTransport::new(dir, extension.clone()).send_job(job, name, &mut s.byte_log)
+            #[cfg(test)]
+            crate::commands::project::tests::between_check_and_write();
+            // Reports and errors name the folder as the person gave it.
+            FileTransport::new(target, extension.clone())
+                .with_shown_dir(dir)
+                .send_job(job, name, &mut s.byte_log)
         }
         TransportSpec::Usb { .. } => Err(TransportError::NotAvailable(USB_NOT_AVAILABLE.into())),
     }
@@ -556,6 +1527,212 @@ fn transport_error(e: TransportError) -> CommandError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flatcraft_path::plan;
+
+    #[test]
+    fn weed_box_warnings_read_right() {
+        assert_eq!(
+            weed_box_blocked_warning(1),
+            "A weed box would cut through material you keep, so it is not cut."
+        );
+        assert!(weed_box_blocked_warning(2).starts_with("2 weed boxes would cut"));
+        assert!(weed_box_warning(1, false).starts_with("The weed box does not fit"));
+        assert!(weed_box_warning(3, true).starts_with("3 weed boxes do not fit"));
+    }
+
+    #[test]
+    fn rounding_warnings_say_what_the_rounding_left() {
+        use flatcraft_path::quantize::RoundReport;
+        assert!(rounding_warnings(&RoundReport::default()).is_empty());
+        // Points it moved out of kept material need no warning.
+        let moved = RoundReport {
+            kept_moved: 4,
+            ..RoundReport::default()
+        };
+        assert!(rounding_warnings(&moved).is_empty());
+        let one = rounding_warnings(&RoundReport {
+            kept_left: 1,
+            ..RoundReport::default()
+        });
+        assert_eq!(
+            one,
+            [
+                "1 blade move at a start or a corner could not be kept fully out of a piece you keep after rounding to plotter steps. Run the simulation to see where."
+            ]
+        );
+        let both = rounding_warnings(&RoundReport {
+            kept_left: 3,
+            pushes_kept: 2,
+            ..RoundReport::default()
+        });
+        assert_eq!(both.len(), 2, "{both:?}");
+        assert!(both[0].starts_with("3 blade moves at a start or a corner could not be kept fully out of a piece you keep after rounding to plotter steps."));
+        assert!(both[1].starts_with(
+            "2 blade moves still push the blade from behind after rounding to plotter steps."
+        ));
+        assert!(both.iter().all(|w| !w.contains('\u{2014}')));
+    }
+
+    /// The tile plans of an offset series merge into one report: one
+    /// warning with the sum, not one per tile.
+    #[test]
+    fn a_merged_rounding_report_counts_each_job_once() {
+        use flatcraft_path::quantize::RoundReport;
+        let r = RoundReport {
+            kept_left: 1,
+            ..RoundReport::default()
+        };
+        let w = rounding_warnings(&r.merge(r));
+        assert_eq!(w.len(), 1);
+        assert!(w[0].starts_with("2 blade moves"), "{w:?}");
+    }
+
+    /// The warnings of a real plan, with its rounding counts set by hand:
+    /// both rounding warnings come once, after the plan's other ones, and
+    /// a plan with nothing to say gives none.
+    #[test]
+    fn plan_warnings_carry_the_rounding_counts() {
+        let square = kurbo::BezPath::from_svg("M20 20 H30 V30 H20 Z").unwrap();
+        let input = [PlacedPath {
+            path: square,
+            source: PathRef {
+                object: ObjectId(1),
+                path_index: 0,
+            },
+        }];
+        let s = PipelineSettings::with_defaults(
+            kurbo::Rect::new(5.0, 5.0, 295.0, 295.0),
+            kurbo::Point::ZERO,
+        );
+        let mut p = plan(&input, &s).unwrap();
+        assert!(plan_warnings(&p, false).is_empty());
+        p.rounding.kept_left = 1;
+        p.rounding.pushes_kept = 2;
+        p.dropped_short = 1;
+        let w = plan_warnings(&p, false);
+        assert_eq!(w.len(), 3, "{w:?}");
+        assert_eq!(w[0], dropped_short_warning(1));
+        assert!(
+            w[1].starts_with("1 blade move at a start or a corner could not be kept fully out"),
+            "{w:?}"
+        );
+        assert!(
+            w[2].starts_with("2 blade moves still push the blade from behind"),
+            "{w:?}"
+        );
+    }
+
+    const SQUARE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><rect x="20" y="20" width="30" height="30"/></svg>"#;
+
+    /// A link in the output folder's path re-pointed into the config dir
+    /// between the agent check and the write: the job still goes to the
+    /// folder that was checked, and the report names the folder as given.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_re_pointed_after_the_check_does_not_redirect_file_output() {
+        let config = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let real = elsewhere.path().join("real");
+        std::fs::create_dir_all(real.join("jobs")).unwrap();
+        let via = elsewhere.path().join("via");
+        std::os::unix::fs::symlink(&real, &via).unwrap();
+        let out = via.join("jobs");
+        let profiles = flatcraft_device::ProfileStore::load(config.path()).unwrap();
+        let prefs = crate::prefs::Preferences {
+            output_dir: Some(out.clone()),
+            ..Default::default()
+        };
+        let mut s = Session::new(profiles, prefs, false, config.path().to_path_buf());
+        s.execute(
+            "object.import_svg",
+            json!({ "svg": SQUARE, "name": "sq" }),
+            Origin::User,
+        )
+        .unwrap();
+        let cfg = config.path().to_path_buf();
+        std::fs::create_dir(cfg.join("jobs")).unwrap();
+        let link = via.clone();
+        crate::commands::project::tests::set_between(move || {
+            std::fs::remove_file(&link).unwrap();
+            std::os::unix::fs::symlink(&cfg, &link).unwrap();
+        });
+        let r = s
+            .execute("job.send", json!({ "name": "swap" }), Origin::Agent)
+            .unwrap();
+        assert!(
+            !config.path().join("jobs/swap.gpgl").exists(),
+            "the job went through the re-pointed link"
+        );
+        assert!(real.join("jobs/swap.gpgl").exists());
+        let files: Vec<PathBuf> = r["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| PathBuf::from(f.as_str().unwrap()))
+            .collect();
+        assert_eq!(files[0], out.join("swap.gpgl"), "the folder as given");
+    }
+
+    /// Errors name the output folder as the person set it, not the folder
+    /// it resolves to.
+    #[cfg(unix)]
+    #[test]
+    fn file_output_errors_name_the_folder_as_given() {
+        let config = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let real = elsewhere.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        // A file where the job folder should be: creating it fails.
+        std::fs::write(real.join("jobs"), "not a folder").unwrap();
+        let via = elsewhere.path().join("via");
+        std::os::unix::fs::symlink(&real, &via).unwrap();
+        let profiles = flatcraft_device::ProfileStore::load(config.path()).unwrap();
+        let prefs = crate::prefs::Preferences {
+            output_dir: Some(via.join("jobs")),
+            ..Default::default()
+        };
+        let mut s = Session::new(profiles, prefs, false, config.path().to_path_buf());
+        s.execute(
+            "object.import_svg",
+            json!({ "svg": SQUARE, "name": "sq" }),
+            Origin::User,
+        )
+        .unwrap();
+        let e = s
+            .execute("job.send", json!({ "name": "named" }), Origin::User)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains(&via.join("jobs").display().to_string()), "{e}");
+        assert!(!e.contains("real"), "{e}");
+    }
+
+    /// An output folder an agent names with a `..` after a folder that does
+    /// not exist is refused, not guessed.
+    #[cfg(unix)]
+    #[test]
+    fn an_unresolvable_output_folder_is_not_guessed() {
+        let config = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(config.path(), elsewhere.path().join("cfglink")).unwrap();
+        let dir = elsewhere.path().join("cfglink/nonexist/../jobs");
+        let profiles = flatcraft_device::ProfileStore::load(config.path()).unwrap();
+        let prefs = crate::prefs::Preferences {
+            output_dir: Some(dir),
+            ..Default::default()
+        };
+        let mut s = Session::new(profiles, prefs, false, config.path().to_path_buf());
+        s.execute(
+            "object.import_svg",
+            json!({ "svg": SQUARE, "name": "sq" }),
+            Origin::User,
+        )
+        .unwrap();
+        let e = s
+            .execute("job.send", json!({ "name": "dots" }), Origin::Agent)
+            .unwrap_err();
+        assert!(matches!(e, CommandError::Refused(_)), "{e}");
+        assert!(!config.path().join("jobs").exists());
+    }
 
     #[test]
     fn user_fixable_emit_errors_are_refusals() {
@@ -577,12 +1754,15 @@ mod tests {
             },
             EmitError::UnknownMedia { id: "m".into() },
             EmitError::EmptyJob,
+            EmitError::CompensationMismatch {
+                profile: "host",
+                geometry: "plain tip paths",
+            },
         ];
         for e in refused {
             assert!(matches!(emit_error(e), CommandError::Refused(_)));
         }
         let failed = [
-            EmitError::HostCompensationNotYet,
             EmitError::DialectNotSupported,
             EmitError::EmptyDraw,
             EmitError::InvalidProfile { reason: "r".into() },
@@ -593,10 +1773,68 @@ mod tests {
     }
 
     #[test]
+    fn the_emitted_geometry_is_what_the_plan_applied() {
+        assert_eq!(geometry_kind(AppliedCompensation::Tip), GeometryKind::Tip);
+        assert_eq!(
+            geometry_kind(AppliedCompensation::Host { offset_mm: 0.3 }),
+            GeometryKind::HostAxis { offset_mm: 0.3 }
+        );
+        assert_eq!(
+            geometry_kind(AppliedCompensation::HostCalibration),
+            GeometryKind::HostCalibration
+        );
+        assert!(!collapsed_warning(2).contains('\u{2014}'));
+    }
+
+    /// A mismatch the person can fix says how, in plain words.
+    #[test]
+    fn compensation_mismatches_say_the_fix() {
+        let series = emit_error(EmitError::CompensationMismatch {
+            profile: "firmware",
+            geometry: GeometryKind::HostCalibration.describe(),
+        });
+        let CommandError::Refused(text) = series else {
+            panic!("{series}")
+        };
+        assert!(text.contains("needs Host knife compensation"), "{text}");
+        let stale = emit_error(EmitError::CompensationMismatch {
+            profile: "host",
+            geometry: GeometryKind::Tip.describe(),
+        });
+        let CommandError::Refused(text) = stale else {
+            panic!("{stale}")
+        };
+        assert!(text.ends_with("Build the job again, so it is planned for this plotter preset."));
+        for t in [
+            dropped_short_warning(1),
+            dropped_short_warning(3),
+            collapsed_warning(1),
+            collapsed_warning(3),
+            tight_curves_warning(2, 0.25),
+            offset_mismatch_warning(0.3, 0.25),
+        ] {
+            assert!(!t.contains('\u{2014}'), "{t}");
+        }
+        assert_eq!(
+            dropped_short_warning(2),
+            "2 paths are shorter than half a plotter step and are not cut."
+        );
+        assert_eq!(
+            tight_curves_warning(3, 0.25),
+            "3 curves are tighter than 0.25 mm. They may come out rounded or torn."
+        );
+        assert_eq!(
+            offset_mismatch_warning(0.3, 0.25),
+            "Host compensation uses 0.3 mm, the blade offset is 0.25 mm. The simulator uses the blade offset."
+        );
+    }
+
+    #[test]
     fn unsafe_bytes_never_wait_for_confirmation() {
         let bad = EmittedJob {
             bytes: b"FB1\x03H\x03".to_vec(),
             listing: vec![],
+            collapsed: vec![],
         };
         let e = checked(bad).unwrap_err();
         assert!(matches!(e, CommandError::Failed(_)), "{e}");
@@ -604,11 +1842,13 @@ mod tests {
         let unterminated = EmittedJob {
             bytes: b"\x1b\x04".to_vec(),
             listing: vec![],
+            collapsed: vec![],
         };
         assert!(checked(unterminated).is_err());
         let good = EmittedJob {
             bytes: b"\x1b\x04H\x03".to_vec(),
             listing: vec![],
+            collapsed: vec![],
         };
         checked(good).unwrap();
     }

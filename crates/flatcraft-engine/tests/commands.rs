@@ -321,6 +321,106 @@ fn job_arrange_and_visibility_are_undoable() {
 }
 
 #[test]
+fn set_cut_skips_several_objects_and_undoes_in_one_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = import(&mut s, 50.0, 50.0);
+    let b = import(&mut s, 50.0, 50.0);
+    s.doc_mut().dirty = false;
+    // An agent may use it.
+    let r = s
+        .execute(
+            "object.set_cut",
+            json!({ "ids": [a, b], "cut": false }),
+            Origin::Agent,
+        )
+        .unwrap();
+    assert_eq!(r["cut"], false);
+    assert!(s.doc().dirty);
+    let cut = |s: &Session, id: u64| s.doc().document.get(ObjectId(id)).unwrap().cut_enabled;
+    assert!(!cut(&s, a) && !cut(&s, b));
+    // Still visible, and document.state says so.
+    let state = run(&mut s, "document.state", json!({}));
+    assert_eq!(state["objects"][0]["visible"], true);
+    assert_eq!(state["objects"][0]["cut_enabled"], false);
+    run(&mut s, "edit.undo", json!({}));
+    assert!(cut(&s, a) && cut(&s, b));
+    // An empty list means the selection.
+    run(&mut s, "object.select", json!({ "ids": [b] }));
+    run(&mut s, "object.set_cut", json!({ "ids": [], "cut": false }));
+    assert!(cut(&s, a) && !cut(&s, b));
+    let e = s
+        .execute(
+            "object.set_cut",
+            json!({ "ids": [999], "cut": false }),
+            Origin::Agent,
+        )
+        .unwrap_err();
+    assert!(!e.to_string().contains('\u{2014}'));
+}
+
+#[test]
+fn rename_changes_one_name_and_undoes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = import(&mut s, 50.0, 50.0);
+    let b = import(&mut s, 50.0, 50.0);
+    let name = |s: &Session, id: u64| s.doc().document.get(ObjectId(id)).unwrap().name.clone();
+    let old = name(&s, b);
+    let r = s
+        .execute(
+            "object.rename",
+            json!({ "id": a, "name": "  Lid  " }),
+            Origin::Agent,
+        )
+        .unwrap();
+    assert_eq!(r["name"], "Lid");
+    assert_eq!(name(&s, a), "Lid");
+    assert_eq!(name(&s, b), old);
+    run(&mut s, "edit.undo", json!({}));
+    assert_ne!(name(&s, a), "Lid");
+    for bad in ["", "   ", "two\nlines"] {
+        let e = s
+            .execute(
+                "object.rename",
+                json!({ "id": a, "name": bad }),
+                Origin::Agent,
+            )
+            .unwrap_err();
+        assert!(!e.to_string().contains('\u{2014}'));
+    }
+    // The cap is in characters, not bytes.
+    let long = "\u{e4}".repeat(200);
+    run(&mut s, "object.rename", json!({ "id": a, "name": long }));
+    let too_long = "x".repeat(201);
+    assert!(
+        s.execute(
+            "object.rename",
+            json!({ "id": a, "name": too_long }),
+            Origin::Agent
+        )
+        .is_err()
+    );
+    // The same name again is no undo step.
+    let steps = s.doc().undo.undo_len();
+    run(&mut s, "object.rename", json!({ "id": a, "name": long }));
+    run(
+        &mut s,
+        "object.rename",
+        json!({ "id": a, "name": format!(" {long} ") }),
+    );
+    assert_eq!(s.doc().undo.undo_len(), steps);
+    assert!(
+        s.execute(
+            "object.rename",
+            json!({ "id": 999, "name": "x" }),
+            Origin::Agent
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn import_svgz_file() {
     use std::io::Write;
     let dir = tempfile::tempdir().unwrap();
@@ -391,6 +491,17 @@ fn error_texts_have_no_em_dash() {
         ("job.set_overrides", json!({ "force": 0 })),
         ("job.set_overrides", json!({ "passes": 0 })),
         ("arrange.auto", json!({ "spacing_mm": -1.0 })),
+        (
+            "arrange.distribute",
+            json!({ "ids": [id], "axis": "horizontal" }),
+        ),
+        ("arrange.distribute", json!({ "axis": "vertical" })),
+        ("object.copies", json!({ "id": id, "count": 0 })),
+        (
+            "object.copies",
+            json!({ "id": id, "count": 2, "gap_mm": -5.0 }),
+        ),
+        ("object.link", json!({ "ids": [id] })),
     ];
     for (cmd, params) in cases {
         let e = s
@@ -620,9 +731,13 @@ fn job_adds_the_grid_origin() {
     );
     let built = flatcraft_engine::job::build(&s).unwrap();
     let text = String::from_utf8_lossy(&built.job.bytes).into_owned();
-    // the 20 mm square's corner app (0,0) = device y 12 mm, x 10 mm = D240,200 units (y first),
-    // reached from the path start point M640,200; Z is the physical mat
-    assert!(text.contains("M640,200\x03D240,200,240,600,"), "{text}");
+    // the 20 mm square's corner app (0,0) = device y 12 mm, x 10 mm = M240,200 units (y first),
+    // the corner nearest the home, cut counter-clockwise (down the left side
+    // first) and closed with the 0.5 mm overcut; Z is the physical mat
+    assert!(
+        text.contains("M240,200\x03D640,200,640,600,240,600,240,200,250,200\x03"),
+        "{text}"
+    );
     assert!(text.contains("Z6604,6096"), "{text}");
 }
 
@@ -638,7 +753,8 @@ fn document_state_reports_mat() {
     assert_eq!(m["width_mm"].as_f64(), Some(304.8));
     assert_eq!(m["height_mm"].as_f64(), Some(330.2));
     assert_eq!(m["calibrated"], false);
-    assert_eq!(m["color"], "#8FA8B8");
+    assert_eq!(m["color"], "#FFFFFF");
+    assert_eq!(m["custom_color"], false);
     assert_eq!(m["grid"]["origin_x_mm"].as_f64(), Some(0.0));
     assert_eq!(m["grid"]["origin_y_mm"].as_f64(), Some(0.0));
     assert_eq!(m["grid"]["width_mm"].as_f64(), Some(304.8));
@@ -661,6 +777,8 @@ fn auto_arrange_packs_without_overlap() {
         (45.0, 70.0),
     ];
     let ids: Vec<u64> = sizes.iter().map(|&(w, h)| import(&mut s, w, h)).collect();
+    // An import selects the new object; with nothing selected all are packed.
+    run(&mut s, "object.select", json!({ "ids": [] }));
     let r = run(&mut s, "arrange.auto", json!({}));
     assert_eq!(r["placed"].as_array().unwrap().len(), 6, "{r}");
     assert!(r["did_not_fit"].as_array().unwrap().is_empty(), "{r}");
@@ -685,6 +803,7 @@ fn auto_arrange_packs_without_overlap() {
     // Wider than the cutting area: does not fit and stays where it is.
     let big = import(&mut s, 300.0, 100.0);
     let before = placed_bounds(&s, big);
+    run(&mut s, "object.select", json!({ "ids": [] }));
     let r = run(&mut s, "arrange.auto", json!({ "spacing_mm": 5.0 }));
     assert_eq!(r["did_not_fit"], json!([big]), "{r}");
     assert_eq!(placed_bounds(&s, big), before);
@@ -787,6 +906,145 @@ fn agent_cannot_save_through_a_link_into_the_config_dir() {
         "theme = \"Light\"\n"
     );
     assert!(!new_file.exists());
+}
+
+/// The guard looks through a linked folder above the file, through a
+/// relative link, and also guards `tools.test_patterns` `svg_path`.
+#[cfg(unix)]
+#[test]
+fn agent_writes_through_folder_and_relative_links_are_refused() {
+    use std::os::unix::fs::symlink;
+    let root = tempfile::tempdir().unwrap();
+    let config = root.path().join("config");
+    let elsewhere = root.path().join("elsewhere");
+    std::fs::create_dir_all(config.join("profiles")).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let profiles = ProfileStore::load(&config).unwrap();
+    let prefs = Preferences {
+        output_dir: Some(root.path().join("output")),
+        ..Preferences::default()
+    };
+    let mut s = Session::new(profiles, prefs, false, config.clone());
+    let prefs_file = config.join("preferences.toml");
+    std::fs::write(&prefs_file, "theme = \"Light\"\n").unwrap();
+    // A folder link: elsewhere/folder -> config/profiles.
+    let folder = elsewhere.join("folder");
+    symlink(config.join("profiles"), &folder).unwrap();
+    let via_folder = folder.join("planted.flatcraft");
+    // A relative link: elsewhere/rel.flatcraft -> ../config/preferences.toml.
+    let relative = elsewhere.join("rel.flatcraft");
+    symlink("../config/preferences.toml", &relative).unwrap();
+    let svg_link = elsewhere.join("sheet.svg");
+    symlink("../config/preferences.toml", &svg_link).unwrap();
+    let svg_in_folder = folder.join("sheet.svg");
+    let attempts = [
+        ("project.save", json!({ "path": via_folder })),
+        ("project.save", json!({ "path": relative })),
+        (
+            "tools.test_patterns",
+            json!({ "add_to_document": false, "svg_path": svg_link }),
+        ),
+        (
+            "tools.test_patterns",
+            json!({ "add_to_document": false, "svg_path": svg_in_folder }),
+        ),
+    ];
+    for (id, params) in attempts {
+        let e = s.execute(id, params.clone(), Origin::Agent).unwrap_err();
+        assert!(matches!(e, CommandError::Refused(_)), "{id} {params}: {e}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(&prefs_file).unwrap(),
+        "theme = \"Light\"\n"
+    );
+    assert!(!config.join("profiles").join("planted.flatcraft").exists());
+    assert!(!config.join("profiles").join("sheet.svg").exists());
+    // The user may, and writes through the links.
+    run(&mut s, "project.save", json!({ "path": via_folder }));
+    assert!(config.join("profiles").join("planted.flatcraft").exists());
+    run(
+        &mut s,
+        "tools.test_patterns",
+        json!({ "add_to_document": false, "svg_path": svg_link }),
+    );
+    assert!(
+        std::fs::read_to_string(&prefs_file)
+            .unwrap()
+            .contains("<svg")
+    );
+    assert!(
+        std::fs::symlink_metadata(&svg_link)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the link stays a link"
+    );
+}
+
+/// A `..` after a folder that does not exist cannot be resolved by the
+/// file system; the guard must not fall back to the lexical path, which
+/// would walk through a linked folder into the config dir.
+#[cfg(unix)]
+#[test]
+fn agent_writes_through_unresolvable_dot_dot_are_refused() {
+    use std::os::unix::fs::symlink;
+    let root = tempfile::tempdir().unwrap();
+    let config = root.path().join("config");
+    let elsewhere = root.path().join("elsewhere");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let profiles = ProfileStore::load(&config).unwrap();
+    let prefs = Preferences {
+        output_dir: Some(root.path().join("output")),
+        ..Preferences::default()
+    };
+    let mut s = Session::new(profiles, prefs, false, config.clone());
+    let prefs_file = config.join("preferences.toml");
+    std::fs::write(&prefs_file, "theme = \"Light\"\n").unwrap();
+    symlink(&config, elsewhere.join("cfglink")).unwrap();
+    symlink(
+        "../nonexist/../config/rel.flatcraft",
+        elsewhere.join("rel.flatcraft"),
+    )
+    .unwrap();
+    symlink("../nonexist/../config/rel.svg", elsewhere.join("rel.svg")).unwrap();
+    let attempts = [
+        (
+            "project.save",
+            json!({ "path": elsewhere.join("cfglink/nonexist/../preferences.toml") }),
+        ),
+        (
+            "project.save",
+            json!({ "path": elsewhere.join("rel.flatcraft") }),
+        ),
+        (
+            "tools.test_patterns",
+            json!({ "add_to_document": false, "svg_path": elsewhere.join("cfglink/nonexist/../sheet.svg") }),
+        ),
+        (
+            "tools.test_patterns",
+            json!({ "add_to_document": false, "svg_path": elsewhere.join("rel.svg") }),
+        ),
+    ];
+    let listing = || {
+        let mut v: Vec<_> = std::fs::read_dir(&config)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        v.sort();
+        v
+    };
+    let before = listing();
+    for (id, params) in attempts {
+        let r = s.execute(id, params.clone(), Origin::Agent);
+        assert!(r.is_err(), "{id} {params}: {r:?}");
+        assert_eq!(
+            std::fs::read_to_string(&prefs_file).unwrap(),
+            "theme = \"Light\"\n",
+            "{id} {params}"
+        );
+        assert_eq!(listing(), before, "{id} {params}");
+    }
 }
 
 #[test]
@@ -970,6 +1228,7 @@ fn auto_arrange_wraps_zero_height_rows() {
     for &i in &ids {
         assert!(close(placed_bounds(&s, i).height(), 0.0));
     }
+    run(&mut s, "object.select", json!({ "ids": [] }));
     let r = run(&mut s, "arrange.auto", json!({}));
     assert_eq!(r["placed"].as_array().unwrap().len(), 3, "{r}");
     let area = Rect::new(5.0, 5.0, 299.8, 299.8);
@@ -1276,9 +1535,11 @@ fn project_open_keeps_the_image_frame_when_the_trace_changes() {
     run(&mut s, "project.save", json!({ "path": path }));
 
     // The dot is dropped when the project is opened.
-    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    v["objects"][0]["source"]["Raster"]["trace"]["min_feature_mm"] = json!(5.0);
-    std::fs::write(&path, v.to_string()).unwrap();
+    flatcraft_core::project::Archive::edit(&path, |a| {
+        let v = &mut a.project;
+        v["objects"][0]["source"]["Raster"]["trace"]["min_feature_mm"] = json!(5.0);
+    })
+    .unwrap();
     let mut s2 = session(&dir);
     run(&mut s2, "project.open", json!({ "path": path }));
     let o = s2.doc().document.get(ObjectId(id)).unwrap();
@@ -1318,11 +1579,11 @@ fn project_open_keeps_the_svg_page_frame_when_the_shapes_change() {
     let before = kurbo::Shape::bounding_box(&o.placed_paths()[1].path);
     let path = dir.path().join("p.flatcraft");
     run(&mut s, "project.save", json!({ "path": path }));
-    use base64::Engine as _;
-    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    v["objects"][0]["source"]["Svg"]["bytes"] =
-        json!(base64::engine::general_purpose::STANDARD.encode(one));
-    std::fs::write(&path, v.to_string()).unwrap();
+    flatcraft_core::project::Archive::edit(&path, |a| {
+        let file = a.add_source(&svg_source(one));
+        a.project["objects"][0]["source"]["Svg"]["file"] = json!(file);
+    })
+    .unwrap();
     let mut s2 = session(&dir);
     run(&mut s2, "project.open", json!({ "path": path }));
     let o = s2.doc().document.get(ObjectId(id)).unwrap();
@@ -1345,15 +1606,28 @@ fn hand_written_project(
     extra: &str,
     transform: &str,
 ) -> std::path::PathBuf {
-    use base64::Engine as _;
     let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><rect x="10" y="10" width="10" height="20"/></svg>"#;
-    let bytes = base64::engine::general_purpose::STANDARD.encode(svg);
+    let mut archive = flatcraft_core::project::Archive {
+        project: Value::Null,
+        sources: Default::default(),
+        thumbnail: None,
+    };
+    let file = archive.add_source(&svg_source(svg));
     let text = format!(
-        r#"{{"format_version":1,"objects":[{{"id":1,"name":"box","source":{{"Svg":{{"name":"box.svg","bytes":"{bytes}"}}}},"transform":{transform},"visible":true{extra}}}],"job":{{"plotter_id":"cameo2","material_id":"cardstock","media_id":"a4","speed":null,"force":null,"passes":null}},"next_id":2}}"#
+        r#"{{"format_version":1,"objects":[{{"id":1,"name":"box","source":{{"Svg":{{"name":"box.svg","file":"{file}"}}}},"transform":{transform},"visible":true{extra}}}],"job":{{"plotter_id":"cameo2","material_id":"cardstock","media_id":"a4","speed":null,"force":null,"passes":null}},"next_id":2}}"#
     );
+    archive.project = serde_json::from_str(&text).unwrap();
     let path = dir.path().join("hand.flatcraft");
-    std::fs::write(&path, text).unwrap();
+    archive.write(&path).unwrap();
     path
+}
+
+/// An SVG source with these bytes.
+fn svg_source(svg: &str) -> flatcraft_core::document::Source {
+    flatcraft_core::document::Source::Svg {
+        name: "box.svg".into(),
+        bytes: svg.as_bytes().into(),
+    }
 }
 
 const PLAIN_TRANSFORM: &str = r#"{"center_mm":{"x":50.0,"y":60.0},"scale_x":1.0,"scale_y":1.0,"rotation_deg":0.0,"mirror":false}"#;
@@ -1415,7 +1689,7 @@ fn project_open_refuses_a_broken_transform() {
     }
 }
 
-const TOO_LARGE: &str = "That would make the object too large (over 1 km). Undo or scale it down.";
+const TOO_LARGE: &str = "That would put an object more than 1 km from the mat, or make it over 1 km in size. Undo it, or move or scale it back.";
 
 /// project.open refuses a placement beyond 1e6 mm, so no command may
 /// make one: group scaling by 1000 stops before it overflows.
@@ -1459,11 +1733,22 @@ fn a_move_beyond_1_km_is_refused() {
     let e = s
         .execute(
             "object.move",
-            json!({ "ids": [id], "center_mm": [2e6, 50.0] }),
+            // In the schema's range (1 km), but the object's centre lands
+            // past it.
+            json!({ "ids": [id], "x_mm": 999_999.0 }),
             Origin::User,
         )
         .unwrap_err();
     assert!(e.to_string().contains(TOO_LARGE), "{e}");
+    // Past the range: refused before the command runs.
+    let e = s
+        .execute(
+            "object.move",
+            json!({ "ids": [id], "center_mm": [2e6, 50.0] }),
+            Origin::User,
+        )
+        .unwrap_err();
+    assert!(matches!(e, CommandError::InvalidParams(_)), "{e}");
     assert_eq!(placed_bounds(&s, id), before);
 }
 
@@ -1472,9 +1757,11 @@ fn a_move_beyond_1_km_is_refused() {
 fn project_open_warnings_join_wrapped_errors_in_lower_case() {
     let dir = tempfile::tempdir().unwrap();
     let path = hand_written_project(&dir, "", PLAIN_TRANSFORM);
-    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    v["objects"][0]["source"]["Svg"]["bytes"] = json!("PG5vdCBzdmc+"); // "<not svg>"
-    std::fs::write(&path, v.to_string()).unwrap();
+    flatcraft_core::project::Archive::edit(&path, |a| {
+        let file = a.add_source(&svg_source("<not svg>"));
+        a.project["objects"][0]["source"]["Svg"]["file"] = json!(file);
+    })
+    .unwrap();
     let mut s = session(&dir);
     let r = run(&mut s, "project.open", json!({ "path": path }));
     let w = r["warnings"][0].as_str().unwrap().to_string();
@@ -1735,6 +2022,7 @@ fn undo_and_redo_by_doc_id() {
 
 #[test]
 fn preview_fills_the_mat_with_its_color() {
+    use flatcraft_core::colour::{contrast_colour, margin_colour};
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let png = flatcraft_engine::preview::render_png(
@@ -1744,10 +2032,27 @@ fn preview_fills_the_mat_with_its_color() {
     )
     .unwrap();
     let img = image::load_from_memory(&png).unwrap().to_rgba8();
-    // a corner of the physical mat, outside the grid
+    let paper = flatcraft_device::DEFAULT_MAT_COLOR_LIGHT;
+    // A corner of the physical mat, outside the grid: the darker margin.
     let (w, h) = img.dimensions();
     let px = img.get_pixel(w / 2, h - 3);
-    assert_eq!(&px.0[..3], &[0x8F, 0xA8, 0xB8]);
+    assert_eq!(&px.0[..3], &margin_colour(paper));
+    // Somewhere in the cutting area between two grid lines (the grid is
+    // 10 mm; 512 px for 330 mm is about 1.55 px per mm): the mat colour.
+    let inside = (w / 4..w * 3 / 4)
+        .flat_map(|x| (h / 4..h * 3 / 4).map(move |y| (x, y)))
+        .filter(|&(x, y)| img.get_pixel(x, y).0[..3] == paper)
+        .count();
+    assert!(inside > 1000, "{inside} paper pixels in the cutting area");
+    // The grid lines are dark on paper (the canvas's contrast rule).
+    let dark = contrast_colour(paper);
+    let darker = (w / 4..w * 3 / 4)
+        .flat_map(|x| (h / 4..h * 3 / 4).map(move |y| (x, y)))
+        .any(|(x, y)| {
+            let p = img.get_pixel(x, y).0;
+            (0..3).all(|c| p[c] < paper[c]) && p[0].abs_diff(dark[0]) < 200
+        });
+    assert!(darker, "no grid line pixels");
 }
 
 #[test]
@@ -2002,14 +2307,15 @@ fn group_scale_keeps_the_layout_about_one_anchor() {
     );
     let group2 = state_bounds(&mut s, a).union(state_bounds(&mut s, b));
     assert!(close(group2.width(), 100.0), "{group2:?}");
-    let e = s
-        .execute(
-            "object.scale",
-            json!({ "ids": [a, b], "width_mm": 50.0, "keep_aspect": false, "group": true }),
-            Origin::User,
-        )
-        .unwrap_err();
-    assert!(matches!(e, CommandError::InvalidParams(_)), "{e}");
+    // Both are straight (0 and 90 degrees): only the width changes.
+    run(
+        &mut s,
+        "object.scale",
+        json!({ "ids": [a, b], "width_mm": 50.0, "keep_aspect": false, "group": true }),
+    );
+    let group3 = state_bounds(&mut s, a).union(state_bounds(&mut s, b));
+    assert!(close(group3.width(), 50.0), "{group3:?}");
+    assert!(close(group3.height(), group2.height()), "{group3:?}");
 }
 
 #[test]
@@ -2093,6 +2399,133 @@ fn an_unreadable_preferences_file_turns_agent_cuts_off() {
     assert!(s.prefs.auto_reload, "the rest stays as read last");
 }
 
+/// A broken file is reported once per change of the file, not at every
+/// check, and the report waits for the window to take it.
+#[test]
+fn a_broken_preferences_file_is_reported_once() {
+    use std::time::{Duration, Instant, SystemTime};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(flatcraft_engine::prefs::FILE_NAME);
+    let write = |text: &str, secs: u64| {
+        std::fs::write(&path, text).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(SystemTime::now() + Duration::from_secs(secs))
+            .unwrap();
+    };
+    let mut s = prefs_session(&dir);
+    s.watch_prefs_file();
+    assert_eq!(s.take_prefs_warning(), None);
+    write("allow_agent_cuts = [", 60);
+    let t0 = Instant::now() + Duration::from_secs(5);
+    assert!(!s.refresh_prefs(t0));
+    let w = s.take_prefs_warning().expect("a warning");
+    assert!(w.contains("preferences.toml"), "{w}");
+    assert!(!w.contains('\n'), "one line for the window: {w}");
+    assert!(w.ends_with("until the file is fixed."), "{w}");
+    for n in 1..4 {
+        assert!(!s.refresh_prefs(t0 + Duration::from_millis(1100 * n)));
+        assert_eq!(s.take_prefs_warning(), None, "the same file, no news");
+    }
+    // Broken in another way: a new report.
+    write("allow_agent_cuts = [[", 120);
+    assert!(!s.refresh_prefs(t0 + Duration::from_secs(10)));
+    assert!(s.take_prefs_warning().is_some());
+    // Fixed: read, and no report.
+    write("auto_reload = true\n", 180);
+    assert!(s.refresh_prefs(t0 + Duration::from_secs(20)));
+    assert!(s.prefs.auto_reload);
+    assert_eq!(s.take_prefs_warning(), None);
+}
+
+/// The start-up warning for the window is one line; the parser's details
+/// go to stderr.
+#[test]
+fn the_start_up_preferences_warning_is_one_line() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(flatcraft_engine::prefs::FILE_NAME),
+        "allow_agent_cuts = [",
+    )
+    .unwrap();
+    let (prefs, w) = Preferences::load_reporting(dir.path());
+    assert_eq!(prefs, Preferences::default());
+    let w = w.expect("a warning");
+    assert!(w.contains("preferences.toml is broken"), "{w}");
+    assert!(!w.contains('\n'), "{w}");
+    assert!(w.ends_with("Using default preferences."), "{w}");
+}
+
+/// A broken file put back exactly as it was read last (same time and size,
+/// like `cp -p` of a backup) is read again, so agent cuts come back.
+#[test]
+fn an_exact_restore_after_a_broken_file_is_read_again() {
+    use std::time::{Duration, Instant, SystemTime};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(flatcraft_engine::prefs::FILE_NAME);
+    let good = "allow_agent_cuts = true\n";
+    let at = SystemTime::now() - Duration::from_secs(3600);
+    let write = |text: &str, at: SystemTime| {
+        std::fs::write(&path, text).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(at)
+            .unwrap();
+    };
+    write(good, at);
+    let mut s = prefs_session(&dir);
+    s.watch_prefs_file();
+    assert!(s.prefs.allow_agent_cuts);
+    write("allow_agent_cuts = [", at + Duration::from_secs(60));
+    let t0 = Instant::now() + Duration::from_secs(5);
+    assert!(!s.refresh_prefs(t0));
+    assert!(!s.prefs.allow_agent_cuts, "fails closed");
+    write(good, at);
+    assert!(s.refresh_prefs(t0 + Duration::from_millis(1100)));
+    assert!(s.prefs.allow_agent_cuts, "the restored file counts again");
+}
+
+/// A read that fails while the file itself stays the same (time and size)
+/// is tried again at the next check, not only after the next change.
+#[cfg(unix)]
+#[test]
+fn a_failed_preferences_read_is_retried() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant, SystemTime};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(flatcraft_engine::prefs::FILE_NAME);
+    let mut s = prefs_session(&dir);
+    s.watch_prefs_file();
+    std::fs::write(&path, "auto_reload = true\n").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(SystemTime::now() + Duration::from_secs(60))
+        .unwrap();
+    let mode =
+        |m: u32| std::fs::set_permissions(&path, std::fs::Permissions::from_mode(m)).unwrap();
+    mode(0o000);
+    if std::fs::read(&path).is_ok() {
+        // Root reads anyway; nothing to test here.
+        return;
+    }
+    let t0 = Instant::now() + Duration::from_secs(5);
+    assert!(!s.refresh_prefs(t0), "the read fails");
+    assert!(!s.prefs.auto_reload);
+    // Readable again; chmod changes neither the time nor the size.
+    mode(0o644);
+    assert!(
+        s.refresh_prefs(t0 + Duration::from_millis(1100)),
+        "the next check reads the file again"
+    );
+    assert!(s.prefs.auto_reload);
+}
+
 fn backups(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut v: Vec<_> = std::fs::read_dir(dir)
         .unwrap()
@@ -2118,6 +2551,10 @@ fn a_broken_preferences_file_is_kept_as_a_backup_before_a_save() {
     s.update_prefs(|p| p.auto_reload = true).unwrap();
     let saved = backups(dir.path());
     assert_eq!(saved.len(), 1, "{saved:?}");
+    // The window hears about the copy, not only stderr.
+    let w = s.take_prefs_warning().expect("a warning about the copy");
+    let copy = saved[0].file_name().unwrap().to_string_lossy().into_owned();
+    assert!(w.contains(&copy), "{w}");
     assert_eq!(std::fs::read_to_string(&saved[0]).unwrap(), broken);
     let name = saved[0].file_name().unwrap().to_string_lossy().into_owned();
     assert!(!name.contains(':'), "{name}");
@@ -2125,6 +2562,7 @@ fn a_broken_preferences_file_is_kept_as_a_backup_before_a_save() {
     // The file is fine now, so the next save keeps no copy.
     s.update_prefs(|p| p.auto_reload = false).unwrap();
     assert_eq!(backups(dir.path()).len(), 1);
+    assert_eq!(s.take_prefs_warning(), None, "no copy, no warning");
     // A plain save backs up a broken file too.
     std::fs::write(&path, broken).unwrap();
     Preferences::default().save(dir.path()).unwrap();
@@ -2168,10 +2606,12 @@ fn reopening_warns_when_an_svg_rebuilds_to_other_bounds() {
     };
     assert!(!warned(&r), "same bounds, no warning: {r}");
     // As if text in the SVG came out in another font here.
-    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    let x1 = v["objects"][0]["local_bounds_mm"]["x1"].as_f64().unwrap();
-    v["objects"][0]["local_bounds_mm"]["x1"] = json!(x1 + 0.1);
-    std::fs::write(&path, serde_json::to_string(&v).unwrap()).unwrap();
+    flatcraft_core::project::Archive::edit(&path, |a| {
+        let v = &mut a.project;
+        let x1 = v["objects"][0]["local_bounds_mm"]["x1"].as_f64().unwrap();
+        v["objects"][0]["local_bounds_mm"]["x1"] = json!(x1 + 0.1);
+    })
+    .unwrap();
     let r = run(&mut s, "project.open", json!({ "path": path }));
     let w: Vec<&str> = r["warnings"]
         .as_array()
@@ -2183,4 +2623,948 @@ fn reopening_warns_when_an_svg_rebuilds_to_other_bounds() {
         w.contains(&"rect looks different on this computer (missing fonts?)"),
         "{w:?}"
     );
+}
+
+// ---------------------------------------------------------------- distribute and copies
+
+/// The placed bounds the arrange commands work with.
+fn cmd_bounds(s: &Session, id: u64) -> Rect {
+    let o = s.doc().document.get(ObjectId(id)).unwrap();
+    flatcraft_engine::commands::placed_bounds(o, Default::default()).unwrap()
+}
+
+/// Imports a w x h rectangle and moves its top-left corner to (x0, y0).
+fn rect_at(s: &mut Session, w: f64, h: f64, x0: f64, y0: f64) -> u64 {
+    let id = import(s, w, h);
+    let b = cmd_bounds(s, id);
+    run(
+        s,
+        "object.move",
+        json!({ "ids": [id], "dx_mm": x0 - b.x0, "dy_mm": y0 - b.y0 }),
+    );
+    id
+}
+
+fn undo_len(s: &Session) -> usize {
+    s.doc().undo.undo_len()
+}
+
+#[test]
+fn distribute_horizontal_makes_equal_gaps_with_uneven_widths() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = rect_at(&mut s, 10.0, 10.0, 20.0, 30.0);
+    let b = rect_at(&mut s, 30.0, 20.0, 50.0, 60.0);
+    let c = rect_at(&mut s, 20.0, 15.0, 130.0, 40.0);
+    let d = rect_at(&mut s, 40.0, 10.0, 200.0, 90.0);
+    let (ya, yb, yc, yd) = (
+        cmd_bounds(&s, a).y0,
+        cmd_bounds(&s, b).y0,
+        cmd_bounds(&s, c).y0,
+        cmd_bounds(&s, d).y0,
+    );
+    let (first, last) = (cmd_bounds(&s, a), cmd_bounds(&s, d));
+    let before = undo_len(&s);
+    // Shuffled: the order comes from the bounds centres.
+    let r = run(
+        &mut s,
+        "arrange.distribute",
+        json!({ "ids": [c, a, d, b], "axis": "horizontal" }),
+    );
+    assert_eq!(undo_len(&s), before + 1, "one undo step");
+    let order: Vec<u64> = r["ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .collect();
+    assert_eq!(order, vec![a, b, c, d]);
+    // The ends stay exactly where they were.
+    assert_eq!(cmd_bounds(&s, a), first);
+    assert_eq!(cmd_bounds(&s, d), last);
+    let bs: Vec<Rect> = order.iter().map(|id| cmd_bounds(&s, *id)).collect();
+    let gaps: Vec<f64> = bs.windows(2).map(|w| w[1].x0 - w[0].x1).collect();
+    let gap = r["gap_mm"].as_f64().unwrap();
+    for g in &gaps {
+        assert!((g - gap).abs() < EPS, "gaps {gaps:?}, gap_mm {gap}");
+    }
+    // 220 mm span, 100 mm of objects, 3 gaps.
+    assert!((gap - 40.0).abs() < 1e-4, "{gap}");
+    // Only x moves.
+    for (id, y) in [(a, ya), (b, yb), (c, yc), (d, yd)] {
+        assert_eq!(cmd_bounds(&s, id).y0, y);
+    }
+    run(&mut s, "edit.undo", json!({}));
+    assert!(close(cmd_bounds(&s, b).x0, 50.0) && close(cmd_bounds(&s, c).x0, 130.0));
+}
+
+#[test]
+fn distribute_vertical_uses_the_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = rect_at(&mut s, 10.0, 12.0, 20.0, 20.0);
+    let b = rect_at(&mut s, 10.0, 33.0, 60.0, 150.0);
+    let c = rect_at(&mut s, 10.0, 7.0, 40.0, 50.0);
+    let (top, bottom) = (cmd_bounds(&s, a), cmd_bounds(&s, b));
+    run(&mut s, "object.select", json!({ "ids": [a, b, c] }));
+    let before = undo_len(&s);
+    let r = run(&mut s, "arrange.distribute", json!({ "axis": "vertical" }));
+    assert_eq!(undo_len(&s), before + 1);
+    assert_eq!(cmd_bounds(&s, a), top);
+    assert_eq!(cmd_bounds(&s, b), bottom);
+    let mid = cmd_bounds(&s, c);
+    let gap = r["gap_mm"].as_f64().unwrap();
+    assert!((mid.y0 - top.y1 - gap).abs() < EPS, "{mid:?} {gap}");
+    assert!((bottom.y0 - mid.y1 - gap).abs() < EPS, "{mid:?} {gap}");
+    assert!(close(mid.x0, 40.0), "x stays");
+}
+
+#[test]
+fn distribute_ties_keep_the_given_order_and_wide_objects_overlap_evenly() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = rect_at(&mut s, 10.0, 10.0, 20.0, 20.0);
+    let b = rect_at(&mut s, 60.0, 10.0, 30.0, 40.0);
+    let c = rect_at(&mut s, 60.0, 10.0, 30.0, 60.0);
+    let d = rect_at(&mut s, 10.0, 10.0, 70.0, 80.0);
+    // b and c share their centre: c was named first, so it comes first.
+    let r = run(
+        &mut s,
+        "arrange.distribute",
+        json!({ "ids": [a, c, b, d], "axis": "horizontal" }),
+    );
+    assert_eq!(r["ids"], json!([a, c, b, d]));
+    let gap = r["gap_mm"].as_f64().unwrap();
+    // 60 mm span, 140 mm of objects: the gaps are negative.
+    assert!((gap - (-80.0 / 3.0)).abs() < 1e-4, "{gap}");
+    let bs: Vec<Rect> = [a, c, b, d].iter().map(|id| cmd_bounds(&s, *id)).collect();
+    for w in bs.windows(2) {
+        assert!((w[1].x0 - w[0].x1 - gap).abs() < EPS, "{bs:?}");
+    }
+}
+
+#[test]
+fn distribute_refuses_fewer_than_three() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = rect_at(&mut s, 10.0, 10.0, 20.0, 20.0);
+    let b = rect_at(&mut s, 10.0, 10.0, 80.0, 20.0);
+    let before = undo_len(&s);
+    let (ba, bb) = (cmd_bounds(&s, a), cmd_bounds(&s, b));
+    for params in [
+        json!({ "ids": [a, b], "axis": "horizontal" }),
+        json!({ "ids": [a, a, b], "axis": "vertical" }),
+    ] {
+        let e = s
+            .execute("arrange.distribute", params, Origin::Agent)
+            .unwrap_err();
+        assert!(matches!(e, CommandError::InvalidParams(_)), "{e}");
+        assert!(e.to_string().contains("at least 3 objects"), "{e}");
+    }
+    run(&mut s, "object.select", json!({ "ids": [a, b] }));
+    let e = s
+        .execute(
+            "arrange.distribute",
+            json!({ "axis": "horizontal" }),
+            Origin::User,
+        )
+        .unwrap_err();
+    assert!(e.to_string().contains("2 are selected"), "{e}");
+    assert_eq!(undo_len(&s), before);
+    assert_eq!((cmd_bounds(&s, a), cmd_bounds(&s, b)), (ba, bb));
+}
+
+#[test]
+fn distribute_of_evenly_spaced_objects_is_no_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let ids = [
+        rect_at(&mut s, 10.0, 10.0, 20.0, 20.0),
+        rect_at(&mut s, 10.0, 10.0, 50.0, 20.0),
+        rect_at(&mut s, 10.0, 10.0, 80.0, 20.0),
+    ];
+    run(
+        &mut s,
+        "arrange.distribute",
+        json!({ "ids": ids, "axis": "horizontal" }),
+    );
+    let before = undo_len(&s);
+    run(
+        &mut s,
+        "arrange.distribute",
+        json!({ "ids": ids, "axis": "horizontal" }),
+    );
+    assert_eq!(undo_len(&s), before);
+}
+
+fn ids_of(r: &Value) -> Vec<u64> {
+    r["ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .collect()
+}
+
+#[test]
+fn copies_in_a_row_start_right_of_the_original() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = rect_at(&mut s, 50.0, 20.0, 20.0, 30.0);
+    let orig = cmd_bounds(&s, id);
+    let before = undo_len(&s);
+    let r = run(
+        &mut s,
+        "object.copies",
+        json!({ "id": id, "count": 3, "layout": "row" }),
+    );
+    assert_eq!(undo_len(&s), before + 1, "one undo step");
+    let ids = ids_of(&r);
+    assert_eq!(ids.len(), 3);
+    assert_eq!(s.doc().document.objects.len(), 4);
+    for (i, c) in ids.iter().enumerate() {
+        let b = cmd_bounds(&s, *c);
+        let k = (i + 1) as f64;
+        // Default gap 5 mm. The width carries usvg's f32 noise.
+        let step = orig.width() + 5.0;
+        assert!((b.x0 - (orig.x0 + k * step)).abs() < EPS, "{i}: {b:?}");
+        assert!((b.y0 - orig.y0).abs() < EPS, "{i}: {b:?}");
+    }
+    let sel: Vec<u64> = s.doc().selection.iter().map(|i| i.0).collect();
+    assert_eq!(sel, ids, "the copies are selected");
+    assert_eq!(cmd_bounds(&s, id), orig, "the original stays");
+    assert_eq!(r["outside_area"], json!([]));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc().document.objects.len(), 1);
+}
+
+#[test]
+fn copies_in_a_grid_fill_rows_then_go_down() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = rect_at(&mut s, 30.0, 20.0, 10.0, 10.0);
+    let orig = cmd_bounds(&s, id);
+    let before = undo_len(&s);
+    let r = run(
+        &mut s,
+        "object.copies",
+        json!({ "id": id, "count": 5, "layout": { "grid": { "columns": 3 } }, "gap_mm": 2.0 }),
+    );
+    assert_eq!(undo_len(&s), before + 1);
+    let ids = ids_of(&r);
+    // The original is cell 0 of the grid.
+    let cells = [(1, 0), (2, 0), (0, 1), (1, 1), (2, 1)];
+    assert_eq!(ids.len(), cells.len());
+    for (c, (col, row)) in ids.iter().zip(cells) {
+        let b = cmd_bounds(&s, *c);
+        let (sx, sy) = (orig.width() + 2.0, orig.height() + 2.0);
+        assert!((b.x0 - (orig.x0 + col as f64 * sx)).abs() < EPS, "{b:?}");
+        assert!((b.y0 - (orig.y0 + row as f64 * sy)).abs() < EPS, "{b:?}");
+    }
+}
+
+#[test]
+fn copies_outside_the_cutting_area_are_added_and_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = rect_at(&mut s, 50.0, 50.0, 20.0, 20.0);
+    let r = run(&mut s, "object.copies", json!({ "id": id, "count": 6 }));
+    let ids = ids_of(&r);
+    assert_eq!(ids.len(), 6);
+    let outside: Vec<u64> = r["outside_area"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .collect();
+    // The cutting area ends at 299.8 mm: copies 5 and 6 start at 295 and 350.
+    assert_eq!(outside, ids[4..].to_vec(), "{r}");
+    let warnings = r["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{r}");
+    assert!(
+        warnings[0]
+            .as_str()
+            .unwrap()
+            .starts_with("2 copies are outside the cutting area"),
+        "{r}"
+    );
+}
+
+#[test]
+fn copies_refuse_bad_params() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 20.0, 20.0);
+    let before = undo_len(&s);
+    // false is accepted (true too, see tests/linked_copies.rs).
+    run(
+        &mut s,
+        "object.copies",
+        json!({ "id": id, "count": 1, "linked": false }),
+    );
+    run(&mut s, "edit.undo", json!({}));
+    for params in [
+        json!({ "id": id, "count": 0 }),
+        json!({ "id": id, "count": 501 }),
+        json!({ "id": id, "count": 2, "gap_mm": -1.0 }),
+        json!({ "id": id, "count": 2, "layout": { "grid": { "columns": 0 } } }),
+        json!({ "id": id, "count": 2, "layout": { "grid": { "columns": 2, "rows": 2 } } }),
+        json!({ "id": id, "count": 2, "layout": "column" }),
+        json!({ "id": id, "count": 2, "spacing_mm": 3.0 }),
+    ] {
+        let e = s
+            .execute("object.copies", params.clone(), Origin::Agent)
+            .expect_err(&format!("{params}"));
+        assert!(matches!(e, CommandError::InvalidParams(_)), "{params}: {e}");
+    }
+    let e = s
+        .execute(
+            "object.copies",
+            json!({ "id": 999, "count": 2 }),
+            Origin::Agent,
+        )
+        .unwrap_err();
+    assert!(matches!(e, CommandError::NotFound(_)), "{e}");
+    assert_eq!(undo_len(&s), before);
+    assert_eq!(s.doc().document.objects.len(), 1);
+}
+
+#[test]
+fn copies_that_would_land_too_far_away_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 20.0, 20.0);
+    // 2 m wide: 500 copies with the largest gap (1 m) reach 1.5 km.
+    s.execute(
+        "object.scale",
+        json!({ "ids": [id], "width_mm": 2000.0, "keep_aspect": true }),
+        Origin::User,
+    )
+    .unwrap();
+    let before = undo_len(&s);
+    let e = s
+        .execute(
+            "object.copies",
+            json!({ "id": id, "count": 500, "gap_mm": 1000.0 }),
+            Origin::Agent,
+        )
+        .unwrap_err();
+    assert!(matches!(e, CommandError::Refused(_)), "{e}");
+    assert!(e.to_string().contains("1 km"), "{e}");
+    assert_eq!(undo_len(&s), before);
+    assert_eq!(s.doc().document.objects.len(), 1);
+}
+
+/// Rotates object `id` by `deg` about its centre.
+fn rotate(s: &mut Session, id: u64, deg: f64) {
+    run(s, "object.rotate", json!({ "ids": [id], "degrees": deg }));
+}
+
+#[test]
+fn distribute_and_copies_use_the_bounds_of_rotated_objects() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = rect_at(&mut s, 30.0, 10.0, 20.0, 20.0);
+    let b = rect_at(&mut s, 50.0, 20.0, 90.0, 60.0);
+    let c = rect_at(&mut s, 20.0, 40.0, 220.0, 30.0);
+    rotate(&mut s, a, 30.0);
+    rotate(&mut s, b, -45.0);
+    rotate(&mut s, c, 72.0);
+    let r = run(
+        &mut s,
+        "arrange.distribute",
+        json!({ "ids": [a, b, c], "axis": "horizontal" }),
+    );
+    let gap = r["gap_mm"].as_f64().unwrap();
+    let bs: Vec<Rect> = ids_of(&r).iter().map(|id| cmd_bounds(&s, *id)).collect();
+    for w in bs.windows(2) {
+        assert!((w[1].x0 - w[0].x1 - gap).abs() < EPS, "{bs:?} {gap}");
+    }
+
+    let orig = cmd_bounds(&s, b);
+    let r = run(
+        &mut s,
+        "object.copies",
+        json!({ "id": b, "count": 3, "layout": { "grid": { "columns": 2 } }, "gap_mm": 4.0 }),
+    );
+    let ids = ids_of(&r);
+    let first = cmd_bounds(&s, ids[0]);
+    let below = cmd_bounds(&s, ids[1]);
+    assert!((first.x0 - orig.x1 - 4.0).abs() < EPS, "{orig:?} {first:?}");
+    assert!((below.y0 - orig.y1 - 4.0).abs() < EPS, "{orig:?} {below:?}");
+    assert!((below.x0 - orig.x0).abs() < EPS, "{orig:?} {below:?}");
+}
+
+#[test]
+fn copies_description_names_the_refusal_and_the_shared_link() {
+    let d = registry::get("object.copies").unwrap().description();
+    assert!(d.contains("refuses the whole call"), "{d}");
+    assert!(d.contains("file link"), "{d}");
+}
+
+/// A reopened .svgz keeps its text: the stored bytes are still gzipped,
+/// and the rebuild must load the fonts for them anyway. The text is in
+/// IBM Plex Sans, which is always in the font database.
+#[test]
+fn a_reopened_svgz_keeps_its_text() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="40mm" viewBox="0 0 100 40"><text x="5" y="30" font-family="IBM Plex Sans" font-size="24">Hi</text></svg>"#;
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(svg.as_bytes()).unwrap();
+    let file = dir.path().join("hi.svgz");
+    std::fs::write(&file, gz.finish().unwrap()).unwrap();
+    let r = run(&mut s, "object.import", json!({ "path": file }));
+    let id = ObjectId(r["id"].as_u64().unwrap());
+    let paths = |s: &Session| s.doc().document.get(id).unwrap().geometry.len();
+    // IBM Plex Sans ships with FlatCraft, so the text draws everywhere.
+    assert_eq!(r["warnings"], json!([]), "{r}");
+    let before = paths(&s);
+    assert!(before > 0, "the text was drawn");
+    let project = dir.path().join("hi.flatcraft");
+    run(&mut s, "project.save", json!({ "path": project }));
+    run(&mut s, "document.new", json!({}));
+    let opened = run(&mut s, "project.open", json!({ "path": project }));
+    assert_eq!(opened["warnings"], json!([]), "{opened}");
+    assert_eq!(paths(&s), before, "the text is still there");
+    let reloaded = run(&mut s, "object.reload", json!({ "ids": [id.0] }));
+    assert_eq!(reloaded["warnings"], json!([]), "{reloaded}");
+    assert_eq!(paths(&s), before);
+    // The Home picture's path: load without opening, then draw.
+    let doc = flatcraft_engine::commands::project::load_rebuilt(&s.profiles, &project).unwrap();
+    assert_eq!(doc.objects[0].geometry.len(), before);
+    let plotter = s.profiles.plotter(&doc.job.plotter_id).unwrap();
+    let png = flatcraft_engine::preview::render_document_png(
+        &plotter,
+        &doc,
+        128,
+        flatcraft_device::DEFAULT_MAT_COLOR_LIGHT,
+    )
+    .unwrap();
+    assert_eq!(&png[1..4], b"PNG");
+}
+
+#[test]
+fn move_to_x_or_y_sets_the_top_left_corner() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 40.0, 20.0);
+    let before = state_bounds(&mut s, id);
+    // X alone keeps Y.
+    run(&mut s, "object.move", json!({ "ids": [id], "x_mm": 12.5 }));
+    let b = state_bounds(&mut s, id);
+    assert!(close(b.x0, 12.5) && close(b.y0, before.y0), "{b:?}");
+    run(&mut s, "object.move", json!({ "ids": [id], "y_mm": 7.0 }));
+    let b = state_bounds(&mut s, id);
+    assert!(close(b.x0, 12.5) && close(b.y0, 7.0), "{b:?}");
+    // A rotated object: the box of the rotated shape.
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [id], "degrees": 30.0 }),
+    );
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [id], "x_mm": 30.0, "y_mm": 40.0 }),
+    );
+    let b = state_bounds(&mut s, id);
+    assert!(close(b.x0, 30.0) && close(b.y0, 40.0), "{b:?}");
+    // Not with a relative move or a centre.
+    for bad in [
+        json!({ "ids": [id], "x_mm": 1.0, "dx_mm": 1.0 }),
+        json!({ "ids": [id], "y_mm": 1.0, "center_mm": [0.0, 0.0] }),
+    ] {
+        assert!(matches!(
+            s.execute("object.move", bad, Origin::User),
+            Err(CommandError::InvalidParams(_))
+        ));
+    }
+}
+
+#[test]
+fn move_to_x_moves_a_multi_selection_as_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = import(&mut s, 20.0, 20.0);
+    let b = import(&mut s, 20.0, 20.0);
+    run(&mut s, "object.move", json!({ "ids": [b], "dx_mm": 50.0 }));
+    let (ba, bb) = (state_bounds(&mut s, a), state_bounds(&mut s, b));
+    let undo = s.doc().undo.undo_len();
+    run(&mut s, "object.move", json!({ "ids": [a, b], "x_mm": 5.0 }));
+    assert_eq!(s.doc().undo.undo_len(), undo + 1, "one undo step");
+    let (na, nb) = (state_bounds(&mut s, a), state_bounds(&mut s, b));
+    assert!(close(na.x0, 5.0), "{na:?}");
+    assert!(close(nb.x0 - na.x0, bb.x0 - ba.x0), "the layout stays");
+    assert!(close(na.y0, ba.y0) && close(nb.y0, bb.y0));
+}
+
+#[test]
+fn a_side_anchor_keeps_the_middle_of_that_side() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 40.0, 20.0);
+    let b = state_bounds(&mut s, id);
+    run(
+        &mut s,
+        "object.scale",
+        json!({ "ids": [id], "factor": 2.0, "anchor": "left" }),
+    );
+    let n = state_bounds(&mut s, id);
+    assert!(
+        close(n.x0, b.x0) && close(n.center().y, b.center().y),
+        "{n:?}"
+    );
+    assert!(close(n.width(), 80.0), "{n:?}");
+    run(
+        &mut s,
+        "object.scale",
+        json!({ "ids": [id], "factor": 0.5, "anchor": "bottom" }),
+    );
+    let m = state_bounds(&mut s, id);
+    assert!(
+        close(m.y1, n.y1) && close(m.center().x, n.center().x),
+        "{m:?}"
+    );
+}
+
+#[test]
+fn a_straight_group_scales_width_and_height_apart() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = import(&mut s, 40.0, 20.0);
+    let b = import(&mut s, 40.0, 20.0);
+    let c = import(&mut s, 30.0, 10.0);
+    run(&mut s, "object.move", json!({ "ids": [b], "dx_mm": 60.0 }));
+    run(&mut s, "object.move", json!({ "ids": [c], "dy_mm": 50.0 }));
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [b], "degrees": 90.0, "about": "each" }),
+    );
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [c], "degrees": 180.0, "about": "each" }),
+    );
+    run(
+        &mut s,
+        "object.mirror",
+        json!({ "ids": [c], "axis": "horizontal", "about": "each" }),
+    );
+    let ids = [a, b, c];
+    let olds: Vec<Rect> = ids.iter().map(|i| state_bounds(&mut s, *i)).collect();
+    let all = olds.iter().copied().reduce(|x, y| x.union(y)).unwrap();
+    let undo = s.doc().undo.undo_len();
+    run(
+        &mut s,
+        "object.scale",
+        json!({
+            "ids": ids,
+            "width_mm": all.width() * 2.0,
+            "height_mm": all.height() * 0.5,
+            "keep_aspect": false,
+            "anchor": "top_left",
+            "group": true,
+        }),
+    );
+    assert_eq!(s.doc().undo.undo_len(), undo + 1);
+    for (id, old) in ids.iter().zip(&olds) {
+        let n = state_bounds(&mut s, *id);
+        let want = Rect::new(
+            all.x0 + (old.x0 - all.x0) * 2.0,
+            all.y0 + (old.y0 - all.y0) * 0.5,
+            all.x0 + (old.x1 - all.x0) * 2.0,
+            all.y0 + (old.y1 - all.y0) * 0.5,
+        );
+        assert!(
+            close(n.x0, want.x0)
+                && close(n.y0, want.y0)
+                && close(n.x1, want.x1)
+                && close(n.y1, want.y1),
+            "{id}: {n:?} want {want:?}"
+        );
+    }
+    // One object turned off a multiple of 90 degrees locks the group.
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [a], "degrees": 30.0, "about": "each" }),
+    );
+    let err = s.execute(
+        "object.scale",
+        json!({ "ids": ids, "width_mm": 300.0, "height_mm": 50.0, "keep_aspect": false, "group": true }),
+        Origin::User,
+    );
+    assert!(
+        matches!(err, Err(CommandError::InvalidParams(_))),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn execute_in_runs_in_another_document_and_keeps_the_active_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 40.0, 20.0);
+    let first = s.doc().id();
+    run(&mut s, "document.new", json!({}));
+    let second = s.doc().id();
+    s.execute_in(
+        first,
+        "object.move",
+        json!({ "ids": [id], "x_mm": 5.0 }),
+        Origin::User,
+    )
+    .unwrap();
+    assert_eq!(s.doc().id(), second, "the active document stays");
+    assert!(s.doc().undo.undo_len() == 0);
+    let a = &s.docs[s.doc_index(first).unwrap()];
+    assert_eq!(a.undo.undo_len(), 2, "the import and the move");
+    assert!(
+        s.execute_in(
+            999,
+            "object.move",
+            json!({ "ids": [id], "x_mm": 1.0 }),
+            Origin::User
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn a_group_free_scale_refuses_linked_copies_turned_two_ways() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = import(&mut s, 40.0, 20.0);
+    let r = run(
+        &mut s,
+        "object.copies",
+        json!({ "id": a, "count": 1, "linked": true }),
+    );
+    let b = r["ids"][0].as_u64().unwrap();
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [b], "degrees": 90.0, "about": "each" }),
+    );
+    let undo = s.doc().undo.undo_len();
+    let (ba, bb) = (state_bounds(&mut s, a), state_bounds(&mut s, b));
+    let err = s.execute(
+        "object.scale",
+        json!({ "ids": [a, b], "width_mm": 200.0, "height_mm": 30.0, "keep_aspect": false, "group": true }),
+        Origin::User,
+    );
+    match err {
+        Err(CommandError::InvalidParams(m)) => assert!(m.contains("linked copy"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(s.doc().undo.undo_len(), undo, "nothing changed");
+    assert_eq!(state_bounds(&mut s, a), ba);
+    assert_eq!(state_bounds(&mut s, b), bb);
+    // Turned the same way, they stretch together.
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [a], "degrees": 90.0, "about": "each" }),
+    );
+    run(
+        &mut s,
+        "object.scale",
+        json!({ "ids": [a, b], "width_mm": 200.0, "keep_aspect": false, "group": true }),
+    );
+}
+
+#[test]
+fn rotate_to_an_absolute_angle_turns_each_about_its_centre() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = import(&mut s, 20.0, 10.0);
+    let b = import(&mut s, 30.0, 10.0);
+    run(&mut s, "object.move", json!({ "ids": [b], "dx_mm": 60.0 }));
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [a], "degrees": 30.0 }),
+    );
+    let centre = |s: &Session, id: u64| s.doc().document.get(ObjectId(id)).unwrap().transform;
+    let (ca, cb) = (centre(&s, a).center_mm, centre(&s, b).center_mm);
+    let steps = s.doc().undo.undo_len();
+    // -45 is 315 clockwise; both get it, each about its own centre.
+    let r = run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [a, b], "angle_deg": -45.0 }),
+    );
+    assert_eq!(r["objects"].as_array().unwrap().len(), 2);
+    assert_eq!(s.doc().undo.undo_len(), steps + 1);
+    for (id, c) in [(a, ca), (b, cb)] {
+        let t = centre(&s, id);
+        assert!(close(t.rotation_deg, 315.0), "{t:?}");
+        assert!(
+            close(t.center_mm.x, c.x) && close(t.center_mm.y, c.y),
+            "{t:?}"
+        );
+    }
+    // The same angle again changes nothing and adds no undo step.
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [a, b], "angle_deg": 315.0 }),
+    );
+    assert_eq!(s.doc().undo.undo_len(), steps + 1);
+    // about: each is allowed.
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [a], "angle_deg": 370.0, "about": "each" }),
+    );
+    assert!(close(centre(&s, a).rotation_deg, 10.0));
+}
+
+#[test]
+fn rotate_needs_exactly_one_of_degrees_and_angle() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = import(&mut s, 20.0, 10.0);
+    for params in [
+        json!({ "ids": [a] }),
+        json!({ "ids": [a], "degrees": 10.0, "angle_deg": 20.0 }),
+        json!({ "ids": [a], "angle_deg": 20.0, "about": "group" }),
+        json!({ "ids": [a], "angle_deg": "north" }),
+    ] {
+        let e = s
+            .execute("object.rotate", params.clone(), Origin::User)
+            .unwrap_err();
+        assert!(matches!(e, CommandError::InvalidParams(_)), "{params}: {e}");
+    }
+    // Relative still works, with the default about.
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [a], "degrees": 10.0 }),
+    );
+    let t = s.doc().document.get(ObjectId(a)).unwrap().transform;
+    assert!(close(t.rotation_deg, 10.0));
+}
+
+#[test]
+fn any_finite_angle_is_reduced_by_full_turns() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = import(&mut s, 20.0, 10.0);
+    let angle = |s: &Session| {
+        s.doc()
+            .document
+            .get(ObjectId(a))
+            .unwrap()
+            .transform
+            .rotation_deg
+    };
+    for (given, want) in [
+        (735.0, 15.0),
+        (-90.0, 270.0),
+        (1080.0, 0.0),
+        (359.999, 359.999),
+        (-0.0, 0.0),
+        (1e9, 280.0),
+        (-1e9, 80.0),
+    ] {
+        run(
+            &mut s,
+            "object.rotate",
+            json!({ "ids": [a], "angle_deg": given }),
+        );
+        assert!(close(angle(&s), want), "{given}: {}", angle(&s));
+        assert!(angle(&s).is_sign_positive(), "{given}");
+    }
+    // Relative turns too.
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [a], "angle_deg": 0.0 }),
+    );
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [a], "degrees": 345.0 }),
+    );
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [a], "degrees": 30.0 }),
+    );
+    assert!(close(angle(&s), 15.0));
+    run(
+        &mut s,
+        "object.rotate",
+        json!({ "ids": [a], "degrees": -360.0 }),
+    );
+    assert!(close(angle(&s), 15.0), "{}", angle(&s));
+}
+
+#[test]
+fn angles_too_large_to_be_exact_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = import(&mut s, 20.0, 10.0);
+    let steps = s.doc().undo.undo_len();
+    // The schema's ranges, checked by the registry: angle_deg at most
+    // 1e9 either way (larger numbers are not exact), degrees at most 360.
+    for (params, range) in [
+        (
+            json!({ "ids": [a], "angle_deg": 1e10 }),
+            "-1000000000 to 1000000000",
+        ),
+        (
+            json!({ "ids": [a], "angle_deg": -1.5e9 }),
+            "-1000000000 to 1000000000",
+        ),
+        (json!({ "ids": [a], "degrees": 1e10 }), "-360 to 360"),
+        (json!({ "ids": [a], "degrees": 361.0 }), "-360 to 360"),
+    ] {
+        let e = s
+            .execute("object.rotate", params.clone(), Origin::User)
+            .unwrap_err();
+        assert!(matches!(e, CommandError::InvalidParams(_)), "{params}: {e}");
+        assert!(e.to_string().contains(range), "{e}");
+    }
+    assert_eq!(s.doc().undo.undo_len(), steps);
+}
+
+/// JSON has no NaN or infinity, so the engine checks them on the typed
+/// value itself.
+#[test]
+fn a_non_finite_angle_is_refused() {
+    use flatcraft_engine::commands::object::check_angle;
+    for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert!(check_angle(v).is_err(), "{v}");
+    }
+    assert!(check_angle(1e9).is_ok());
+}
+
+// ---------------------------------------------------------------- project file thumbnail
+
+/// A save, also an agent's, puts a 512 px picture of the mat into the
+/// project file.
+#[test]
+fn project_save_embeds_a_thumbnail_that_decodes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    import(&mut s, 30.0, 20.0);
+    let out = tempfile::tempdir().unwrap();
+    let path = out.path().join("pic.flatcraft");
+    s.execute("project.save", json!({ "path": path }), Origin::Agent)
+        .unwrap();
+    let png = flatcraft_core::project::read_thumbnail(&path)
+        .unwrap()
+        .expect("a thumbnail");
+    let img = image::load_from_memory_with_format(&png, image::ImageFormat::Png).unwrap();
+    assert_eq!(img.width().max(img.height()), 512);
+    // The project itself is a zip with the FlatCraft mimetype.
+    let raw = std::fs::read(&path).unwrap();
+    assert_eq!(&raw[0..4], b"PK\x03\x04");
+    assert_eq!(&raw[30..38], b"mimetype");
+}
+
+/// How long the 512 px thumbnail takes in a save of 500 traced objects.
+/// A measurement, not a check: run it in release mode with
+/// `cargo nextest run --release -p flatcraft-engine --run-ignored only thumbnail_timing`.
+#[test]
+#[ignore = "timing measurement"]
+fn thumbnail_timing_for_500_traced_objects() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let mut img = image::GrayImage::from_pixel(600, 600, image::Luma([255]));
+    for row in 0..6 {
+        for col in 0..6 {
+            for y in 0..60 {
+                for x in 0..60 {
+                    let (x0, y0) = (20 + col * 95, 20 + row * 95);
+                    let inside = (x as i32 - 30).pow(2) + (y as i32 - 30).pow(2) < 900;
+                    if inside {
+                        img.put_pixel(x0 + x, y0 + y, image::Luma([0]));
+                    }
+                }
+            }
+        }
+    }
+    let png = dir.path().join("dots.png");
+    img.save(&png).unwrap();
+    let id = run(&mut s, "object.import", json!({ "path": png }))["id"]
+        .as_u64()
+        .unwrap();
+    run(
+        &mut s,
+        "object.copies",
+        json!({ "id": id, "count": 499, "gap_mm": 1.0, "layout": { "grid": { "columns": 25 } } }),
+    );
+    let doc = s.doc().document.clone();
+    assert_eq!(doc.objects.len(), 500);
+    let paths: usize = doc.objects.iter().map(|o| o.geometry.len()).sum();
+    let t = std::time::Instant::now();
+    let placed: usize = doc.objects.iter().map(|o| o.placed_paths().len()).sum();
+    let transform = t.elapsed();
+    let mut empty = doc.clone();
+    empty.objects.clear();
+    let t = std::time::Instant::now();
+    flatcraft_engine::commands::project::thumbnail_png(
+        &s.profiles,
+        &empty,
+        flatcraft_device::DEFAULT_MAT_COLOR_LIGHT,
+    )
+    .unwrap();
+    let mat = t.elapsed();
+    eprintln!("TIMING placing {placed} paths {transform:?}, empty mat {mat:?}");
+    let t = std::time::Instant::now();
+    let pic = flatcraft_engine::commands::project::thumbnail_png(
+        &s.profiles,
+        &doc,
+        flatcraft_device::DEFAULT_MAT_COLOR_LIGHT,
+    )
+    .unwrap();
+    let render = t.elapsed();
+    let out = tempfile::tempdir().unwrap();
+    let path = out.path().join("big.flatcraft");
+    let t = std::time::Instant::now();
+    run(&mut s, "project.save", json!({ "path": path }));
+    let save = t.elapsed();
+    eprintln!(
+        "TIMING 500 objects, {paths} paths: thumbnail {render:?} ({} bytes), whole project.save {save:?}",
+        pic.len()
+    );
+}
+
+/// The slow part of a save runs without the session lock: a change made
+/// meanwhile is not in the file and keeps the document dirty.
+#[test]
+fn a_change_during_an_unlocked_save_keeps_the_document_dirty() {
+    use flatcraft_engine::commands::project::{SaveParams, begin_save, finish_save};
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let id = import(&mut s, 10.0, 10.0);
+    let out = tempfile::tempdir().unwrap();
+    let path = out.path().join("p.flatcraft");
+    let params: SaveParams = serde_json::from_value(json!({ "path": path })).unwrap();
+    let job = begin_save(&mut s, params, Origin::User).unwrap();
+    // Without the lock: someone moves the object.
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [id], "dx_mm": 20.0, "dy_mm": 0.0 }),
+    );
+    let written = job.write();
+    finish_save(&mut s, job, written).unwrap();
+    assert_eq!(s.doc().path.as_deref(), Some(path.as_path()));
+    assert!(s.doc().dirty, "the move is not in the file");
+    let saved = flatcraft_core::project::load(&path).unwrap();
+    let t = saved.get(ObjectId(id)).unwrap().transform;
+    let now = s.doc().document.get(ObjectId(id)).unwrap().transform;
+    assert!((now.center_mm.x - t.center_mm.x - 20.0).abs() < 1e-6);
+
+    // Without a change in between, the save leaves it clean.
+    let session = std::sync::Mutex::new(s);
+    flatcraft_engine::commands::project::save_unlocked(&session, json!({}), Origin::User).unwrap();
+    assert!(!session.lock().unwrap().doc().dirty);
 }

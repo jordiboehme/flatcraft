@@ -11,5 +11,5 @@ pub mod safety;
 
 pub use command::{DevPoint, EmitError, GpglCommand, Tb50Mode};
 pub use decode::{DecodedCommand, decode};
-pub use emit::{CutSettings, EmitPath, EmittedJob, ListingLine, emit_job};
+pub use emit::{CutSettings, EmitPath, EmittedJob, GeometryKind, ListingLine, emit_job};
 pub use safety::{CheckedJob, SafetyError, check_safe, check_safe_fragment};

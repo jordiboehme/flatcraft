@@ -22,14 +22,21 @@ use std::time::Duration;
 /// A file that exists keeps its permissions (unix mode). When `path` is a
 /// symbolic link, the file it points to is replaced and the link stays.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let target = resolve_links(path)?;
-    let keep = existing_permissions(&target);
-    let tmp = write_temp_for(&target, bytes, keep)?;
-    if let Err(e) = fs::rename(&tmp, &target) {
+    write_atomic_at(&resolve_links(path)?, bytes)
+}
+
+/// Like [`write_atomic`], for a `target` the caller has already resolved
+/// (see [`resolve_links`]) and checked: links are not followed again. A
+/// link that appears at `target` after the check is replaced by the file,
+/// never written through, because the rename replaces the name itself.
+pub fn write_atomic_at(target: &Path, bytes: &[u8]) -> io::Result<()> {
+    let keep = existing_permissions(target);
+    let tmp = write_temp_for(target, bytes, keep)?;
+    if let Err(e) = fs::rename(&tmp, target) {
         let _ = fs::remove_file(&tmp);
         return Err(e);
     }
-    sync_parent(&target);
+    sync_parent(target);
     Ok(())
 }
 
@@ -67,7 +74,11 @@ pub fn write_temp_for(
 /// the new file gets the defaults.
 #[cfg(unix)]
 fn existing_permissions(path: &Path) -> Option<fs::Permissions> {
-    fs::metadata(path).ok().map(|m| m.permissions())
+    // Not through a link: a link planted at a checked target lends nothing.
+    fs::symlink_metadata(path)
+        .ok()
+        .filter(|m| m.is_file())
+        .map(|m| m.permissions())
 }
 
 #[cfg(not(unix))]
@@ -275,6 +286,23 @@ mod tests {
         );
         assert_eq!(fs::read_to_string(&real).unwrap(), "new");
         assert_eq!(fs::read_to_string(&link).unwrap(), "new");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_checked_target_replaces_a_link_instead_of_following_it() {
+        let _serial = SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let d = tempfile::tempdir().unwrap();
+        let victim = d.path().join("victim.txt");
+        fs::write(&victim, "keep me").unwrap();
+        let target = d.path().join("a.toml");
+        std::os::unix::fs::symlink(&victim, &target).unwrap();
+        write_atomic_at(&target, b"new").unwrap();
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "keep me");
+        assert!(fs::symlink_metadata(&target).unwrap().is_file());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new");
     }
 
     #[test]

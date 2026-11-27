@@ -201,7 +201,7 @@ async fn preview_kind_is_an_enum_in_the_schema() {
     let t = tools.iter().find(|t| t.name == "preview").unwrap();
     let schema = serde_json::to_string(&*t.input_schema).unwrap();
     assert!(
-        schema.contains("canvas") && schema.contains("path"),
+        schema.contains("canvas") && schema.contains("path") && schema.contains("simulation"),
         "{schema}"
     );
     assert!(!schema.contains("$ref"), "{schema}");
@@ -356,4 +356,225 @@ fn instructions_put_the_origin_on_the_mat_grid() {
     assert!(text.contains("cutting_area_mm"), "{text}");
     assert!(!text.contains("top-left corner of the media"), "{text}");
     assert!(!text.contains('\u{2014}'), "no em-dash");
+}
+
+#[test]
+fn instructions_name_the_report_codes() {
+    let text = flatcraft_mcp::server::INSTRUCTIONS;
+    for code in flatcraft_engine::report::Code::ALL {
+        assert!(text.contains(code.as_str()), "{} missing", code.as_str());
+    }
+    assert!(text.contains("fixes"), "{text}");
+    assert!(text.contains("document.check"), "{text}");
+}
+
+async fn exec(f: &Fixture, command: &str, params: Value) -> Value {
+    let r = call(
+        f,
+        "execute",
+        json!({ "command": command, "params": params }),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{command}: {}", text(&r));
+    serde_json::from_str(&text(&r)).unwrap()
+}
+
+/// An agent reads the import report, runs the offered fix with one
+/// execute call, and the issue is gone.
+#[tokio::test]
+async fn an_agent_runs_the_fix_of_an_import_report() {
+    let f = connect().await;
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><rect x="20" y="20" width="1" height="1"/></svg>"#;
+    let r = exec(
+        &f,
+        "object.import_svg",
+        json!({ "svg": svg, "name": "dot" }),
+    )
+    .await;
+    let issue = &r["report"]["issues"][0];
+    assert_eq!(issue["code"], "below_min_feature");
+    assert_eq!(issue["severity"], "warning");
+    assert_eq!(issue["object_ids"], json!([r["id"]]));
+    let fix = &issue["fixes"][0];
+    exec(&f, fix["command"].as_str().unwrap(), fix["args"].clone()).await;
+    let c = exec(&f, "document.check", json!({})).await;
+    assert_eq!(c["issues"], json!([]), "{c}");
+}
+
+/// job.preview of a job with nothing to cut is data with the reasons,
+/// not a tool error.
+#[tokio::test]
+async fn nothing_to_cut_comes_back_as_reasons_with_fixes() {
+    let f = connect().await;
+    let r = exec(
+        &f,
+        "object.import_svg",
+        json!({ "svg": SVG, "name": "box" }),
+    )
+    .await;
+    exec(
+        &f,
+        "object.set_cut",
+        json!({ "ids": [r["id"]], "cut": false }),
+    )
+    .await;
+    let p = exec(&f, "job.preview", json!({})).await;
+    assert_eq!(p["ready"], false);
+    assert_eq!(p["nothing_to_cut"], true);
+    let issue = &p["issues"][0];
+    assert_eq!(issue["code"], "skipped");
+    assert_eq!(
+        issue["message"],
+        "'box' is set to skip, so the knife leaves it out."
+    );
+    let fix = &issue["fixes"][0];
+    assert_eq!(fix["command"], "object.set_cut");
+    exec(&f, "object.set_cut", fix["args"].clone()).await;
+    let p = exec(&f, "job.preview", json!({})).await;
+    assert_eq!(p["ready"], true, "{p}");
+}
+
+#[test]
+fn instructions_point_to_the_troubleshooter() {
+    let text = flatcraft_mcp::server::INSTRUCTIONS;
+    assert!(text.contains("job.troubleshoot"), "{text}");
+    for s in flatcraft_engine::troubleshoot::Symptom::ALL {
+        assert!(text.contains(s.as_str()), "{} missing", s.as_str());
+    }
+    assert!(!text.contains('\u{2014}'));
+}
+
+/// An agent gets the same checklist the window shows, runs a fix with
+/// one execute (the job override changes, the preset does not), and
+/// still cannot send to a USB plotter on its own.
+#[tokio::test]
+async fn an_agent_troubleshoots_like_the_window() {
+    use flatcraft_engine::troubleshoot::{Symptom, checklist};
+    let f = connect().await;
+    exec(
+        &f,
+        "object.import_svg",
+        json!({ "svg": SVG, "name": "box" }),
+    )
+    .await;
+    let c = exec(&f, "job.troubleshoot", json!({ "symptom": "not_through" })).await;
+    let want = {
+        let s = f.session.lock().unwrap();
+        let input = flatcraft_engine::job::JobInput::of(&s).unwrap();
+        let log = s.cut_log();
+        checklist(
+            &input,
+            Symptom::NotThrough,
+            log.last_good(&input.job.material_id),
+        )
+    };
+    assert_eq!(c, serde_json::to_value(&want).unwrap());
+    let force = c["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["check"] == "force")
+        .unwrap();
+    let fix = &force["fixes"][0];
+    assert_eq!(fix["label"], "Force +2");
+    assert_eq!(fix["command"], "job.set_overrides");
+    let before = c["settings"]["force"].as_u64().unwrap();
+    let out = exec(&f, "job.set_overrides", fix["args"].clone()).await;
+    assert_eq!(out["force"], before + 2);
+    let p = exec(&f, "profiles.get", json!({ "id": "copy-paper" })).await;
+    assert_eq!(p["force"], before, "the preset stays");
+    // A USB cut still needs the person.
+    exec(&f, "job.set_plotter", json!({ "id": "silhouette-cameo-2" })).await;
+    let r = call(
+        &f,
+        "execute",
+        json!({ "command": "job.send", "params": {} }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true), "{}", text(&r));
+}
+
+#[tokio::test]
+async fn long_agent_commands_leave_the_session_lock_free() {
+    use flatcraft_engine::session::UnlockedHook;
+    let f = connect().await;
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let log = seen.clone();
+    let weak = Arc::downgrade(&f.session);
+    f.session.lock().unwrap().unlocked_hook = Some(UnlockedHook(Arc::new(move |id: &str| {
+        let s = weak.upgrade().expect("the session lives");
+        assert!(s.try_lock().is_ok(), "the lock is free while {id} computes");
+        log.lock().unwrap().push(id.to_string());
+    })));
+    let mut img = image::GrayImage::from_pixel(300, 300, image::Luma([255]));
+    for y in 50..250 {
+        for x in 50..250 {
+            img.put_pixel(x, y, image::Luma([0]));
+        }
+    }
+    let png = f._dir.path().join("square.png");
+    img.save(&png).unwrap();
+    let r = call(
+        &f,
+        "execute",
+        json!({ "command": "object.import", "params": { "path": png } }),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{}", text(&r));
+    let id = serde_json::from_str::<Value>(&text(&r)).unwrap()["id"].clone();
+    let r = call(
+        &f,
+        "execute",
+        json!({ "command": "object.retrace", "params": { "id": id, "settings": { "threshold": 90 } } }),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{}", text(&r));
+    let r = call(&f, "preview", json!({ "kind": "canvas", "max_px": 128 })).await;
+    assert_ne!(r.is_error, Some(true), "{}", text(&r));
+    assert_eq!(
+        *seen.lock().unwrap(),
+        ["object.import", "object.retrace", "document.preview"]
+    );
+    let s = f.session.lock().unwrap();
+    assert_eq!(s.doc().document.objects.len(), 1);
+    assert_eq!(s.doc().undo.undo_len(), 2, "one undo step per command");
+    assert!(s.last_agent_activity.is_some());
+}
+
+/// An agent simulates the job through execute: off the session lock, with
+/// the grade and the metrics, and the run is kept in the document.
+#[tokio::test]
+async fn execute_job_simulate_returns_grade() {
+    let f = connect().await;
+    let plotters = f._dir.path().join("plotters");
+    std::fs::create_dir_all(&plotters).unwrap();
+    std::fs::write(
+        plotters.join("host.toml"),
+        "id = \"host\"\nname = \"host\"\ninherits = \"file-output-gpgl-cameo2\"\nknife_compensation = { Host = { offset_mm = 0.3, pivot_threshold_deg = 0.0 } }\nblade_offset_mm = 0.3\n",
+    )
+    .unwrap();
+    f.session.lock().unwrap().profiles.reload().unwrap();
+    exec(&f, "job.set_plotter", json!({ "id": "host" })).await;
+    exec(
+        &f,
+        "object.import_svg",
+        json!({ "svg": r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><rect x="20" y="20" width="50" height="50"/></svg>"#, "name": "square" }),
+    )
+    .await;
+    let r = exec(&f, "job.simulate", json!({})).await;
+    assert_eq!(r["mode"], "host", "{r}");
+    assert_eq!(r["simulated"], true);
+    assert_eq!(r["grade"], "good", "{r}");
+    assert!(r["metrics"]["max_hausdorff_mm"].as_f64().is_some());
+    assert!(f.session.lock().unwrap().last_sim().is_some());
+    let r = exec(&f, "job.compare_strategies", json!({})).await;
+    assert_eq!(r["strategies"].as_array().unwrap().len(), 3, "{r}");
+    let r = call(
+        &f,
+        "preview",
+        json!({ "kind": "simulation", "max_px": 128 }),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{}", text(&r));
+    assert!(r.content.iter().any(|c| c.as_image().is_some()));
 }

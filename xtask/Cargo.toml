@@ -11,6 +11,7 @@ publish = false
 clap = { workspace = true, features = ["derive", "std", "help", "usage", "error-context"] }
 anyhow.workspace = true
 flatcraft-device = { path = "../crates/flatcraft-device" }
+flatcraft-engine = { path = "../crates/flatcraft-engine" }
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -1,5 +1,9 @@
 //! The Cut timeline: a slider over the toolpath index and a Play button.
 //! Only the toolpaths up to the index are drawn. Prepare folds it away.
+//!
+//! In Simulate the timeline runs over the simulation instead: a slider
+//! over the head's travel in mm ([`SimClock`]), played at
+//! [`SIM_RATE_MM_S`] times the chosen speed.
 
 use egui::Ui;
 
@@ -101,9 +105,199 @@ pub fn show(ui: &mut Ui, tl: &mut Timeline, t: &Tokens) {
     });
 }
 
+/// Head travel per second of playback at 1x, mm.
+pub const SIM_RATE_MM_S: f64 = 50.0;
+
+/// The playback speeds of the simulation.
+pub const SIM_SPEEDS: [f64; 3] = [0.25, 1.0, 4.0];
+
+/// The hover card of the simulation time slider.
+pub const SIM_SLIDER_CARD: &str = "Drag to move the head along the job. Everything up to this point is drawn: the head's path in thin grey and the blade tip in green, amber or red. The number is how far the head has travelled, in mm.";
+/// The hover card of the speed buttons.
+pub const SIM_SPEED_CARD: &str = "How fast Play runs. At 1x the head moves 50 mm per second on screen, about the speed of a real cut. Slow it to 0.25x to watch a corner, speed it up to 4x for a big job.";
+/// The hover card of Play in Simulate.
+pub const SIM_PLAY_CARD: &str = "Plays the cut from the start, the head and the blade tip as they move. It starts over when it is at the end.";
+/// The hover card of the time slider in firmware mode, where the sent
+/// path plays.
+pub const SENT_SLIDER_CARD: &str = "Drag to move the head along the path the plotter is sent. Everything up to this point is drawn: the cuts, and dotted the travel where the knife is up. The number is how far the head has travelled, in mm.";
+/// The hover card of Play in firmware mode.
+pub const SENT_PLAY_CARD: &str = "Plays the path the plotter is sent, from the start: the cut order, the travel and each time the knife goes up and down. It starts over when it is at the end.";
+/// Why the simulation timeline is dimmed.
+pub const SIM_NOTHING: &str = "Nothing to play yet: the simulation has not finished.";
+
+/// Where the simulation timeline stands.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SimClock {
+    /// Head travel shown, mm, `0..=total_mm`.
+    pub t_mm: f64,
+    /// Head travel of the whole job, mm.
+    pub total_mm: f64,
+    /// The playback speed, one of [`SIM_SPEEDS`].
+    pub speed: f64,
+    /// While playing: the frame time and travel playback started at.
+    pub playing: Option<(f64, f64)>,
+}
+
+impl Default for SimClock {
+    fn default() -> Self {
+        Self {
+            t_mm: 0.0,
+            total_mm: 0.0,
+            speed: 1.0,
+            playing: None,
+        }
+    }
+}
+
+impl SimClock {
+    /// A new simulation: show all of it and stop playing. The speed stays.
+    pub fn reset(&mut self, total_mm: f64) {
+        *self = Self {
+            t_mm: total_mm,
+            total_mm,
+            speed: self.speed,
+            playing: None,
+        };
+    }
+
+    /// Starts playing at `now` (seconds); from the start if at the end.
+    pub fn play(&mut self, now: f64) {
+        if self.t_mm >= self.total_mm {
+            self.t_mm = 0.0;
+        }
+        self.playing = Some((now, self.t_mm));
+    }
+
+    /// A new speed; playback goes on from where it is.
+    pub fn set_speed(&mut self, speed: f64, now: f64) {
+        self.speed = speed;
+        if self.playing.is_some() {
+            self.playing = Some((now, self.t_mm));
+        }
+    }
+
+    /// Moves the time on while playing. Returns true while it plays.
+    pub fn tick(&mut self, now: f64) -> bool {
+        let Some((start, from)) = self.playing else {
+            return false;
+        };
+        let t = from + (now - start).max(0.0) * SIM_RATE_MM_S * self.speed;
+        self.t_mm = t.min(self.total_mm);
+        if self.t_mm >= self.total_mm {
+            self.playing = None;
+        }
+        self.playing.is_some()
+    }
+}
+
+/// An icon-only button named `name` without a tooltip of its own: its
+/// hover card comes from `groups::card`, and two would stack.
+fn card_icon_button(ui: &mut Ui, icon: Icon, name: &str, enabled: bool) -> egui::Response {
+    let tex = super::icons::texture(ui.ctx(), icon, super::ICON_SIZE);
+    let image = egui::Image::from_texture(egui::load::SizedTexture::new(
+        tex.id(),
+        egui::Vec2::splat(super::ICON_SIZE),
+    ))
+    .alt_text(name);
+    ui.add_enabled(enabled, egui::Button::image(image))
+}
+
+/// The speed's label: "0.25x".
+pub fn speed_label(speed: f64) -> String {
+    format!("{speed}x")
+}
+
+/// The timeline row of the Simulate stage. `has` is false while there is
+/// nothing to play; `sent` plays the sent path (firmware mode).
+pub fn show_sim(ui: &mut Ui, clock: &mut SimClock, has: bool, sent: bool, t: &Tokens) {
+    let now = ui.input(|i| i.time);
+    if clock.tick(now) {
+        ui.ctx().request_repaint();
+    }
+    let why = (!has).then_some(SIM_NOTHING);
+    ui.horizontal(|ui| {
+        if clock.playing.is_some() {
+            let r = card_icon_button(ui, Icon::Close, "Stop", true);
+            super::groups::card(&r, "Stop", "Stops the playback where it is.", None, false);
+            if r.clicked() {
+                clock.playing = None;
+            }
+        } else {
+            let r = card_icon_button(ui, Icon::Play, "Play", has);
+            let card = if sent { SENT_PLAY_CARD } else { SIM_PLAY_CARD };
+            super::groups::card(&r, "Play", card, why, false);
+            if r.clicked() {
+                clock.play(now);
+                ui.ctx().request_repaint();
+            }
+        }
+        for speed in SIM_SPEEDS {
+            let label = speed_label(speed);
+            let r = ui.add_enabled(
+                has,
+                egui::Button::new(label.as_str()).selected(clock.speed == speed),
+            );
+            super::groups::card(&r, &format!("Speed {label}"), SIM_SPEED_CARD, why, false);
+            set_name(ui, &r, &format!("Speed {label}"));
+            if r.clicked() {
+                clock.set_speed(speed, now);
+            }
+        }
+        let mut at = clock.t_mm.min(clock.total_mm);
+        ui.spacing_mut().slider_width = (ui.available_width() - 200.0).max(120.0);
+        let resp = ui.add_enabled(
+            has,
+            egui::Slider::new(&mut at, 0.0..=clock.total_mm.max(1.0)).show_value(false),
+        );
+        set_name(ui, &resp, "Time");
+        let card = if sent {
+            SENT_SLIDER_CARD
+        } else {
+            SIM_SLIDER_CARD
+        };
+        super::groups::card(&resp, "Time", card, why, false);
+        if resp.changed() {
+            clock.t_mm = at.min(clock.total_mm);
+            clock.playing = None;
+        }
+        let text = if has {
+            format!(
+                "{:.0} of {:.0} mm",
+                clock.t_mm.min(clock.total_mm),
+                clock.total_mm
+            )
+        } else {
+            "Nothing to play".to_string()
+        };
+        ui.label(egui::RichText::new(text).color(t.text_dim));
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sim_clock_plays_at_50_mm_per_second_times_the_speed() {
+        let mut c = SimClock::default();
+        c.reset(200.0);
+        assert_eq!(c.t_mm, 200.0);
+        c.play(10.0);
+        assert_eq!(c.t_mm, 0.0);
+        assert!(c.tick(11.0));
+        assert!((c.t_mm - 50.0).abs() < 1e-9);
+        c.set_speed(4.0, 11.0);
+        assert!(c.tick(11.5));
+        assert!((c.t_mm - 150.0).abs() < 1e-9);
+        c.set_speed(0.25, 11.5);
+        assert!(c.tick(12.5));
+        assert!((c.t_mm - 162.5).abs() < 1e-9);
+        assert!(!c.tick(100.0));
+        assert_eq!(c.t_mm, 200.0);
+        // A new simulation keeps the speed.
+        c.reset(10.0);
+        assert_eq!((c.t_mm, c.speed), (10.0, 0.25));
+    }
 
     #[test]
     fn play_runs_from_the_start_to_the_end() {

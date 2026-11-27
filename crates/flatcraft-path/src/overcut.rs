@@ -1,13 +1,21 @@
-//! Stage 6: overcut for closed rings.
+//! Overcut for closed rings, after the last of their chained laps.
 
 use kurbo::Point;
 
-/// `points` is a closed ring (last equals first). Appends the points along the
-/// ring from its start for `overcut_mm`, ending on an interpolated point.
-/// The overcut never exceeds one full lap.
-pub fn apply(points: &[Point], overcut_mm: f64) -> Vec<Point> {
+/// `points` is a closed ring (last equals first). Runs the ring `laps`
+/// times without a repeated point at the joins, then appends the points
+/// along the ring from its start for `overcut_mm`, ending on an
+/// interpolated point. The overcut never exceeds one full lap of the ring,
+/// whatever the number of laps. `laps` of 0 counts as 1.
+pub fn apply(points: &[Point], laps: u32, overcut_mm: f64) -> Vec<Point> {
     let mut out = points.to_vec();
-    if overcut_mm <= 0.0 || points.len() < 2 {
+    if points.len() < 2 {
+        return out;
+    }
+    for _ in 1..laps.max(1) {
+        out.extend_from_slice(&points[1..]);
+    }
+    if overcut_mm <= 0.0 {
         return out;
     }
     let perimeter = crate::clean::length(points);
@@ -45,28 +53,37 @@ mod tests {
 
     #[test]
     fn overcut_extends_closed_square() {
-        let out = apply(&square(), 0.5);
+        let out = apply(&square(), 1, 0.5);
         assert!((length(&out) - 40.5).abs() < 1e-9);
+        assert_eq!(*out.last().unwrap(), Point::new(5.5, 5.0));
+        assert_eq!(out[..5], square()[..]);
+        // Three chained laps, then the overcut once after the last lap.
+        let out = apply(&square(), 3, 0.5);
+        assert!((length(&out) - 120.5).abs() < 1e-9);
+        assert_eq!(out.len(), 5 + 4 + 4 + 1);
         assert_eq!(*out.last().unwrap(), Point::new(5.5, 5.0));
         assert_eq!(out[..5], square()[..]);
     }
 
     #[test]
     fn overcut_spans_corners() {
-        let out = apply(&square(), 12.0);
+        let out = apply(&square(), 1, 12.0);
         assert!((length(&out) - 52.0).abs() < 1e-9);
         assert_eq!(*out.last().unwrap(), Point::new(15.0, 7.0));
     }
 
     #[test]
     fn overcut_zero_is_identity() {
-        assert_eq!(apply(&square(), 0.0), square());
+        assert_eq!(apply(&square(), 1, 0.0), square());
     }
 
     #[test]
     fn overcut_is_capped_at_one_lap() {
-        let out = apply(&square(), 1000.0);
+        let out = apply(&square(), 1, 1000.0);
         assert!((length(&out) - 80.0).abs() < 1e-9);
+        // One lap of overcut, not one lap per chained lap.
+        let out = apply(&square(), 2, 1000.0);
+        assert!((length(&out) - 120.0).abs() < 1e-9);
     }
 
     proptest! {
@@ -80,7 +97,7 @@ mod tests {
                 })
                 .collect();
             pts.push(pts[0]);
-            let out = apply(&pts, mm);
+            let out = apply(&pts, 1, mm);
             prop_assert!((length(&out) - (length(&pts) + mm)).abs() < 1e-6);
         }
     }

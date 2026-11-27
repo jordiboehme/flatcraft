@@ -8,9 +8,44 @@ pub const MIN_TOLERANCE_MM: f64 = 0.001;
 pub const MAX_TOLERANCE_MM: f64 = 1.0;
 /// Largest overcut, mm.
 pub const MAX_OVERCUT_MM: f64 = 5.0;
-/// Largest pivot threshold of host knife compensation, degrees.
-pub const MAX_PIVOT_THRESHOLD_DEG: f64 = 180.0;
+/// Largest pivot threshold of host knife compensation, degrees. A larger
+/// threshold would skip the swivel at right-angle corners.
+pub const MAX_PIVOT_THRESHOLD_DEG: f64 = 90.0;
+/// Largest blade offset of host knife compensation, mm. Drag blades trail
+/// by a few tenths of a millimetre; more is a typo.
+pub const MAX_HOST_OFFSET_MM: f64 = 2.0;
+/// Largest corner overshoot of the lift-and-overshoot corner mode, mm.
+pub const MAX_CORNER_OVERSHOOT_MM: f64 = 2.0;
+/// Largest minimum radius a material can ask for, mm.
+pub const MAX_MIN_RADIUS_MM: f64 = 50.0;
 
 /// Allowed plotter scale factors (`scale_x`, `scale_y`). A calibration
 /// corrects a few percent; anything outside this range is a typo.
 pub const SCALE_RANGE: std::ops::RangeInclusive<f64> = 0.5..=2.0;
+
+/// Largest source file (an imported SVG or picture), bytes. The importer
+/// refuses bigger files, so a project never needs more.
+pub const MAX_SOURCE_BYTES: u64 = 50 * 1024 * 1024;
+
+/// Largest `project.json` in a project file, bytes, unpacked.
+pub const MAX_PROJECT_JSON_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Largest `thumbnail.png` in a project file, bytes.
+pub const MAX_THUMBNAIL_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Most bytes a project file may unpack to, all entries together. Guards
+/// against a zip bomb: a small file that unpacks to gigabytes.
+pub const MAX_PROJECT_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Most entries in a project file.
+pub const MAX_PROJECT_ENTRIES: usize = 10_000;
+
+/// Smallest weed box margin, mm: the box keeps at least this far from the
+/// design (the weed clearance).
+pub const MIN_WEED_MARGIN_MM: f64 = 1.0;
+/// Largest weed box margin, mm.
+pub const MAX_WEED_MARGIN_MM: f64 = 50.0;
+/// Smallest spacing of weed lines, mm.
+pub const MIN_WEED_SPACING_MM: f64 = 5.0;
+/// Largest spacing of weed lines, mm.
+pub const MAX_WEED_SPACING_MM: f64 = 300.0;

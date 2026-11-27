@@ -4,6 +4,7 @@ members = [
     "crates/flatcraft-core",
     "crates/flatcraft-import",
     "crates/flatcraft-path",
+    "crates/flatcraft-sim",
     "crates/flatcraft-device",
     "crates/flatcraft-engine",
     "crates/flatcraft-mcp",
@@ -42,11 +43,16 @@ egui_kittest = "=0.37.0"
 rfd = "=0.18.0"
 clap = "=4.6.9"
 muda = "=0.21.2"
+objc2-app-kit = { version = "=0.3.2", default-features = false }
+objc2-foundation = { version = "=0.3.2", default-features = false }
 proptest = "=1.12.0"
 insta = "=1.49.0"
 tempfile = "=3.27.0"
 sha2 = "=0.11.1"
 flate2 = { version = "=1.1.11", default-features = false, features = ["rust_backend"] }
+pdf-writer = "=0.15.0"
+jiff = { version = "=0.2.43", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo", "tzdb-bundle-platform"] }
+zip = { version = "=9.8.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [profile.dev]
 opt-level = 1

@@ -1,5 +1,6 @@
-//! Lucide icons (ISC licence, see `assets/icons/LICENSE`), rasterised with
-//! resvg in the theme's text colour and cached per size and colour.
+//! Lucide icons (ISC licence, see `assets/icons/LICENSE`), plus FlatCraft's
+//! own plotter icon in the Lucide style (MPL-2.0), rasterised with resvg in
+//! the theme's text colour and cached per size and colour.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -48,6 +49,91 @@ pub enum Icon {
     PanelRight,
     RotateLeft,
     ZoomActual,
+    Copies,
+    DistributeHorizontal,
+    DistributeVertical,
+    Linked,
+    Heart,
+    Move,
+    RectangularPattern,
+    CircularPattern,
+    Pin,
+    PinOff,
+    ChevronDown,
+    ChevronLeft,
+    ChevronRight,
+    AlignLeft,
+    AlignCentre,
+    AlignRight,
+    AlignTop,
+    AlignBottom,
+    /// "Edit" group.
+    Pencil,
+    /// "Zoom" group.
+    ZoomIn,
+    /// "Panels" group.
+    Panels,
+    /// The Each object toggle: each on its own (on), the selection as one
+    /// piece (off).
+    EachObject,
+    AsGroup,
+    /// The Group and Ungroup actions.
+    Group,
+    Ungroup,
+    /// The stacking-order actions: Bring to front, Bring forward, Send
+    /// backward, Send to back.
+    BringToFront,
+    BringForward,
+    SendBackward,
+    SendToBack,
+    /// "Auto arrange...", the panel (the one-click one uses Arrange).
+    AutoArrangePanel,
+    /// "Transform" group: a frame with four handles.
+    Transform,
+    /// The badges of the dialogs.
+    Warning,
+    Info,
+    Error,
+    /// The Align directions "to the cutting area": the align icon inside a
+    /// small dashed frame, drawn at render time from the Lucide file.
+    AlignLeftArea,
+    AlignCentreArea,
+    AlignRightArea,
+    AlignTopArea,
+    AlignMiddleArea,
+    AlignBottomArea,
+    /// Settings pages: Appearance, Agents, Shortcuts, Materials (Plotters
+    /// uses [`Icon::Plotter`]).
+    Palette,
+    Bot,
+    Keyboard,
+    Layers,
+    /// Home's New project card.
+    NewFile,
+    /// Home's Open card.
+    FolderOpen,
+    /// "How did it go?": it went well.
+    ThumbsUp,
+    /// "How did it go?": it did not.
+    ThumbsDown,
+    /// The cutting plotter: the Cut bar's Device & Material stage and the
+    /// Plotters page of Settings. FlatCraft's own icon in the Lucide style
+    /// (MPL-2.0, not Lucide).
+    Plotter,
+    /// The Cut bar's Path stage: Lucide "route" with a dotted middle
+    /// (cut, travel, cut).
+    RouteTravel,
+    /// "Pick on the mat...", the keep picker.
+    Pipette,
+    /// The Select tool of the Select/Lasso toggle.
+    Pointer,
+    /// The Lasso tool of the Select/Lasso toggle.
+    Lasso,
+    /// "Unlink file": forget the linked file.
+    FileX,
+    /// The buttons that fold a side panel into its rail.
+    PanelRightClose,
+    PanelLeftClose,
 }
 
 macro_rules! svg {
@@ -57,7 +143,7 @@ macro_rules! svg {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 39] = [
+    pub const ALL: [Icon; 95] = [
         Icon::Import,
         Icon::Trace,
         Icon::Duplicate,
@@ -97,10 +183,84 @@ impl Icon {
         Icon::PanelRight,
         Icon::RotateLeft,
         Icon::ZoomActual,
+        Icon::Copies,
+        Icon::DistributeHorizontal,
+        Icon::DistributeVertical,
+        Icon::Linked,
+        Icon::Heart,
+        Icon::Move,
+        Icon::RectangularPattern,
+        Icon::CircularPattern,
+        Icon::Pin,
+        Icon::PinOff,
+        Icon::ChevronDown,
+        Icon::ChevronLeft,
+        Icon::ChevronRight,
+        Icon::AlignLeft,
+        Icon::AlignCentre,
+        Icon::AlignRight,
+        Icon::AlignTop,
+        Icon::AlignBottom,
+        Icon::Pencil,
+        Icon::ZoomIn,
+        Icon::Panels,
+        Icon::EachObject,
+        Icon::AsGroup,
+        Icon::Group,
+        Icon::Ungroup,
+        Icon::BringToFront,
+        Icon::BringForward,
+        Icon::SendBackward,
+        Icon::SendToBack,
+        Icon::AutoArrangePanel,
+        Icon::Transform,
+        Icon::Warning,
+        Icon::Info,
+        Icon::Error,
+        Icon::AlignLeftArea,
+        Icon::AlignCentreArea,
+        Icon::AlignRightArea,
+        Icon::AlignTopArea,
+        Icon::AlignMiddleArea,
+        Icon::AlignBottomArea,
+        Icon::Palette,
+        Icon::Bot,
+        Icon::Keyboard,
+        Icon::Layers,
+        Icon::NewFile,
+        Icon::FolderOpen,
+        Icon::ThumbsUp,
+        Icon::ThumbsDown,
+        Icon::Plotter,
+        Icon::RouteTravel,
+        Icon::Pipette,
+        Icon::Pointer,
+        Icon::Lasso,
+        Icon::FileX,
+        Icon::PanelRightClose,
+        Icon::PanelLeftClose,
     ];
 
-    /// The vendored Lucide SVG source.
+    /// The plain icon a framed "to the cutting area" icon is made from.
+    pub fn framed_from(self) -> Option<Icon> {
+        Some(match self {
+            Icon::AlignLeftArea => Icon::AlignLeft,
+            Icon::AlignCentreArea => Icon::AlignCentre,
+            Icon::AlignRightArea => Icon::AlignRight,
+            Icon::AlignTopArea => Icon::AlignTop,
+            Icon::AlignMiddleArea => Icon::Align,
+            Icon::AlignBottomArea => Icon::AlignBottom,
+            _ => return None,
+        })
+    }
+
+    /// The vendored Lucide source (of the base icon for a framed one).
     pub fn svg(self) -> &'static str {
+        self.framed_from().unwrap_or(self).lucide()
+    }
+
+    /// The vendored Lucide SVG source.
+    fn lucide(self) -> &'static str {
         match self {
             Icon::Import => svg!("import"),
             Icon::Trace => svg!("spline"),
@@ -139,23 +299,190 @@ impl Icon {
             Icon::TestPatterns => svg!("flask-conical"),
             Icon::PanelLeft => svg!("panel-left"),
             Icon::PanelRight => svg!("panel-right"),
+            Icon::FileX => svg!("file-x"),
+            Icon::PanelRightClose => svg!("panel-right-close"),
+            Icon::PanelLeftClose => svg!("panel-left-close"),
             Icon::RotateLeft => svg!("rotate-ccw"),
             Icon::ZoomActual => svg!("percent"),
+            Icon::Copies => svg!("copy-plus"),
+            Icon::DistributeHorizontal => svg!("align-horizontal-distribute-center"),
+            Icon::DistributeVertical => svg!("align-vertical-distribute-center"),
+            Icon::Linked => svg!("link"),
+            Icon::Heart => svg!("heart"),
+            Icon::Move => svg!("move"),
+            Icon::RectangularPattern => svg!("grid-2x2-plus"),
+            Icon::CircularPattern => svg!("circle-dot"),
+            Icon::Pin => svg!("pin"),
+            Icon::PinOff => svg!("pin-off"),
+            Icon::ChevronDown => svg!("chevron-down"),
+            Icon::ChevronLeft => svg!("chevron-left"),
+            Icon::ChevronRight => svg!("chevron-right"),
+            Icon::AlignLeft => svg!("align-start-vertical"),
+            Icon::AlignCentre => svg!("align-center-vertical"),
+            Icon::AlignRight => svg!("align-end-vertical"),
+            Icon::AlignTop => svg!("align-start-horizontal"),
+            Icon::AlignBottom => svg!("align-end-horizontal"),
+            Icon::Pencil => svg!("pencil"),
+            Icon::ZoomIn => svg!("zoom-in"),
+            Icon::Panels => svg!("panels-top-left"),
+            Icon::EachObject => svg!("shapes"),
+            Icon::AsGroup => svg!("square-dashed"),
+            Icon::Group => svg!("group"),
+            Icon::Ungroup => svg!("ungroup"),
+            Icon::BringToFront => svg!("bring-to-front"),
+            Icon::BringForward => svg!("move-up"),
+            Icon::SendBackward => svg!("move-down"),
+            Icon::SendToBack => svg!("send-to-back"),
+            Icon::AutoArrangePanel => svg!("layout-dashboard"),
+            Icon::Transform => svg!("vector-square"),
+            Icon::Warning => svg!("triangle-exclamation-point"),
+            Icon::Info => svg!("info"),
+            Icon::Error => svg!("circle-x"),
+            Icon::Palette => svg!("palette"),
+            Icon::Bot => svg!("bot"),
+            Icon::Keyboard => svg!("keyboard"),
+            Icon::Layers => svg!("layers"),
+            Icon::NewFile => svg!("file-plus"),
+            Icon::FolderOpen => svg!("folder-open"),
+            Icon::ThumbsUp => svg!("thumbs-up"),
+            Icon::ThumbsDown => svg!("thumbs-down"),
+            Icon::Plotter => svg!("plotter"),
+            Icon::RouteTravel => svg!("route-travel"),
+            Icon::Pipette => svg!("pipette"),
+            Icon::Pointer => svg!("mouse-pointer-2"),
+            Icon::Lasso => svg!("lasso"),
+            Icon::AlignLeftArea
+            | Icon::AlignCentreArea
+            | Icon::AlignRightArea
+            | Icon::AlignTopArea
+            | Icon::AlignMiddleArea
+            | Icon::AlignBottomArea => unreachable!("framed icons are built in svg()"),
         }
     }
 }
 
-/// The SVG with `currentColor` replaced by `color`, so resvg does not paint
-/// it black.
-pub fn tinted_svg(icon: Icon, color: Color32) -> String {
-    let hex = format!("#{:02x}{:02x}{:02x}", color.r(), color.g(), color.b());
-    icon.svg().replace("currentColor", &hex)
+/// The colours an icon is drawn in (see [`super::tools::ICON_ROLES`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Palette {
+    pub ink: Color32,
+    pub accent: Color32,
+    pub paper: Color32,
+    pub cut: Color32,
+}
+
+impl Palette {
+    /// The theme's icon colours.
+    pub fn of(t: &super::theme::Tokens) -> Self {
+        Self {
+            ink: t.icon_ink,
+            accent: t.icon_accent,
+            paper: t.icon_paper,
+            cut: t.icon_cut,
+        }
+    }
+
+    /// The Cut bar's colours: the part that tells what happens is in the
+    /// Cut colour, not the Prepare teal. On the selected stage's orange
+    /// fill the Cut colour reads poorly (under 3:1), so there it is ink.
+    pub fn cut(t: &super::theme::Tokens, selected: bool) -> Self {
+        Self {
+            accent: if selected { t.icon_ink } else { t.icon_cut },
+            ..Self::of(t)
+        }
+    }
+
+    /// One colour for everything, no paper fill (a tinted icon).
+    pub fn mono(c: Color32) -> Self {
+        Self {
+            ink: c,
+            accent: c,
+            paper: Color32::TRANSPARENT,
+            cut: c,
+        }
+    }
+
+    fn is_mono(&self) -> bool {
+        self.paper == Color32::TRANSPARENT
+    }
+
+    fn key(&self) -> [u8; 16] {
+        let mut k = [0; 16];
+        for (i, c) in [self.ink, self.accent, self.paper, self.cut]
+            .iter()
+            .enumerate()
+        {
+            k[i * 4..i * 4 + 4].copy_from_slice(&c.to_array());
+        }
+        k
+    }
+}
+
+fn hex(c: Color32) -> String {
+    format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
+}
+
+/// The child elements of a vendored Lucide file, in file order (one per
+/// line in the files).
+pub fn children(icon: Icon) -> Vec<&'static str> {
+    let svg = icon.framed_from().unwrap_or(icon).lucide();
+    svg.lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with('<') && !l.starts_with("<svg") && !l.starts_with("</svg"))
+        .collect()
+}
+
+/// The icon in the "Paper (crisp)" style: square line ends and sharp
+/// joins; paper children filled with paper and outlined in the cut colour,
+/// accent children in the accent colour, the rest in ink, paper first so
+/// no fill covers a line. A framed icon is drawn at 60 % inside a dashed
+/// frame in the cut colour, the cutting area. The Lucide files are not
+/// changed, only their contents are wrapped.
+pub fn styled_svg(icon: Icon, pal: &Palette) -> String {
+    let base = icon.framed_from().unwrap_or(icon);
+    let src = base.lucide();
+    let open_end = src.find('>').expect("an svg element") + 1;
+    let root = src[..open_end]
+        .replace("stroke-linecap=\"round\"", "stroke-linecap=\"square\"")
+        .replace("stroke-linejoin=\"round\"", "stroke-linejoin=\"miter\"")
+        .replace("currentColor", &hex(pal.ink));
+    let (paper, accent) = if pal.is_mono() {
+        (&[][..], &[][..])
+    } else {
+        super::tools::icon_roles(base).unwrap_or((&[], &[]))
+    };
+    let kids = children(base);
+    let paint = |i: usize, el: &str| {
+        let attrs = if paper.contains(&i) {
+            format!(" fill=\"{}\" stroke=\"{}\"", hex(pal.paper), hex(pal.cut))
+        } else if accent.contains(&i) {
+            format!(" stroke=\"{}\"", hex(pal.accent))
+        } else {
+            format!(" stroke=\"{}\"", hex(pal.ink))
+        };
+        let tag_end = el.find([' ', '/', '>']).unwrap_or(el.len());
+        format!("{}{attrs}{}", &el[..tag_end], &el[tag_end..])
+    };
+    let mut body = String::new();
+    for (i, el) in kids.iter().enumerate().filter(|(i, _)| paper.contains(i)) {
+        body.push_str(&paint(i, el));
+    }
+    for (i, el) in kids.iter().enumerate().filter(|(i, _)| !paper.contains(i)) {
+        body.push_str(&paint(i, el));
+    }
+    if icon.framed_from().is_some() {
+        format!(
+            "{root}<rect x=\"1\" y=\"1\" width=\"22\" height=\"22\" stroke=\"{}\" stroke-width=\"1.5\" stroke-dasharray=\"3 2\" /><g transform=\"translate(4.8 4.8) scale(0.6)\">{body}</g></svg>",
+            hex(pal.cut)
+        )
+    } else {
+        format!("{root}{body}</svg>")
+    }
 }
 
 /// Renders the icon into a square image of `px` pixels.
-pub fn rasterize(icon: Icon, px: u32, color: Color32) -> ColorImage {
+pub fn rasterize(icon: Icon, px: u32, pal: &Palette) -> ColorImage {
     let px = px.max(1);
-    let svg = tinted_svg(icon, color);
+    let svg = snap_strokes(&styled_svg(icon, pal), px);
     let tree =
         usvg::Tree::from_str(&svg, &usvg::Options::default()).expect("vendored Lucide SVGs parse");
     let mut pixmap = tiny_skia::Pixmap::new(px, px).expect("icon size is not zero");
@@ -167,28 +494,59 @@ pub fn rasterize(icon: Icon, px: u32, color: Color32) -> ColorImage {
     ColorImage::from_rgba_premultiplied([px as usize, px as usize], pixmap.data())
 }
 
+/// At small sizes (20 px and less) the 2-unit Lucide stroke snaps to a
+/// whole number of pixels, but only when that changes its width by 0.25 px
+/// or less, so no icon gets visibly heavier or lighter (18 px keeps its
+/// 1.5 px line). The Lucide geometry sits on a 24-unit grid, so line
+/// positions cannot all land on pixel edges; only widths are snapped.
+pub fn snap_strokes(svg: &str, px: u32) -> String {
+    if px > 20 {
+        return svg.to_string();
+    }
+    let width = 2.0 * px as f32 / 24.0;
+    let pixels = width.round().max(1.0);
+    if (pixels - width).abs() > 0.25 {
+        return svg.to_string();
+    }
+    let units = pixels * 24.0 / px as f32;
+    svg.replacen(
+        "stroke-width=\"2\"",
+        &format!("stroke-width=\"{units}\""),
+        1,
+    )
+}
+
 #[derive(Clone, Default)]
 struct TextureCache(Arc<std::sync::Mutex<HashMap<CacheKey, TextureHandle>>>);
 
-/// Icon, size in pixels and RGBA colour.
-type CacheKey = (Icon, u32, [u8; 4]);
+/// Icon, size in pixels and the palette's colours.
+type CacheKey = (Icon, u32, [u8; 16]);
 
-/// The icon as a texture of `size` points in the theme's text colour. Cached
-/// per context, size, colour and pixel density.
+/// The icon as a texture of `size` points in the theme's icon colours.
+/// Cached per context, size, palette and pixel density.
 pub fn texture(ctx: &egui::Context, icon: Icon, size: f32) -> TextureHandle {
-    let color = ctx.global_style().visuals.text_color();
-    texture_colored(ctx, icon, size, color)
+    let t = if ctx.global_style().visuals.dark_mode {
+        super::theme::Tokens::dark()
+    } else {
+        super::theme::Tokens::light()
+    };
+    texture_with(ctx, icon, size, &Palette::of(&t))
 }
 
-/// Like [`texture`], in a given colour.
+/// Like [`texture`], in one given colour.
 pub fn texture_colored(
     ctx: &egui::Context,
     icon: Icon,
     size: f32,
     color: Color32,
 ) -> TextureHandle {
+    texture_with(ctx, icon, size, &Palette::mono(color))
+}
+
+/// Like [`texture`], in the colours of `pal`.
+pub fn texture_with(ctx: &egui::Context, icon: Icon, size: f32, pal: &Palette) -> TextureHandle {
     let px = (size * ctx.pixels_per_point()).round().max(1.0) as u32;
-    let key = (icon, px, color.to_array());
+    let key = (icon, px, pal.key());
     let cache = ctx.data_mut(|d| {
         d.get_temp_mut_or_default::<TextureCache>(egui::Id::unique("flatcraft-icons"))
             .clone()
@@ -201,7 +559,7 @@ pub fn texture_colored(
         .or_insert_with(|| {
             ctx.load_texture(
                 format!("icon-{icon:?}-{px}"),
-                rasterize(icon, px, color),
+                rasterize(icon, px, pal),
                 TextureOptions::LINEAR,
             )
         })
@@ -212,20 +570,123 @@ pub fn texture_colored(
 mod tests {
     use super::*;
 
+    const TEAL: Color32 = Color32::from_rgb(0x2B, 0xB3, 0xA3);
+
+    fn lit(img: &ColorImage) -> Vec<(u8, u8, u8)> {
+        img.pixels
+            .iter()
+            .filter(|p| p.a() == 255)
+            .map(|p| (p.r(), p.g(), p.b()))
+            .collect()
+    }
+
     #[test]
-    fn every_icon_parses_and_uses_the_given_colour() {
+    fn every_icon_parses_and_a_tinted_one_uses_the_given_colour() {
         for icon in Icon::ALL {
             assert!(icon.svg().contains("currentColor"), "{icon:?}");
-            let svg = tinted_svg(icon, Color32::from_rgb(0x2B, 0xB3, 0xA3));
-            assert!(!svg.contains("currentColor"));
-            let img = rasterize(icon, 24, Color32::from_rgb(0x2B, 0xB3, 0xA3));
-            let lit: Vec<_> = img.pixels.iter().filter(|p| p.a() == 255).collect();
+            assert!(!children(icon).is_empty(), "{icon:?}");
+            let img = rasterize(icon, 24, &Palette::mono(TEAL));
+            let lit = lit(&img);
             assert!(!lit.is_empty(), "{icon:?} rendered nothing");
             assert!(
-                lit.iter()
-                    .all(|p| (p.r(), p.g(), p.b()) == (0x2B, 0xB3, 0xA3)),
-                "{icon:?} is not in the theme colour"
+                lit.iter().all(|p| *p == (0x2B, 0xB3, 0xA3)),
+                "{icon:?} is not in the tint"
             );
+        }
+    }
+
+    #[test]
+    fn paper_icons_are_crisp_and_use_the_theme_roles() {
+        for t in [
+            super::super::theme::Tokens::dark(),
+            super::super::theme::Tokens::light(),
+        ] {
+            let pal = Palette::of(&t);
+            for icon in Icon::ALL {
+                let svg = styled_svg(icon, &pal);
+                assert!(svg.contains("stroke-linecap=\"square\""), "{icon:?}");
+                assert!(svg.contains("stroke-linejoin=\"miter\""), "{icon:?}");
+                assert!(usvg::Tree::from_str(&svg, &usvg::Options::default()).is_ok());
+                let Some((paper, accent)) = super::super::tools::icon_roles(icon) else {
+                    continue;
+                };
+                let img = rasterize(icon, 48, &pal);
+                let px = lit(&img);
+                let has = |c: Color32| px.contains(&(c.r(), c.g(), c.b()));
+                assert!(has(pal.accent), "{icon:?}: no accent pixels");
+                if !paper.is_empty() {
+                    assert!(has(pal.paper), "{icon:?}: no paper fill");
+                    assert!(has(pal.cut), "{icon:?}: no cut line");
+                }
+                assert!(!accent.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn small_strokes_snap_only_when_the_width_hardly_changes() {
+        let pal = Palette::of(&super::super::theme::Tokens::light());
+        let svg = styled_svg(Icon::Move, &pal);
+        assert!(svg.contains("stroke-width=\"2\""));
+        // 18 px: 1.5 px would round to 2 px, a third heavier: unchanged.
+        assert_eq!(snap_strokes(&svg, 18), svg);
+        // 16 and 20 px: 1.33 and 1.67 px are 0.33 px from a whole pixel.
+        assert_eq!(snap_strokes(&svg, 16), svg);
+        assert_eq!(snap_strokes(&svg, 20), svg);
+        // 15 px: 1.25 px becomes 1 px (2 * 24 / 15 / 2 = 1.6 units).
+        assert!(snap_strokes(&svg, 15).contains("stroke-width=\"1.6\""));
+        // 12 px: already 1 px.
+        assert!(snap_strokes(&svg, 12).contains("stroke-width=\"2\""));
+        assert_eq!(snap_strokes(&svg, 36), svg, "large sizes stay");
+    }
+
+    /// WCAG contrast of two colours.
+    fn contrast(a: Color32, b: Color32) -> f32 {
+        fn lum(c: Color32) -> f32 {
+            let lin = |v: u8| {
+                let v = v as f32 / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+        }
+        let (a, b) = (lum(a), lum(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn cut_bar_accents_read_on_their_background() {
+        for t in [
+            super::super::theme::Tokens::dark(),
+            super::super::theme::Tokens::light(),
+        ] {
+            // The selected stage's fill: the Cut accent at 35 % on the panel.
+            let a = t.accent_cut;
+            let mix = |c: u8, p: u8| (c as f32 * 0.35 + p as f32 * 0.65).round() as u8;
+            let fill = Color32::from_rgb(
+                mix(a.r(), t.panel.r()),
+                mix(a.g(), t.panel.g()),
+                mix(a.b(), t.panel.b()),
+            );
+            let on = Palette::cut(&t, true);
+            let off = Palette::cut(&t, false);
+            assert_eq!(off.accent, t.icon_cut, "the Cut colour, not the teal");
+            assert!(contrast(on.accent, fill) >= 3.0);
+            assert!(contrast(off.accent, t.panel) >= 3.0);
+        }
+    }
+
+    #[test]
+    fn rotate_arrows_are_teal() {
+        let pal = Palette::of(&super::super::theme::Tokens::light());
+        let teal = hex(pal.accent);
+        for (icon, head) in [(Icon::Rotate, "M21 3v5h-5"), (Icon::RotateLeft, "M3 3v5h5")] {
+            let svg = styled_svg(icon, &pal);
+            let want = format!("<path stroke=\"{teal}\" d=\"{head}\"");
+            assert!(svg.contains(&want), "{icon:?}: {svg}");
         }
     }
 }

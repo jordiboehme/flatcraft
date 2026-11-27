@@ -1,0 +1,658 @@
+//! The host blade offset calibration series (`tools.offset_series`): one
+//! tile per offset in a row, planned through the one emit path and sent
+//! through the one send path, and the simulation that ranks the tiles.
+
+use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+use flatcraft_device::ProfileStore;
+use flatcraft_device::gpgl::check_safe;
+use flatcraft_engine::calibrate::{self, NEEDS_HOST, TILE_MM, TILE_PITCH_MM};
+use flatcraft_engine::cutlog::{CALIBRATION_NOT_RATED, Calibration, Verdict};
+use flatcraft_engine::job::{JobInput, WAITING};
+use flatcraft_engine::prefs::Preferences;
+use flatcraft_engine::session::{CommandError, Origin, Session, UnlockedHook};
+use flatcraft_engine::unlocked;
+use flatcraft_path::AppliedCompensation;
+use serde_json::{Value, json};
+
+struct Dirs {
+    config: tempfile::TempDir,
+    out: tempfile::TempDir,
+}
+
+fn dirs() -> Dirs {
+    Dirs {
+        config: tempfile::tempdir().unwrap(),
+        out: tempfile::tempdir().unwrap(),
+    }
+}
+
+fn session_with(d: &Dirs, has_ui: bool) -> Session {
+    let profiles = ProfileStore::load(d.config.path()).unwrap();
+    let prefs = Preferences {
+        output_dir: Some(d.out.path().to_path_buf()),
+        ..Preferences::default()
+    };
+    Session::new(profiles, prefs, has_ui, d.config.path().to_path_buf())
+}
+
+fn run(s: &mut Session, id: &str, params: Value) -> Value {
+    s.execute(id, params, Origin::User)
+        .unwrap_or_else(|e| panic!("{id} failed: {e}"))
+}
+
+/// A user plotter preset `id` that inherits `parent`, with host
+/// compensation at `offset` and a blade of `blade` mm.
+fn host_plotter(config: &Path, id: &str, parent: &str, offset: f64, blade: f64) {
+    let plotters = config.join("plotters");
+    std::fs::create_dir_all(&plotters).unwrap();
+    std::fs::write(
+        plotters.join(format!("{id}.toml")),
+        format!(
+            "id = \"{id}\"\nname = \"{id}\"\ninherits = \"{parent}\"\nknife_compensation = {{ Host = {{ offset_mm = {offset:?}, pivot_threshold_deg = 0.0 }} }}\nblade_offset_mm = {blade:?}\n"
+        ),
+    )
+    .unwrap();
+}
+
+/// A session on a File Output plotter with host compensation.
+fn host_session(d: &Dirs, blade: f64) -> Session {
+    host_plotter(
+        d.config.path(),
+        "host",
+        "file-output-gpgl-cameo2",
+        blade,
+        blade,
+    );
+    let mut s = session_with(d, false);
+    run(&mut s, "job.set_plotter", json!({ "id": "host" }));
+    s
+}
+
+/// A session on the USB Cameo 2 with host compensation.
+fn usb_host_session(d: &Dirs, has_ui: bool) -> Session {
+    host_plotter(d.config.path(), "usb-host", "silhouette-cameo-2", 0.3, 0.3);
+    let mut s = session_with(d, has_ui);
+    run(&mut s, "job.set_plotter", json!({ "id": "usb-host" }));
+    s
+}
+
+fn cutting_area(s: &mut Session) -> kurbo::Rect {
+    let a = &run(s, "document.state", json!({}))["cutting_area_mm"];
+    let f = |k: &str| a[k].as_f64().unwrap();
+    kurbo::Rect::new(f("x0"), f("y0"), f("x1"), f("y1"))
+}
+
+fn files(dir: &Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    v.sort();
+    v
+}
+
+fn bytes_have(bytes: &[u8], needle: &[u8]) -> bool {
+    bytes.windows(needle.len()).any(|w| w == needle)
+}
+
+const OFFSETS: [f64; 3] = [0.2, 0.25, 0.3];
+
+#[test]
+fn offset_series_builds_one_tile_per_offset() {
+    let d = dirs();
+    let mut s = host_session(&d, 0.25);
+    let area = cutting_area(&mut s);
+    let r = calibrate::offset_series(&s, &OFFSETS).unwrap();
+    assert_eq!(r.plan.compensation, AppliedCompensation::HostCalibration);
+    let mut objects: Vec<u64> = r.plan.toolpaths.iter().map(|t| t.source.object.0).collect();
+    objects.dedup();
+    assert_eq!(
+        objects,
+        vec![1, 2, 3],
+        "the tiles are cut one after another"
+    );
+    // Every tile's intended path lies in its own 25 mm tile, the row
+    // starting at the cutting area's top-left, 30 mm apart.
+    for t in &r.plan.toolpaths {
+        let i = (t.source.object.0 - 1) as f64;
+        let tile = kurbo::Rect::from_origin_size(
+            (area.x0 + TILE_PITCH_MM * i, area.y0),
+            (TILE_MM, TILE_MM),
+        );
+        for p in &t.points {
+            assert!(tile.contains(*p), "{p:?} outside tile {i}: {tile:?}");
+        }
+    }
+    let notes: Vec<&str> = r.job.listing.iter().map(|l| l.note.as_str()).collect();
+    assert!(
+        notes.iter().any(|n| n.contains("Offset 0.25 mm")),
+        "the listing names each tile: {notes:?}"
+    );
+
+    // Structural: each tile is planned at its offset, from where the tile
+    // before ended and with its last heading.
+    let input = calibrate::prepare(&s, &OFFSETS, false, Origin::User).unwrap();
+    let series = calibrate::build(&input).unwrap();
+    assert_eq!(series.tiles.len(), 3);
+    for (t, o) in series.tiles.iter().zip(OFFSETS) {
+        assert_eq!(t.offset_mm, o);
+    }
+    for w in series.tiles.windows(2) {
+        assert_eq!(w[1].plan.home, w[0].plan.end);
+        assert_eq!(w[1].start_heading, w[0].plan.end_heading);
+    }
+    assert_eq!(series.job.job.bytes, r.job.bytes, "one build, one result");
+
+    // The command says the same, per tile.
+    let v = run(
+        &mut s,
+        "tools.offset_series",
+        json!({ "offsets_mm": OFFSETS }),
+    );
+    let tiles = v["tiles"].as_array().unwrap();
+    assert_eq!(tiles.len(), 3);
+    for (t, o) in tiles.iter().zip(OFFSETS) {
+        assert_eq!(t["offset_mm"], o);
+        assert!(t["max_hausdorff_mm"].as_f64().is_some(), "{t}");
+        assert!(t["grade"].is_string(), "{t}");
+    }
+    assert_eq!(v["sent"], Value::Null);
+    assert_eq!(v["waiting_for_confirmation"], false);
+    assert_eq!(v["toolpaths"], r.toolpaths_cut());
+    assert!(
+        files(d.out.path()).is_empty(),
+        "nothing is sent without send"
+    );
+    assert!(s.doc().document.objects.is_empty(), "nothing is added");
+}
+
+#[test]
+fn offset_series_needs_host_profile() {
+    let d = dirs();
+    let mut s = session_with(&d, false);
+    let e = calibrate::offset_series(&s, &OFFSETS).unwrap_err();
+    assert_eq!(e, CommandError::Refused(NEEDS_HOST.into()));
+    let e = s
+        .execute(
+            "tools.offset_series",
+            json!({ "offsets_mm": OFFSETS }),
+            Origin::Agent,
+        )
+        .unwrap_err();
+    assert_eq!(e, CommandError::Refused(NEEDS_HOST.into()));
+    assert!(!NEEDS_HOST.contains('\u{2014}'));
+}
+
+#[test]
+fn offset_series_checks_its_offsets() {
+    let d = dirs();
+    let mut s = host_session(&d, 0.3);
+    for bad in [
+        json!([0.3]),
+        json!([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]),
+        json!([0.3, 0.04]),
+        json!([0.3, 1.1]),
+    ] {
+        let e = s
+            .execute(
+                "tools.offset_series",
+                json!({ "offsets_mm": bad }),
+                Origin::Agent,
+            )
+            .unwrap_err();
+        assert!(matches!(e, CommandError::InvalidParams(_)), "{bad}: {e}");
+    }
+    // The bounds themselves are fine.
+    run(
+        &mut s,
+        "tools.offset_series",
+        json!({ "offsets_mm": [0.05, 1.0] }),
+    );
+}
+
+/// The device simulation with a blade of 0.3 mm: the tile planned for
+/// 0.3 mm strays least.
+#[test]
+fn series_simulation_prefers_the_real_offset() {
+    let d = dirs();
+    let mut s = host_session(&d, 0.3);
+    let offsets = [0.2, 0.25, 0.3, 0.35, 0.4];
+    let v = run(
+        &mut s,
+        "tools.offset_series",
+        json!({ "offsets_mm": offsets }),
+    );
+    println!("offset_mm | max_hausdorff_mm | grade | score | rank");
+    for t in v["tiles"].as_array().unwrap() {
+        println!(
+            "{} | {} | {} | {} | {}",
+            t["offset_mm"], t["max_hausdorff_mm"], t["grade"], t["score"], t["rank"]
+        );
+    }
+    assert_eq!(v["blade_offset_mm"], 0.3);
+    assert_eq!(v["best_offset_mm"], 0.3);
+    let tiles = v["tiles"].as_array().unwrap();
+    let h = |i: usize| tiles[i]["max_hausdorff_mm"].as_f64().unwrap();
+    let best = (0..tiles.len())
+        .min_by(|&a, &b| h(a).total_cmp(&h(b)))
+        .unwrap();
+    assert_eq!(tiles[best]["offset_mm"], 0.3);
+    assert_eq!(tiles[best]["rank"], 1);
+    // The farther the offset from the blade, the more it strays.
+    assert!(h(0) > h(1) && h(1) > h(2), "{v}");
+    assert!(h(4) > h(3) && h(3) > h(2), "{v}");
+}
+
+#[test]
+fn offset_series_sends_to_file_output() {
+    let d = dirs();
+    let mut s = host_session(&d, 0.3);
+    let v = s
+        .execute(
+            "tools.offset_series",
+            json!({ "offsets_mm": OFFSETS, "send": true }),
+            Origin::Agent,
+        )
+        .unwrap();
+    let sent = &v["sent"];
+    assert!(sent["bytes_sent"].as_u64().unwrap() > 0, "{v}");
+    assert!(sent["cut_log_entry"].is_string(), "{v}");
+    assert!(
+        files(d.out.path())
+            .iter()
+            .any(|f| f == "offset-series.gpgl"),
+        "{:?}",
+        files(d.out.path())
+    );
+    let bytes = std::fs::read(d.out.path().join("offset-series.gpgl")).unwrap();
+    check_safe(&bytes).unwrap();
+    assert!(
+        bytes_have(&bytes, b"FC0\x03"),
+        "host compensation sends FC0"
+    );
+    assert!(bytes.ends_with(b"H\x03"));
+    let last = s.doc().last_sent().unwrap();
+    assert_eq!(last.plan.compensation, AppliedCompensation::HostCalibration);
+}
+
+/// A sent series is a calibration cut in the cut log: job.history says
+/// so with its offsets, and even rated good it never counts as the
+/// material's last cut, last good cut or cut to rate. A design cut does.
+#[test]
+fn a_sent_series_is_a_calibration_cut_in_the_cut_log() {
+    let d = dirs();
+    let mut s = host_session(&d, 0.3);
+    // A stencil design out of the row's way, and the Fast strategy: the
+    // series' entry names its own pieces and the strategy it was planned
+    // with, never the document's keep mode.
+    let sq = run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": SQUARE, "name": "sq" }),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [sq], "x_mm": 150.0, "y_mm": 150.0 }),
+    );
+    run(
+        &mut s,
+        "object.set_keep",
+        json!({ "ids": [sq], "keep": "stencil" }),
+    );
+    run(&mut s, "job.set_strategy", json!({ "strategy": "fast" }));
+    let v = run(
+        &mut s,
+        "tools.offset_series",
+        json!({ "offsets_mm": OFFSETS, "send": true }),
+    );
+    let id = v["sent"]["cut_log_entry"].as_str().unwrap().to_string();
+    let material = s.doc().document.job.material_id.clone();
+    assert_eq!(
+        s.record_outcome(&id, Verdict::Good, "0.3 looks best"),
+        Err(CALIBRATION_NOT_RATED.to_string()),
+        "a calibration cut is not rated"
+    );
+
+    let log = s.cut_log();
+    let e = log.get(&id).unwrap();
+    assert_eq!(
+        e.calibration,
+        Some(Calibration::OffsetSeries {
+            offsets_mm: OFFSETS.to_vec()
+        })
+    );
+    assert!(log.last_good(&material).is_none());
+    assert!(log.last_time(&material).is_none());
+    assert!(log.to_rate(&material).is_none());
+    assert!(log.has_cut(&material), "it was cut on this material");
+
+    let h = run(&mut s, "job.history", json!({}));
+    let entry = &h["entries"][0];
+    assert_eq!(entry["calibration"]["kind"], "offset_series");
+    assert_eq!(entry["calibration"]["offsets_mm"], json!(OFFSETS));
+    assert_eq!(entry["keep_mode"], "pieces");
+    assert_eq!(entry["strategy"], "fast");
+    assert_eq!(entry["outcome"], Value::Null);
+
+    // A design cut after it is the material's cut, and has no calibration.
+    let sent = run(&mut s, "job.send", json!({}));
+    let design = sent["cut_log_entry"].as_str().unwrap().to_string();
+    s.record_outcome(&design, Verdict::Good, "").unwrap();
+    let log = s.cut_log();
+    assert_eq!(log.last_good(&material).unwrap().id, design);
+    assert_eq!(log.last_time(&material).unwrap().id, design);
+    assert_eq!(log.get(&design).unwrap().calibration, None);
+    let h = run(&mut s, "job.history", json!({}));
+    assert!(h["entries"][0].get("calibration").is_none());
+    assert_eq!(h["entries"][0]["keep_mode"], "stencil");
+}
+
+#[test]
+fn agent_usb_offset_series_headless_is_refused() {
+    let d = dirs();
+    let s = Arc::new(Mutex::new(usb_host_session(&d, false)));
+    let params = json!({ "offsets_mm": OFFSETS, "send": true });
+    let e =
+        unlocked::execute(&s, "tools.offset_series", params.clone(), Origin::Agent).unwrap_err();
+    let refusal = CommandError::Refused(
+        "Agents may not start USB cuts in a headless session. Turn on 'Allow agents to start cuts' in the preferences.".into(),
+    );
+    assert_eq!(e, refusal);
+    let mut s = s.lock().unwrap();
+    assert_eq!(
+        s.execute("tools.offset_series", params, Origin::Agent),
+        Err(refusal)
+    );
+    assert!(s.pending_send().is_none());
+    // Without send there is nothing to refuse.
+    s.execute(
+        "tools.offset_series",
+        json!({ "offsets_mm": OFFSETS }),
+        Origin::Agent,
+    )
+    .unwrap();
+}
+
+/// The MCP server runs the series off the lock; the send that waits for
+/// the person is the real session's pending send, not a snapshot's.
+#[test]
+fn agent_usb_offset_series_with_window_waits() {
+    let d = dirs();
+    let s = Arc::new(Mutex::new(usb_host_session(&d, true)));
+    let v = unlocked::execute(
+        &s,
+        "tools.offset_series",
+        json!({ "offsets_mm": OFFSETS, "send": true }),
+        Origin::Agent,
+    )
+    .unwrap();
+    // The ranking comes back while the send waits, with the wait as a
+    // field.
+    assert_eq!(v["waiting_for_confirmation"], true, "{v}");
+    assert_eq!(v["note"], WAITING);
+    assert_eq!(v["sent"], Value::Null);
+    assert_eq!(v["tiles"].as_array().unwrap().len(), 3);
+    assert_eq!(v["best_offset_mm"], 0.3);
+    let s = s.lock().unwrap();
+    let pending = s.pending_send().expect("the send waits for the person");
+    assert_eq!(pending.doc, s.doc().id());
+    assert_eq!(pending.plotter_id, "usb-host");
+    assert_eq!(pending.name, calibrate::SERIES_NAME);
+    check_safe(&pending.job.bytes).unwrap();
+    assert!(bytes_have(&pending.job.bytes, b"FC0\x03"));
+    assert!(files(d.out.path()).is_empty());
+}
+
+/// The series plans and simulates without the session lock: the hook
+/// takes the lock in the compute step, which would deadlock otherwise.
+#[test]
+fn offset_series_runs_off_the_lock() {
+    assert!(unlocked::runs_unlocked("tools.offset_series"));
+    let d = dirs();
+    let s = Arc::new(Mutex::new(host_session(&d, 0.3)));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let weak = Arc::downgrade(&s);
+    let seen = calls.clone();
+    s.lock().unwrap().unlocked_hook = Some(UnlockedHook(Arc::new(move |id: &str| {
+        assert_eq!(id, "tools.offset_series");
+        if let Some(s) = weak.upgrade() {
+            s.lock()
+                .unwrap()
+                .execute("document.state", json!({}), Origin::Agent)
+                .unwrap();
+            seen.fetch_add(1, Ordering::SeqCst);
+        }
+    })));
+    let v = unlocked::execute(
+        &s,
+        "tools.offset_series",
+        json!({ "offsets_mm": OFFSETS }),
+        Origin::Agent,
+    )
+    .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(v["doc_id"], s.lock().unwrap().doc().id());
+    assert_eq!(v["tiles"].as_array().unwrap().len(), 3);
+}
+
+/// A document that changes while the series is planned: the series runs
+/// once more on the new state, and a second change drops it.
+#[test]
+fn offset_series_is_planned_again_when_the_document_changes() {
+    let d = dirs();
+    let s = Arc::new(Mutex::new(host_session(&d, 0.3)));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let weak = Arc::downgrade(&s);
+    let seen = calls.clone();
+    s.lock().unwrap().unlocked_hook = Some(UnlockedHook(Arc::new(move |_: &str| {
+        if let Some(s) = weak.upgrade() {
+            seen.fetch_add(1, Ordering::SeqCst);
+            s.lock()
+                .unwrap()
+                .execute(
+                    "object.import_svg",
+                    json!({ "svg": SQUARE, "name": "sq" }),
+                    Origin::User,
+                )
+                .unwrap();
+        }
+    })));
+    let e = unlocked::execute(
+        &s,
+        "tools.offset_series",
+        json!({ "offsets_mm": OFFSETS, "send": true }),
+        Origin::Agent,
+    )
+    .unwrap_err();
+    assert_eq!(
+        e,
+        unlocked::changed_error("the offset series was planned"),
+        "{e}"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert!(
+        files(d.out.path()).is_empty(),
+        "a stale series is never sent"
+    );
+}
+
+const SQUARE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="40mm" viewBox="0 0 40 40"><rect x="0" y="0" width="40" height="40"/></svg>"#;
+
+/// The row keeps 5 mm away from the document's objects, hidden ones too,
+/// and the refusal says why when there is no room.
+#[test]
+fn offset_series_avoids_the_objects_on_the_mat() {
+    let d = dirs();
+    let mut s = host_session(&d, 0.3);
+    let id = run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": SQUARE, "name": "sq" }),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    let area = cutting_area(&mut s);
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [id], "x_mm": area.x0 + 20.0, "y_mm": area.y0 }),
+    );
+    run(
+        &mut s,
+        "object.set_visible",
+        json!({ "ids": [id], "visible": false }),
+    );
+    let input = JobInput::of(&s).unwrap();
+    let taken = flatcraft_engine::report::object_bounds(&input, &input.objects[0]).unwrap();
+    let v = run(
+        &mut s,
+        "tools.offset_series",
+        json!({ "offsets_mm": OFFSETS }),
+    );
+    for t in v["tiles"].as_array().unwrap() {
+        let b = &t["bounds_mm"];
+        let f = |k: &str| b[k].as_f64().unwrap();
+        let tile = kurbo::Rect::new(f("x0"), f("y0"), f("x1"), f("y1"));
+        let near = taken.inflate(4.999, 4.999);
+        assert!(
+            near.intersect(tile).is_zero_area(),
+            "{tile:?} too close to {taken:?}"
+        );
+        assert!(tile.y0 >= area.y0 && tile.x1 <= area.x1);
+    }
+
+    // A row of seven tiles does not fit on a mat full of objects.
+    let big = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}mm" height="{h}mm" viewBox="0 0 {w} {h}"><rect x="0" y="0" width="{w}" height="{h}"/></svg>"#,
+        w = area.width() - 1.0,
+        h = area.height() - 1.0
+    );
+    let mut s = host_session(&d, 0.3);
+    run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": big, "name": "big" }),
+    );
+    let e = s
+        .execute(
+            "tools.offset_series",
+            json!({ "offsets_mm": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] }),
+            Origin::Agent,
+        )
+        .unwrap_err();
+    let CommandError::Refused(text) = e else {
+        panic!("{e}")
+    };
+    assert!(
+        text.starts_with("There is no free spot for the offset series"),
+        "{text}"
+    );
+    assert!(!text.contains('\u{2014}'));
+}
+
+#[test]
+fn the_tile_holds_the_brief_shapes() {
+    let svg = calibrate::offset_tile_svg();
+    assert!(svg.contains(r#"width="25mm" height="25mm""#), "{svg}");
+    for id in ["square-10", "star-90", "star-30", "circles"] {
+        assert!(svg.contains(&format!(r#"id="{id}""#)), "{id}: {svg}");
+    }
+    assert!(svg.contains(r#"width="10" height="10""#));
+    assert!(svg.contains(r#"r="0.5""#) && svg.contains(r#"r="1""#));
+}
+
+/// Tile names show the offset rounded, never float noise.
+#[test]
+fn tile_names_round_the_offset() {
+    assert_eq!(calibrate::tile_name(0.1 + 0.2), "Offset 0.3 mm");
+    assert_eq!(calibrate::tile_name(0.25), "Offset 0.25 mm");
+    assert_eq!(calibrate::tile_name(1.0), "Offset 1 mm");
+    assert_eq!(calibrate::tile_name(0.325), "Offset 0.325 mm");
+    let d = dirs();
+    let s = host_session(&d, 0.3);
+    let r = calibrate::offset_series(&s, &[0.1 + 0.2, 0.35]).unwrap();
+    let notes: Vec<&str> = r.job.listing.iter().map(|l| l.note.as_str()).collect();
+    assert!(
+        notes.iter().any(|n| n.contains("'Offset 0.3 mm'")),
+        "{notes:?}"
+    );
+    assert!(notes.iter().all(|n| !n.contains("0.30000")), "{notes:?}");
+}
+
+/// The compensated runs (lead-ins, corner arcs, overcut) of the smallest
+/// and largest offset stay inside the cutting area of an uncalibrated mat
+/// and near their own tile.
+#[test]
+fn compensated_runs_stay_inside_the_cutting_area() {
+    let d = dirs();
+    let mut s = host_session(&d, 0.3);
+    let area = cutting_area(&mut s);
+    assert_eq!(area.x0, 5.0, "an uncalibrated mat keeps 5 mm");
+    let input = calibrate::prepare(&s, &[0.05, 1.0], false, Origin::User).unwrap();
+    let series = calibrate::build(&input).unwrap();
+    assert_eq!(
+        series.tiles[0].bounds_mm.x0, area.x0,
+        "the row touches the area's edge"
+    );
+    assert_eq!(series.tiles[0].bounds_mm.y0, area.y0);
+    for t in &series.tiles {
+        let near = t.bounds_mm.inflate(1.5, 1.5);
+        let mut runs = 0;
+        for tp in &t.plan.toolpaths {
+            assert!(tp.axis.is_some(), "host compensated");
+            for r in tp.runs() {
+                runs += 1;
+                for p in &r.points {
+                    assert!(area.contains(*p), "{p:?} outside the cutting area {area:?}");
+                    assert!(
+                        near.contains(*p),
+                        "{p:?} too far from its tile {:?}",
+                        t.bounds_mm
+                    );
+                }
+            }
+        }
+        assert!(runs >= 5, "offset {} has {runs} runs", t.offset_mm);
+    }
+}
+
+/// Without a mat the row lies inside one feed band, even when objects
+/// push it down across a band line, so the head never goes back a band.
+#[test]
+fn a_no_mat_row_stays_inside_one_feed_band() {
+    use flatcraft_path::feed::{BAND_MM, band_of};
+    let d = dirs();
+    let mut s = host_session(&d, 0.3);
+    run(&mut s, "job.set_media", json!({ "id": "no-mat" }));
+    let area = cutting_area(&mut s);
+    // A strip across the whole width, 25 mm tall: the first free spot
+    // would be 5 mm below it, and a 25 mm row would cross the line at 50.
+    let w = area.width();
+    let strip = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}mm" height="25mm" viewBox="0 0 {w} 25"><rect x="0" y="0" width="{w}" height="25"/></svg>"#
+    );
+    let id = run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": strip, "name": "strip" }),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [id], "x_mm": area.x0, "y_mm": area.y0 }),
+    );
+    let input = calibrate::prepare(&s, &OFFSETS, false, Origin::User).unwrap();
+    let series = calibrate::build(&input).unwrap();
+    let y0 = series.tiles[0].bounds_mm.y0;
+    assert_eq!(y0, BAND_MM, "the row starts at the next band line");
+    let bands: Vec<usize> = series.job.plan.toolpaths.iter().map(band_of).collect();
+    assert!(bands.iter().all(|&b| b == bands[0]), "{bands:?}");
+}

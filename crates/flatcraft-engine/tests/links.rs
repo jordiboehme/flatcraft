@@ -806,14 +806,15 @@ fn a_link_to_another_file_type_is_never_read() {
     // A crafted project points the link at a file that is no SVG or image.
     let secret = dir.path().join("secret.txt");
     write(&secret, svg(true));
-    let text = std::fs::read_to_string(&project).unwrap();
-    let mut v: Value = serde_json::from_str(&text).unwrap();
-    v["objects"][0]["link"]["path"] = json!(secret);
-    v["objects"][0]["link"]
-        .as_object_mut()
-        .unwrap()
-        .remove("relative");
-    std::fs::write(&project, v.to_string()).unwrap();
+    flatcraft_core::project::Archive::edit(&project, |a| {
+        let v = &mut a.project;
+        v["objects"][0]["link"]["path"] = json!(secret);
+        v["objects"][0]["link"]
+            .as_object_mut()
+            .unwrap()
+            .remove("relative");
+    })
+    .unwrap();
 
     let mut s = session(dir.path());
     run(&mut s, "project.open", json!({ "path": project }));
@@ -833,14 +834,15 @@ fn a_relative_link_path_resolves_against_the_project_folder() {
     let id = import(&mut s, &file);
     let project = dir.path().join("p.flatcraft");
     run(&mut s, "project.save", json!({ "path": project }));
-    let text = std::fs::read_to_string(&project).unwrap();
-    let mut v: Value = serde_json::from_str(&text).unwrap();
-    v["objects"][0]["link"]["path"] = json!("only-here.svg");
-    v["objects"][0]["link"]
-        .as_object_mut()
-        .unwrap()
-        .remove("relative");
-    std::fs::write(&project, v.to_string()).unwrap();
+    flatcraft_core::project::Archive::edit(&project, |a| {
+        let v = &mut a.project;
+        v["objects"][0]["link"]["path"] = json!("only-here.svg");
+        v["objects"][0]["link"]
+            .as_object_mut()
+            .unwrap()
+            .remove("relative");
+    })
+    .unwrap();
     change(&file, svg(true));
 
     let mut s = session(dir.path());
