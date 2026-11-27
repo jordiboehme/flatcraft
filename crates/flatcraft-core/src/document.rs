@@ -622,6 +622,18 @@ impl Document {
     }
 
     pub fn add(&mut self, name: String, source: Source, geometry: Vec<CutPath>) -> ObjectId {
+        self.add_shared(name, source, Arc::new(geometry))
+    }
+
+    /// [`Document::add`] with geometry held elsewhere too: the `Arc` is
+    /// shared, not copied, so caches keyed on it (the cut pieces) carry
+    /// over.
+    pub fn add_shared(
+        &mut self,
+        name: String,
+        source: Source,
+        geometry: Arc<Vec<CutPath>>,
+    ) -> ObjectId {
         let id = ObjectId(self.next_id);
         self.next_id += 1;
         let mut object = Object {
@@ -640,7 +652,8 @@ impl Document {
             link_group: None,
             parent: None,
         };
-        object.set_geometry(geometry);
+        object.local_bounds = bounds(&geometry).unwrap_or(Rect::ZERO);
+        object.geometry = geometry;
         self.objects.push(object);
         id
     }

@@ -907,7 +907,7 @@ fn rebuild_shared(o: &Object, blade: f64, warnings: &mut Vec<String>) -> Option<
                 }
             }
             let local_bounds = bounds(&r.paths).unwrap_or(Rect::ZERO);
-            Some((Arc::new(r.paths), local_bounds, r.frame))
+            Some((r.paths, local_bounds, r.frame))
         }
         Err(e) => {
             let what = if svg {

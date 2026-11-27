@@ -283,22 +283,45 @@ fn the_lock_is_free_while_long_commands_compute() {
     );
 }
 
+/// A raster object imported from `square.png` in `dir`: its id.
+fn add_png(s: &Shared, dir: &std::path::Path) -> u64 {
+    locked_run(s, "object.import", json!({ "path": square_png(dir) })).unwrap()["id"]
+        .as_u64()
+        .unwrap()
+}
+
+/// An image different from [`square_png`], at `dir/name`.
+fn other_png(dir: &std::path::Path, name: &str, size: u32) -> std::path::PathBuf {
+    let mut img = image::GrayImage::from_pixel(300, 300, image::Luma([255]));
+    for y in 20..20 + size {
+        for x in 20..20 + size {
+            img.put_pixel(x, y, image::Luma([0]));
+        }
+    }
+    let path = dir.join(name);
+    img.save(&path).unwrap();
+    path
+}
+
 #[test]
-fn a_change_meanwhile_is_not_stored_and_the_command_runs_again() {
+fn an_import_lands_on_the_document_as_it_is_now() {
     let dir = tempfile::tempdir().unwrap();
     let s = shared(dir.path());
     let id = add_svg(&s);
     let tries = Arc::new(AtomicUsize::new(0));
     let t = tries.clone();
     set_hook(&s, move |s, _| {
-        // The person moves the object while the first try computes.
-        if t.fetch_add(1, Ordering::SeqCst) == 0 {
-            nudge(s, id);
-        }
+        // The person moves another object on every try.
+        t.fetch_add(1, Ordering::SeqCst);
+        nudge(s, id);
     });
     let png = square_png(dir.path());
     let r = unlocked_run(&s, "object.import", json!({ "path": png })).unwrap();
-    assert_eq!(tries.load(Ordering::SeqCst), 2, "one more try");
+    assert_eq!(
+        tries.load(Ordering::SeqCst),
+        1,
+        "traced once, applied to the new state"
+    );
     assert_eq!(objects(&s), 2);
     // The import, the move and the import: the move was kept.
     assert_eq!(undo_len(&s), 3);
@@ -317,10 +340,142 @@ fn a_change_meanwhile_is_not_stored_and_the_command_runs_again() {
         g.doc().selection.iter().map(|i| i.0).collect::<Vec<_>>(),
         vec![r["id"].as_u64().unwrap()]
     );
+    drop(g);
+    // The same for SVG text.
+    let r = unlocked_run(&s, "object.import_svg", json!({ "svg": SVG, "name": "b" }));
+    assert!(r.is_ok(), "{r:?}");
+    assert_eq!(tries.load(Ordering::SeqCst), 2);
+    assert_eq!(objects(&s), 3);
 }
 
 #[test]
-fn a_document_that_keeps_changing_gives_a_clear_error() {
+fn the_apply_step_gives_what_the_locked_command_gives_on_the_new_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = shared(dir.path());
+    let b = shared(dir.path());
+    let png = square_png(dir.path());
+    for s in [&a, &b] {
+        add_svg(s);
+    }
+    // a: the move, then the import under the lock. b: the import starts,
+    // the move happens while it traces.
+    nudge(&a, 1);
+    let locked = locked_run(&a, "object.import", json!({ "path": png })).unwrap();
+    set_hook(&b, |s, _| nudge(s, 1));
+    let unlocked = unlocked_run(&b, "object.import", json!({ "path": png })).unwrap();
+    assert_eq!(locked, unlocked);
+    let (a, b) = (a.lock().unwrap(), b.lock().unwrap());
+    assert_eq!(
+        doc_text(&a.doc().document, dir.path()),
+        doc_text(&b.doc().document, dir.path())
+    );
+    assert_eq!(a.doc().undo.undo_len(), b.doc().undo.undo_len());
+}
+
+#[test]
+fn a_retrace_lands_while_another_object_moves() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = shared(dir.path());
+    let other = add_svg(&s);
+    let img = add_png(&s, dir.path());
+    let tries = Arc::new(AtomicUsize::new(0));
+    let t = tries.clone();
+    set_hook(&s, move |s, _| {
+        t.fetch_add(1, Ordering::SeqCst);
+        nudge(s, other);
+    });
+    let before = undo_len(&s);
+    let r = unlocked_run(
+        &s,
+        "object.retrace",
+        json!({ "id": img, "settings": { "threshold": 90 } }),
+    );
+    assert!(r.is_ok(), "{r:?}");
+    assert_eq!(tries.load(Ordering::SeqCst), 1);
+    assert_eq!(undo_len(&s), before + 2, "the move and the retrace");
+    let g = s.lock().unwrap();
+    let o = g
+        .doc()
+        .document
+        .get(flatcraft_core::document::ObjectId(img))
+        .unwrap();
+    assert!(
+        matches!(&o.source, flatcraft_core::document::Source::Raster { trace, .. } if trace.threshold == Some(90))
+    );
+}
+
+#[test]
+fn a_retrace_whose_own_image_changed_runs_again_or_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = shared(dir.path());
+    let img = add_png(&s, dir.path());
+    let a = other_png(dir.path(), "a.png", 100);
+    let b = other_png(dir.path(), "b.png", 150);
+    // Once: the image is replaced while the first try traces; the second
+    // try traces the new image and lands.
+    let tries = Arc::new(AtomicUsize::new(0));
+    let t = tries.clone();
+    let first = a.clone();
+    set_hook(&s, move |s, id| {
+        if id == "object.retrace" && t.fetch_add(1, Ordering::SeqCst) == 0 {
+            s.lock()
+                .unwrap()
+                .execute(
+                    "object.relink",
+                    json!({ "id": img, "path": first }),
+                    Origin::User,
+                )
+                .unwrap();
+        }
+    });
+    let r = unlocked_run(&s, "object.retrace", json!({ "id": img, "settings": {} }));
+    assert!(r.is_ok(), "{r:?}");
+    assert_eq!(tries.load(Ordering::SeqCst), 2, "one more try");
+    // Every time: the clear message, and the retrace changed nothing.
+    let t = tries.clone();
+    let flip = Arc::new(AtomicUsize::new(0));
+    set_hook(&s, move |s, id| {
+        if id != "object.retrace" {
+            return;
+        }
+        t.fetch_add(1, Ordering::SeqCst);
+        let path = if flip.fetch_add(1, Ordering::SeqCst).is_multiple_of(2) {
+            &b
+        } else {
+            &a
+        };
+        s.lock()
+            .unwrap()
+            .execute(
+                "object.relink",
+                json!({ "id": img, "path": path }),
+                Origin::User,
+            )
+            .unwrap();
+    });
+    tries.store(0, Ordering::SeqCst);
+    let before = undo_len(&s);
+    let r = unlocked_run(
+        &s,
+        "object.retrace",
+        json!({ "id": img, "settings": { "threshold": 90 } }),
+    );
+    assert_eq!(r, Err(changed_error("the image was traced")));
+    assert_eq!(tries.load(Ordering::SeqCst), 2);
+    assert_eq!(undo_len(&s), before + 2, "only the two relinks");
+    let g = s.lock().unwrap();
+    let o = g
+        .doc()
+        .document
+        .get(flatcraft_core::document::ObjectId(img))
+        .unwrap();
+    assert!(
+        matches!(&o.source, flatcraft_core::document::Source::Raster { trace, .. } if trace.threshold.is_none())
+    );
+}
+
+#[test]
+fn whole_document_commands_keep_retry_once_and_the_message() {
     let dir = tempfile::tempdir().unwrap();
     let s = shared(dir.path());
     let id = add_svg(&s);
@@ -330,24 +485,14 @@ fn a_document_that_keeps_changing_gives_a_clear_error() {
         t.fetch_add(1, Ordering::SeqCst);
         nudge(s, id);
     });
-    let png = square_png(dir.path());
     for (command, params, what) in [
-        (
-            "object.import",
-            json!({ "path": png }),
-            "the file was imported",
-        ),
-        (
-            "object.retrace",
-            json!({ "id": id, "settings": {} }),
-            "the image was traced",
-        ),
         ("job.preview", json!({}), "the job was planned"),
         (
             "document.preview",
             json!({ "kind": "canvas" }),
             "the preview was drawn",
         ),
+        ("document.check", json!({}), "the objects were checked"),
     ] {
         tries.store(0, Ordering::SeqCst);
         let before = undo_len(&s);
@@ -357,7 +502,6 @@ fn a_document_that_keeps_changing_gives_a_clear_error() {
         // Only the two moves are new steps.
         assert_eq!(undo_len(&s), before + 2, "{command}");
     }
-    assert_eq!(objects(&s), 1, "nothing was imported");
     assert!(
         s.lock().unwrap().doc().last_job().is_none(),
         "no plan was stored"

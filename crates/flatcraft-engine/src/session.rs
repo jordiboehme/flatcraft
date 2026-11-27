@@ -440,6 +440,31 @@ impl DocState {
         }
     }
 
+    /// Adds the pieces of `extra` (cut geometry a command built on an
+    /// older snapshot) to the cached cut geometry, for the objects it does
+    /// not hold: a seed only, checked object by object when it is read.
+    pub(crate) fn seed_cut_geometry(&self, extra: &Arc<CutGeometry>) {
+        let mut cache = self
+            .cut_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let seed = match cache.take() {
+            Some((_, g)) => crate::cutgeom::merged_seed(&g, extra),
+            None => extra.clone(),
+        };
+        // A key no reader asks for: the merged geometry is only ever a
+        // seed for the next build, never read as it is.
+        let key = CacheKey {
+            doc_revision: u64::MAX,
+            profiles_revision: u64::MAX,
+            plotter_id: String::new(),
+            material_id: String::new(),
+            tol: f64::NAN,
+            min_width_mm: f64::NAN,
+        };
+        *cache = Some((key, seed));
+    }
+
     /// What a twin started from, so [`DocState::adopt`] can tell what the
     /// command changed from what changed here meanwhile.
     pub(crate) fn twin_base(&self) -> TwinBase {

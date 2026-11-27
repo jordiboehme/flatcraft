@@ -239,6 +239,35 @@ pub fn objects_cut_geometry(
     Arc::new(out)
 }
 
+/// `primary` with the pieces of `extra` added for the objects `primary`
+/// does not hold, as a seed for [`objects_cut_geometry`]: a command that
+/// ran on a snapshot built the pieces of its new object there, and the
+/// current document's build takes them over. Only pieces whose key still
+/// fits are ever taken, so a seed never gives a wrong piece.
+pub(crate) fn merged_seed(
+    primary: &Arc<CutGeometry>,
+    extra: &Arc<CutGeometry>,
+) -> Arc<CutGeometry> {
+    if !same_f64(primary.tolerance_mm, extra.tolerance_mm)
+        || !same_f64(primary.min_width_mm, extra.min_width_mm)
+    {
+        return primary.clone();
+    }
+    let mut out = (**primary).clone();
+    for (id, key) in &extra.keys {
+        if out.keys.contains_key(id) {
+            continue;
+        }
+        if let Some(pieces) = extra.per_object.get(id) {
+            out.keys.insert(*id, key.clone());
+            out.per_object.insert(*id, pieces.clone());
+            out.facts.insert(*id, extra.facts(*id));
+            out.bounds.insert(*id, extra.bounds(*id));
+        }
+    }
+    Arc::new(out)
+}
+
 /// The warning about `n` filled slivers of the object `name` that are
 /// thinner than `width_mm` and not cut.
 pub fn sliver_warning(name: &str, n: usize, width_mm: f64) -> String {

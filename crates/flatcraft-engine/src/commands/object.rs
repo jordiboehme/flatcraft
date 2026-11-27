@@ -8,14 +8,13 @@ use flatcraft_core::document::{
 };
 use flatcraft_core::geometry::CutPath;
 use flatcraft_core::nodes::GroupNode;
-use flatcraft_import::svg::import_svg;
-use flatcraft_import::trace::{TraceResult, trace};
-use flatcraft_import::{ImportError, ImportWarning, fonts};
+use flatcraft_import::trace::TraceResult;
+use flatcraft_import::{ImportError, ImportWarning};
 use kurbo::{Point, Rect, Vec2};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::sources::{FileKind, ReadError, absolute, clip, file_kind, new_link, read_capped};
+use super::sources::{FileKind, ReadError, absolute, clip, file_kind, new_link};
 use super::{
     check_exists, check_node, command, common_box, cutting_area, ids_json, inside, knife_of,
     object_mut, placed_bounds, rect_json, resolve_ids, resolve_units, translate, unit_leaves,
@@ -90,13 +89,13 @@ fn add_object(
     s: &mut Session,
     name: String,
     source: Source,
-    paths: Vec<CutPath>,
+    paths: std::sync::Arc<Vec<CutPath>>,
     frame: Rect,
 ) -> Result<ObjectId, CommandError> {
     let area = cutting_area(s).ok();
     let mw = knife_of(s);
     let doc = &mut s.doc_mut().document;
-    let id = doc.add(name, source, paths);
+    let id = doc.add_shared(name, source, paths);
     let o = object_mut(doc, id)?;
     o.frame = frame;
     o.transform.center_mm = o.local_bounds.center();
@@ -127,18 +126,16 @@ fn bounds_json(s: &Session, id: ObjectId) -> Value {
 pub(crate) fn add_svg(
     s: &mut Session,
     name: String,
-    bytes: Vec<u8>,
+    bytes: std::sync::Arc<[u8]>,
 ) -> Result<(ObjectId, Value), CommandError> {
-    let import = import_svg(&bytes, fonts::system_fonts()).map_err(import_error)?;
+    let (import, paths) =
+        crate::memo::svg(&bytes, crate::memo::Fonts::System).map_err(import_error)?;
     let mut warnings: Vec<String> = import.warnings.iter().map(warning_text).collect();
     let id = add_object(
         s,
         name.clone(),
-        Source::Svg {
-            name,
-            bytes: bytes.into(),
-        },
-        import.paths,
+        Source::Svg { name, bytes },
+        paths,
         import.page_frame_mm,
     )?;
     warnings.extend(larger_than_area(s, id));
@@ -268,10 +265,11 @@ pub(crate) fn trace_report(t: &TraceResult, invert: bool) -> (Vec<String>, Value
 fn add_raster(
     s: &mut Session,
     name: String,
-    bytes: Vec<u8>,
+    bytes: std::sync::Arc<[u8]>,
 ) -> Result<(ObjectId, Value), CommandError> {
     let settings = TraceSettings::default();
-    let t = trace(&bytes, &settings, blade_offset_mm(s)).map_err(import_error)?;
+    let (t, paths) =
+        crate::memo::trace(&bytes, &settings, blade_offset_mm(s)).map_err(import_error)?;
     let (warnings, numbers) = trace_report(&t, settings.invert);
     let findings = trace_findings(&t, settings.invert);
     let id = add_object(
@@ -279,10 +277,10 @@ fn add_raster(
         name.clone(),
         Source::Raster {
             name,
-            bytes: bytes.into(),
+            bytes,
             trace: settings,
         },
-        t.paths,
+        paths,
         Rect::new(0.0, 0.0, t.size_mm.0, t.size_mm.1),
     )?;
     let mut warnings = warnings;
@@ -350,7 +348,7 @@ fn import_one(s: &mut Session, path: &std::path::Path) -> Result<Value, CommandE
         .and_then(|s| s.to_str())
         .unwrap_or("Imported")
         .to_string();
-    let file = read_capped(path).map_err(|e| match e {
+    let file = crate::memo::read(path).map_err(|e| match e {
         ReadError::NotFound => CommandError::NotFound(format!("file {}", path.display())),
         ReadError::TooLarge | ReadError::NotAFile => {
             CommandError::InvalidParams(format!("cannot import {}: {}", path.display(), e.text()))
@@ -451,7 +449,7 @@ pub struct ImportSvgParams {
 }
 
 fn run_import_svg(s: &mut Session, p: ImportSvgParams, _: Origin) -> Result<Value, CommandError> {
-    add_svg(s, p.name, p.svg.into_bytes()).map(|(_, out)| out)
+    add_svg(s, p.name, p.svg.into_bytes().into()).map(|(_, out)| out)
 }
 
 command!(
@@ -566,7 +564,7 @@ fn run_retrace(s: &mut Session, p: RetraceParams, _: Origin) -> Result<Value, Co
             id.0
         )));
     };
-    let t = trace(bytes, &settings, blade).map_err(import_error)?;
+    let (t, paths) = crate::memo::trace(bytes, &settings, blade).map_err(import_error)?;
     let size_before = placed_bounds(o, mw).map(|b| b.size());
     let invert = settings.invert;
     let (mut warnings, numbers) = trace_report(&t, invert);
@@ -578,7 +576,12 @@ fn run_retrace(s: &mut Session, p: RetraceParams, _: Origin) -> Result<Value, Co
     // Keep the image frame in place, not the geometry centre: the placement
     // is relative to the centre of the local bounds, which the new trace
     // changes.
-    o.set_geometry_anchored(t.paths, Rect::new(0.0, 0.0, t.size_mm.0, t.size_mm.1));
+    let local_bounds = flatcraft_core::geometry::bounds(&paths).unwrap_or(Rect::ZERO);
+    o.share_geometry_anchored(
+        paths,
+        local_bounds,
+        Rect::new(0.0, 0.0, t.size_mm.0, t.size_mm.1),
+    );
     // Linked copies share the trace settings and the geometry.
     s.doc_mut().document.spread_shared(id);
     let o = object_mut(&mut s.doc_mut().document, id)?;

@@ -203,6 +203,7 @@ fn execute_on(
             },
             PreparedExport::write,
         ),
+        _ if rebases(id) => rebase(session, doc, id, params, origin, what),
         _ => split(
             session,
             doc,
@@ -213,6 +214,103 @@ fn execute_on(
             Ok,
         ),
     }
+}
+
+/// True for the commands whose slow part depends only on their inputs
+/// (files, bytes, settings, the blade offset) and that apply it to the
+/// document as it is now: a change of another object meanwhile never
+/// loses them (see [`rebase`]).
+pub fn rebases(id: &str) -> bool {
+    matches!(
+        id,
+        "object.import"
+            | "object.import_svg"
+            | "object.retrace"
+            | "object.reload"
+            | "object.relink"
+    )
+}
+
+/// A command that runs on a snapshot off the lock with its slow steps
+/// recorded (`crate::memo`). If the document is unchanged, that result is
+/// stored as it is. Else the command runs again under the lock on the
+/// current document with the slow steps replayed, which is cheap: an
+/// import lands whatever happened to the other objects. Only when the
+/// replay needs a slow step the record did not make (the target object's
+/// bytes or settings, or the blade offset changed) is the result dropped
+/// and the command tried once more.
+fn rebase(
+    session: &Mutex<Session>,
+    doc: Option<u64>,
+    id: &str,
+    params: Value,
+    origin: Origin,
+    what: &str,
+) -> Result<Value, CommandError> {
+    for _ in 0..TRIES {
+        let (mut scratch, key, base, hook) = {
+            let mut s = lock(session);
+            begin(&mut s, origin);
+            if doc.is_some_and(|d| s.doc().id() != d) {
+                return Err(not_active());
+            }
+            (
+                s.scratch(),
+                Key::of(&s),
+                s.doc().twin_base(),
+                s.unlocked_hook.clone(),
+            )
+        };
+        let mut memo = None;
+        let result = compute(id, hook, || {
+            let (r, m) = crate::memo::record(|| scratch.execute(id, params.clone(), origin));
+            memo = Some(m);
+            r
+        });
+        let mut s = lock(session);
+        let twin = scratch
+            .docs
+            .pop()
+            .expect("a scratch session has one document");
+        if Key::of(&s) == key {
+            s.doc_mut().adopt(&base, twin);
+            s.prune_pending();
+            return result;
+        }
+        if doc.is_some_and(|d| s.doc().id() != d) {
+            s.prune_pending();
+            return Err(not_active());
+        }
+        let Some(memo) = memo else {
+            // The snapshot run panicked: its error stands.
+            s.prune_pending();
+            return result;
+        };
+        // Apply on the current document, with the cut pieces the snapshot
+        // run built (its new object's among them) as a seed.
+        let mut current = s.scratch();
+        if let Some(g) = twin.cached_cut_geometry() {
+            current.docs[0].seed_cut_geometry(&g);
+        }
+        let current_base = s.doc().twin_base();
+        let mut missed = false;
+        let applied = compute(id, None, || {
+            let (r, m) = crate::memo::replay(memo, || current.execute(id, params.clone(), origin));
+            missed = m;
+            r
+        });
+        if !missed {
+            let twin = current
+                .docs
+                .pop()
+                .expect("a scratch session has one document");
+            s.doc_mut().adopt(&current_base, twin);
+            s.prune_pending();
+            return applied;
+        }
+        s.prune_pending();
+    }
+    Err(changed_error(what))
 }
 
 /// [`crate::commands::project::open_bytes`] with the rebuild off the
@@ -368,5 +466,65 @@ impl Command for Install {
             .take()
             .ok_or_else(|| internal_error("project.open"))?;
         Ok(install_open(s, path, document, warnings))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cutgeom::tests::OBJECT_CUTS;
+    use crate::session::UnlockedHook;
+    use std::sync::Arc;
+
+    const SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="200mm" viewBox="0 0 200 200"><rect x="20" y="20" width="50" height="30"/></svg>"#;
+
+    /// The apply step on a changed document cuts only what changed: the
+    /// new object's pieces come from the snapshot run.
+    #[test]
+    fn the_apply_step_takes_the_new_objects_pieces_from_the_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config");
+        let profiles = flatcraft_device::ProfileStore::load(&config).unwrap();
+        let prefs = crate::prefs::Preferences {
+            output_dir: Some(dir.path().join("output")),
+            ..Default::default()
+        };
+        let s = Arc::new(Mutex::new(Session::new(profiles, prefs, false, config)));
+        let a = s
+            .lock()
+            .unwrap()
+            .execute(
+                "object.import_svg",
+                serde_json::json!({ "svg": SVG, "name": "a" }),
+                Origin::User,
+            )
+            .unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        s.lock().unwrap().cut_geometry().unwrap();
+        let weak = Arc::downgrade(&s);
+        s.lock().unwrap().unlocked_hook = Some(UnlockedHook(Arc::new(move |_: &str| {
+            if let Some(s) = weak.upgrade() {
+                s.lock()
+                    .unwrap()
+                    .execute(
+                        "object.move",
+                        serde_json::json!({ "ids": [a], "dx_mm": 1.0 }),
+                        Origin::User,
+                    )
+                    .unwrap();
+            }
+        })));
+        OBJECT_CUTS.with(|n| n.set(0));
+        execute(
+            &s,
+            "object.import_svg",
+            serde_json::json!({ "svg": SVG, "name": "b" }),
+            Origin::Agent,
+        )
+        .unwrap();
+        // The snapshot cuts b; the apply cuts the moved a, and b again
+        // would make three.
+        assert_eq!(OBJECT_CUTS.with(std::cell::Cell::get), 2);
     }
 }

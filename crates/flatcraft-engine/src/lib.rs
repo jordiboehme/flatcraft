@@ -7,6 +7,7 @@ pub mod cutlog;
 pub mod export;
 pub mod gate;
 pub mod job;
+mod memo;
 pub mod patterns;
 pub mod placement;
 pub mod prefs;

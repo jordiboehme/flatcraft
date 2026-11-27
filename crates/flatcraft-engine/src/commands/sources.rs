@@ -6,13 +6,12 @@
 
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use flatcraft_core::document::{Document, GroupId, ObjectId, Source, SourceLink};
 use flatcraft_core::geometry::CutPath;
-use flatcraft_import::svg::import_svg;
-use flatcraft_import::{ImportError, fonts};
+use flatcraft_import::ImportError;
 use kurbo::Rect;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -53,9 +52,23 @@ impl ReadError {
     }
 }
 
+impl Clone for ReadError {
+    /// An I/O error is kept by its kind and text, which is all that is
+    /// ever shown of it.
+    fn clone(&self) -> Self {
+        match self {
+            ReadError::NotFound => ReadError::NotFound,
+            ReadError::NotAFile => ReadError::NotAFile,
+            ReadError::TooLarge => ReadError::TooLarge,
+            ReadError::Io(e) => ReadError::Io(std::io::Error::new(e.kind(), e.to_string())),
+        }
+    }
+}
+
 /// A file read with the import size cap, plus its modification time.
+#[derive(Debug, Clone)]
 pub(crate) struct SourceFile {
-    pub bytes: Vec<u8>,
+    pub bytes: Arc<[u8]>,
     pub modified: Option<String>,
 }
 
@@ -85,7 +98,7 @@ pub(crate) fn read_capped(path: &Path) -> Result<SourceFile, ReadError> {
         return Err(ReadError::TooLarge);
     }
     Ok(SourceFile {
-        bytes,
+        bytes: bytes.into(),
         modified: meta.modified().ok().and_then(rfc3339),
     })
 }
@@ -341,7 +354,7 @@ pub(crate) fn new_link(file: &Path, project: Option<&Path>, f: &SourceFile) -> O
     Some(SourceLink {
         path: file.to_path_buf(),
         relative: project_dir(project).and_then(|dir| relative_to(file, &dir)),
-        sha256: sha256_hex(&f.bytes),
+        sha256: crate::memo::sha(&f.bytes),
         modified: f.modified.clone(),
         anchor_dir: project_dir(project),
     })
@@ -422,7 +435,8 @@ pub(crate) fn civil_from_days(days: i64) -> (i64, u32, u32) {
 
 /// Geometry built from source bytes.
 pub(crate) struct Rebuilt {
-    pub paths: Vec<CutPath>,
+    /// Shared, so a replay (`crate::memo`) gives the same `Arc`.
+    pub paths: Arc<Vec<CutPath>>,
     /// The page frame in local mm (SVG page, image pixel frame).
     pub frame: Rect,
     pub warnings: Vec<String>,
@@ -439,22 +453,22 @@ pub(crate) fn rebuild(
 ) -> Result<Rebuilt, ImportError> {
     match source {
         Source::Svg { .. } => {
-            let import = import_svg(bytes, fonts::fonts_for(bytes))?;
+            let (import, paths) = crate::memo::svg(bytes, crate::memo::Fonts::ForDocument)?;
             Ok(Rebuilt {
                 frame: import.page_frame_mm,
                 warnings: import.warnings.iter().map(warning_text).collect(),
-                found: Found::Svg(import.warnings),
-                paths: import.paths,
+                found: Found::Svg(import.warnings.clone()),
+                paths,
             })
         }
         Source::Raster { trace, .. } => {
-            let t = flatcraft_import::trace::trace(bytes, trace, blade_offset_mm)?;
+            let (t, paths) = crate::memo::trace(bytes, trace, blade_offset_mm)?;
             let (warnings, _) = trace_report(&t, trace.invert);
             let found = Found::Trace(trace_findings(&t, trace.invert));
             Ok(Rebuilt {
                 found,
                 frame: Rect::new(0.0, 0.0, t.size_mm.0, t.size_mm.1),
-                paths: t.paths,
+                paths,
                 warnings,
             })
         }
@@ -507,7 +521,7 @@ fn reload_one(
     else {
         return Outcome::Missing;
     };
-    let file = match read_capped(&path) {
+    let file = match crate::memo::read(&path) {
         Ok(f) => f,
         Err(ReadError::NotFound) => return Outcome::Missing,
         Err(e) => {
@@ -526,7 +540,7 @@ fn reload_one(
         ));
         return Outcome::Failed;
     };
-    if link.sha256 == sha256_hex(embedded_bytes(&o.source)) {
+    if link.sha256 == crate::memo::sha(embedded_bytes(&o.source)) {
         let moved = o
             .link
             .as_ref()
@@ -560,9 +574,10 @@ fn reload_one(
         return Outcome::Failed;
     };
     match &mut o.source {
-        Source::Svg { bytes, .. } | Source::Raster { bytes, .. } => *bytes = file.bytes.into(),
+        Source::Svg { bytes, .. } | Source::Raster { bytes, .. } => *bytes = file.bytes,
     }
-    o.set_geometry_anchored(rebuilt.paths, rebuilt.frame);
+    let local_bounds = flatcraft_core::geometry::bounds(&rebuilt.paths).unwrap_or(Rect::ZERO);
+    o.share_geometry_anchored(rebuilt.paths, local_bounds, rebuilt.frame);
     o.link = Some(link);
     // Linked copies share the source: rebuilt once, given to all members.
     s.doc_mut().document.spread_shared(id);

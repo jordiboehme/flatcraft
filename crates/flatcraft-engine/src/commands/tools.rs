@@ -65,7 +65,7 @@ fn run_test_patterns(
         out.insert("svg_path".into(), json!(path));
     }
     if p.add_to_document {
-        let (id, _) = add_svg(s, SHEET_NAME.to_string(), svg.clone().into_bytes())?;
+        let (id, _) = add_svg(s, SHEET_NAME.to_string(), svg.clone().into_bytes().into())?;
         centre_sheet(s, id)?;
         out.insert("id".into(), id.0.into());
     }
@@ -118,7 +118,7 @@ fn run_test_shape(s: &mut Session, _: super::NoParams, _: Origin) -> Result<Valu
             add_svg(
                 s,
                 TEST_SHAPE_NAME.to_string(),
-                test_shape_svg().into_bytes(),
+                test_shape_svg().into_bytes().into(),
             )?
             .0,
             true,
