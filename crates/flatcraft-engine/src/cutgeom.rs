@@ -571,10 +571,10 @@ pub fn cut_bounds(object: &Object, knife: Knife) -> Option<Rect> {
 }
 
 /// A box that holds everything the object can cut, without cutting it:
-/// its drawn paths placed, grown by twice the widest stroke (a mitred
-/// corner reaches at most that far, with the SVG miter limit of 4). Never
-/// smaller than [`cut_bounds`]; cheap, for finding the objects near
-/// another.
+/// its drawn paths placed, grown by the furthest a stroke reaches past
+/// them (half its miter limit, at least one width, so caps and round
+/// joins fit too). Never smaller than [`cut_bounds`]; cheap, for finding
+/// the objects near another.
 pub fn loose_bounds(o: &JobObject) -> Option<Rect> {
     let affine = o.transform.affine(o.local_bounds);
     let mut drawn: Option<Rect> = None;
@@ -583,7 +583,13 @@ pub fn loose_bounds(o: &JobObject) -> Option<Rect> {
         let b = p.path.bounding_box();
         drawn = Some(drawn.map_or(b, |d| d.union(b)));
         if let Some(s) = p.paint.stroke {
-            widest = widest.max(s.width_mm);
+            // How far past the path a corner of the stroke reaches, in
+            // stroke widths: half, or half the miter limit.
+            let reach = match s.join {
+                flatcraft_core::geometry::Join::Miter { limit } => (limit / 2.0).max(1.0),
+                _ => 1.0,
+            };
+            widest = widest.max(s.width_mm * reach);
         }
     }
     let d = drawn?;
@@ -599,7 +605,7 @@ pub fn loose_bounds(o: &JobObject) -> Option<Rect> {
         b = b.union_pt(*p);
     }
     let scale = o.transform.scale_x.abs().max(o.transform.scale_y.abs());
-    let grow = 2.0 * widest * scale + 0.01;
+    let grow = widest * scale + 0.01;
     Some(b.inflate(grow, grow))
 }
 
