@@ -231,6 +231,8 @@ pub enum Action {
     /// Store the side panel sections opened or folded since the last time
     /// (merged into `Preferences::panel_sections`).
     RememberSections(std::collections::BTreeMap<String, bool>),
+    /// Store tips the person hid (added to `Preferences::hidden_tips`).
+    HideTips(std::collections::BTreeSet<String>),
     /// Store the spacing of the Auto arrange panel in the preferences, for
     /// the next panel and the one-click Auto arrange.
     RememberSpacing(f64),
@@ -466,16 +468,18 @@ pub struct FlatCraftApp {
 impl FlatCraftApp {
     /// Installs the fonts and the theme of the preferences on `ctx`.
     pub fn new(ctx: &egui::Context, session: SharedSession, config_dir: PathBuf) -> Self {
-        let (theme, rotate_each, panels, sections) = {
+        let (theme, rotate_each, panels, sections, tips) = {
             let s = lock(&session);
             (
                 s.prefs.theme,
                 s.prefs.rotate_each,
                 rails::Panels::from_prefs(&s.prefs),
                 s.prefs.panel_sections.clone(),
+                s.prefs.hidden_tips.clone(),
             )
         };
         inspector::blocks::seed(ctx, sections);
+        inspector::blocks::seed_tips(ctx, tips);
         let tokens = Tokens::for_theme(theme, ctx.system_theme());
         fonts::install(ctx);
         theme::apply(ctx, &tokens, theme == Theme::System);
@@ -1574,6 +1578,12 @@ impl FlatCraftApp {
                     )));
                 }
             }
+            Action::HideTips(ids) => {
+                let result = lock(&self.session).update_prefs(|p| p.hidden_tips.extend(ids));
+                if let Err(e) = result {
+                    self.toast(Toast::error(format!("Cannot store the hidden tip: {e}")));
+                }
+            }
             Action::RememberSpacing(mm) => {
                 let result = lock(&self.session).update_prefs(|p| p.auto_arrange_spacing_mm = mm);
                 if let Err(e) = result {
@@ -2511,6 +2521,9 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     }
     if let Some(open) = inspector::blocks::take_changed(&ctx) {
         actions.push(Action::RememberSections(open));
+    }
+    if let Some(ids) = inspector::blocks::take_hidden_tips(&ctx) {
+        actions.push(Action::HideTips(ids));
     }
     // Number fields left with a text they could not read say so.
     for text in calc::take_toasts(&ctx) {

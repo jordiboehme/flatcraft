@@ -266,6 +266,8 @@ pub fn skipped_note(ui: &mut Ui, snap: &Snapshot, t: &Tokens) {
 
 /// The test cut hint's heading.
 pub const TEST_CUT_TITLE: &str = "Start with a test cut";
+/// The id of the test cut hint, for hiding it (`Preferences.hidden_tips`).
+pub const TEST_CUT_TIP: &str = "job.test_cut";
 /// The test cut hint's button.
 pub const TEST_CUT_BUTTON: &str = "Add a test shape";
 
@@ -310,6 +312,7 @@ pub fn test_cut_hint(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec
     let clicked = super::inspector::blocks::hint_card(
         ui,
         t,
+        Some(TEST_CUT_TIP),
         Some((TEST_CUT_TITLE, &text)),
         &issue,
         &[button],

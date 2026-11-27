@@ -48,7 +48,8 @@ fn is_open(h: &AppHarness) -> bool {
 /// The controls of every row of the window (every setting the old
 /// Settings and Profiles window had, and the new ones), by row id. The
 /// test fails when a row has no entry here, so a new setting needs one.
-const REACHABLE: [(&str, &[&str]); 24] = [
+const REACHABLE: [(&str, &[&str]); 25] = [
+    ("hidden_tips", &["Show hidden tips again"]),
     ("output_dir", &["Choose folder...", "Use the default"]),
     ("auto_reload", &["Reload changed files automatically"]),
     ("theme", &["Theme: Dark", "Theme: Light", "Theme: System"]),
@@ -739,4 +740,72 @@ fn the_stepper_field_follows_the_click_rules_and_esc_keeps_the_window() {
     h.key_press(egui::Key::Escape);
     h.run_plan();
     assert!(!is_open(&h));
+}
+
+#[test]
+fn a_hidden_tip_stays_hidden_until_settings_shows_it_again() {
+    use flatcraft::ui::inspector::blocks::{HIDE_TIP, HIDE_TIP_CARD};
+    use flatcraft::ui::materials::{TEST_CUT_TIP, TEST_CUT_TITLE};
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    s.lock()
+        .unwrap()
+        .execute("object.select", json!({ "ids": [] }), Origin::User)
+        .unwrap();
+    let mut h = harness(&dir, &s);
+    to_prepare(&mut h);
+    // Nothing hidden: the button is dimmed and says why.
+    open(&mut h, "General");
+    assert!(disabled(&h, settings_window::SHOW_TIPS));
+    h.get_by_label(settings_window::SHOW_TIPS).hover();
+    h.run_plan();
+    assert!(h.query_by_label(settings_window::NO_HIDDEN_TIPS).is_some());
+    h.get_by_label("No tips are hidden.");
+    h.hover_at(egui::pos2(1.0, 1.0));
+    h.run_plan();
+    click(&mut h, "OK");
+    // The X of the test cut tip, with its card.
+    h.get_by_label(TEST_CUT_TITLE);
+    h.get_by_label(HIDE_TIP).hover();
+    h.run_plan();
+    assert!(h.query_by_label(HIDE_TIP_CARD).is_some());
+    h.get_by_role_and_label(Role::Button, HIDE_TIP).click();
+    h.run_plan();
+    assert!(h.query_by_label(TEST_CUT_TITLE).is_none());
+    assert!(stored(&dir).hidden_tips.contains(TEST_CUT_TIP));
+    // Hidden for every material, not only this one.
+    s.lock()
+        .unwrap()
+        .execute(
+            "job.set_material",
+            json!({ "id": "kraft-paper" }),
+            Origin::User,
+        )
+        .unwrap();
+    h.run_plan();
+    assert!(h.query_by_label(TEST_CUT_TITLE).is_none());
+    // And after a restart.
+    drop(h);
+    let mut h = harness(&dir, &s);
+    to_prepare(&mut h);
+    assert!(h.query_by_label(TEST_CUT_TITLE).is_none());
+    // Settings shows it again: one hidden, the button clears, OK stores.
+    open(&mut h, "General");
+    h.get_by_label("1 tip is hidden.");
+    assert!(!disabled(&h, settings_window::SHOW_TIPS));
+    h.get_by_role_and_label(Role::Button, settings_window::SHOW_TIPS)
+        .click();
+    h.run_plan();
+    h.get_by_label("No tips are hidden.");
+    assert!(disabled(&h, settings_window::SHOW_TIPS));
+    click(&mut h, "OK");
+    assert!(stored(&dir).hidden_tips.is_empty());
+    h.get_by_label(TEST_CUT_TITLE);
+    for text in [
+        HIDE_TIP_CARD,
+        settings_window::NO_HIDDEN_TIPS,
+        settings_window::SHOW_TIPS,
+    ] {
+        assert!(!text.contains('\u{2014}'), "{text}");
+    }
 }

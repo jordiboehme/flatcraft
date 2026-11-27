@@ -657,16 +657,82 @@ pub struct HintButton<'a> {
     pub why: Option<&'a str>,
 }
 
+/// The tips the person hid with the X of their hint card, by id. Like
+/// the open sections it lives in egui's memory: the app seeds it from
+/// `Preferences.hidden_tips` ([`seed_tips`]) and stores what was hidden
+/// ([`take_hidden_tips`]). The Settings window shows them again.
+#[derive(Debug, Clone, Default)]
+struct Tips {
+    hidden: std::collections::BTreeSet<String>,
+    /// Hidden since the last [`take_hidden_tips`].
+    new: std::collections::BTreeSet<String>,
+}
+
+fn tips_id() -> Id {
+    Id::unique("flatcraft-hidden-tips")
+}
+
+/// Puts the stored hidden tips into `ctx`.
+pub fn seed_tips(ctx: &egui::Context, hidden: std::collections::BTreeSet<String>) {
+    ctx.data_mut(|d| {
+        d.insert_temp(
+            tips_id(),
+            Tips {
+                hidden,
+                new: Default::default(),
+            },
+        );
+    });
+}
+
+/// Whether the tip `id` is hidden.
+pub fn tip_hidden(ctx: &egui::Context, id: &str) -> bool {
+    ctx.data(|d| {
+        d.get_temp::<Tips>(tips_id())
+            .is_some_and(|t| t.hidden.contains(id))
+    })
+}
+
+/// Hides the tip `id`.
+pub fn hide_tip(ctx: &egui::Context, id: &str) {
+    ctx.data_mut(|d| {
+        let t = d.get_temp_mut_or_default::<Tips>(tips_id());
+        t.hidden.insert(id.to_string());
+        t.new.insert(id.to_string());
+    });
+}
+
+/// The tips hidden since the last call, to store; `None` when none.
+pub fn take_hidden_tips(ctx: &egui::Context) -> Option<std::collections::BTreeSet<String>> {
+    ctx.data_mut(|d| {
+        let t = d.get_temp_mut_or_default::<Tips>(tips_id());
+        let new = std::mem::take(&mut t.new);
+        (!new.is_empty()).then_some(new)
+    })
+}
+
+/// The name and the card of a hint card's X.
+pub const HIDE_TIP: &str = "Hide this tip";
+pub const HIDE_TIP_CARD: &str = "Hide this tip. You can show it again in Settings.";
+
 /// A hint: an issue in a soft amber box, with a title (and its card), the
 /// text and buttons that fix it. Returns the index of the clicked button.
+/// A tip with a `dismiss` id has an X in its top right corner that hides
+/// it for good (for every material and document) until the Settings
+/// window shows hidden tips again; a hidden tip draws nothing.
 pub fn hint_card(
     ui: &mut Ui,
     t: &Tokens,
+    dismiss: Option<&str>,
     title: Option<(&str, &str)>,
     issue: &str,
     actions: &[HintButton<'_>],
 ) -> Option<usize> {
+    if dismiss.is_some_and(|id| tip_hidden(ui.ctx(), id)) {
+        return None;
+    }
     let mut clicked = None;
+    let mut hide = false;
     egui::Frame::new()
         .fill(t.warn.gamma_multiply(0.10))
         .stroke(egui::Stroke::new(1.0, t.warn.gamma_multiply(0.6)))
@@ -674,13 +740,33 @@ pub fn hint_card(
         .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            if let Some((title, card)) = title {
-                let r = ui.label(
-                    RichText::new(title)
-                        .font(fonts::semibold(13.0))
-                        .color(t.warn_text),
-                );
-                groups::card(&r, title, card, None, false);
+            if title.is_some() || dismiss.is_some() {
+                ui.horizontal(|ui| {
+                    if let Some((title, card)) = title {
+                        let r = ui.label(
+                            RichText::new(title)
+                                .font(fonts::semibold(13.0))
+                                .color(t.warn_text),
+                        );
+                        groups::card(&r, title, card, None, false);
+                    }
+                    if dismiss.is_some() {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let size = 12.0;
+                            let tex = icons::texture(ui.ctx(), Icon::Close, size);
+                            let image = egui::Image::from_texture(egui::load::SizedTexture::new(
+                                tex.id(),
+                                vec2(size, size),
+                            ))
+                            .tint(t.text_dim)
+                            .alt_text(HIDE_TIP);
+                            let r = ui.add(egui::Button::image(image).frame(false));
+                            set_name(ui, &r, HIDE_TIP);
+                            groups::card(&r, HIDE_TIP, HIDE_TIP_CARD, None, false);
+                            hide = r.clicked();
+                        });
+                    }
+                });
             }
             ui.add(egui::Label::new(RichText::new(issue).color(t.text)).wrap());
             if !actions.is_empty() {
@@ -696,5 +782,9 @@ pub fn hint_card(
                 });
             }
         });
+    if hide && let Some(id) = dismiss {
+        hide_tip(ui.ctx(), id);
+        return None;
+    }
     clicked
 }

@@ -110,6 +110,10 @@ pub struct Preferences {
     /// window writes it (a UI preference); no registry command reads or
     /// changes it.
     pub panel_sections: std::collections::BTreeMap<String, bool>,
+    /// The tips (hint cards) the person hid with their X, by id. They
+    /// stay hidden until the Settings window shows them again. Only the
+    /// window writes it; no registry command reads or changes it.
+    pub hidden_tips: std::collections::BTreeSet<String>,
 }
 
 /// The Home page's details of one recent project (see
@@ -431,6 +435,7 @@ impl Default for Preferences {
             default_strategy: CutStrategy::Quality,
             recent_details: Vec::new(),
             panel_sections: std::collections::BTreeMap::new(),
+            hidden_tips: std::collections::BTreeSet::new(),
         }
     }
 }

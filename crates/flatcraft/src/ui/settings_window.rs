@@ -37,6 +37,11 @@ use super::theme::{self, Tokens};
 use super::tools::Setting;
 use super::{Action, FlatCraftApp, Toast, fonts, help, lock};
 
+/// The button that shows the hidden tips again.
+pub const SHOW_TIPS: &str = "Show hidden tips again";
+/// Why it is dimmed.
+pub const NO_HIDDEN_TIPS: &str = "No tip is hidden. Hide one with the X in its top right corner.";
+
 /// The accessible name of the × at the top right.
 pub const CLOSE_NAME: &str = "Close settings";
 /// The accessible name of the search field.
@@ -211,7 +216,17 @@ const fn other(
 
 /// Every setting the window shows: each preference (by field name), plus
 /// the rows of the other pages search can jump to.
-pub const ROWS: [Row; 24] = [
+pub const ROWS: [Row; 25] = [
+    pref(
+        "hidden_tips",
+        Page::General,
+        "Tips",
+        "Hidden tips",
+        Card::Text(
+            "Tips you hid with the X in their corner stay hidden for every material and document. Show hidden tips again brings them all back; Apply or OK stores it.",
+        ),
+        "hint tip hide hidden show again dismiss test cut",
+    ),
     pref(
         "output_dir",
         Page::General,
@@ -488,6 +503,7 @@ pub fn copy_field(field: &str, from: &Preferences, to: &mut Preferences) {
         "panel_settings" => to.panel_settings = from.panel_settings,
         "panel_stage" => to.panel_stage = from.panel_stage,
         "default_strategy" => to.default_strategy = from.default_strategy,
+        "hidden_tips" => to.hidden_tips.clone_from(&from.hidden_tips),
         _ => {}
     }
 }
@@ -804,6 +820,7 @@ pub fn apply_staged(app: &mut FlatCraftApp, ctx: &egui::Context) {
     st.preview_theme = None;
     app.ui.prepare.fields.each = fresh.rotate_each;
     app.ui.prepare.panels.adopt(&fresh);
+    super::inspector::blocks::seed_tips(ctx, fresh.hidden_tips.clone());
     app.tokens = Tokens::for_theme(fresh.theme, ctx.system_theme());
     app.follows_system = fresh.theme == Theme::System;
     theme::apply(ctx, &app.tokens, app.follows_system);
@@ -1418,6 +1435,30 @@ fn stepper(
 }
 
 fn general(ui: &mut Ui, cx: &mut Cx<'_>, d: &mut Preferences, actions: &mut Vec<Action>) {
+    section(ui, cx, "Tips", |ui, cx| {
+        let t = *cx.t;
+        row_ui(ui, cx, "hidden_tips", |ui| {
+            let n = d.hidden_tips.len();
+            let note = match n {
+                0 => "No tips are hidden.".to_string(),
+                1 => "1 tip is hidden.".to_string(),
+                n => format!("{n} tips are hidden."),
+            };
+            ui.label(RichText::new(note).color(t.text_dim));
+            let r = ui.add_enabled(n > 0, egui::Button::new(SHOW_TIPS));
+            super::groups::card(
+                &r,
+                SHOW_TIPS,
+                "Shows every tip you hid again, like Start with a test cut. Apply or OK stores it.",
+                (n == 0).then_some(NO_HIDDEN_TIPS),
+                false,
+            );
+            if r.clicked() {
+                d.hidden_tips.clear();
+            }
+            None
+        });
+    });
     section(ui, cx, "Files", |ui, cx| {
         let t = cx.t;
         row_ui(ui, cx, "output_dir", |ui| {
@@ -1959,6 +2000,7 @@ mod tests {
             default_strategy: CutStrategy::Fast,
             recent_details: Vec::new(),
             panel_sections: Default::default(),
+            hidden_tips: ["x".to_string()].into(),
         };
         for f in fields() {
             assert!(differs(f, &other, &def), "{f} is not copied");
