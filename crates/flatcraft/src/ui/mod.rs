@@ -234,9 +234,10 @@ pub enum Action {
     RememberSections(std::collections::BTreeMap<String, bool>),
     /// Store tips the person hid (added to `Preferences::hidden_tips`).
     HideTips(std::collections::BTreeSet<String>),
-    /// Store the spacing of the Auto arrange panel in the preferences, for
-    /// the next panel and the one-click Auto arrange.
-    RememberSpacing(f64),
+    /// Store the values a tool card ran with in the preferences
+    /// (`Preferences::tool_cards`), for the next card and the one-click
+    /// Auto arrange.
+    RememberCards(inspector::tool_card::Values),
     /// Pin a ribbon action, or unpin it, in the preferences
     /// (`ribbon_pins`, by [`tools::Tool::id`]).
     SetPin {
@@ -472,11 +473,12 @@ pub struct FlatCraftApp {
 impl FlatCraftApp {
     /// Installs the fonts and the theme of the preferences on `ctx`.
     pub fn new(ctx: &egui::Context, session: SharedSession, config_dir: PathBuf) -> Self {
-        let (theme, rotate_each, panels, sections, tips) = {
+        let (theme, rotate_each, cards, panels, sections, tips) = {
             let s = lock(&session);
             (
                 s.prefs.theme,
                 s.prefs.rotate_each,
+                arrange::memory_from_prefs(&s.prefs.tool_cards),
                 rails::Panels::from_prefs(&s.prefs),
                 s.prefs.panel_sections.clone(),
                 s.prefs.hidden_tips.clone(),
@@ -493,6 +495,7 @@ impl FlatCraftApp {
         ctx.options_mut(|o| o.max_passes = std::num::NonZeroUsize::new(3).expect("3 > 0"));
         let mut ui = UiState::default();
         ui.prepare.fields.each = rotate_each;
+        ui.prepare.panel_last = cards;
         ui.prepare.panels = panels;
         Self {
             session,
@@ -1624,11 +1627,15 @@ impl FlatCraftApp {
                     self.toast(Toast::error(format!("Cannot store the hidden tip: {e}")));
                 }
             }
-            Action::RememberSpacing(mm) => {
-                let result = lock(&self.session).update_prefs(|p| p.auto_arrange_spacing_mm = mm);
+            Action::RememberCards(values) => {
+                let result = lock(&self.session).update_prefs(|p| {
+                    for (k, v) in values {
+                        p.tool_cards.insert(k.clone(), v.to_string());
+                    }
+                });
                 if let Err(e) = result {
                     self.toast(Toast::error(format!(
-                        "Cannot store the Auto arrange spacing: {e}"
+                        "Cannot store the tool card values: {e}"
                     )));
                 }
             }
@@ -2688,7 +2695,7 @@ impl FlatCraftApp {
 }
 
 /// A dialog that owns the keyboard is open: About, Shortcuts, Trace, Rename, Export, unsaved changes
-/// or the agent's pending send. The docked Arrange panels are not dialogs:
+/// or the agent's pending send. The tool cards are not dialogs:
 /// the document stays usable behind them.
 pub fn modal_open(app: &FlatCraftApp) -> bool {
     app.ui.about.open
@@ -2907,7 +2914,7 @@ fn dropped_files(ctx: &egui::Context, t: &Tokens, actions: &mut Vec<Action>) {
 /// keyboard or a menu is open (Escape closes that first): Cmd+A (Ctrl+A)
 /// selects every visible object, Cmd+I imports, Cmd+D duplicates the
 /// selection, the arrow keys nudge it (see [`canvas::nudge_keys`]), Delete
-/// removes it and Escape clears it (or closes an open Arrange panel). The
+/// removes it and Escape clears it (or closes an open tool card). The
 /// keys come from [`help::SHORTCUTS`].
 fn prepare_keys(
     ctx: &egui::Context,
@@ -2951,7 +2958,7 @@ fn prepare_keys(
         }
         return;
     }
-    // Escape closes an open Arrange panel first, and changes nothing. One
+    // Escape closes an open tool card first, and changes nothing. One
     // press is enough while a panel field has the keys: egui drops the
     // focus on Escape before this runs.
     if st.panel.is_some() && help::pressed(ctx, help::PrepareKey::ClearSelection) {
@@ -3045,7 +3052,7 @@ fn prepare_keys(
     }
 }
 
-/// A text field has the keys and it is not in the Arrange panel at
+/// A text field has the keys and it is not in the tool card at
 /// `panel` (screen area).
 fn text_focus_outside(ctx: &egui::Context, panel: Option<egui::Rect>) -> bool {
     if !ctx.text_edit_focused() {

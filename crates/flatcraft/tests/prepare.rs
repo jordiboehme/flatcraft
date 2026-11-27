@@ -1701,9 +1701,13 @@ fn panel_kind(h: &AppHarness) -> Option<flatcraft::ui::arrange::PanelKind> {
     app(h).ui.prepare.panel.as_ref().map(|p| p.kind)
 }
 
-fn values(h: &mut AppHarness) -> &mut flatcraft::ui::arrange::PanelValues {
-    &mut app_mut(h).ui.prepare.panel.as_mut().unwrap().values
+fn values(h: &mut AppHarness) -> &mut flatcraft::ui::inspector::tool_card::CardState {
+    &mut app_mut(h).ui.prepare.panel.as_mut().unwrap().card
 }
+
+const COPIES: &str = "object.copies";
+const COLUMNS: &str = "layout.grid.columns";
+const ROWS: (&str, &str) = ("pattern.rectangular", "rows");
 
 fn revision(s: &SharedSession) -> u64 {
     s.lock().unwrap().doc().revision()
@@ -1744,7 +1748,7 @@ fn copies_opens_the_rectangular_pattern_panel_and_ok_is_one_step() {
     assert_eq!(panel_kind(&h), Some(PanelKind::RectangularPattern));
     assert!(
         !flatcraft::ui::modal_open(app(&h)),
-        "a docked panel is no dialog"
+        "a tool card is no dialog"
     );
     h.get_by_label("Linked copies");
     h.get_by_label("Columns").click();
@@ -1755,7 +1759,7 @@ fn copies_opens_the_rectangular_pattern_panel_and_ok_is_one_step() {
     h.run_plan();
     h.key_press(egui::Key::Enter);
     h.run_plan();
-    assert_eq!(values(&mut h).rect.columns, 4);
+    assert_eq!(values(&mut h).u64(COPIES, COLUMNS), Some(4));
     let before = undo_len(&s);
     click_ok(&mut h);
     assert_eq!(undo_len(&s), before + 1);
@@ -1784,30 +1788,35 @@ fn panels_remember_the_last_values_that_ran() {
     h.get_by_role_and_label(Role::Button, "Copies").click();
     h.run_plan();
     {
-        let r = &mut values(&mut h).rect;
-        r.columns = 2;
-        r.rows = 5;
-        r.gap_x_mm = 1.5;
-        r.gap_y_mm = 2.5;
+        let r = values(&mut h);
+        r.set(COPIES, COLUMNS, 2);
+        r.set(ROWS.0, ROWS.1, 5);
+        r.set(COPIES, "gap_x_mm", 1.5);
+        r.set(COPIES, "gap_y_mm", 2.5);
     }
     click_ok(&mut h);
     select(&s, &[a]);
     h.run_plan();
     h.get_by_role_and_label(Role::Button, "Copies").click();
     h.run_plan();
-    let r = values(&mut h).rect.clone();
+    let r = values(&mut h).clone();
     assert_eq!(
-        (r.columns, r.rows, r.gap_x_mm, r.gap_y_mm),
-        (2, 5, 1.5, 2.5)
+        (
+            r.u64(COPIES, COLUMNS),
+            r.u64(ROWS.0, ROWS.1),
+            r.f64(COPIES, "gap_x_mm"),
+            r.f64(COPIES, "gap_y_mm")
+        ),
+        (Some(2), Some(5), Some(1.5), Some(2.5))
     );
     // Cancel keeps the last values that ran, not the edits.
-    values(&mut h).rect.columns = 7;
+    values(&mut h).set(COPIES, COLUMNS, 7);
     h.get_by_role_and_label(Role::Button, &cancel_name())
         .click();
     h.run_plan();
     h.get_by_role_and_label(Role::Button, "Copies").click();
     h.run_plan();
-    assert_eq!(values(&mut h).rect.columns, 2);
+    assert_eq!(values(&mut h).u64(COPIES, COLUMNS), Some(2));
 }
 
 /// The active document as the project file stores it, plus the
@@ -1837,19 +1846,19 @@ fn cancel_close_and_escape_change_nothing() {
         select(&s, &ids);
         h.run_plan();
         let (before, rev, undo) = (document_bytes(&s), revision(&s), undo_len(&s));
-        for how in [cancel_name().as_str(), "Close panel", "escape"] {
+        for how in [cancel_name().as_str(), "Close card", "escape"] {
             open_panel(&mut h, label);
             assert!(app(&h).ui.prepare.panel.is_some(), "{label}");
             // Edits that OK would use: Cancel drops them.
             {
                 let v = values(&mut h);
-                v.move_copy.copy = true;
-                v.move_copy.count = 4;
-                v.rotate.degrees = 33.0;
-                v.rotate.each = true;
-                v.rect.columns = 5;
-                v.circular.count = 7;
-                v.spacing_mm = 12.0;
+                v.set("move_copy", "copy", true);
+                v.set("object.duplicate", "count", 4);
+                v.set("object.rotate", "degrees", 33.0);
+                v.set("object.rotate", "about", "each");
+                v.set(COPIES, COLUMNS, 5);
+                v.set("object.circular_copies", "count", 7);
+                v.set("arrange.auto", "spacing_mm", 12.0);
             }
             h.run_plan();
             if how == "escape" {
@@ -1865,7 +1874,7 @@ fn cancel_close_and_escape_change_nothing() {
             assert_eq!(undo_len(&s), undo, "{label} {how}");
             assert!(!app(&h).ui.prepare.fields.each, "{label} {how}");
             let stored = flatcraft_engine::prefs::Preferences::load(&app(&h).config_dir);
-            assert_eq!(stored.auto_arrange_spacing_mm, 5.0, "{label} {how}");
+            assert!(stored.tool_cards.is_empty(), "{label} {how}");
         }
     }
 }
@@ -2018,9 +2027,9 @@ fn move_copy_moves_or_copies_in_one_step() {
     h.run_plan();
     let c = object_centre(&s, a);
     {
-        let m = &mut values(&mut h).move_copy;
-        m.dx_mm = 12.5;
-        m.dy_mm = -4.0;
+        let m = values(&mut h);
+        m.set("object.move", "dx_mm", 12.5);
+        m.set("object.move", "dy_mm", -4.0);
     }
     let before = undo_len(&s);
     click_ok(&mut h);
@@ -2032,10 +2041,10 @@ fn move_copy_moves_or_copies_in_one_step() {
     h.get_by_label("Copy").click();
     h.run_plan();
     {
-        let m = &mut values(&mut h).move_copy;
-        m.dx_mm = 0.0;
-        m.dy_mm = 30.0;
-        m.count = 3;
+        let m = values(&mut h);
+        m.set("object.duplicate", "offset_mm[0]", 0.0);
+        m.set("object.duplicate", "offset_mm[1]", 30.0);
+        m.set("object.duplicate", "count", 3);
     }
     let c = object_centre(&s, a);
     let before = undo_len(&s);
@@ -2054,7 +2063,7 @@ fn pick_each(h: &mut AppHarness) {
     h.run_plan();
     h.get_by_label("Each about its own centre").click();
     h.run_plan();
-    assert!(values(h).rotate.each);
+    assert_eq!(values(h).str("object.rotate", "about"), Some("each"));
 }
 
 #[test]
@@ -2068,7 +2077,7 @@ fn rotate_panel_turns_in_one_step() {
     to_prepare(&mut h);
     let cb = object_centre(&s, b);
     open_panel(&mut h, "Rotate...");
-    values(&mut h).rotate.degrees = 180.0;
+    values(&mut h).set("object.rotate", "degrees", 180.0);
     let before = undo_len(&s);
     click_ok(&mut h);
     assert_eq!(undo_len(&s), before + 1);
@@ -2108,14 +2117,15 @@ fn circular_panel_previews_exactly_what_ok_makes() {
     let rev = revision(&s);
     open_panel(&mut h, "Circular pattern...");
     {
-        let c = &mut values(&mut h).circular;
-        c.count = 2;
-        c.own_centre = true;
-        c.center_mm = [120.0, 120.0];
+        let c = values(&mut h);
+        c.set("object.circular_copies", "count", 2);
+        c.set("pattern.circular", "own_centre", true);
+        c.set("object.circular_copies", "center_mm[0]", 120.0);
+        c.set("object.circular_copies", "center_mm[1]", 120.0);
     }
     h.run_plan();
     let one = ghost_points(&h);
-    values(&mut h).circular.count = 4;
+    values(&mut h).set("object.circular_copies", "count", 4);
     h.run_plan();
     let three = ghost_points(&h);
     assert!(!one.is_empty(), "the ghost is drawn");
@@ -2193,11 +2203,11 @@ fn rectangular_panel_previews_exactly_what_ok_makes() {
     h.get_by_role_and_label(Role::Button, "Copies").click();
     h.run_plan();
     {
-        let r = &mut values(&mut h).rect;
-        r.columns = 3;
-        r.rows = 2;
-        r.gap_x_mm = 2.5;
-        r.gap_y_mm = 7.0;
+        let r = values(&mut h);
+        r.set(COPIES, COLUMNS, 3);
+        r.set(ROWS.0, ROWS.1, 2);
+        r.set(COPIES, "gap_x_mm", 2.5);
+        r.set(COPIES, "gap_y_mm", 7.0);
     }
     h.run_plan();
     assert!(!ghost_points(&h).is_empty());
@@ -2368,13 +2378,13 @@ fn rectangular_pattern_makes_linked_copies() {
     h.get_by_role_and_label(Role::Button, "Copies").click();
     h.run_plan();
     {
-        let r = &mut values(&mut h).rect;
-        r.columns = 2;
-        r.rows = 2;
+        let r = values(&mut h);
+        r.set(COPIES, COLUMNS, 2);
+        r.set(ROWS.0, ROWS.1, 2);
     }
     h.get_by_label("Linked copies").click();
     h.run_plan();
-    assert!(values(&mut h).rect.linked);
+    assert_eq!(values(&mut h).bool(COPIES, "linked"), Some(true));
     let before = undo_len(&s);
     click_ok(&mut h);
     assert_eq!(undo_len(&s), before + 1);
@@ -2396,7 +2406,7 @@ fn rectangular_pattern_makes_linked_copies() {
     h.run_plan();
     h.get_by_role_and_label(Role::Button, "Copies").click();
     h.run_plan();
-    assert!(values(&mut h).rect.linked);
+    assert_eq!(values(&mut h).bool(COPIES, "linked"), Some(true));
 }
 
 #[test]
@@ -2883,7 +2893,7 @@ fn rotate_and_mirror_turn_a_multi_selection_as_a_group_or_each_object() {
     // Group by default: half a turn swaps the two centres.
     let rotate = |h: &mut AppHarness, degrees: f64| {
         open_panel(h, "Rotate...");
-        values(h).rotate.degrees = degrees;
+        values(h).set("object.rotate", "degrees", degrees);
         click_ok(h);
     };
     rotate(&mut h, 180.0);

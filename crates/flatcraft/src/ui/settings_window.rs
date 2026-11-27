@@ -27,10 +27,9 @@ use egui::{
     Align, Color32, Key, Layout, Modifiers, Rect, Response, RichText, Sense, Ui, Vec2, pos2, vec2,
 };
 use flatcraft_core::document::CutStrategy;
-use flatcraft_core::numexpr::{Field, Kind};
 use flatcraft_engine::prefs::{PanelUser, Preferences, Theme, default_ribbon_pins};
 
-use super::calc::{self, Number};
+use super::calc;
 use super::icons::{self, Icon};
 use super::profiles_window::{self, Leave, Request};
 use super::settings::set_name;
@@ -222,7 +221,7 @@ const fn other(
 
 /// Every setting the window shows: each preference (by field name), plus
 /// the rows of the other pages search can jump to.
-pub const ROWS: [Row; 27] = [
+pub const ROWS: [Row; 26] = [
     pref(
         "hidden_tips",
         Page::General,
@@ -358,14 +357,6 @@ pub const ROWS: [Row; 27] = [
         "Each object",
         Card::Setting(Setting::EachObject),
         "rotate mirror scale own centre center",
-    ),
-    pref(
-        "auto_arrange_spacing_mm",
-        Page::Cutting,
-        "Arrange",
-        "Auto arrange spacing",
-        Card::Setting(Setting::AutoArrangeSpacing),
-        "gap distance pack nest",
     ),
     pref(
         "allow_agent_cuts",
@@ -524,7 +515,6 @@ pub fn copy_field(field: &str, from: &Preferences, to: &mut Preferences) {
         "auto_reload" => to.auto_reload = from.auto_reload,
         "rotate_each" => to.rotate_each = from.rotate_each,
         "ribbon_pins" => to.ribbon_pins.clone_from(&from.ribbon_pins),
-        "auto_arrange_spacing_mm" => to.auto_arrange_spacing_mm = from.auto_arrange_spacing_mm,
         "panel_objects" => to.panel_objects = from.panel_objects,
         "panel_settings" => to.panel_settings = from.panel_settings,
         "panel_stage" => to.panel_stage = from.panel_stage,
@@ -1440,70 +1430,6 @@ fn segmented<T: Copy + PartialEq>(
     }
 }
 
-/// A number field between − and + buttons, named `name`.
-fn stepper(
-    ui: &mut Ui,
-    name: &str,
-    v: &mut f64,
-    step: f64,
-    range: std::ops::RangeInclusive<f64>,
-    unit: &str,
-) -> Response {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = metrics::SPACE_2;
-        let (lo, hi) = (*range.start(), *range.end());
-        let less = ui.add_enabled(
-            *v > lo,
-            egui::Button::new("\u{2212}").min_size(Vec2::splat(metrics::CONTROL)),
-        );
-        set_name(ui, &less, &format!("Less {name}"));
-        let low = format!("{lo}{unit} is the smallest value.");
-        super::groups::card(
-            &less,
-            &format!("Less {name}"),
-            &format!("Takes {step}{unit} off."),
-            (*v <= lo).then_some(low.as_str()),
-            false,
-        );
-        if less.clicked() {
-            *v = ((*v - step) / step).round() * step;
-            *v = v.clamp(lo, hi);
-        }
-        let kind = if unit.trim() == "mm" {
-            Kind::Length
-        } else {
-            Kind::Plain
-        };
-        // A stored value outside the range stays as it is: opening
-        // Settings never changes a preference. A typed one is refused.
-        let spec = Number::new(Field::new(kind).range(lo, hi))
-            .decimals(1, 1)
-            .unit(unit.trim_start())
-            .width(48.0);
-        let (r, _) = calc::number(ui, ("flatcraft-stepper", name), true, v, &spec);
-        set_name(ui, &r, name);
-        let more = ui.add_enabled(
-            *v < hi,
-            egui::Button::new("+").min_size(Vec2::splat(metrics::CONTROL)),
-        );
-        set_name(ui, &more, &format!("More {name}"));
-        let high = format!("{hi}{unit} is the largest value.");
-        super::groups::card(
-            &more,
-            &format!("More {name}"),
-            &format!("Adds {step}{unit}."),
-            (*v >= hi).then_some(high.as_str()),
-            false,
-        );
-        if more.clicked() {
-            *v = ((*v + step) / step).round() * step;
-            *v = v.clamp(lo, hi);
-        }
-        r
-    })
-    .inner
-}
-
 fn general(ui: &mut Ui, cx: &mut Cx<'_>, d: &mut Preferences, actions: &mut Vec<Action>) {
     section(ui, cx, "Tips", |ui, cx| {
         let t = *cx.t;
@@ -1798,71 +1724,6 @@ fn cutting(ui: &mut Ui, cx: &mut Cx<'_>, d: &mut Preferences, view: &profiles_wi
             ))
         });
     });
-    section(ui, cx, "Arrange", |ui, cx| {
-        let t = *cx.t;
-        row_ui(ui, cx, "auto_arrange_spacing_mm", |ui| {
-            let r = ui
-                .horizontal(|ui| {
-                    let r = stepper(
-                        ui,
-                        "Auto arrange spacing",
-                        &mut d.auto_arrange_spacing_mm,
-                        0.5,
-                        flatcraft_engine::prefs::AUTO_SPACING_RANGE_MM,
-                        " mm",
-                    );
-                    ui.add_space(metrics::SPACE_8);
-                    spacing_example(ui, d.auto_arrange_spacing_mm, &t);
-                    r
-                })
-                .inner;
-            Some(r)
-        });
-    });
-}
-
-/// Two small pieces with the gap Auto arrange leaves between them, drawn
-/// at twice their size in points.
-fn spacing_example(ui: &mut Ui, mm: f64, t: &Tokens) {
-    let gap = (mm as f32 * 2.0).clamp(0.0, 60.0);
-    // Two pieces, the gap mark and its label under them: 36 pt, so the
-    // label sits clear of the mark.
-    let side = metrics::ICON_COMPACT;
-    let (rect, _) = ui.allocate_exact_size(
-        vec2(
-            side + side + gap + metrics::SPACE_4,
-            metrics::ROW + metrics::SPACE_8,
-        ),
-        Sense::hover(),
-    );
-    let a = Rect::from_min_size(
-        rect.left_top() + Vec2::splat(metrics::SPACE_2),
-        egui::Vec2::splat(side),
-    );
-    let b = a.translate(vec2(side + gap, 0.0));
-    for r in [a, b] {
-        ui.painter().rect(
-            r,
-            0.0,
-            t.icon_paper,
-            egui::Stroke::new(1.0, t.icon_cut),
-            egui::StrokeKind::Inside,
-        );
-    }
-    let y = a.bottom() + metrics::SPACE_2;
-    ui.painter().hline(
-        a.right()..=b.left(),
-        y,
-        egui::Stroke::new(1.0, t.icon_accent),
-    );
-    paint(
-        ui,
-        pos2((a.right() + b.left()) / 2.0, y + metrics::SPACE_2),
-        egui::Align2::CENTER_TOP,
-        &format!("{mm:.1} mm"),
-        fonts::medium(metrics::TEXT_SMALL),
-        t.text_dim,
-    );
 }
 
 /// The Claude Code command that adds FlatCraft, with the binary path in
@@ -2083,10 +1944,16 @@ mod tests {
             // The recent projects list and its details are history, not
             // settings; the version of the default pins is bookkeeping
             // that goes with the pins; the open panel sections are where
-            // the person left the panels, changed by a click on them.
+            // the person left the panels, changed by a click on them; the
+            // tool card values are what the cards last ran with, kept by
+            // the cards themselves.
             if matches!(
                 key.as_str(),
-                "recent_projects" | "recent_details" | "pin_defaults_version" | "panel_sections"
+                "recent_projects"
+                    | "recent_details"
+                    | "pin_defaults_version"
+                    | "panel_sections"
+                    | "tool_cards"
             ) {
                 continue;
             }
@@ -2122,7 +1989,7 @@ mod tests {
             rotate_each: true,
             ribbon_pins: Vec::new(),
             pin_defaults_version: 0,
-            auto_arrange_spacing_mm: 9.0,
+            tool_cards: Default::default(),
             panel_objects: PanelUser::Open,
             panel_settings: PanelUser::Collapsed,
             panel_stage: PanelUser::Open,

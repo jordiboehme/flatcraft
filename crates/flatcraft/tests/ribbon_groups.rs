@@ -1,6 +1,6 @@
 //! The ribbon's groups (Task 37): group buttons with their lists, pins for
 //! every group, hover cards, dimmed actions with their reason, the Align
-//! option, and the Auto arrange panel.
+//! option, and the Auto arrange card.
 
 mod common;
 use common::RunPlan;
@@ -296,15 +296,19 @@ fn auto_arrange_spacing_round_trips_and_is_one_undo_step() {
     h.run_plan();
     let p = app(&h).ui.prepare.panel.clone().expect("the panel opens");
     assert_eq!(p.kind, flatcraft::ui::arrange::PanelKind::AutoArrange);
-    assert_eq!(p.values.spacing_mm, 5.0, "the stored spacing");
+    assert_eq!(
+        p.card.f64("arrange.auto", "spacing_mm"),
+        Some(5.0),
+        "the schema's default"
+    );
     app_mut(&mut h)
         .ui
         .prepare
         .panel
         .as_mut()
         .unwrap()
-        .values
-        .spacing_mm = 2.5;
+        .card
+        .set("arrange.auto", "spacing_mm", 2.5);
     h.run_plan();
     // The preview is where the objects land.
     let ctx = h.ctx.clone();
@@ -322,8 +326,8 @@ fn auto_arrange_spacing_round_trips_and_is_one_undo_step() {
     wait_for_workers(&mut h);
     assert_eq!(undo_len(&s), undo + 1, "one step");
     assert_eq!(
-        Preferences::load(&app(&h).config_dir).auto_arrange_spacing_mm,
-        2.5
+        Preferences::load(&app(&h).config_dir).tool_cards["arrange.auto spacing_mm"],
+        "2.5"
     );
     let state = s
         .lock()
@@ -911,6 +915,6 @@ fn the_panel_says_which_objects_do_not_fit() {
     let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
     let panel = app(&h).ui.prepare.panel.clone().unwrap();
     assert!(flatcraft::ui::arrange::ghosts(&snap, &panel).is_empty());
-    let plan = flatcraft::ui::arrange::auto_arrange_plan(&snap, panel.values.spacing_mm).unwrap();
+    let plan = flatcraft::ui::arrange::auto_arrange_plan(&snap, panel.spacing_mm(&snap)).unwrap();
     assert_eq!(plan.did_not_fit, vec![tall]);
 }

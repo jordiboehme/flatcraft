@@ -1405,7 +1405,6 @@ pub enum Setting {
     Smoothing,
     MinFeature,
     AutoMinFeature,
-    AutoArrangeSpacing,
     KnifeCompensation,
     MirrorX,
     MirrorY,
@@ -1466,7 +1465,7 @@ pub enum Setting {
 }
 
 impl Setting {
-    pub const ALL: [Setting; 89] = [
+    pub const ALL: [Setting; 88] = [
         Setting::PositionX,
         Setting::PositionY,
         Setting::Width,
@@ -1498,7 +1497,6 @@ impl Setting {
         Setting::Smoothing,
         Setting::MinFeature,
         Setting::AutoMinFeature,
-        Setting::AutoArrangeSpacing,
         Setting::KnifeCompensation,
         Setting::MirrorX,
         Setting::MirrorY,
@@ -1565,9 +1563,10 @@ impl Setting {
         use flatcraft_core::numexpr::Kind;
         Some(match self {
             PositionX | PositionY | Width | Height | BladeOffset | Overcut | MinFeature
-            | AutoArrangeSpacing | FlattenTolerance | HostOffset | MatWidth | MatHeight
-            | GridOriginX | GridOriginY | GridWidth | GridHeight | WeedMargin | WeedSpacing
-            | CornerOvershoot | MinRadius => Kind::Length,
+            | FlattenTolerance | HostOffset | MatWidth | MatHeight | GridOriginX | GridOriginY
+            | GridWidth | GridHeight | WeedMargin | WeedSpacing | CornerOvershoot | MinRadius => {
+                Kind::Length
+            }
             Angle | CornerThreshold | PivotThreshold => Kind::Angle,
             ScalePercent => Kind::Percent,
             Speed | Force | Passes | Threshold | Despeckle | Smoothing | UnitsPerMm | ScaleX
@@ -1660,9 +1659,6 @@ impl Setting {
             }
             Setting::AutoMinFeature => {
                 "Use 6 times the blade offset of the plotter as the smallest shape."
-            }
-            Setting::AutoArrangeSpacing => {
-                "The gap left between objects, in millimetres. A pinned Auto arrange uses it too."
             }
             Setting::KnifeCompensation => {
                 "Who steers the blade around corners. Firmware lets the plotter do it, Host lets FlatCraft do it, None cuts the plain lines."
@@ -1927,7 +1923,7 @@ pub const FIELD_CARDS: &[(&str, &str, &str)] = &[
     ),
     (
         "pattern.circular",
-        "centre",
+        "own_centre",
         "What the circle turns about: the centre of the selection, or a point you type in Centre X and Centre Y.",
     ),
     (

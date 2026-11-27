@@ -12,7 +12,7 @@ use egui::accesskit::Role;
 use egui::{Event, Modifiers};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use flatcraft::ui::arrange::{self, KINDS, PanelKind};
-use flatcraft::ui::inspector::tool_card::{self, FieldKind, Source};
+use flatcraft::ui::inspector::tool_card::{self, FieldKind};
 use flatcraft::ui::{prepare, tools};
 use flatcraft_engine::commands::meta;
 use flatcraft_engine::prefs::Preferences;
@@ -107,63 +107,100 @@ fn window(dir: &tempfile::TempDir, s: SharedSession, w: f32) -> AppHarness {
     h
 }
 
+/// The card text of the row labelled `label` of the open card.
+fn card_of(kind: PanelKind, label: &str) -> &'static str {
+    for c in kind.commands() {
+        for m in meta::fields_of(c) {
+            if m.label == label {
+                return tools::field_card(c, m.path).unwrap();
+            }
+        }
+    }
+    let own = [
+        (arrange::COPY.label, (arrange::COPY.owner, arrange::COPY.id)),
+        (
+            arrange::ROWS.label,
+            (arrange::ROWS.owner, arrange::ROWS.key),
+        ),
+        (
+            arrange::CENTRE.label,
+            (arrange::CENTRE.owner, arrange::CENTRE.key),
+        ),
+    ];
+    let (_, (o, k)) = own.iter().find(|(l, _)| *l == label).unwrap();
+    tools::field_card(o, k).unwrap()
+}
+
 #[test]
 fn every_tool_param_has_label_unit_range_and_card() {
-    let prefs = toml::to_string(&Preferences::default()).unwrap();
+    let mut used: Vec<(&str, &str)> = Vec::new();
     for kind in KINDS {
         for text in [kind.description(), kind.title_card(), kind.title()] {
             assert!(!text.is_empty() && !text.contains(EM_DASH), "{kind:?}");
         }
-        assert!(!kind.fields().is_empty(), "{kind:?}");
-        for f in kind.fields() {
-            let s = tool_card::spec(f).unwrap_or_else(|| panic!("{kind:?}: unknown field"));
-            let what = format!("{kind:?} {} {}", s.owner, s.key);
-            assert!(!s.label.is_empty() && !s.label.contains(EM_DASH), "{what}");
-            let card = s.card.unwrap_or_else(|| panic!("{what}: no card text"));
-            assert!(card.len() > 20, "{what}: a card in plain words");
-            assert!(!tool_card::card_text(&s).contains(EM_DASH), "{what}");
-            match &s.kind {
-                FieldKind::Number { min, max } | FieldKind::Integer { min, max } => {
-                    assert!(min.is_some() || max.is_some(), "{what}: no range");
-                    assert_ne!(s.unit, meta::Unit::None, "{what}: no unit");
+        for c in kind.commands() {
+            assert!(meta::fields_of(c).next().is_some(), "{kind:?} {c}");
+            for m in meta::fields_of(c) {
+                used.push((m.command, m.path));
+                let what = format!("{kind:?} {c} {}", m.path);
+                let s = tool_card::spec(c, m.path).unwrap_or_else(|| panic!("{what}"));
+                assert!(!s.label.is_empty() && !s.label.contains(EM_DASH), "{what}");
+                let card = s.card.unwrap_or_else(|| panic!("{what}: no card text"));
+                assert!(card.len() > 20, "{what}: a card in plain words");
+                assert!(!tool_card::card_text(&s).contains(EM_DASH), "{what}");
+                match &s.kind {
+                    FieldKind::Number { min, max } | FieldKind::Integer { min, max } => {
+                        assert!(min.is_some() && max.is_some(), "{what}: no range");
+                        assert_ne!(s.unit, meta::Unit::None, "{what}: no unit");
+                    }
+                    FieldKind::Choice(choices) => {
+                        assert!(choices.len() >= 2, "{what}");
+                        assert!(
+                            choices
+                                .iter()
+                                .all(|(_, l)| !l.is_empty() && !l.contains(EM_DASH))
+                        );
+                    }
+                    FieldKind::Switch => {}
                 }
-                FieldKind::Choice(labels) => {
-                    assert_eq!(labels.len(), 2, "{what}");
-                    assert!(labels.iter().all(|l| !l.is_empty() && !l.contains(EM_DASH)));
-                }
-                FieldKind::Switch => {}
-            }
-            if let Source::Param { command, path } = f.source {
-                assert!(meta::param_info(command, path).is_some(), "{what}");
-            }
-            if let Some(name) = f.special {
-                assert!(tool_card::special(name).is_some(), "{what}: no {name}");
-            }
-            if let Some(key) = f.pref {
-                assert!(
-                    prefs.lines().any(|l| l.starts_with(&format!("{key} ="))),
-                    "{what}: {key} is no Preferences key"
-                );
             }
         }
     }
-    // One card text per engine parameter and per window-only field, and
-    // no text without its field.
+    // Every row of the table is shown by a card.
     for m in meta::PARAMS {
-        assert!(tools::field_card(m.command, m.path).is_some(), "{m:?}");
+        assert!(
+            used.contains(&(m.command, m.path)),
+            "{} {}: no card shows it",
+            m.command,
+            m.path
+        );
     }
-    let window: Vec<(&str, &str)> = KINDS
-        .iter()
-        .flat_map(|k| k.fields())
-        .filter_map(|f| match f.source {
-            Source::Window(w) => Some((w.owner, w.id)),
-            Source::Param { .. } => None,
-        })
-        .collect();
+    // The specials draw parameters of their command, and their own rows
+    // have card texts.
+    for sp in tool_card::SPECIALS {
+        for p in sp.paths {
+            assert!(meta::meta(sp.command, p).is_some(), "{} {p}", sp.name);
+        }
+        assert!(tool_card::special(sp.name).is_some());
+        assert!(!sp.labels.is_empty());
+    }
+    for (label, kind) in [
+        (arrange::COPY.label, PanelKind::MoveCopy),
+        (arrange::ROWS.label, PanelKind::RectangularPattern),
+        (arrange::CENTRE.label, PanelKind::CircularPattern),
+    ] {
+        assert!(card_of(kind, label).len() > 20, "{label}");
+    }
+    // No card text without its field.
+    let own = [
+        (arrange::COPY.owner, arrange::COPY.id),
+        (arrange::ROWS.owner, arrange::ROWS.key),
+        (arrange::CENTRE.owner, arrange::CENTRE.key),
+    ];
     for (owner, key, text) in tools::FIELD_CARDS {
         assert!(!text.contains(EM_DASH), "{owner} {key}");
         assert!(
-            meta::meta(owner, key).is_some() || window.contains(&(*owner, *key)),
+            meta::meta(owner, key).is_some() || own.contains(&(*owner, *key)),
             "{owner} {key}: a card without its field"
         );
     }
@@ -174,6 +211,46 @@ fn every_tool_param_has_label_unit_range_and_card() {
     ] {
         assert!(!t.contains(EM_DASH));
     }
+}
+
+/// A command listed in the meta table gets a working card from the
+/// table alone: its start values, and params that the command takes.
+#[test]
+fn a_command_in_the_table_gets_a_working_card_from_it_alone() {
+    let mut commands: Vec<&'static str> = meta::PARAMS.iter().map(|m| m.command).collect();
+    commands.dedup();
+    for c in commands {
+        let dir = tempfile::tempdir().unwrap();
+        let s = session(&dir);
+        let [a, _, _] = three(&s);
+        select(&s, &[a]);
+        let list: &'static [&'static str] = Box::leak(vec![c].into_boxed_slice());
+        let card = tool_card::CardState::new(list, None, &Default::default());
+        let params = card.params(&[a], Some(a));
+        for m in meta::fields_of(c) {
+            if m.path.starts_with("center_mm") {
+                continue;
+            }
+            assert!(
+                card.get(c, m.path).is_some(),
+                "{c} {}: no start value",
+                m.path
+            );
+        }
+        let undo = undo_len(&s);
+        let out = s.lock().unwrap().execute(c, params.clone(), Origin::User);
+        assert!(out.is_ok(), "{c} {params}: {out:?}");
+        assert_eq!(undo_len(&s), undo + 1, "{c}");
+    }
+    // The paths nest: a field of an enum variant and items of an array.
+    let mut v = json!({});
+    tool_card::set_path(&mut v, "layout.grid.columns", json!(4));
+    tool_card::set_path(&mut v, "center_mm[1]", json!(7.0));
+    tool_card::set_path(&mut v, "center_mm[0]", json!(3.0));
+    assert_eq!(
+        v,
+        json!({ "layout": { "grid": { "columns": 4 } }, "center_mm": [3.0, 7.0] })
+    );
 }
 
 #[test]
@@ -191,16 +268,15 @@ fn every_card_field_shows_with_its_card_and_dimmed_reason() {
         select(&s, &ids);
         h.run_plan();
         open(&mut h, kind);
-        for f in kind.fields() {
-            let spec = tool_card::spec(f).unwrap();
-            let node = h.get_by_label(spec.label);
-            node.hover();
+        let labels = app(&h).ui.prepare.panel.as_ref().unwrap().card.labels();
+        assert!(!labels.is_empty());
+        for label in labels {
+            h.get_by_label(label).hover();
             h.run_plan();
-            let card = spec.card.unwrap();
+            let card = card_of(kind, label);
             assert!(
                 h.query_by_label_contains(&card[..20]).is_some(),
-                "{kind:?} {}: its card shows",
-                spec.label
+                "{kind:?} {label}: its card shows"
             );
         }
         h.get_by_role_and_label(Role::Button, &cancel_name())
@@ -209,25 +285,107 @@ fn every_card_field_shows_with_its_card_and_dimmed_reason() {
         assert!(app(&h).ui.prepare.panel.is_none());
     }
     // A field that does not apply is dimmed and says why.
-    select(&s, &[a, b]);
+    select(&s, &[a]);
     h.run_plan();
-    open(&mut h, PanelKind::MoveCopy);
+    open(&mut h, PanelKind::CircularPattern);
+    assert!(h.get_by_label("Centre X").accesskit_node().is_disabled());
+    h.get_by_label("Centre X").hover();
+    h.run_plan();
     assert!(
-        h.get_by_label("Number of copies")
-            .accesskit_node()
-            .is_disabled(),
-        "copies wait for Copy"
+        h.query_by_label_contains("Choose Centre at X and Y first")
+            .is_some()
     );
-    h.get_by_label("Number of copies").hover();
-    h.run_plan();
-    assert!(h.query_by_label_contains("Turn on Copy first").is_some());
+    open(&mut h, PanelKind::Rotate);
+    assert!(h.get_by_label("Turn about").accesskit_node().is_disabled());
+}
+
+/// With Copy on, Move / Copy shows object.duplicate's own fields, with
+/// their labels, cards and start values; off, object.move's.
+#[test]
+fn copy_shows_the_duplicate_commands_own_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let [a, _, _] = three(&s);
+    select(&s, &[a]);
+    let mut h = window(&dir, s.clone(), 1400.0);
+    open(&mut h, PanelKind::MoveCopy);
+    assert!(h.query_by_label("Number of copies").is_none());
+    assert_eq!(field_text(&h, "X offset"), "10.00");
+    assert_eq!(field_text(&h, "Y offset"), "0.00");
     h.get_by_label("Copy").click();
     h.run_plan();
+    let card = &app(&h).ui.prepare.panel.as_ref().unwrap().card;
+    assert_eq!(card.command(), "object.duplicate");
+    // The duplicate's schema default: [10, 10].
+    assert_eq!(field_text(&h, "X offset"), "10.00");
+    assert_eq!(field_text(&h, "Y offset"), "10.00");
+    assert_eq!(field_text(&h, "Number of copies"), "1");
+    h.get_by_label("Y offset").hover();
+    h.run_plan();
+    let text = tools::field_card("object.duplicate", "offset_mm[1]").unwrap();
+    assert!(h.query_by_label_contains(&text[..20]).is_some());
+    let undo = undo_len(&s);
+    h.get_by_role_and_label(Role::Button, "OK").click();
+    h.run_plan();
+    wait_for_workers(&mut h);
+    assert_eq!(undo_len(&s), undo + 1);
+    assert_eq!(s.lock().unwrap().doc().document.objects.len(), 4);
+}
+
+/// Columns and Rows at their largest: far more than 500 copies. OK is
+/// dimmed and says why; nothing overflows.
+#[test]
+fn huge_columns_and_rows_are_refused_with_a_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let [a, _, _] = three(&s);
+    select(&s, &[a]);
+    let mut h = window(&dir, s.clone(), 1400.0);
+    open(&mut h, PanelKind::RectangularPattern);
+    type_into(&mut h, "Columns", "501");
+    type_into(&mut h, "Rows", "501");
+    let card = &app(&h).ui.prepare.panel.as_ref().unwrap().card;
+    assert_eq!(card.u64("object.copies", "layout.grid.columns"), Some(501));
+    assert_eq!(card.u64("pattern.rectangular", "rows"), Some(501));
     assert!(
-        !h.get_by_label("Number of copies")
+        h.get_by_role_and_label(Role::Button, "OK")
             .accesskit_node()
             .is_disabled()
     );
+    assert!(h.query_by_label_contains("more than 500 copies").is_some());
+    // A value past the range is refused by the field itself.
+    type_into(&mut h, "Rows", "99999999999");
+    let card = &app(&h).ui.prepare.panel.as_ref().unwrap().card;
+    assert_eq!(card.u64("pattern.rectangular", "rows"), Some(501));
+    let sn = snap(&mut h);
+    let p = app(&h).ui.prepare.panel.clone().unwrap();
+    assert!(arrange::ok_action(&sn, &p).is_none());
+    assert!(arrange::ghosts(&sn, &p).is_empty());
+}
+
+/// The keep picker and a card can be open at once: Escape closes the
+/// picker first, then the card.
+#[test]
+fn escape_closes_the_keep_picker_before_the_card() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let [a, _, _] = three(&s);
+    select(&s, &[a]);
+    let mut h = window(&dir, s.clone(), 1400.0);
+    open(&mut h, PanelKind::Rotate);
+    let sn = snap(&mut h);
+    app_mut(&mut h).ui.prepare.keep_pick = flatcraft::ui::keep_pick::KeepPick::start(&sn, &[a]);
+    h.run_plan();
+    assert!(app(&h).ui.prepare.keep_pick.is_some());
+    assert!(app(&h).ui.prepare.panel.is_some());
+    h.key_press(egui::Key::Escape);
+    h.run_plan();
+    assert!(app(&h).ui.prepare.keep_pick.is_none(), "the picker first");
+    assert!(app(&h).ui.prepare.panel.is_some(), "the card stays");
+    h.key_press(egui::Key::Escape);
+    h.run_plan();
+    assert!(app(&h).ui.prepare.panel.is_none(), "then the card");
+    assert_eq!(selection_ids(&s), vec![a]);
 }
 
 /// Auto arrange from its card moves the objects exactly as `arrange.auto`
@@ -252,8 +410,15 @@ fn auto_arrange_card_matches_old_panel_result() {
     open(&mut h, PanelKind::AutoArrange);
     type_into(&mut h, "Spacing", "7.5");
     assert_eq!(
-        app(&h).ui.prepare.panel.as_ref().unwrap().values.spacing_mm,
-        7.5
+        app(&h)
+            .ui
+            .prepare
+            .panel
+            .as_ref()
+            .unwrap()
+            .card
+            .f64("arrange.auto", "spacing_mm"),
+        Some(7.5)
     );
     // The preview shows where they land: the moves of the direct run.
     let sn = snap(&mut h);
@@ -272,8 +437,8 @@ fn auto_arrange_card_matches_old_panel_result() {
     }
     // OK stored the spacing for the next Auto arrange.
     assert_eq!(
-        Preferences::load(&app(&h).config_dir).auto_arrange_spacing_mm,
-        7.5
+        Preferences::load(&app(&h).config_dir).tool_cards["arrange.auto spacing_mm"],
+        "7.5"
     );
 }
 
@@ -296,10 +461,8 @@ fn card_cancel_changes_nothing() {
         for how in [cancel_name(), tool_card::CLOSE.to_string()] {
             open(&mut h, kind);
             // Change the first number field, as a person would.
-            let first = kind
-                .fields()
-                .iter()
-                .filter_map(tool_card::spec)
+            let first = meta::fields_of(kind.commands()[0])
+                .filter_map(|m| tool_card::spec(m.command, m.path))
                 .find(|s| matches!(s.kind, FieldKind::Number { .. } | FieldKind::Integer { .. }))
                 .unwrap();
             type_into(&mut h, first.label, "3");
@@ -312,8 +475,8 @@ fn card_cancel_changes_nothing() {
             assert_eq!(undo_len(&s), undo, "{kind:?} {how}");
             let now = Preferences::load(&app(&h).config_dir);
             assert_eq!(
-                (now.rotate_each, now.auto_arrange_spacing_mm),
-                (stored.rotate_each, stored.auto_arrange_spacing_mm),
+                (now.rotate_each, &now.tool_cards),
+                (stored.rotate_each, &stored.tool_cards),
                 "{kind:?} {how}"
             );
         }
@@ -510,6 +673,14 @@ fn auto_arrange_is_one_split_button() {
         assert!((c.left() - m.right()).abs() < 0.5, "{pins:?}: {m:?} {c:?}");
         assert!((c.top() - m.top()).abs() < 0.5 && (c.height() - m.height()).abs() < 0.5);
         assert!(c.width() < m.width() / 2.0, "{pins:?}: a narrow chevron");
+        // A hairline divides the two parts.
+        let border = app(&h).tokens.border;
+        let divided = painted(&h).iter().any(|sh| {
+            matches!(sh, egui::Shape::LineSegment { points, stroke }
+                if stroke.color == border && (points[0].x - c.left()).abs() < 1.0
+                    && points[0].y > c.top() && points[1].y < c.bottom())
+        });
+        assert!(divided, "{pins:?}: no divider");
         // The chevron opens the card and changes nothing.
         let before = (document(&s), undo_len(&s));
         click_at(&mut h, c.center());

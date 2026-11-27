@@ -21,7 +21,7 @@ use flatcraft_engine::commands::{placed_bounds, sources};
 use flatcraft_engine::job::JobInput;
 use serde_json::json;
 
-use super::arrange::{self, ArrangePanel, PanelValues};
+use super::arrange::{self, ArrangePanel};
 use super::canvas::{self, CanvasView};
 use super::rails::{self, Side, SidePanel};
 use super::theme::Tokens;
@@ -337,8 +337,9 @@ pub struct PrepareState {
     pub cache: ShapeCache,
     /// The tool card open on top of the inspector, if one is.
     pub panel: Option<ArrangePanel>,
-    /// The values of the last card that ran, for the next one.
-    pub panel_last: PanelValues,
+    /// The values the cards last ran with (`Preferences::tool_cards`),
+    /// for the next card.
+    pub panel_last: super::inspector::tool_card::Values,
     /// The Auto arrange card's last plan (see `arrange::AutoPlanCache`).
     pub auto_plan: super::arrange::AutoPlanCache,
     /// Open this group's list on the next frame (search asked for it).
@@ -466,7 +467,7 @@ impl Default for PrepareState {
             source_memory: HashMap::new(),
             cache: ShapeCache::default(),
             panel: None,
-            panel_last: PanelValues::default(),
+            panel_last: Default::default(),
             auto_plan: arrange::AutoPlanCache::default(),
             open_group: None,
             panel_rect: None,
@@ -1328,7 +1329,9 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
             profile_problem,
             auto_reload: s.prefs.auto_reload,
             ribbon_pins: s.prefs.ribbon_pins.clone(),
-            auto_spacing_mm: s.prefs.auto_arrange_spacing_mm,
+            auto_spacing_mm: arrange::remembered_spacing(&arrange::memory_from_prefs(
+                &s.prefs.tool_cards,
+            )),
             trace_source_changed,
             job_input: want_job.then(|| match (&plotter, &material) {
                 // The document's cached cut geometry seeds the build,

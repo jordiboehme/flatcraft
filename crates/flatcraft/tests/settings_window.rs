@@ -4,10 +4,7 @@
 mod common;
 use common::RunPlan;
 
-use common::{
-    AppHarness, app, app_mut, click_at, double_click_at, harness_sized, harness_steps, session,
-    to_prepare,
-};
+use common::{AppHarness, app, app_mut, harness_sized, harness_steps, session, to_prepare};
 use egui::accesskit::{Role, Toggled};
 use egui::{Modifiers, Rect};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
@@ -51,7 +48,7 @@ fn is_open(h: &AppHarness) -> bool {
 /// The controls of every row of the window (every setting the old
 /// Settings and Profiles window had, and the new ones), by row id. The
 /// test fails when a row has no entry here, so a new setting needs one.
-const REACHABLE: [(&str, &[&str]); 27] = [
+const REACHABLE: [(&str, &[&str]); 26] = [
     ("hidden_tips", &["Show hidden tips again"]),
     ("output_dir", &["Choose folder...", "Use the default"]),
     ("auto_reload", &["Reload changed files automatically"]),
@@ -82,14 +79,6 @@ const REACHABLE: [(&str, &[&str]); 27] = [
     (
         "rotate_each",
         &["Turn and scale each object about its own centre"],
-    ),
-    (
-        "auto_arrange_spacing_mm",
-        &[
-            "Auto arrange spacing",
-            "Less Auto arrange spacing",
-            "More Auto arrange spacing",
-        ],
     ),
     ("allow_agent_cuts", &["Allow agents to start cuts"]),
     (
@@ -362,7 +351,6 @@ fn applied_panels_and_each_object_take_effect_at_once() {
     h.get_by_role_and_label(Role::Tab, "Cutting").click();
     h.run_plan();
     click(&mut h, "Turn and scale each object about its own centre");
-    click(&mut h, "More Auto arrange spacing");
     click(&mut h, "OK");
     let a = app(&h);
     assert_eq!(
@@ -373,7 +361,6 @@ fn applied_panels_and_each_object_take_effect_at_once() {
     let p = stored(&dir);
     assert_eq!(p.panel_objects, PanelUser::Collapsed);
     assert!(p.rotate_each);
-    assert_eq!(p.auto_arrange_spacing_mm, 5.5);
     // The ribbon pins reset to the defaults of a new install.
     s.lock()
         .unwrap()
@@ -464,33 +451,6 @@ fn the_window_fits_at_900_by_600() {
                 );
             }
         }
-    }
-}
-
-#[test]
-fn opening_settings_never_changes_a_stored_value() {
-    let dir = tempfile::tempdir().unwrap();
-    let s = session(&dir);
-    // Above what the stepper offers, as an older build or a hand edit
-    // may have stored it.
-    s.lock()
-        .unwrap()
-        .update_prefs(|p| p.auto_arrange_spacing_mm = 180.0)
-        .unwrap();
-    let mut h = harness(&dir, &s);
-    for value in [80.0, 180.0] {
-        s.lock()
-            .unwrap()
-            .update_prefs(|p| p.auto_arrange_spacing_mm = value)
-            .unwrap();
-        open(&mut h, "Cutting");
-        h.get_by_label("Auto arrange spacing");
-        let st = &app(&h).ui.settings;
-        assert_eq!(st.draft.as_ref().unwrap().auto_arrange_spacing_mm, value);
-        assert!(!st.dirty(), "{value}");
-        assert!(disabled(&h, "Apply"), "{value}");
-        click(&mut h, "OK");
-        assert_eq!(stored(&dir).auto_arrange_spacing_mm, value);
     }
 }
 
@@ -626,117 +586,6 @@ fn the_keyboard_page_lists_the_drag_modifiers() {
     h.get_by_label("While dragging a corner handle: rotate instead of resize");
     h.get_by_label("Drag just outside a corner of the selection: rotate it");
     h.get_by_label("While rotating: turn in 15 degree steps");
-}
-
-/// A number field of the window: a calculation counts, a double-click
-/// selects the whole value, and a text it cannot read says why.
-#[test]
-fn a_number_field_takes_a_calculation_and_a_double_click_selects_it_all() {
-    let dir = tempfile::tempdir().unwrap();
-    let s = session(&dir);
-    let mut h = harness(&dir, &s);
-    open(&mut h, "Cutting");
-    let r = h.get_by_label("Auto arrange spacing").rect();
-    // On the "5" of "5.0", which a word selection would take alone.
-    let at = egui::pos2(r.left() + 6.0, r.center().y);
-    h.hover_at(at);
-    h.run_plan();
-    // The first click turns the drag value into a text field (egui
-    // selects it all); the second places the cursor.
-    click_at(&mut h, at);
-    h.ctx
-        .options_mut(|o| o.input_options.max_double_click_delay = 2.0);
-    for _ in 0..8 {
-        h.step();
-    }
-    click_at(&mut h, at);
-    for _ in 0..8 {
-        h.step();
-    }
-    double_click_at(&mut h, at);
-    h.run_plan();
-    // With only "5" selected this would read "7,.0", which has a dot and
-    // a comma; the whole value replaced reads "7,", that is 7.
-    h.event(egui::Event::Text("7,".into()));
-    h.run_plan();
-    h.key_press(egui::Key::Enter);
-    h.run_plan();
-    click(&mut h, "OK");
-    assert_eq!(stored(&dir).auto_arrange_spacing_mm, 7.0);
-}
-
-#[test]
-fn a_number_field_refuses_a_value_outside_its_range_and_says_why() {
-    let dir = tempfile::tempdir().unwrap();
-    let s = session(&dir);
-    let mut h = harness(&dir, &s);
-    open(&mut h, "Cutting");
-    h.get_by_label("Auto arrange spacing").click();
-    h.run_plan();
-    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
-    h.run_plan();
-    h.event(egui::Event::Text("5in".into()));
-    h.run_plan();
-    h.key_press(egui::Key::Enter);
-    h.run_plan();
-    let (_, hi) = flatcraft_engine::prefs::AUTO_SPACING_RANGE_MM.into_inner();
-    h.get_by_label(&format!(
-        "127 is too large: give at most {hi} mm. Press Esc to go back."
-    ));
-    click(&mut h, "OK");
-    assert_eq!(stored(&dir).auto_arrange_spacing_mm, 5.0);
-}
-
-#[test]
-fn ok_counts_a_typed_value_and_restores_one_it_cannot_read() {
-    let dir = tempfile::tempdir().unwrap();
-    let s = session(&dir);
-    let mut h = harness(&dir, &s);
-    let type_without_leaving = |h: &mut AppHarness, text: &str| {
-        h.get_by_label("Auto arrange spacing").click();
-        h.run_plan();
-        h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
-        h.run_plan();
-        h.event(egui::Event::Text(text.into()));
-        h.run_plan();
-    };
-    // Typed, still in the field: OK counts it first.
-    open(&mut h, "Cutting");
-    type_without_leaving(&mut h, "2*3");
-    click(&mut h, "OK");
-    for _ in 0..3 {
-        h.run_plan();
-    }
-    assert!(!is_open(&h));
-    assert_eq!(stored(&dir).auto_arrange_spacing_mm, 6.0);
-    // A text it cannot read: the old value stays, a toast says why.
-    open(&mut h, "Cutting");
-    type_without_leaving(&mut h, "2*");
-    click(&mut h, "OK");
-    for _ in 0..3 {
-        h.run_plan();
-    }
-    assert!(!is_open(&h));
-    assert_eq!(stored(&dir).auto_arrange_spacing_mm, 6.0);
-    let toast = app(&h).ui.toasts.last().cloned().unwrap();
-    assert_eq!(
-        toast.text,
-        "Can't read '2*': something is missing after *. Nothing changed."
-    );
-}
-
-#[test]
-fn the_stepper_field_follows_the_click_rules_and_esc_keeps_the_window() {
-    let dir = tempfile::tempdir().unwrap();
-    let s = session(&dir);
-    let mut h = harness(&dir, &s);
-    open(&mut h, "Cutting");
-    common::check_click_rules(&mut h, "Auto arrange spacing");
-    assert!(is_open(&h), "Esc in the field only puts the value back");
-    // Esc with no field being typed into closes the window as before.
-    h.key_press(egui::Key::Escape);
-    h.run_plan();
-    assert!(!is_open(&h));
 }
 
 #[test]

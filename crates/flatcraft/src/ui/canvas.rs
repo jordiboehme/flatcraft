@@ -1055,7 +1055,7 @@ pub fn show(
                 &view,
                 contrast,
                 &plan.fixed,
-                p.values.spacing_mm,
+                p.spacing_mm(snap),
             );
             did_not_fit.clone_from(&plan.did_not_fit);
         }
@@ -1238,7 +1238,7 @@ fn unit_arrange_box(snap: &Snapshot, id: u64) -> Option<kurbo::Rect> {
         .reduce(|a, b| a.union(b))
 }
 
-/// Marks the objects an open Auto arrange panel packs around (see
+/// Marks the objects an open Auto arrange card packs around (see
 /// [`super::arrange::fixed`]): their box, and faintly the band of
 /// `spacing_mm` around it that the packed objects keep clear of.
 pub(crate) fn draw_fixed(
@@ -1265,7 +1265,7 @@ pub(crate) fn draw_fixed(
     }
 }
 
-/// Marks the chosen objects an open Auto arrange panel cannot place (see
+/// Marks the chosen objects an open Auto arrange card cannot place (see
 /// [`super::arrange::did_not_fit_note`]): a faint red fill and a red
 /// outline of their box.
 pub(crate) fn draw_did_not_fit(
@@ -1284,7 +1284,7 @@ pub(crate) fn draw_did_not_fit(
     }
 }
 
-/// Draws the would-be objects of an open Arrange panel faintly: each
+/// Draws the would-be objects of an open tool card faintly: each
 /// ghost is an object's shape placed by its affine (see
 /// [`super::arrange::ghosts`]). Nothing in the document changes.
 pub(crate) fn draw_ghosts(

@@ -1,4 +1,4 @@
-//! The arrange panels' commands: object.circular_copies, object.duplicate
+//! The tool cards' commands: object.circular_copies, object.duplicate
 //! with a count and object.copies with its own gaps per axis.
 
 use std::path::Path;

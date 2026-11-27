@@ -3,8 +3,8 @@
 //! migration of the Arrange pins of earlier versions.
 
 use flatcraft_engine::prefs::{
-    DEFAULT_AUTO_SPACING_MM, PIN_DEFAULTS_VERSION, Preferences, RIBBON_PIN_IDS, clean_ribbon_pins,
-    default_ribbon_pins, migrate_arrange_pins,
+    PIN_DEFAULTS_VERSION, Preferences, RIBBON_PIN_IDS, clean_ribbon_pins, default_ribbon_pins,
+    migrate_arrange_pins,
 };
 
 fn strings(ids: &[&str]) -> Vec<String> {
@@ -105,7 +105,7 @@ fn a_new_install_pins_what_the_ribbon_showed() {
             .iter()
             .all(|d| RIBBON_PIN_IDS.contains(&d.as_str()))
     );
-    assert_eq!(p.auto_arrange_spacing_mm, DEFAULT_AUTO_SPACING_MM);
+    assert!(p.tool_cards.is_empty());
 }
 
 #[test]
@@ -239,23 +239,19 @@ fn unknown_ids_and_repeats_are_dropped() {
 }
 
 #[test]
-fn the_auto_arrange_spacing_round_trips() {
+fn the_tool_card_values_round_trip() {
     let dir = tempfile::tempdir().unwrap();
     let current = Preferences {
         output_dir: Some(dir.path().join("output")),
         ..Preferences::default()
     };
     let (_, written) = Preferences::update(dir.path(), &current, |p| {
-        p.auto_arrange_spacing_mm = 2.5;
+        p.tool_cards
+            .insert("arrange.auto spacing_mm".into(), "2.5".into());
     });
     written.unwrap();
-    assert_eq!(Preferences::load(dir.path()).auto_arrange_spacing_mm, 2.5);
-    // A value no one can use falls back to the default.
-    write(&dir, "auto_arrange_spacing_mm = -3.0\n");
-    assert_eq!(
-        Preferences::load(dir.path()).auto_arrange_spacing_mm,
-        DEFAULT_AUTO_SPACING_MM
-    );
+    let p = Preferences::load(dir.path());
+    assert_eq!(p.tool_cards["arrange.auto spacing_mm"], "2.5");
 }
 
 #[test]

@@ -45,26 +45,83 @@ fn ranges_match_what_the_commands_accept() {
         let i = meta::param_info(c, p).unwrap();
         (i.min, i.max)
     };
-    assert_eq!(range("object.copies", "count"), (Some(1.0), Some(500.0)));
-    assert_eq!(range("object.duplicate", "count"), (Some(1.0), Some(500.0)));
-    assert_eq!(
-        range("object.circular_copies", "count"),
-        (Some(2.0), Some(501.0))
-    );
+    let both = |lo: f64, hi: f64| (Some(lo), Some(hi));
+    assert_eq!(range("object.copies", "count"), both(1.0, 500.0));
+    assert_eq!(range("object.duplicate", "count"), both(1.0, 500.0));
+    assert_eq!(range("object.circular_copies", "count"), both(2.0, 501.0));
     assert_eq!(
         range("object.circular_copies", "total_deg"),
-        (Some(-360.0), Some(360.0))
+        both(-360.0, 360.0)
     );
-    assert_eq!(range("object.rotate", "degrees"), (Some(-1e9), Some(1e9)));
+    assert_eq!(range("object.rotate", "degrees"), both(-360.0, 360.0));
     assert_eq!(
         range("object.copies", "layout.grid.columns"),
-        (Some(1.0), None)
+        both(1.0, 501.0)
     );
-    assert_eq!(range("object.copies", "gap_x_mm"), (Some(0.0), None));
-    assert_eq!(range("arrange.auto", "spacing_mm"), (Some(0.0), None));
+    assert_eq!(range("object.copies", "gap_x_mm"), both(0.0, 1000.0));
+    assert_eq!(range("object.copies", "gap_y_mm"), both(0.0, 1000.0));
+    assert_eq!(range("arrange.auto", "spacing_mm"), both(0.0, 100.0));
+    assert_eq!(range("object.move", "dx_mm"), both(-10000.0, 10000.0));
+    assert_eq!(
+        range("object.duplicate", "offset_mm[1]"),
+        both(-10000.0, 10000.0)
+    );
     assert_eq!(
         range("object.circular_copies", "center_mm[1]"),
-        (Some(-1e6), Some(1e6))
+        both(-10000.0, 10000.0)
+    );
+}
+
+/// A field starts with the schema's default; where the command has none,
+/// with the table's start value, which the doc comment states for agents.
+#[test]
+fn every_field_has_one_start_value() {
+    for m in meta::PARAMS {
+        let what = format!("{} {}", m.command, m.path);
+        let info = meta::param_info(m.command, m.path).unwrap();
+        let schema = info.default.as_ref().filter(|d| !d.is_null());
+        match (schema, m.start) {
+            (Some(_), Some(_)) => panic!("{what}: two start values"),
+            (Some(_), None) => {}
+            (None, Some(meta::Start::Number(n))) => assert!(
+                info.description
+                    .contains(&format!("The window starts with {n}.")),
+                "{what}: the doc comment does not say it starts with {n}"
+            ),
+            (None, Some(meta::Start::Text(_))) => assert!(
+                info.description.contains("The window starts with"),
+                "{what}"
+            ),
+            // The centre of a circle: the selection's, unless typed.
+            (None, None) => assert!(m.path.starts_with("center_mm"), "{what}: no start"),
+        }
+        if m.path.starts_with("center_mm") {
+            continue;
+        }
+        assert!(meta::start_value(m.command, m.path).is_some(), "{what}");
+    }
+    assert_eq!(
+        meta::start_value("object.move", "dx_mm"),
+        Some(serde_json::json!(10))
+    );
+    assert_eq!(
+        meta::start_value("object.duplicate", "offset_mm[1]"),
+        Some(serde_json::json!(10.0))
+    );
+}
+
+#[test]
+fn fields_come_in_card_order() {
+    let paths: Vec<&str> = meta::fields_of("object.copies").map(|m| m.path).collect();
+    assert_eq!(
+        paths,
+        [
+            "layout.grid.columns",
+            "count",
+            "gap_x_mm",
+            "gap_y_mm",
+            "linked"
+        ]
     );
 }
 

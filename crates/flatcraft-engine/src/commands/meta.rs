@@ -37,6 +37,15 @@ impl Unit {
     }
 }
 
+/// The value a window field starts with where the command has no
+/// default of its own. The parameter's doc comment says it too, so
+/// agents read the same number.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Start {
+    Number(f64),
+    Text(&'static str),
+}
+
 /// The label and unit of one parameter of one command.
 #[derive(Debug, Clone, Copy)]
 pub struct ParamMeta {
@@ -47,6 +56,8 @@ pub struct ParamMeta {
     pub unit: Unit,
     /// For an enum: each value with its plain label, in schema order.
     pub choices: &'static [(&'static str, &'static str)],
+    /// The start value where the schema has no default.
+    pub start: Option<Start>,
 }
 
 const fn p(
@@ -61,35 +72,50 @@ const fn p(
         label,
         unit,
         choices: &[],
+        start: None,
     }
 }
 
-/// The parameters of the commands the window's tool cards run.
+const fn from(mut m: ParamMeta, start: f64) -> ParamMeta {
+    m.start = Some(Start::Number(start));
+    m
+}
+
+/// The parameters a window shows for each command, in the order its tool
+/// card shows them. A command listed here gets a tool card built from
+/// these rows alone.
 pub const PARAMS: &[ParamMeta] = &[
-    p("object.move", "dx_mm", "X offset", Unit::Mm),
-    p("object.move", "dy_mm", "Y offset", Unit::Mm),
+    from(p("object.move", "dx_mm", "X offset", Unit::Mm), 10.0),
+    from(p("object.move", "dy_mm", "Y offset", Unit::Mm), 0.0),
     p("object.duplicate", "offset_mm[0]", "X offset", Unit::Mm),
     p("object.duplicate", "offset_mm[1]", "Y offset", Unit::Mm),
     p("object.duplicate", "count", "Number of copies", Unit::Count),
-    p("object.rotate", "degrees", "Turn by", Unit::Deg),
+    from(p("object.rotate", "degrees", "Turn by", Unit::Deg), 90.0),
     ParamMeta {
         choices: &[
             ("group", "As one group"),
             ("each", "Each about its own centre"),
         ],
+        start: Some(Start::Text("group")),
         ..p("object.rotate", "about", "Turn about", Unit::None)
     },
-    p("object.copies", "count", "Copies", Unit::Count),
-    p(
-        "object.copies",
-        "layout.grid.columns",
-        "Columns",
-        Unit::Count,
+    from(
+        p(
+            "object.copies",
+            "layout.grid.columns",
+            "Columns",
+            Unit::Count,
+        ),
+        3.0,
     ),
-    p("object.copies", "gap_x_mm", "Spacing X", Unit::Mm),
-    p("object.copies", "gap_y_mm", "Spacing Y", Unit::Mm),
+    from(p("object.copies", "count", "Copies", Unit::Count), 5.0),
+    from(p("object.copies", "gap_x_mm", "Spacing X", Unit::Mm), 5.0),
+    from(p("object.copies", "gap_y_mm", "Spacing Y", Unit::Mm), 5.0),
     p("object.copies", "linked", "Linked copies", Unit::None),
-    p("object.circular_copies", "count", "Instances", Unit::Count),
+    from(
+        p("object.circular_copies", "count", "Instances", Unit::Count),
+        6.0,
+    ),
     p(
         "object.circular_copies",
         "total_deg",
@@ -128,6 +154,25 @@ pub fn meta(command: &str, path: &str) -> Option<&'static ParamMeta> {
     PARAMS
         .iter()
         .find(|m| m.command == command && m.path == path)
+}
+
+/// The parameters of `command` a window shows, in order.
+pub fn fields_of(command: &str) -> impl Iterator<Item = &'static ParamMeta> + '_ {
+    PARAMS.iter().filter(move |m| m.command == command)
+}
+
+/// The value a field of `path` of `command` starts with: the schema's
+/// default, else the start value of the table. `None` when there is
+/// neither (the centre of a circle: the selection's, by default).
+pub fn start_value(command: &str, path: &str) -> Option<Value> {
+    if let Some(d) = param_info(command, path)?.default.filter(|d| !d.is_null()) {
+        return Some(d);
+    }
+    Some(match meta(command, path)?.start? {
+        Start::Number(n) if n.fract() == 0.0 && n >= 0.0 => Value::from(n as u64),
+        Start::Number(n) => Value::from(n),
+        Start::Text(t) => Value::from(t),
+    })
 }
 
 /// The type of a parameter, as its field shows it.

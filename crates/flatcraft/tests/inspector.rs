@@ -438,7 +438,7 @@ fn escape_order_card_then_job_view_then_canvas() {
     let id = selection_all(&s)[0];
     run(&s, "object.select", json!({ "ids": [id] }));
     h.run_plan();
-    // A tool card (the Arrange panel), the Job view and the Lasso tool.
+    // A tool card (the tool card), the Job view and the Lasso tool.
     let sn = snap(&mut h);
     flatcraft::ui::arrange::open(
         &mut app_mut(&mut h).ui.prepare,

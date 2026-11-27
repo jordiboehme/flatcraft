@@ -145,7 +145,7 @@ fn the_prepare_panels_keep_their_width_while_the_pointer_moves() {
 
 #[test]
 fn the_panels_share_a_900_pt_window_without_growing() {
-    // Objects, Cut and Job and the docked Arrange panel, all open.
+    // Objects, Cut and Job and a tool card, all open.
     prepare_panels_at(1.0, 900.0);
     // The Cut stage panel.
     let (_d, mut h) = window_sized(1.0, None, 900.0);
@@ -167,7 +167,7 @@ fn prepare_panels_at(ppp: f32, width: f32) {
     to_prepare(&mut h);
     wait_for_workers(&mut h);
     sweep(&mut h, "Prepare");
-    // With the docked Arrange panel open.
+    // With a tool card open.
     h.get_by_role_and_label(Role::Tab, "Layout").click();
     h.run_plan();
     let tool = flatcraft::ui::tools::TOOLS

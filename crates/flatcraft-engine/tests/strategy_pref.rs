@@ -64,11 +64,11 @@ fn an_unknown_stored_strategy_gives_quality_and_keeps_the_rest() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("preferences.toml"),
-        "default_strategy = \"keep_sheet\"\nauto_arrange_spacing_mm = 7.5\n",
+        "default_strategy = \"keep_sheet\"\nrotate_each = true\n",
     )
     .unwrap();
     let (prefs, warning) = Preferences::load_reporting(dir.path());
     assert_eq!(warning, None);
     assert_eq!(prefs.default_strategy, CutStrategy::Quality);
-    assert_eq!(prefs.auto_arrange_spacing_mm, 7.5);
+    assert!(prefs.rotate_each);
 }

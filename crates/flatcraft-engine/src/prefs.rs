@@ -104,9 +104,13 @@ pub struct Preferences {
     /// on reading, the default pins retired since then are dropped once.
     /// Only the window writes it.
     pub pin_defaults_version: u32,
-    /// The gap the one-click Auto arrange leaves between objects, in mm.
-    /// The Auto arrange panel stores it on OK. Only the window writes it.
-    pub auto_arrange_spacing_mm: f64,
+    /// The values the window's tool cards last ran with, by
+    /// "command parameter" ("arrange.auto spacing_mm", "object.copies
+    /// layout.grid.columns") or by a card's own field ("pattern.rectangular
+    /// rows"), each as JSON text. A card opens with them, and the one-click
+    /// Auto arrange uses the card's spacing. Only the window writes it (a
+    /// UI memory); no registry command reads or changes it.
+    pub tool_cards: std::collections::BTreeMap<String, String>,
     /// What the person chose for the Prepare Objects panel, the Prepare
     /// Cut and Job panel and the Cut workspace's stage panel. Only the
     /// window writes them (UI preferences); no registry command reads or
@@ -455,15 +459,6 @@ pub fn ribbon_pins_from_arrange(old: &[String]) -> Vec<String> {
     out
 }
 
-/// The spacing of Auto arrange until the person picks another one, as the
-/// engine's `arrange.auto` default.
-pub const DEFAULT_AUTO_SPACING_MM: f64 = 5.0;
-
-/// The Auto arrange spacing the panel and the Settings window offer, in
-/// mm. A stored value outside it is kept as it is until the person
-/// changes it.
-pub const AUTO_SPACING_RANGE_MM: std::ops::RangeInclusive<f64> = 0.0..=100.0;
-
 impl Default for Preferences {
     fn default() -> Self {
         Self {
@@ -477,7 +472,7 @@ impl Default for Preferences {
             rotate_each: false,
             ribbon_pins: default_ribbon_pins(),
             pin_defaults_version: PIN_DEFAULTS_VERSION,
-            auto_arrange_spacing_mm: DEFAULT_AUTO_SPACING_MM,
+            tool_cards: std::collections::BTreeMap::new(),
             panel_objects: PanelUser::None,
             panel_settings: PanelUser::None,
             panel_stage: PanelUser::None,
@@ -556,9 +551,6 @@ impl Preferences {
             upgrade_default_pins(&mut prefs.ribbon_pins, version);
         }
         prefs.pin_defaults_version = version.max(PIN_DEFAULTS_VERSION);
-        if !(prefs.auto_arrange_spacing_mm.is_finite() && prefs.auto_arrange_spacing_mm >= 0.0) {
-            prefs.auto_arrange_spacing_mm = DEFAULT_AUTO_SPACING_MM;
-        }
         Ok(prefs)
     }
 
