@@ -111,6 +111,9 @@ pub struct SimInput {
     /// Tests only: the session's `unlocked_hook`, run at the start of
     /// [`compute`] with the id `job.simulate`.
     hook: Option<UnlockedHook>,
+    /// The light theme's default mat colour (preferences): the colour a
+    /// mat without its own has in the picture and the mat colour note.
+    mat_light: [u8; 3],
 }
 
 /// One simulated job.
@@ -218,6 +221,7 @@ pub fn snapshot(
         },
         input,
         hook: s.unlocked_hook.clone(),
+        mat_light: s.prefs.mat_color_light,
     })
 }
 
@@ -305,6 +309,7 @@ pub(crate) fn compute_with(
         strategy,
         key,
         hook: _,
+        mat_light,
     } = input;
     // The float run plans in floats too, so it measures the algorithm
     // alone; a plan rounded for the device would read the rounding.
@@ -330,9 +335,7 @@ pub(crate) fn compute_with(
     let mut warnings = job.warnings.clone();
     warnings.extend(sim_warnings(mode, plotter));
     if mode != SimMode::Firmware
-        && !flatcraft_core::colour::deviation_colours_read(
-            media.color_or(flatcraft_device::DEFAULT_MAT_COLOR_LIGHT),
-        )
+        && !flatcraft_core::colour::deviation_colours_read(media.color_or(mat_light))
     {
         warnings.push(MAT_COLOUR_NOTE.to_string());
     }

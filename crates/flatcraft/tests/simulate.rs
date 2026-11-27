@@ -189,14 +189,23 @@ fn many_squares() -> String {
 /// Blocks every simulation until `release` sends; a test that waits on a
 /// worker never hangs: the gate opens by itself after a while.
 fn gate(s: &SharedSession) -> mpsc::Sender<()> {
+    gate_with_entry(s).0
+}
+
+/// [`gate`], plus a receiver that gets a message each time a simulation
+/// reaches the gate, so a test waits for that event, not for wall time.
+fn gate_with_entry(s: &SharedSession) -> (mpsc::Sender<()>, mpsc::Receiver<()>) {
     let (tx, rx) = mpsc::channel::<()>();
+    let (entered_tx, entered_rx) = mpsc::channel::<()>();
     let rx = Arc::new(Mutex::new(rx));
+    let entered_tx = Mutex::new(entered_tx);
     s.lock().unwrap().unlocked_hook = Some(UnlockedHook(Arc::new(move |id| {
         if id == "job.simulate" {
-            let _ = rx.lock().unwrap().recv_timeout(Duration::from_secs(10));
+            let _ = entered_tx.lock().unwrap().send(());
+            let _ = rx.lock().unwrap().recv_timeout(Duration::from_secs(60));
         }
     })));
-    tx
+    (tx, entered_rx)
 }
 
 #[test]
@@ -207,18 +216,22 @@ fn simulation_runs_off_the_ui_thread() {
     let mut h = harness(&dir, s.clone(), false);
     app_mut(&mut h).ui.workspace = Workspace::Cut;
     h.run_plan();
-    let release = gate(&s);
+    let (release, entered) = gate_with_entry(&s);
     h.get_by_role_and_label(Role::Tab, "Simulate").click();
-    let start = Instant::now();
+    // Step until the worker holds the simulation at the gate. The event
+    // ends the wait, not a time: a loaded machine only takes more frames.
+    let mut frames = 0;
+    while entered.try_recv().is_err() {
+        h.step();
+        frames += 1;
+        assert!(frames < 100_000, "the simulation never started");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // The worker holds the simulation and the frames come back anyway:
+    // run in the frame, a step would wait for the gate.
     h.step();
     h.step();
-    let took = start.elapsed();
-    // The worker holds the simulation and the frames came back anyway:
-    // run in the frame, the step would wait for the gate (10 s) and the
-    // run would be over.
     assert!(app(&h).ui.cut.sim.simulating());
-    // Not a check (shared runners vary): the frames' time, to look at.
-    println!("first frames with the simulation started: {took:?}");
     assert!(painted_texts(&h).contains(&sim::SIMULATING.to_string()));
     assert_eq!(simulate_status(&mut h), sim::SIMULATING);
     release.send(()).unwrap();

@@ -314,8 +314,10 @@ fn mat_margin_is_a_darker_shade_and_the_area_is_the_mat_colour() {
     let s = session(&dir);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    let paper = flatcraft_device::DEFAULT_MAT_COLOR_DARK;
-    let [mr, mg, mb] = flatcraft_core::colour::margin_colour(paper);
+    // The harness runs the dark theme (kittest's system theme), so the
+    // preset mat, which has no colour of its own, takes the dark default.
+    let default_mat = flatcraft_device::DEFAULT_MAT_COLOR_DARK;
+    let [mr, mg, mb] = flatcraft_core::colour::margin_colour(default_mat);
     let margin = Color32::from_rgb(mr, mg, mb);
     let shapes = painted(&h);
     let fills: Vec<_> = shapes
@@ -328,7 +330,7 @@ fn mat_margin_is_a_darker_shade_and_the_area_is_the_mat_colour() {
     let mat = fills.iter().find(|(c, _)| *c == margin).expect("margin").1;
     let area = fills
         .iter()
-        .find(|(c, _)| *c == Color32::from_rgb(paper[0], paper[1], paper[2]))
+        .find(|(c, _)| *c == Color32::from_rgb(default_mat[0], default_mat[1], default_mat[2]))
         .expect("area")
         .1;
     assert!(mat.contains_rect(area) && mat.area() > area.area());

@@ -540,7 +540,7 @@ impl FlatCraftApp {
     /// renderer (tests).
     pub fn with_thumbnailer(
         mut self,
-        f: impl Fn(&flatcraft_device::ProfileStore, &Path) -> Result<Vec<u8>, String>
+        f: impl Fn(&flatcraft_device::ProfileStore, &Path, [u8; 3]) -> Result<Vec<u8>, String>
         + Send
         + Sync
         + 'static,

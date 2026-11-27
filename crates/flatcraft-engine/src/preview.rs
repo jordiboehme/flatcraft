@@ -190,15 +190,33 @@ pub fn render_png(s: &Session, kind: PreviewKind, max_px: u32) -> Result<Vec<u8>
     match kind {
         PreviewKind::Canvas => {
             let cut = s.cut_geometry()?;
-            draw(&plotter, doc, View::Canvas(&cut), max_px)
+            draw(
+                &plotter,
+                doc,
+                View::Canvas(&cut),
+                max_px,
+                s.prefs.mat_color_light,
+            )
         }
         PreviewKind::Path => {
             let job = crate::job::build(s)?;
-            draw(&plotter, doc, View::Path(&job), max_px)
+            draw(
+                &plotter,
+                doc,
+                View::Path(&job),
+                max_px,
+                s.prefs.mat_color_light,
+            )
         }
         PreviewKind::Simulation => {
             let run = crate::simulate::current_unstored(s)?;
-            draw(&plotter, doc, View::Simulation(&run), max_px)
+            draw(
+                &plotter,
+                doc,
+                View::Simulation(&run),
+                max_px,
+                s.prefs.mat_color_light,
+            )
         }
     }
 }
@@ -211,8 +229,9 @@ pub fn render_document_png(
     plotter: &flatcraft_device::PlotterProfile,
     doc: &flatcraft_core::document::Document,
     max_px: u32,
+    mat_light: [u8; 3],
 ) -> Result<Vec<u8>, CommandError> {
-    render_document_png_seeded(plotter, doc, None, max_px)
+    render_document_png_seeded(plotter, doc, None, max_px, mat_light)
 }
 
 /// [`render_document_png`] with cut geometry to start from (the
@@ -224,10 +243,11 @@ pub fn render_document_png_seeded(
     doc: &flatcraft_core::document::Document,
     seed: Option<&std::sync::Arc<crate::cutgeom::CutGeometry>>,
     max_px: u32,
+    mat_light: [u8; 3],
 ) -> Result<Vec<u8>, CommandError> {
     check_px(max_px)?;
     let cut = document_cut_geometry(plotter, doc, seed);
-    draw(plotter, doc, View::Canvas(&cut), max_px)
+    draw(plotter, doc, View::Canvas(&cut), max_px, mat_light)
 }
 
 /// [`render_document_png`] with the cut geometry `cut` of `doc` (see
@@ -237,9 +257,10 @@ pub fn render_document_png_cut(
     doc: &flatcraft_core::document::Document,
     cut: &crate::cutgeom::CutGeometry,
     max_px: u32,
+    mat_light: [u8; 3],
 ) -> Result<Vec<u8>, CommandError> {
     check_px(max_px)?;
-    draw(plotter, doc, View::Canvas(cut), max_px)
+    draw(plotter, doc, View::Canvas(cut), max_px, mat_light)
 }
 
 /// The cut geometry of `doc`'s objects for `plotter`, with the same
@@ -274,11 +295,12 @@ fn draw(
     doc: &flatcraft_core::document::Document,
     view: View<'_>,
     max_px: u32,
+    mat_light: [u8; 3],
 ) -> Result<Vec<u8>, CommandError> {
     let (media, _) = crate::commands::effective_media(plotter, &doc.job)?;
-    // An image has no theme: a mat without a colour of its own is the light
-    // theme's default.
-    let mat_colour = media.color_or(flatcraft_device::DEFAULT_MAT_COLOR_LIGHT);
+    // An image has no theme: a mat without a colour of its own takes the
+    // light theme's default from the preferences.
+    let mat_colour = media.color_or(mat_light);
     let area = plotter
         .cutting_area(&media.id)
         .ok_or_else(|| failed("no cutting area"))?;

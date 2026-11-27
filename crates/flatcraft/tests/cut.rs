@@ -885,8 +885,10 @@ fn cut_moves_are_orange_and_travel_is_faint() {
     let mut h = harness(&dir, s, false);
     to_cut(&mut h);
     stage(&mut h, "Path");
-    let paper = flatcraft_device::DEFAULT_MAT_COLOR_DARK;
-    let [r, g, b] = flatcraft_core::colour::cut_colour(paper);
+    // The test harness runs the dark theme, so a mat without a colour of
+    // its own has the dark default.
+    let default_mat = flatcraft_device::DEFAULT_MAT_COLOR_DARK;
+    let [r, g, b] = flatcraft_core::colour::cut_colour(default_mat);
     let orange = egui::Color32::from_rgb(r, g, b);
     let shapes = common::painted(&h);
     let cut_lines = shapes

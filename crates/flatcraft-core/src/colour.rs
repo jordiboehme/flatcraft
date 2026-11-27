@@ -196,6 +196,31 @@ mod tests {
         assert!(contrast_ratio(m, dark) > 1.1);
     }
 
+    /// The default mats of Settings (white in the light theme, a dimmed grey
+    /// in the dark one): cut, grade, commanded, weed and selection colours all
+    /// keep 3:1 on them, and the grade colours stay apart.
+    #[test]
+    fn every_colour_reads_on_the_default_mats() {
+        for mat in [[0xFF, 0xFF, 0xFF], [0xE8, 0xE9, 0xEB]] {
+            let read = |what: &str, c: [u8; 3]| {
+                assert!(contrast_ratio(c, mat) >= 3.0, "{what} {c:?} on {mat:?}");
+            };
+            read("cut", cut_colour(mat));
+            read("selection", selection_colour(mat));
+            read("commanded", commanded_colour(mat));
+            read("grid line contrast colour", contrast_colour(mat));
+            for preferred in [WEED_LIGHT, WEED_DARK] {
+                read("weed", weed_colour(mat, preferred));
+            }
+            assert!(deviation_colours_read(mat), "{mat:?}");
+            let set = deviation_colours(mat);
+            for c in set {
+                read("grade", c);
+            }
+            assert!(set[0] != set[1] && set[1] != set[2] && set[0] != set[2]);
+        }
+    }
+
     #[test]
     fn cut_orange_reads_on_paper_and_dark_and_differs_from_the_selection() {
         for mat in [[0xFB, 0xF4, 0xE4], [0x20, 0x22, 0x26]] {

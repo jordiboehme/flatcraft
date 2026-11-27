@@ -398,7 +398,12 @@ mod tests {
         ] {
             let kept = raw(t.kept_paper);
             assert_ne!(kept, mat);
-            assert!(contrast(t.kept_paper, super::rgb(mat)) >= 1.05);
+            // Visible next to the mat, not only different: a ratio the eye sees.
+            let ratio = contrast(t.kept_paper, super::rgb(mat));
+            assert!(
+                ratio >= 1.08,
+                "kept paper only {ratio:.3}:1 against the mat"
+            );
         }
         assert_eq!(
             Tokens::light().icon_paper,

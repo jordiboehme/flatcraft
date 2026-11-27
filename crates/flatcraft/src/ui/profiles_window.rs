@@ -265,7 +265,7 @@ pub fn slug(name: &str) -> String {
 
 /// `#RRGGBB` of a colour.
 pub fn hex(c: [u8; 3]) -> String {
-    format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2])
+    flatcraft_device::hex_colour(c)
 }
 
 /// Why the hex field of a mat that follows the default is dimmed.
@@ -275,11 +275,7 @@ const MAT_COLOUR_DEFAULT_WHY: &str = "This mat follows the default colour from S
 pub fn parse_hex(s: &str) -> Option<[u8; 3]> {
     let h = s.trim();
     let h = h.strip_prefix('#').unwrap_or(h);
-    if h.len() != 6 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
-    }
-    let v = u32::from_str_radix(h, 16).ok()?;
-    Some([(v >> 16) as u8, (v >> 8) as u8, v as u8])
+    flatcraft_device::parse_hex_colour(&format!("#{h}")).ok()
 }
 
 /// The problem of a mat for a person ("The grid size must be above 0."),

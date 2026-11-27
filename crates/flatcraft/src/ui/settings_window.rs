@@ -1602,7 +1602,7 @@ fn appearance(ui: &mut Ui, cx: &mut Cx<'_>, d: &mut Preferences) {
         ui.add(
             egui::Label::new(
                 RichText::new(
-                    "A mat preset can still have its own colour. Pick Custom on its Mat colour row in Devices.",
+                    "A mat preset can still have its own colour. Pick Custom on its Mat colour row under Profiles, Mats.",
                 )
                 .color(t.text_dim),
             )

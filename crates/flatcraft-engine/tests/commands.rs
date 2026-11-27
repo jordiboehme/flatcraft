@@ -3017,7 +3017,13 @@ fn a_reopened_svgz_keeps_its_text() {
     let doc = flatcraft_engine::commands::project::load_rebuilt(&s.profiles, &project).unwrap();
     assert_eq!(doc.objects[0].geometry.len(), before);
     let plotter = s.profiles.plotter(&doc.job.plotter_id).unwrap();
-    let png = flatcraft_engine::preview::render_document_png(&plotter, &doc, 128).unwrap();
+    let png = flatcraft_engine::preview::render_document_png(
+        &plotter,
+        &doc,
+        128,
+        flatcraft_device::DEFAULT_MAT_COLOR_LIGHT,
+    )
+    .unwrap();
     assert_eq!(&png[1..4], b"PNG");
 }
 
@@ -3471,11 +3477,21 @@ fn thumbnail_timing_for_500_traced_objects() {
     let mut empty = doc.clone();
     empty.objects.clear();
     let t = std::time::Instant::now();
-    flatcraft_engine::commands::project::thumbnail_png(&s.profiles, &empty).unwrap();
+    flatcraft_engine::commands::project::thumbnail_png(
+        &s.profiles,
+        &empty,
+        flatcraft_device::DEFAULT_MAT_COLOR_LIGHT,
+    )
+    .unwrap();
     let mat = t.elapsed();
     eprintln!("TIMING placing {placed} paths {transform:?}, empty mat {mat:?}");
     let t = std::time::Instant::now();
-    let pic = flatcraft_engine::commands::project::thumbnail_png(&s.profiles, &doc).unwrap();
+    let pic = flatcraft_engine::commands::project::thumbnail_png(
+        &s.profiles,
+        &doc,
+        flatcraft_device::DEFAULT_MAT_COLOR_LIGHT,
+    )
+    .unwrap();
     let render = t.elapsed();
     let out = tempfile::tempdir().unwrap();
     let path = out.path().join("big.flatcraft");

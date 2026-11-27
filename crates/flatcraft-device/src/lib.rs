@@ -18,7 +18,7 @@ pub use profile::{
     AxisMapping, Capabilities, CornerModeSpec, DEFAULT_MAT_COLOR_DARK, DEFAULT_MAT_COLOR_LIGHT,
     GpglDialect, Grid, KnifeCompensation, MatTack, MaterialGroup, MaterialOverride,
     MaterialProfile, Media, MediaError, MediaField, MediaKind, PlotterProfile, Protocol,
-    TransportSpec, UNCALIBRATED_MARGIN_MM,
+    TransportSpec, UNCALIBRATED_MARGIN_MM, hex_colour, parse_hex_colour,
 };
 pub use store::{PRESET_NOTES_FILE, PresetDiagnostic, PresetInfo, ProfileError, ProfileStore};
 pub use transport::{FileTransport, SendReport, Transport, TransportError};

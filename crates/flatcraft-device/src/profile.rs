@@ -231,6 +231,17 @@ impl Media {
 pub const DEFAULT_MAT_COLOR_LIGHT: [u8; 3] = [0xFF, 0xFF, 0xFF];
 /// Default mat colour in the dark theme: a light grey, dimmed so it does not glare.
 pub const DEFAULT_MAT_COLOR_DARK: [u8; 3] = [0xE8, 0xE9, 0xEB];
+/// A colour from `#RRGGBB`, or the reason it is not one. The one parser
+/// of the app (the profile files, the preferences and the windows).
+pub fn parse_hex_colour(s: &str) -> Result<[u8; 3], String> {
+    hex_color::parse(s)
+}
+
+/// A colour as `#RRGGBB`.
+pub fn hex_colour(c: [u8; 3]) -> String {
+    format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2])
+}
+
 /// Colours as `#RRGGBB` strings.
 mod hex_color {
     use serde::Serializer;
@@ -247,7 +258,7 @@ mod hex_color {
 
     pub fn serialize_opt<S: Serializer>(c: &Option<[u8; 3]>, s: S) -> Result<S::Ok, S::Error> {
         match c {
-            Some(c) => s.serialize_str(&format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2])),
+            Some(c) => s.serialize_str(&super::hex_colour(*c)),
             None => s.serialize_none(),
         }
     }

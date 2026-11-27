@@ -823,7 +823,11 @@ fn regenerate_samples() {
         let (_dir, s) = build(sample.id);
         let doc = s.lock().unwrap().doc().document.clone();
         let profiles = s.lock().unwrap().profiles.clone();
-        let thumbnail = flatcraft_engine::commands::project::thumbnail_png(&profiles, &doc);
+        let thumbnail = flatcraft_engine::commands::project::thumbnail_png(
+            &profiles,
+            &doc,
+            flatcraft_device::DEFAULT_MAT_COLOR_LIGHT,
+        );
         assert!(thumbnail.is_some(), "{} has a picture", sample.id);
         let bytes = flatcraft_core::project::to_archive(&doc, thumbnail.as_deref())
             .unwrap()

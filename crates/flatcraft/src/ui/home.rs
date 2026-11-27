@@ -281,24 +281,28 @@ const THUMB_BOX: f32 = 44.0;
 
 /// Draws the picture of a project file (a PNG), on a worker thread.
 pub type Thumbnailer = std::sync::Arc<
-    dyn Fn(&flatcraft_device::ProfileStore, &Path) -> Result<Vec<u8>, String> + Send + Sync,
+    dyn Fn(&flatcraft_device::ProfileStore, &Path, [u8; 3]) -> Result<Vec<u8>, String>
+        + Send
+        + Sync,
 >;
 
 /// The default [`Thumbnailer`]: the picture the project file carries
 /// (`thumbnail.png`, written by every save). A project file without one,
 /// or with one that does not decode, is loaded, rebuilt and drawn by the
 /// preview renderer the agents use (canvas view), as the save would have
-/// drawn it.
+/// drawn it. `mat_light` is the Settings default mat colour of the light
+/// theme, for a mat without a colour of its own.
 pub fn render_project(
     profiles: &flatcraft_device::ProfileStore,
     path: &Path,
+    mat_light: [u8; 3],
 ) -> Result<Vec<u8>, String> {
     if let Some(png) = flatcraft_engine::thumbnails::embedded(path) {
         return Ok(png);
     }
     let doc = flatcraft_engine::commands::project::load_rebuilt(profiles, path)
         .map_err(|e| e.to_string())?;
-    draw_document(profiles, &doc)
+    draw_document(profiles, &doc, mat_light)
 }
 
 /// A sample's picture: the one in its project file, or drawn like a
@@ -306,6 +310,7 @@ pub fn render_project(
 fn render_sample(
     profiles: &flatcraft_device::ProfileStore,
     bytes: &[u8],
+    mat_light: [u8; 3],
 ) -> Result<Vec<u8>, String> {
     if let Some(png) = flatcraft_engine::thumbnails::embedded_in(bytes) {
         return Ok(png);
@@ -313,14 +318,15 @@ fn render_sample(
     let doc =
         flatcraft_engine::commands::project::load_rebuilt_bytes(profiles, bytes, "the sample")
             .map_err(|e| e.to_string())?;
-    draw_document(profiles, &doc)
+    draw_document(profiles, &doc, mat_light)
 }
 
 fn draw_document(
     profiles: &flatcraft_device::ProfileStore,
     doc: &flatcraft_core::document::Document,
+    mat_light: [u8; 3],
 ) -> Result<Vec<u8>, String> {
-    flatcraft_engine::commands::project::thumbnail_png(profiles, doc)
+    flatcraft_engine::commands::project::thumbnail_png(profiles, doc, mat_light)
         .ok_or_else(|| "the picture cannot be drawn".to_string())
 }
 
@@ -510,12 +516,15 @@ fn start_worker(app: &mut FlatCraftApp, ctx: &egui::Context, missing: Vec<Wanted
     if missing.is_empty() {
         return;
     }
-    let profiles = lock(&app.session).profiles.clone();
+    let (profiles, mat_light) = {
+        let s = lock(&app.session);
+        (s.profiles.clone(), s.prefs.mat_color_light)
+    };
     let draw = app.thumbnailer.clone();
     let paint = move |_id: &str, version: &str, source: &Source| {
         let result = match source {
-            Source::File(path) => draw(&profiles, path),
-            Source::Sample(bytes) => render_sample(&profiles, bytes),
+            Source::File(path) => draw(&profiles, path, mat_light),
+            Source::Sample(bytes) => render_sample(&profiles, bytes, mat_light),
         };
         // A file that changed while it was read (a save) may show an old
         // version: dropped, and the next frame reads it again.

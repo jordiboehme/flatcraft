@@ -315,10 +315,11 @@ fn pictures_come_from_the_project_file_and_refresh_on_save() {
     let calls = Arc::new(AtomicUsize::new(0));
     let counted = calls.clone();
     let mut h = harness_with(&dir, s.clone(), move |a| {
-        a.with_inline_pictures(false).with_thumbnailer(move |p, f| {
-            counted.fetch_add(1, Ordering::SeqCst);
-            flatcraft::ui::home::render_project(p, f)
-        })
+        a.with_inline_pictures(false)
+            .with_thumbnailer(move |p, f, m| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                flatcraft::ui::home::render_project(p, f, m)
+            })
     });
     wait_for_pictures(&mut h);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -476,14 +477,15 @@ fn a_picture_of_an_old_version_never_replaces_the_newer_one() {
     // While the worker reads the picture, the project is saved again
     // with another picture.
     let mut h = harness_with(&dir, s.clone(), move |a| {
-        a.with_inline_pictures(false).with_thumbnailer(move |p, f| {
-            let png = flatcraft::ui::home::render_project(p, f)?;
-            if counted.fetch_add(1, Ordering::SeqCst) == 0 {
-                flatcraft_core::project::Archive::edit(f, |a| a.thumbnail = Some(tiny_png()))
-                    .unwrap();
-            }
-            Ok(png)
-        })
+        a.with_inline_pictures(false)
+            .with_thumbnailer(move |p, f, m| {
+                let png = flatcraft::ui::home::render_project(p, f, m)?;
+                if counted.fetch_add(1, Ordering::SeqCst) == 0 {
+                    flatcraft_core::project::Archive::edit(f, |a| a.thumbnail = Some(tiny_png()))
+                        .unwrap();
+                }
+                Ok(png)
+            })
     });
     wait_for_pictures(&mut h);
     // The first picture showed an old version and was dropped; the next
@@ -551,7 +553,12 @@ fn a_broken_thumbnail_is_drawn_again() {
     })
     .unwrap();
     let profiles = s.lock().unwrap().profiles.clone();
-    let png = flatcraft::ui::home::render_project(&profiles, &path).unwrap();
+    let png = flatcraft::ui::home::render_project(
+        &profiles,
+        &path,
+        flatcraft_device::DEFAULT_MAT_COLOR_LIGHT,
+    )
+    .unwrap();
     let p = tiny_skia::Pixmap::decode_png(&png).expect("a picture that decodes");
     assert_eq!(p.width().max(p.height()), 512);
 }

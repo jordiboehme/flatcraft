@@ -602,7 +602,13 @@ fn thumbnail_draws_cut_geometry() {
         .unwrap();
     let doc = s.doc().document.clone();
     let max_px = 2048;
-    let thumb = flatcraft_engine::preview::render_document_png(&plotter, &doc, max_px).unwrap();
+    let thumb = flatcraft_engine::preview::render_document_png(
+        &plotter,
+        &doc,
+        max_px,
+        flatcraft_device::DEFAULT_MAT_COLOR_LIGHT,
+    )
+    .unwrap();
     let canvas = render_png(&s, PreviewKind::Canvas, max_px).unwrap();
     assert_eq!(thumb, canvas, "one drawing path");
     let seeded = flatcraft_engine::preview::render_document_png_seeded(
@@ -610,6 +616,7 @@ fn thumbnail_draws_cut_geometry() {
         &doc,
         s.doc().cached_cut_geometry().as_ref(),
         max_px,
+        flatcraft_device::DEFAULT_MAT_COLOR_LIGHT,
     )
     .unwrap();
     assert_eq!(seeded, canvas);
@@ -1136,4 +1143,35 @@ fn straddling_case(no_mat: bool) {
 fn a_front_ring_across_the_background_also_waits_for_the_counter() {
     straddling_case(false);
     straddling_case(true);
+}
+
+/// A mat without a colour of its own is drawn in the light default the
+/// person set in Settings: in the preview picture, the thumbnail and what
+/// `document.state` reports. A mat with its own colour keeps it.
+#[test]
+fn previews_use_the_light_default_of_the_preferences() {
+    let d = dirs();
+    let mut s = session(&d);
+    let mine = [0xF0, 0xE6, 0xD2];
+    s.prefs.mat_color_light = mine;
+    import(&mut s, SQUARE_50);
+    let state = run(&mut s, "document.state", json!({}));
+    assert_eq!(state["mat"]["color"], "#F0E6D2");
+    assert_eq!(state["mat"]["custom_color"], false);
+    // A point of the cutting area away from the object and the grid lines.
+    let max_px = 1024;
+    let plotter = s
+        .profiles
+        .plotter(&s.doc().document.job.plotter_id)
+        .unwrap();
+    let doc = s.doc().document.clone();
+    let media = plotter.media_or_first(&doc.job.media_id).unwrap().0;
+    let scale = f64::from(max_px) / media.width_mm.max(media.height_mm);
+    let at = |mm: f64| ((mm + media.grid.origin_x_mm) * scale) as u32;
+    let (x, y) = (at(204.5), at(204.5));
+    let png = render_png(&s, PreviewKind::Canvas, max_px).unwrap();
+    assert_eq!(pixel(&png, x, y), mine);
+    let thumb =
+        flatcraft_engine::preview::render_document_png(&plotter, &doc, max_px, mine).unwrap();
+    assert_eq!(pixel(&thumb, x, y), mine);
 }

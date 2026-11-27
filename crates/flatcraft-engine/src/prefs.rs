@@ -13,36 +13,26 @@ fn lenient_strategy<'de, D: serde::Deserializer<'de>>(d: D) -> Result<CutStrateg
     Ok(CutStrategy::deserialize(value).unwrap_or_default())
 }
 
-/// A `#RRGGBB` colour in the file. One that does not parse gives the
-/// default, so a hand-edit never resets every other preference.
+/// A `#RRGGBB` colour in the file, with the profile files' parser. One that
+/// does not parse gives the theme's default (`DARK`), so a hand-edit never
+/// resets every other preference.
 mod hex_colour {
     use serde::{Deserialize, Deserializer, Serializer};
 
-    pub fn parse(s: &str) -> Option<[u8; 3]> {
-        let hex = s.strip_prefix('#')?;
-        if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return None;
-        }
-        let v = u32::from_str_radix(hex, 16).ok()?;
-        Some([(v >> 16) as u8, (v >> 8) as u8, v as u8])
-    }
-
     pub fn serialize<S: Serializer>(c: &[u8; 3], s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2]))
+        s.serialize_str(&flatcraft_device::hex_colour(*c))
     }
 
-    pub fn light<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 3], D::Error> {
+    pub fn lenient<'de, D: Deserializer<'de>, const DARK: bool>(d: D) -> Result<[u8; 3], D::Error> {
+        let default = if DARK {
+            flatcraft_device::DEFAULT_MAT_COLOR_DARK
+        } else {
+            flatcraft_device::DEFAULT_MAT_COLOR_LIGHT
+        };
         let v = toml::Value::deserialize(d)?;
         Ok(v.as_str()
-            .and_then(parse)
-            .unwrap_or(flatcraft_device::DEFAULT_MAT_COLOR_LIGHT))
-    }
-
-    pub fn dark<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 3], D::Error> {
-        let v = toml::Value::deserialize(d)?;
-        Ok(v.as_str()
-            .and_then(parse)
-            .unwrap_or(flatcraft_device::DEFAULT_MAT_COLOR_DARK))
+            .and_then(|s| flatcraft_device::parse_hex_colour(s).ok())
+            .unwrap_or(default))
     }
 }
 
@@ -152,13 +142,13 @@ pub struct Preferences {
     /// writes it; no registry command reads or changes it.
     #[serde(
         serialize_with = "hex_colour::serialize",
-        deserialize_with = "hex_colour::light"
+        deserialize_with = "hex_colour::lenient::<_, false>"
     )]
     pub mat_color_light: [u8; 3],
     /// The same for the dark theme: a dimmed light grey by default.
     #[serde(
         serialize_with = "hex_colour::serialize",
-        deserialize_with = "hex_colour::dark"
+        deserialize_with = "hex_colour::lenient::<_, true>"
     )]
     pub mat_color_dark: [u8; 3],
 }

@@ -854,3 +854,53 @@ fn settings_mat_colours_restore_defaults() {
     assert_eq!(p.mat_color_light, [0xFF, 0xFF, 0xFF]);
     assert_eq!(p.mat_color_dark, [0xE8, 0xE9, 0xEB]);
 }
+
+/// The mat colour and the rest of the window switch theme in the same
+/// frame: the staged theme is applied at the start of the next frame, before
+/// the snapshot, so the canvas never shows the old mat on the new panels.
+#[test]
+fn the_mat_colour_switches_with_the_theme_in_one_frame() {
+    use egui::{Color32, Shape};
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    s.lock()
+        .unwrap()
+        .update_prefs(|p| p.theme = Theme::Dark)
+        .unwrap();
+    let mut h = harness(&dir, &s);
+    to_prepare(&mut h);
+    // Whether a rect of colour `c` covers the middle of the mat (the window's
+    // own background is wider than the mat and does not count).
+    let has_mat = |h: &mut AppHarness, c: [u8; 3]| {
+        let c = Color32::from_rgb(c[0], c[1], c[2]);
+        let at = app(h)
+            .ui
+            .prepare
+            .view
+            .mm_to_screen(kurbo::Point::new(150.0, 150.0));
+        common::painted(h)
+            .iter()
+            .any(|s| matches!(s, Shape::Rect(r) if r.fill == c && r.rect.contains(at) && r.rect.width() < 1000.0))
+    };
+    let (light, dark) = (
+        flatcraft_device::DEFAULT_MAT_COLOR_LIGHT,
+        flatcraft_device::DEFAULT_MAT_COLOR_DARK,
+    );
+    assert!(has_mat(&mut h, dark));
+    open(&mut h, "Appearance");
+    for (click, now_dark) in [("Theme: Light", false), ("Theme: Dark", true)] {
+        h.get_by_label(click).click();
+        // Every frame the canvas has the mat of the theme the panels have.
+        for _ in 0..4 {
+            h.step();
+            let (mine, other) = if app(&h).tokens.is_dark() {
+                (dark, light)
+            } else {
+                (light, dark)
+            };
+            assert!(has_mat(&mut h, mine), "the mat is not {mine:?}");
+            assert!(!has_mat(&mut h, other), "the mat shows {other:?}");
+        }
+        assert_eq!(app(&h).tokens.is_dark(), now_dark);
+    }
+}

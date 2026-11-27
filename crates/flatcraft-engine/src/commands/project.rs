@@ -77,7 +77,7 @@ fn mat_json(s: &Session) -> (Value, Option<String>) {
     let Ok((m, warning)) = super::effective_media(&plotter, job) else {
         return (Value::Null, None);
     };
-    let shown = m.color_or(flatcraft_device::DEFAULT_MAT_COLOR_LIGHT);
+    let shown = crate::prefs::resolved_mat_colour(m, &s.prefs, false);
     let mat = json!({
         "id": m.id,
         "name": m.name,
@@ -151,7 +151,7 @@ command!(
     mutates: false,
     params: NoParams,
     run: run_state,
-    description: "Describes the active document. All lengths are mm; the origin is the 0,0 of the grid printed on the mat, x right, y down; rotation is degrees clockwise. Returns {index, documents, doc_id (stable id of the active document), doc_ids (stable ids of all open documents, in index order), objects: [{id, name, kind: svg|raster, visible, cut_enabled (false: the object is skipped and not cut, see object.set_cut), bounds_mm: {x0,y0,x1,y1} of what is cut (the cut geometry per the cut options, stroke outlines included), transform: {center_mm: [x,y], scale_x, scale_y, rotation_deg, mirror}, cut: {mode: all_lines|object_outlines|merged_outline|visible_outline, strokes: auto|centre_line|outline, auto_threshold_mm} (see object.set_cut_options), keep: pieces|stencil|both (what is kept after cutting, see object.set_keep), link: {path (last known absolute path of the imported file), relative (to the project file, or null)} or null when the object has no linked file, link_group (its linked copies, or null), group (the group it is in, or null)}], groups: [{id, name, parent (the group it is in, or null), rotation_deg (its own angle, 0 when made), members: [id] (objects and groups right in it), objects: [id] (every object in it, at any depth)}] (see object.group; a group id works wherever object ids do), selection: [id] (objects; a selected group lists all its objects), job: {plotter_id, material_id, media_id, speed, force, passes, strategy, weed: {box, margin_mm, per_object, lines, spacing_mm}} (null overrides mean the material value), mat: {id, name, kind: mat|no_mat, width_mm, height_mm (physical), grid: {origin_x_mm, origin_y_mm, width_mm, height_mm}, calibrated, color: \"#RRGGBB\" (the mat's own colour, else the light theme default, white, the colour the previews draw), custom_color (true when the mat has a colour of its own, false when it follows the Settings default)} (null when unknown; when the plotter no longer lists job.media_id, hidden or deleted, this is the plotter's first mat, which jobs then use too), cutting_area_mm: {x0,y0,x1,y1} (the grid, minus a 5 mm safety margin while the mat is not calibrated; objects must stay inside it), description (one line, empty when none), notes (the person's project notes, empty when none; see document.notes), dirty, path, can_undo, can_redo, warnings: [text] (for example a mat that is no longer available)}.",
+    description: "Describes the active document. All lengths are mm; the origin is the 0,0 of the grid printed on the mat, x right, y down; rotation is degrees clockwise. Returns {index, documents, doc_id (stable id of the active document), doc_ids (stable ids of all open documents, in index order), objects: [{id, name, kind: svg|raster, visible, cut_enabled (false: the object is skipped and not cut, see object.set_cut), bounds_mm: {x0,y0,x1,y1} of what is cut (the cut geometry per the cut options, stroke outlines included), transform: {center_mm: [x,y], scale_x, scale_y, rotation_deg, mirror}, cut: {mode: all_lines|object_outlines|merged_outline|visible_outline, strokes: auto|centre_line|outline, auto_threshold_mm} (see object.set_cut_options), keep: pieces|stencil|both (what is kept after cutting, see object.set_keep), link: {path (last known absolute path of the imported file), relative (to the project file, or null)} or null when the object has no linked file, link_group (its linked copies, or null), group (the group it is in, or null)}], groups: [{id, name, parent (the group it is in, or null), rotation_deg (its own angle, 0 when made), members: [id] (objects and groups right in it), objects: [id] (every object in it, at any depth)}] (see object.group; a group id works wherever object ids do), selection: [id] (objects; a selected group lists all its objects), job: {plotter_id, material_id, media_id, speed, force, passes, strategy, weed: {box, margin_mm, per_object, lines, spacing_mm}} (null overrides mean the material value), mat: {id, name, kind: mat|no_mat, width_mm, height_mm (physical), grid: {origin_x_mm, origin_y_mm, width_mm, height_mm}, calibrated, color: \"#RRGGBB\" (the mat's own colour, else the light theme default from Settings, white unless changed: the colour the previews draw), custom_color (true when the mat has a colour of its own, false when it follows the Settings default)} (null when unknown; when the plotter no longer lists job.media_id, hidden or deleted, this is the plotter's first mat, which jobs then use too), cutting_area_mm: {x0,y0,x1,y1} (the grid, minus a 5 mm safety margin while the mat is not calibrated; objects must stay inside it), description (one line, empty when none), notes (the person's project notes, empty when none; see document.notes), dirty, path, can_undo, can_redo, warnings: [text] (for example a mat that is no longer available)}.",
 );
 
 // ---------------------------------------------------------------- document.new / switch / close
@@ -436,6 +436,8 @@ pub struct SaveJob {
     /// The document as it is saved (shapes and sources are shared `Arc`s).
     document: flatcraft_core::document::Document,
     plotter: Option<flatcraft_device::PlotterProfile>,
+    /// The light theme's default mat colour (preferences), for the thumbnail.
+    mat_light: [u8; 3],
     /// The document's revision when the save began.
     revision: u64,
     /// The links before `relink_for_save`, to put back if the save fails.
@@ -492,6 +494,7 @@ pub fn begin_save(s: &mut Session, p: SaveParams, origin: Origin) -> Result<Save
         target,
         document: st.document.clone(),
         plotter,
+        mat_light: s.prefs.mat_color_light,
         revision,
         previous,
         hook,
@@ -518,6 +521,7 @@ impl SaveJob {
                 &self.document,
                 cut,
                 project::THUMBNAIL_PX,
+                self.mat_light,
             )
             .ok()
         });
@@ -652,9 +656,10 @@ pub fn save_unlocked(
 pub fn thumbnail_png(
     profiles: &flatcraft_device::ProfileStore,
     doc: &flatcraft_core::document::Document,
+    mat_light: [u8; 3],
 ) -> Option<Vec<u8>> {
     let plotter = profiles.plotter(&doc.job.plotter_id).ok()?;
-    crate::preview::render_document_png(&plotter, doc, project::THUMBNAIL_PX).ok()
+    crate::preview::render_document_png(&plotter, doc, project::THUMBNAIL_PX, mat_light).ok()
 }
 
 command!(
