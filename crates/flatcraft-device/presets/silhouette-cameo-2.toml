@@ -16,9 +16,9 @@ force_range = [1, 33]
 passes_range = [1, 20]
 flatten_tolerance_mm = 0.01
 media = [
-  { id = "mat-12x12", name = "Mat 12x12", kind = "Mat", color = "#FBF4E4", width_mm = 304.8, height_mm = 330.2, calibrated = false, grid = { origin_x_mm = 0.0, origin_y_mm = 0.0, width_mm = 304.8, height_mm = 304.8 } },
-  { id = "mat-12x24", name = "Mat 12x24", kind = "Mat", color = "#FBF4E4", width_mm = 304.8, height_mm = 635.0, calibrated = false, grid = { origin_x_mm = 0.0, origin_y_mm = 0.0, width_mm = 304.8, height_mm = 609.6 } },
-  { id = "no-mat", name = "No mat", kind = "NoMat", color = "#FBF4E4", width_mm = 304.8, height_mm = 3000.0, calibrated = false, grid = { origin_x_mm = 0.0, origin_y_mm = 0.0, width_mm = 304.8, height_mm = 3000.0 } },
+  { id = "mat-12x12", name = "Mat 12x12", kind = "Mat", width_mm = 304.8, height_mm = 330.2, calibrated = false, grid = { origin_x_mm = 0.0, origin_y_mm = 0.0, width_mm = 304.8, height_mm = 304.8 } },
+  { id = "mat-12x24", name = "Mat 12x24", kind = "Mat", width_mm = 304.8, height_mm = 635.0, calibrated = false, grid = { origin_x_mm = 0.0, origin_y_mm = 0.0, width_mm = 304.8, height_mm = 609.6 } },
+  { id = "no-mat", name = "No mat", kind = "NoMat", width_mm = 304.8, height_mm = 3000.0, calibrated = false, grid = { origin_x_mm = 0.0, origin_y_mm = 0.0, width_mm = 304.8, height_mm = 3000.0 } },
 ]
 
 [axis]

@@ -224,9 +224,11 @@ fn edit_one_mat_keeps_the_others() {
     let mat = media[0].as_table().unwrap();
     assert_eq!(mat["id"].as_str(), Some("mat-12x12"));
     // A complete entry, not only the changed field.
-    for k in ["name", "kind", "width_mm", "height_mm", "grid", "color"] {
+    for k in ["name", "kind", "width_mm", "height_mm", "grid"] {
         assert!(mat.contains_key(k), "missing {k}");
     }
+    // A mat on the default colour stores none.
+    assert!(!mat.contains_key("color"));
     h.get_by_label("Mat 12x12 (modified)");
     // The dot sits on the field that differs from the built-in mat.
     h.get_by_label("Grid origin y (mm) (modified)");
@@ -302,7 +304,7 @@ fn mat_colour_roundtrip() {
     save_as_my_cameo(&mut h);
     page(&mut h, "Mats");
     click(&mut h, "Mat 12x12");
-    h.get_by_label("Mat colour");
+    click(&mut h, "Custom");
     type_into(&mut h, "Mat colour (hex)", "#336699");
     click(&mut h, "Save preset");
 
@@ -312,7 +314,7 @@ fn mat_colour_roundtrip() {
     let reloaded = ProfileStore::load(&dir.path().join("profiles")).unwrap();
     assert_eq!(
         reloaded.plotter("user-my-cameo").unwrap().media[0].color,
-        [0x33, 0x66, 0x99]
+        Some([0x33, 0x66, 0x99])
     );
 
     use_plotter(&mut h, &s, "user-my-cameo");

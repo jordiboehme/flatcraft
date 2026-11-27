@@ -1137,11 +1137,10 @@ fn rotate_cursor(ui: &Ui, at: Pos2, t: &Tokens) {
     );
 }
 
-/// The mat colour, falling back to paper.
+/// The colour the mat is drawn in (its own, else the Settings default of
+/// the theme).
 pub fn mat_rgb(snap: &Snapshot) -> [u8; 3] {
-    snap.mat
-        .as_ref()
-        .map_or(flatcraft_device::DEFAULT_MAT_COLOR, |m| m.color)
+    snap.mat_colour
 }
 
 /// Fills the canvas, draws the mat (the margin in a darker shade of its
@@ -1162,10 +1161,10 @@ pub(crate) fn draw_mat(
         painter.rect_filled(
             view.rect_to_screen(snap.mat_rect(m)),
             0.0,
-            rgb(margin_colour(m.color)),
+            rgb(margin_colour(mat_rgb)),
         );
         let area = snap.area.unwrap_or_else(|| snap.mat_rect(m));
-        painter.rect_filled(view.rect_to_screen(area), 0.0, rgb(m.color));
+        painter.rect_filled(view.rect_to_screen(area), 0.0, rgb(mat_rgb));
         if show_grid {
             draw_grid(painter, view, m.grid.width_mm, m.grid.height_mm, contrast);
         }

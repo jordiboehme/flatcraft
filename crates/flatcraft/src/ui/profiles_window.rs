@@ -14,9 +14,9 @@ use egui::{Color32, Response, RichText, Sense, Ui, vec2};
 use flatcraft_core::numexpr::{Field, Kind as NumKind};
 use flatcraft_device::profile::MAX_SIZE_MM;
 use flatcraft_device::{
-    CornerModeSpec, DEFAULT_MAT_COLOR, GpglDialect, Grid, KnifeCompensation, MatTack,
-    MaterialGroup, MaterialOverride, MaterialProfile, Media, MediaField, MediaKind, PlotterProfile,
-    PresetInfo, Protocol, RingDirection, TransportSpec,
+    CornerModeSpec, GpglDialect, Grid, KnifeCompensation, MatTack, MaterialGroup, MaterialOverride,
+    MaterialProfile, Media, MediaField, MediaKind, PlotterProfile, PresetInfo, Protocol,
+    RingDirection, TransportSpec,
 };
 
 use super::calc::{self, Number};
@@ -192,6 +192,9 @@ pub(crate) struct View {
     mats_in_use: Vec<(String, String)>,
     /// User preset files the store could not read.
     diagnostics: Vec<flatcraft_device::PresetDiagnostic>,
+    /// The Settings default mat colours of the light and the dark theme:
+    /// what a mat without a colour of its own is painted in.
+    mat_default: ([u8; 3], [u8; 3]),
 }
 
 impl View {
@@ -264,6 +267,9 @@ pub fn slug(name: &str) -> String {
 pub fn hex(c: [u8; 3]) -> String {
     format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2])
 }
+
+/// Why the hex field of a mat that follows the default is dimmed.
+const MAT_COLOUR_DEFAULT_WHY: &str = "This mat follows the default colour from Settings. Pick Custom to give it a colour of its own.";
 
 /// A colour from `#RRGGBB` (the `#` may be left out).
 pub fn parse_hex(s: &str) -> Option<[u8; 3]> {
@@ -550,6 +556,7 @@ pub(crate) fn load(app: &mut FlatCraftApp) -> View {
         plotters,
         materials,
         diagnostics: s.profiles.diagnostics().to_vec(),
+        mat_default: (s.prefs.mat_color_light, s.prefs.mat_color_dark),
     }
 }
 
@@ -1039,6 +1046,11 @@ pub(crate) fn mats_page(
                     hex,
                     hex_editing,
                     highlight,
+                    if t.is_dark() {
+                        view.mat_default.1
+                    } else {
+                        view.mat_default.0
+                    },
                     t,
                 );
                 ui.add_space(t.spacing * 2.0);
@@ -1387,6 +1399,7 @@ fn mats(
     hex_text: &mut String,
     hex_editing: &mut bool,
     highlight: &Highlight,
+    default_colour: [u8; 3],
     t: &Tokens,
 ) {
     let f = Form {
@@ -1468,7 +1481,7 @@ fn mats(
                         height_mm: 304.8,
                     },
                     calibrated: false,
-                    color: DEFAULT_MAT_COLOR,
+                    color: None,
                 });
                 *selected = Some(id);
             }
@@ -1679,31 +1692,62 @@ fn mats(
                         &mut m.calibrated,
                     );
                     f.row(ui, "Mat colour", "color", Setting::MatColour, |ui| {
-                        ui.color_edit_button_srgb(&mut m.color)
+                        ui.horizontal(|ui| {
+                            let own = m.color.is_some();
+                            if ui.selectable_label(!own, "Use default").clicked() {
+                                m.color = None;
+                            }
+                            if ui.selectable_label(own, "Custom").clicked() && !own {
+                                m.color = Some(default_colour);
+                            }
+                            let mut shown = m.color.unwrap_or(default_colour);
+                            if own {
+                                if ui.color_edit_button_srgb(&mut shown).changed() {
+                                    m.color = Some(shown);
+                                }
+                            } else {
+                                // The default, shown as a swatch.
+                                let (r, _) =
+                                    ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
+                                ui.painter().rect_filled(r, 3.0, canvas::rgb(shown));
+                                ui.painter().rect_stroke(
+                                    r,
+                                    3.0,
+                                    egui::Stroke::new(1.0, t.border),
+                                    egui::StrokeKind::Inside,
+                                );
+                            }
+                        })
+                        .response
                     });
-                    f.row(
+                    f.row_dimmed(
                         ui,
                         "Mat colour (hex)",
                         "color",
                         Setting::MatColourHex,
+                        m.color.is_none().then_some(MAT_COLOUR_DEFAULT_WHY),
                         |ui| {
+                            let own = m.color.is_some();
                             if !*hex_editing {
-                                *hex_text = hex(m.color);
+                                *hex_text = hex(m.color.unwrap_or(default_colour));
                             }
-                            let r =
-                                ui.add(egui::TextEdit::singleline(hex_text).desired_width(90.0));
+                            let r = ui.add_enabled(
+                                own,
+                                egui::TextEdit::singleline(hex_text).desired_width(90.0),
+                            );
                             *hex_editing = r.has_focus();
-                            if (r.changed() || r.lost_focus())
+                            if own
+                                && (r.changed() || r.lost_focus())
                                 && let Some(c) = parse_hex(hex_text)
                             {
-                                m.color = c;
+                                m.color = Some(c);
                             }
                             r
                         },
                     );
                 });
         });
-        mat_drawing(ui, m, t);
+        mat_drawing(ui, m, default_colour, t);
     });
     if m.width_mm > MAX_SIZE_MM || m.height_mm > MAX_SIZE_MM {
         ui.label(RichText::new(format!("Mats up to {MAX_SIZE_MM} mm.")).color(t.text_dim));
@@ -1732,7 +1776,8 @@ fn mat_differences(a: &Media, b: &Media) -> Vec<String> {
 }
 
 /// The physical mat in its colour, the grid area and the origin, to scale.
-fn mat_drawing(ui: &mut Ui, m: &Media, t: &Tokens) {
+fn mat_drawing(ui: &mut Ui, m: &Media, default_colour: [u8; 3], t: &Tokens) {
+    let mat_colour = m.color.unwrap_or(default_colour);
     let size = vec2(150.0, 200.0);
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let (w, h) = (m.width_mm, m.height_mm);
@@ -1741,10 +1786,10 @@ fn mat_drawing(ui: &mut Ui, m: &Media, t: &Tokens) {
     }
     let scale = (f64::from(size.x) / w).min(f64::from(size.y) / h) as f32;
     let mat = egui::Rect::from_min_size(rect.min, vec2(w as f32 * scale, h as f32 * scale));
-    let [r, g, b] = m.color;
+    let [r, g, b] = mat_colour;
     let painter = ui.painter_at(rect);
     painter.rect_filled(mat, 2.0, Color32::from_rgb(r, g, b));
-    let [cr, cg, cb] = canvas::contrast_colour(m.color);
+    let [cr, cg, cb] = canvas::contrast_colour(mat_colour);
     let ink = Color32::from_rgb(cr, cg, cb);
     let gr = &m.grid;
     let grid = egui::Rect::from_min_size(

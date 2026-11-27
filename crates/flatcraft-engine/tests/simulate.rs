@@ -475,7 +475,7 @@ fn canvas_preview_draws_cut_geometry() {
         (b["x0"].as_f64().unwrap() + b["x1"].as_f64().unwrap()) / 2.0,
         (b["y0"].as_f64().unwrap() + b["y1"].as_f64().unwrap()) / 2.0,
     );
-    let mat = media.color;
+    let mat = media.color_or(flatcraft_device::DEFAULT_MAT_COLOR_LIGHT);
     // Off the 10 mm grid lines of the mat.
     let cx = (cx / 10.0).floor() * 10.0 + 4.5;
     let (x, y) = px(cx, cy);
@@ -632,7 +632,9 @@ fn grid_lines_stop_at_the_grid_edge() {
         .0;
     assert!(media.height_mm > media.grid.origin_y_mm + media.grid.height_mm + 5.0);
     let scale = 1024.0 / media.width_mm.max(media.height_mm);
-    let margin = flatcraft_core::colour::margin_colour(media.color);
+    let margin = flatcraft_core::colour::margin_colour(
+        media.color_or(flatcraft_device::DEFAULT_MAT_COLOR_LIGHT),
+    );
     let bottom = media.grid.origin_y_mm + media.grid.height_mm;
     for k in 0..=30 {
         let x_mm = media.grid.origin_x_mm + f64::from(k) * 10.0;
@@ -723,7 +725,7 @@ fn big_host_job_display_stays_near_the_cap() {
 /// and on a dark mat.
 #[test]
 fn firmware_preview_draws_the_commanded_path_neutral() {
-    for mat in ["#FBF4E4", "#202226", "#808080"] {
+    for mat in ["#F2EAD8", "#202226", "#808080"] {
         let d = dirs();
         let media = format!(
             "media = [{{ id = \"mat-12x12\", name = \"Mat 12x12\", kind = \"Mat\", color = \"{mat}\", width_mm = 304.8, height_mm = 330.2, calibrated = false, grid = {{ origin_x_mm = 0.0, origin_y_mm = 0.0, width_mm = 304.8, height_mm = 304.8 }} }}]\n"
@@ -741,7 +743,12 @@ fn firmware_preview_draws_the_commanded_path_neutral() {
         let img = image::load_from_memory(&png).unwrap().to_rgb8();
         let colour = {
             let plotter = s.profiles.plotter("fw").unwrap();
-            plotter.media_or_first("mat-12x12").unwrap().0.color
+            plotter
+                .media_or_first("mat-12x12")
+                .unwrap()
+                .0
+                .color
+                .unwrap()
         };
         let ink = flatcraft_core::colour::commanded_colour(colour);
         let has = |c: [u8; 3]| img.pixels().any(|p| [p[0], p[1], p[2]] == c);

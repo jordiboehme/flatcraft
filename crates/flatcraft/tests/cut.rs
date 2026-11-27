@@ -885,7 +885,7 @@ fn cut_moves_are_orange_and_travel_is_faint() {
     let mut h = harness(&dir, s, false);
     to_cut(&mut h);
     stage(&mut h, "Path");
-    let paper = flatcraft_device::PAPER_COLOR;
+    let paper = flatcraft_device::DEFAULT_MAT_COLOR_DARK;
     let [r, g, b] = flatcraft_core::colour::cut_colour(paper);
     let orange = egui::Color32::from_rgb(r, g, b);
     let shapes = common::painted(&h);
@@ -980,7 +980,7 @@ fn path_stage_counts_and_dashes_weed_paths() {
     // weed blue of the theme on this mat.
     assert!(dashes(&h) > plain + 20, "{} vs {plain}", dashes(&h));
     let t = app(&h).tokens;
-    let blue = flatcraft::ui::canvas::weed_rgb(flatcraft_device::PAPER_COLOR, &t);
+    let blue = flatcraft::ui::canvas::weed_rgb(flatcraft_device::DEFAULT_MAT_COLOR_DARK, &t);
     let blue_dashes = common::painted(&h)
         .iter()
         .filter(|s| matches!(s, egui::Shape::LineSegment { stroke, .. } if stroke.color == blue))

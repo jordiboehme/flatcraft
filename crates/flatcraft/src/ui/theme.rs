@@ -81,9 +81,9 @@ impl Tokens {
             accent_cut: Color32::from_rgb(0xF2, 0xA3, 0x3A),
             danger: Color32::from_rgb(0xE5, 0x48, 0x4D),
             weed_path: rgb(flatcraft_core::colour::WEED_DARK),
-            // A paper a little dimmer than white, so it does not glare on
-            // the dark canvas.
-            kept_paper: Color32::from_rgb(0xEC, 0xE7, 0xDC),
+            // A very light grey, a touch lighter than the dark default mat,
+            // so kept paper stays apart from the mat.
+            kept_paper: Color32::from_rgb(0xF6, 0xF7, 0xF9),
             waste_hatch: Color32::from_rgba_unmultiplied_const(0x2A, 0x2F, 0x36, 0x66),
             ok: Color32::from_rgb(0x46, 0xC2, 0x7A),
             warn: Color32::from_rgb(0xE8, 0xB2, 0x3A),
@@ -116,7 +116,7 @@ impl Tokens {
             accent_cut: Color32::from_rgb(0xF2, 0xA3, 0x3A),
             danger: Color32::from_rgb(0xC8, 0x2E, 0x34),
             weed_path: rgb(flatcraft_core::colour::WEED_LIGHT),
-            kept_paper: Color32::from_rgb(0xFF, 0xFD, 0xF8),
+            kept_paper: Color32::from_rgb(0xEE, 0xF0, 0xF3),
             waste_hatch: Color32::from_rgba_unmultiplied_const(0x4A, 0x52, 0x5C, 0x80),
             ok: Color32::from_rgb(0x2F, 0x9E, 0x5B),
             warn: Color32::from_rgb(0xD9, 0x9A, 0x1E),
@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn weed_paths_read_on_the_mats_and_the_canvas() {
         use flatcraft_core::colour::{cut_colour, weed_colour};
-        let paper = flatcraft_device::PAPER_COLOR;
+        let paper = flatcraft_device::DEFAULT_MAT_COLOR_LIGHT;
         // A dark vinyl backing used as a mat colour (no preset has one).
         let vinyl = [0x33, 0x37, 0x3C];
         let raw = |c: Color32| [c.r(), c.g(), c.b()];
@@ -348,8 +348,9 @@ mod tests {
             let own = raw(t.weed_path);
             for mat in [
                 paper,
-                flatcraft_device::DEFAULT_MAT_COLOR,
-                flatcraft_device::DEFAULT_NO_MAT_COLOR,
+                flatcraft_device::DEFAULT_MAT_COLOR_LIGHT,
+                flatcraft_device::DEFAULT_MAT_COLOR_DARK,
+                [0xFB, 0xF4, 0xE4],
                 vinyl,
             ] {
                 let c = super::rgb(weed_colour(mat, own));
@@ -384,11 +385,25 @@ mod tests {
         }
     }
 
-    /// The mat is paper in both themes: the light value of the paper token.
+    /// The icons keep their cream paper; the mat is white (light) or a dimmed
+    /// grey (dark) by default, and kept paper stays apart from either.
     #[test]
-    fn the_mat_is_the_light_paper() {
-        let [r, g, b] = flatcraft_device::PAPER_COLOR;
-        assert_eq!(Tokens::light().icon_paper, Color32::from_rgb(r, g, b));
+    fn kept_paper_differs_from_white_mat() {
+        use flatcraft_device::{DEFAULT_MAT_COLOR_DARK, DEFAULT_MAT_COLOR_LIGHT};
+        let raw = |c: Color32| [c.r(), c.g(), c.b()];
+        assert_ne!(DEFAULT_MAT_COLOR_LIGHT, [0xFB, 0xF4, 0xE4]);
+        for (t, mat) in [
+            (Tokens::light(), DEFAULT_MAT_COLOR_LIGHT),
+            (Tokens::dark(), DEFAULT_MAT_COLOR_DARK),
+        ] {
+            let kept = raw(t.kept_paper);
+            assert_ne!(kept, mat);
+            assert!(contrast(t.kept_paper, super::rgb(mat)) >= 1.05);
+        }
+        assert_eq!(
+            Tokens::light().icon_paper,
+            Color32::from_rgb(0xFB, 0xF4, 0xE4)
+        );
     }
 
     #[test]

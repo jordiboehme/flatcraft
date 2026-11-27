@@ -1737,10 +1737,10 @@ impl Setting {
                 "The height of the printed grid, in millimetres. Cuts stay inside the grid, 5 mm inside while the mat is not calibrated."
             }
             Setting::MatColour => {
-                "The colour FlatCraft paints this mat in on screen, so it looks like yours. It does not change the cut."
+                "The colour FlatCraft paints this mat in on screen, so it looks like yours. Use default follows the mat colour from Settings, Appearance, which differs for the light and the dark theme. Pick Custom when this mat has its own look, for example a green cutting mat. It does not change the cut."
             }
             Setting::MatColourHex => {
-                "The mat colour as a hex code, like #336699: two digits each for red, green and blue. Type one to change the colour."
+                "The mat colour as a hex code, like #336699: two digits each for red, green and blue. Type one to change the colour. Dimmed while the mat uses the default colour."
             }
             Setting::BladeDepthHint => {
                 "A note on how far to set a manual blade for this material, for example 3. The job settings show it as a reminder; FlatCraft does not send it to the plotter."

@@ -329,7 +329,11 @@ pub(crate) fn compute_with(
     let notes = job::toolpath_notes(&job.plan, &input.objects, &input.cut_geometry());
     let mut warnings = job.warnings.clone();
     warnings.extend(sim_warnings(mode, plotter));
-    if mode != SimMode::Firmware && !flatcraft_core::colour::deviation_colours_read(media.color) {
+    if mode != SimMode::Firmware
+        && !flatcraft_core::colour::deviation_colours_read(
+            media.color_or(flatcraft_device::DEFAULT_MAT_COLOR_LIGHT),
+        )
+    {
         warnings.push(MAT_COLOUR_NOTE.to_string());
     }
     let (result, display) = match mode {

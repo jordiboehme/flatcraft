@@ -13,6 +13,39 @@ fn lenient_strategy<'de, D: serde::Deserializer<'de>>(d: D) -> Result<CutStrateg
     Ok(CutStrategy::deserialize(value).unwrap_or_default())
 }
 
+/// A `#RRGGBB` colour in the file. One that does not parse gives the
+/// default, so a hand-edit never resets every other preference.
+mod hex_colour {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn parse(s: &str) -> Option<[u8; 3]> {
+        let hex = s.strip_prefix('#')?;
+        if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let v = u32::from_str_radix(hex, 16).ok()?;
+        Some([(v >> 16) as u8, (v >> 8) as u8, v as u8])
+    }
+
+    pub fn serialize<S: Serializer>(c: &[u8; 3], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2]))
+    }
+
+    pub fn light<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 3], D::Error> {
+        let v = toml::Value::deserialize(d)?;
+        Ok(v.as_str()
+            .and_then(parse)
+            .unwrap_or(flatcraft_device::DEFAULT_MAT_COLOR_LIGHT))
+    }
+
+    pub fn dark<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 3], D::Error> {
+        let v = toml::Value::deserialize(d)?;
+        Ok(v.as_str()
+            .and_then(parse)
+            .unwrap_or(flatcraft_device::DEFAULT_MAT_COLOR_DARK))
+    }
+}
+
 /// File name of the preferences inside the config dir.
 pub const FILE_NAME: &str = "preferences.toml";
 
@@ -114,6 +147,32 @@ pub struct Preferences {
     /// stay hidden until the Settings window shows them again. Only the
     /// window writes it; no registry command reads or changes it.
     pub hidden_tips: std::collections::BTreeSet<String>,
+    /// The mat colour on the canvas in the light theme, for every mat that
+    /// has no colour of its own. White by default. Only the Settings window
+    /// writes it; no registry command reads or changes it.
+    #[serde(
+        serialize_with = "hex_colour::serialize",
+        deserialize_with = "hex_colour::light"
+    )]
+    pub mat_color_light: [u8; 3],
+    /// The same for the dark theme: a dimmed light grey by default.
+    #[serde(
+        serialize_with = "hex_colour::serialize",
+        deserialize_with = "hex_colour::dark"
+    )]
+    pub mat_color_dark: [u8; 3],
+}
+
+/// The colour a mat shows on the canvas: its own when it has one, else the
+/// Settings default of the theme in use. Every place that draws or picks a
+/// contrast colour from the mat takes it from here, never from the raw
+/// `Media::color`.
+pub fn resolved_mat_colour(
+    media: &flatcraft_device::Media,
+    prefs: &Preferences,
+    dark: bool,
+) -> [u8; 3] {
+    media.color_or(prefs.mat_default(dark))
 }
 
 /// The Home page's details of one recent project (see
@@ -436,11 +495,22 @@ impl Default for Preferences {
             recent_details: Vec::new(),
             panel_sections: std::collections::BTreeMap::new(),
             hidden_tips: std::collections::BTreeSet::new(),
+            mat_color_light: flatcraft_device::DEFAULT_MAT_COLOR_LIGHT,
+            mat_color_dark: flatcraft_device::DEFAULT_MAT_COLOR_DARK,
         }
     }
 }
 
 impl Preferences {
+    /// The mat colour of the theme for a mat without a colour of its own.
+    pub fn mat_default(&self, dark: bool) -> [u8; 3] {
+        if dark {
+            self.mat_color_dark
+        } else {
+            self.mat_color_light
+        }
+    }
+
     /// Loads the preferences. A missing file gives the defaults; a broken file
     /// gives the defaults and a warning on stderr.
     pub fn load(config_dir: &Path) -> Self {

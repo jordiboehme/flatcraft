@@ -48,11 +48,13 @@ fn is_open(h: &AppHarness) -> bool {
 /// The controls of every row of the window (every setting the old
 /// Settings and Profiles window had, and the new ones), by row id. The
 /// test fails when a row has no entry here, so a new setting needs one.
-const REACHABLE: [(&str, &[&str]); 25] = [
+const REACHABLE: [(&str, &[&str]); 27] = [
     ("hidden_tips", &["Show hidden tips again"]),
     ("output_dir", &["Choose folder...", "Use the default"]),
     ("auto_reload", &["Reload changed files automatically"]),
     ("theme", &["Theme: Dark", "Theme: Light", "Theme: System"]),
+    ("mat_color_light", &["Mat colour, light theme"]),
+    ("mat_color_dark", &["Mat colour, dark theme"]),
     (
         "panel_objects",
         &[
@@ -828,4 +830,27 @@ fn restore_defaults_on_general_says_it_shows_hidden_tips_again() {
     for t in [settings_window::RESTORE, settings_window::RESTORE_GENERAL] {
         assert!(!t.contains('\u{2014}'));
     }
+}
+
+#[test]
+fn settings_mat_colours_restore_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    s.lock()
+        .unwrap()
+        .update_prefs(|p| {
+            p.mat_color_light = [0xF0, 0xE0, 0xD0];
+            p.mat_color_dark = [0x10, 0x20, 0x30];
+        })
+        .unwrap();
+    let mut h = harness(&dir, &s);
+    open(&mut h, "Appearance");
+    assert!(h.query_by_label("Mat colour, light theme").is_some());
+    assert!(h.query_by_label("Mat colour, dark theme").is_some());
+    assert!(!disabled(&h, "Restore page defaults"));
+    click(&mut h, "Restore page defaults");
+    click(&mut h, "OK");
+    let p = stored(&dir);
+    assert_eq!(p.mat_color_light, [0xFF, 0xFF, 0xFF]);
+    assert_eq!(p.mat_color_dark, [0xE8, 0xE9, 0xEB]);
 }

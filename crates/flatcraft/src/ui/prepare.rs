@@ -984,6 +984,11 @@ pub struct Snapshot {
     /// was skipped at load, when it was.
     pub material_skipped: Option<super::materials::Skipped>,
     pub mat: Option<Media>,
+    /// The colour the mat is drawn in: its own, else the Settings default of
+    /// the theme in use (`flatcraft_engine::prefs::resolved_mat_colour`).
+    /// Everything that draws on the mat or picks a contrast colour from it
+    /// reads this, never `Media::color`.
+    pub mat_colour: [u8; 3],
     /// The cutting area, in mm.
     pub area: Option<kurbo::Rect>,
     /// Set when the document's mat is gone and the plotter's first mat is
@@ -1216,6 +1221,11 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
             .zip(effective.as_ref())
             .and_then(|(p, (m, _))| p.cutting_area(&m.id));
         let (mat, mat_warning) = effective.unzip();
+        let dark = ctx.global_style().visuals.dark_mode;
+        let mat_colour = mat.as_ref().map_or_else(
+            || s.prefs.mat_default(dark),
+            |m| flatcraft_engine::prefs::resolved_mat_colour(m, &s.prefs, dark),
+        );
         let cut_log = s.cut_log();
         let mat_warning = mat_warning.flatten();
         let trace_source_changed = trace.as_mut().is_some_and(|d| {
@@ -1305,6 +1315,7 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
                 })
                 .map(|room| super::materials::TestCut { room }),
             mat,
+            mat_colour,
             area,
             mat_warning,
             profile_problem,

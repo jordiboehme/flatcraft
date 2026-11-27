@@ -753,7 +753,8 @@ fn document_state_reports_mat() {
     assert_eq!(m["width_mm"].as_f64(), Some(304.8));
     assert_eq!(m["height_mm"].as_f64(), Some(330.2));
     assert_eq!(m["calibrated"], false);
-    assert_eq!(m["color"], "#FBF4E4");
+    assert_eq!(m["color"], "#FFFFFF");
+    assert_eq!(m["custom_color"], false);
     assert_eq!(m["grid"]["origin_x_mm"].as_f64(), Some(0.0));
     assert_eq!(m["grid"]["origin_y_mm"].as_f64(), Some(0.0));
     assert_eq!(m["grid"]["width_mm"].as_f64(), Some(304.8));
@@ -2020,7 +2021,7 @@ fn preview_fills_the_mat_with_its_color() {
     )
     .unwrap();
     let img = image::load_from_memory(&png).unwrap().to_rgba8();
-    let paper = flatcraft_device::PAPER_COLOR;
+    let paper = flatcraft_device::DEFAULT_MAT_COLOR_LIGHT;
     // A corner of the physical mat, outside the grid: the darker margin.
     let (w, h) = img.dimensions();
     let px = img.get_pixel(w / 2, h - 3);

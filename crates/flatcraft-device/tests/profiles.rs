@@ -462,7 +462,7 @@ fn mat(id: &str) -> Media {
             height_mm: 300.0,
         },
         calibrated: false,
-        color: DEFAULT_MAT_COLOR,
+        color: None,
     }
 }
 
@@ -582,8 +582,8 @@ fn save_writes_only_changed_and_new_mats() {
 fn mat_color_defaults_roundtrips_and_validates() {
     let (_d, s) = store();
     let p = s.plotter("silhouette-cameo-2").unwrap();
-    assert_eq!(p.media[0].color, DEFAULT_MAT_COLOR);
-    assert_eq!(p.media[2].color, DEFAULT_NO_MAT_COLOR);
+    assert_eq!(p.media[0].color, None);
+    assert_eq!(p.media[2].color, None);
 
     // old files without color get the default of their kind
     let d = tempdir().unwrap();
@@ -598,21 +598,21 @@ fn mat_color_defaults_roundtrips_and_validates() {
     let s = ProfileStore::load(d.path()).unwrap();
     let o = s.plotter("oldmedia").unwrap();
     let get = |id: &str| o.media.iter().find(|m| m.id == id).unwrap().color;
-    assert_eq!(get("a"), DEFAULT_MAT_COLOR);
-    assert_eq!(get("b"), DEFAULT_NO_MAT_COLOR);
+    assert_eq!(get("a"), None);
+    assert_eq!(get("b"), None);
 
     // save writes a changed colour as #RRGGBB and it comes back
     let (d, mut s) = store();
     let mut p = s.plotter("silhouette-cameo-2").unwrap();
     p.id = "tuned".into();
-    p.media[0].color = [0x12, 0xAB, 0xEF];
+    p.media[0].color = Some([0x12, 0xAB, 0xEF]);
     s.save_user_plotter(&p, "silhouette-cameo-2").unwrap();
     let text = fs::read_to_string(d.path().join("plotters/tuned.toml")).unwrap();
     assert!(text.contains("#12ABEF"), "{text}");
     let s2 = ProfileStore::load(d.path()).unwrap();
     assert_eq!(
         s2.plotter("tuned").unwrap().media[0].color,
-        [0x12, 0xAB, 0xEF]
+        Some([0x12, 0xAB, 0xEF])
     );
 }
 
@@ -1039,18 +1039,18 @@ fn the_device_home_is_the_media_corner_in_app_coordinates() {
 }
 
 #[test]
-fn built_in_mats_default_to_paper() {
+fn built_in_mats_have_no_colour() {
     let (_d, s) = store();
     for info in s.plotters() {
         let p = s.plotter(&info.id).unwrap();
         for m in &p.media {
-            assert_eq!(m.color, PAPER_COLOR, "{} / {}", p.id, m.id);
+            assert_eq!(m.color, None, "{} / {}", p.id, m.id);
         }
     }
 }
 
 #[test]
-fn old_factory_colours_move_to_paper_and_picked_colours_stay() {
+fn a_stored_colour_is_custom_and_a_missing_one_is_default() {
     let d = tempdir().unwrap();
     write(
         d.path(),
@@ -1058,22 +1058,14 @@ fn old_factory_colours_move_to_paper_and_picked_colours_stay() {
         "mine",
         "id = \"mine\"\nname = \"M\"\ninherits = \"silhouette-cameo-2\"\n\
          media = [\n\
-         { id = \"old\", name = \"Old\", width_mm = 10.0, height_mm = 10.0, color = \"#8FA8B8\" },\n\
-         { id = \"oldlow\", name = \"Old\", width_mm = 10.0, height_mm = 10.0, color = \"#8fa8b8\" },\n\
-         { id = \"oldnomat\", name = \"N\", kind = \"NoMat\", width_mm = 10.0, height_mm = 10.0, color = \"#F4F1EA\" },\n\
-         { id = \"green\", name = \"Green\", width_mm = 10.0, height_mm = 10.0, color = \"#2E7D32\" },\n\
-         { id = \"mat-12x24\", name = \"Mat 12x24\", width_mm = 304.8, height_mm = 635.0, color = \"#336699\" }]\n",
+         { id = \"a\", name = \"A\", width_mm = 10.0, height_mm = 10.0, color = \"#FBF4E4\" },\n\
+         { id = \"b\", name = \"B\", width_mm = 10.0, height_mm = 10.0 }]\n",
     );
     let s = ProfileStore::load(d.path()).unwrap();
     let p = s.plotter("mine").unwrap();
     let get = |id: &str| p.media.iter().find(|m| m.id == id).unwrap().color;
-    assert_eq!(get("old"), PAPER_COLOR);
-    assert_eq!(get("oldlow"), PAPER_COLOR);
-    assert_eq!(get("oldnomat"), PAPER_COLOR);
-    assert_eq!(get("green"), [0x2E, 0x7D, 0x32]);
-    assert_eq!(get("mat-12x24"), [0x33, 0x66, 0x99]);
-    // A mat the user did not touch follows the built-in one.
-    assert_eq!(get("mat-12x12"), PAPER_COLOR);
+    assert_eq!(get("a"), Some([0xFB, 0xF4, 0xE4]));
+    assert_eq!(get("b"), None);
 }
 
 #[test]
@@ -1090,7 +1082,7 @@ fn a_user_plotter_that_inherits_follows_the_built_in_mat_colour() {
     let child = s.plotter("child").unwrap();
     let colours = |p: &PlotterProfile| p.media.iter().map(|m| m.color).collect::<Vec<_>>();
     assert_eq!(colours(&child), colours(&parent));
-    assert!(colours(&child).iter().all(|c| *c == PAPER_COLOR));
+    assert!(colours(&child).iter().all(Option::is_none));
 }
 
 #[test]

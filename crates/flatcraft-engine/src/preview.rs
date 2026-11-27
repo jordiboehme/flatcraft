@@ -276,6 +276,9 @@ fn draw(
     max_px: u32,
 ) -> Result<Vec<u8>, CommandError> {
     let (media, _) = crate::commands::effective_media(plotter, &doc.job)?;
+    // An image has no theme: a mat without a colour of its own is the light
+    // theme's default.
+    let mat_colour = media.color_or(flatcraft_device::DEFAULT_MAT_COLOR_LIGHT);
     let area = plotter
         .cutting_area(&media.id)
         .ok_or_else(|| failed("no cutting area"))?;
@@ -297,14 +300,14 @@ fn draw(
 
     // The mat margin in a darker shade of the mat colour, the cutting area in
     // the mat colour itself, the printed grid in a contrast colour on top.
-    let [mr, mg, mb] = flatcraft_core::colour::margin_colour(media.color);
+    let [mr, mg, mb] = flatcraft_core::colour::margin_colour(mat_colour);
     pm.fill(color(mr, mg, mb));
-    let [r, g, b] = media.color;
+    let [r, g, b] = mat_colour;
     match rect_path(area) {
         Some(p) => pm.fill_path(&p, &paint(color(r, g, b)), FillRule::Winding, mat, None),
         None => pm.fill(color(r, g, b)),
     }
-    let [lr, lg, lb] = line_colour(media.color);
+    let [lr, lg, lb] = line_colour(mat_colour);
     let mut grid_lines = PathBuilder::new();
     let (gw, gh) = (media.grid.width_mm as f32, media.grid.height_mm as f32);
     let mut at = 0.0f32;
@@ -385,23 +388,21 @@ fn draw(
                 mat,
                 px_mm: px(1.0) as f32,
                 line: [lr, lg, lb],
-                mat_colour: media.color,
+                mat_colour,
             };
             draw_simulation(canvas, run);
         }
         View::Path(result) => {
-            let [cr, cg, cb] = flatcraft_core::colour::cut_colour(media.color);
+            let [cr, cg, cb] = flatcraft_core::colour::cut_colour(mat_colour);
             let cut = paint(color(cr, cg, cb));
             // The light theme's weed blue (the image has no theme), or the
             // dark one when only that reads on the mat.
-            let [wr, wg, wb] = flatcraft_core::colour::weed_colour(
-                media.color,
-                flatcraft_core::colour::WEED_LIGHT,
-            );
+            let [wr, wg, wb] =
+                flatcraft_core::colour::weed_colour(mat_colour, flatcraft_core::colour::WEED_LIGHT);
             let weed = paint(color(wr, wg, wb));
             let travel = paint(Color::from_rgba8(lr, lg, lb, 150));
             let start = paint(color(0xd6, 0x28, 0x28));
-            let [tr, tg, tb] = label_colour(media.color);
+            let [tr, tg, tb] = label_colour(mat_colour);
             let label = paint(color(tr, tg, tb));
             let cut_stroke = Stroke {
                 width: px(1.5) as f32,

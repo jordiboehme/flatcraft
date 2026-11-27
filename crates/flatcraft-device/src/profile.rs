@@ -208,23 +208,29 @@ pub struct Media {
     pub grid: Grid,
     /// True once the grid origin was measured on the real mat.
     pub calibrated: bool,
-    /// The colour of the mat on the canvas, `#RRGGBB` in files.
-    #[serde(serialize_with = "hex_color::serialize")]
-    pub color: [u8; 3],
+    /// The mat's own colour on the canvas, `#RRGGBB` in files. `None` means
+    /// "use the default from Settings" for the theme in use; resolve it with
+    /// `resolved_mat_colour` (in the engine's preferences), never read it raw
+    /// to draw.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "hex_color::serialize_opt"
+    )]
+    pub color: Option<[u8; 3]>,
 }
 
-/// The paper colour: a warm cream, the light value of the icon style's paper
-/// token. A mat is a physical object, so it looks the same in both app themes.
-pub const PAPER_COLOR: [u8; 3] = [0xFB, 0xF4, 0xE4];
-/// Default mat colour on the canvas: paper.
-pub const DEFAULT_MAT_COLOR: [u8; 3] = PAPER_COLOR;
-/// Default colour of "No mat" on the canvas: paper.
-pub const DEFAULT_NO_MAT_COLOR: [u8; 3] = PAPER_COLOR;
-/// The factory colours before paper (a blue-grey mat, a cream no-mat). A mat
-/// that still holds one of them takes the new default when it is read.
-const OLD_MAT_COLOR: [u8; 3] = [0x8F, 0xA8, 0xB8];
-const OLD_NO_MAT_COLOR: [u8; 3] = [0xF4, 0xF1, 0xEA];
+impl Media {
+    /// The mat's own colour, or `default` when it has none.
+    pub fn color_or(&self, default: [u8; 3]) -> [u8; 3] {
+        self.color.unwrap_or(default)
+    }
+}
 
+/// Default mat colour in the light theme: white.
+pub const DEFAULT_MAT_COLOR_LIGHT: [u8; 3] = [0xFF, 0xFF, 0xFF];
+/// Default mat colour in the dark theme: a light grey, dimmed so it does not glare.
+pub const DEFAULT_MAT_COLOR_DARK: [u8; 3] = [0xE8, 0xE9, 0xEB];
 /// Colours as `#RRGGBB` strings.
 mod hex_color {
     use serde::Serializer;
@@ -239,8 +245,11 @@ mod hex_color {
         Ok([(v >> 16) as u8, (v >> 8) as u8, v as u8])
     }
 
-    pub fn serialize<S: Serializer>(c: &[u8; 3], s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2]))
+    pub fn serialize_opt<S: Serializer>(c: &Option<[u8; 3]>, s: S) -> Result<S::Ok, S::Error> {
+        match c {
+            Some(c) => s.serialize_str(&format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2])),
+            None => s.serialize_none(),
+        }
     }
 }
 
@@ -268,13 +277,8 @@ impl TryFrom<MediaFile> for Media {
 
     fn try_from(f: MediaFile) -> Result<Self, String> {
         let color = match &f.color {
-            Some(c) => match (hex_color::parse(c)?, f.kind) {
-                (OLD_MAT_COLOR, MediaKind::Mat) => DEFAULT_MAT_COLOR,
-                (OLD_NO_MAT_COLOR, MediaKind::NoMat) => DEFAULT_NO_MAT_COLOR,
-                (own, _) => own,
-            },
-            None if f.kind == MediaKind::NoMat => DEFAULT_NO_MAT_COLOR,
-            None => DEFAULT_MAT_COLOR,
+            Some(c) => Some(hex_color::parse(c)?),
+            None => None,
         };
         let grid = f.grid.unwrap_or(Grid {
             origin_x_mm: 0.0,

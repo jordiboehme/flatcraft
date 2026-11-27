@@ -298,8 +298,9 @@ fn mat_colour_fills_canvas() {
         mat["height_mm"].as_f64().unwrap() / 2.0 - oy,
     );
     let at = app(&h).ui.prepare.view.mm_to_screen(centre);
-    let colour = Color32::from_rgb(0xFB, 0xF4, 0xE4);
-    assert_eq!(mat["color"], "#FBF4E4");
+    let [r, g, b] = flatcraft_device::DEFAULT_MAT_COLOR_DARK;
+    let colour = Color32::from_rgb(r, g, b);
+    assert_eq!(mat["color"], "#FFFFFF");
     let hit = painted(&h).iter().any(|shape| match shape {
         Shape::Rect(r) => r.fill == colour && r.rect.contains(at),
         _ => false,
@@ -313,7 +314,7 @@ fn mat_margin_is_a_darker_shade_and_the_area_is_the_mat_colour() {
     let s = session(&dir);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    let paper = flatcraft_device::PAPER_COLOR;
+    let paper = flatcraft_device::DEFAULT_MAT_COLOR_DARK;
     let [mr, mg, mb] = flatcraft_core::colour::margin_colour(paper);
     let margin = Color32::from_rgb(mr, mg, mb);
     let shapes = painted(&h);

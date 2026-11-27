@@ -221,7 +221,7 @@ const fn other(
 
 /// Every setting the window shows: each preference (by field name), plus
 /// the rows of the other pages search can jump to.
-pub const ROWS: [Row; 25] = [
+pub const ROWS: [Row; 27] = [
     pref(
         "hidden_tips",
         Page::General,
@@ -261,6 +261,26 @@ pub const ROWS: [Row; 25] = [
             "Dark, Light, or System, which follows your computer's appearance. You see the change at once, and Cancel takes it back.",
         ),
         "dark light mode colour color night appearance",
+    ),
+    pref(
+        "mat_color_light",
+        Page::Appearance,
+        "Mat",
+        "Mat colour, light theme",
+        Card::Text(
+            "The colour of the cutting mat on the canvas while the Light theme is on. It is the colour of every mat that has none of its own: a mat preset can still pick its own colour in Devices. White by default. Pick a tint that looks like your real mat. It only changes how the canvas looks, never the cut.",
+        ),
+        "mat colour color canvas white cream paper background swatch",
+    ),
+    pref(
+        "mat_color_dark",
+        Page::Appearance,
+        "Mat",
+        "Mat colour, dark theme",
+        Card::Text(
+            "The colour of the cutting mat on the canvas while the Dark theme is on. It is a light grey by default, a little dimmed so it does not glare in a dim workshop. Make it brighter for contrast or darker if your eyes tire. It only changes how the canvas looks, never the cut.",
+        ),
+        "mat colour color canvas grey gray dim glare swatch night",
     ),
     pref(
         "panel_objects",
@@ -509,6 +529,8 @@ pub fn copy_field(field: &str, from: &Preferences, to: &mut Preferences) {
         "panel_stage" => to.panel_stage = from.panel_stage,
         "default_strategy" => to.default_strategy = from.default_strategy,
         "hidden_tips" => to.hidden_tips.clone_from(&from.hidden_tips),
+        "mat_color_light" => to.mat_color_light = from.mat_color_light,
+        "mat_color_dark" => to.mat_color_dark = from.mat_color_dark,
         _ => {}
     }
 }
@@ -1548,6 +1570,45 @@ fn appearance(ui: &mut Ui, cx: &mut Cx<'_>, d: &mut Preferences) {
             None
         });
     });
+    section(ui, cx, "Mat", |ui, cx| {
+        let t = *cx.t;
+        for (id, name, colour, default) in [
+            (
+                "mat_color_light",
+                "Mat colour, light theme",
+                &mut d.mat_color_light,
+                flatcraft_device::DEFAULT_MAT_COLOR_LIGHT,
+            ),
+            (
+                "mat_color_dark",
+                "Mat colour, dark theme",
+                &mut d.mat_color_dark,
+                flatcraft_device::DEFAULT_MAT_COLOR_DARK,
+            ),
+        ] {
+            row_ui(ui, cx, id, |ui| {
+                ui.horizontal(|ui| {
+                    let r = ui.color_edit_button_srgb(colour);
+                    set_name(ui, &r, name);
+                    ui.label(RichText::new(profiles_window::hex(*colour)).color(t.text_dim));
+                    if *colour != default {
+                        ui.label(RichText::new("(changed)").color(t.text_dim));
+                    }
+                    Some(r)
+                })
+                .inner
+            });
+        }
+        ui.add(
+            egui::Label::new(
+                RichText::new(
+                    "A mat preset can still have its own colour. Pick Custom on its Mat colour row in Devices.",
+                )
+                .color(t.text_dim),
+            )
+            .wrap(),
+        );
+    });
 }
 
 /// What the side panel choices do, once under the panel rows.
@@ -2016,6 +2077,8 @@ mod tests {
             recent_details: Vec::new(),
             panel_sections: Default::default(),
             hidden_tips: ["x".to_string()].into(),
+            mat_color_light: [1, 2, 3],
+            mat_color_dark: [4, 5, 6],
         };
         for f in fields() {
             assert!(differs(f, &other, &def), "{f} is not copied");
