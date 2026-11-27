@@ -1250,12 +1250,15 @@ fn hints_are_checked_off_the_ui_thread_and_the_last_check_shows_faded() {
         .ui
         .prepare
         .object_hints
-        .set_checker(Arc::new(move |input, ids| {
+        .set_checker(Arc::new(move |input, ids, stop| {
             seen.lock().unwrap().push(std::thread::current().id());
             while !gate.load(Ordering::SeqCst) {
+                if stop() {
+                    return None;
+                }
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
-            flatcraft_engine::report::check_selection(input, ids)
+            flatcraft_engine::report::check_selection_until(input, ids, stop)
         }));
     run(&s, "object.select", json!({ "ids": [a, b] }));
     // Frames go on while the check waits: it says it checks, nothing else.
@@ -1360,4 +1363,86 @@ fn hints_say_when_there_is_nothing_to_check_with_and_count_the_rest() {
         .filter(|sh| matches!(sh, Shape::Text(t) if t.galley.text() == "Tiny shapes"))
         .count();
     assert!(cards <= object::MAX_CARDS, "{cards}");
+}
+
+#[test]
+fn a_new_selection_stops_a_long_check_and_never_waits_behind_it() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let dir = tempfile::tempdir().unwrap();
+    let ids = std::cell::Cell::new((0, 0));
+    let (s, mut h) = window(&dir, 1400.0, |s| {
+        let (a, b) = two_squares(s);
+        run(
+            s,
+            "object.move",
+            json!({ "ids": [b], "x_mm": 70.3, "y_mm": 20.0 }),
+        );
+        ids.set((a, b));
+    });
+    let (a, b) = ids.get();
+    // A check of both objects runs until it is told to stop; a check of
+    // one object is quick.
+    let stopped = Arc::new(AtomicBool::new(false));
+    let seen = stopped.clone();
+    app_mut(&mut h)
+        .ui
+        .prepare
+        .object_hints
+        .set_checker(Arc::new(move |input, ids, stop| {
+            if ids.len() == 2 {
+                while !stop() {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                seen.store(true, Ordering::SeqCst);
+                return None;
+            }
+            flatcraft_engine::report::check_selection_until(input, ids, stop)
+        }));
+    run(&s, "object.select", json!({ "ids": [a, b] }));
+    for _ in 0..5 {
+        h.step();
+    }
+    the(&h, object::CHECKING);
+    // Another selection: its check starts at once and lands; the long one
+    // was told to stop.
+    run(&s, "object.select", json!({ "ids": [a] }));
+    h.run_plan();
+    assert!(in_inspector(&h, object::CHECKING).is_empty());
+    the(&h, "Move apart");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !stopped.load(Ordering::SeqCst) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the long check never stopped"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn a_worker_that_cannot_start_is_said_once_and_not_tried_every_frame() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, mut h) = window(&dir, 1400.0, |_| {});
+    app_mut(&mut h).ui.prepare.object_hints.fail_spawns(true);
+    let id = selection_all(&s)[0];
+    run(&s, "object.select", json!({ "ids": [id] }));
+    h.run_plan();
+    the(&h, object::CANNOT_CHECK);
+    assert!(!painted_text(&h, object::NO_HINTS));
+    let tried = app(&h).ui.prepare.object_hints.tried;
+    assert_eq!(tried, 1);
+    for _ in 0..10 {
+        h.step();
+    }
+    assert_eq!(
+        app(&h).ui.prepare.object_hints.tried,
+        tried,
+        "no retry every frame"
+    );
+    // Another state tries again, once.
+    run(&s, "object.move", json!({ "ids": [id], "x_mm": 30.0 }));
+    h.run_plan();
+    assert_eq!(app(&h).ui.prepare.object_hints.tried, tried + 1);
+    assert_eq!(app(&h).ui.prepare.object_hints.started, 0);
 }

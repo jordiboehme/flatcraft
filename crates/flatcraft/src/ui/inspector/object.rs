@@ -806,46 +806,80 @@ fn source(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Vec
 /// profiles' revision and the selection.
 type HintKey = (u64, u64, u64, Vec<u64>);
 
-/// Checks objects of a job input: `report::check_selection`; tests
-/// replace it (a slow one, one that notes its thread).
+/// Checks objects of a job input: `report::check_selection_until`, which
+/// gives up (`None`) when its third argument says stop; tests replace it
+/// (a slow one, one that notes its thread).
 pub type HintChecker = std::sync::Arc<
     dyn Fn(
             &JobInput,
             &[flatcraft_core::document::ObjectId],
-        ) -> (flatcraft_engine::report::Report, bool)
+            &dyn Fn() -> bool,
+        ) -> Option<(flatcraft_engine::report::Report, bool)>
         + Send
         + Sync,
 >;
 
-/// A finished check: the issues, or `None` when there was no plotter or
-/// material to check with.
-type Checked = (HintKey, Option<Vec<Issue>>);
+/// What a check found.
+#[derive(Debug, Clone)]
+enum Outcome {
+    Issues(Vec<Issue>),
+    /// There was no plotter or material to check with.
+    NoProfiles,
+    /// The worker could not be started.
+    Failed,
+}
+
+/// A finished check.
+type Checked = (HintKey, Outcome);
 
 /// What the worker sends back: the check, and the input when its cut
 /// geometry is the whole document's (it goes back into the cache).
 type Landed = (Checked, Option<JobInput>);
 
+/// A check on the worker: its key, where its result comes, the flag that
+/// tells it to stop, and the flag it sets when it ended.
+type Running = (
+    HintKey,
+    std::sync::mpsc::Receiver<Landed>,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+);
+
+/// How many stopped checks may still be winding down (a cut geometry
+/// build in progress ends before it can stop) before a new one waits.
+const MAX_STOPPING: usize = 2;
+
 /// The report's issues for the selected objects, for the object
-/// inspector's Hints. The check runs on a worker thread, one at a time,
-/// keyed by document, revision, profiles and selection; a frame never
-/// waits for it. Meanwhile the last result for the same document and
-/// selection shows, faded.
+/// inspector's Hints. The check runs on a worker thread, keyed by
+/// document, revision, profiles and selection; a frame never waits for
+/// it. A newer ask stops a running check of something else (it gives up
+/// between objects and pairs) and starts at once. Meanwhile the last
+/// result for the same document and selection shows, faded.
 pub struct Hints {
     done: Option<Checked>,
-    running: Option<(HintKey, std::sync::mpsc::Receiver<Landed>)>,
+    running: Option<Running>,
     /// The newest check asked for while one runs.
     queued: Option<(HintKey, Option<JobInput>)>,
+    /// The ended-flags of stopped checks that may still run.
+    stopping: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     checker: HintChecker,
+    /// Starting a worker failed once: it was said once, not every frame.
+    told_failure: bool,
+    /// Tests: every start of a worker fails.
+    fail_spawns: bool,
     /// How many checks were started (tests).
     pub started: u64,
+    /// How many starts were tried, failed ones included (tests).
+    pub tried: u64,
 }
 
 impl std::fmt::Debug for Hints {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Hints")
             .field("done", &self.done.as_ref().map(|(k, _)| k))
-            .field("running", &self.running.is_some())
+            .field("running", &self.running.as_ref().map(|r| &r.0))
             .field("queued", &self.queued.as_ref().map(|(k, _)| k))
+            .field("stopping", &self.stopping.len())
             .finish()
     }
 }
@@ -857,8 +891,12 @@ impl Clone for Hints {
             done: self.done.clone(),
             running: None,
             queued: None,
+            stopping: Vec::new(),
             checker: self.checker.clone(),
+            told_failure: self.told_failure,
+            fail_spawns: self.fail_spawns,
             started: self.started,
+            tried: self.tried,
         }
     }
 }
@@ -869,10 +907,14 @@ impl Default for Hints {
             done: None,
             running: None,
             queued: None,
-            checker: std::sync::Arc::new(|input, ids| {
-                flatcraft_engine::report::check_selection(input, ids)
+            stopping: Vec::new(),
+            checker: std::sync::Arc::new(|input, ids, stop| {
+                flatcraft_engine::report::check_selection_until(input, ids, stop)
             }),
+            told_failure: false,
+            fail_spawns: false,
             started: 0,
+            tried: 0,
         }
     }
 }
@@ -889,6 +931,8 @@ pub struct HintsView<'a> {
     pub checking: bool,
     /// There is no plotter or material to check with.
     pub no_profiles: bool,
+    /// The check could not be started.
+    pub failed: bool,
 }
 
 impl Hints {
@@ -906,6 +950,11 @@ impl Hints {
         self.checker = f;
     }
 
+    /// Makes every start of a worker fail (tests).
+    pub fn fail_spawns(&mut self, yes: bool) {
+        self.fail_spawns = yes;
+    }
+
     /// A check runs or waits.
     pub fn busy(&self) -> bool {
         self.running.is_some() || self.queued.is_some()
@@ -915,13 +964,13 @@ impl Hints {
     pub fn asked(&self, snap: &Snapshot) -> bool {
         let key = Self::key_of(snap);
         self.done.as_ref().is_some_and(|(k, _)| *k == key)
-            || self.running.as_ref().is_some_and(|(k, _)| *k == key)
+            || self.running.as_ref().is_some_and(|r| r.0 == key)
             || self.queued.as_ref().is_some_and(|(k, _)| *k == key)
     }
 
     /// Asks for a check of `snap`'s state with `input` (`None`: no
-    /// plotter or material). It starts now when no check runs, else after
-    /// the one that runs (a newer ask replaces an older waiting one).
+    /// plotter or material). A running check of something else is
+    /// stopped, and this one starts at once.
     pub fn ask(&mut self, ctx: &egui::Context, snap: &Snapshot, input: Option<JobInput>) {
         self.queued = Some((Self::key_of(snap), input));
         self.pump(ctx);
@@ -932,8 +981,8 @@ impl Hints {
     /// its document and revision, for the document's cache. Never waits.
     pub fn poll(&mut self, ctx: &egui::Context) -> Option<(u64, u64, JobInput)> {
         let mut offer = None;
-        if let Some((_, rx)) = &self.running {
-            match rx.try_recv() {
+        if let Some(r) = &self.running {
+            match r.1.try_recv() {
                 Ok((checked, input)) => {
                     let (doc, rev) = (checked.0.0, checked.0.1);
                     offer = input.map(|i| (doc, rev, i));
@@ -949,40 +998,72 @@ impl Hints {
         offer
     }
 
-    /// Starts the waiting check when none runs.
+    /// Starts the waiting check: at once when nothing runs, else after
+    /// stopping the running check (of an older state), unless too many
+    /// stopped ones still wind down.
     fn pump(&mut self, ctx: &egui::Context) {
-        if self.running.is_some() {
+        use std::sync::atomic::Ordering;
+        self.stopping.retain(|ended| !ended.load(Ordering::SeqCst));
+        if self.queued.is_none() {
             return;
+        }
+        if let Some(r) = &self.running {
+            if self.stopping.len() >= MAX_STOPPING {
+                return;
+            }
+            r.2.store(true, Ordering::SeqCst);
+            if let Some(r) = self.running.take() {
+                self.stopping.push(r.3);
+            }
         }
         let Some((key, input)) = self.queued.take() else {
             return;
         };
         let Some(input) = input else {
-            self.done = Some((key, None));
+            self.done = Some((key, Outcome::NoProfiles));
             return;
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let checker = self.checker.clone();
         let repaint = ctx.clone();
         let k = key.clone();
-        let spawned = std::thread::Builder::new()
-            .name("flatcraft-hints".into())
-            .spawn(move || {
-                let ids: Vec<flatcraft_core::document::ObjectId> =
-                    k.3.iter()
-                        .map(|i| flatcraft_core::document::ObjectId(*i))
-                        .collect();
-                let (report, whole) = checker(&input, &ids);
-                let input = (whole && input.built_cut_geometry().is_some()).then_some(input);
-                let _ = tx.send(((k, Some(report.issues)), input));
-                repaint.request_repaint();
-            });
-        if spawned.is_err() {
-            eprintln!("flatcraft: cannot start the hints worker");
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ended = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (stop2, ended2) = (stop.clone(), ended.clone());
+        self.tried += 1;
+        let spawned = if self.fail_spawns {
+            Err(std::io::Error::other("no threads in this test"))
+        } else {
+            std::thread::Builder::new()
+                .name("flatcraft-hints".into())
+                .spawn(move || {
+                    let ids: Vec<flatcraft_core::document::ObjectId> =
+                        k.3.iter()
+                            .map(|i| flatcraft_core::document::ObjectId(*i))
+                            .collect();
+                    let stopped = || stop2.load(Ordering::SeqCst);
+                    if let Some((report, whole)) = checker(&input, &ids, &stopped) {
+                        let input =
+                            (whole && input.built_cut_geometry().is_some()).then_some(input);
+                        let _ = tx.send(((k, Outcome::Issues(report.issues)), input));
+                    }
+                    ended2.store(true, Ordering::SeqCst);
+                    repaint.request_repaint();
+                })
+                .map(|_| ())
+        };
+        if let Err(e) = spawned {
+            // Said once; the state is marked as checked, so no frame
+            // tries again until the objects or the document change.
+            if !self.told_failure {
+                eprintln!("flatcraft: cannot start the hints worker: {e}");
+                self.told_failure = true;
+            }
+            self.done = Some((key, Outcome::Failed));
             return;
         }
         self.started += 1;
-        self.running = Some((key, rx));
+        self.running = Some((key, rx, stop, ended));
     }
 
     /// What to show for `snap`'s document and selection. A check of
@@ -992,13 +1073,18 @@ impl Hints {
         let key = Self::key_of(snap);
         let same = |k: &HintKey| k.0 == key.0 && k.3 == key.3;
         let done = self.done.as_ref().filter(|(k, _)| same(k));
-        let checking = self.running.as_ref().is_some_and(|(k, _)| *k == key)
+        let checking = self.running.as_ref().is_some_and(|r| r.0 == key)
             || self.queued.as_ref().is_some_and(|(k, _)| *k == key);
+        let now = |o: fn(&Outcome) -> bool| done.is_some_and(|(k, d)| *k == key && o(d));
         HintsView {
-            issues: done.and_then(|(_, i)| i.as_deref()),
+            issues: done.and_then(|(_, d)| match d {
+                Outcome::Issues(i) => Some(i.as_slice()),
+                _ => None,
+            }),
             stale: done.is_some_and(|(k, _)| *k != key),
             checking,
-            no_profiles: done.is_some_and(|(k, i)| *k == key && i.is_none()),
+            no_profiles: now(|d| matches!(d, Outcome::NoProfiles)),
+            failed: now(|d| matches!(d, Outcome::Failed)),
         }
     }
 }
@@ -1050,6 +1136,9 @@ pub const NO_HINTS: &str = "Nothing to tell. These objects are good to go.";
 pub const CHECKING: &str = "Checking these objects...";
 /// When there is nothing to check with.
 pub const NO_PROFILES: &str = "Pick a plotter and a material to check these objects.";
+/// When the check could not be started.
+pub const CANNOT_CHECK: &str =
+    "These objects cannot be checked right now. Select them again to try once more.";
 /// Why the buttons of an older check are dimmed.
 pub const STALE_FIX: &str = "Wait a moment: these objects changed and are checked again.";
 
@@ -1086,6 +1175,8 @@ fn hints(ui: &mut Ui, st: &PrepareState, snap: &Snapshot, t: &Tokens, actions: &
                 CHECKING
             } else if view.no_profiles {
                 NO_PROFILES
+            } else if view.failed {
+                CANNOT_CHECK
             } else if on_card > 0 {
                 ""
             } else if view.issues.is_some_and(|_| issues.is_empty()) {
