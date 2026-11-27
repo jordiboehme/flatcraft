@@ -577,14 +577,16 @@ fn weed_mm(
         calc::hint(Kind::Length)
     );
     blocks::row_dimmed(ui, label, &card, why, None, |ui| {
-        // The field fills the value column, less the unit after it.
+        // The field fills the value column, less the unit after it. The
+        // unit is measured in the font its label uses, in whole pixels as
+        // the label takes them: measured short, the row would ask for more
+        // than it has.
+        let font = egui::TextStyle::Body.resolve(ui.style());
         let unit = ui
             .painter()
-            .layout_no_wrap("mm".into(), metrics::body(), egui::Color32::PLACEHOLDER)
+            .layout_no_wrap("mm".into(), font, egui::Color32::PLACEHOLDER)
             .size()
             .x
-            // The label after the field takes whole pixels: measured
-            // short, the row would ask for more than it has.
             .ceil();
         let w = ui.available_width() - unit - ui.spacing().item_spacing.x;
         let spec = Number::new(Field::new(Kind::Length).range(lo, hi))
@@ -912,6 +914,75 @@ fn last_time(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec<Action>
         );
         if b.clicked() {
             actions.push(Action::AskOutcome(e.id.clone()));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A weeding row with its "mm" never takes more than the width it
+    /// has: a row that over-asks would widen a resizable panel on every
+    /// frame. Widths with fractions, at 1x and 2x, in the app's style and
+    /// in egui's own (whose body text is larger).
+    #[test]
+    fn weed_rows_use_at_most_their_width() {
+        for themed in [true, false] {
+            weed_rows_fit(themed);
+        }
+    }
+
+    fn weed_rows_fit(themed: bool) {
+        let ctx = egui::Context::default();
+        crate::ui::fonts::install(&ctx);
+        if themed {
+            crate::ui::theme::apply(&ctx, &Tokens::light(), false);
+        }
+        for ppp in [1.0, 2.0] {
+            for w in [240.0, 256.5, 263.25, 271.75, 296.0] {
+                let mut used = 0.0;
+                for _ in 0..2 {
+                    let input = egui::RawInput {
+                        viewports: std::iter::once((
+                            egui::ViewportId::ROOT,
+                            egui::ViewportInfo {
+                                native_pixels_per_point: Some(ppp),
+                                ..Default::default()
+                            },
+                        ))
+                        .collect(),
+                        ..Default::default()
+                    };
+                    let mut out = ctx.run_ui(input, |ui| {
+                        let rect = egui::Rect::from_min_size(
+                            ui.max_rect().min,
+                            egui::vec2(w, metrics::ROW * 2.0),
+                        );
+                        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                        blocks::panel_spacing(&mut child);
+                        weed_mm(
+                            &mut child,
+                            "Box margin",
+                            2.0,
+                            (0.0, 50.0),
+                            Setting::WeedMargin,
+                            None,
+                        );
+                        weed_mm(
+                            &mut child,
+                            "Line spacing",
+                            10.0,
+                            (1.0, 100.0),
+                            Setting::WeedSpacing,
+                            Some(WEED_LINES_OFF),
+                        );
+                        used = child.min_rect().width();
+                    });
+                    out.textures_delta.clear();
+                }
+                assert!(used <= w + 1e-3, "{used} of {w} at {ppp}x, themed {themed}");
+            }
         }
     }
 }

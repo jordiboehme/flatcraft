@@ -612,7 +612,11 @@ pub fn panel_body<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
             .max_rect(rect)
             .layout(*ui.layout()),
     );
-    child.set_clip_rect(ui.clip_rect().intersect(rect));
+    // The clip reaches a little past the content on the sides, so the
+    // focus ring and the hover stroke of a control at the edge are not
+    // cut; never past the panel's own clip.
+    let clip = rect.expand2(vec2(super::metrics::SPACE_2, 0.0));
+    child.set_clip_rect(ui.clip_rect().intersect(clip));
     let r = add(&mut child);
     let used = Rect::from_min_size(rect.min, vec2(w, child.min_rect().height()));
     ui.advance_cursor_after_rect(used);

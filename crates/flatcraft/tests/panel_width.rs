@@ -29,12 +29,13 @@ fn canvas(h: &AppHarness) -> Rect {
 /// canvas keeps its left and right edges).
 fn sweep(h: &mut AppHarness, what: &str) {
     let first = canvas(h);
+    let w = h.ctx.content_rect().width();
     for i in 0..120 {
         // Every other move over the right panels, where the bug was.
         let x = if i % 2 == 0 {
-            1100.0 + (i as f32 * 37.0) % 290.0
+            w - 300.0 + (i as f32 * 37.0) % 290.0
         } else {
-            20.0 + (i as f32 * 97.0) % 1360.0
+            20.0 + (i as f32 * 97.0) % (w - 40.0)
         };
         let y = 160.0 + (i as f32 * 53.0) % 700.0;
         h.event(Event::PointerMoved(Pos2::new(x, y)));
@@ -58,6 +59,12 @@ fn window(ppp: f32) -> (tempfile::TempDir, AppHarness) {
 /// with that knife compensation (the host one is simulated, the firmware
 /// one is not).
 fn window_with(ppp: f32, knife: Option<&str>) -> (tempfile::TempDir, AppHarness) {
+    window_sized(ppp, knife, 1400.0)
+}
+
+/// [`window_with`] `width` points wide. Below 1400 pt every side panel is
+/// held open, so the panels share the narrow window.
+fn window_sized(ppp: f32, knife: Option<&str>, width: f32) -> (tempfile::TempDir, AppHarness) {
     let dir = tempfile::tempdir().unwrap();
     if let Some(knife) = knife {
         let plotters = dir.path().join("profiles").join("plotters");
@@ -95,6 +102,12 @@ fn window_with(ppp: f32, knife: Option<&str>) -> (tempfile::TempDir, AppHarness)
         ] {
             st.prefs.panel_sections.insert(id.into(), true);
         }
+        if width < 1400.0 {
+            use flatcraft_engine::prefs::PanelUser;
+            st.prefs.panel_objects = PanelUser::Open;
+            st.prefs.panel_settings = PanelUser::Open;
+            st.prefs.panel_stage = PanelUser::Open;
+        }
     }
     import_square(&s);
     import_square(&s);
@@ -102,9 +115,9 @@ fn window_with(ppp: f32, knife: Option<&str>) -> (tempfile::TempDir, AppHarness)
         .unwrap()
         .execute("object.select", json!({ "ids": [1] }), Origin::User)
         .unwrap();
-    let mut h = harness_sized(&dir, s, [1400.0, 900.0], 8, |a| a);
+    let mut h = harness_sized(&dir, s, [width, 900.0], 8, |a| a);
     h.set_pixels_per_point(ppp);
-    h.set_size(egui::vec2(1400.0, 900.0));
+    h.set_size(egui::vec2(width, 900.0));
     h.run_plan();
     (dir, h)
 }
@@ -130,8 +143,27 @@ fn the_prepare_panels_keep_their_width_while_the_pointer_moves() {
     }
 }
 
+#[test]
+fn the_panels_share_a_900_pt_window_without_growing() {
+    // Objects, Cut and Job and the docked Arrange panel, all open.
+    prepare_panels_at(1.0, 900.0);
+    // The Cut stage panel.
+    let (_d, mut h) = window_sized(1.0, None, 900.0);
+    app_mut(&mut h).ui.workspace = Workspace::Cut;
+    wait_for_workers(&mut h);
+    for stage in Stage::ALL {
+        app_mut(&mut h).ui.cut.stage = stage;
+        wait_for_workers(&mut h);
+        sweep(&mut h, &format!("{} at 900 pt", stage.name()));
+    }
+}
+
 fn prepare_panels(ppp: f32) {
-    let (_d, mut h) = window(ppp);
+    prepare_panels_at(ppp, 1400.0);
+}
+
+fn prepare_panels_at(ppp: f32, width: f32) {
+    let (_d, mut h) = window_sized(ppp, None, width);
     to_prepare(&mut h);
     wait_for_workers(&mut h);
     sweep(&mut h, "Prepare");
@@ -148,6 +180,13 @@ fn prepare_panels(ppp: f32) {
     h.get_by_label(&tool.row_name()).click();
     h.run_plan();
     assert!(app(&h).ui.prepare.panel.is_some());
+    // Held open below 1400 pt: the panels share the window.
+    if width < 1400.0 {
+        for panel in ["Objects", "Cut and Job"] {
+            let name = format!("Collapse the {panel} panel");
+            assert!(h.query_by_label(&name).is_some(), "{panel} is open");
+        }
+    }
     sweep(&mut h, "Arrange");
 }
 
