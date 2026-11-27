@@ -12,6 +12,7 @@
 //! mode, so a click only switches between finished masks and the frame
 //! never builds one.
 
+use crate::ui::metrics;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
@@ -21,13 +22,13 @@ use flatcraft_engine::job::JobResult;
 use flatcraft_path::{KeptMaterial, Region, RegionHit, keep_for};
 use serde_json::json;
 
+use super::Action;
 use super::canvas::CanvasView;
 use super::groups::card;
 use super::kept::{KeptCache, Variant};
 use super::prepare::Snapshot;
 use super::settings::keep_name;
 use super::theme::Tokens;
-use super::{Action, fonts};
 
 /// The button next to the Keep combo.
 pub const BUTTON: &str = "Pick on the mat...";
@@ -394,17 +395,19 @@ impl KeepPick {
         t: &Tokens,
     ) -> Option<Outcome> {
         let mut outcome = None;
-        let width = BAR_WIDTH.min(rect.width() - 2.0 * t.spacing).max(160.0);
+        let width = BAR_WIDTH
+            .min(rect.width() - 2.0 * metrics::SPACE_8)
+            .max(160.0);
         let backing = snap.material.as_ref().is_some_and(|m| m.backing);
         let mode = self.result();
         // At the bottom right: designs mostly sit at the top left of the
         // mat, the pills at the bottom left. Laid out from the bottom up,
         // so the buttons stay where they are when a line above them
         // changes.
-        let right = rect.right() - t.spacing;
+        let right = rect.right() - metrics::SPACE_8;
         let max = egui::Rect::from_min_max(
             egui::pos2(right - width, rect.top()),
-            egui::pos2(right, rect.bottom() - t.spacing),
+            egui::pos2(right, rect.bottom() - metrics::SPACE_8),
         );
         let shown = ui.scope_builder(
             egui::UiBuilder::new()
@@ -415,9 +418,9 @@ impl KeepPick {
                     .fill(t.surface)
                     .stroke(egui::Stroke::new(1.0, t.accent_prepare))
                     .corner_radius(t.radius)
-                    .inner_margin(t.spacing)
+                    .inner_margin(metrics::CARD_PAD)
                     .show(ui, |ui| {
-                        ui.set_width(width - 2.0 * t.spacing);
+                        ui.set_width(width - 2.0 * metrics::CARD_PAD);
                         // Bottom up: the last line first.
                         ui.horizontal(|ui| {
                             let why = match (planned, mode) {
@@ -446,7 +449,7 @@ impl KeepPick {
                                 outcome = Some(Outcome::Cancel);
                             }
                         });
-                        ui.add_space(t.spacing / 2.0);
+                        ui.add_space(metrics::SPACE_4);
                         if !planned {
                             ui.label(NO_PLAN);
                         } else {
@@ -462,7 +465,7 @@ impl KeepPick {
                             }
                             ui.label(result_text(mode));
                         }
-                        ui.label(RichText::new(TITLE).font(fonts::semibold(14.0)));
+                        ui.label(RichText::new(TITLE).font(metrics::heading()));
                     })
                     .response
                     .rect

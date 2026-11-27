@@ -4,6 +4,7 @@
 //! The byte log holds up to 100 000 entries, so only its tail is copied,
 //! and only when it changed; decoding happens outside the session lock.
 
+use crate::ui::metrics;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -14,7 +15,7 @@ use flatcraft_device::{Dir, TransportSpec};
 use flatcraft_engine::JobResult;
 
 use super::theme::Tokens;
-use super::{Action, FlatCraftApp, fonts, lock};
+use super::{Action, FlatCraftApp, lock};
 
 /// Most byte log rows the panel shows (the newest ones).
 pub const MAX_ROWS: usize = 5000;
@@ -187,7 +188,7 @@ fn listing(ui: &mut Ui, id: &str, job: &JobResult) {
             for l in &lines[range] {
                 ui.label(
                     RichText::new(format!("{}\t# {}", l.command, l.note))
-                        .font(egui::FontId::monospace(11.0)),
+                        .font(egui::FontId::monospace(metrics::TEXT_SMALL)),
                 );
             }
         });
@@ -217,7 +218,7 @@ fn table(ui: &mut Ui, id: &str, rows: &[Row], t: &Tokens) {
         ui.label(RichText::new("Nothing here yet.").color(t.text_dim));
         return;
     }
-    let mono = egui::FontId::monospace(11.0);
+    let mono = egui::FontId::monospace(metrics::TEXT_SMALL);
     let height = ui.text_style_height(&egui::TextStyle::Body).max(14.0) + 4.0;
     ui.horizontal(|ui| {
         for (w, h) in [
@@ -226,7 +227,7 @@ fn table(ui: &mut Ui, id: &str, rows: &[Row], t: &Tokens) {
             (330.0, "Hex"),
             (0.0, "Meaning"),
         ] {
-            let l = egui::Label::new(RichText::new(h).font(fonts::semibold(12.0)));
+            let l = egui::Label::new(RichText::new(h).font(metrics::subsection_title()));
             if w > 0.0 {
                 ui.add_sized([w, height], l);
             } else {

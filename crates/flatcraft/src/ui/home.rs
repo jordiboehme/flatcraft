@@ -8,14 +8,14 @@ use super::icons::{self, Icon};
 use super::theme::Tokens;
 use std::path::{Path, PathBuf};
 
-use super::{Action, FlatCraftApp, fonts, groups, lock, project_name};
+use super::{Action, FlatCraftApp, groups, lock, metrics, project_name};
 
 /// The widest the page gets; wider windows centre it.
 pub const MAX_WIDTH: f32 = 1080.0;
 /// Room left and right of the page.
-pub const SIDE: f32 = 24.0;
+pub const SIDE: f32 = metrics::SPACE_24;
 /// Room between cards.
-pub const GAP: f32 = 12.0;
+pub const GAP: f32 = metrics::SPACE_12;
 /// The height of a New card.
 pub const NEW_CARD_HEIGHT: f32 = 76.0;
 /// A New card is never narrower than this while there are 4 columns.
@@ -117,9 +117,9 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, actions: &mut Vec<Action>) {
                 ui.add_space(left);
                 ui.vertical(|ui| {
                     ui.set_width(width);
-                    ui.add_space(28.0);
+                    ui.add_space(metrics::SPACE_24);
                     page(ui, app, &t, width, actions);
-                    ui.add_space(32.0);
+                    ui.add_space(metrics::SPACE_24);
                 });
             });
         });
@@ -137,14 +137,14 @@ fn page(ui: &mut Ui, app: &mut FlatCraftApp, t: &Tokens, width: f32, actions: &m
         app.ui.home.versions.clear();
     }
     app.ui.home.collect(ui.ctx());
+    ui.label(RichText::new(TITLE).font(metrics::display()).color(t.text));
+    ui.add_space(metrics::SPACE_2);
     ui.label(
-        RichText::new(TITLE)
-            .font(fonts::semibold(26.0))
-            .color(t.text),
+        RichText::new(SUBTITLE)
+            .size(metrics::TEXT_HEADING)
+            .color(t.text_dim),
     );
-    ui.add_space(2.0);
-    ui.label(RichText::new(SUBTITLE).size(14.0).color(t.text_dim));
-    ui.add_space(24.0);
+    ui.add_space(metrics::SPACE_24);
 
     heading(ui, t, "New");
     let cols = columns(width, NEW_CARD_MIN, &[4, 2, 1]);
@@ -163,12 +163,12 @@ fn page(ui: &mut Ui, app: &mut FlatCraftApp, t: &Tokens, width: f32, actions: &m
             }
         },
     );
-    ui.add_space(28.0);
+    ui.add_space(metrics::SPACE_24);
 
     heading(ui, t, "Recent");
     let mut missing = Vec::new();
     recent(ui, app, t, &mut missing, actions);
-    ui.add_space(28.0);
+    ui.add_space(metrics::SPACE_24);
 
     heading(ui, t, "Samples");
     samples(ui, app, t, width, &mut missing, actions);
@@ -179,10 +179,10 @@ fn page(ui: &mut Ui, app: &mut FlatCraftApp, t: &Tokens, width: f32, actions: &m
 fn heading(ui: &mut Ui, t: &Tokens, text: &str) {
     ui.label(
         RichText::new(text.to_uppercase())
-            .font(fonts::semibold(11.0))
+            .font(metrics::caption())
             .color(t.text_dim),
     );
-    ui.add_space(8.0);
+    ui.add_space(metrics::SPACE_8);
 }
 
 /// Lays out `n` cards in rows of `cols`, each `height` tall, filling
@@ -251,18 +251,8 @@ fn new_card(ui: &mut Ui, t: &Tokens, card: &NewCard, size: Vec2) -> egui::Respon
     let x = tile.right() + 12.0;
     let text_w = (rect.right() - 12.0 - x).max(40.0);
     let painter = ui.painter();
-    let title = painter.layout(
-        card.title.to_string(),
-        fonts::semibold(14.0),
-        t.text,
-        text_w,
-    );
-    let line = painter.layout(
-        (card.line)(),
-        egui::FontId::proportional(12.0),
-        t.text_dim,
-        text_w,
-    );
+    let title = painter.layout(card.title.to_string(), metrics::heading(), t.text, text_w);
+    let line = painter.layout((card.line)(), metrics::secondary(), t.text_dim, text_w);
     let total = title.size().y + 2.0 + line.size().y;
     let top = rect.center().y - total / 2.0;
     painter.galley(egui::pos2(x, top), title.clone(), t.text);
@@ -709,7 +699,7 @@ fn recent(
             }
         });
     if total > SHOWN_RECENT {
-        ui.add_space(8.0);
+        ui.add_space(metrics::SPACE_8);
         let (label, hint) = if app.ui.home.show_all {
             (
                 "Show fewer".to_string(),
@@ -811,7 +801,7 @@ fn recent_row(
     let text_w = (rect.right() - right_room - x).max(60.0);
     let name_g = painter.layout_job(trunc(
         &name,
-        fonts::semibold(14.0),
+        metrics::heading(),
         if gone { t.text_dim } else { t.text },
         text_w,
     ));
@@ -820,18 +810,13 @@ fn recent_row(
     } else {
         (short_folder(&row.path, home_dir), t.text_dim)
     };
-    let second_g = painter.layout_job(trunc(
-        &second,
-        egui::FontId::proportional(12.0),
-        second_colour,
-        text_w,
-    ));
+    let second_g = painter.layout_job(trunc(&second, metrics::secondary(), second_colour, text_w));
     // The description, when there is one, sits between the name and the
     // folder.
     let desc_g = (!gone && !row.description.is_empty()).then(|| {
         painter.layout_job(trunc(
             &row.description,
-            egui::FontId::proportional(12.0),
+            metrics::secondary(),
             t.text,
             text_w,
         ))
@@ -887,7 +872,7 @@ fn recent_row(
         let right = rect.right() - 14.0;
         if let Some(doc) = row.open {
             let badge =
-                painter.layout_no_wrap("Open now".into(), fonts::semibold(11.0), t.accent_prepare);
+                painter.layout_no_wrap("Open now".into(), metrics::caption(), t.accent_prepare);
             let pad = Vec2::new(7.0, 2.0);
             let b = Rect::from_min_size(
                 egui::pos2(
@@ -905,14 +890,9 @@ fn recent_row(
         } else {
             let when = ago(now, row.opened);
             let ws = row.workspace;
-            let when_g =
-                painter.layout_no_wrap(when.clone(), egui::FontId::proportional(12.0), t.text_dim);
+            let when_g = painter.layout_no_wrap(when.clone(), metrics::secondary(), t.text_dim);
             let ws_g = ws.map(|w| {
-                painter.layout_no_wrap(
-                    w.name().into(),
-                    egui::FontId::proportional(12.0),
-                    w.accent(t),
-                )
+                painter.layout_no_wrap(w.name().into(), metrics::secondary(), w.accent(t))
             });
             let h = when_g.size().y + ws_g.as_ref().map_or(0.0, |g| g.size().y + 2.0);
             let top = rect.center().y - h / 2.0;
@@ -1152,15 +1132,10 @@ fn sample_card(
     );
     let x = rect.left() + 14.0;
     let text_w = rect.width() - 28.0;
-    let title = painter.layout(
-        sample.title.to_string(),
-        fonts::semibold(14.0),
-        t.text,
-        text_w,
-    );
+    let title = painter.layout(sample.title.to_string(), metrics::heading(), t.text, text_w);
     let line = painter.layout(
         sample.sentence.to_string(),
-        egui::FontId::proportional(12.0),
+        metrics::secondary(),
         t.text_dim,
         text_w,
     );
@@ -1224,19 +1199,19 @@ mod tests {
     #[test]
     fn sample_texts_fit_their_cards() {
         let ctx = egui::Context::default();
-        fonts::install(&ctx);
+        crate::ui::fonts::install(&ctx);
         let mut out = ctx.run_ui(Default::default(), |_| {});
         out.textures_delta.clear();
         let width = SAMPLE_CARD_MIN - 28.0;
         for x in &SAMPLES {
             let (title, line) = ctx.fonts_mut(|f| {
                 (
-                    f.layout(x.title.into(), fonts::semibold(14.0), Color32::WHITE, width)
+                    f.layout(x.title.into(), metrics::heading(), Color32::WHITE, width)
                         .size()
                         .y,
                     f.layout(
                         x.sentence.into(),
-                        egui::FontId::proportional(12.0),
+                        metrics::secondary(),
                         Color32::WHITE,
                         width,
                     )

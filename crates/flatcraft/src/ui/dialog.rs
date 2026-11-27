@@ -15,9 +15,9 @@
 //! plotter): there the title stays plain, because the person may need to
 //! act fast.
 
+use crate::ui::metrics;
 use egui::{Color32, Key, Modifiers, RichText, Ui};
 
-use super::fonts;
 use super::groups::card;
 use super::icons::{self, Icon};
 use super::settings::set_name;
@@ -251,22 +251,26 @@ impl Dialog {
                     .show(ui, |ui| {
                         ui.horizontal_top(|ui| {
                             badge(ui, self.kind, t);
-                            ui.add_space(t.spacing * 1.5);
+                            ui.add_space(metrics::SPACE_12);
                             ui.vertical(|ui| {
-                                ui.set_width(WIDTH - 2.0 * PAD - BADGE - t.spacing * 1.5);
+                                ui.set_width(WIDTH - 2.0 * PAD - BADGE - metrics::SPACE_12);
                                 // The title leaves room at the right for the ×.
                                 ui.scope(|ui| {
-                                    ui.set_max_width(ui.available_width() - 28.0);
+                                    ui.set_max_width(
+                                        ui.available_width()
+                                            - metrics::CLOSE_BUTTON
+                                            - metrics::SPACE_4,
+                                    );
                                     ui.add(
                                         egui::Label::new(
                                             RichText::new(&self.title)
-                                                .font(fonts::semibold(15.0))
+                                                .font(metrics::title())
                                                 .color(t.text),
                                         )
                                         .wrap(),
                                     );
                                 });
-                                ui.add_space(t.spacing / 2.0);
+                                ui.add_space(metrics::SPACE_4);
                                 for line in &self.body {
                                     ui.add(
                                         egui::Label::new(RichText::new(line).color(t.text_dim))
@@ -280,13 +284,17 @@ impl Dialog {
                 // The × at the top right, over the content.
                 let max = ui.min_rect();
                 let x_rect = egui::Rect::from_center_size(
-                    egui::pos2(max.right() - PAD - 6.0, max.top() + PAD + 6.0),
-                    egui::Vec2::splat(22.0),
+                    egui::pos2(
+                        max.right() - PAD - metrics::CLOSE_BUTTON / 2.0 + metrics::SPACE_4,
+                        max.top() + PAD + metrics::CLOSE_BUTTON / 2.0 - metrics::SPACE_4,
+                    ),
+                    egui::Vec2::splat(metrics::CLOSE_BUTTON),
                 );
                 let x = ui.place(
                     x_rect,
                     egui::Button::image(
-                        icon_image(ui, Icon::Close, 14.0, t.text_dim).alt_text(CLOSE_NAME),
+                        icon_image(ui, Icon::Close, metrics::ICON_COMPACT, t.text_dim)
+                            .alt_text(CLOSE_NAME),
                     )
                     .frame_when_inactive(false),
                 );
@@ -298,7 +306,7 @@ impl Dialog {
                 let line_y = ui.cursor().top();
                 let footer_bg = ui.painter().add(egui::Shape::Noop);
                 let footer = egui::Frame::new()
-                    .inner_margin(egui::Margin::symmetric(PAD as i8, (PAD / 1.5) as i8))
+                    .inner_margin(egui::Margin::symmetric(PAD as i8, metrics::SPACE_12 as i8))
                     .show(ui, |ui| {
                         ui.set_width(WIDTH - 2.0 * PAD);
                         let (left, right) = egui::Sides::new().show(
@@ -443,7 +451,7 @@ fn take_fresh_press(i: &mut egui::InputState, modifiers: Modifiers, key: Key) ->
 /// Width of every dialog.
 const WIDTH: f32 = 440.0;
 /// Room inside the dialog's edge.
-const PAD: f32 = 18.0;
+const PAD: f32 = metrics::WINDOW_PAD;
 /// Size of the round badge.
 const BADGE: f32 = 36.0;
 

@@ -7,7 +7,7 @@ use egui::{Align2, Color32, CornerRadius, Key, Modifiers, Rect, Sense, Ui, Vec2,
 use super::icons::{self, Icon};
 use super::prepare::RibbonTab;
 use super::theme::Tokens;
-use super::{Action, FlatCraftApp, Workspace, cut, fonts, groups, metrics, ribbon as ribbon_tabs};
+use super::{Action, FlatCraftApp, Workspace, cut, groups, metrics, ribbon as ribbon_tabs};
 
 /// The workspaces the popup offers.
 pub const CHOICES: [Workspace; 2] = [Workspace::Prepare, Workspace::Cut];
@@ -52,10 +52,10 @@ pub fn ribbon(
     let t = app.tokens;
     egui::Panel::top("flatcraft-ribbon")
         .frame(egui::Frame::new().fill(t.rail).inner_margin(egui::Margin {
-            left: t.spacing as i8,
-            right: t.spacing as i8,
-            top: (t.spacing / 2.0) as i8,
-            bottom: (t.spacing / 2.0) as i8,
+            left: metrics::SPACE_8 as i8,
+            right: metrics::SPACE_8 as i8,
+            top: (metrics::SPACE_4) as i8,
+            bottom: (metrics::SPACE_4) as i8,
         }))
         .show_separator_line(false)
         .show(ui, |ui| {
@@ -130,10 +130,10 @@ fn switcher(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
     let cursor_id = egui::Id::unique("flatcraft-workspace-cursor");
     let open = egui::Popup::menu(&resp).show(|ui| {
         ui.set_width(LIST_WIDTH);
-        ui.spacing_mut().item_spacing.y = 4.0;
+        ui.spacing_mut().item_spacing.y = metrics::SPACE_4;
         ui.label(
             egui::RichText::new("WORKSPACE")
-                .font(fonts::semibold(11.0))
+                .font(metrics::caption())
                 .color(t.text_dim),
         );
         // The first frame only opens: the Enter that opened the list must
@@ -186,9 +186,16 @@ fn switcher(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                 picked = Some(w);
             }
         }
-        ui.add_space(2.0);
+        ui.add_space(metrics::SPACE_2);
         ui.separator();
-        ui.add(egui::Label::new(egui::RichText::new(FOOTER).size(11.0).color(t.text_dim)).wrap());
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(FOOTER)
+                    .font(metrics::small())
+                    .color(t.text_dim),
+            )
+            .wrap(),
+        );
         ui.data_mut(|d| d.insert_temp(cursor_id, cursor));
         if let Some(w) = picked {
             actions.push(Action::SetWorkspace(w));
@@ -396,11 +403,11 @@ fn row(ui: &mut Ui, t: &Tokens, w: Workspace, current: bool, cursor: bool) -> eg
         egui::pos2(x, rect.top() + 10.0),
         Align2::LEFT_TOP,
         w.name(),
-        fonts::semibold(14.0),
+        metrics::heading(),
         t.text,
     );
     if current {
-        let badge = painter.layout_no_wrap("Current".to_owned(), fonts::semibold(10.0), accent);
+        let badge = painter.layout_no_wrap("Current".to_owned(), metrics::caption(), accent);
         let pad = Vec2::new(6.0, 1.0);
         let b = Rect::from_min_size(
             egui::pos2(
@@ -416,14 +423,14 @@ fn row(ui: &mut Ui, t: &Tokens, w: Workspace, current: bool, cursor: bool) -> eg
         egui::pos2(x, rect.top() + 31.0),
         Align2::LEFT_TOP,
         purpose(w),
-        egui::FontId::proportional(12.0),
+        metrics::secondary(),
         t.text,
     );
     painter.text(
         egui::pos2(x, rect.top() + 51.0),
         Align2::LEFT_TOP,
         holds(w),
-        egui::FontId::proportional(11.0),
+        metrics::small(),
         t.text_dim,
     );
     resp

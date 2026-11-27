@@ -2311,7 +2311,7 @@ pub fn display_name(path: &Path) -> String {
 }
 
 /// Size of icons in buttons, in points.
-pub const ICON_SIZE: f32 = 18.0;
+pub const ICON_SIZE: f32 = metrics::ICON_BAR;
 
 /// The smallest window (logical points). The ribbon, the app bar and the
 /// Cut bar are tested at this width: nothing is cut off or out of reach.
@@ -2558,7 +2558,7 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     let t = app.tokens;
     about::show(&ctx, &mut app.ui.about, &t, now, &mut actions);
     if app.ui.show_shortcuts {
-        app.ui.show_shortcuts = help::show_shortcuts(&ctx, &t);
+        app.ui.show_shortcuts = help::show_shortcuts(&ctx);
     }
     match &snap {
         Some(snap) => {
@@ -2881,7 +2881,7 @@ fn dropped_files(ctx: &egui::Context, t: &Tokens, actions: &mut Vec<Action>) {
             rect.center(),
             egui::Align2::CENTER_CENTER,
             "Drop it! SVGs and images are imported, projects open.",
-            fonts::medium(20.0),
+            fonts::medium(metrics::TEXT_DISPLAY),
             t.text,
         );
     }

@@ -804,7 +804,7 @@ fn preset_notes(ui: &mut Ui, heading: &str, preset: &str, notes: Option<&str>, t
     ui.add_space(metrics::SPACE_4);
     let r = ui.label(
         RichText::new(heading)
-            .font(super::super::fonts::semibold(12.0))
+            .font(metrics::subsection_title())
             .color(t.text_dim),
     );
     super::super::groups::card(

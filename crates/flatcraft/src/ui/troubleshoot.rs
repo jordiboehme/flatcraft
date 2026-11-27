@@ -9,15 +9,16 @@
 //! It opens from the Cut workspace (under the send button) and from the
 //! Help menu, as one of the shared dialogs.
 
+use crate::ui::metrics;
 use egui::{RichText, Ui};
 use flatcraft_engine::cutlog::CutEntry;
 use flatcraft_engine::troubleshoot::{self, Check, Checklist, Item, Symptom};
 
+use super::Action;
 use super::dialog::{Dialog, Kind};
 use super::groups::card;
 use super::prepare::Snapshot;
 use super::theme::Tokens;
-use super::{Action, fonts};
 
 /// The text of the button and the Help menu item.
 pub const LABEL: &str = "It didn't cut right...";
@@ -132,7 +133,7 @@ pub fn show(
         .cancel_hint(CLOSE_HINT);
     let mut close = false;
     let answer = dialog.show(ctx, t, |ui| {
-        ui.add_space(t.spacing / 2.0);
+        ui.add_space(metrics::SPACE_4);
         ui.horizontal_wrapped(|ui| {
             for s in Symptom::ALL {
                 let r = ui.add(egui::Button::selectable(st.symptom == Some(s), s.label()));
@@ -142,7 +143,7 @@ pub fn show(
                 }
             }
         });
-        ui.add_space(t.spacing);
+        ui.add_space(metrics::SPACE_8);
         // One height for the list, whatever is picked: the dialog keeps
         // its size and place, so the symptom buttons never jump.
         let height = (ui.ctx().content_rect().height() * 0.55).clamp(160.0, 520.0);
@@ -162,7 +163,7 @@ pub fn show(
                 return;
             };
             ui.add(egui::Label::new(RichText::new(&list.lead).color(t.text_dim)).wrap());
-            ui.add_space(t.spacing / 2.0);
+            ui.add_space(metrics::SPACE_4);
             ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
             egui::ScrollArea::vertical()
                 .id_salt(("flatcraft-troubleshoot-list", list.symptom.as_str()))
@@ -170,7 +171,7 @@ pub fn show(
                 .show(ui, |ui| {
                     for (n, it) in list.items.iter().enumerate() {
                         if n > 0 {
-                            ui.add_space(t.spacing);
+                            ui.add_space(metrics::SPACE_8);
                         }
                         if item_row(ui, n + 1, it, list, doc_id, t, actions) {
                             close = true;
@@ -198,7 +199,7 @@ fn item_row(
 ) -> bool {
     let mut leave = false;
     let title = format!("{number}. {}", it.title);
-    let r = ui.label(RichText::new(&title).font(fonts::semibold(13.0)));
+    let r = ui.label(RichText::new(&title).font(metrics::section_title()));
     card(&r, &it.title, &it.hint, None, false);
     if it.likely {
         ui.horizontal(|ui| {

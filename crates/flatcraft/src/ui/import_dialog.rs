@@ -8,6 +8,7 @@
 //! sends one `object.retrace` to the object's document.
 
 use super::tools::Setting;
+use crate::ui::metrics;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
@@ -556,10 +557,10 @@ pub fn show(
                         d.changed(now);
                     }
                 });
-                ui.add_space(t.spacing * 2.0);
+                ui.add_space(metrics::SPACE_16);
                 preview_box(ui, d, t);
             });
-            ui.add_space(t.spacing);
+            ui.add_space(metrics::SPACE_8);
             let status = d.status();
             let colour = if d.error.is_some() {
                 t.danger
@@ -579,7 +580,7 @@ pub fn show(
                         .color(t.text_dim),
                 );
             }
-            ui.add_space(t.spacing);
+            ui.add_space(metrics::SPACE_8);
             ui.horizontal(|ui| {
                 let apply = ui
                     .button("Apply")

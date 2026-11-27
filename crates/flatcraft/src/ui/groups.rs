@@ -700,7 +700,7 @@ fn pinned_buttons(ui: &mut Ui, mode: Mode, pins: &[&'static Tool], cx: &mut Cx) 
 /// The heading of a section of the list. Align also asks what to line up
 /// with; switching it switches the rows under it at once.
 fn heading(ui: &mut Ui, section: Section, st: &mut PrepareState) {
-    ui.add_space(2.0);
+    ui.add_space(metrics::SPACE_2);
     ui.horizontal(|ui| {
         ui.add(image(ui, section.icon(), ICON_SIZE));
         ui.label(RichText::new(section.title()).strong());

@@ -1147,7 +1147,7 @@ pub fn hint_card_with(
         .fill(accent.gamma_multiply(0.10))
         .stroke(egui::Stroke::new(1.0, accent.gamma_multiply(0.6)))
         .corner_radius(t.radius)
-        .inner_margin(egui::Margin::same(metrics::SPACE_8 as i8))
+        .inner_margin(egui::Margin::same(metrics::CARD_PAD as i8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = metrics::SPACE_4;

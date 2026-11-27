@@ -2,11 +2,11 @@
 //! keyboard shortcut table that drives both the key handler and the
 //! shortcuts sheet, and the "Report a problem" link.
 
+use crate::ui::metrics;
 use egui::{Key, KeyboardShortcut, Modifiers, RichText};
 
+use super::Action;
 use super::about::BUILD;
-use super::theme::Tokens;
-use super::{Action, fonts};
 
 pub const GUIDE_URL: &str = "https://github.com/jordiboehme/flatcraft#readme";
 pub const BUG_URL: &str =
@@ -780,29 +780,29 @@ pub const CALC_EXAMPLES: [(&str, &str); 7] = [
 ];
 
 /// The shortcuts sheet. Returns false once it should close.
-pub fn show_shortcuts(ctx: &egui::Context, t: &Tokens) -> bool {
+pub fn show_shortcuts(ctx: &egui::Context) -> bool {
     let modal = egui::Modal::new(egui::Id::unique("flatcraft-shortcuts")).show(ctx, |ui| {
         ui.set_width(460.0);
-        ui.label(RichText::new("Keyboard shortcuts").font(fonts::semibold(16.0)));
-        ui.add_space(t.spacing);
+        ui.label(RichText::new("Keyboard shortcuts").font(metrics::title()));
+        ui.add_space(metrics::SPACE_8);
         // The list scrolls in a short window, so Close stays in reach.
         let room = (ctx.content_rect().height() * 0.6).max(120.0);
         egui::ScrollArea::vertical()
             .max_height(room)
             .min_scrolled_height(room)
-            .show(ui, |ui| sheet_body(ui, t));
-        ui.add_space(t.spacing);
+            .show(ui, sheet_body);
+        ui.add_space(metrics::SPACE_8);
         ui.button("Close").clicked()
     });
     !(modal.inner || modal.should_close())
 }
 
 /// The keys and the calculations of the shortcuts sheet.
-fn sheet_body(ui: &mut egui::Ui, t: &Tokens) {
+fn sheet_body(ui: &mut egui::Ui) {
     {
         egui::Grid::new("flatcraft-shortcut-grid")
             .num_columns(2)
-            .spacing([24.0, 4.0])
+            .spacing([metrics::SPACE_24, metrics::SPACE_4])
             .show(ui, |ui| {
                 for s in SHORTCUTS.iter().filter(|s| s.here()) {
                     ui.label(RichText::new(s.keys()).monospace());
@@ -810,12 +810,12 @@ fn sheet_body(ui: &mut egui::Ui, t: &Tokens) {
                     ui.end_row();
                 }
             });
-        ui.add_space(t.spacing);
-        ui.label(RichText::new(CALC_TITLE).font(fonts::semibold(14.0)));
+        ui.add_space(metrics::SPACE_8);
+        ui.label(RichText::new(CALC_TITLE).font(metrics::heading()));
         ui.label(CALC_INTRO);
         egui::Grid::new("flatcraft-calc-grid")
             .num_columns(2)
-            .spacing([24.0, 4.0])
+            .spacing([metrics::SPACE_24, metrics::SPACE_4])
             .show(ui, |ui| {
                 for (typed, what) in CALC_EXAMPLES {
                     ui.label(RichText::new(typed).monospace());

@@ -11,6 +11,7 @@
 //! when clicked. With reduced motion the ring is not drawn; the lifetime
 //! stays the same.
 
+use crate::ui::metrics;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -251,7 +252,7 @@ pub fn show(
         });
         return events;
     }
-    let gap = t.spacing * 2.0;
+    let gap = metrics::SPACE_16;
     let mut width = WIDTH;
     // Folded into one line: the canvas is too short for a card.
     let mut folded = false;
@@ -273,13 +274,13 @@ pub fn show(
                 .flatten()
                 .filter(across)
             {
-                bottom = bottom.min(o.top() - t.spacing);
+                bottom = bottom.min(o.top() - metrics::SPACE_8);
             }
             let top = p
                 .report
                 .filter(across)
                 .map_or(r.top() + super::canvas::RULER + gap, |o| {
-                    o.bottom() + t.spacing
+                    o.bottom() + metrics::SPACE_8
                 });
             let room = bottom - top;
             cramped = room < MIN_STACK_HEIGHT;
@@ -289,8 +290,8 @@ pub fn show(
                 // its top (over the ruler if need be), the Hide button
                 // included, never past the top.
                 let bottom = r.bottom() - gap;
-                let button = ctx.global_style().spacing.interact_size.y + t.spacing;
-                let full = bottom - (r.top() + t.spacing) - button;
+                let button = ctx.global_style().spacing.interact_size.y + metrics::SPACE_8;
+                let full = bottom - (r.top() + metrics::SPACE_8) - button;
                 (
                     area.pivot(egui::Align2::LEFT_BOTTOM)
                         .fixed_pos(egui::pos2(left, bottom)),
@@ -333,7 +334,7 @@ pub fn show(
             .min_scrolled_height(max_height.min(64.0))
             .stick_to_bottom(true)
             .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = t.spacing;
+                ui.spacing_mut().item_spacing.y = metrics::SPACE_8;
                 for toast in toasts.iter_mut() {
                     let (event, hovered) = card(ui, toast, t, now, reduce_motion, width);
                     toast.set_hovered(hovered, now);
@@ -373,7 +374,7 @@ fn card(
     width: f32,
 ) -> (Option<Event>, bool) {
     const X: f32 = 20.0;
-    let pad = 10.0;
+    let pad = metrics::CARD_PAD;
     let frame = egui::Frame::new()
         .fill(t.panel)
         .stroke(egui::Stroke::new(1.0, t.border))
@@ -399,7 +400,7 @@ fn card(
                 ui.add(
                     egui::Label::new(
                         RichText::new(&toast.text)
-                            .font(super::fonts::semibold(14.0))
+                            .font(metrics::heading())
                             .color(t.text),
                     )
                     .wrap(),
@@ -408,7 +409,7 @@ fn card(
                     // Wrapped anywhere, so a long path is shown whole.
                     let mut job = egui::text::LayoutJob::simple(
                         detail.clone(),
-                        egui::TextStyle::Small.resolve(ui.style()),
+                        metrics::secondary(),
                         t.text_dim,
                         ui.available_width(),
                     );
@@ -452,14 +453,14 @@ fn card(
         ui.painter()
             .circle_filled(x_rect.center(), X / 2.0, t.surface);
     }
-    let tex = icons::texture_colored(ui.ctx(), Icon::Close, 12.0, t.text_dim);
+    let tex = icons::texture_colored(ui.ctx(), Icon::Close, metrics::ICON_SMALL, t.text_dim);
     egui::Image::from_texture(egui::load::SizedTexture::new(
         tex.id(),
-        egui::Vec2::splat(12.0),
+        egui::Vec2::splat(metrics::ICON_SMALL),
     ))
     .paint_at(
         ui,
-        egui::Rect::from_center_size(x_rect.center(), egui::Vec2::splat(12.0)),
+        egui::Rect::from_center_size(x_rect.center(), egui::Vec2::splat(metrics::ICON_SMALL)),
     );
     if let (Some(life), Some(left)) = (toast.lifetime(), toast.left(now))
         && !reduce_motion

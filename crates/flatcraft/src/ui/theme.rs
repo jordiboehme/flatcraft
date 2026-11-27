@@ -2,6 +2,8 @@
 
 use egui::{Color32, CornerRadius, Stroke, Visuals};
 
+use super::metrics;
+
 /// The design tokens of one theme.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tokens {
@@ -59,8 +61,6 @@ pub struct Tokens {
     pub ribbon_radius: u8,
     /// Corner radius in points.
     pub radius: u8,
-    /// Base spacing in points.
-    pub spacing: f32,
 }
 
 const fn rgb(c: [u8; 3]) -> Color32 {
@@ -99,7 +99,6 @@ impl Tokens {
             icon_ink: Color32::from_rgb(0xD5, 0xDE, 0xDB),
             ribbon_radius: 2,
             radius: 6,
-            spacing: 8.0,
         }
     }
 
@@ -132,7 +131,6 @@ impl Tokens {
             icon_ink: Color32::from_rgb(0x33, 0x40, 0x3D),
             ribbon_radius: 2,
             radius: 6,
-            spacing: 8.0,
         }
     }
 
@@ -228,10 +226,10 @@ fn install(ctx: &egui::Context, t: &Tokens) -> egui::Theme {
     };
     ctx.set_visuals_of(theme, visuals);
     ctx.style_mut_of(theme, |style| {
-        style.spacing.item_spacing = egui::vec2(t.spacing, t.spacing * 0.75);
-        style.spacing.button_padding = egui::vec2(t.spacing, t.spacing * 0.5);
-        style.spacing.window_margin = egui::Margin::same(t.spacing as i8);
-        style.spacing.menu_margin = egui::Margin::same(t.spacing as i8);
+        style.spacing.item_spacing = metrics::ITEM_SPACING;
+        style.spacing.button_padding = metrics::BUTTON_PADDING;
+        style.spacing.window_margin = egui::Margin::same(metrics::WINDOW_MARGIN as i8);
+        style.spacing.menu_margin = egui::Margin::same(metrics::WINDOW_MARGIN as i8);
     });
     theme
 }
@@ -252,7 +250,7 @@ pub fn tight(style: &mut egui::Style) {
     ] {
         w.corner_radius = radius;
     }
-    style.spacing.button_padding = egui::vec2(t.spacing / 2.0, t.spacing / 4.0);
+    style.spacing.button_padding = metrics::TIGHT_BUTTON_PADDING;
 }
 
 /// [`tight`] on top of egui's menu style, for the ribbon's lists.
@@ -427,7 +425,6 @@ mod tests {
         assert_eq!(d.accent_prepare, Color32::from_rgb(0x2B, 0xB3, 0xA3));
         assert_eq!(d.accent_cut, Color32::from_rgb(0xF2, 0xA3, 0x3A));
         assert_eq!(d.radius, 6);
-        assert_eq!(d.spacing, 8.0);
         assert!(d.is_dark());
         assert!(!Tokens::light().is_dark());
     }

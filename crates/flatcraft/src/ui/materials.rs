@@ -2,15 +2,16 @@
 //! its tips and values, the "Start with a test cut" hint for a material
 //! never cut, and the Cut stage's mirror reminder for iron-on material.
 
+use crate::ui::metrics;
 use egui::{RichText, Ui};
 use flatcraft_device::{MatTack, MaterialGroup, MaterialProfile, ProfileStore, presets};
 use flatcraft_engine::cutlog::CutLog;
 use flatcraft_engine::troubleshoot::Item;
 use serde_json::json;
 
+use super::Action;
 use super::prepare::Snapshot;
 use super::theme::Tokens;
-use super::{Action, fonts};
 
 /// One entry of the material picker.
 #[derive(Debug, Clone, PartialEq)]
@@ -202,7 +203,7 @@ pub fn picker(ui: &mut Ui, snap: &Snapshot, t: &Tokens) -> (egui::Response, Opti
                 }
                 let h = ui.label(
                     RichText::new(group.label())
-                        .font(fonts::semibold(12.0))
+                        .font(metrics::subsection_title())
                         .color(t.text_dim),
                 );
                 super::groups::card(&h, group.label(), group_hint(group), None, true);
@@ -252,7 +253,7 @@ pub fn skipped_note(ui: &mut Ui, snap: &Snapshot, t: &Tokens) {
         return;
     };
     let reason = &skipped.reason;
-    ui.add_space(t.spacing / 2.0);
+    ui.add_space(metrics::SPACE_4);
     let text = skipped_text(skipped.shadows_system);
     let r = ui.add(egui::Label::new(RichText::new(text).color(t.danger)).wrap());
     super::groups::card(
@@ -301,7 +302,7 @@ pub fn test_cut_hint(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec
         .map_or(snap.job.material_id.as_str(), |m| m.name.as_str());
     let backing = snap.material.as_ref().is_none_or(|m| m.backing);
     let text = test_cut_text(name, backing);
-    ui.add_space(t.spacing / 2.0);
+    ui.add_space(metrics::SPACE_4);
     let issue =
         format!("You have not cut {name} yet. Cut a small test shape first, then the design.");
     let button = super::inspector::blocks::HintButton {
@@ -391,10 +392,10 @@ pub fn iron_on_reminder(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut 
 }
 
 fn show_reminder(ui: &mut Ui, item: &Item, doc_id: u64, t: &Tokens, actions: &mut Vec<Action>) {
-    ui.add_space(t.spacing / 2.0);
+    ui.add_space(metrics::SPACE_4);
     let r = ui.label(
         RichText::new(MIRROR_TITLE)
-            .font(fonts::semibold(13.0))
+            .font(metrics::section_title())
             .color(t.warn_text),
     );
     super::groups::card(&r, MIRROR_TITLE, &item.hint, None, false);

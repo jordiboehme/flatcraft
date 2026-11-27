@@ -4,6 +4,7 @@
 //! between screen points and millimetres with [`CanvasView`]. Moves and
 //! scales are sent as one registry command when the drag ends.
 
+use crate::ui::metrics;
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2};
 use flatcraft_device::MediaKind;
 use flatcraft_engine::placement;
@@ -1032,10 +1033,10 @@ pub fn show(
             .draw(ui.ctx(), &painter, &view, &job, area, mat_rgb, t);
     } else if !picking && st.show_kept_waste && matches!(cut.plan, Some(Err(_))) {
         painter.text(
-            rect.left_top() + Vec2::splat(RULER + t.spacing),
+            rect.left_top() + Vec2::splat(RULER + metrics::SPACE_8),
             egui::Align2::LEFT_TOP,
             super::kept::NO_PLAN,
-            super::fonts::medium(12.0),
+            super::fonts::medium(metrics::TEXT_SECONDARY),
             t.text_dim,
         );
     }

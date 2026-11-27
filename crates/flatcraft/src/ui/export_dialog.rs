@@ -8,6 +8,7 @@
 //! selection when there is one, else on all objects; the object
 //! right-click menu's "Export selected..." opens it on the selection.
 
+use crate::ui::metrics;
 use egui::{RichText, Ui};
 use flatcraft_engine::export::{ExportFormat, ExportScope};
 
@@ -185,7 +186,7 @@ pub fn show(
         .primary_hint(EXPORT_HINT)
         .cancel_hint(CANCEL_HINT);
     let answer = dialog.show_with(ctx, t, |ui| {
-        ui.add_space(t.spacing);
+        ui.add_space(metrics::SPACE_8);
         controls(ui, d, snap, has_selection, t).map(String::from)
     });
     match answer {
@@ -215,7 +216,7 @@ fn controls(
             groups::card(&r, f.label(), format_hint(f), None, false);
         }
     });
-    ui.add_space(t.spacing / 2.0);
+    ui.add_space(metrics::SPACE_4);
     ui.label(RichText::new("Objects").strong());
     ui.horizontal(|ui| {
         for (s, label) in [(ExportScope::Selected, SELECTED), (ExportScope::All, ALL)] {
@@ -228,7 +229,7 @@ fn controls(
             groups::card(&r, label, scope_hint(s), why, false);
         }
     });
-    ui.add_space(t.spacing / 2.0);
+    ui.add_space(metrics::SPACE_4);
     let objects = in_scope(snap, d.scope);
     let any_skipped = objects.iter().any(|(v, c)| *v && !*c);
     let why = (!any_skipped).then_some(NOTHING_SKIPPED);
@@ -241,7 +242,7 @@ fn controls(
     let include = d.include_skipped && any_skipped;
     let blocked = why_nothing(&objects, include);
     if let Some(why) = blocked {
-        ui.add_space(t.spacing / 2.0);
+        ui.add_space(metrics::SPACE_4);
         ui.add(egui::Label::new(RichText::new(why).color(t.warn_text)).wrap());
     }
     blocked

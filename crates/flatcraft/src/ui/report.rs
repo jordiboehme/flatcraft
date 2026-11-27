@@ -3,15 +3,16 @@
 //! message, and a button per fix that runs exactly the fix's registry
 //! command with its arguments, the same that agents get over MCP.
 
+use crate::ui::metrics;
 use egui::{RichText, Ui};
 use flatcraft_engine::job::JobInput;
 use flatcraft_engine::report::{self, Issue, Report, Severity};
 use serde_json::Value;
 
+use super::Action;
 use super::groups::card;
 use super::prepare::Snapshot;
 use super::theme::Tokens;
-use super::{Action, fonts};
 
 /// The card of the "Show me" button.
 pub const SHOW_ME_HINT: &str =
@@ -203,7 +204,7 @@ fn issue_rows(
     let mut rows = Vec::with_capacity(issues.len());
     for (n, issue) in issues.iter().enumerate() {
         if n > 0 {
-            ui.add_space(t.spacing * 0.75);
+            ui.add_space(metrics::SPACE_4);
         }
         let row = ui.horizontal_top(|ui| {
             let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 14.0), egui::Sense::hover());
@@ -269,11 +270,13 @@ pub fn import_card(
         .map(|i| i.severity)
         .max()
         .unwrap_or(Severity::Info);
-    let width = CARD_WIDTH.min(canvas.width() - 2.0 * t.spacing).max(120.0);
+    let width = CARD_WIDTH
+        .min(canvas.width() - 2.0 * metrics::SPACE_8)
+        .max(120.0);
     let max = egui::Rect::from_min_size(
         egui::pos2(
-            canvas.right() - width - t.spacing,
-            canvas.top() + super::canvas::RULER + t.spacing,
+            canvas.right() - width - metrics::SPACE_8,
+            canvas.top() + super::canvas::RULER + metrics::SPACE_8,
         ),
         egui::vec2(width, canvas.height() * 0.7),
     );
@@ -282,11 +285,11 @@ pub fn import_card(
             .fill(t.surface)
             .stroke(egui::Stroke::new(1.0, severity_colour(worst, t)))
             .corner_radius(t.radius)
-            .inner_margin(t.spacing)
+            .inner_margin(metrics::SPACE_8)
             .show(ui, |ui| {
-                ui.set_width(width - 2.0 * t.spacing);
+                ui.set_width(width - 2.0 * metrics::SPACE_8);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(&c.header).font(fonts::semibold(14.0)));
+                    ui.label(RichText::new(&c.header).font(metrics::heading()));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let r = ui.button("Dismiss");
                         card(&r, "Dismiss", DISMISS_HINT, None, false);
@@ -306,12 +309,12 @@ pub fn import_card(
                     "A few things to know before you cut."
                 };
                 ui.label(RichText::new(format!("{}: {shapes}. {lead}", c.title)).color(t.text_dim));
-                ui.add_space(t.spacing / 2.0);
+                ui.add_space(metrics::SPACE_4);
                 // A solid bar that shows whenever more lines are below,
                 // not a floating one that shows only on hover.
                 ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
                 // Room for the "N more below" line under the list.
-                let more_h = ui.text_style_height(&egui::TextStyle::Body) + t.spacing / 2.0;
+                let more_h = ui.text_style_height(&egui::TextStyle::Body) + metrics::SPACE_4;
                 let jump_id = egui::Id::unique("flatcraft-report-scroll-down");
                 let jump: Option<f32> = ui.ctx().data_mut(|d| d.remove_temp(jump_id));
                 let mut area = egui::ScrollArea::vertical()
@@ -371,17 +374,17 @@ pub fn reasons_box(
         .fill(t.danger.gamma_multiply(0.12))
         .stroke(egui::Stroke::new(1.0, t.danger))
         .corner_radius(t.radius)
-        .inner_margin(t.spacing)
+        .inner_margin(metrics::SPACE_8)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new(nothing_title(nothing_to_cut)).font(fonts::semibold(13.0)));
+            ui.label(RichText::new(nothing_title(nothing_to_cut)).font(metrics::section_title()));
             let lead = if nothing_to_cut {
                 "The knife is ready, but nothing is in its way. Here is why:"
             } else {
                 "This is what stops the cut:"
             };
             ui.label(RichText::new(lead).color(t.text_dim));
-            ui.add_space(t.spacing / 2.0);
+            ui.add_space(metrics::SPACE_4);
             issue_list(ui, &by_severity(issues.iter()), doc_id, t, true, actions);
         });
 }

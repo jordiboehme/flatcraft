@@ -1189,7 +1189,7 @@ fn hints(ui: &mut Ui, st: &PrepareState, snap: &Snapshot, t: &Tokens, actions: &
             }
             for (n, issue) in issues.iter().take(MAX_CARDS).enumerate() {
                 if n > 0 {
-                    ui.add_space(t.spacing / 2.0);
+                    ui.add_space(metrics::SPACE_4);
                 }
                 let fixes: Vec<_> = issue
                     .fixes

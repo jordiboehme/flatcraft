@@ -13,6 +13,7 @@
 //! (stats, legend, timeline, kept overlay) reads only the plan of the
 //! current input. A plan built for an older input is never shown.
 
+use crate::ui::metrics;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -859,7 +860,11 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
             });
     }
     egui::Panel::bottom("flatcraft-timeline")
-        .frame(egui::Frame::new().fill(t.panel).inner_margin(t.spacing))
+        .frame(
+            egui::Frame::new()
+                .fill(t.panel)
+                .inner_margin(metrics::SPACE_8),
+        )
         .show(ui, |ui| {
             let cut = &mut app.ui.cut;
             if cut.stage == Stage::Simulate {
@@ -893,10 +898,10 @@ fn error_box(ui: &mut Ui, e: &CommandError, t: &Tokens) {
         .fill(t.danger.gamma_multiply(0.12))
         .stroke(Stroke::new(1.0, t.danger))
         .corner_radius(t.radius)
-        .inner_margin(t.spacing)
+        .inner_margin(metrics::SPACE_8)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new("Houston, we have a problem").font(fonts::semibold(13.0)));
+            ui.label(RichText::new("Houston, we have a problem").font(metrics::section_title()));
             ui.label(person_text(e));
         });
 }
@@ -922,12 +927,12 @@ fn problem(
 ///
 /// "Weed paths" always shows; dimmed, with the reason, while weeding is
 /// off.
-fn stats(ui: &mut Ui, job: &JobResult, snap: &Snapshot, t: &Tokens) {
+fn stats(ui: &mut Ui, job: &JobResult, snap: &Snapshot) {
     let why = weed_why(snap, job.plan.kept.sheet_kept_besides(|_| false));
     let weeding = why.is_none();
     egui::Grid::new("flatcraft-cut-stats")
         .num_columns(2)
-        .spacing([t.spacing * 2.0, t.spacing * 0.5])
+        .spacing([metrics::SPACE_16, metrics::ROW_GAP])
         .show(ui, |ui| {
             ui.label("Paths");
             ui.label(job.toolpaths_cut().to_string());
@@ -958,7 +963,7 @@ fn planning_stats(ui: &mut Ui, t: &Tokens) {
     super::groups::card(&note, PLANNING, PLANNING_CARD, None, false);
     egui::Grid::new("flatcraft-cut-stats")
         .num_columns(2)
-        .spacing([t.spacing * 2.0, t.spacing * 0.5])
+        .spacing([metrics::SPACE_16, metrics::ROW_GAP])
         .show(ui, |ui| {
             for row in ["Paths", "Weed paths", "Cut length", "Travel length"] {
                 ui.add_enabled(false, egui::Label::new(row));
@@ -990,7 +995,7 @@ fn warnings(ui: &mut Ui, job: &JobResult, doc_id: u64, t: &Tokens, actions: &mut
         }
     }
     if !job.issues.is_empty() {
-        ui.add_space(t.spacing / 2.0);
+        ui.add_space(metrics::SPACE_4);
         let list = super::report::by_severity(job.issues.iter());
         super::report::issue_list(ui, &list, doc_id, t, true, actions);
     }
@@ -1004,7 +1009,10 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
     if rails::header(ui, SidePanel::Stage, Side::Right, &title) {
         app.ui.prepare.panels.set_collapsed(SidePanel::Stage, true);
     }
-    ui.add_space(t.spacing / 2.0);
+    // The lines of a stage sit ROW_GAP apart, as the controls of two
+    // panel rows do. Data lines (label and value) stay one text line high.
+    ui.spacing_mut().item_spacing.y = metrics::ROW_GAP;
+    ui.add_space(metrics::SPACE_4);
     match stage {
         Stage::Device => {
             // Why nothing cuts, before the settings: the first thing seen
@@ -1018,7 +1026,7 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
                     &t,
                     actions,
                 );
-                ui.add_space(t.spacing);
+                ui.add_space(metrics::SPACE_8);
             }
             // The Job panel's rows, with the side panels' spacing.
             ui.scope(|ui| {
@@ -1028,15 +1036,15 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
             super::materials::iron_on_reminder(ui, snap, &t, actions);
             if let Some(tr) = &app.ui.cut.transport {
                 ui.separator();
-                ui.label(RichText::new("Transport").font(fonts::semibold(13.0)));
+                ui.label(RichText::new("Transport").font(metrics::section_title()));
                 ui.label(transport_text(tr, snap));
             }
         }
         Stage::Path => match &st.plan {
             Some(Ok(job)) => {
-                stats(ui, job, snap, &t);
+                stats(ui, job, snap);
                 warnings(ui, job, snap.doc_id, &t, actions);
-                ui.add_space(t.spacing);
+                ui.add_space(metrics::SPACE_8);
                 legend(ui, snap, job, &t);
                 ui.label(
                     RichText::new(
@@ -1069,13 +1077,13 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
             let ok = matches!(st.plan, Some(Ok(_)));
             let planning = st.planning() && st.plan.is_none();
             if let Some(p) = &snap.plotter {
-                ui.label(RichText::new(&p.name).font(fonts::medium(13.0)));
+                ui.label(RichText::new(&p.name).font(metrics::section_title()));
                 ui.label(RichText::new(transport_text(&p.transport, snap)).color(t.text_dim));
-                ui.add_space(t.spacing / 2.0);
+                ui.add_space(metrics::SPACE_4);
             }
             match &st.plan {
                 Some(Ok(job)) => {
-                    stats(ui, job, snap, &t);
+                    stats(ui, job, snap);
                     ui.label(format!(
                         "Speed {}, force {}, {}",
                         job.settings.speed,
@@ -1089,7 +1097,7 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
                 None => {}
             }
             super::materials::iron_on_reminder(ui, snap, &t, actions);
-            ui.add_space(t.spacing);
+            ui.add_space(metrics::SPACE_8);
             send_notes(ui, &mut app.ui.cut, snap, &t);
             let label = send_label(snap);
             let hint = if ok {
@@ -1116,7 +1124,7 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
             }
             // After a cut: what to check when it went wrong. It stays
             // usable when this job cannot be cut, the cut may be older.
-            ui.add_space(t.spacing);
+            ui.add_space(metrics::SPACE_8);
             let r = ui.button(super::troubleshoot::LABEL);
             super::groups::card(
                 &r,
@@ -1313,13 +1321,13 @@ fn send_notes(ui: &mut Ui, st: &mut CutState, snap: &Snapshot, t: &Tokens) {
         egui::Frame::new()
             .fill(t.accent_prepare.gamma_multiply(0.10))
             .corner_radius(t.radius)
-            .inner_margin(t.spacing)
+            .inner_margin(metrics::SPACE_8)
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.add(egui::Label::new(snap.notes.trim_end()).wrap());
             });
     }
-    ui.add_space(t.spacing);
+    ui.add_space(metrics::SPACE_8);
 }
 
 fn passes_text(job: &JobResult) -> String {
@@ -1394,8 +1402,16 @@ fn cut_canvas(
     };
     if let Some(prev) = &previous {
         draw_previous(&painter, &view, prev, contrast);
-        let galley = painter.layout_no_wrap(PLANNING.to_string(), fonts::medium(12.0), t.text_dim);
-        let at = rect.left_top() + Vec2::new(canvas::RULER + t.spacing, canvas::RULER + t.spacing);
+        let galley = painter.layout_no_wrap(
+            PLANNING.to_string(),
+            fonts::medium(metrics::TEXT_SECONDARY),
+            t.text_dim,
+        );
+        let at = rect.left_top()
+            + Vec2::new(
+                canvas::RULER + metrics::SPACE_8,
+                canvas::RULER + metrics::SPACE_8,
+            );
         painter.galley(at, galley, t.text_dim);
     }
     let faded = if job.is_some() { 0.3 } else { 1.0 };
@@ -1420,18 +1436,25 @@ fn cut_canvas(
         if crowded {
             // Above the notices while they show there, so both stay
             // readable, and always inside the canvas.
-            let galley =
-                painter.layout_no_wrap(ZOOM_HINT.to_string(), fonts::medium(12.0), t.text_dim);
+            let galley = painter.layout_no_wrap(
+                ZOOM_HINT.to_string(),
+                fonts::medium(metrics::TEXT_SECONDARY),
+                t.text_dim,
+            );
             let size = galley.size();
-            let at = rect.left_bottom() + Vec2::new(canvas::RULER + t.spacing, -t.spacing);
+            let at =
+                rect.left_bottom() + Vec2::new(canvas::RULER + metrics::SPACE_8, -metrics::SPACE_8);
             let hint =
                 egui::Rect::from_min_max(at - Vec2::new(0.0, size.y), at + Vec2::new(size.x, 0.0));
             let at = match super::toasts::stack_rect(ui.ctx()) {
-                Some(n) if n.intersects(hint) => egui::pos2(at.x, n.top() - t.spacing),
+                Some(n) if n.intersects(hint) => egui::pos2(at.x, n.top() - metrics::SPACE_8),
                 _ => at,
             };
-            let lowest_top = rect.top() + canvas::RULER + t.spacing + size.y;
-            let at = egui::pos2(at.x, at.y.max(lowest_top).min(rect.bottom() - t.spacing));
+            let lowest_top = rect.top() + canvas::RULER + metrics::SPACE_8 + size.y;
+            let at = egui::pos2(
+                at.x,
+                at.y.max(lowest_top).min(rect.bottom() - metrics::SPACE_8),
+            );
             painter.galley(at - Vec2::new(0.0, size.y), galley, t.text_dim);
         }
     }

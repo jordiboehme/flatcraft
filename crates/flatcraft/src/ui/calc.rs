@@ -13,6 +13,7 @@
 //! any other way, the old value comes back and a toast says why ("...
 //! Nothing changed.").
 
+use crate::ui::metrics;
 use std::hash::Hash;
 
 use egui::emath::Numeric;
@@ -433,12 +434,15 @@ pub fn number_seen<T: Numeric>(
     let width = spec.width.max(super::ribbon::field_width(ui, &text));
     let resp = ui
         .horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.spacing_mut().item_spacing.x = metrics::SPACE_4;
             let r = ui.add_enabled(
                 enabled,
                 egui::TextEdit::singleline(&mut text)
                     .id(id)
-                    .margin(egui::Margin::symmetric(4, 2))
+                    .margin(egui::Margin::symmetric(
+                        metrics::FIELD_MARGIN.x as i8,
+                        metrics::FIELD_MARGIN.y as i8,
+                    ))
                     .desired_width(width)
                     .min_size(egui::vec2(width, 0.0)),
             );

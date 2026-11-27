@@ -13,7 +13,7 @@ use super::icons::{self, Icon};
 use super::prepare::{ObjView, PrepareState, Snapshot};
 use super::rails::{Side, SidePanel};
 use super::theme::Tokens;
-use super::{Action, ICON_SIZE, fonts, metrics};
+use super::{Action, ICON_SIZE, metrics};
 
 /// A small icon with an accessible name.
 fn badge(ui: &mut Ui, icon: Icon, name: &str, colour: egui::Color32) {
@@ -92,7 +92,7 @@ pub fn section_toggle(ui: &mut Ui, title: &str, open: bool, hint: &str) -> bool 
         egui::Vec2::splat(ICON_SIZE * 0.8),
     ));
     let resp = ui.add(
-        egui::Button::image_and_text(image, RichText::new(title).font(fonts::semibold(14.0)))
+        egui::Button::image_and_text(image, RichText::new(title).font(metrics::heading()))
             .frame(false),
     );
     super::settings::set_name(ui, &resp, title);

@@ -4,6 +4,7 @@
 //! five clicks on the banner send a simulated knife along its dotted travel
 //! path, cutting the four shape outlines in order before it drives home.
 
+use crate::ui::metrics;
 use std::time::{Duration, Instant};
 
 use egui::{Color32, CornerRadius, Pos2, RichText, Sense, TextureHandle, Ui, Vec2};
@@ -12,10 +13,10 @@ use flatcraft_path::{PathRef, Toolpath};
 use flatcraft_sim::{SimSettings, simulate};
 use kurbo::Point;
 
+use super::Action;
 use super::icons::{self, Icon};
 use super::rng::XorShift;
 use super::theme::Tokens;
-use super::{Action, fonts};
 
 /// The release motto under the version. It is set per release.
 pub const MOTTO: &str = "Super massive stability stuff";
@@ -464,7 +465,7 @@ fn centered_row(ui: &mut Ui, id: &str, add: impl FnOnce(&mut Ui)) {
     let key = ui.scope_id().with(id);
     let width: f32 = ui.data(|d| d.get_temp(key)).unwrap_or(0.0);
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.spacing_mut().item_spacing.x = metrics::SPACE_4;
         ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
         let start = ui.cursor().min.x;
         add(ui);
@@ -497,11 +498,14 @@ pub fn show(
         .show(ctx, |ui| {
             ui.set_width(WIDTH);
             if st.licenses {
-                licenses(ui, st, t);
+                licenses(ui, st);
             } else {
                 banner(ui, st, t, radius, now);
                 egui::Frame::new()
-                    .inner_margin(egui::Margin::symmetric(24, 16))
+                    .inner_margin(egui::Margin::symmetric(
+                        metrics::SPACE_24 as i8,
+                        metrics::WINDOW_PAD as i8,
+                    ))
                     .show(ui, |ui| credits(ui, st, t, actions));
             }
         });
@@ -597,7 +601,7 @@ fn banner(ui: &mut Ui, st: &mut AboutState, t: &Tokens, radius: CornerRadius, no
             ui.add(
                 egui::Label::new(
                     RichText::new(END_OF_LINE)
-                        .font(fonts::semibold(20.0))
+                        .font(metrics::display())
                         .color(t.accent_cut.gamma_multiply(alpha)),
                 )
                 .selectable(false),
@@ -608,15 +612,15 @@ fn banner(ui: &mut Ui, st: &mut AboutState, t: &Tokens, radius: CornerRadius, no
 
 fn credits(ui: &mut Ui, st: &mut AboutState, t: &Tokens, actions: &mut Vec<Action>) {
     ui.vertical_centered(|ui| {
-        ui.label(RichText::new("FlatCraft").font(fonts::semibold(24.0)));
+        ui.label(RichText::new("FlatCraft").font(metrics::display()));
         ui.label(RichText::new(version_line()).color(t.text_dim));
         ui.label(RichText::new(MOTTO).italics().color(t.accent_cut));
-        ui.add_space(t.spacing);
-        ui.label(RichText::new(TAGLINE).font(fonts::semibold(16.0)));
+        ui.add_space(metrics::SPACE_8);
+        ui.label(RichText::new(TAGLINE).font(metrics::title()));
         for line in PITCH_LINES {
             ui.label(line);
         }
-        ui.add_space(t.spacing);
+        ui.add_space(metrics::SPACE_8);
     });
     centered_row(ui, "buttons", |ui| {
         for (name, url) in [("Ko-fi", KOFI_URL), ("PayPal", PAYPAL_URL)] {
@@ -629,26 +633,36 @@ fn credits(ui: &mut Ui, st: &mut AboutState, t: &Tokens, actions: &mut Vec<Actio
             actions.push(Action::OpenUrl(GITHUB_URL.to_string()));
         }
     });
-    ui.add_space(t.spacing);
-    let small = |s: &str| RichText::new(s).size(12.0).color(t.text_dim);
+    ui.add_space(metrics::SPACE_8);
+    let small = |s: &str| {
+        RichText::new(s)
+            .font(metrics::secondary())
+            .color(t.text_dim)
+    };
     ui.vertical_centered(|ui| {
         ui.label(small(BUILT_WITH));
         ui.label(small(INSPIRED_BY));
     });
     centered_row(ui, "made-with", |ui| {
         ui.label(small(MADE_WITH));
-        let heart = icons::texture_colored(ui.ctx(), Icon::Heart, 12.0, PINK);
+        let heart = icons::texture_colored(ui.ctx(), Icon::Heart, metrics::ICON_SMALL, PINK);
         ui.add(
-            egui::Image::from_texture(egui::load::SizedTexture::new(heart.id(), Vec2::splat(12.0)))
-                .alt_text("❤️"),
+            egui::Image::from_texture(egui::load::SizedTexture::new(
+                heart.id(),
+                Vec2::splat(metrics::ICON_SMALL),
+            ))
+            .alt_text("❤️"),
         );
         ui.label(small(MADE_FOR));
-        if ui.link(RichText::new(LICENSES).size(12.0)).clicked() {
+        if ui
+            .link(RichText::new(LICENSES).font(metrics::secondary()))
+            .clicked()
+        {
             st.licenses = true;
         }
     });
     if let Some((quote, author)) = st.quote.and_then(|i| QUOTES.get(i)) {
-        ui.add_space(t.spacing * 1.5);
+        ui.add_space(metrics::SPACE_12);
         ui.vertical_centered(|ui| {
             ui.label(RichText::new(format!("\u{201c}{quote}\u{201d}")).italics());
             ui.label(RichText::new(format!("- {author}")).color(t.text_dim));
@@ -656,22 +670,26 @@ fn credits(ui: &mut Ui, st: &mut AboutState, t: &Tokens, actions: &mut Vec<Actio
     }
 }
 
-fn licenses(ui: &mut Ui, st: &mut AboutState, t: &Tokens) {
+fn licenses(ui: &mut Ui, st: &mut AboutState) {
     egui::Frame::new()
-        .inner_margin(egui::Margin::same(16))
+        .inner_margin(egui::Margin::same(metrics::WINDOW_PAD as i8))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Back").clicked() {
                     st.licenses = false;
                 }
-                ui.label(RichText::new("Third-party licenses").font(fonts::semibold(16.0)));
+                ui.label(RichText::new("Third-party licenses").font(metrics::title()));
             });
-            ui.add_space(t.spacing);
+            ui.add_space(metrics::SPACE_8);
             egui::ScrollArea::vertical()
                 .max_height(420.0)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    ui.label(RichText::new(THIRD_PARTY).monospace().size(11.0));
+                    ui.label(
+                        RichText::new(THIRD_PARTY)
+                            .monospace()
+                            .size(metrics::TEXT_SMALL),
+                    );
                 });
         });
 }

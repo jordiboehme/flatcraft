@@ -12,6 +12,7 @@
 //! "Simulating..." note, and nothing counts from it. A run of an older
 //! state is never shown as the current one.
 
+use crate::ui::metrics;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
@@ -918,8 +919,16 @@ pub fn centred(view: &CanvasView, rect: Rect, at: kurbo::Point) -> CanvasView {
 
 /// The note at the top left of the canvas.
 pub fn canvas_note(painter: &egui::Painter, rect: Rect, text: &str, t: &Tokens) {
-    let galley = painter.layout_no_wrap(text.to_string(), fonts::medium(12.0), t.text_dim);
-    let at = rect.left_top() + Vec2::new(canvas::RULER + t.spacing, canvas::RULER + t.spacing);
+    let galley = painter.layout_no_wrap(
+        text.to_string(),
+        fonts::medium(metrics::TEXT_SECONDARY),
+        t.text_dim,
+    );
+    let at = rect.left_top()
+        + Vec2::new(
+            canvas::RULER + metrics::SPACE_8,
+            canvas::RULER + metrics::SPACE_8,
+        );
     painter.galley(at, galley, t.text_dim);
 }
 
@@ -973,17 +982,16 @@ pub fn panel(
                 ui.painter()
                     .circle_filled(rect.center(), 6.0, grade_colour(m.grade, t));
                 let g = ui.add(
-                    egui::Label::new(RichText::new(grade_line(m)).font(fonts::semibold(15.0)))
-                        .wrap(),
+                    egui::Label::new(RichText::new(grade_line(m)).font(metrics::heading())).wrap(),
                 );
                 super::groups::card(&g, "Grade", GRADE_CARD, None, false);
             });
             let s = ui.label(RichText::new(on_target_text(m.score)).color(t.text_dim));
             super::groups::card(&s, "On target", ON_TARGET_CARD, None, false);
-            ui.add_space(t.spacing / 2.0);
+            ui.add_space(metrics::SPACE_4);
             egui::Grid::new("flatcraft-sim-metrics")
                 .num_columns(2)
-                .spacing([t.spacing * 2.0, t.spacing * 0.5])
+                .spacing([metrics::SPACE_16, metrics::ROW_GAP])
                 .show(ui, |ui| {
                     row(ui, "Worst miss", "The farthest the blade tip strays from your line anywhere in the job. Within 0.06 mm it is green on the mat.", mm(m.max_hausdorff_mm));
                     row(ui, "Worst corner", "The farthest the tip misses a corner. A drag knife cuts corners short unless FlatCraft or the plotter steers it around them.", mm(m.max_corner_deviation_mm));
@@ -998,13 +1006,13 @@ pub fn panel(
                 });
         }
         None => {
-            ui.label(RichText::new("Not simulated").font(fonts::semibold(16.0)));
+            ui.label(RichText::new("Not simulated").font(metrics::heading()));
             ui.label(simulate::FIRMWARE_NOTE);
-            ui.add_space(t.spacing / 2.0);
+            ui.add_space(metrics::SPACE_4);
             let c = &run.commanded;
             egui::Grid::new("flatcraft-sim-metrics")
                 .num_columns(2)
-                .spacing([t.spacing * 2.0, t.spacing * 0.5])
+                .spacing([metrics::SPACE_16, metrics::ROW_GAP])
                 .show(ui, |ui| {
                     row(ui, "Cut length", "How far the head moves with the blade down.", super::cut::mm_text(c.cut_mm));
                     row(ui, "Travel", "How far the head moves with the blade up, between cuts.", super::cut::mm_text(c.travel_mm));
@@ -1019,8 +1027,8 @@ pub fn panel(
         ui.label(RichText::new(w).color(t.warn_text));
     }
     if run.result.is_some() {
-        ui.add_space(t.spacing);
-        ui.label(RichText::new("Worst spots").font(fonts::semibold(13.0)));
+        ui.add_space(metrics::SPACE_8);
+        ui.label(RichText::new("Worst spots").font(metrics::section_title()));
         if cur.spots.is_empty() {
             ui.label(
                 RichText::new("None beyond the limit. Clean cut, Mr. Sulu.").color(t.text_dim),
@@ -1036,9 +1044,9 @@ pub fn panel(
             }
         }
     }
-    ui.add_space(t.spacing);
+    ui.add_space(metrics::SPACE_8);
     compare(ui, st, snap, t, actions);
-    ui.add_space(t.spacing);
+    ui.add_space(metrics::SPACE_8);
     legend(ui, snap, run, t);
     centre
 }
@@ -1052,13 +1060,13 @@ pub fn running_panel(ui: &mut Ui, t: &Tokens) {
         ui.spinner();
         let r = ui.add_enabled(
             false,
-            egui::Label::new(RichText::new("...").font(fonts::semibold(16.0))),
+            egui::Label::new(RichText::new("...").font(metrics::heading())),
         );
         super::groups::card(&r, "Grade", GRADE_CARD, Some(SIMULATING_CARD), false);
     });
     egui::Grid::new("flatcraft-sim-metrics")
         .num_columns(2)
-        .spacing([t.spacing * 2.0, t.spacing * 0.5])
+        .spacing([metrics::SPACE_16, metrics::ROW_GAP])
         .show(ui, |ui| {
             for name in [
                 "Worst miss",
@@ -1189,7 +1197,7 @@ fn compare(ui: &mut Ui, st: &mut SimState, snap: &Snapshot, t: &Tokens, actions:
         }
         return;
     };
-    let heading = ui.label(RichText::new(COMPARE).font(fonts::semibold(13.0)));
+    let heading = ui.label(RichText::new(COMPARE).font(metrics::section_title()));
     super::groups::card(&heading, COMPARE, COMPARE_CARD, None, false);
     let runs = match rows {
         Ok(r) => r,
@@ -1210,7 +1218,7 @@ fn compare(ui: &mut Ui, st: &mut SimState, snap: &Snapshot, t: &Tokens, actions:
                 Color32::TRANSPARENT
             })
             .corner_radius(t.radius)
-            .inner_margin(egui::Margin::symmetric(6, 4))
+            .inner_margin(egui::Margin::symmetric(metrics::SPACE_8 as i8, metrics::SPACE_4 as i8))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {

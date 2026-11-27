@@ -19,11 +19,12 @@
 //! cards, search and "Restore page defaults" read it. No registry command
 //! changes the preferences: this window is the only way (agent limit).
 
+use crate::ui::metrics;
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use egui::{
-    Align, Color32, Key, Layout, Modifiers, Rect, Response, RichText, Sense, Ui, pos2, vec2,
+    Align, Color32, Key, Layout, Modifiers, Rect, Response, RichText, Sense, Ui, Vec2, pos2, vec2,
 };
 use flatcraft_core::document::CutStrategy;
 use flatcraft_core::numexpr::{Field, Kind};
@@ -666,14 +667,20 @@ enum Footer {
 /// The size of the window on a screen of `screen`: room for the pages,
 /// never more than the screen minus a margin.
 pub fn window_size(screen: egui::Vec2) -> egui::Vec2 {
-    vec2(1040.0, 760.0).min(screen - vec2(2.0 * MARGIN, 2.0 * MARGIN))
+    SIZE.min(screen - vec2(2.0 * MARGIN, 2.0 * MARGIN))
 }
 
-const MARGIN: f32 = 16.0;
-const HEADER: f32 = 52.0;
-const FOOTER: f32 = 52.0;
+/// The window's size on a large screen (a fixed size, see
+/// docs/design/ui-rules.md).
+const SIZE: Vec2 = vec2(1040.0, 760.0);
+/// Room between the window and the screen's edge.
+const MARGIN: f32 = metrics::SPACE_16;
+const HEADER: f32 = metrics::WINDOW_BAR;
+const FOOTER: f32 = metrics::WINDOW_BAR;
+/// The page list (a fixed size, see docs/design/ui-rules.md).
 const SIDEBAR: f32 = 196.0;
-const PAD: f32 = 20.0;
+const PAD: f32 = metrics::WINDOW_PAD;
+/// The label column of a page (a fixed size, see docs/design/ui-rules.md).
 const LABEL_W: f32 = 200.0;
 
 /// Draws the window when it is open.
@@ -746,7 +753,7 @@ pub fn show(ctx: &egui::Context, app: &mut FlatCraftApp, actions: &mut Vec<Actio
                 st.jump(first, now);
             }
             sidebar(ui, side, st, &t);
-            let body = content.shrink2(vec2(PAD, PAD * 0.75));
+            let body = content.shrink2(vec2(PAD, metrics::SPACE_12));
             ui.scope_builder(
                 egui::UiBuilder::new()
                     .max_rect(body)
@@ -908,33 +915,36 @@ fn header_ui(
     st: &mut SettingsState,
     t: &Tokens,
 ) -> (bool, Option<&'static Row>) {
-    let icon = Rect::from_center_size(
-        pos2(rect.left() + PAD + 9.0, rect.center().y),
-        egui::Vec2::splat(18.0),
+    let icon = Rect::from_min_size(
+        pos2(
+            rect.left() + PAD,
+            rect.center().y - metrics::ICON_COMPACT / 2.0,
+        ),
+        egui::Vec2::splat(metrics::ICON_COMPACT),
     );
-    icon_image(ui, Icon::Settings, 18.0, t.icon_accent).paint_at(ui, icon);
+    icon_image(ui, Icon::Settings, metrics::ICON_COMPACT, t.icon_accent).paint_at(ui, icon);
     paint(
         ui,
-        pos2(icon.right() + 10.0, rect.center().y),
+        pos2(icon.right() + metrics::SPACE_8, rect.center().y),
         egui::Align2::LEFT_CENTER,
         "Settings",
-        fonts::semibold(16.0),
+        metrics::title(),
         t.text,
     );
     let mut clicked = false;
     let mut enter = None;
     ui.scope_builder(
         egui::UiBuilder::new()
-            .max_rect(rect.shrink2(vec2(PAD * 0.75, 0.0)))
+            .max_rect(rect.shrink2(vec2(metrics::SPACE_12, 0.0)))
             .layout(Layout::right_to_left(Align::Center)),
         |ui| {
-            let x = ui.add(egui::Button::image(icon_image(ui, Icon::Close, 14.0, t.text_dim).alt_text(CLOSE_NAME)).frame_when_inactive(false));
+            let x = ui.add(egui::Button::image(icon_image(ui, Icon::Close, metrics::ICON_COMPACT, t.text_dim).alt_text(CLOSE_NAME)).frame_when_inactive(false));
             set_name(ui, &x, CLOSE_NAME);
             super::groups::card(&x, "Close", "Close Settings and drop the changes you did not apply.", None, false);
             clicked = x.clicked();
-            ui.add_space(t.spacing);
+            ui.add_space(metrics::SPACE_8);
             let key = if cfg!(target_os = "macos") { "Cmd+F" } else { "Ctrl+F" };
-            ui.label(RichText::new(key).color(t.text_dim).size(11.0));
+            ui.label(RichText::new(key).color(t.text_dim).font(metrics::small()));
             let r = ui.add(
                 egui::TextEdit::singleline(&mut st.search)
                     .id_salt("flatcraft-settings-search")
@@ -964,31 +974,33 @@ fn header_ui(
 fn sidebar(ui: &mut Ui, rect: Rect, st: &mut SettingsState, t: &Tokens) {
     ui.scope_builder(
         egui::UiBuilder::new()
-            .max_rect(rect.shrink2(vec2(10.0, 12.0)))
+            .max_rect(rect.shrink2(vec2(metrics::SPACE_8, metrics::SPACE_12)))
             .layout(Layout::top_down(Align::Min)),
         |ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.spacing_mut().item_spacing.y = metrics::SPACE_2;
             let mut group = "";
             for page in Page::ALL {
                 if page.group() != group {
                     group = page.group();
                     if page != Page::General {
-                        ui.add_space(8.0);
+                        ui.add_space(metrics::SPACE_8);
                     }
-                    let (r, _) =
-                        ui.allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::hover());
+                    let (r, _) = ui.allocate_exact_size(
+                        vec2(ui.available_width(), metrics::SPACE_16),
+                        Sense::hover(),
+                    );
                     paint(
                         ui,
-                        r.left_center() + vec2(8.0, 0.0),
+                        r.left_center() + vec2(metrics::SPACE_8, 0.0),
                         egui::Align2::LEFT_CENTER,
                         group,
-                        fonts::semibold(10.5),
+                        metrics::caption(),
                         t.text_dim,
                     );
                 }
                 let on = st.page == page;
-                let (r, resp) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
+                let (r, resp) = ui
+                    .allocate_exact_size(vec2(ui.available_width(), metrics::ROW), Sense::click());
                 resp.widget_info(|| {
                     egui::WidgetInfo::selected(egui::accesskit::Role::Tab, true, on, page.name())
                 });
@@ -1009,20 +1021,23 @@ fn sidebar(ui: &mut Ui, rect: Rect, st: &mut SettingsState, t: &Tokens) {
                 }
                 let color = if on { t.text } else { t.text_dim };
                 let icon = Rect::from_center_size(
-                    pos2(r.left() + 18.0, r.center().y),
-                    egui::Vec2::splat(16.0),
+                    pos2(
+                        r.left() + metrics::SPACE_8 + metrics::ICON_COMPACT / 2.0,
+                        r.center().y,
+                    ),
+                    egui::Vec2::splat(metrics::ICON_COMPACT),
                 );
                 let tint = if on { t.icon_accent } else { t.text_dim };
-                icon_image(ui, page.icon(), 16.0, tint).paint_at(ui, icon);
+                icon_image(ui, page.icon(), metrics::ICON_COMPACT, tint).paint_at(ui, icon);
                 paint(
                     ui,
-                    pos2(icon.right() + 10.0, r.center().y),
+                    pos2(icon.right() + metrics::SPACE_8, r.center().y),
                     egui::Align2::LEFT_CENTER,
                     page.name(),
                     if on {
-                        fonts::semibold(13.0)
+                        metrics::section_title()
                     } else {
-                        fonts::medium(13.0)
+                        fonts::medium(metrics::TEXT_SECTION)
                     },
                     color,
                 );
@@ -1084,7 +1099,7 @@ fn footer_ui(
                 let ok = ui.add(
                     egui::Button::new(RichText::new("OK").color(ink).strong())
                         .fill(fill)
-                        .min_size(vec2(64.0, 0.0)),
+                        .min_size(vec2(metrics::BUTTON_MIN_W, 0.0)),
                 );
                 super::groups::card(&ok, "OK", "Store your changes and close Settings.", None, false);
                 if calc::click(ui, &ok) {
@@ -1138,17 +1153,18 @@ fn page_ui(
     let page = st.page;
     // The title is painted, so the sidebar tab keeps the only node with
     // the page's name.
-    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
+    let (r, _) =
+        ui.allocate_exact_size(vec2(ui.available_width(), metrics::CONTROL), Sense::hover());
     paint(
         ui,
         r.left_center(),
         egui::Align2::LEFT_CENTER,
         page.name(),
-        fonts::semibold(18.0),
+        metrics::title(),
         t.text,
     );
     ui.add(egui::Label::new(RichText::new(page.purpose()).color(t.text_dim)).wrap());
-    ui.add_space(t.spacing);
+    ui.add_space(metrics::SPACE_8);
     if page.is_profile() {
         profiles_window::diagnostics(ui, view, t, actions);
         match page {
@@ -1168,13 +1184,18 @@ fn page_ui(
     egui::ScrollArea::vertical()
         .id_salt(("flatcraft-settings-page", page))
         .auto_shrink([false, false])
-        .show(ui, |ui| match page {
-            Page::General => general(ui, &mut cx, draft, actions),
-            Page::Appearance => appearance(ui, &mut cx, draft),
-            Page::Layout => layout(ui, &mut cx, draft),
-            Page::Cutting => cutting(ui, &mut cx, draft, view),
-            Page::Agents => agents(ui, &mut cx, draft),
-            _ => shortcuts(ui, &mut cx),
+        .show(ui, |ui| {
+            // Rows carry their own room: a control is CONTROL tall and
+            // two rows are ROW apart, as in the side panels.
+            super::inspector::blocks::panel_spacing(ui);
+            match page {
+                Page::General => general(ui, &mut cx, draft, actions),
+                Page::Appearance => appearance(ui, &mut cx, draft),
+                Page::Layout => layout(ui, &mut cx, draft),
+                Page::Cutting => cutting(ui, &mut cx, draft, view),
+                Page::Agents => agents(ui, &mut cx, draft),
+                _ => shortcuts(ui, &mut cx),
+            }
         });
 }
 
@@ -1183,14 +1204,17 @@ fn section(ui: &mut Ui, cx: &mut Cx<'_>, title: &str, add: impl FnOnce(&mut Ui, 
     let key = format!("{}/{title}", cx.page.name());
     let open = !cx.collapsed.contains(&key);
     let t = cx.t;
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(
+        vec2(ui.available_width(), metrics::SECTION_HEADER),
+        Sense::click(),
+    );
     let name = format!("{title} section");
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &name));
     ui.ctx()
         .accesskit_node_builder(resp.id, |n| n.set_expanded(open));
-    let chevron = Rect::from_center_size(
-        pos2(rect.left() + 7.0, rect.center().y),
-        egui::Vec2::splat(14.0),
+    let chevron = Rect::from_min_size(
+        pos2(rect.left(), rect.center().y - metrics::ICON_SMALL / 2.0),
+        egui::Vec2::splat(metrics::ICON_SMALL),
     );
     let icon = if open {
         Icon::ChevronDown
@@ -1198,17 +1222,17 @@ fn section(ui: &mut Ui, cx: &mut Cx<'_>, title: &str, add: impl FnOnce(&mut Ui, 
         Icon::ChevronRight
     };
     let ink = if resp.hovered() { t.text } else { t.text_dim };
-    icon_image(ui, icon, 14.0, ink).paint_at(ui, chevron);
+    icon_image(ui, icon, metrics::ICON_SMALL, ink).paint_at(ui, chevron);
     let text = paint(
         ui,
-        pos2(chevron.right() + 6.0, rect.center().y),
+        pos2(chevron.right() + metrics::SPACE_4, rect.center().y),
         egui::Align2::LEFT_CENTER,
         &title.to_uppercase(),
-        fonts::semibold(11.0),
+        metrics::caption(),
         ink,
     );
     ui.painter().hline(
-        (text.right() + 10.0)..=rect.right(),
+        (text.right() + metrics::SPACE_8)..=rect.right(),
         rect.center().y,
         egui::Stroke::new(1.0, t.border),
     );
@@ -1226,10 +1250,9 @@ fn section(ui: &mut Ui, cx: &mut Cx<'_>, title: &str, add: impl FnOnce(&mut Ui, 
         }
     }
     if open {
-        ui.add_space(4.0);
         add(ui, cx);
     }
-    ui.add_space(t.spacing * 1.5);
+    ui.add_space(metrics::SPACE_8);
 }
 
 /// Paints the outline and tint of a row a search jumped to.
@@ -1256,7 +1279,7 @@ fn row_ui(
     let t = cx.t;
     let bg = ui.painter().add(egui::Shape::Noop);
     let inner = ui.horizontal_top(|ui| {
-        let (lr, _) = ui.allocate_exact_size(vec2(LABEL_W, 22.0), Sense::hover());
+        let (lr, _) = ui.allocate_exact_size(vec2(LABEL_W, metrics::CONTROL), Sense::hover());
         let text = paint(
             ui,
             lr.left_center(),
@@ -1276,6 +1299,8 @@ fn row_ui(
         );
         ui.vertical(|ui| {
             ui.set_max_width(ui.available_width().min(520.0));
+            // Lines inside one control (a choice and its explanation).
+            ui.spacing_mut().item_spacing.y = metrics::SPACE_2;
             control(ui)
         })
         .inner
@@ -1309,7 +1334,7 @@ fn row_ui(
         ui.scroll_to_rect(rect, Some(Align::Center));
         *cx.scroll_to = None;
     }
-    ui.add_space(t.spacing);
+    ui.add_space(metrics::ROW_GAP);
 }
 
 /// The ⓘ beside a label: hovering it shows the row's card.
@@ -1349,11 +1374,11 @@ fn segmented<T: Copy + PartialEq>(
                 .layout_no_wrap(label.to_string(), font.clone(), t.text)
                 .size()
                 .x
-                + 24.0
+                + metrics::SPACE_24
         })
         .collect();
     let total: f32 = widths.iter().sum();
-    let (rect, _) = ui.allocate_exact_size(vec2(total, 24.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(total, metrics::CONTROL), Sense::hover());
     let mut x = rect.left();
     for (i, ((v, label, _), w)) in options.iter().zip(&widths).enumerate() {
         let r = Rect::from_min_size(pos2(x, rect.top()), vec2(*w, rect.height()));
@@ -1415,11 +1440,11 @@ fn stepper(
     unit: &str,
 ) -> Response {
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
+        ui.spacing_mut().item_spacing.x = metrics::SPACE_2;
         let (lo, hi) = (*range.start(), *range.end());
         let less = ui.add_enabled(
             *v > lo,
-            egui::Button::new("\u{2212}").min_size(vec2(24.0, 22.0)),
+            egui::Button::new("\u{2212}").min_size(Vec2::splat(metrics::CONTROL)),
         );
         set_name(ui, &less, &format!("Less {name}"));
         let low = format!("{lo}{unit} is the smallest value.");
@@ -1447,7 +1472,10 @@ fn stepper(
             .width(48.0);
         let (r, _) = calc::number(ui, ("flatcraft-stepper", name), true, v, &spec);
         set_name(ui, &r, name);
-        let more = ui.add_enabled(*v < hi, egui::Button::new("+").min_size(vec2(24.0, 22.0)));
+        let more = ui.add_enabled(
+            *v < hi,
+            egui::Button::new("+").min_size(Vec2::splat(metrics::CONTROL)),
+        );
         set_name(ui, &more, &format!("More {name}"));
         let high = format!("{hi}{unit} is the largest value.");
         super::groups::card(
@@ -1779,7 +1807,7 @@ fn cutting(ui: &mut Ui, cx: &mut Cx<'_>, d: &mut Preferences, view: &profiles_wi
                         flatcraft_engine::prefs::AUTO_SPACING_RANGE_MM,
                         " mm",
                     );
-                    ui.add_space(t.spacing);
+                    ui.add_space(metrics::SPACE_8);
                     spacing_example(ui, d.auto_arrange_spacing_mm, &t);
                     r
                 })
@@ -1817,7 +1845,7 @@ fn spacing_example(ui: &mut Ui, mm: f64, t: &Tokens) {
         pos2((a.right() + b.left()) / 2.0, y + 1.0),
         egui::Align2::CENTER_TOP,
         &format!("{mm:.1} mm"),
-        fonts::medium(10.0),
+        fonts::medium(metrics::TEXT_SMALL),
         t.text_dim,
     );
 }
@@ -1878,7 +1906,7 @@ fn agents(ui: &mut Ui, cx: &mut Cx<'_>, d: &mut Preferences) {
                 .wrap(),
             );
             let bin = binary_path();
-            ui.add_space(4.0);
+            ui.add_space(metrics::SPACE_4);
             ui.label(RichText::new("For Claude Code:").strong());
             snippet(
                 ui,
@@ -1912,9 +1940,16 @@ fn snippet(ui: &mut Ui, text: &str, copy: &str, t: &Tokens) {
     egui::Frame::new()
         .fill(t.surface)
         .corner_radius(t.ribbon_radius)
-        .inner_margin(egui::Margin::same(6))
+        .inner_margin(egui::Margin::same(metrics::SPACE_8 as i8))
         .show(ui, |ui| {
-            ui.add(egui::Label::new(RichText::new(text).monospace().size(11.5)).wrap());
+            ui.add(
+                egui::Label::new(
+                    RichText::new(text)
+                        .monospace()
+                        .size(metrics::TEXT_SECONDARY),
+                )
+                .wrap(),
+            );
         });
     let r = ui.button("Copy");
     set_name(ui, &r, copy);
@@ -1935,7 +1970,7 @@ fn shortcuts(ui: &mut Ui, cx: &mut Cx<'_>) {
         row_ui(ui, cx, "shortcuts", |ui| {
             egui::Grid::new("flatcraft-settings-shortcuts")
                 .num_columns(2)
-                .spacing([18.0, 4.0])
+                .spacing([metrics::SPACE_16, metrics::SPACE_4])
                 .show(ui, |ui| {
                     for s in help::SHORTCUTS.iter().filter(|s| s.here()) {
                         ui.label(RichText::new(s.keys()).monospace());
@@ -1951,13 +1986,14 @@ fn shortcuts(ui: &mut Ui, cx: &mut Cx<'_>) {
 /// The search results in place of the page.
 fn results(ui: &mut Ui, st: &mut SettingsState, now: Instant, t: &Tokens) {
     let hits = search(&st.search);
-    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
+    let (r, _) =
+        ui.allocate_exact_size(vec2(ui.available_width(), metrics::CONTROL), Sense::hover());
     paint(
         ui,
         r.left_center(),
         egui::Align2::LEFT_CENTER,
         "Search results",
-        fonts::semibold(18.0),
+        metrics::title(),
         t.text,
     );
     if hits.is_empty() {
@@ -1967,7 +2003,7 @@ fn results(ui: &mut Ui, st: &mut SettingsState, now: Instant, t: &Tokens) {
         );
         return;
     }
-    ui.add_space(t.spacing / 2.0);
+    ui.add_space(metrics::SPACE_4);
     let mut picked = None;
     egui::ScrollArea::vertical()
         .id_salt("flatcraft-settings-results")
@@ -1975,26 +2011,28 @@ fn results(ui: &mut Ui, st: &mut SettingsState, now: Instant, t: &Tokens) {
         .show(ui, |ui| {
             for hit in hits {
                 let name = format!("{} ({})", hit.label, hit.page.name());
-                let (rect, resp) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::click());
+                let (rect, resp) = ui.allocate_exact_size(
+                    vec2(ui.available_width(), metrics::ROW + metrics::SPACE_16),
+                    Sense::click(),
+                );
                 resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &name));
                 if resp.hovered() {
                     ui.painter().rect_filled(rect, t.ribbon_radius, t.surface);
                 }
                 paint(
                     ui,
-                    rect.left_top() + vec2(8.0, 6.0),
+                    rect.left_top() + vec2(metrics::SPACE_8, metrics::SPACE_4),
                     egui::Align2::LEFT_TOP,
                     hit.label,
-                    fonts::semibold(13.0),
+                    metrics::section_title(),
                     t.text,
                 );
                 paint(
                     ui,
-                    rect.left_top() + vec2(8.0, 24.0),
+                    rect.left_top() + vec2(metrics::SPACE_8, metrics::SPACE_24),
                     egui::Align2::LEFT_TOP,
                     &format!("{} > {}", hit.page.name(), hit.section),
-                    fonts::medium(11.0),
+                    fonts::medium(metrics::TEXT_SMALL),
                     t.text_dim,
                 );
                 super::groups::card(&resp, hit.label, hit.card.text(), None, true);

@@ -7,6 +7,7 @@
 //! send it opens only for a cut on a plotter (milestone 3), never after
 //! File Output, which cut nothing yet ([`cutlog::asks_after`]).
 
+use crate::ui::metrics;
 use egui::{RichText, Ui};
 use flatcraft_engine::cutlog::{self, CutEntry, Verdict};
 
@@ -169,7 +170,7 @@ pub fn show(
         .cancel_hint("Closes the question without saving anything. You can answer later from the job settings.");
     let why_not = d.calibration.then_some(cutlog::CALIBRATION_NOT_RATED);
     let answer = dialog.show_with(ctx, t, |ui| {
-        ui.add_space(t.spacing);
+        ui.add_space(metrics::SPACE_8);
         ui.horizontal(|ui| {
             if thumb(
                 ui,
@@ -192,7 +193,7 @@ pub fn show(
                 d.verdict = Some(Verdict::Bad);
             }
         });
-        ui.add_space(t.spacing / 2.0);
+        ui.add_space(metrics::SPACE_4);
         ui.label(RichText::new("A few words (you may leave it empty)").color(t.text_dim));
         let r = ui.add_enabled(
             why_not.is_none(),

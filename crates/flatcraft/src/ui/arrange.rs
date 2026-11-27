@@ -8,6 +8,7 @@
 //! so the preview and the result cannot differ. OK runs one command (one
 //! undo step); Cancel, the close button and Escape change nothing.
 
+use crate::ui::metrics;
 use egui::{RichText, Ui};
 use flatcraft_core::document::ObjectId;
 use flatcraft_core::numexpr::{Field, Kind};
@@ -23,7 +24,7 @@ use super::prepare::{ObjView, PrepareState, Snapshot};
 use super::settings::{painted_label, set_name};
 use super::theme::Tokens;
 use super::tools::{self, Act, Setting, Tool};
-use super::{Action, ICON_SIZE, ribbon};
+use super::{Action, ribbon};
 
 // ---------------------------------------------------------------- panels
 
@@ -780,6 +781,9 @@ pub fn panel_ui(
     };
     let mut close = false;
     let mut ok = None;
+    // The side panels' rules: CONTROL-tall fields, ROW apart.
+    super::inspector::blocks::panel_spacing(ui);
+    ui.spacing_mut().item_spacing.y = metrics::ROW_GAP;
     ui.horizontal_top(|ui| {
         // The close button first, from the right, so a long title
         // ("Auto arrange 12 selected objects") wraps before it.
@@ -788,16 +792,14 @@ pub fn panel_ui(
                 close = true;
             }
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
-                let tex = icons::texture(ui.ctx(), p.kind.tool().icon, ICON_SIZE);
+                let tex = icons::texture(ui.ctx(), p.kind.tool().icon, metrics::ICON_COMPACT);
                 ui.image(egui::load::SizedTexture::new(
                     tex.id(),
-                    egui::Vec2::splat(ICON_SIZE),
+                    egui::Vec2::splat(metrics::ICON_COMPACT),
                 ));
                 let title = panel_title(snap, p);
-                let r = ui.add(
-                    egui::Label::new(RichText::new(&title).font(super::fonts::semibold(15.0)))
-                        .wrap(),
-                );
+                let r =
+                    ui.add(egui::Label::new(RichText::new(&title).font(metrics::heading())).wrap());
                 if p.kind == PanelKind::AutoArrange {
                     super::groups::card(&r, &title, AUTO_ARRANGE_CARD, None, false);
                 }
@@ -806,7 +808,7 @@ pub fn panel_ui(
     });
     ui.separator();
     fields(ui, p, snap, st.fields.each);
-    ui.add_space(t.spacing);
+    ui.add_space(metrics::SPACE_8);
     let why = not_ready(snap, p);
     if let Some(why) = &why {
         ui.label(RichText::new(why.as_str()).color(t.text_dim));
@@ -828,7 +830,7 @@ pub fn panel_ui(
             .color(t.text_dim),
         );
     }
-    ui.add_space(t.spacing / 2.0);
+    ui.add_space(metrics::SPACE_4);
     ui.horizontal(|ui| {
         let r = ui.add_enabled(why.is_none(), egui::Button::new("OK"));
         if calc::click(ui, &r) {

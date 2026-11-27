@@ -282,3 +282,241 @@ fn workspace_tile_aligns_with_group_footers() {
         assert!(near(tile.1, step.1), "same size at {w}");
     }
 }
+
+// ------------------------------------------------------------ the guard
+
+/// Calls and assignments that set layout or text size. Their numbers must
+/// come from `ui/metrics.rs`.
+const CALLS: [&str; 11] = [
+    ".spacing([",
+    "medium(",
+    "FontId::monospace(",
+    ".size(",
+    "add_space(",
+    "Margin::same(",
+    "Margin::symmetric(",
+    "FontId::proportional(",
+    "semibold(",
+    ".min_size(",
+    "set_height(",
+];
+const ASSIGNED: [&str; 2] = ["item_spacing", "button_padding"];
+
+/// The source with its `//` comments blanked out (strings kept).
+fn strip_comments(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    for line in src.lines() {
+        let b = line.as_bytes();
+        let mut in_str = false;
+        let mut cut = b.len();
+        let mut i = 0;
+        while i < b.len() {
+            match b[i] {
+                b'\\' if in_str => i += 1,
+                b'"' => in_str = !in_str,
+                b'\'' if !in_str && i + 2 < b.len() && b[i + 2] == b'\'' => i += 2,
+                b'/' if !in_str && b.get(i + 1) == Some(&b'/') => {
+                    cut = i;
+                    break;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        out.push_str(&line[..cut]);
+        out.push('\n');
+    }
+    out
+}
+
+/// The non-zero number literals of `expr`, leaving out the halving idiom
+/// of centring (`/ 2.0`) and digits inside names (`SPACE_8`, `vec2`, `i8`).
+fn numbers(expr: &str) -> Vec<String> {
+    let b = expr.as_bytes();
+    let mut found = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        let starts = b[i].is_ascii_digit()
+            && (i == 0
+                || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_' || b[i - 1] == b'.'));
+        if !starts {
+            i += 1;
+            continue;
+        }
+        let s = i;
+        while i < b.len() && (b[i].is_ascii_digit() || b[i] == b'.' || b[i] == b'_') {
+            i += 1;
+        }
+        let lit = expr[s..i].trim_end_matches('.');
+        let zero = lit.parse::<f64>().is_ok_and(|v| v == 0.0);
+        let halving =
+            lit.parse::<f64>().is_ok_and(|v| v == 2.0) && expr[..s].trim_end().ends_with('/');
+        if !zero && !halving {
+            found.push(lit.to_string());
+        }
+    }
+    found
+}
+
+fn squash(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Every layout call or assignment in `src` with a number literal, as
+/// one-line snippets (`add_space(3.0)`, `item_spacing.y = 2.0`).
+fn layout_literals(src: &str) -> Vec<String> {
+    let src = strip_comments(src);
+    let mut hits = Vec::new();
+    for call in CALLS {
+        let mut from = 0;
+        while let Some(at) = src[from..].find(call) {
+            let start = from + at;
+            let open = start + call.len();
+            let mut depth = 1;
+            let mut end = open;
+            for (j, c) in src[open..].char_indices() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+                if depth == 0 {
+                    end = open + j;
+                    break;
+                }
+            }
+            let args = &src[open..end];
+            // `fn semibold(size: f32)` and friends declare, they do not call.
+            let declares = src[..start].trim_end().ends_with("fn");
+            if !declares && !numbers(args).is_empty() {
+                hits.push(squash(&format!("{call}{args})")));
+            }
+            from = open;
+        }
+    }
+    for name in ASSIGNED {
+        let mut from = 0;
+        while let Some(at) = src[from..].find(name) {
+            let start = from + at;
+            let rest = &src[start + name.len()..];
+            let field = rest
+                .find(|c: char| !(c == '.' || c == 'x' || c == 'y'))
+                .unwrap_or(0);
+            let after = rest[field..].trim_start();
+            if after.starts_with('=') && !after.starts_with("==") {
+                let end = after.find(';').unwrap_or(after.len());
+                let rhs = &after[1..end];
+                if !numbers(rhs).is_empty() {
+                    hits.push(squash(&format!(
+                        "{name}{} = {}",
+                        &rest[..field],
+                        rhs.trim()
+                    )));
+                }
+            }
+            from = start + name.len();
+        }
+    }
+    hits
+}
+
+/// The allow-list: `file | snippet | reason`, one per line.
+fn allowed() -> Vec<(String, String, String)> {
+    let text = include_str!("design_rules_allow.txt");
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| {
+            let parts: Vec<&str> = l.splitn(3, '|').map(str::trim).collect();
+            assert_eq!(
+                parts.len(),
+                3,
+                "allow-list line needs file | snippet | reason: {l}"
+            );
+            assert!(parts[2].len() > 10, "allow-list entry needs a reason: {l}");
+            (parts[0].into(), squash(parts[1]), parts[2].into())
+        })
+        .collect()
+}
+
+fn ui_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for e in std::fs::read_dir(dir).unwrap() {
+        let p = e.unwrap().path();
+        if p.is_dir() {
+            ui_sources(&p, out);
+        } else if p.extension().is_some_and(|x| x == "rs") {
+            out.push(p);
+        }
+    }
+}
+
+#[test]
+fn the_guard_finds_layout_literals() {
+    let src = "ui.add_space(3.0);\n\
+               ui.add_space(metrics::SPACE_8); // add_space(9.0)\n\
+               ui.add_space((w - x) / 2.0);\n\
+               .inner_margin(egui::Margin::symmetric(\n    6,\n    metrics::SPACE_4 as i8,\n))\n\
+               ui.spacing_mut().item_spacing.y = 0.0;\n\
+               ui.spacing_mut().item_spacing = vec2(metrics::SPACE_4, 2.0 * pad);\n\
+               RichText::new(\"a // b\").font(fonts::semibold(15.0));\n\
+               pub fn semibold(size: f32) -> FontId {}\n";
+    assert_eq!(
+        layout_literals(src),
+        vec![
+            "add_space(3.0)",
+            "Margin::symmetric( 6, metrics::SPACE_4 as i8, )",
+            "semibold(15.0)",
+            "item_spacing = vec2(metrics::SPACE_4, 2.0 * pad)",
+        ]
+    );
+}
+
+/// Layout spacing, sizes and text sizes in `ui/` come from `ui/metrics.rs`
+/// (docs/design/ui-rules.md). A number typed into a layout call fails
+/// here unless the allow-list names it with a reason.
+#[test]
+fn ui_layout_numbers_come_from_metrics() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui");
+    let mut files = Vec::new();
+    ui_sources(&root, &mut files);
+    assert!(files.len() > 30, "scanned {} files", files.len());
+    let allow = allowed();
+    let mut used = vec![false; allow.len()];
+    let mut bad = Vec::new();
+    for f in &files {
+        let rel = f
+            .strip_prefix(&root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        if rel == "metrics.rs" {
+            continue;
+        }
+        let src = std::fs::read_to_string(f).unwrap();
+        for hit in layout_literals(&src) {
+            match allow
+                .iter()
+                .position(|(file, snip, _)| *file == rel && *snip == hit)
+            {
+                Some(i) => used[i] = true,
+                None => bad.push(format!("{rel}: {hit}")),
+            }
+        }
+    }
+    let stale: Vec<_> = allow
+        .iter()
+        .zip(&used)
+        .filter(|(_, u)| !**u)
+        .map(|((f, s, _), _)| format!("{f}: {s}"))
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "layout numbers outside ui/metrics.rs (use a metrics constant, or add an allow-list entry with a reason):\n{}",
+        bad.join("\n")
+    );
+    assert!(
+        stale.is_empty(),
+        "allow-list entries that match nothing:\n{}",
+        stale.join("\n")
+    );
+}

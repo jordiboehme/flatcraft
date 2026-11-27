@@ -84,6 +84,10 @@ pub const ICON_COMPACT: f32 = 16.0;
 pub const ICON_BIG: f32 = 24.0;
 /// Small icons inside a control: chevrons, a card's close X.
 pub const ICON_SMALL: f32 = 12.0;
+/// Icons beside a text in the app bar, the ribbon's lists, the Cut steps
+/// and the timeline (`ui::ICON_SIZE`). Off the scale on purpose: tuned by
+/// eye with the app bar (see docs/design/ui-rules.md).
+pub const ICON_BAR: f32 = 18.0;
 
 // ---------------------------------------------------------------- type
 
@@ -118,6 +122,60 @@ pub fn subsection_title() -> FontId {
 pub fn heading() -> FontId {
     fonts::semibold(TEXT_HEADING)
 }
+
+/// Small text: badges ("Current", "Open now") and the eyebrow labels
+/// over a group of items ("GENERAL", "WORKSPACE").
+pub const TEXT_SMALL: f32 = 11.0;
+/// The title of a window, a dialog or a page (semibold).
+pub const TEXT_TITLE: f32 = 16.0;
+/// The one big line of a page: Home's greeting, the About name (semibold).
+pub const TEXT_DISPLAY: f32 = 24.0;
+
+pub fn small() -> FontId {
+    FontId::proportional(TEXT_SMALL)
+}
+
+/// A badge or an eyebrow label: small, semibold.
+pub fn caption() -> FontId {
+    fonts::semibold(TEXT_SMALL)
+}
+
+pub fn title() -> FontId {
+    fonts::semibold(TEXT_TITLE)
+}
+
+pub fn display() -> FontId {
+    fonts::semibold(TEXT_DISPLAY)
+}
+
+// ---------------------------------------------------------------- windows
+
+/// The room around the content of a window or a dialog.
+pub const WINDOW_PAD: f32 = SPACE_16;
+/// The room around the content of a card: a hint card, a toast, a bar
+/// over the canvas, a legend.
+pub const CARD_PAD: f32 = SPACE_8;
+/// The header and the footer bar of the Settings window.
+pub const WINDOW_BAR: f32 = 48.0;
+/// The narrowest a window's main button gets (OK, Done).
+pub const BUTTON_MIN_W: f32 = 64.0;
+/// The width of a small dialog with one field (Save as, Delete).
+pub const SMALL_DIALOG_W: f32 = 360.0;
+/// A window's close button (the x at its top right) and its icon.
+pub const CLOSE_BUTTON: f32 = ICON_BUTTON;
+
+// ---------------------------------------------------------------- base style
+
+/// egui's spacing outside the panels: popups, menus, windows. The 6 pt
+/// row gap is egui's own look and is off the scale on purpose (see
+/// docs/design/ui-rules.md).
+pub const ITEM_SPACING: Vec2 = vec2(SPACE_8, 6.0);
+/// The padding of a button outside the ribbon.
+pub const BUTTON_PADDING: Vec2 = vec2(SPACE_8, SPACE_4);
+/// The inner margin of a window and of a menu.
+pub const WINDOW_MARGIN: f32 = SPACE_8;
+/// The ribbon's tighter button padding (`theme::tight`).
+pub const TIGHT_BUTTON_PADDING: Vec2 = vec2(SPACE_4, SPACE_2);
 
 // ---------------------------------------------------------------- ribbon
 

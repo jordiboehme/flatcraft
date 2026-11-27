@@ -5,6 +5,7 @@
 //! under one short lock. Everything is drawn from the snapshot; changes go
 //! out as [`Action`]s that name the document they were made for.
 
+use crate::ui::metrics;
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
@@ -1554,8 +1555,12 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
     if app.ui.prepare.panel.is_some() {
         let shown = egui::Panel::right("flatcraft-arrange-panel")
             .resizable(false)
-            .exact_size(270.0)
-            .frame(egui::Frame::new().fill(t.panel).inner_margin(t.spacing))
+            .exact_size(rails::ARRANGE_W)
+            .frame(
+                egui::Frame::new()
+                    .fill(t.panel)
+                    .inner_margin(metrics::panel_margin()),
+            )
             .show(ui, |ui| {
                 arrange::panel_ui(ui, &mut app.ui.prepare, snap, &t, actions);
             });
@@ -1670,7 +1675,7 @@ fn rename_window(
     // Whether Rename can run is decided after the field took this frame's
     // typing, so the button and Enter see the name as it is now.
     let answer = dialog.show_with(ctx, t, |ui| {
-        ui.add_space(t.spacing);
+        ui.add_space(metrics::SPACE_8);
         let field = ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(f32::INFINITY));
         settings::set_name(ui, &field, "Name");
         if !field.has_focus() && !field.lost_focus() {
@@ -1714,8 +1719,12 @@ fn pills(
     actions: &mut Vec<Action>,
 ) {
     let area = Rect::from_min_max(
-        rect.min + egui::vec2(canvas::RULER + t.spacing, canvas::RULER + t.spacing),
-        rect.max - egui::vec2(t.spacing, t.spacing),
+        rect.min
+            + egui::vec2(
+                canvas::RULER + metrics::SPACE_8,
+                canvas::RULER + metrics::SPACE_8,
+            ),
+        rect.max - egui::vec2(metrics::SPACE_8, metrics::SPACE_8),
     );
     let doc_id = snap.doc_id;
     let src = &mut st.sources;
@@ -1729,7 +1738,7 @@ fn pills(
                     .fill(t.surface)
                     .stroke(egui::Stroke::new(1.0, colour))
                     .corner_radius(t.radius * 2)
-                    .inner_margin(egui::Margin::symmetric(t.spacing as i8 * 2, 4))
+                    .inner_margin(egui::Margin::symmetric(metrics::SPACE_16 as i8, metrics::SPACE_4 as i8))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| add(ui));
                     });

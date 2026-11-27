@@ -10,6 +10,7 @@
 //! "Save preset" stores both.
 
 use super::tools::Setting;
+use crate::ui::metrics;
 use egui::{Color32, Response, RichText, Sense, Ui, vec2};
 use flatcraft_core::numexpr::{Field, Kind as NumKind};
 use flatcraft_device::profile::MAX_SIZE_MM;
@@ -429,7 +430,7 @@ pub(crate) fn discard_banner(ui: &mut Ui, st: &mut ProfilesState, t: &Tokens) {
     egui::Frame::new()
         .stroke(egui::Stroke::new(1.0, t.accent_cut))
         .corner_radius(t.radius)
-        .inner_margin(egui::Margin::same(t.spacing as i8))
+        .inner_margin(egui::Margin::same(metrics::SPACE_8 as i8))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Discard your changes?").color(t.warn_text));
@@ -472,7 +473,7 @@ pub(crate) fn discard_banner(ui: &mut Ui, st: &mut ProfilesState, t: &Tokens) {
                 }
             });
         });
-    ui.add_space(t.spacing / 2.0);
+    ui.add_space(metrics::SPACE_4);
 }
 
 /// Copies the lists and preferences, and loads a newly selected preset,
@@ -561,7 +562,7 @@ pub(crate) fn load(app: &mut FlatCraftApp) -> View {
 fn header(ui: &mut Ui, name: &str, parent: Option<&str>, system: bool, t: &Tokens) {
     let galley = ui
         .painter()
-        .layout_no_wrap(name.to_string(), fonts::semibold(15.0), t.text);
+        .layout_no_wrap(name.to_string(), metrics::heading(), t.text);
     let (rect, _) = ui.allocate_exact_size(galley.size(), Sense::hover());
     ui.painter().galley(rect.left_top(), galley, t.text);
     let origin = match (parent, system) {
@@ -571,7 +572,7 @@ fn header(ui: &mut Ui, name: &str, parent: Option<&str>, system: bool, t: &Token
         (None, false) => "User preset".to_string(),
     };
     ui.label(RichText::new(origin).color(t.text_dim));
-    ui.add_space(t.spacing / 2.0);
+    ui.add_space(metrics::SPACE_4);
 }
 
 /// Text painted without an accessibility node, so the widget next to it
@@ -579,7 +580,11 @@ fn header(ui: &mut Ui, name: &str, parent: Option<&str>, system: bool, t: &Token
 fn paint_text(ui: &mut Ui, text: &str, color: Color32, dot: Option<Color32>) -> egui::Rect {
     let font = egui::TextStyle::Body.resolve(ui.style());
     let galley = ui.painter().layout_no_wrap(text.to_string(), font, color);
-    let extra = if dot.is_some() { 12.0 } else { 0.0 };
+    let extra = if dot.is_some() {
+        metrics::DOT_SLOT
+    } else {
+        0.0
+    };
     let (rect, _) = ui.allocate_exact_size(galley.size() + vec2(extra, 0.0), Sense::hover());
     ui.painter().galley(rect.left_top(), galley, color);
     if let Some(c) = dot {
@@ -758,7 +763,7 @@ fn preset_list(
     for (system, heading) in [(true, "System"), (false, "User")] {
         ui.label(
             RichText::new(heading)
-                .font(fonts::semibold(13.0))
+                .font(metrics::section_title())
                 .color(t.text_dim),
         );
         let mut any = false;
@@ -779,7 +784,7 @@ fn preset_list(
         if !any {
             ui.label(RichText::new("None yet. Save one from a system preset.").color(t.text_dim));
         }
-        ui.add_space(t.spacing);
+        ui.add_space(metrics::SPACE_8);
     }
     picked
 }
@@ -911,7 +916,8 @@ fn plotter_list(ui: &mut Ui, st: &mut ProfilesState, view: &View, t: &Tokens, he
 }
 
 /// Width of the preset list column.
-const LIST_WIDTH: f32 = 170.0;
+/// The preset list (a fixed size, see docs/design/ui-rules.md).
+const LIST_WIDTH: f32 = 168.0;
 
 /// The name, origin and Save buttons of the selected plotter preset, then
 /// `body` with the draft. The Plotters and the Mats page share it.
@@ -991,7 +997,7 @@ pub(crate) fn plotters_page(
             .max_height(ui.available_height())
             .show(ui, |ui| {
                 plotter_form(ui, d, hl, t);
-                *out = notes_field(ui, Kind::Plotter, d, t).or(out.take());
+                *out = notes_field(ui, Kind::Plotter, d).or(out.take());
             });
     });
     if let Some(req) = st.notes_request.take() {
@@ -1049,11 +1055,11 @@ pub(crate) fn mats_page(
                     },
                     t,
                 );
-                ui.add_space(t.spacing * 2.0);
+                ui.add_space(metrics::SPACE_16);
                 // A row search can jump to, like the form rows.
                 let at = ui
                     .vertical(|ui| {
-                        ui.label(RichText::new("Calibration").font(fonts::semibold(14.0)));
+                        ui.label(RichText::new("Calibration").font(metrics::heading()));
                         ui.label(CALIBRATION_LATER);
                         ui.label(
                             RichText::new(
@@ -1089,7 +1095,8 @@ fn plotter_form(ui: &mut Ui, d: &mut Draft<PlotterProfile>, highlight: &Highligh
     ui.add_enabled_ui(!d.system, |ui| {
         egui::Grid::new("flatcraft-profiles-plotter")
             .num_columns(2)
-            .spacing([t.spacing, t.spacing * 0.6])
+            .spacing([metrics::SPACE_8, metrics::ROW_GAP])
+            .min_row_height(metrics::CONTROL)
             .show(ui, |ui| {
                 f.row(ui, "Name", "name", Setting::PresetName, |ui| {
                     ui.text_edit_singleline(&mut p.name)
@@ -1528,7 +1535,7 @@ fn mats(
             }
         });
     });
-    ui.add_space(t.spacing / 2.0);
+    ui.add_space(metrics::SPACE_4);
 
     let Some(id) = selected.clone() else {
         return;
@@ -1619,7 +1626,8 @@ fn mats(
         ui.add_enabled_ui(!system, |ui| {
             egui::Grid::new("flatcraft-profiles-mat")
                 .num_columns(2)
-                .spacing([t.spacing, t.spacing * 0.6])
+                .spacing([metrics::SPACE_8, metrics::ROW_GAP])
+                .min_row_height(metrics::CONTROL)
                 .show(ui, |ui| {
                     f.row(ui, "Mat name", "name", Setting::MatName, |ui| {
                         ui.add(egui::TextEdit::singleline(&mut m.name).desired_width(160.0))
@@ -1807,7 +1815,7 @@ fn mat_drawing(ui: &mut Ui, m: &Media, default_colour: [u8; 3], t: &Tokens) {
         grid.min + vec2(5.0, 3.0),
         egui::Align2::LEFT_TOP,
         "0,0",
-        fonts::medium(11.0),
+        fonts::medium(metrics::TEXT_SMALL),
         ink,
     );
 }
@@ -1882,7 +1890,7 @@ pub(crate) fn materials_page(
                 .max_height(ui.available_height())
                 .show(ui, |ui| {
                     material_form(ui, d, &st.highlight, view, t);
-                    if let Some(req) = notes_field(ui, Kind::Material, d, t) {
+                    if let Some(req) = notes_field(ui, Kind::Material, d) {
                         actions.push(Action::Profiles(req));
                     }
                 });
@@ -1906,10 +1914,9 @@ fn notes_field<T: PresetNotes + PartialEq>(
     ui: &mut Ui,
     kind: Kind,
     d: &mut Draft<T>,
-    t: &Tokens,
 ) -> Option<Request> {
-    ui.add_space(t.spacing);
-    ui.label(RichText::new("Notes").font(fonts::semibold(14.0)));
+    ui.add_space(metrics::SPACE_8);
+    ui.label(RichText::new("Notes").font(metrics::heading()));
     let mut text = d.edit.notes().cloned().unwrap_or_default();
     let r = ui.add(
         egui::TextEdit::multiline(&mut text)
@@ -2003,7 +2010,8 @@ fn material_form(
     ui.add_enabled_ui(!d.system, |ui| {
         egui::Grid::new("flatcraft-profiles-material")
             .num_columns(2)
-            .spacing([t.spacing, t.spacing * 0.6])
+            .spacing([metrics::SPACE_8, metrics::ROW_GAP])
+            .min_row_height(metrics::CONTROL)
             .show(ui, |ui| {
                 f.row(ui, "Name", "name", Setting::PresetName, |ui| {
                     ui.text_edit_singleline(&mut m.name)
@@ -2070,8 +2078,8 @@ fn material_form(
                     });
                 }
             });
-        ui.add_space(t.spacing);
-        ui.label(RichText::new("Per-plotter overrides").font(fonts::semibold(14.0)));
+        ui.add_space(metrics::SPACE_8);
+        ui.label(RichText::new("Per-plotter overrides").font(metrics::heading()));
         ui.label(
             RichText::new("Values that differ on one plotter. The rest come from above.")
                 .color(t.text_dim),
@@ -2223,7 +2231,8 @@ fn overrides(ui: &mut Ui, f: &Form<'_>, m: &mut MaterialProfile, view: &View, t:
     let mut remove = None;
     egui::Grid::new("flatcraft-profiles-overrides")
         .num_columns(6)
-        .spacing([t.spacing, t.spacing * 0.6])
+        .spacing([metrics::SPACE_8, metrics::ROW_GAP])
+            .min_row_height(metrics::CONTROL)
         .show(ui, |ui| {
             if m.overrides.is_empty() {
                 return;
@@ -2339,10 +2348,11 @@ fn corner_overrides(
     let base_corner = m.corner_mode;
     // The material's own minimum radius; `None` is the blade offset.
     let base_radius = m.min_radius_mm;
-    ui.add_space(t.spacing * 0.5);
+    ui.add_space(metrics::SPACE_4);
     egui::Grid::new("flatcraft-profiles-corner-overrides")
         .num_columns(4)
-        .spacing([t.spacing, t.spacing * 0.6])
+        .spacing([metrics::SPACE_8, metrics::ROW_GAP])
+        .min_row_height(metrics::CONTROL)
         .show(ui, |ui| {
             let dim = t.text_dim;
             for h in [
@@ -2489,9 +2499,9 @@ fn save_as_dialog(
     };
     let mut close = false;
     egui::Modal::new(egui::Id::unique("flatcraft-profiles-save-as")).show(ctx, |ui| {
-        ui.set_width(360.0);
-        ui.label(RichText::new("Save as user preset").font(fonts::semibold(15.0)));
-        ui.add_space(t.spacing / 2.0);
+        ui.set_width(metrics::SMALL_DIALOG_W);
+        ui.label(RichText::new("Save as user preset").font(metrics::title()));
+        ui.add_space(metrics::SPACE_4);
         let r = ui.text_edit_singleline(&mut dialog.name);
         set_name(ui, &r, "Preset name");
         action_card(
@@ -2604,10 +2614,10 @@ fn delete_dialog(
     };
     let mut close = false;
     egui::Modal::new(egui::Id::unique("flatcraft-profiles-delete")).show(ctx, |ui| {
-        ui.set_width(360.0);
-        ui.label(RichText::new(format!("Delete {name}?")).font(fonts::semibold(15.0)));
+        ui.set_width(metrics::SMALL_DIALOG_W);
+        ui.label(RichText::new(format!("Delete {name}?")).font(metrics::title()));
         ui.label(RichText::new("Its file is removed. This cannot be undone.").color(t.text_dim));
-        ui.add_space(t.spacing);
+        ui.add_space(metrics::SPACE_8);
         ui.horizontal(|ui| {
             let r = ui.button("Yes, delete");
             action_card(

@@ -1,0 +1,9 @@
+# Layout numbers outside ui/metrics.rs, on purpose. One per line:
+#   file (under src/ui) | snippet as the guard prints it | reason
+# Keep this in step with "Off-grid values, on purpose" in
+# docs/design/ui-rules.md.
+switcher.rs | FontId::proportional(10.5) | The workspace tile's width is measured with the 10.5 pt foot it had before Task 63d; a narrower tile would move every ribbon group and the Cut bar.
+fonts.rs | FontId::proportional(14.0) | Only asks whether the fonts have a glyph; nothing is laid out with it.
+canvas.rs | medium(9.0) | The ruler's numbers: canvas drawing that has to fit the 18 pt ruler.
+cut.rs | medium(10.0) | The cut order numbers on the mat in the Path stage: canvas drawing next to a start dot, small so they do not hide the paths.
+inspector/blocks.rs | item_spacing = vec2(metrics::SPACE_4, 2.0 * pad) | Wrapped action buttons: a second line of buttons keeps the row's padding above and below, so two lines sit as far apart as two rows.

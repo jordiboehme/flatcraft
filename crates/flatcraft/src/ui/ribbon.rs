@@ -797,7 +797,7 @@ pub struct Layout {
 /// in the ribbon panel's colour that opens into the panel. Returns the
 /// active tab's rect.
 fn tabs(ui: &mut Ui, st: &mut PrepareState, t: &Tokens) -> egui::Rect {
-    ui.spacing_mut().item_spacing.x = 2.0;
+    ui.spacing_mut().item_spacing.x = metrics::SPACE_2;
     let font = egui::TextStyle::Body.resolve(ui.style());
     let mut active = egui::Rect::NOTHING;
     for tab in RibbonTab::ALL {
@@ -1476,7 +1476,7 @@ fn select_toggle(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
         draw(ui);
     } else {
         ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.spacing_mut().item_spacing.y = metrics::SPACE_2;
             draw(ui);
         });
     }

@@ -4,6 +4,7 @@
 //! window content runs under a transparent title bar, the traffic lights
 //! stay at the left, and dragging the bar's empty space moves the window.
 
+use crate::ui::metrics;
 use std::time::Instant;
 
 use egui::{RichText, Ui};
@@ -12,7 +13,7 @@ use super::groups::card;
 use super::icons::{self, Icon};
 use super::settings::set_name;
 use super::theme::Tokens;
-use super::{Action, FlatCraftApp, ICON_SIZE, Workspace, fonts, lock, project_name};
+use super::{Action, FlatCraftApp, ICON_SIZE, Workspace, lock, project_name};
 
 /// Height of the app bar. On macOS it is the title bar's height, so the
 /// traffic lights sit in its middle.
@@ -190,8 +191,8 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
         .exact_size(BAR_HEIGHT)
         .show_separator_line(false)
         .frame(egui::Frame::new().fill(t.rail).inner_margin(egui::Margin {
-            left: (t.spacing + inset) as i8,
-            right: t.spacing as i8,
+            left: (metrics::SPACE_8 + inset) as i8,
+            right: metrics::SPACE_8 as i8,
             top: 0,
             bottom: 0,
         }))
@@ -199,7 +200,7 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
             // The empty bar, under every widget: a drag moves the window and
             // a double-click zooms it, as the system title bar does. The
             // widgets come later, so they win the clicks on them.
-            let whole = ui.max_rect().expand2(egui::vec2(t.spacing + inset, 0.0));
+            let whole = ui.max_rect().expand2(egui::vec2(metrics::SPACE_8 + inset, 0.0));
             let empty = ui.interact(whole, drag_id(), egui::Sense::click_and_drag());
             // The widgets that take a click: a drag that starts on one of
             // them is theirs, not the window's (egui hands a drag to the
@@ -207,12 +208,12 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
             let mut hot: Vec<egui::Rect> = Vec::new();
             let mut hot_right: Vec<egui::Rect> = Vec::new();
             ui.set_height(BAR_HEIGHT);
-            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.spacing_mut().item_spacing.x = metrics::SPACE_2;
             egui::Sides::new().shrink_left().height(BAR_HEIGHT).show(
                 ui,
                 |ui| {
                     app_name(ui, &t);
-                    ui.add_space(t.spacing);
+                    ui.add_space(metrics::SPACE_8);
                     let home = flat_icon(ui, Icon::Home, "Home", HOME_HINT, None);
                     hot.push(home.rect);
                     if home.clicked() {
@@ -285,9 +286,9 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                     if redo.clicked() {
                         actions.push(Action::Redo(active));
                     }
-                    ui.add_space(t.spacing / 2.0);
+                    ui.add_space(metrics::SPACE_4);
                     thin_separator(ui, &t);
-                    ui.add_space(t.spacing / 2.0);
+                    ui.add_space(metrics::SPACE_4);
                     let menus = !super::modal_open(app);
                     doc_tabs(ui, &t, &tabs, active, menus, actions, &mut hot);
                 },
@@ -304,7 +305,7 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                     if version.clicked() {
                         actions.push(Action::ShowAbout);
                     }
-                    ui.add_space(t.spacing / 2.0);
+                    ui.add_space(metrics::SPACE_4);
                     let help = flat_icon(ui, Icon::Help, "Help", HELP_HINT, None);
                     egui::Popup::menu(&help).show(|ui| super::help::menu(ui, actions));
                     let settings = flat_icon(ui, Icon::Settings, "Settings", SETTINGS_HINT, None);
@@ -316,7 +317,7 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                         let r = egui::Frame::new()
                             .stroke(egui::Stroke::new(1.0, t.text_dim))
                             .corner_radius(t.radius * 2)
-                            .inner_margin(egui::Margin::symmetric(t.spacing as i8, 2))
+                            .inner_margin(egui::Margin::symmetric(metrics::SPACE_8 as i8, metrics::SPACE_2 as i8))
                             .show(ui, |ui| {
                                 ui.label(RichText::new(note.as_str()).color(t.text_dim));
                             })
@@ -333,7 +334,7 @@ pub fn show(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
                         egui::Frame::new()
                             .stroke(egui::Stroke::new(1.0, color))
                             .corner_radius(t.radius * 2)
-                            .inner_margin(egui::Margin::symmetric(t.spacing as i8, 2))
+                            .inner_margin(egui::Margin::symmetric(metrics::SPACE_8 as i8, metrics::SPACE_2 as i8))
                             .show(ui, |ui| {
                                 ui.label(RichText::new(status).color(color));
                             });
@@ -377,8 +378,8 @@ fn app_name(ui: &mut Ui, t: &Tokens) {
         tex.id(),
         egui::Vec2::splat(ICON_SIZE),
     )));
-    ui.add_space(2.0);
-    ui.label(RichText::new("FlatCraft").font(fonts::semibold(14.0)));
+    ui.add_space(metrics::SPACE_2);
+    ui.label(RichText::new("FlatCraft").font(metrics::heading()));
 }
 
 /// The app icon for a dark or a light bar, decoded once per context.
