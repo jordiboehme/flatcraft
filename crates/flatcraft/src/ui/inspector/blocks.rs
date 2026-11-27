@@ -460,16 +460,18 @@ pub fn section_named(
     )
 }
 
-/// [`section`] whose summary shows while it is open too: a state that
+/// [`section`] whose header says `live` while it is open: a state that
 /// comes and goes ("checking...") sits in the header's one line, so the
-/// body never changes height for it. The summary is also a label for
-/// screen readers then.
+/// body never changes height for it. Folded, the header shows `summary`
+/// as usual. The live text is also a label for screen readers.
+#[allow(clippy::too_many_arguments)]
 pub fn section_live(
     ui: &mut Ui,
     id: &str,
     title: &str,
     card: &str,
     summary: &str,
+    live: &str,
     default_open: bool,
     body: impl FnOnce(&mut Ui),
 ) -> bool {
@@ -481,7 +483,7 @@ pub fn section_live(
         card,
         summary,
         default_open,
-        Kind::Live,
+        Kind::Live(live),
         body,
         None,
     )
@@ -489,11 +491,11 @@ pub fn section_live(
 
 /// What a header is.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Kind {
+enum Kind<'a> {
     /// A section's header: the summary shows while folded.
     Section,
-    /// A section's header whose summary shows while open too.
-    Live,
+    /// A section's header that shows this text while open.
+    Live(&'a str),
     /// The header of a section's Advanced part.
     Sub,
 }
@@ -507,7 +509,7 @@ fn section_kind(
     card: &str,
     summary: &str,
     default_open: bool,
-    kind: Kind,
+    kind: Kind<'_>,
     body: impl FnOnce(&mut Ui),
     advanced: Option<&mut dyn FnMut(&mut Ui)>,
 ) -> bool {
@@ -540,7 +542,7 @@ fn header(
     card: &str,
     summary: &str,
     default_open: bool,
-    kind: Kind,
+    kind: Kind<'_>,
 ) -> bool {
     let open = is_open(ui.ctx(), id, default_open);
     let open = header_row(ui, title, name, card, summary, open, kind);
@@ -565,7 +567,7 @@ fn header_row(
     card: &str,
     summary: &str,
     mut open: bool,
-    kind: Kind,
+    kind: Kind<'_>,
 ) -> bool {
     let sub = kind == Kind::Sub;
     let w = ui.available_width();
@@ -620,24 +622,27 @@ fn header_row(
             (rect.right() - left).max(0.0),
             Align::LEFT,
         );
-        if (!open || kind == Kind::Live) && !summary.is_empty() {
+        let (shown, live) = match (open, kind) {
+            (false, _) => (summary, false),
+            (true, Kind::Live(l)) => (l, true),
+            (true, _) => ("", false),
+        };
+        if !shown.is_empty() {
             let room = rect.right() - t.right() - metrics::SPACE_16;
             if room > metrics::SPACE_12 {
                 let r = one_line(
                     p,
-                    summary,
+                    shown,
                     metrics::secondary(),
                     dim,
                     egui::pos2(rect.right(), rect.center().y),
                     room,
                     Align::Max,
                 );
-                if kind == Kind::Live {
+                if live {
                     let node = ui.interact(r, resp.id.with("summary"), Sense::hover());
-                    node.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::Role::Label, true, summary)
-                    });
-                    set_name(ui, &node, summary);
+                    node.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, shown));
+                    set_name(ui, &node, shown);
                 }
             }
         }

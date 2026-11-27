@@ -54,10 +54,7 @@ pub fn follow_selection(st: &mut PrepareState, snap: &Snapshot) {
 
 /// The line under "Job": nothing selected, and over a selection (the
 /// Job view). The heading's card says the rest ([`SUBTITLES`]).
-pub const SUBTITLE_LINES: [&str; 2] = [
-    "Nothing selected: what this cut uses",
-    "What this cut uses. Esc goes back",
-];
+pub const SUBTITLE_LINES: [&str; 2] = ["nothing selected", "Esc goes back"];
 
 /// The cards of the heading "Job", in the order of [`SUBTITLE_LINES`].
 pub const SUBTITLES: [&str; 2] = [

@@ -1271,6 +1271,33 @@ fn hints_are_checked_off_the_ui_thread_and_the_last_check_shows_faded() {
     }
     the(&h, object::CHECKING);
     assert!(h.query_by_label("Move apart").is_none());
+    // Pointing at "checking..." is pointing at the header: its card shows
+    // and its caret lights up.
+    let header = the(&h, "Hints");
+    let cards = h.query_all_by_label("Hints").count();
+    h.hover_at(the(&h, object::CHECKING).center());
+    // Past the card's delay.
+    for _ in 0..60 {
+        h.step();
+    }
+    assert!(
+        h.query_all_by_label("Hints").count() > cards,
+        "the header's card"
+    );
+    let ink = flatcraft::ui::theme::Tokens::of(&h.ctx.global_style().visuals).text;
+    let caret = painted(&h).into_iter().any(|s| match s {
+        Shape::Path(p) => {
+            p.closed
+                && p.fill == ink
+                && p.points
+                    .iter()
+                    .all(|q| q.x < header.left() + 16.0 && header.y_range().contains(q.y))
+        }
+        _ => false,
+    });
+    assert!(caret, "the caret lights up");
+    h.hover_at(egui::pos2(1.0, 1.0));
+    h.step();
     open.store(true, Ordering::SeqCst);
     h.run_plan();
     let fresh = the(&h, "Move apart");

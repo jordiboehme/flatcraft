@@ -617,19 +617,28 @@ pub fn collapse_button(ui: &mut Ui, kind: SidePanel, side: Side) -> bool {
         Side::Right => Icon::PanelRightClose,
     };
     let name = collapse_name(kind);
-    let size = super::metrics::ICON_COMPACT;
-    let ink = super::theme::Tokens::of(ui.visuals()).text_dim;
-    let tex = icons::texture_colored(ui.ctx(), icon, size, ink);
-    let image =
-        egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), vec2(size, size)))
-            .alt_text(&name);
     let b = super::metrics::ICON_BUTTON;
-    let resp = ui
-        .scope(|ui| {
-            ui.spacing_mut().interact_size.y = b;
-            ui.add_sized(vec2(b, b), egui::Button::image(image).frame(false))
-        })
-        .inner;
+    let (rect, resp) = ui.allocate_exact_size(vec2(b, b), egui::Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &name));
+    set_name(ui, &resp, &name);
+    if ui.is_rect_visible(rect) {
+        // Hover is a light fill, and the icon in the text colour.
+        let t = Tokens::of(ui.visuals());
+        let lit = resp.hovered() || resp.has_focus();
+        if lit {
+            ui.painter().rect_filled(rect, t.radius, t.surface);
+        }
+        let ink = if lit { t.text } else { t.text_dim };
+        let size = super::metrics::ICON_COMPACT;
+        let tex = icons::texture_colored(ui.ctx(), icon, size, ink);
+        ui.painter().image(
+            tex.id(),
+            Rect::from_center_size(rect.center(), vec2(size, size)),
+            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    }
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     groups::card(&resp, &name, &collapse_card(kind), None, false);
     resp.clicked()
 }

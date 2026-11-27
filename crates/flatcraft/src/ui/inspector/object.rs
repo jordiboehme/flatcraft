@@ -1155,13 +1155,15 @@ fn hints(ui: &mut Ui, st: &PrepareState, snap: &Snapshot, t: &Tokens, actions: &
     let view = st.object_hints.view(snap);
     let (issues, on_card) = hint_issues(st, snap, &view);
     // A running check says so in the header's one line, so the cards
-    // below (the last check, faded) never move while it runs.
+    // below (the last check, faded) never move while it runs. Open, the
+    // header says nothing else: the body shows the hints.
     let summary = if view.checking {
         CHECKING.to_string()
     } else {
         hints_summary(issues.len() + on_card)
     };
-    blocks::section_live(ui, HINTS, "Hints", HINTS_CARD, &summary, true, |ui| {
+    let live = if view.checking { CHECKING } else { "" };
+    blocks::section_live(ui, HINTS, "Hints", HINTS_CARD, &summary, live, true, |ui| {
         // What the last check found when there is no card to show.
         let status = if view.no_profiles {
             NO_PROFILES
@@ -1174,15 +1176,16 @@ fn hints(ui: &mut Ui, st: &PrepareState, snap: &Snapshot, t: &Tokens, actions: &
         } else {
             ""
         };
-        if !status.is_empty() {
-            blocks::status_line(ui, status, t.text_dim);
-        }
-        if on_card > 0 {
-            blocks::note(ui, &on_the_card(on_card), t.text_dim);
-        }
+        // Everything the last check found fades while it is checked again.
         ui.scope(|ui| {
             if view.stale {
                 ui.multiply_opacity(0.5);
+            }
+            if !status.is_empty() {
+                blocks::status_line(ui, status, t.text_dim);
+            }
+            if on_card > 0 {
+                blocks::note(ui, &on_the_card(on_card), t.text_dim);
             }
             for (n, issue) in issues.iter().take(MAX_CARDS).enumerate() {
                 if n > 0 {
@@ -1218,9 +1221,9 @@ fn hints(ui: &mut Ui, st: &PrepareState, snap: &Snapshot, t: &Tokens, actions: &
                     actions.push(fixes[i].1.clone());
                 }
             }
+            if issues.len() > MAX_CARDS {
+                blocks::note(ui, &more_hints(issues.len() - MAX_CARDS), t.text_dim);
+            }
         });
-        if issues.len() > MAX_CARDS {
-            blocks::note(ui, &more_hints(issues.len() - MAX_CARDS), t.text_dim);
-        }
     });
 }
