@@ -300,7 +300,7 @@ pub fn test_cut_hint(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec
     let r = ui.label(
         RichText::new(TEST_CUT_TITLE)
             .font(fonts::semibold(13.0))
-            .color(t.accent_cut),
+            .color(t.warn_text),
     );
     super::groups::card(&r, TEST_CUT_TITLE, &text, None, false);
     ui.add(
@@ -400,7 +400,7 @@ fn show_reminder(ui: &mut Ui, item: &Item, doc_id: u64, t: &Tokens, actions: &mu
     let r = ui.label(
         RichText::new(MIRROR_TITLE)
             .font(fonts::semibold(13.0))
-            .color(t.accent_cut),
+            .color(t.warn_text),
     );
     super::groups::card(&r, MIRROR_TITLE, &item.hint, None, false);
     ui.add(egui::Label::new(&item.message).wrap());

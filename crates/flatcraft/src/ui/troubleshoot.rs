@@ -204,7 +204,7 @@ fn item_row(
         ui.horizontal(|ui| {
             let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 14.0), egui::Sense::hover());
             ui.painter().circle_filled(dot.center(), 3.5, t.warn);
-            ui.label(RichText::new(LIKELY).color(t.warn));
+            ui.label(RichText::new(LIKELY).color(t.warn_text));
         });
     }
     let r = ui.add(egui::Label::new(it.message.as_str()).wrap());

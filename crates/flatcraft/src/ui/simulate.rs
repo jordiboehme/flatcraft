@@ -536,6 +536,76 @@ pub fn grade_colour(g: Grade, t: &Tokens) -> Color32 {
     }
 }
 
+/// Why a job did not grade Good, as the engine grades it, the most
+/// serious reason first: (short, for the stage bar and the comparison;
+/// long, a phrase after the grade in the panel). `None` for Good.
+///
+/// The score only counts the line that is missed or strays, so a job can
+/// score 98 and still be Poor (it cuts into what you keep). The grade
+/// therefore always comes with its reason, and the score is shown as what
+/// it is: the share of the line on target.
+pub fn grade_reason(m: &flatcraft_sim::JobMetrics) -> Option<(&'static str, String)> {
+    if m.grade == Grade::Good {
+        return None;
+    }
+    Some(if m.max_into_kept_mm > 0.0 {
+        (
+            "cuts into kept",
+            format!(
+                "cuts up to {:.2} mm into material you keep",
+                m.max_into_kept_mm
+            ),
+        )
+    } else if m.score < 90.0 {
+        (
+            "misses the line",
+            format!("misses {:.0} % of the line", 100.0 - m.score),
+        )
+    } else if m.pushed > 0 {
+        let times = if m.pushed == 1 {
+            "once".to_string()
+        } else {
+            format!("{} times", m.pushed)
+        };
+        (
+            "blade pushed",
+            format!("pushes the blade from behind {times}"),
+        )
+    } else if m.max_hausdorff_mm > END_TO_END_LIMIT_MM {
+        (
+            "strays from the line",
+            format!("strays up to {:.2} mm from your line", m.max_hausdorff_mm),
+        )
+    } else {
+        (
+            "misses some line",
+            format!("misses {:.0} % of the line", 100.0 - m.score),
+        )
+    })
+}
+
+/// The grade with its reason: "Good", "Poor: cuts up to 0.23 mm into
+/// material you keep".
+pub fn grade_line(m: &flatcraft_sim::JobMetrics) -> String {
+    match grade_reason(m) {
+        Some((_, why)) => format!("{}: {why}", grade_text(m.grade)),
+        None => grade_text(m.grade).to_string(),
+    }
+}
+
+/// The grade with its short reason: "Good", "Poor · cuts into kept".
+pub fn grade_short(m: &flatcraft_sim::JobMetrics) -> String {
+    match grade_reason(m) {
+        Some((why, _)) => format!("{} · {why}", grade_text(m.grade)),
+        None => grade_text(m.grade).to_string(),
+    }
+}
+
+/// The score as what it measures: "98 % of the line on target".
+pub fn on_target_text(score: f64) -> String {
+    format!("{score:.0} % of the line on target")
+}
+
 /// The name of a grade as the window shows it.
 pub fn grade_text(g: Grade) -> &'static str {
     match g {
@@ -861,7 +931,10 @@ fn row(ui: &mut Ui, name: &str, card: &str, value: String) {
 }
 
 /// The card of the grade.
-pub const GRADE_CARD: &str = "How well the blade follows your lines, after a full simulation of the drag knife: its tip trails a little behind the head, so it can cut a corner short or start off the line. Good means every spot is within 0.06 mm of the line, Fair within twice that, Poor beyond. The score is the share of the cut that is on the line, out of 100.";
+pub const GRADE_CARD: &str = "How well the blade follows your lines, after a full simulation of the drag knife: its tip trails a little behind the head, so it can cut a corner short or start off the line. Good means every spot is within 0.06 mm of the line, nothing you keep is cut and the blade is never pushed. Fair means a few spots stray or the blade is pushed. Poor means the blade cuts into material you keep or misses much of the line. The reason after the grade says what counts most.";
+
+/// The card of the share of the line on target.
+pub const ON_TARGET_CARD: &str = "How much of your line the blade cuts within the limit, in percent. It only counts the line itself: a cut into material you keep or a pushed blade makes the grade worse even when this is high.";
 
 /// The stage panel of Simulate for a finished run.
 pub fn panel(
@@ -877,16 +950,19 @@ pub fn panel(
     match &run.result {
         Some(r) => {
             let m = &r.metrics;
-            ui.horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+            // The grade and why first; the score after it, as what it is.
+            ui.horizontal_top(|ui| {
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(14.0, 20.0), Sense::hover());
                 ui.painter()
                     .circle_filled(rect.center(), 6.0, grade_colour(m.grade, t));
-                let g = ui.label(RichText::new(grade_text(m.grade)).font(fonts::semibold(16.0)));
+                let g = ui.add(
+                    egui::Label::new(RichText::new(grade_line(m)).font(fonts::semibold(15.0)))
+                        .wrap(),
+                );
                 super::groups::card(&g, "Grade", GRADE_CARD, None, false);
-                let s = ui
-                    .label(RichText::new(format!("score {:.0} of 100", m.score)).color(t.text_dim));
-                super::groups::card(&s, "Score", GRADE_CARD, None, false);
             });
+            let s = ui.label(RichText::new(on_target_text(m.score)).color(t.text_dim));
+            super::groups::card(&s, "On target", ON_TARGET_CARD, None, false);
             ui.add_space(t.spacing / 2.0);
             egui::Grid::new("flatcraft-sim-metrics")
                 .num_columns(2)
@@ -923,7 +999,7 @@ pub fn panel(
         }
     }
     for w in &run.warnings {
-        ui.label(RichText::new(w).color(t.accent_cut));
+        ui.label(RichText::new(w).color(t.warn_text));
     }
     if run.result.is_some() {
         ui.add_space(t.spacing);
@@ -1073,7 +1149,7 @@ fn legend(ui: &mut Ui, snap: &Snapshot, run: &SimRun, t: &Tokens) {
 }
 
 /// The card of a strategy's numbers in the comparison.
-pub const COMPARE_ROW_CARD: &str = "Worst miss: the farthest the blade tip strays from your line. Travel: how far the head moves with the blade up. Crossings: blade-up moves over a finished cut, each can snag a loose piece. Time: a rough guess of the cut time.";
+pub const COMPARE_ROW_CARD: &str = "On target: the share of your line the blade cuts within the limit. Worst miss: the farthest the blade tip strays from your line. Travel: how far the head moves with the blade up. Crossings: blade-up moves over a finished cut, each can snag a loose piece. Time: a rough guess of the cut time.";
 
 fn compare(ui: &mut Ui, st: &mut SimState, snap: &Snapshot, t: &Tokens, actions: &mut Vec<Action>) {
     let comparing = st.comparing();
@@ -1120,10 +1196,8 @@ fn compare(ui: &mut Ui, st: &mut SimState, snap: &Snapshot, t: &Tokens, actions:
                     ui.label(RichText::new(name).strong());
                     if let Some(r) = &run.result {
                         let m = &r.metrics;
-                        let g = ui.label(
-                            RichText::new(format!("{} {:.0}", grade_text(m.grade), m.score))
-                                .color(grade_colour(m.grade, t)),
-                        );
+                        let g = ui
+                            .label(RichText::new(grade_short(m)).color(grade_colour(m.grade, t)));
                         super::groups::card(&g, "Grade", GRADE_CARD, None, false);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1158,7 +1232,8 @@ fn compare(ui: &mut Ui, st: &mut SimState, snap: &Snapshot, t: &Tokens, actions:
                             n => format!("{n} crossings"),
                         };
                         format!(
-                            "Worst miss {} · travel {:.0} mm · {crossings} · {}",
+                            "{:.0} % on target · worst miss {} · travel {:.0} mm · {crossings} · {}",
+                            m.score,
                             mm(m.max_hausdorff_mm),
                             m.travel_mm,
                             time_text(run.estimate_s)
@@ -1190,6 +1265,87 @@ pub fn mode_of(snap: &Snapshot) -> Option<SimMode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The metrics of a 50 mm square simulated with the blade offset `d`
+    /// and no compensation.
+    fn metrics(d: f64) -> flatcraft_sim::JobMetrics {
+        let p = |x: f64, y: f64| kurbo::Point::new(x, y);
+        let square = flatcraft_path::Toolpath::new(
+            vec![
+                p(10.0, 10.0),
+                p(60.0, 10.0),
+                p(60.0, 60.0),
+                p(10.0, 60.0),
+                p(10.0, 10.0),
+            ],
+            true,
+            flatcraft_path::PathRef {
+                object: flatcraft_core::document::ObjectId(1),
+                path_index: 0,
+            },
+        );
+        flatcraft_sim::run(
+            &[square],
+            kurbo::Point::ZERO,
+            &flatcraft_sim::SimSettings::float(d),
+            5,
+            &flatcraft_sim::TimeModel::PROVISIONAL,
+        )
+        .unwrap()
+        .metrics
+    }
+
+    /// The grade always comes with the reason that decided it, so a high
+    /// score next to Poor never reads as a contradiction; the reason
+    /// follows the engine's grading order.
+    #[test]
+    fn grade_reason_explains_a_grade_the_score_does_not() {
+        let good = metrics(0.0);
+        assert_eq!(good.grade, Grade::Good);
+        assert_eq!(grade_reason(&good), None);
+        assert_eq!(grade_line(&good), "Good");
+        // Poor with a high score: cuts into kept material.
+        let into_kept = flatcraft_sim::JobMetrics {
+            grade: Grade::Poor,
+            score: 98.0,
+            max_into_kept_mm: 0.234,
+            ..good.clone()
+        };
+        assert_eq!(
+            grade_line(&into_kept),
+            "Poor: cuts up to 0.23 mm into material you keep"
+        );
+        assert_eq!(grade_short(&into_kept), "Poor · cuts into kept");
+        let missed = flatcraft_sim::JobMetrics {
+            grade: Grade::Poor,
+            score: 80.0,
+            ..good.clone()
+        };
+        assert_eq!(grade_line(&missed), "Poor: misses 20 % of the line");
+        let pushed = flatcraft_sim::JobMetrics {
+            grade: Grade::Fair,
+            pushed: 2,
+            ..good.clone()
+        };
+        assert_eq!(
+            grade_line(&pushed),
+            "Fair: pushes the blade from behind 2 times"
+        );
+        let strays = flatcraft_sim::JobMetrics {
+            grade: Grade::Fair,
+            max_hausdorff_mm: 0.1,
+            ..good.clone()
+        };
+        assert_eq!(
+            grade_line(&strays),
+            "Fair: strays up to 0.10 mm from your line"
+        );
+        // A real uncompensated square: graded worse than Good, with a reason.
+        let pen = metrics(0.3);
+        assert_ne!(pen.grade, Grade::Good);
+        assert!(grade_reason(&pen).is_some());
+        assert_eq!(on_target_text(97.6), "98 % of the line on target");
+    }
 
     #[test]
     fn time_text_reads_plainly() {

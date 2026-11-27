@@ -430,7 +430,7 @@ pub(crate) fn discard_banner(ui: &mut Ui, st: &mut ProfilesState, t: &Tokens) {
         .inner_margin(egui::Margin::same(t.spacing as i8))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Discard your changes?").color(t.accent_cut));
+                ui.label(RichText::new("Discard your changes?").color(t.warn_text));
                 let r = ui.button("Discard");
                 action_card(
                     &r,

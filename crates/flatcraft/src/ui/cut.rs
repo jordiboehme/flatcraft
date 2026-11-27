@@ -476,8 +476,9 @@ enum Status {
     NotPlanned,
     /// The plan of the latest change is being built.
     Planning,
-    /// The simulation's grade and score.
-    Graded(flatcraft_sim::Grade, u32),
+    /// The simulation's grade with its short reason ("Poor · cuts into
+    /// kept") and its long one, and the share of the line on target.
+    Graded(String, Option<String>, u32),
     /// Firmware mode: the knife is not simulated.
     NotSimulated,
     /// The simulation of the latest change runs.
@@ -559,9 +560,8 @@ impl Status {
             Status::NeedsFix => "Needs a fix".into(),
             Status::NotPlanned => "Not planned yet".into(),
             Status::Planning => PLANNING.into(),
-            Status::Graded(g, score) => {
-                format!("{} · score {score}", super::simulate::grade_text(*g))
-            }
+            Status::Graded(short, None, score) => format!("{short} · {score} % on target"),
+            Status::Graded(short, Some(_), _) => short.clone(),
             Status::NotSimulated => "Not simulated".into(),
             Status::Simulating => super::simulate::SIMULATING.into(),
             Status::NotRun => "Not run yet".into(),
@@ -588,10 +588,17 @@ impl Status {
             Status::NeedsFix => "The job needs a fix first. Path says what.".into(),
             Status::NotPlanned => "The job is not planned yet.".into(),
             Status::Planning => "FlatCraft is planning the cut for your latest change.".into(),
-            Status::Graded(g, score) => format!(
-                "The simulation grades the cut {}, score {score} of 100.",
-                super::simulate::grade_text(*g)
-            ),
+            Status::Graded(short, why, score) => {
+                let grade = short.split(" · ").next().unwrap_or(short);
+                match why {
+                    Some(why) => format!(
+                        "The simulation grades the cut {grade}: it {why}. {score} % of the line is on target."
+                    ),
+                    None => format!(
+                        "The simulation grades the cut {grade}. {score} % of the line is on target."
+                    ),
+                }
+            }
             Status::NotSimulated => "The plotter's firmware steers the blade, so the knife is not simulated. Simulate shows the commanded path.".into(),
             Status::Simulating => "FlatCraft is simulating the cut for your latest change.".into(),
             Status::NotRun => format!("Open {} to play the cut and grade it.", stage.name()),
@@ -611,9 +618,14 @@ fn sim_status(st: &CutState, snap: &Snapshot) -> Status {
         return Status::NotSimulated;
     }
     let graded = |run: &flatcraft_engine::simulate::SimRun| {
-        run.result
-            .as_ref()
-            .map(|r| Status::Graded(r.metrics.grade, r.metrics.score.round() as u32))
+        run.result.as_ref().map(|r| {
+            let m = &r.metrics;
+            Status::Graded(
+                super::simulate::grade_short(m),
+                super::simulate::grade_reason(m).map(|(_, long)| long),
+                m.score.round() as u32,
+            )
+        })
     };
     match st.sim.current(snap) {
         Some(Ok(c)) => graded(&c.run).unwrap_or(Status::NotSimulated),
@@ -948,7 +960,7 @@ pub fn mm_text(mm: f64) -> String {
 fn warnings(ui: &mut Ui, job: &JobResult, doc_id: u64, t: &Tokens, actions: &mut Vec<Action>) {
     for (i, w) in job.warnings.iter().enumerate() {
         if !job.covered_warnings.contains(&i) {
-            ui.label(RichText::new(w).color(t.accent_cut));
+            ui.label(RichText::new(w).color(t.warn_text));
         }
     }
     if !job.issues.is_empty() {

@@ -807,7 +807,7 @@ fn recent_row(
         text_w,
     ));
     let (second, second_colour) = if gone {
-        ("File moved or deleted".to_string(), t.warn)
+        ("File moved or deleted".to_string(), t.warn_text)
     } else {
         (short_folder(&row.path, home_dir), t.text_dim)
     };

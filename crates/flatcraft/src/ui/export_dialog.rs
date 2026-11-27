@@ -242,7 +242,7 @@ fn controls(
     let blocked = why_nothing(&objects, include);
     if let Some(why) = blocked {
         ui.add_space(t.spacing / 2.0);
-        ui.add(egui::Label::new(RichText::new(why).color(t.warn)).wrap());
+        ui.add(egui::Label::new(RichText::new(why).color(t.warn_text)).wrap());
     }
     blocked
 }

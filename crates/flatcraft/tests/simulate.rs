@@ -88,9 +88,10 @@ fn simulate_stage_runs_and_shows_grade() {
     let mut h = harness(&dir, s.clone(), false);
     to_simulate(&mut h);
     assert!(h.query_by_label("Good").is_some(), "no grade shown");
+    assert!(h.query_by_label("100 % of the line on target").is_some());
     assert!(h.query_by_label("Time (estimate)").is_some());
     assert!(h.query_by_label(sim::COMPARE).is_some());
-    assert!(simulate_status(&mut h).starts_with("Good · score"));
+    assert_eq!(simulate_status(&mut h), "Good · 100 % on target");
     // The run is the document's last simulation, so an agent reads the
     // same grade.
     let stored = s.lock().unwrap().last_sim().cloned().expect("stored");
@@ -273,6 +274,16 @@ fn worst_spots_are_ringed_and_centre_the_view() {
         !cur.spots.is_empty(),
         "an uncompensated square has bad spots"
     );
+    // The grade comes with the reason that decided it, the score after it
+    // as the share on target: never "Poor - score 98".
+    let m = &cur.run.result.as_ref().unwrap().metrics;
+    let line = sim::grade_line(m);
+    assert!(line.contains(": "), "{line}");
+    assert!(h.query_by_label(&line).is_some(), "{line} not shown");
+    assert!(h.query_by_label(&sim::on_target_text(m.score)).is_some());
+    let status = simulate_status(&mut h);
+    assert_eq!(status, sim::grade_short(m));
+    assert!(!status.contains("score"), "{status}");
     // The pen mode warning says what is simulated.
     assert!(h.query_by_label_contains("no knife compensation").is_some());
     let at = cur.spots[0].at;

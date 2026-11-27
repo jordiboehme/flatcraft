@@ -610,7 +610,7 @@ pub fn job(
             }
         });
     if eleven_shown(st, snap) {
-        ui.label(RichText::new(ELEVEN).color(t.accent_cut));
+        ui.label(RichText::new(ELEVEN).color(t.warn_text));
     }
     weeding(ui, snap, st.sheet_kept, t, actions);
     if let Some(hint) = &material.blade_depth_hint {

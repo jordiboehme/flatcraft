@@ -2988,7 +2988,7 @@ fn pending_modal(ctx: &egui::Context, app: &mut FlatCraftApp, actions: &mut Vec<
     let d = pending_dialog(&p);
     let answer = d.show(ctx, &t, |ui| {
         for w in &p.summary.warnings {
-            ui.add(egui::Label::new(egui::RichText::new(w).color(t.accent_cut)).wrap());
+            ui.add(egui::Label::new(egui::RichText::new(w).color(t.warn_text)).wrap());
         }
     });
     match answer {

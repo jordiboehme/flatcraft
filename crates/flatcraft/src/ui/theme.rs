@@ -35,6 +35,10 @@ pub struct Tokens {
     pub ok: Color32,
     /// The rail dot of a job with warnings.
     pub warn: Color32,
+    /// Warning text on a panel, a card or a dialog: an amber dark enough
+    /// (light) or bright enough (dark) for 4.5:1. `warn` and `accent_cut`
+    /// are for dots, icons and lines only.
+    pub warn_text: Color32,
     /// The simulation grade on a panel (not on the mat: the mat picks its
     /// own colours, `colour::deviation_colours`): within the limit,
     /// within twice the limit, beyond.
@@ -80,6 +84,7 @@ impl Tokens {
             waste_hatch: Color32::from_rgba_unmultiplied_const(0x2A, 0x2F, 0x36, 0x66),
             ok: Color32::from_rgb(0x46, 0xC2, 0x7A),
             warn: Color32::from_rgb(0xE8, 0xB2, 0x3A),
+            warn_text: Color32::from_rgb(0xF2, 0xB4, 0x5A),
             quality_good: Color32::from_rgb(0x3F, 0xB9, 0x50),
             quality_warn: Color32::from_rgb(0xF2, 0xA3, 0x3A),
             quality_bad: Color32::from_rgb(0xE5, 0x48, 0x4D),
@@ -111,6 +116,7 @@ impl Tokens {
             waste_hatch: Color32::from_rgba_unmultiplied_const(0x4A, 0x52, 0x5C, 0x80),
             ok: Color32::from_rgb(0x2F, 0x9E, 0x5B),
             warn: Color32::from_rgb(0xD9, 0x9A, 0x1E),
+            warn_text: Color32::from_rgb(0x94, 0x52, 0x00),
             // Deeper than the dark theme's, so they reach 3:1 on white.
             quality_good: Color32::from_rgb(0x1A, 0x7F, 0x45),
             quality_warn: Color32::from_rgb(0xA8, 0x6A, 0x00),
@@ -281,6 +287,18 @@ mod tests {
             }
             // The cut line must show against the paper it outlines.
             assert!(contrast(t.icon_cut, t.icon_paper) >= 2.0);
+        }
+    }
+
+    /// Warning text reads at 4.5:1 (WCAG AA for text) on the window, the
+    /// panels and the cards in both themes.
+    #[test]
+    fn warning_text_reads_on_every_surface() {
+        for t in [Tokens::dark(), Tokens::light()] {
+            for bg in [t.bg, t.panel, t.surface] {
+                let c = contrast(t.warn_text, bg);
+                assert!(c >= 4.5, "{:?} on {bg:?}: {c:.2}", t.warn_text);
+            }
         }
     }
 
