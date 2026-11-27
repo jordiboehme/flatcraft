@@ -428,8 +428,58 @@ pub fn order(
     start: Point,
     s: &PipelineSettings,
 ) -> Vec<Toolpath> {
+    order_with_work(paths, tree, start, s).0
+}
+
+/// How much work an [`order`] did, summed over its bands: a measure that
+/// does not depend on the machine, for budget tests.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OrderWork {
+    /// [`ConstructStats::cells_visited`].
+    pub cells_visited: u64,
+    /// [`ConstructStats::scored`].
+    pub scored: u64,
+    /// Crossing tests of the construction and the improvement.
+    pub crossing_tests: u64,
+    /// [`ImproveStats::evaluations`].
+    pub evaluations: u64,
+}
+
+impl OrderWork {
+    fn add(&mut self, c: &ConstructStats, i: &ImproveStats) {
+        self.cells_visited += c.cells_visited;
+        self.scored += c.scored;
+        self.crossing_tests += c.crossing_tests + i.crossing_tests;
+        self.evaluations += i.evaluations;
+    }
+
+    /// Everything counted, as one number.
+    pub fn total(&self) -> u64 {
+        self.cells_visited + self.scored + self.crossing_tests + self.evaluations
+    }
+
+    /// The sum of two.
+    pub fn merge(self, o: Self) -> Self {
+        Self {
+            cells_visited: self.cells_visited + o.cells_visited,
+            scored: self.scored + o.scored,
+            crossing_tests: self.crossing_tests + o.crossing_tests,
+            evaluations: self.evaluations + o.evaluations,
+        }
+    }
+}
+
+/// [`order`], with the work it did.
+pub fn order_with_work(
+    paths: Vec<Toolpath>,
+    tree: &ContainmentTree,
+    start: Point,
+    s: &PipelineSettings,
+) -> (Vec<Toolpath>, OrderWork) {
+    let mut work = OrderWork::default();
     if !s.monotonic_feed {
-        return order_group(paths, tree, start, s).0;
+        let (ordered, _) = order_group(paths, tree, start, s, &mut work);
+        return (ordered, work);
     }
     let band = crate::feed::bands(&paths, tree);
     let mut distinct = band.clone();
@@ -485,13 +535,13 @@ pub fn order(
         band_settings.start_heading = heading;
         band_settings.strategy.budget = budgets[k];
         let group: Vec<Toolpath> = members.iter().filter_map(|&g| slots[g].take()).collect();
-        let (ordered, exit) = order_group(group, &sub, head, &band_settings);
+        let (ordered, exit) = order_group(group, &sub, head, &band_settings, &mut work);
         if let Some((h, hd)) = exit {
             (head, heading) = (h, hd);
         }
         out.extend(ordered);
     }
-    out
+    (out, work)
 }
 
 /// The improvement budget of each band, in proportion to its path count.
@@ -519,10 +569,12 @@ fn order_group(
     tree: &ContainmentTree,
     start: Point,
     s: &PipelineSettings,
+    work: &mut OrderWork,
 ) -> (Vec<Toolpath>, Option<(Point, Vec2)>) {
     let units: Vec<Unit> = paths.iter().map(|t| Unit::new(t, s)).collect();
-    let mut tour = construct(&units, tree, start, s);
-    improve(&units, &mut tour, tree, start, s);
+    let (mut tour, built) = construct_with_stats(&units, tree, start, s);
+    let improved = improve(&units, &mut tour, tree, start, s);
+    work.add(&built, &improved);
     let exit = tour
         .iter()
         .rev()

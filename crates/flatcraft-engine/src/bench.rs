@@ -157,6 +157,11 @@ pub struct BenchRow {
     /// stored, never compared.
     #[serde(skip)]
     pub millis: u64,
+    /// The work of the plan and the simulation, the same on every
+    /// machine: the cut order's work (`OrderWork::total`) plus the
+    /// simulated samples. Not stored; budget tests bound it.
+    #[serde(skip)]
+    pub work: u64,
 }
 
 impl BenchRow {
@@ -393,6 +398,7 @@ fn compute_row(input: simulate::SimInput, case: &str, variant: Variant) -> Bench
         lifts: m.lifts,
         estimate_s: round(sim.estimate_s),
         millis,
+        work: sim.job.plan.order_work.total() + r.trace.samples.len() as u64,
     }
 }
 

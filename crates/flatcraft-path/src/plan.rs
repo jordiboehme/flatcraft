@@ -301,6 +301,8 @@ pub struct CutPlan {
     /// ([`crate::quantize::round_runs`]); the default when they are not
     /// rounded.
     pub rounding: crate::quantize::RoundReport,
+    /// How much work the cut order took (see [`order::OrderWork`]).
+    pub order_work: order::OrderWork,
 }
 
 /// The pipeline setting an [`PlanError::InvalidSettings`] is about.
@@ -603,7 +605,7 @@ pub fn plan_with_regions(
     for (i, t) in toolpaths.iter_mut().enumerate() {
         t.keep = containment::keep_side(&tree, i, t.closed, mode_of(t.source.object));
     }
-    let toolpaths = order::order(toolpaths, &tree, s.home, s);
+    let (toolpaths, order_work) = order::order_with_work(toolpaths, &tree, s.home, s);
     // Weeds read the design as one lap each, before passes and overcut.
     let unit_of = |o: ObjectId| s.weed_units.get(&o).copied().unwrap_or(o);
     let weeds = weed::generate_with_regions(
@@ -660,6 +662,7 @@ pub fn plan_with_regions(
         freed_early,
         kept: std::sync::Arc::new(kept),
         rounding,
+        order_work,
     })
 }
 

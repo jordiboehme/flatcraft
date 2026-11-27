@@ -162,11 +162,14 @@ fn quality_order_beats_baseline_on_its_objective() {
     assert!(misses.is_empty(), "{}", misses.join("\n"));
 }
 
-#[test]
-fn dense_trace_finishes_in_time() {
-    // A time budget, not a quality check: the trace, the plan and the
-    // simulation of the dense picture with the default strategy stay under
-    // 20 s in the CI debug build.
+/// The most work (`BenchRow::work`: the cut order's work plus the
+/// simulated samples) the dense trace may take with the default strategy.
+/// Measured 647 734 when the bound was set; twice that leaves room for
+/// small changes and still catches a blow-up of the order search or the
+/// simulation, which multiplies it.
+const DENSE_TRACE_WORK: u64 = 1_300_000;
+
+fn dense_trace_row() -> (bench::BenchRow, Duration) {
     let dir = tempfile::tempdir().unwrap();
     let case = bench::case(bench::DENSE_TRACE).unwrap();
     let started = Instant::now();
@@ -175,14 +178,39 @@ fn dense_trace_finishes_in_time() {
         &case,
         &[Variant::Strategy(CutStrategy::Quality)],
     );
-    let took = started.elapsed();
-    println!("dense trace: {took:?}, {} lifts", rows[0].lifts);
+    (rows[0].clone(), started.elapsed())
+}
+
+#[test]
+fn dense_trace_stays_within_its_work_budget() {
+    // A work budget, not a quality check: the plan and the simulation of
+    // the dense picture with the default strategy. Counted, not timed, so
+    // a busy CI runner does not fail it.
+    let (row, _) = dense_trace_row();
+    println!("dense trace: work {}, {} lifts", row.work, row.lifts);
     assert!(
-        rows[0].lifts > 200,
+        row.lifts > 200,
         "{} lifts: the picture traced too few shapes",
-        rows[0].lifts
+        row.lifts
     );
-    assert!(took < Duration::from_secs(20), "{took:?}");
+    assert!(row.work > 0);
+    assert!(
+        row.work <= DENSE_TRACE_WORK,
+        "work {} > {DENSE_TRACE_WORK}",
+        row.work
+    );
+}
+
+/// The wall time of the same job, for a local look only: shared CI
+/// runners vary too much for a time limit. Run it with `--ignored`.
+#[test]
+#[ignore = "wall time: run by hand with --ignored"]
+fn dense_trace_wall_time() {
+    let (row, took) = dense_trace_row();
+    println!(
+        "dense trace: {took:?}, work {}, {} lifts",
+        row.work, row.lifts
+    );
 }
 
 #[test]

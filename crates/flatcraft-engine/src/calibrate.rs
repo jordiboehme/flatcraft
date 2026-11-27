@@ -304,6 +304,9 @@ fn merge(tiles: &[Tile], area: Rect) -> CutPlan {
         rounding: tiles
             .iter()
             .fold(Default::default(), |r, t| r.merge(t.plan.rounding)),
+        order_work: tiles
+            .iter()
+            .fold(Default::default(), |w, t| w.merge(t.plan.order_work)),
     }
 }
 
