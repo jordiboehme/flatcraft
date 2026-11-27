@@ -1100,25 +1100,40 @@ fn every_enabled_menu_item_does_something_when_clicked() {
     drop(h);
     for cmd in todo {
         let mut f = fixture();
-        let before = effects(&f);
         let doc = f.s.lock().unwrap().doc().id();
         let action = cmd
             .action(doc, &f.recent)
             .unwrap_or_else(|| panic!("{cmd:?}"));
-        let ctx = f.h.ctx.clone();
-        // Some items start a worker (the hole finder of Pick on the mat)
-        // that asks for a repaint when it is done: settle by the clock.
-        // What the click asked of the platform (open a URL, close) is what
-        // it sent while it ran, over every frame of the settling.
-        let sent = common::capture(&mut f.h, |h| {
-            app_mut(h).apply(&ctx, vec![action]);
-            settle(h);
-        });
         assert!(
-            sent != common::Captured::default() || effects(&f) != before,
+            click_does_something(&mut f, vec![action]),
             "{cmd:?} did nothing"
         );
     }
+}
+
+/// Applies `actions`, settles, and says whether anything changed: the
+/// state, or a command sent to the platform (open a URL, close) while the
+/// click ran, over every frame of the settling.
+fn click_does_something(f: &mut Fixture, actions: Vec<Action>) -> bool {
+    let before = effects(f);
+    let ctx = f.h.ctx.clone();
+    // Some items start a worker (the hole finder of Pick on the mat)
+    // that asks for a repaint when it is done: settle by the clock.
+    let sent = common::capture(&mut f.h, |h| {
+        app_mut(h).apply(&ctx, actions);
+        settle(h);
+    });
+    sent != common::Captured::default() || effects(f) != before
+}
+
+/// A click that does nothing must be reported as such: no command that
+/// the window sends on every frame may make an empty action pass.
+#[test]
+fn an_empty_click_is_reported_as_doing_nothing() {
+    let mut f = fixture();
+    assert!(!click_does_something(&mut f, vec![]));
+    // And a second time, after the window settled once more.
+    assert!(!click_does_something(&mut f, vec![]));
 }
 
 #[test]

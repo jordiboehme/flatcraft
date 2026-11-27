@@ -15,7 +15,7 @@
 //!   `platform_output`, `viewport_output` or `shapes`): the last frame is
 //!   whichever frame a busy machine ran last, so a command sent by a click
 //!   (open a URL, copy, close) is gone after one extra frame. Read
-//!   `common::OutputLog`, which records every frame. State that every
+//!   `common::capture`, which records every frame of one action. State that every
 //!   frame sets again (the cursor, the painted shapes, the repaint delay)
 //!   is fine, with a `// output:` comment on the line or just above.
 //!   Known gap: `let o = h.output();` followed by a field read on a later
@@ -416,7 +416,7 @@ fn window_tests_wait_by_event_and_click_in_fixed_frames() {
         }
         for l in last_frame_reads(&src) {
             bad.push(format!(
-                "{name}:{l}: last frame output (read common::OutputLog)"
+                "{name}:{l}: last frame output (read common::capture)"
             ));
         }
         for l in held_clicks(&src) {
