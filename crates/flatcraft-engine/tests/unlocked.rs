@@ -149,11 +149,19 @@ fn steps(dir: &std::path::Path, out: &std::path::Path) -> Vec<(&'static str, Val
 /// runs.
 fn comparable(r: Result<Value, CommandError>, dir: &std::path::Path) -> String {
     let text = match r {
-        Ok(v) => v.to_string(),
+        Ok(v) => without_doc(v).to_string(),
         Err(e) => format!("error: {e}"),
     };
     let dir = serde_json::to_string(&dir.display().to_string()).unwrap();
     text.replace(dir.trim_matches('"'), "<dir>")
+}
+
+/// `v` without `doc_id`: two sessions give their documents other ids.
+fn without_doc(mut v: Value) -> Value {
+    if let Some(o) = v.as_object_mut() {
+        o.remove("doc_id");
+    }
+    v
 }
 
 /// A document as text, its shapes included, with `dir` taken out.
@@ -363,7 +371,7 @@ fn the_apply_step_gives_what_the_locked_command_gives_on_the_new_state() {
     let locked = locked_run(&a, "object.import", json!({ "path": png })).unwrap();
     set_hook(&b, |s, _| nudge(s, 1));
     let unlocked = unlocked_run(&b, "object.import", json!({ "path": png })).unwrap();
-    assert_eq!(locked, unlocked);
+    assert_eq!(without_doc(locked), without_doc(unlocked));
     let (a, b) = (a.lock().unwrap(), b.lock().unwrap());
     assert_eq!(
         doc_text(&a.doc().document, dir.path()),
@@ -816,8 +824,8 @@ fn a_window_command_runs_in_the_document_it_was_meant_for() {
     let first = s.lock().unwrap().doc().id();
     locked_run(&s, "document.new", json!({})).unwrap();
     let active = s.lock().unwrap().doc().id();
-    // Off the lock and under it, in the first document while the second
-    // stays active.
+    // A long command runs in the first document while the second stays
+    // active.
     let r = unlocked::execute_in(
         &s,
         first,
@@ -826,19 +834,11 @@ fn a_window_command_runs_in_the_document_it_was_meant_for() {
         Origin::User,
     );
     assert!(r.is_ok(), "{r:?}");
-    let r = unlocked::execute_in(
-        &s,
-        first,
-        "object.move",
-        json!({ "ids": [1], "dx_mm": 1.0 }),
-        Origin::User,
-    );
-    assert!(r.is_ok(), "{r:?}");
     let g = s.lock().unwrap();
     assert_eq!(g.doc().id(), active);
     let i = g.doc_index(first).unwrap();
     assert_eq!(g.docs[i].document.objects.len(), 1);
-    assert_eq!(g.docs[i].undo.undo_len(), 2);
+    assert_eq!(g.docs[i].undo.undo_len(), 1);
     assert!(g.doc().document.objects.is_empty());
     drop(g);
     // A document that is no longer open.
@@ -875,4 +875,62 @@ fn a_sample_opens_off_the_lock_like_open_bytes() {
         doc_text(&a.doc().document, dir.path()),
         doc_text(&b.doc().document, dir.path())
     );
+}
+
+#[test]
+fn long_command_results_name_the_document_they_landed_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = shared(dir.path());
+    let file = dir.path().join("My project.flatcraft");
+    locked_run(&s, "project.save", json!({ "path": file })).unwrap();
+    let a = s.lock().unwrap().doc().id();
+    let png = square_png(dir.path());
+    let img = locked_run(&s, "object.import", json!({ "path": png })).unwrap()["id"].clone();
+    locked_run(&s, "document.new", json!({})).unwrap();
+    let b = s.lock().unwrap().doc().id();
+    locked_run(&s, "document.switch", json!({ "doc_id": a })).unwrap();
+    // The person switches to b while the agent's commands run in a.
+    set_hook(&s, move |s, _| {
+        s.lock()
+            .unwrap()
+            .execute("document.switch", json!({ "doc_id": b }), Origin::User)
+            .unwrap();
+    });
+    for (command, params) in [
+        ("object.import", json!({ "path": png })),
+        ("object.import_svg", json!({ "svg": SVG, "name": "t" })),
+        ("object.retrace", json!({ "id": img, "settings": {} })),
+        ("object.reload", json!({ "ids": [img] })),
+        ("object.relink", json!({ "id": img, "path": png })),
+    ] {
+        locked_run(&s, "document.switch", json!({ "doc_id": a })).unwrap();
+        let r = unlocked_run(&s, command, params).unwrap();
+        assert_eq!(r["doc_id"], json!(a), "{command}");
+        assert_eq!(r["document_name"], json!("My project"), "{command}");
+        let c = flatcraft_engine::registry::get(command).unwrap();
+        assert!(
+            c.description().contains("doc_id and document_name"),
+            "{command}"
+        );
+    }
+    // A document never saved has no name.
+    let r = locked_run(&s, "object.import_svg", json!({ "svg": SVG, "name": "u" })).unwrap();
+    assert_eq!(r["doc_id"], json!(b));
+    assert_eq!(r["document_name"], Value::Null);
+}
+
+#[test]
+#[cfg_attr(debug_assertions, should_panic(expected = "only long commands"))]
+fn execute_in_refuses_other_commands_in_a_document_that_is_not_active() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = shared(dir.path());
+    let first = s.lock().unwrap().doc().id();
+    locked_run(&s, "document.new", json!({})).unwrap();
+    let r = unlocked::execute_in(&s, first, "document.new", json!({}), Origin::User);
+    // Release builds refuse it with the internal error.
+    assert!(
+        matches!(&r, Err(CommandError::Failed(t)) if t.contains("internal error")),
+        "{r:?}"
+    );
+    assert_eq!(s.lock().unwrap().docs.len(), 2);
 }

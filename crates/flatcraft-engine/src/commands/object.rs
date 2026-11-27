@@ -385,7 +385,11 @@ fn with_path(e: CommandError, path: &std::path::Path) -> CommandError {
     }
 }
 
-fn run_import(s: &mut Session, p: ImportParams, _: Origin) -> Result<Value, CommandError> {
+fn run_import(s: &mut Session, p: ImportParams, origin: Origin) -> Result<Value, CommandError> {
+    run_import_here(s, p, origin).map(|v| super::landed(s, v))
+}
+
+fn run_import_here(s: &mut Session, p: ImportParams, _: Origin) -> Result<Value, CommandError> {
     match (p.path, p.paths.is_empty()) {
         (Some(path), true) => import_one(s, &path),
         (None, false) => import_many(s, &p.paths),
@@ -436,7 +440,7 @@ command!(
     mutates: true,
     params: ImportParams,
     run: run_import,
-    description: "Imports a vector file from disk as a new object and selects it. Supported: .svg and .svgz, and the raster types .png, .jpg, .jpeg, .webp and .gif (by extension). The object name is the file name without extension. The object keeps an embedded copy and remembers the file, so after the file is changed in another app object.reload picks up the changes. SVG sizes come from the SVG in mm. A raster image is traced into cut outlines with the default trace settings (automatic threshold, dark pixels are cut) at the dpi stored in the file, or 300 dpi; use object.retrace to change the settings. Images over 16384 x 16384 px are refused. The object keeps its position from the SVG page if that lies inside the cutting area, otherwise its top-left corner moves to the top-left of the cutting area. Coordinates are mm, origin the 0,0 of the grid printed on the mat, y down. With paths instead of path, several files are imported as one undo step and all new objects are selected; the call never fails because of a file: a file that cannot be imported is listed in failed and the others are still imported, and when none could be imported nothing changes (no undo step); it returns {imported: [id], failed: [{path, reason}], warnings: [text, each starting with the file path]}. With path it returns {id, bounds_mm: {x0,y0,x1,y1}, warnings: [text], report: {shapes, issues: [issue]}}; with paths the report covers every imported object (each issue names its object_ids). The report lists what to know about the new objects (open paths, hairlines, shapes below the minimum feature size, fills the cut mode ignores, objects larger than the cutting area, missing fonts and more), each with a code, a severity, a plain message, a hint and fixes that are ready-to-run commands; see document.check for the format and the codes. An empty issues list means nothing to report. Raster imports also return dropped_small (shapes below the minimum feature size that were dropped), despeckled (specks below the despeckle area that were removed), threshold_used (0-255) and size_mm [width, height] of the whole image.",
+    description: "Imports a vector file from disk as a new object and selects it. Supported: .svg and .svgz, and the raster types .png, .jpg, .jpeg, .webp and .gif (by extension). The object name is the file name without extension. The object keeps an embedded copy and remembers the file, so after the file is changed in another app object.reload picks up the changes. SVG sizes come from the SVG in mm. A raster image is traced into cut outlines with the default trace settings (automatic threshold, dark pixels are cut) at the dpi stored in the file, or 300 dpi; use object.retrace to change the settings. Images over 16384 x 16384 px are refused. The object keeps its position from the SVG page if that lies inside the cutting area, otherwise its top-left corner moves to the top-left of the cutting area. Coordinates are mm, origin the 0,0 of the grid printed on the mat, y down. With paths instead of path, several files are imported as one undo step and all new objects are selected; the call never fails because of a file: a file that cannot be imported is listed in failed and the others are still imported, and when none could be imported nothing changes (no undo step); it returns {imported: [id], failed: [{path, reason}], warnings: [text, each starting with the file path]}. With path it returns {id, bounds_mm: {x0,y0,x1,y1}, warnings: [text], report: {shapes, issues: [issue]}}; with paths the report covers every imported object (each issue names its object_ids). The report lists what to know about the new objects (open paths, hairlines, shapes below the minimum feature size, fills the cut mode ignores, objects larger than the cutting area, missing fonts and more), each with a code, a severity, a plain message, a hint and fixes that are ready-to-run commands; see document.check for the format and the codes. An empty issues list means nothing to report. Raster imports also return dropped_small (shapes below the minimum feature size that were dropped), despeckled (specks below the despeckle area that were removed), threshold_used (0-255) and size_mm [width, height] of the whole image. The result also has doc_id and document_name (null for a document never saved): the document it landed in, which is the one active when the call began, even if another one became active while it ran.",
 );
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -448,7 +452,19 @@ pub struct ImportSvgParams {
     pub name: String,
 }
 
-fn run_import_svg(s: &mut Session, p: ImportSvgParams, _: Origin) -> Result<Value, CommandError> {
+fn run_import_svg(
+    s: &mut Session,
+    p: ImportSvgParams,
+    origin: Origin,
+) -> Result<Value, CommandError> {
+    run_import_svg_here(s, p, origin).map(|v| super::landed(s, v))
+}
+
+fn run_import_svg_here(
+    s: &mut Session,
+    p: ImportSvgParams,
+    _: Origin,
+) -> Result<Value, CommandError> {
     add_svg(s, p.name, p.svg.into_bytes().into()).map(|(_, out)| out)
 }
 
@@ -459,7 +475,7 @@ command!(
     mutates: true,
     params: ImportSvgParams,
     run: run_import_svg,
-    description: "Imports SVG markup given as text as a new object and selects it. Give the SVG a width and height in mm (for example width=\"50mm\") so the size is exact; plain numbers are CSS pixels (96 per inch). Every visible path, fill or stroke, is cut as set by object.set_cut_options (default: the outline of fills and of strokes 1.5 mm or wider, the minimum feature size of the default blade); text is cut as outlines. Placement as in object.import. Coordinates are mm, origin the 0,0 of the grid printed on the mat, y down. Returns {id, bounds_mm: {x0,y0,x1,y1}, warnings: [text], report: {shapes, issues: [issue]}}: the import report, with codes, plain messages and fixes as ready-to-run commands (see document.check for the format and the codes).",
+    description: "Imports SVG markup given as text as a new object and selects it. Give the SVG a width and height in mm (for example width=\"50mm\") so the size is exact; plain numbers are CSS pixels (96 per inch). Every visible path, fill or stroke, is cut as set by object.set_cut_options (default: the outline of fills and of strokes 1.5 mm or wider, the minimum feature size of the default blade); text is cut as outlines. Placement as in object.import. Coordinates are mm, origin the 0,0 of the grid printed on the mat, y down. Returns {id, bounds_mm: {x0,y0,x1,y1}, warnings: [text], report: {shapes, issues: [issue]}}: the import report, with codes, plain messages and fixes as ready-to-run commands (see document.check for the format and the codes). The result also has doc_id and document_name (null for a document never saved): the document it landed in, which is the one active when the call began, even if another one became active while it ran.",
 );
 
 // ---------------------------------------------------------------- retrace
@@ -547,7 +563,11 @@ pub struct RetraceParams {
     pub settings: RetraceSettings,
 }
 
-fn run_retrace(s: &mut Session, p: RetraceParams, _: Origin) -> Result<Value, CommandError> {
+fn run_retrace(s: &mut Session, p: RetraceParams, origin: Origin) -> Result<Value, CommandError> {
+    run_retrace_here(s, p, origin).map(|v| super::landed(s, v))
+}
+
+fn run_retrace_here(s: &mut Session, p: RetraceParams, _: Origin) -> Result<Value, CommandError> {
     let id = ObjectId(p.id);
     let settings = p.settings.into_trace()?;
     let blade = blade_offset_mm(s);
@@ -614,7 +634,7 @@ command!(
     mutates: true,
     params: RetraceParams,
     run: run_retrace,
-    description: "Traces a raster object again with new settings and keeps its position, scale, rotation and mirror. Settings (all optional, omitted ones use the defaults): threshold (0-255, null = automatic), invert (cut the light pixels), despeckle_mm2 (default 0.5), corner_threshold_deg (default 60), smoothing (0-10, default 5), min_feature_mm (null = 6 times the blade offset of the plotter), dpi_override (null = dpi of the file, else 300). Only raster objects can be retraced. Linked copies (see object.copies) share the trace settings, so all members of the group are retraced in the same undo step, each keeping its own position, rotation and mirror. Returns {id, bounds_mm, warnings, report: {shapes, issues} (the import report of the object and its linked copies, see document.check), dropped_small (shapes below the minimum feature size), despeckled (specks below the despeckle area), threshold_used, size_mm}.",
+    description: "Traces a raster object again with new settings and keeps its position, scale, rotation and mirror. Settings (all optional, omitted ones use the defaults): threshold (0-255, null = automatic), invert (cut the light pixels), despeckle_mm2 (default 0.5), corner_threshold_deg (default 60), smoothing (0-10, default 5), min_feature_mm (null = 6 times the blade offset of the plotter), dpi_override (null = dpi of the file, else 300). Only raster objects can be retraced. Linked copies (see object.copies) share the trace settings, so all members of the group are retraced in the same undo step, each keeping its own position, rotation and mirror. Returns {id, bounds_mm, warnings, report: {shapes, issues} (the import report of the object and its linked copies, see document.check), dropped_small (shapes below the minimum feature size), despeckled (specks below the despeckle area), threshold_used, size_mm}. The result also has doc_id and document_name (null for a document never saved): the document it landed in, which is the one active when the call began, even if another one became active while it ran.",
 );
 
 // ---------------------------------------------------------------- select / visible / delete

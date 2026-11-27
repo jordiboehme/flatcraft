@@ -592,7 +592,11 @@ pub struct ReloadParams {
     pub ids: Vec<u64>,
 }
 
-fn run_reload(s: &mut Session, p: ReloadParams, _: Origin) -> Result<Value, CommandError> {
+fn run_reload(s: &mut Session, p: ReloadParams, origin: Origin) -> Result<Value, CommandError> {
+    run_reload_here(s, p, origin).map(|v| super::landed(s, v))
+}
+
+fn run_reload_here(s: &mut Session, p: ReloadParams, _: Origin) -> Result<Value, CommandError> {
     let ids: Vec<ObjectId> = if p.ids.is_empty() {
         let doc = &s.doc().document;
         doc.objects
@@ -650,7 +654,7 @@ command!(
     mutates: true,
     params: ReloadParams,
     run: run_reload,
-    description: "Reads linked files again after they were changed in another app and rebuilds the objects (SVG import, or a trace with the object's stored trace settings). Position, scale, rotation, mirror, cut options, name and visibility stay; the object stays anchored to the file's page (SVG page, image frame), so unchanged shapes keep their place on the mat. A file is looked for relative to the project file first (while the project is in the folder that path was made for), then at its absolute path; only files of the object's type (.svg/.svgz or an image type) count. ids: objects to reload; empty (default) means every linked object. Linked copies (see object.copies) share one source: reloading one reloads all members of its group, and all of them are listed. One undo step for the whole call; a call that changed nothing (all unchanged, missing or failed) records no undo step and does not mark the document as changed. The call never fails because of a file: a file that is gone is listed in missing, a file that cannot be read or is broken is listed in failed with a warning, and those objects keep their embedded copy unchanged. Returns {reloaded: [id], unchanged: [id] (same content), missing: [id], failed: [id], warnings: [text], report: {shapes, issues}}; the report is the import report of the reloaded objects (what the new files have, and the geometry checks), see document.check for the codes.",
+    description: "Reads linked files again after they were changed in another app and rebuilds the objects (SVG import, or a trace with the object's stored trace settings). Position, scale, rotation, mirror, cut options, name and visibility stay; the object stays anchored to the file's page (SVG page, image frame), so unchanged shapes keep their place on the mat. A file is looked for relative to the project file first (while the project is in the folder that path was made for), then at its absolute path; only files of the object's type (.svg/.svgz or an image type) count. ids: objects to reload; empty (default) means every linked object. Linked copies (see object.copies) share one source: reloading one reloads all members of its group, and all of them are listed. One undo step for the whole call; a call that changed nothing (all unchanged, missing or failed) records no undo step and does not mark the document as changed. The call never fails because of a file: a file that is gone is listed in missing, a file that cannot be read or is broken is listed in failed with a warning, and those objects keep their embedded copy unchanged. Returns {reloaded: [id], unchanged: [id] (same content), missing: [id], failed: [id], warnings: [text], report: {shapes, issues}}; the report is the import report of the reloaded objects (what the new files have, and the geometry checks), see document.check for the codes. The result also has doc_id and document_name (null for a document never saved): the document it landed in, which is the one active when the call began, even if another one became active while it ran.",
 );
 
 // ---------------------------------------------------------------- relink
@@ -739,7 +743,11 @@ fn relink_one(
     result
 }
 
-fn run_relink(s: &mut Session, p: RelinkParams, _: Origin) -> Result<Value, CommandError> {
+fn run_relink(s: &mut Session, p: RelinkParams, origin: Origin) -> Result<Value, CommandError> {
+    run_relink_here(s, p, origin).map(|v| super::landed(s, v))
+}
+
+fn run_relink_here(s: &mut Session, p: RelinkParams, _: Origin) -> Result<Value, CommandError> {
     // `items` reports per item and never fails because of one; id and path
     // is one relink that fails like any command.
     let single = p.items.is_empty();
@@ -845,7 +853,7 @@ command!(
     mutates: true,
     params: RelinkParams,
     run: run_relink,
-    description: "Points an object's link to a file at a new location (after it was moved or renamed) and reloads it from there, keeping position, scale, rotation, mirror, cut options, name and visibility. An unlinked object gets a link. Linked copies (see object.copies) share the link, so relinking one relinks all members of its group, and all of them are listed; with items, a later item for another member of a group relinked earlier in the call is listed in failed. The file must exist and match the object's kind (.svg/.svgz for SVG objects, .png/.jpg/.jpeg/.webp/.gif for traced images); a file that cannot be read or parsed fails the call and changes nothing. One undo step. items: [{id, path}] instead of id and path relinks several objects in one undo step (for example the also_found list); an item that fails changes nothing and is listed in failed: [{id, path, reason}], the others are still relinked, and the call never fails because of an item (with one item too). Returns {reloaded: [id] (the content changed), unchanged: [id] (same content, only the link moved), also_found: [{id, path}] (other objects whose file is missing but whose file name exists in the new folder; relink them too, in one call with items), warnings: [text], report: {shapes, issues} (the import report of the reloaded objects, see document.check)}, plus failed with items.",
+    description: "Points an object's link to a file at a new location (after it was moved or renamed) and reloads it from there, keeping position, scale, rotation, mirror, cut options, name and visibility. An unlinked object gets a link. Linked copies (see object.copies) share the link, so relinking one relinks all members of its group, and all of them are listed; with items, a later item for another member of a group relinked earlier in the call is listed in failed. The file must exist and match the object's kind (.svg/.svgz for SVG objects, .png/.jpg/.jpeg/.webp/.gif for traced images); a file that cannot be read or parsed fails the call and changes nothing. One undo step. items: [{id, path}] instead of id and path relinks several objects in one undo step (for example the also_found list); an item that fails changes nothing and is listed in failed: [{id, path, reason}], the others are still relinked, and the call never fails because of an item (with one item too). Returns {reloaded: [id] (the content changed), unchanged: [id] (same content, only the link moved), also_found: [{id, path}] (other objects whose file is missing but whose file name exists in the new folder; relink them too, in one call with items), warnings: [text], report: {shapes, issues} (the import report of the reloaded objects, see document.check)}, plus failed with items. The result also has doc_id and document_name (null for a document never saved): the document it landed in, which is the one active when the call began, even if another one became active while it ran.",
 );
 
 // ---------------------------------------------------------------- unlink

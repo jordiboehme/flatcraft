@@ -70,6 +70,25 @@ macro_rules! command {
 }
 pub(crate) use command;
 
+/// Adds where a long command's result landed to `out` (an object):
+/// `doc_id` and `document_name` (the project file's name without its
+/// extension, null for a document never saved). A long command runs off
+/// the session lock and stays in the document it began in, so the
+/// caller can tell it from the one active now.
+pub(crate) fn landed(s: &Session, mut out: serde_json::Value) -> serde_json::Value {
+    let st = s.doc();
+    if let Some(o) = out.as_object_mut() {
+        o.insert("doc_id".into(), st.id().into());
+        let name = st
+            .path
+            .as_deref()
+            .and_then(std::path::Path::file_stem)
+            .map(|n| n.to_string_lossy().into_owned());
+        o.insert("document_name".into(), name.into());
+    }
+    out
+}
+
 /// Params of commands that take none.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]

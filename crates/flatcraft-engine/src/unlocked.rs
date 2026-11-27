@@ -179,9 +179,10 @@ pub fn closed(id: &str) -> CommandError {
 
 /// [`execute`] in the open document `doc_id`, active or not, and the
 /// active document stays as it is (like [`Session::execute_in`]): for a
-/// command the window started on the document the person saw. A tab
-/// switch meanwhile never drops it. Fails with [`closed`] when the
-/// document was closed before the result could be stored.
+/// long command ([`runs_unlocked`]) the window started on the document
+/// the person saw. A tab switch meanwhile never drops it. Fails with
+/// [`closed`] when the document was closed before the result could be
+/// stored. Any other command runs only while `doc_id` is active.
 pub fn execute_in(
     session: &Mutex<Session>,
     doc_id: u64,
@@ -212,8 +213,17 @@ fn execute_on(
         let mut s = lock(session);
         return match doc {
             Some(d) if s.doc_index(d).is_err() => Err(closed(id)),
-            Some(d) => s.execute_in(d, id, params, origin),
-            None => s.execute(id, params, origin),
+            // Only the long commands may run in a document that is not
+            // active; any other (one that opens, closes or switches
+            // documents) would break the active document.
+            Some(d) if s.doc().id() != d => {
+                debug_assert!(
+                    false,
+                    "only long commands run in a document that is not active, not {id}"
+                );
+                Err(internal_error(id))
+            }
+            Some(_) | None => s.execute(id, params, origin),
         };
     };
     match id {
