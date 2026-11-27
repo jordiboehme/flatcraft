@@ -1765,10 +1765,19 @@ struct PairContext<'a> {
 /// outline): only such an object covers what lies behind it in visible
 /// outline. A centre-line stroke or an all-lines line covers nothing.
 fn covers(input: &JobInput, o: &JobObject) -> bool {
+    // The same rule as the cut: a sliver that is not cut covers nothing.
     let affine = o.transform.affine(o.local_bounds);
-    o.geometry
-        .iter()
-        .any(|p| !cutgeom::painted_area(p, &o.cut, affine, input.tolerance_mm()).is_empty())
+    o.geometry.iter().any(|p| {
+        !cutgeom::painted(
+            p,
+            &o.cut,
+            affine,
+            input.tolerance_mm(),
+            input.min_width_mm(),
+        )
+        .area
+        .is_empty()
+    })
 }
 
 /// The width of the narrowest strip that `front` leaves to see of the

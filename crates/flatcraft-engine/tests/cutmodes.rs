@@ -1443,3 +1443,36 @@ fn the_overlap_hint_names_the_merged_outline() {
         "{msg}"
     );
 }
+
+#[test]
+fn a_cut_that_meets_a_front_edge_at_a_shallow_angle_reaches_it() {
+    // The front's top edge crosses the back's top edge at about 8 degrees,
+    // at (10, 0). The back's edge must run right up to it.
+    let mut doc = Document::new(job_settings());
+    let back = add(
+        &mut doc,
+        "back",
+        vec![filled(rect(0.0, 0.0, 20.0, 20.0))],
+        CutMode::VisibleOutline,
+    );
+    let slope = 8f64.to_radians().tan();
+    let mut front = BezPath::new();
+    front.move_to((0.0, 10.0 * slope));
+    front.line_to((30.0, -20.0 * slope));
+    front.line_to((30.0, 30.0));
+    front.line_to((0.0, 30.0));
+    front.close_path();
+    add(
+        &mut doc,
+        "front",
+        vec![filled(front)],
+        CutMode::ObjectOutlines,
+    );
+    let g = geometry(&doc);
+    let reaches = g
+        .pieces(back)
+        .iter()
+        .flat_map(|p| vertices(&p.path))
+        .any(|v| v.distance(Point::new(10.0, 0.0)) < 1e-6);
+    assert!(reaches, "{:?}", g.pieces(back));
+}

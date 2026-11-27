@@ -964,3 +964,57 @@ fn lead_ins_of_a_visible_outline_stay_out_of_kept_material() {
     let into = r["metrics"]["max_into_kept_mm"].as_f64().unwrap();
     assert_eq!(into, 0.0, "{r}");
 }
+
+/// A 150 mm tall plate in visible outline, its left and right edges
+/// covered at y 90..100, with a counter near its bottom: its outline is
+/// cut as a top and a bottom part. On a roll the feed must never go back,
+/// and the counter still comes before the cut that frees the plate.
+#[test]
+fn a_tall_visible_outline_keeps_the_feed_monotonic() {
+    let d = dirs();
+    let mut s = session(&d);
+    run(&mut s, "job.set_media", json!({ "id": "no-mat" }));
+    let back = import(
+        &mut s,
+        r#"<path fill-rule="evenodd" d="M30 10h40v150h-40z M45 140h10v10h-10z"/>"#,
+    );
+    let left = import(&mut s, r#"<rect x="20" y="90" width="15" height="10"/>"#);
+    let right = import(&mut s, r#"<rect x="65" y="90" width="15" height="10"/>"#);
+    run(
+        &mut s,
+        "object.set_cut_options",
+        json!({ "ids": [back], "mode": "visible_outline" }),
+    );
+    let input = flatcraft_engine::job::JobInput::of(&s).unwrap();
+    let plan = flatcraft_engine::job::build_input(&input).unwrap().plan;
+    let cuts: Vec<&flatcraft_path::Toolpath> = plan
+        .toolpaths
+        .iter()
+        .filter(|t| t.kind == flatcraft_path::ToolpathKind::Cut && t.pass == 1)
+        .collect();
+    let bands: Vec<usize> = cuts
+        .iter()
+        .map(|t| flatcraft_path::feed::band_of(t))
+        .collect();
+    assert!(
+        bands.windows(2).all(|w| w[0] <= w[1]),
+        "the feed goes back: {bands:?}"
+    );
+    let at = |f: &dyn Fn(&flatcraft_path::Toolpath) -> bool| -> Vec<usize> {
+        cuts.iter()
+            .enumerate()
+            .filter(|(_, t)| f(t))
+            .map(|(k, _)| k)
+            .collect()
+    };
+    let counter = at(&|t| t.source.object.0 == back && t.closed);
+    let outline = at(&|t| t.source.object.0 == back && !t.closed);
+    let fronts = at(&|t| [left, right].contains(&t.source.object.0));
+    assert_eq!(counter.len(), 1, "{cuts:?}");
+    assert_eq!(outline.len(), 2, "a top and a bottom part: {cuts:?}");
+    let freed = outline.iter().chain(&fronts).max().unwrap();
+    assert!(
+        counter[0] < *freed,
+        "counter {counter:?}, outline {outline:?}, fronts {fronts:?}"
+    );
+}

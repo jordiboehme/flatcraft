@@ -268,13 +268,18 @@ pub fn build(paths: &[Toolpath]) -> ContainmentTree {
 /// paths that end on the cuts of the objects in front).
 ///
 /// For every outer ring of a region whose object has open paths on that
-/// outline, the longest of those open paths stands for the missing ring
-/// in the cut order: every path that lies inside the outline and has no
-/// smaller container inside it becomes its child, so the holes and inner
-/// pieces are cut before the piece can come free (R8, holes first). The
+/// outline, one of the cuts that close the outline (those open paths, and
+/// the rings of the shapes in front that run along it) stands for the
+/// missing ring in the cut order: the one that reaches the latest feed
+/// band, the object's own path first, then the longest. Every path that
+/// lies inside the outline and has no smaller container inside it becomes
+/// its child, so the holes and inner pieces are cut before the piece can
+/// come free (R8, holes first), and with a monotonic feed in their own
+/// band. The
 /// ring depths count the outline too, so keep sides (and the depth of the
 /// object's own rings) are those of a closed outline.
 pub fn adopt_regions(tree: &mut ContainmentTree, paths: &[Toolpath], regions: &Regions) {
+    let n_paths = paths.len();
     for (object, rings) in regions {
         let rings: Vec<&[Point]> = rings
             .iter()
@@ -312,12 +317,35 @@ pub fn adopt_regions(tree: &mut ContainmentTree, paths: &[Toolpath], regions: &R
                     && bbox(&t.points).is_some_and(|b| box_in(b, grown))
                     && t.points.iter().all(|p| near_ring(*p, ring, ON_OUTLINE_MM))
             };
-            // The open path that stands for the outline: the longest.
+            if !(0..paths.len()).any(on_outline) {
+                continue;
+            }
+            // The cuts that close the outline: the object's open paths on
+            // it, and the rings of other objects that run along it (the
+            // shapes in front).
+            let region_box = |t: &Toolpath| bbox(&t.points).is_some_and(|b| b.overlaps(grown));
+            let closes = |j: usize| {
+                let t = &paths[j];
+                t.closed
+                    && t.source.object != *object
+                    && region_box(t)
+                    && ring.iter().any(|p| near_ring(*p, t.lap(), ON_OUTLINE_MM))
+            };
+            // The cut that stands for the outline: of those that reach the
+            // latest feed band, the object's own open path first, then the
+            // longest. With a monotonic feed the paths inside are cut in
+            // their own band, before the cut that frees the piece, and the
+            // feed never goes back.
             let Some(stand) = (0..paths.len())
-                .filter(|&j| on_outline(j))
+                .filter(|&j| on_outline(j) || closes(j))
                 .max_by(|&a, &b| {
-                    crate::clean::length(&paths[a].points)
-                        .total_cmp(&crate::clean::length(&paths[b].points))
+                    let key = |j: usize| (crate::feed::band_of(&paths[j]), on_outline(j));
+                    key(a)
+                        .cmp(&key(b))
+                        .then(
+                            crate::clean::length(&paths[a].points)
+                                .total_cmp(&crate::clean::length(&paths[b].points)),
+                        )
                         .then(b.cmp(&a))
                 })
             else {
@@ -354,8 +382,17 @@ pub fn adopt_regions(tree: &mut ContainmentTree, paths: &[Toolpath], regions: &R
                 if paths[j].source.object == *object {
                     tree.own_depth[j] += 1;
                 }
-                // A container inside the outline stays the parent.
-                if tree.parent[j].is_none_or(|p| !within[p]) {
+                // A container inside the outline stays the parent. Never
+                // a loop: the stand must not lie inside `j`.
+                let mut at = Some(stand);
+                let mut guard = n_paths;
+                let mut loops = false;
+                while let Some(a) = at.filter(|_| guard > 0) {
+                    loops |= a == j;
+                    at = tree.parent[a];
+                    guard -= 1;
+                }
+                if tree.parent[j].is_none_or(|p| !within[p]) && !loops {
                     tree.parent[j] = Some(stand);
                 }
             }

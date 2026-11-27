@@ -65,7 +65,7 @@ pub type Contour = Vec<[f64; 2]>;
 
 mod cross;
 pub use cross::painted_area;
-pub(crate) use cross::would_weld;
+pub(crate) use cross::{painted, would_weld};
 
 /// One cut path of an object, in mat mm: what the job, the export, the
 /// report and the window read. `source` is the index of the object's

@@ -362,9 +362,35 @@ fn clip_piece(piece: &CutPiece, cover: &[Contour], tol: f64) -> (Vec<CutPiece>, 
             boundary_included: false,
         },
     );
-    let crossing = along
-        .into_iter()
-        .filter(|c| length(std::slice::from_ref(c)) <= 3.0 * super::CLOSE_TOLERANCE_MM);
+    // A part that ends on the cover's edge is where the cut meets the
+    // front shape: it stays, also at a shallow angle (down to
+    // `MEET_MIN_DEG`), so the two cuts meet and leave no bridge.
+    // Only the two ends of the few parts in the band are asked, so a plain
+    // walk over the cover's edges is enough.
+    let on_edge = |p: [f64; 2]| {
+        cover.iter().any(|c| {
+            let n = c.len();
+            (0..n).any(|k| {
+                let (a, b) = (c[k], c[(k + 1) % n]);
+                let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                let len2 = dx * dx + dy * dy;
+                let t = if len2 > 0.0 {
+                    (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                (p[0] - a[0] - dx * t).hypot(p[1] - a[1] - dy * t) <= 1e-6
+            })
+        })
+    };
+    let meets = |c: &Contour| {
+        c.first().is_some_and(|p| on_edge(*p)) || c.last().is_some_and(|p| on_edge(*p))
+    };
+    let meet_reach = super::CLOSE_TOLERANCE_MM / MEET_MIN_DEG.to_radians().sin();
+    let crossing = along.into_iter().filter(|c| {
+        let l = length(std::slice::from_ref(c));
+        l <= 3.0 * super::CLOSE_TOLERANCE_MM || (l <= meet_reach && meets(c))
+    });
     let kept: Vec<Contour> = away.into_iter().chain(crossing).collect();
     let before = length(&lines);
     if (before - length(&kept)).abs() <= 1e-9 * before.max(1.0) {
@@ -395,6 +421,12 @@ fn clip_piece(piece: &CutPiece, cover: &[Contour], tol: f64) -> (Vec<CutPiece>, 
         .collect();
     (pieces, true)
 }
+
+/// The shallowest angle at which a cut that meets a front shape's edge
+/// still reaches it exactly, in degrees. Below it, the cut stops where it
+/// comes within the join tolerance of the edge: a bridge of at most that
+/// tolerance, far below a plotter step.
+const MEET_MIN_DEG: f64 = 5.0;
 
 /// `line` without the vertices that lie on a straight run (where the
 /// clips split a segment), so a clipped edge stays one segment.
