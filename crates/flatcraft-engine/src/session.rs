@@ -418,11 +418,105 @@ impl DocState {
             && !self.undo.can_redo()
     }
 
+    /// A copy for a command run off the session lock (`crate::unlocked`):
+    /// the same id, revision, document, selection, jobs and caches, but no
+    /// undo history (it is not needed and not cheap to copy). Only commands
+    /// that never read the undo history or the burst run on it.
+    pub(crate) fn twin(&self) -> DocState {
+        DocState {
+            id: self.id,
+            document: self.document.clone(),
+            selection: self.selection.clone(),
+            undo: UndoStack::default(),
+            path: self.path.clone(),
+            dirty: self.dirty,
+            last_job: self.last_job.clone(),
+            last_sent: self.last_sent.clone(),
+            last_sent_rev: self.last_sent_rev,
+            revision: self.revision,
+            bounds_cache: self.bounds_cache.clone(),
+            burst: None,
+            cut_cache: Mutex::new(self.cut_cache_entry()),
+        }
+    }
+
+    /// What a twin started from, so [`DocState::adopt`] can tell what the
+    /// command changed from what changed here meanwhile.
+    pub(crate) fn twin_base(&self) -> TwinBase {
+        TwinBase {
+            selection: self.selection.clone(),
+            dirty: self.dirty,
+            last_job: self.last_job.clone(),
+        }
+    }
+
+    /// Takes over what a command did on `twin`, a [`DocState::twin`] of
+    /// this document taken at `base`, while the document is still at the
+    /// revision the twin started from (the caller checks). The result is
+    /// the same as if the command had run here: the new document with one
+    /// undo step (when the command recorded one), the revision, the dirty
+    /// flag, the selection and the job it built, and the caches it filled.
+    /// A selection or dirty flag the command left alone keeps the value it
+    /// has here, which the window may have changed meanwhile.
+    pub(crate) fn adopt(&mut self, base: &TwinBase, twin: DocState) {
+        debug_assert_eq!(self.id, twin.id);
+        let mut recorded = false;
+        if twin.revision != self.revision {
+            // `run_command` records at most one step on the empty history.
+            if let Some(before) = twin.undo.last() {
+                self.undo.record(before.clone());
+                self.burst = None;
+                recorded = true;
+            }
+            self.document = twin.document;
+            self.revision = twin.revision;
+        }
+        // A recorded change always leaves the document dirty, even when a
+        // save finished meanwhile: that file holds the state before it.
+        if recorded || twin.dirty != base.dirty {
+            self.dirty = twin.dirty;
+        }
+        if twin.selection != base.selection {
+            self.selection = twin.selection;
+        }
+        self.prune_selection();
+        let same_job = match (&twin.last_job, &base.last_job) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same_job {
+            self.last_job = twin.last_job;
+        }
+        self.bounds_cache.extend(twin.bounds_cache);
+        let entry = twin
+            .cut_cache
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The cache is what the command left in it, as if it had run
+        // here: it is checked object by object on every read, so an entry
+        // built half way through the command is as good here as there.
+        if entry.is_some() {
+            *self
+                .cut_cache
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = entry;
+        }
+    }
+
     /// Drops selected ids that no longer exist in the document.
     pub fn prune_selection(&mut self) {
         let doc = &self.document;
         self.selection.retain(|id| doc.get(*id).is_some());
     }
+}
+
+/// The selection, dirty flag and last job a [`DocState::twin`] started
+/// from.
+pub(crate) struct TwinBase {
+    selection: BTreeSet<ObjectId>,
+    dirty: bool,
+    last_job: Option<Arc<JobResult>>,
 }
 
 /// Compares embedded sources, the expensive part (up to 50 MB of bytes;
@@ -538,6 +632,22 @@ pub struct Session {
     /// session lock, with the file the save replaces.
     #[doc(hidden)]
     pub save_write_hook: Option<SaveWriteHook>,
+    /// Tests only: runs in the compute step of every command that runs off
+    /// the session lock (`crate::unlocked`), without the lock, with the
+    /// command id.
+    #[doc(hidden)]
+    pub unlocked_hook: Option<UnlockedHook>,
+}
+
+/// A test hook for the compute step of a command that runs off the
+/// session lock (see [`Session::unlocked_hook`]).
+#[derive(Clone)]
+pub struct UnlockedHook(pub Arc<dyn Fn(&str) + Send + Sync>);
+
+impl std::fmt::Debug for UnlockedHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("UnlockedHook")
+    }
 }
 
 /// A test hook for the write step of a save (see
@@ -597,9 +707,53 @@ impl Session {
             cut_log_rev: 0,
             cut_log_cache: Mutex::default(),
             save_write_hook: None,
+            unlocked_hook: None,
         };
         s.docs.push(s.new_doc_state());
         s
+    }
+
+    /// A private session that holds only a twin of the active document
+    /// ([`DocState::twin`]) and copies of the profiles and preferences, for
+    /// a command run off the session lock (`crate::unlocked`). It never
+    /// reads the preferences file, never sends and never saves.
+    pub(crate) fn scratch(&self) -> Session {
+        Session {
+            docs: vec![self.doc().twin()],
+            active: 0,
+            profiles: self.profiles.clone(),
+            prefs: self.prefs.clone(),
+            has_ui: self.has_ui,
+            config_dir: self.config_dir.clone(),
+            last_agent_activity: None,
+            byte_log: ByteLog::new(),
+            pending_send: None,
+            next_pending_id: 1,
+            no_user_change: false,
+            coalesce: None,
+            prefs_watch: None,
+            prefs_warning: None,
+            save_gate: Arc::default(),
+            cut_log_rev: self.cut_log_rev,
+            cut_log_cache: Mutex::default(),
+            save_write_hook: None,
+            unlocked_hook: None,
+        }
+    }
+
+    /// Runs `command`, a command whose slow part already ran off the
+    /// session lock, with the same bookkeeping as [`Session::execute`]
+    /// (undo step, rollback after a panic, linked copies), but without
+    /// reading the preferences again: the caller did that when it took
+    /// its snapshot.
+    pub(crate) fn run_prepared(
+        &mut self,
+        command: &dyn registry::Command,
+        origin: Origin,
+    ) -> Result<serde_json::Value, CommandError> {
+        let result = self.run_command(command, serde_json::Value::Null, origin);
+        self.prune_pending();
+        result
     }
 
     /// The gate every save of this session passes, so two saves never
@@ -1275,7 +1429,9 @@ impl Session {
 pub(crate) fn internal_error(id: &str) -> CommandError {
     const REPORT: &str = "Please report it at https://github.com/jordiboehme/flatcraft/issues.";
     let written = match id {
-        "project.save" | "tools.test_patterns" => Some("the file may have been written"),
+        "project.save" | "tools.test_patterns" | "document.export" => {
+            Some("the file may have been written")
+        }
         "job.send" => Some("the job may have been written or sent"),
         _ => None,
     };

@@ -493,3 +493,50 @@ async fn an_agent_troubleshoots_like_the_window() {
     .await;
     assert_eq!(r.is_error, Some(true), "{}", text(&r));
 }
+
+#[tokio::test]
+async fn long_agent_commands_leave_the_session_lock_free() {
+    use flatcraft_engine::session::UnlockedHook;
+    let f = connect().await;
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let log = seen.clone();
+    let weak = Arc::downgrade(&f.session);
+    f.session.lock().unwrap().unlocked_hook = Some(UnlockedHook(Arc::new(move |id: &str| {
+        let s = weak.upgrade().expect("the session lives");
+        assert!(s.try_lock().is_ok(), "the lock is free while {id} computes");
+        log.lock().unwrap().push(id.to_string());
+    })));
+    let mut img = image::GrayImage::from_pixel(300, 300, image::Luma([255]));
+    for y in 50..250 {
+        for x in 50..250 {
+            img.put_pixel(x, y, image::Luma([0]));
+        }
+    }
+    let png = f._dir.path().join("square.png");
+    img.save(&png).unwrap();
+    let r = call(
+        &f,
+        "execute",
+        json!({ "command": "object.import", "params": { "path": png } }),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{}", text(&r));
+    let id = serde_json::from_str::<Value>(&text(&r)).unwrap()["id"].clone();
+    let r = call(
+        &f,
+        "execute",
+        json!({ "command": "object.retrace", "params": { "id": id, "settings": { "threshold": 90 } } }),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{}", text(&r));
+    let r = call(&f, "preview", json!({ "kind": "canvas", "max_px": 128 })).await;
+    assert_ne!(r.is_error, Some(true), "{}", text(&r));
+    assert_eq!(
+        *seen.lock().unwrap(),
+        ["object.import", "object.retrace", "document.preview"]
+    );
+    let s = f.session.lock().unwrap();
+    assert_eq!(s.doc().document.objects.len(), 1);
+    assert_eq!(s.doc().undo.undo_len(), 2, "one undo step per command");
+    assert!(s.last_agent_activity.is_some());
+}

@@ -11,7 +11,7 @@ use kurbo::Rect;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::object::blade_offset_for;
+use super::object::{blade_offset_for, blade_offset_in};
 use super::sources::{project_dir, relink_for_save, restore_links};
 use super::{NoParams, command, cutting_area, ids_json, point_arr, rect_json};
 use crate::session::{CommandError, DocState, Origin, Session};
@@ -637,46 +637,65 @@ fn bounds_differ(a: Rect, b: Rect) -> bool {
 }
 
 fn run_open(s: &mut Session, p: OpenParams, _: Origin) -> Result<Value, CommandError> {
-    let (mut document, unlinked) = project::load_report(&p.path).map_err(|e| match e {
+    let (document, warnings) = load_open(&s.profiles, &p.path)?;
+    Ok(install_open(s, p.path, document, warnings))
+}
+
+/// The slow part of `project.open`, which needs no session: reads the
+/// file and rebuilds its shapes (an SVG import or a trace per source)
+/// with the blade offset of the document's plotter in `profiles`.
+/// Returns the document, ready to open, and the warnings.
+pub(crate) fn load_open(
+    profiles: &flatcraft_device::ProfileStore,
+    path: &Path,
+) -> Result<(flatcraft_core::document::Document, Vec<String>), CommandError> {
+    let (mut document, unlinked) = project::load_report(path).map_err(|e| match e {
         ProjectError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => {
-            CommandError::NotFound(format!("file {}", p.path.display()))
+            CommandError::NotFound(format!("file {}", path.display()))
         }
         // Say which file: the person may have several open.
         other => CommandError::Failed(format!(
             "cannot open {}: {other}",
-            p.path.file_name().map_or_else(
-                || p.path.display().to_string(),
+            path.file_name().map_or_else(
+                || path.display().to_string(),
                 |n| n.to_string_lossy().into_owned()
             )
         )),
     })?;
-    let blade = blade_offset_for(s, &document.job.plotter_id);
-    let warnings = rebuild_loaded(
-        &mut document,
-        &unlinked,
-        blade,
-        &p.path.display().to_string(),
-    )?;
+    let blade = blade_offset_in(profiles, &document.job.plotter_id);
+    let warnings = rebuild_loaded(&mut document, &unlinked, blade, &path.display().to_string())?;
     // A relative path in a project file is relative to that file.
-    let anchor = project_dir(Some(&p.path));
+    let anchor = project_dir(Some(path));
     for link in document.objects.iter_mut().filter_map(|o| o.link.as_mut()) {
         link.anchor_dir = anchor.clone();
     }
+    Ok((document, warnings))
+}
+
+/// The quick part of `project.open`: the loaded document becomes the
+/// active one. It replaces the active document only if that one is
+/// pristine at this moment.
+pub(crate) fn install_open(
+    s: &mut Session,
+    path: PathBuf,
+    document: flatcraft_core::document::Document,
+    warnings: Vec<String>,
+) -> Value {
     let objects = document.objects.len();
     let mut st = DocState::new(document);
-    st.path = Some(p.path.clone());
+    st.path = Some(path.clone());
     if s.doc().is_pristine() {
         *s.doc_mut() = st;
     } else {
         s.docs.push(st);
         s.active = s.docs.len() - 1;
     }
-    Ok(json!({
+    json!({
         "index": s.active,
-        "path": p.path,
+        "path": path,
         "objects": objects,
         "warnings": warnings,
-    }))
+    })
 }
 
 /// Opens a project file's bytes that are not a file (a sample built into

@@ -68,7 +68,13 @@ pub fn blade_offset_mm(s: &Session) -> f64 {
 }
 
 pub(crate) fn blade_offset_for(s: &Session, plotter_id: &str) -> f64 {
-    s.profiles
+    blade_offset_in(&s.profiles, plotter_id)
+}
+
+/// Blade offset of the plotter `plotter_id` in `profiles`, mm. 0.25 if
+/// the plotter cannot be resolved.
+pub(crate) fn blade_offset_in(profiles: &flatcraft_device::ProfileStore, plotter_id: &str) -> f64 {
+    profiles
         .plotter(plotter_id)
         .map(|p| p.blade_offset_mm)
         .unwrap_or(0.25)

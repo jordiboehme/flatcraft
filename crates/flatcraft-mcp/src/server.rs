@@ -158,6 +158,29 @@ impl FlatcraftMcp {
         }
     }
 
+    /// Runs the command `id` with its slow part off the session lock
+    /// ([`flatcraft_engine::unlocked::execute`]) on tokio's blocking pool,
+    /// so the window keeps drawing while an agent imports, traces, opens,
+    /// plans or draws. Tells the GUI afterwards only if `notify`.
+    async fn unlocked(
+        &self,
+        notify: bool,
+        id: String,
+        params: Value,
+    ) -> Result<Result<Value, CommandError>, CallToolResult> {
+        let session = Arc::clone(&self.session);
+        let on_change = Arc::clone(&self.on_change);
+        tokio::task::spawn_blocking(move || {
+            let r = flatcraft_engine::unlocked::execute(&session, &id, params, Origin::Agent);
+            if notify {
+                on_change();
+            }
+            r
+        })
+        .await
+        .map_err(|_| text_err("The call stopped with an internal error"))
+    }
+
     /// Runs `f` on the session on tokio's blocking pool. The lock is never held
     /// across an await. Marks the agent activity; tells the GUI afterwards only if `notify`.
     async fn with_session<T: Send + 'static>(
@@ -263,6 +286,13 @@ impl FlatcraftMcp {
         if command == "project.save" {
             return self.save(params).await;
         }
+        if flatcraft_engine::unlocked::runs_unlocked(&command) {
+            return match self.unlocked(true, command, params).await {
+                Ok(Ok(v)) => text_ok(&v),
+                Ok(Err(e)) => error_result(&e),
+                Err(e) => e,
+            };
+        }
         match self
             .with_session(true, move |s| s.execute(&command, params, Origin::Agent))
             .await
@@ -296,9 +326,7 @@ impl FlatcraftMcp {
             params["max_px"] = json!(px);
         }
         let r = match self
-            .with_session(false, move |s| {
-                s.execute("document.preview", params, Origin::Agent)
-            })
+            .unlocked(false, "document.preview".into(), params)
             .await
         {
             Ok(r) => r,

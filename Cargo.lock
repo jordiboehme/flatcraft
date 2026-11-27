@@ -1522,6 +1522,7 @@ dependencies = [
  "base64",
  "flatcraft-device",
  "flatcraft-engine",
+ "image",
  "rmcp",
  "schemars",
  "serde",

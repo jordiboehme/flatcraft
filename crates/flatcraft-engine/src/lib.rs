@@ -17,6 +17,7 @@ pub mod session;
 pub mod simulate;
 pub mod thumbnails;
 pub mod troubleshoot;
+pub mod unlocked;
 
 pub use job::JobResult;
 pub use prefs::Preferences;
