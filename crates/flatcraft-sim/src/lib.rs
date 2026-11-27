@@ -6,6 +6,7 @@
 //! it over a list of toolpaths, `metrics` measures the trace against the
 //! intended paths and `report` adds the time estimate.
 
+pub mod display;
 mod grid;
 pub mod metrics;
 pub mod report;
@@ -14,6 +15,7 @@ pub mod trace;
 use flatcraft_path::ASSUMED_START_HEADING;
 use kurbo::Vec2;
 
+pub use display::{DisplaySample, decimate};
 pub use metrics::{Grade, JobMetrics, PathMetrics, Spot, SpotKind, measure, measure_kept};
 pub use report::{SimResult, TimeModel, estimate_seconds, run, run_plan};
 pub use trace::{Sample, SimTrace, simulate};

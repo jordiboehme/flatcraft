@@ -384,6 +384,37 @@ segment the gap is exactly the tractrix value. So a longer overcut is not
 the fix for this; a known start heading is. Captures and test cuts in M3
 decide what `FC18` really does.
 
+## The quality report and firmware mode
+
+`job.simulate` grades a job with this simulator, and `job.compare_strategies`
+runs it once per cut strategy. What it simulates follows the plotter preset:
+
+- Host compensation: simulated on the device grid, as the plotter gets it.
+- No compensation ("None", a pen): simulated with the preset's blade
+  offset, so a knife set to "None" by mistake shows its real corners. A pen
+  sets the blade offset to 0.
+- Firmware compensation (`FC18`): not simulated. The report says so and
+  gives only the commanded path, the travel, the segment count and the
+  largest heading change per vertex on curves.
+
+Task 51 saw a plain design without weed lines reach `max_into_kept_mm` of
+about 0.3 mm when it was simulated without compensation. Measured on a
+50 mm square with a 20 mm hole at d 0.3 (no compensation):
+
+| spot | depth into kept material | where |
+|---|---|---|
+| the hole's drop point | 0.300 mm | 0.3 mm before the hole's start, along the travel |
+| each outer corner | 0.143 mm | the corner the trailing tip rounds into the piece |
+
+At d 0 (a pen) both are 0. So this is not an artefact of the simulator:
+the blade comes down with its tip d behind the head along the travel
+direction, and the travel to a hole crosses the kept ring, so the tip
+lands in kept material and is dragged to the line from there. An
+uncompensated knife really does that. What the firmware does at a drop
+and at a corner is not known, so in firmware mode this is no longer
+reported as a nick: firmware mode is not simulated until the M3 captures
+and test cuts show what `FC18` does.
+
 ## Sources
 
 - R1 start alignment, R2 arc at every corner, R3 simulation of the rounded

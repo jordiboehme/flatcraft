@@ -201,7 +201,7 @@ async fn preview_kind_is_an_enum_in_the_schema() {
     let t = tools.iter().find(|t| t.name == "preview").unwrap();
     let schema = serde_json::to_string(&*t.input_schema).unwrap();
     assert!(
-        schema.contains("canvas") && schema.contains("path"),
+        schema.contains("canvas") && schema.contains("path") && schema.contains("simulation"),
         "{schema}"
     );
     assert!(!schema.contains("$ref"), "{schema}");
@@ -539,4 +539,42 @@ async fn long_agent_commands_leave_the_session_lock_free() {
     assert_eq!(s.doc().document.objects.len(), 1);
     assert_eq!(s.doc().undo.undo_len(), 2, "one undo step per command");
     assert!(s.last_agent_activity.is_some());
+}
+
+/// An agent simulates the job through execute: off the session lock, with
+/// the grade and the metrics, and the run is kept in the document.
+#[tokio::test]
+async fn execute_job_simulate_returns_grade() {
+    let f = connect().await;
+    let plotters = f._dir.path().join("plotters");
+    std::fs::create_dir_all(&plotters).unwrap();
+    std::fs::write(
+        plotters.join("host.toml"),
+        "id = \"host\"\nname = \"host\"\ninherits = \"file-output-gpgl-cameo2\"\nknife_compensation = { Host = { offset_mm = 0.3, pivot_threshold_deg = 0.0 } }\nblade_offset_mm = 0.3\n",
+    )
+    .unwrap();
+    f.session.lock().unwrap().profiles.reload().unwrap();
+    exec(&f, "job.set_plotter", json!({ "id": "host" })).await;
+    exec(
+        &f,
+        "object.import_svg",
+        json!({ "svg": r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100"><rect x="20" y="20" width="50" height="50"/></svg>"#, "name": "square" }),
+    )
+    .await;
+    let r = exec(&f, "job.simulate", json!({})).await;
+    assert_eq!(r["mode"], "host", "{r}");
+    assert_eq!(r["simulated"], true);
+    assert_eq!(r["grade"], "good", "{r}");
+    assert!(r["metrics"]["max_hausdorff_mm"].as_f64().is_some());
+    assert!(f.session.lock().unwrap().last_sim().is_some());
+    let r = exec(&f, "job.compare_strategies", json!({})).await;
+    assert_eq!(r["strategies"].as_array().unwrap().len(), 3, "{r}");
+    let r = call(
+        &f,
+        "preview",
+        json!({ "kind": "simulation", "max_px": 128 }),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{}", text(&r));
+    assert!(r.content.iter().any(|c| c.as_image().is_some()));
 }

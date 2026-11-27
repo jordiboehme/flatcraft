@@ -158,7 +158,7 @@ fn default_max_px() -> u32 {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PreviewParams {
-    /// "canvas": media, cutting area and objects in their colours. "path": toolpaths in cut order (weed paths in blue long dashes), dashed travel moves, start dots and the 0,0 the first travel starts from, labelled H.
+    /// "canvas": media, cutting area and what is cut of the objects in their colours. "path": toolpaths in cut order (weed paths in blue long dashes), dashed travel moves, start dots and the 0,0 the first travel starts from, labelled H. "simulation": the simulated blade tip of job.simulate.
     pub kind: PreviewKind,
     /// Size in px of the larger image side, 64 to 4096 (default 1024).
     #[serde(default = "default_max_px")]
@@ -171,6 +171,11 @@ fn run_preview(s: &mut Session, p: PreviewParams, _: Origin) -> Result<Value, Co
             "max_px must be between {MIN_PX} and {MAX_PX}, not {}",
             p.max_px
         )));
+    }
+    if p.kind == PreviewKind::Simulation {
+        // Simulate (or reuse) and store it, so job.simulate after the
+        // picture is free.
+        crate::simulate::current(s, None)?;
     }
     let png = render_png(s, p.kind, p.max_px)?;
     let (width, height) = png_size(&png);
@@ -194,5 +199,5 @@ command!(
     mutates: false,
     params: PreviewParams,
     run: run_preview,
-    description: "Draws the active document as a PNG. kind 'canvas' shows the media, the cutting area and the visible objects in their colours; kind 'path' shows the planned toolpaths numbered in cut order (the weed box and weed lines in blue long dashes), travel moves in thin dashes, a red dot at every start point and an H at the 0,0 where the first travel move starts (it needs something to cut and plans like job.preview). max_px is the larger image side, 64 to 4096, default 1024. Returns {png_base64, width, height}.",
+    description: "Draws the active document as a PNG. kind 'canvas' shows the media, the cutting area and what is cut of the visible objects in their colours (a stroked line shows the outline the knife cuts); kind 'path' shows the planned toolpaths numbered in cut order (the weed box and weed lines in blue long dashes), travel moves in thin dashes, a red dot at every start point and an H at the 0,0 where the first travel move starts (it needs something to cut and plans like job.preview); kind 'simulation' simulates the job like job.simulate and shows the path of the head in grey, the blade tip in green where it stays within the end-to-end limit, amber within twice that and red beyond, blade-down waste moves (swivels, lead-ins) dashed in slate blue and the worst spots that miss the limit (or push the blade, leave a line uncut or cut into kept material) ringed in magenta (in firmware mode, which is not simulated, the commanded path only). max_px is the larger image side, 64 to 4096, default 1024. Returns {png_base64, width, height}.",
 );

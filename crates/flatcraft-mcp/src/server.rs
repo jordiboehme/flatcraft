@@ -57,13 +57,14 @@ pub struct ExecuteArgs {
     pub params: Option<Value>,
 }
 
-/// What to draw. "canvas": media, cutting area and objects. "path": planned toolpaths in cut order.
+/// What to draw. "canvas": media, cutting area and what is cut of the objects. "path": planned toolpaths in cut order. "simulation": the simulated blade tip coloured by deviation (job.simulate).
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 #[schemars(inline)]
 pub enum PreviewKind {
     Canvas,
     Path,
+    Simulation,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -318,10 +319,10 @@ impl FlatcraftMcp {
     }
 
     #[tool(
-        description = "Draw the active document as a PNG image. Input: kind ('canvas' or 'path'), optional max_px (64 to 4096, default 1024)."
+        description = "Draw the active document as a PNG image. Input: kind ('canvas', 'path' or 'simulation'), optional max_px (64 to 4096, default 1024)."
     )]
     async fn preview(&self, Parameters(args): Parameters<PreviewArgs>) -> CallToolResult {
-        let mut params = json!({ "kind": match args.kind { PreviewKind::Canvas => "canvas", PreviewKind::Path => "path" } });
+        let mut params = json!({ "kind": match args.kind { PreviewKind::Canvas => "canvas", PreviewKind::Path => "path", PreviewKind::Simulation => "simulation" } });
         if let Some(px) = args.max_px {
             params["max_px"] = json!(px);
         }

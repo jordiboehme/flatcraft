@@ -73,6 +73,59 @@ command!(
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct SimulateParams {
+    /// Simulate the job planned with this strategy instead of the document's own: quality, fast or outlines_last. The document keeps its strategy.
+    pub strategy: Option<super::profiles::StrategyParam>,
+}
+
+fn run_simulate(s: &mut Session, p: SimulateParams, _: Origin) -> Result<Value, CommandError> {
+    let run = crate::simulate::current(s, p.strategy.map(Into::into))?;
+    Ok(super::landed(s, run.report_json()))
+}
+
+command!(
+    JobSimulate,
+    id: "job.simulate",
+    title: "Simulate job",
+    mutates: false,
+    params: SimulateParams,
+    run: run_simulate,
+    description: "Simulates where the blade tip really goes for the job of the active document and grades the cut, without sending anything. It plans the job like job.preview (optional strategy: quality, fast or outlines_last, for this run only) and runs the drag knife model over every toolpath that is really cut, with every point rounded to the plotter's device grid. mode follows the plotter preset's knife compensation: host (FlatCraft steers the blade, simulated), pen (no compensation, simulated with the preset's blade offset, so a knife set to None shows its real corners; set the blade offset to 0 for a pen) or firmware (not simulated: simulated is false, the note says why, and only the commanded path is reported, with max_turn_per_vertex_deg, the largest heading change at one curve vertex). Returns {doc_id, document_name, mode, simulated, note (firmware only), strategy, score (0 to 100: the share of the cut length that is neither uncut nor stray; null in firmware mode), grade (good, fair or poor; null in firmware mode), metrics: {max_hausdorff_mm, max_correspondence_mm, max_span_frechet_mm, max_corner_deviation_mm, max_into_kept_mm, max_twist_deg, max_start_deviation_mm, max_closure_gap_mm, uncut_mm, stray_mm, waste_mm, cut_mm, travel_mm, travel_crossings, segments, lifts, pushed} (firmware: travel_mm, cut_mm, segments, lifts), estimate_s (an estimated job time in seconds, from a provisional speed model), limits: {algorithm_mm, device_mm, end_to_end_mm}, worst_spots: [{x_mm, y_mm, deviation_mm, kind (deviation, uncut, pushed or into_kept), toolpath (the number in the path preview), note}], worst_paths: [up to 20 {toolpath, note, hausdorff_mm, corner_deviation_mm, start_deviation_mm, closure_gap_mm, uncut_mm, stray_mm, pushed}, worst first], warnings: [text]}. Good means a score of at least 98, no point farther than end_to_end_mm from the line, no pushed blade and no cut into kept material. A length that is not a number (nothing of a path was cut) is null.",
+);
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CompareParams {}
+
+fn run_compare(s: &mut Session, _: CompareParams, _: Origin) -> Result<Value, CommandError> {
+    let runs = crate::simulate::compare(s)?;
+    let name = |r: Option<&crate::simulate::SimRun>| {
+        r.map_or(Value::Null, |r| {
+            json!(crate::simulate::strategy_name(r.strategy))
+        })
+    };
+    Ok(super::landed(
+        s,
+        json!({
+            "strategies": runs.iter().map(|r| r.compare_json()).collect::<Vec<_>>(),
+            "best_quality": name(crate::simulate::best_quality(&runs)),
+            "fastest": name(crate::simulate::fastest(&runs)),
+        }),
+    ))
+}
+
+command!(
+    JobCompareStrategies,
+    id: "job.compare_strategies",
+    title: "Compare cut strategies",
+    mutates: false,
+    params: CompareParams,
+    run: run_compare,
+    description: "Simulates the job of the active document with each cut strategy (quality, fast, outlines_last) like job.simulate and compares them, without changing the document. Returns {doc_id, document_name, strategies: [{strategy, score, grade, max_hausdorff_mm, travel_mm, travel_crossings, segments, lifts, estimate_s}], best_quality (the best grade, then the smallest max_hausdorff_mm, then the highest score; null in firmware mode, where nothing is simulated and score, grade, max_hausdorff_mm and travel_crossings are null), fastest (the smallest estimate_s)}. Set the one you pick with job.set_strategy.",
+);
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SendParams {
     /// Job name for the output files. Default: the project file name, else "flatcraft-job". Only letters, digits, '.', '_' and '-' are kept; other characters become '_'.
     pub name: Option<String>,

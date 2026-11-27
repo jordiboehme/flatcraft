@@ -1,11 +1,18 @@
 //! Preview images of the active document, drawn with tiny-skia.
 //!
-//! Canvas view: the media, the cutting area and the objects in their colours.
+//! Canvas view: the media, the cutting area and what is cut of the objects
+//! (their cut geometry, so a stroke shows the outline the knife cuts) in
+//! their colours.
 //! Path view: the media and cutting area, then the toolpaths in cut order
 //! (each with its number), travel moves dashed and a dot on every start point;
 //! the 0,0 where the first travel move starts is marked and labelled H (home).
 //! Order numbers come from a tiny built-in 3x5 digit font, because the engine
 //! has no text rendering library. Direction arrows are not drawn.
+//! Simulation view: the head's path in grey, the blade tip coloured by its
+//! deviation (green within `END_TO_END_LIMIT_MM`, amber within twice that,
+//! red beyond), blade-down waste moves dashed in slate blue and the worst spots that miss
+//! the limit ringed.
+//! In firmware mode nothing is simulated, so it shows the commanded path.
 
 use kurbo::{BezPath, PathEl, Point, Rect};
 use serde::Deserialize;
@@ -27,6 +34,16 @@ pub enum PreviewKind {
     Canvas,
     /// The toolpaths in cut order with travel moves and start points.
     Path,
+    /// The simulated blade tip coloured by deviation (`job.simulate`).
+    Simulation,
+}
+
+/// What [`draw`] puts on the mat.
+enum View<'a> {
+    /// The objects: their cut geometry when given, else their paths.
+    Canvas(Option<&'a crate::cutgeom::CutGeometry>),
+    Path(&'a crate::job::JobResult),
+    Simulation(&'a crate::simulate::SimRun),
 }
 
 fn color(r: u8, g: u8, b: u8) -> Color {
@@ -169,11 +186,21 @@ pub fn render_png(s: &Session, kind: PreviewKind, max_px: u32) -> Result<Vec<u8>
         .profiles
         .plotter(&s.doc().document.job.plotter_id)
         .map_err(crate::commands::profile_error)?;
-    let job = match kind {
-        PreviewKind::Canvas => None,
-        PreviewKind::Path => Some(crate::job::build(s)?),
-    };
-    draw(&plotter, &s.doc().document, job.as_ref(), max_px)
+    let doc = &s.doc().document;
+    match kind {
+        PreviewKind::Canvas => {
+            let cut = s.cut_geometry()?;
+            draw(&plotter, doc, View::Canvas(Some(&cut)), max_px)
+        }
+        PreviewKind::Path => {
+            let job = crate::job::build(s)?;
+            draw(&plotter, doc, View::Path(&job), max_px)
+        }
+        PreviewKind::Simulation => {
+            let run = crate::simulate::current_unstored(s)?;
+            draw(&plotter, doc, View::Simulation(&run), max_px)
+        }
+    }
 }
 
 /// Renders `doc` on its mat, the canvas view (objects in their colours),
@@ -190,14 +217,14 @@ pub fn render_document_png(
             "max_px must be between {MIN_PX} and {MAX_PX}, not {max_px}"
         )));
     }
-    draw(plotter, doc, None, max_px)
+    draw(plotter, doc, View::Canvas(None), max_px)
 }
 
-/// The canvas view of `doc`, or the path view of `job` when given.
+/// The canvas, path or simulation view of `doc`.
 fn draw(
     plotter: &flatcraft_device::PlotterProfile,
     doc: &flatcraft_core::document::Document,
-    job: Option<&crate::job::JobResult>,
+    view: View<'_>,
     max_px: u32,
 ) -> Result<Vec<u8>, CommandError> {
     let (media, _) = crate::commands::effective_media(plotter, &doc.job)?;
@@ -261,12 +288,34 @@ fn draw(
         pm.stroke_path(&p, &edge, &stroke, mat, None);
     }
 
-    match job {
-        None => {
+    match view {
+        View::Canvas(cut) => {
             for o in doc.objects.iter().filter(|o| o.visible) {
-                for cp in o.placed_paths() {
-                    let c = cp.color.unwrap_or([0x22, 0x26, 0x2e]);
-                    if let Some(p) = to_skia(&cp.path) {
+                // What is cut of the object, in the colour of the source
+                // path each piece came from; without cut geometry (a
+                // thumbnail) the object's own paths.
+                let shapes: Vec<(BezPath, Option<[u8; 3]>)> = match cut {
+                    Some(cut) => cut
+                        .pieces(o.id)
+                        .iter()
+                        .map(|piece| {
+                            let colour = piece
+                                .source
+                                .and_then(|i| o.geometry.get(i))
+                                .and_then(|p| p.color)
+                                .or_else(|| o.geometry.iter().find_map(|p| p.color));
+                            (piece.path.clone(), colour)
+                        })
+                        .collect(),
+                    None => o
+                        .placed_paths()
+                        .into_iter()
+                        .map(|cp| (cp.path, cp.color))
+                        .collect(),
+                };
+                for (path, colour) in shapes {
+                    let c = colour.unwrap_or([0x22, 0x26, 0x2e]);
+                    if let Some(p) = to_skia(&path) {
                         // A skipped object is dimmed and dashed, as in the app.
                         let (alpha, dash) = if o.cut_enabled {
                             (255, None)
@@ -289,7 +338,18 @@ fn draw(
                 }
             }
         }
-        Some(result) => {
+        View::Simulation(run) => {
+            let canvas = Canvas {
+                pm: &mut pm,
+                mat,
+                px_mm: px(1.0) as f32,
+                cell: (max_px as f32 / 512.0).round().max(1.0),
+                line: [lr, lg, lb],
+                cut: flatcraft_core::colour::cut_colour(media.color),
+            };
+            draw_simulation(canvas, run);
+        }
+        View::Path(result) => {
             let [cr, cg, cb] = flatcraft_core::colour::cut_colour(media.color);
             let cut = paint(color(cr, cg, cb));
             // The light theme's weed blue (the image has no theme), or the
@@ -363,6 +423,180 @@ fn draw(
         }
     }
     pm.encode_png().map_err(|e| failed(&e.to_string()))
+}
+
+/// The pixmap and the scale a view draws with.
+struct Canvas<'a> {
+    pm: &'a mut Pixmap,
+    /// Mat millimetres to pixels.
+    mat: Transform,
+    /// One pixel in mm.
+    px_mm: f32,
+    /// The size of one dot of the digit font, px.
+    cell: f32,
+    /// The mat's contrast colour.
+    line: [u8; 3],
+    /// The cut colour on this mat.
+    cut: [u8; 3],
+}
+
+/// The tip colour of a sample with `deviation_mm`: green within the
+/// end-to-end limit, amber within twice that, red beyond.
+pub fn deviation_colour(deviation_mm: f32) -> [u8; 3] {
+    let d = f64::from(deviation_mm);
+    let limit = flatcraft_sim::END_TO_END_LIMIT_MM;
+    if d.is_nan() || d <= limit {
+        [0x1f, 0x9d, 0x55]
+    } else if d <= 2.0 * limit {
+        [0xe0, 0x9b, 0x00]
+    } else {
+        [0xd6, 0x28, 0x28]
+    }
+}
+
+/// The colour of blade-down waste moves (swivels, lead-ins, overshoots).
+const WASTE_INK: [u8; 3] = [0x5a, 0x6b, 0x8c];
+
+/// How a stretch of tip moves is drawn.
+#[derive(Clone, Copy, PartialEq)]
+enum Ink {
+    Tip([u8; 3]),
+    Waste([u8; 3]),
+}
+
+/// The simulation view: the head (axis) path in grey, the tip coloured by
+/// deviation, waste moves dashed, travel thin and dashed, and the worst
+/// spots ringed. Firmware mode draws the commanded path only.
+fn draw_simulation(c: Canvas<'_>, run: &crate::simulate::SimRun) {
+    let Canvas {
+        pm,
+        mat,
+        px_mm,
+        cell,
+        line,
+        cut,
+    } = c;
+    let [lr, lg, lb] = line;
+    let travel = paint(Color::from_rgba8(lr, lg, lb, 120));
+    let travel_stroke = Stroke {
+        width: px_mm,
+        dash: StrokeDash::new(vec![5.0 * px_mm, 4.0 * px_mm], 0.0),
+        ..Stroke::default()
+    };
+    let Some(result) = &run.result else {
+        // Firmware mode: the commanded path, as the plotter gets it.
+        let ink = paint(color(cut[0], cut[1], cut[2]));
+        let stroke = Stroke {
+            width: 1.5 * px_mm,
+            line_join: LineJoin::Round,
+            ..Stroke::default()
+        };
+        let mut at = run.job.plan.home;
+        for &i in &run.plan_index {
+            for r in run.job.plan.toolpaths[i].runs() {
+                let Some(&first) = r.points.first() else {
+                    continue;
+                };
+                if let Some(p) = polyline(&[at, first], false) {
+                    pm.stroke_path(&p, &travel, &travel_stroke, mat, None);
+                }
+                if let Some(p) = polyline(&r.points, false) {
+                    pm.stroke_path(&p, &ink, &stroke, mat, None);
+                }
+                at = *r.points.last().unwrap_or(&first);
+            }
+        }
+        return;
+    };
+    let samples = &run.display;
+    // The head: every blade-down axis move, thin grey.
+    let axis_paint = paint(Color::from_rgba8(0x8a, 0x8f, 0x98, 200));
+    let axis_stroke = Stroke {
+        width: px_mm,
+        line_join: LineJoin::Round,
+        ..Stroke::default()
+    };
+    let mut axis = PathBuilder::new();
+    let mut up = PathBuilder::new();
+    for w in samples.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let pb = if b.down { &mut axis } else { &mut up };
+        pb.move_to(a.axis.x as f32, a.axis.y as f32);
+        pb.line_to(b.axis.x as f32, b.axis.y as f32);
+    }
+    if let Some(p) = up.finish() {
+        pm.stroke_path(&p, &travel, &travel_stroke, mat, None);
+    }
+    if let Some(p) = axis.finish() {
+        pm.stroke_path(&p, &axis_paint, &axis_stroke, mat, None);
+    }
+    // The tip: consecutive moves of one ink as one path.
+    let tip_stroke = Stroke {
+        width: 1.5 * px_mm,
+        line_join: LineJoin::Round,
+        line_cap: LineCap::Round,
+        ..Stroke::default()
+    };
+    let waste_stroke = Stroke {
+        dash: StrokeDash::new(vec![3.0 * px_mm, 3.0 * px_mm], 0.0),
+        ..tip_stroke.clone()
+    };
+    let flush = |pm: &mut Pixmap, ink: Option<Ink>, pb: PathBuilder| {
+        let (Some(ink), Some(p)) = (ink, pb.finish()) else {
+            return;
+        };
+        match ink {
+            Ink::Tip([r, g, b]) => {
+                pm.stroke_path(&p, &paint(color(r, g, b)), &tip_stroke, mat, None)
+            }
+            Ink::Waste([r, g, b]) => {
+                pm.stroke_path(&p, &paint(color(r, g, b)), &waste_stroke, mat, None)
+            }
+        }
+    };
+    let mut current: Option<Ink> = None;
+    let mut pb = PathBuilder::new();
+    for w in samples.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        if !b.down {
+            continue;
+        }
+        // A waste move lies in waste on purpose, away from the line, so
+        // its distance to the line says nothing: one plain colour. A waste
+        // move into kept material is a worst spot and gets its ring.
+        let ink = if b.waste {
+            Ink::Waste(WASTE_INK)
+        } else {
+            Ink::Tip(deviation_colour(b.deviation_mm))
+        };
+        if current != Some(ink) {
+            flush(pm, current, std::mem::take(&mut pb));
+            current = Some(ink);
+        }
+        pb.move_to(a.tip.x as f32, a.tip.y as f32);
+        pb.line_to(b.tip.x as f32, b.tip.y as f32);
+    }
+    flush(pm, current, pb);
+    // The worst spots that are a problem: a ring each, a few pixels
+    // across. A spot within the limit is only the least good of a good
+    // cut, so it is not ringed.
+    let ring = paint(color(0xc0, 0x1c, 0x8c));
+    let ring_stroke = Stroke {
+        width: 1.5 * cell * px_mm,
+        ..Stroke::default()
+    };
+    let radius = (1.0f32).max(6.0 * cell * px_mm);
+    let limit = flatcraft_sim::END_TO_END_LIMIT_MM;
+    for spot in result
+        .metrics
+        .worst_spots
+        .iter()
+        .filter(|x| x.kind != flatcraft_sim::SpotKind::Deviation || x.deviation_mm > limit)
+    {
+        if let Some(p) = PathBuilder::from_circle(spot.at.x as f32, spot.at.y as f32, radius) {
+            pm.stroke_path(&p, &ring, &ring_stroke, mat, None);
+        }
+    }
 }
 
 #[cfg(test)]

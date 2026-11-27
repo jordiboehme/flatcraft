@@ -24,6 +24,7 @@ use thiserror::Error;
 use crate::cutgeom::CutGeometry;
 use crate::prefs::Preferences;
 use crate::registry;
+use crate::simulate::SimRun;
 
 /// Who started a command. Agents get a few extra limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +122,9 @@ pub struct DocState {
     last_job: Option<Arc<JobResult>>,
     /// The job last sent from this document, kept apart from previews.
     last_sent: Option<Arc<JobResult>>,
+    /// The last simulation (`job.simulate`), valid only while its key
+    /// matches (see [`Session::last_sim`]).
+    last_sim: Option<Arc<SimRun>>,
     /// How many jobs were sent from this document.
     last_sent_rev: u64,
     /// Counts changes of `document`, so work done outside the session lock
@@ -225,6 +229,7 @@ impl Clone for DocState {
             dirty: self.dirty,
             last_job: self.last_job.clone(),
             last_sent: self.last_sent.clone(),
+            last_sim: self.last_sim.clone(),
             last_sent_rev: self.last_sent_rev,
             revision: self.revision,
             bounds_cache: self.bounds_cache.clone(),
@@ -250,6 +255,7 @@ impl DocState {
             dirty: false,
             last_job: None,
             last_sent: None,
+            last_sim: None,
             last_sent_rev: 0,
             revision: 0,
             bounds_cache: HashMap::new(),
@@ -398,6 +404,17 @@ impl DocState {
         self.last_sent_rev
     }
 
+    /// The last simulation stored in this document, whatever it was run
+    /// on: [`Session::last_sim`] gives it only while it is still valid.
+    pub fn stored_sim(&self) -> Option<&Arc<SimRun>> {
+        self.last_sim.as_ref()
+    }
+
+    /// Stores a simulation of this document (see `simulate::store`).
+    pub(crate) fn set_last_sim(&mut self, run: Arc<SimRun>) {
+        self.last_sim = Some(run);
+    }
+
     /// A built (previewed) job.
     pub(crate) fn set_last_job(&mut self, job: JobResult) {
         self.last_job = Some(Arc::new(job));
@@ -436,6 +453,7 @@ impl DocState {
             dirty: self.dirty,
             last_job: self.last_job.clone(),
             last_sent: self.last_sent.clone(),
+            last_sim: self.last_sim.clone(),
             last_sent_rev: self.last_sent_rev,
             revision: self.revision,
             bounds_cache: self.bounds_cache.clone(),
@@ -476,6 +494,7 @@ impl DocState {
             selection: self.selection.clone(),
             dirty: self.dirty,
             last_job: self.last_job.clone(),
+            last_sim: self.last_sim.clone(),
         }
     }
 
@@ -517,6 +536,14 @@ impl DocState {
         if !same_job {
             self.last_job = twin.last_job;
         }
+        let same_sim = match (&twin.last_sim, &base.last_sim) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same_sim {
+            self.last_sim = twin.last_sim;
+        }
         self.bounds_cache.extend(twin.bounds_cache);
         let entry = twin
             .cut_cache
@@ -551,6 +578,7 @@ pub(crate) struct TwinBase {
     selection: BTreeSet<ObjectId>,
     dirty: bool,
     last_job: Option<Arc<JobResult>>,
+    last_sim: Option<Arc<SimRun>>,
 }
 
 /// Compares embedded sources, the expensive part (up to 50 MB of bytes;
@@ -891,6 +919,19 @@ impl Session {
             return false;
         }
         st.store_cut_geometry(self.cut_key(st, input), geometry)
+    }
+
+    /// The last simulation of the active document (`job.simulate`), only
+    /// while it is valid: run on this document at its current revision,
+    /// with the profiles at their current revision. Any edit, undo, redo
+    /// or profile change makes it stale.
+    pub fn last_sim(&self) -> Option<&Arc<SimRun>> {
+        let st = self.doc();
+        st.stored_sim().filter(|r| {
+            r.key.doc_id == st.id()
+                && r.key.doc_revision == st.revision()
+                && r.key.profiles_revision == self.profiles.revision()
+        })
     }
 
     /// Index of the open document with this stable id.
@@ -1442,6 +1483,7 @@ impl Session {
                     dirty: d.dirty,
                     last_job: d.last_job,
                     last_sent: d.last_sent,
+                    last_sim: None,
                     last_sent_rev: d.last_sent_rev,
                     revision: d.revision + 1,
                     bounds_cache: HashMap::new(),
@@ -1688,6 +1730,8 @@ mod tests {
                 "profiles.list",
                 "profiles.get",
                 "job.preview",
+                "job.simulate",
+                "job.compare_strategies",
                 "job.history",
                 "job.troubleshoot",
                 "document.preview",

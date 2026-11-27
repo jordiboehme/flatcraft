@@ -136,6 +136,18 @@ fn undo_invalidates_cut_geometry_and_last_sim() {
     assert!(after.doc_revision > key.doc_revision);
     let again = sent_bytes(&run(&mut s, "job.send", json!({})));
     assert_eq!(before, again, "the pre-move geometry is cut again");
+    // The last simulation follows the same key.
+    run(&mut s, "job.simulate", json!({}));
+    let sim = s.last_sim().expect("a fresh simulation").clone();
+    run(&mut s, "job.simulate", json!({}));
+    assert!(
+        Arc::ptr_eq(s.last_sim().unwrap(), &sim),
+        "an unchanged document reuses it"
+    );
+    run(&mut s, "edit.redo", json!({}));
+    assert!(s.last_sim().is_none(), "redo makes it stale");
+    run(&mut s, "edit.undo", json!({}));
+    assert!(s.last_sim().is_none(), "undo makes it stale too");
 }
 
 #[test]

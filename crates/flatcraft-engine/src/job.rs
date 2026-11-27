@@ -334,6 +334,26 @@ impl<'a> NoteNames<'a> {
     }
 }
 
+/// The listing note of every toolpath of `plan`, without run numbers:
+/// what `job.simulate` names a toolpath by.
+pub(crate) fn toolpath_notes(
+    plan: &CutPlan,
+    objects: &[JobObject],
+    cut: &CutGeometry,
+) -> Vec<String> {
+    let names = NoteNames::of(objects, cut);
+    plan.toolpaths.iter().map(|t| names.note(t)).collect()
+}
+
+/// For each toolpath of `result`'s plan, whether it is really cut (see
+/// [`JobResult::cut_toolpaths`]).
+pub(crate) fn cut_mask(result: &JobResult) -> Vec<bool> {
+    left_out(&result.plan, &result.job.collapsed)
+        .into_iter()
+        .map(|out| !out)
+        .collect()
+}
+
 /// How many blade-down runs toolpath `t` is emitted as.
 fn run_count(t: &Toolpath) -> usize {
     t.axis.as_ref().map_or(1, Vec::len)

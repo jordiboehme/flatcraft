@@ -47,6 +47,8 @@ use crate::session::{CommandError, Origin, Session, internal_error};
 ///   result on an older state would undo the change made meanwhile.
 /// - `job.preview` stores the plan as the last job, and an agent decides
 ///   on a send by its numbers.
+/// - `job.simulate` and `job.compare_strategies` store the simulation as
+///   the document's last one, and an agent decides on its grade.
 /// - `document.preview` and `document.check`: an agent decides its next
 ///   step from the picture or the issues, so they must show the document
 ///   as it is.
@@ -62,6 +64,8 @@ pub fn stale_policy(id: &str) -> Option<&'static str> {
         "object.reload" => "the files were read again",
         "object.relink" => "the file was read",
         "job.preview" => "the job was planned",
+        "job.simulate" => "the job was simulated",
+        "job.compare_strategies" => "the strategies were compared",
         "document.preview" => "the preview was drawn",
         "document.check" => "the objects were checked",
         "document.export" => "the file was exported",
