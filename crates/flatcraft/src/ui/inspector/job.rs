@@ -582,7 +582,10 @@ fn weed_mm(
             .painter()
             .layout_no_wrap("mm".into(), metrics::body(), egui::Color32::PLACEHOLDER)
             .size()
-            .x;
+            .x
+            // The label after the field takes whole pixels: measured
+            // short, the row would ask for more than it has.
+            .ceil();
         let w = ui.available_width() - unit - ui.spacing().item_spacing.x;
         let spec = Number::new(Field::new(Kind::Length).range(lo, hi))
             .decimals(0, 2)

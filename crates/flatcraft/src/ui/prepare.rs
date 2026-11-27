@@ -1549,7 +1549,9 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
                     .inner_margin(super::metrics::panel_margin()),
             )
             .show(ui, |ui| {
-                objects::show(ui, &mut app.ui.prepare, snap, &t, actions);
+                rails::panel_body(ui, |ui| {
+                    objects::show(ui, &mut app.ui.prepare, snap, &t, actions);
+                });
             });
     }
 
@@ -1590,15 +1592,17 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
             }))
             .show(ui, |ui| {
                 let dot = rails::job_dot(snap, Some(&app.ui.cut));
-                super::inspector::show(
-                    ui,
-                    &mut app.ui.prepare,
-                    snap,
-                    dot,
-                    &t,
-                    &mut app.ui.show_debug,
-                    actions,
-                );
+                rails::panel_body(ui, |ui| {
+                    super::inspector::show(
+                        ui,
+                        &mut app.ui.prepare,
+                        snap,
+                        dot,
+                        &t,
+                        &mut app.ui.show_debug,
+                        actions,
+                    );
+                });
             });
     }
 

@@ -594,6 +594,31 @@ pub fn show_rail(ui: &mut Ui, kind: SidePanel, side: Side, t: &Tokens, summary: 
     clicked
 }
 
+/// The content of a resizable side panel, held to the panel's width.
+///
+/// A resizable egui panel takes the width its content used as its new
+/// width. Content that asks for a little more than the room it has (a
+/// field with a unit measured a fraction too narrow, a label rounded up
+/// to the pixel grid) would make the panel grow on every frame, so with
+/// every pointer move, until it fills the window. Here the content draws
+/// in a child that is clipped to the panel, and the panel only learns its
+/// height: what over-asks is cut off at the edge instead.
+pub fn panel_body<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let w = ui.available_width();
+    let rect = Rect::from_min_size(ui.cursor().min, vec2(w, ui.available_height()));
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("flatcraft-panel-body")
+            .max_rect(rect)
+            .layout(*ui.layout()),
+    );
+    child.set_clip_rect(ui.clip_rect().intersect(rect));
+    let r = add(&mut child);
+    let used = Rect::from_min_size(rect.min, vec2(w, child.min_rect().height()));
+    ui.advance_cursor_after_rect(used);
+    r
+}
+
 /// The accessible name of the button that collapses the panel `kind`.
 pub fn collapse_name(kind: SidePanel) -> String {
     format!("Collapse the {} panel", kind.title())

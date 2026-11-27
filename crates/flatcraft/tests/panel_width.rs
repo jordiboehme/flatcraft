@@ -1,0 +1,152 @@
+//! Side panels keep their width while the pointer moves: content that
+//! asks for a little more room than the panel has must never make a
+//! resizable panel grow frame by frame.
+
+mod common;
+use common::RunPlan;
+
+use common::*;
+use egui::accesskit::Role;
+use egui::{Event, Pos2, Rect};
+use egui_kittest::kittest::Queryable as _;
+use flatcraft::ui::Workspace;
+use flatcraft::ui::cut::Stage;
+use flatcraft_engine::session::Origin;
+use serde_json::json;
+
+/// The canvas of the workspace that shows: the side panels sit left and
+/// right of it, so its edges move when a panel changes its width.
+fn canvas(h: &AppHarness) -> Rect {
+    let a = app(h);
+    match a.ui.workspace {
+        Workspace::Cut => a.ui.cut.canvas_rect,
+        _ => a.ui.prepare.canvas_rect,
+    }
+}
+
+/// Moves the pointer across the window, over the panels and the canvas,
+/// for 120 frames, and checks that the side panels keep their width (the
+/// canvas keeps its left and right edges).
+fn sweep(h: &mut AppHarness, what: &str) {
+    let first = canvas(h);
+    for i in 0..120 {
+        // Every other move over the right panels, where the bug was.
+        let x = if i % 2 == 0 {
+            1100.0 + (i as f32 * 37.0) % 290.0
+        } else {
+            20.0 + (i as f32 * 97.0) % 1360.0
+        };
+        let y = 160.0 + (i as f32 * 53.0) % 700.0;
+        h.event(Event::PointerMoved(Pos2::new(x, y)));
+        h.step();
+        let now = canvas(h);
+        assert!(
+            (now.left() - first.left()).abs() <= 0.5 && (now.right() - first.right()).abs() <= 0.5,
+            "{what}: the canvas went from {first:?} to {now:?} after {i} frames"
+        );
+    }
+    h.run_plan();
+}
+
+/// Two squares, the first selected, every panel section open (the panels
+/// are taller than the window, so they scroll), at `ppp` pixels per point.
+fn window(ppp: f32) -> (tempfile::TempDir, AppHarness) {
+    window_with(ppp, None)
+}
+
+/// [`window`]; with `knife`, the job's plotter is a File Output preset
+/// with that knife compensation (the host one is simulated, the firmware
+/// one is not).
+fn window_with(ppp: f32, knife: Option<&str>) -> (tempfile::TempDir, AppHarness) {
+    let dir = tempfile::tempdir().unwrap();
+    if let Some(knife) = knife {
+        let plotters = dir.path().join("profiles").join("plotters");
+        std::fs::create_dir_all(&plotters).unwrap();
+        std::fs::write(
+            plotters.join("host.toml"),
+            format!(
+                "id = \"host\"\nname = \"host\"\ninherits = \"file-output-gpgl-cameo2\"\nknife_compensation = {knife}\nblade_offset_mm = 0.3\n"
+            ),
+        )
+        .unwrap();
+    }
+    let s = session(&dir);
+    if knife.is_some() {
+        s.lock()
+            .unwrap()
+            .execute("job.set_plotter", json!({ "id": "host" }), Origin::User)
+            .unwrap();
+    }
+    {
+        use flatcraft::ui::inspector::{job, object};
+        let mut st = s.lock().unwrap();
+        for id in [
+            job::MACHINE,
+            job::VALUES,
+            job::ORDER,
+            job::WEEDING,
+            job::TIPS,
+            job::ADVANCED,
+            object::CUT,
+            object::POSITION,
+            object::ARRANGE,
+            object::SOURCE,
+            object::HINTS,
+        ] {
+            st.prefs.panel_sections.insert(id.into(), true);
+        }
+    }
+    import_square(&s);
+    import_square(&s);
+    s.lock()
+        .unwrap()
+        .execute("object.select", json!({ "ids": [1] }), Origin::User)
+        .unwrap();
+    let mut h = harness_sized(&dir, s, [1400.0, 900.0], 8, |a| a);
+    h.set_pixels_per_point(ppp);
+    h.set_size(egui::vec2(1400.0, 900.0));
+    h.run_plan();
+    (dir, h)
+}
+
+#[test]
+fn the_cut_stage_panel_keeps_its_width_while_the_pointer_moves() {
+    for ppp in [1.0, 2.0] {
+        let (_d, mut h) = window(ppp);
+        app_mut(&mut h).ui.workspace = Workspace::Cut;
+        wait_for_workers(&mut h);
+        for stage in Stage::ALL {
+            app_mut(&mut h).ui.cut.stage = stage;
+            wait_for_workers(&mut h);
+            sweep(&mut h, &format!("{} at {ppp}x", stage.name()));
+        }
+    }
+}
+
+#[test]
+fn the_prepare_panels_keep_their_width_while_the_pointer_moves() {
+    for ppp in [1.0, 2.0] {
+        prepare_panels(ppp);
+    }
+}
+
+fn prepare_panels(ppp: f32) {
+    let (_d, mut h) = window(ppp);
+    to_prepare(&mut h);
+    wait_for_workers(&mut h);
+    sweep(&mut h, "Prepare");
+    // With the docked Arrange panel open.
+    h.get_by_role_and_label(Role::Tab, "Layout").click();
+    h.run_plan();
+    let tool = flatcraft::ui::tools::TOOLS
+        .iter()
+        .find(|t| t.title == "Rotate...")
+        .unwrap();
+    h.get_by_role_and_label(Role::Button, tool.group.def().title)
+        .click();
+    h.run_plan();
+    h.get_by_label(&tool.row_name()).click();
+    h.run_plan();
+    assert!(app(&h).ui.prepare.panel.is_some());
+    sweep(&mut h, "Arrange");
+}

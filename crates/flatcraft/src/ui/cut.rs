@@ -861,8 +861,10 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
                     .inner_margin(super::metrics::panel_margin()),
             )
             .show(ui, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    stage_panel(ui, app, snap, actions);
+                rails::panel_body(ui, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        stage_panel(ui, app, snap, actions);
+                    });
                 });
             });
     }
