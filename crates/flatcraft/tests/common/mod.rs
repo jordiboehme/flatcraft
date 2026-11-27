@@ -371,6 +371,49 @@ impl flatcraft::ui::files::Revealer for FakeRevealer {
     }
 }
 
+/// What the window asked of the platform over all frames: the output
+/// commands (open a URL, copy text) and the viewport commands (close). A
+/// harness keeps only the last frame's output, and a frame that a worker
+/// asks for in between would wipe a command the click sent.
+#[derive(Clone, Default)]
+pub struct OutputLog(pub Arc<Mutex<Vec<String>>>);
+
+impl OutputLog {
+    /// Starts recording the output of every frame of `ctx`.
+    pub fn record(ctx: &egui::Context) -> Self {
+        let log = Self::default();
+        ctx.add_plugin(OutputPlugin(log.0.clone()));
+        log
+    }
+
+    /// Everything recorded so far, as one string.
+    pub fn text(&self) -> String {
+        format!("{:?}", self.0.lock().unwrap())
+    }
+}
+
+struct OutputPlugin(Arc<Mutex<Vec<String>>>);
+
+impl egui::plugin::Plugin for OutputPlugin {
+    fn debug_name(&self) -> &'static str {
+        "OutputLog"
+    }
+
+    fn output_hook(&mut self, _ctx: &egui::Context, output: &mut egui::FullOutput) {
+        let mut log = self.0.lock().unwrap();
+        log.extend(
+            output
+                .platform_output
+                .commands
+                .iter()
+                .map(|c| format!("{c:?}")),
+        );
+        for v in output.viewport_output.values() {
+            log.extend(v.commands.iter().map(|c| format!("{c:?}")));
+        }
+    }
+}
+
 /// The text the last frame put on the clipboard, if any.
 pub fn copied(h: &AppHarness) -> Option<String> {
     h.output()

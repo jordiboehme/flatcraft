@@ -975,6 +975,7 @@ struct Fixture {
     h: AppHarness,
     picker: common::FakePicker,
     revealed: common::FakeRevealer,
+    output: common::OutputLog,
     recent: Vec<PathBuf>,
 }
 
@@ -1018,12 +1019,15 @@ fn fixture() -> Fixture {
     h.run_plan();
     // Not fitted and not at 100%, so both zoom items have something to do.
     app_mut(&mut h).ui.prepare.view.px_per_mm = 5.0;
+    // From here on: the click's output commands survive extra frames.
+    let output = common::OutputLog::record(&h.ctx);
     Fixture {
         _dir: dir,
         s,
         h,
         picker,
         revealed,
+        output,
         recent: vec![PathBuf::from("/nowhere/a.flatcraft")],
     }
 }
@@ -1037,13 +1041,7 @@ fn effects(f: &Fixture) -> String {
             .execute("document.state", json!({}), Origin::User)
             .unwrap();
     let docs = f.s.lock().unwrap().docs.len();
-    let commands =
-        f.h.output()
-            .viewport_output
-            .get(&egui::ViewportId::ROOT)
-            .map(|v| format!("{:?}", v.commands))
-            .unwrap_or_default();
-    let commands = format!("{commands} {:?}", f.h.output().platform_output.commands);
+    let commands = f.output.text();
     let p = &a.ui.prepare;
     let requests = f.picker.requests.lock().unwrap().len();
     let revealed = f.revealed.0.lock().unwrap().len();
