@@ -405,10 +405,24 @@ pub fn double_click_at(h: &mut AppHarness, at: egui::Pos2) {
     }
 }
 
+/// A click at `at`: the press and the release take one frame each, then
+/// the window settles and the workers that land in it end. egui counts a
+/// press longer than `max_click_duration` (0.8 s, about three test frames)
+/// as no click, so no wait for workers may come between the two.
+pub fn click_at(h: &mut AppHarness, at: egui::Pos2) {
+    h.drag_at(at);
+    h.step();
+    h.drop_at(at);
+    h.step();
+    wait_until(h, landing);
+}
+
+/// [`click_at`] that ends with `Harness::run`.
 fn press_at(h: &mut AppHarness, at: egui::Pos2) {
     h.drag_at(at);
-    h.run();
+    h.step();
     h.drop_at(at);
+    h.step();
     h.run();
 }
 

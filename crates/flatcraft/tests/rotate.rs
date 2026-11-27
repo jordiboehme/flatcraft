@@ -256,10 +256,7 @@ fn a_click_in_the_rotate_zone_keeps_the_selection() {
     h.hover_at(at);
     h.run_plan();
     // Press and release on the spot: a click.
-    h.drag_at(at);
-    h.run_plan();
-    h.drop_at(at);
-    h.run_plan();
+    common::click_at(&mut h, at);
     h.run_plan();
     assert_eq!(s.lock().unwrap().doc().selection.len(), 1);
 }
@@ -553,10 +550,7 @@ fn an_object_under_the_rotate_zone_wins_a_click() {
     h.run_plan();
     h.run_plan();
     assert_ne!(cursor(&h), CursorIcon::None, "no rotate cursor over b");
-    h.drag_at(at);
-    h.run_plan();
-    h.drop_at(at);
-    h.run_plan();
+    common::click_at(&mut h, at);
     h.run_plan();
     let sel: Vec<u64> = s
         .lock()

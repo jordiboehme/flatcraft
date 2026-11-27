@@ -236,10 +236,7 @@ fn closing_a_toast_never_hits_its_neighbour() {
             .center();
     r.h.hover_at(x);
     r.h.run_plan();
-    r.h.drag_at(x);
-    r.h.run_plan();
-    r.h.drop_at(x);
-    r.h.run_plan();
+    common::click_at(&mut r.h, x);
     assert_eq!(r.titles(), ["B"]);
     assert_eq!(app(&r.h).ui.toasts[0].id, ids[1], "B keeps its id");
     // A click on B shows B's file.

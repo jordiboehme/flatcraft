@@ -2743,10 +2743,7 @@ fn arrows_move_an_object_selected_on_the_canvas() {
     let at = view.mm_to_screen(start);
     h.hover_at(at);
     h.run_plan();
-    h.drag_at(at);
-    h.run_plan();
-    h.drop_at(at);
-    h.run_plan();
+    common::click_at(&mut h, at);
     assert_eq!(selection(&s), [a]);
     press(&mut h, Modifiers::NONE, egui::Key::ArrowLeft);
     assert!((object_centre(&s, a) - start + kurbo::Vec2::new(1.0, 0.0)).hypot() < 1e-9);
@@ -3234,10 +3231,7 @@ fn objects_panel_ctrl_click_toggles_and_cmd_shift_adds_a_range() {
     ));
     h.hover_at(p);
     h.run_plan();
-    h.drag_at(p);
-    h.run_plan();
-    h.drop_at(p);
-    h.run_plan();
+    common::click_at(&mut h, p);
     assert_eq!(selection(&s), [b]);
     row(&mut h, 3, Modifiers::SHIFT);
     assert_eq!(selection(&s), [b, c, d]);

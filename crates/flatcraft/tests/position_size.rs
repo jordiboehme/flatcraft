@@ -7,8 +7,8 @@ mod common;
 use common::RunPlan;
 
 use common::{
-    AppHarness, app, app_mut, double_click_at, harness, import_square, session, to_prepare,
-    undo_len,
+    AppHarness, app, app_mut, click_at, double_click_at, harness, import_square, session,
+    to_prepare, undo_len,
 };
 use egui::accesskit::Role;
 use egui::{Key, Modifiers, Pos2, Vec2};
@@ -769,12 +769,6 @@ fn the_keep_aspect_lock_opens_and_closes() {
 // ---------------------------------------------------------------- selecting
 
 /// Presses and releases the primary button at `at`.
-fn click_at(h: &mut AppHarness, at: Pos2) {
-    h.drag_at(at);
-    h.run_plan();
-    h.drop_at(at);
-    h.run_plan();
-}
 
 #[test]
 fn a_double_click_selects_the_whole_value() {

@@ -5,7 +5,8 @@ mod common;
 use common::RunPlan;
 
 use common::{
-    AppHarness, app, app_mut, double_click_at, harness_sized, harness_steps, session, to_prepare,
+    AppHarness, app, app_mut, click_at, double_click_at, harness_sized, harness_steps, session,
+    to_prepare,
 };
 use egui::accesskit::{Role, Toggled};
 use egui::{Modifiers, Rect};
@@ -625,13 +626,6 @@ fn the_keyboard_page_lists_the_drag_modifiers() {
     h.get_by_label("While dragging a corner handle: rotate instead of resize");
     h.get_by_label("Drag just outside a corner of the selection: rotate it");
     h.get_by_label("While rotating: turn in 15 degree steps");
-}
-
-fn click_at(h: &mut AppHarness, at: egui::Pos2) {
-    h.drag_at(at);
-    h.run_plan();
-    h.drop_at(at);
-    h.run_plan();
 }
 
 /// A number field of the window: a calculation counts, a double-click

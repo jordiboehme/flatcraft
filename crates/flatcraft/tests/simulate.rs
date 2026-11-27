@@ -174,18 +174,6 @@ fn quality_color_thresholds() {
     assert_eq!(tip_colour(paper, f32::NAN), None);
 }
 
-/// 500 squares of 4 mm.
-fn many_squares() -> String {
-    let mut body = String::new();
-    for i in 0..500 {
-        let (x, y) = (5 + (i % 25) * 7, 5 + (i / 25) * 7);
-        body.push_str(&format!(r#"<rect x="{x}" y="{y}" width="4" height="4"/>"#));
-    }
-    format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="200mm" viewBox="0 0 200 200">{body}</svg>"#
-    )
-}
-
 /// Blocks every simulation until `release` sends; a test that waits on a
 /// worker never hangs: the gate opens by itself after a while.
 fn gate(s: &SharedSession) -> mpsc::Sender<()> {
@@ -212,7 +200,9 @@ fn gate_with_entry(s: &SharedSession) -> (mpsc::Sender<()>, mpsc::Receiver<()>) 
 fn simulation_runs_off_the_ui_thread() {
     let dir = tempfile::tempdir().unwrap();
     let s = plotter_session(&dir, "host", HOST);
-    import(&s, &many_squares());
+    // One square: the gate holds the simulation, so it needs no size to be
+    // slow, and after the gate it ends quickly on a loaded machine too.
+    common::import_square(&s);
     let mut h = harness(&dir, s.clone(), false);
     app_mut(&mut h).ui.workspace = Workspace::Cut;
     h.run_plan();
