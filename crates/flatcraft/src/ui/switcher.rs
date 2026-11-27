@@ -82,12 +82,18 @@ pub fn ribbon(
                                 .fill(t.panel)
                                 .stroke(egui::Stroke::new(1.0, t.border))
                                 .corner_radius(t.ribbon_radius)
-                                .inner_margin(egui::Margin::symmetric(6, 4))
+                                .inner_margin(egui::Margin::symmetric(
+                                    ribbon_tabs::PANEL_PAD.x as i8,
+                                    ribbon_tabs::PANEL_PAD.y as i8,
+                                ))
                                 .show(ui, |ui| {
-                                    ui.set_min_height(TILE_HEIGHT - 10.0);
+                                    // The panel's height, less its padding
+                                    // and its 1 pt border.
+                                    let inner = TILE_HEIGHT - 2.0 * ribbon_tabs::PANEL_PAD.y - 2.0;
+                                    ui.set_min_height(inner);
                                     // The stage bar sits in the middle of the
                                     // panel's height.
-                                    let room = TILE_HEIGHT - 10.0 - cut::BAR_HEIGHT;
+                                    let room = inner - cut::BAR_HEIGHT;
                                     ui.add_space(room / 2.0);
                                     super::cut::stage_bar(
                                         ui,

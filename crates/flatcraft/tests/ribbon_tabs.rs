@@ -331,3 +331,132 @@ fn small_pins_sit_in_the_middle_of_the_row_of_pins() {
     let block = (top.top() + bottom.bottom()) / 2.0;
     assert!((block - mid).abs() <= 1.0, "{top:?} {bottom:?} vs {mid}");
 }
+
+/// The text painted last frame inside `rect`.
+fn texts_in(h: &AppHarness, rect: Rect) -> Vec<String> {
+    painted(h)
+        .into_iter()
+        .filter_map(|s| match s {
+            egui::Shape::Text(t) if rect.contains(t.visual_bounding_rect().center()) => {
+                Some(t.galley.text().to_string())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn tab_row_aligns_with_ribbon() {
+    for width in WIDTHS {
+        let dir = tempfile::tempdir().unwrap();
+        let s = session(&dir);
+        let a = import_square(&s);
+        select_all(&s, &[a]);
+        let mut h = rig(&dir, s, width);
+        for (tab, first) in [(RibbonTab::Layout, "Add"), (RibbonTab::View, "Zoom")] {
+            show_tab(&mut h, tab);
+            let l = layout(&h);
+            // The first tab starts where the first group starts.
+            let tab_left = node_rect(&h, Role::Tab, RibbonTab::Layout.name()).left();
+            let group = node_rect(&h, Role::Button, first);
+            assert!(
+                (tab_left - group.left()).abs() < 0.5,
+                "{width} {tab:?}: the tab starts at {tab_left}, {first} at {}",
+                group.left()
+            );
+            assert!((tab_left - l.tools.left()).abs() < 0.5, "{width} {tab:?}");
+        }
+    }
+}
+
+#[test]
+fn ribbon_is_lower_than_before() {
+    // Before the polish the tab row and the panel were 98 pt tall.
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select_all(&s, &[a]);
+    let mut h = rig(&dir, s, 1400.0);
+    for tab in RibbonTab::ALL {
+        show_tab(&mut h, tab);
+        let l = layout(&h);
+        let height = l.panel.bottom() - l.tab_row.top();
+        assert!(height <= 88.0, "{tab:?}: the ribbon is {height} pt tall");
+    }
+}
+
+#[test]
+fn long_titles_have_short_ribbon_labels() {
+    use flatcraft::ui::ribbon::{Hit, fuzzy_score, search};
+    use flatcraft::ui::tools::Style;
+    let big = || tools::TOOLS.iter().filter(|t| t.style == Style::Big);
+    // The table: one or two short words on the ribbon, and typing what
+    // the ribbon shows finds the action.
+    for t in big() {
+        let label = t.ribbon_label();
+        assert!(
+            label.chars().count() <= 12,
+            "{}: {label:?} is too long",
+            t.id
+        );
+        assert!(fuzzy_score(label, &t.full_title()).is_some(), "{}", t.id);
+        assert!(
+            search(label, 1)
+                .iter()
+                .any(|h| matches!(h, Hit::Tool(x) if x.id == t.id)),
+            "{}: searching {label:?} does not find it",
+            t.id
+        );
+    }
+    let label = |id| tools::by_id(id).unwrap().ribbon_label();
+    assert_eq!(label("pattern.rectangular"), "Pattern");
+    assert_eq!(label("pattern.circular"), "Circular");
+
+    // On screen, with every action pinned and room for all: the ribbon
+    // paints the short label, the card shows the full title.
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    let b = import_square(&s);
+    select_all(&s, &[a, b]);
+    s.lock()
+        .unwrap()
+        .update_prefs(|p| p.ribbon_pins = RIBBON_PIN_IDS.iter().map(|s| s.to_string()).collect())
+        .unwrap();
+    let mut h = rig(&dir, s, 2400.0);
+    h.ctx
+        .global_style_mut(|st| st.interaction.tooltip_delay = 0.0);
+    for tab in RibbonTab::ALL {
+        show_tab(&mut h, tab);
+        let l = layout(&h);
+        let texts = texts_in(&h, l.panel);
+        for t in big().filter(|t| t.group.def().tab == tab) {
+            let label = t.ribbon_label();
+            assert!(
+                texts.iter().any(|x| x == label),
+                "{tab:?}: {label:?} in {texts:?}"
+            );
+            if label != t.short_title() {
+                assert!(
+                    !texts.iter().any(|x| x == t.short_title()),
+                    "{tab:?}: the long title {:?} is painted",
+                    t.short_title()
+                );
+            }
+            // The hover card names the action in full.
+            let at = node_rect(&h, Role::Button, &t.button_name()).center();
+            h.hover_at(at);
+            h.run_plan();
+            h.run_plan();
+            assert!(
+                h.query_all_by_role(Role::Label).any(|n| n
+                    .accesskit_node()
+                    .value()
+                    .is_some_and(|x| x.starts_with(&t.full_title()))),
+                "{}: no card with {:?}",
+                t.id,
+                t.full_title()
+            );
+        }
+    }
+}

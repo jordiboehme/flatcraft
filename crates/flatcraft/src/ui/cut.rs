@@ -691,6 +691,8 @@ pub fn stage_bar(
         )
         .response
         .rect;
+    // The same room between the buttons as on the ribbon.
+    ui.spacing_mut().item_spacing.x = super::groups::BUTTON_GAP;
     let gap = ui.spacing().item_spacing.x;
     let mut rest = full;
     rest.set_right((debug.left() - gap).max(full.left()));

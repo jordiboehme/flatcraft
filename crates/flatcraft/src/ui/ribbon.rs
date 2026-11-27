@@ -781,9 +781,10 @@ fn search_box(ui: &mut Ui, cx: &mut Cx) {
 }
 
 /// Height of the tab row above the ribbon panel.
-pub const TAB_ROW: f32 = 24.0;
-/// Room between the ribbon panel's border and its tools.
-pub const PANEL_PAD: egui::Vec2 = egui::vec2(6.0, 4.0);
+pub const TAB_ROW: f32 = 22.0;
+/// Room between the ribbon panel's border and its tools. The first tab
+/// starts this far in too, so it lines up with the first group.
+pub const PANEL_PAD: egui::Vec2 = egui::vec2(4.0, 3.0);
 
 /// Where the ribbon drew its parts, for the tests and the next frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -902,7 +903,7 @@ pub fn show(
         .rect;
     let gap = ui.spacing().item_spacing.x;
     let tabs_rect = egui::Rect::from_min_max(
-        egui::pos2(full.left() + 2.0, tab_row.top()),
+        egui::pos2(full.left() + PANEL_PAD.x, tab_row.top()),
         egui::pos2((search.left() - gap).max(full.left()), tab_row.bottom()),
     );
     let active_tab = ui
@@ -925,6 +926,7 @@ pub fn show(
             |ui| {
                 // As tall on every tab, so the ribbon does not jump.
                 ui.set_min_height(groups::ROW_HEIGHT);
+                ui.spacing_mut().item_spacing.x = groups::BUTTON_GAP;
                 let tab = cx.st.tab;
                 let bar = bar_groups(ui, tab);
                 let sig = signature(tab, &cx);
@@ -1235,7 +1237,7 @@ fn size_scale(ui: &mut Ui, cx: &mut Cx) {
 }
 
 /// The width of the Keep aspect column: the lock and the bracket's arms.
-const LOCK_COLUMN: f32 = 18.0;
+const LOCK_COLUMN: f32 = 14.0;
 
 /// Where the lock's centre sits in its column, from the column's left:
 /// room for an open shackle on the left.

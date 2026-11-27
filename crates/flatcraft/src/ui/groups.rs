@@ -24,12 +24,23 @@ use super::settings::set_name;
 use super::tools::{AlignTo, GroupDef, GroupId, Section, Style, Tool};
 use super::{Action, ICON_SIZE};
 
-/// Height of the row of pinned buttons, as tall as a big button.
-pub const BIG_HEIGHT: f32 = 48.0;
+/// Height of the row of pinned buttons, as tall as a big button. Two
+/// compact switches ([`COMPACT_HEIGHT`]) stack in it.
+pub const BIG_HEIGHT: f32 = 46.0;
+/// The narrowest a big button, a tile or a Cut step gets.
+pub const BIG_MIN_WIDTH: f32 = 40.0;
+/// Room left and right of a big button's label, and of a tile's title.
+const BIG_PAD_X: f32 = 4.0;
+/// Room above a big button's icon and under its label.
+const BIG_PAD_Y: f32 = 3.0;
 /// Height of the group button under the pinned buttons.
-pub const GROUP_BUTTON_HEIGHT: f32 = 16.0;
-/// Room between the pinned buttons and the group button.
-pub const GROUP_GAP: f32 = 2.0;
+pub const GROUP_BUTTON_HEIGHT: f32 = 14.0;
+/// Room between the pinned buttons and the group button: none, the group
+/// button is a quiet strip at the group's foot.
+pub const GROUP_GAP: f32 = 0.0;
+/// Room between two buttons of the ribbon and of the Cut bar, on every
+/// tab.
+pub const BUTTON_GAP: f32 = 4.0;
 /// Height of the tools row of the ribbon on every tab.
 pub const ROW_HEIGHT: f32 = BIG_HEIGHT + GROUP_GAP + GROUP_BUTTON_HEIGHT;
 
@@ -184,9 +195,9 @@ pub fn big_button(
             ui.painter()
                 .layout_no_wrap(text.to_string(), font, egui::Color32::PLACEHOLDER);
         let width = if show_label {
-            (galley.size().x + 12.0).max(BIG_HEIGHT)
+            (galley.size().x + 2.0 * BIG_PAD_X).max(BIG_MIN_WIDTH)
         } else {
-            ICON + 12.0
+            ICON + 2.0 * BIG_PAD_X
         };
         let (rect, resp) =
             ui.allocate_exact_size(egui::vec2(width, BIG_HEIGHT), egui::Sense::click());
@@ -199,7 +210,7 @@ pub fn big_button(
             let visuals = ui.style().interact(&resp);
             paint_state(ui, rect, &resp, selected, on);
             let icon_y = if show_label {
-                rect.top() + 4.0 + ICON / 2.0
+                rect.top() + BIG_PAD_Y + ICON / 2.0
             } else {
                 rect.center().y
             };
@@ -211,7 +222,7 @@ pub fn big_button(
             image(ui, icon, ICON).paint_at(ui, icon_rect);
             let at = egui::pos2(
                 rect.center().x - galley.size().x / 2.0,
-                rect.bottom() - 4.0 - galley.size().y,
+                rect.bottom() - BIG_PAD_Y - galley.size().y,
             );
             ui.painter().galley(at, galley, visuals.text_color());
         }
@@ -293,7 +304,9 @@ pub fn step_button(
             .as_ref()
             .map_or(title_g.size().x, |d| d.size().x.max(title_g.size().x))
             .max(reserve_w);
-        let width = (text_w + 16.0).max(BIG_HEIGHT);
+        // A little more room than a big button: its selection fill frames
+        // the larger title.
+        let width = (text_w + 3.0 * BIG_PAD_X).max(BIG_MIN_WIDTH);
         let (rect, resp) =
             ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), egui::Sense::click());
         let on = ui.is_enabled();
@@ -395,7 +408,7 @@ pub fn compact_switch(
 /// Size of the icons of small buttons; two rows of them fit [`BIG_HEIGHT`].
 const SMALL_ICON: f32 = 16.0;
 /// The padding of a small button around its icon.
-const SMALL_PADDING: egui::Vec2 = egui::vec2(3.0, 2.0);
+const SMALL_PADDING: egui::Vec2 = egui::vec2(2.0, 2.0);
 
 /// A small icon button for a pinned direction. Its accessible name is
 /// `name`.
@@ -444,7 +457,7 @@ pub fn tile_width(ui: &Ui, title: &str) -> f32 {
     let galley = ui
         .painter()
         .layout_no_wrap(title.to_string(), font, egui::Color32::PLACEHOLDER);
-    (galley.size().x + 12.0).max(BIG_HEIGHT)
+    (galley.size().x + 2.0 * BIG_PAD_X).max(BIG_MIN_WIDTH)
 }
 
 /// The id of a group's button and tile: one id, so the list stays open
@@ -472,61 +485,72 @@ fn tile(ui: &mut Ui, def: &GroupDef) -> Response {
                 egui::StrokeKind::Inside,
             );
         }
-        let icon_rect = egui::Rect::from_center_size(
-            egui::pos2(rect.center().x, rect.top() + 6.0 + ICON / 2.0),
-            egui::Vec2::splat(ICON),
-        );
-        image(ui, def.icon, ICON).paint_at(ui, icon_rect);
         let font = egui::TextStyle::Small.resolve(ui.style());
         let galley = ui
             .painter()
             .layout_no_wrap(def.title.to_string(), font, visuals.text_color());
-        let text_top = icon_rect.bottom() + 4.0;
+        // Icon, title and chevron, in the middle of the row.
+        let (gap, chevron) = (3.0, 12.0);
+        let block = ICON + gap + galley.size().y + chevron;
+        let top = rect.center().y - block / 2.0;
+        let icon_rect = egui::Rect::from_center_size(
+            egui::pos2(rect.center().x, top + ICON / 2.0),
+            egui::Vec2::splat(ICON),
+        );
+        image(ui, def.icon, ICON).paint_at(ui, icon_rect);
+        let text_top = icon_rect.bottom() + gap;
         ui.painter().galley(
             egui::pos2(rect.center().x - galley.size().x / 2.0, text_top),
             galley.clone(),
             visuals.text_color(),
         );
-        let chevron = egui::Rect::from_center_size(
-            egui::pos2(rect.center().x, text_top + galley.size().y + 7.0),
-            egui::Vec2::splat(12.0),
+        let c = egui::Rect::from_center_size(
+            egui::pos2(rect.center().x, text_top + galley.size().y + chevron / 2.0),
+            egui::Vec2::splat(chevron),
         );
-        image(ui, Icon::ChevronDown, 12.0).paint_at(ui, chevron);
+        image(ui, Icon::ChevronDown, chevron).paint_at(ui, c);
     }
     resp
 }
 
 /// The group button under the pinned buttons: the title and a chevron,
-/// `width` wide (at least as wide as its text).
+/// `width` wide (at least as wide as its text). A quiet strip at the
+/// group's foot on the group's own background; hovered, a light fill
+/// shows it is a button.
 fn group_button(ui: &mut Ui, def: &GroupDef, width: f32) -> Response {
     let font = egui::TextStyle::Small.resolve(ui.style());
     let galley =
         ui.painter()
             .layout_no_wrap(def.title.to_string(), font, egui::Color32::PLACEHOLDER);
     let chevron = 12.0;
-    let width = width.max(galley.size().x + chevron + 12.0);
+    let width = width.max(galley.size().x + chevron + 2.0 * BIG_PAD_X);
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(width, GROUP_BUTTON_HEIGHT), egui::Sense::hover());
     let resp = ui.interact(rect, group_id(def.id), egui::Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::accesskit::Role::Button, true, def.title));
     if ui.is_rect_visible(rect) {
         let visuals = ui.style().interact(&resp);
-        let fill = if resp.hovered() || resp.has_focus() {
-            visuals.weak_bg_fill
+        let lit = resp.hovered() || resp.has_focus();
+        if lit {
+            ui.painter()
+                .rect_filled(rect, visuals.corner_radius, visuals.weak_bg_fill);
+        }
+        // Quiet like the Position and size title until hovered.
+        let colour = if lit {
+            visuals.text_color()
         } else {
-            ui.visuals().faint_bg_color
+            ui.visuals().weak_text_color()
         };
-        ui.painter().rect_filled(rect, visuals.corner_radius, fill);
         let text_w = galley.size().x + 2.0 + chevron;
         let left = rect.center().x - text_w / 2.0;
         let font = egui::TextStyle::Small.resolve(ui.style());
         let galley = ui
             .painter()
-            .layout_no_wrap(def.title.to_string(), font, visuals.text_color());
+            .layout_no_wrap(def.title.to_string(), font, colour);
         ui.painter().galley(
             egui::pos2(left, rect.center().y - galley.size().y / 2.0),
             galley.clone(),
-            visuals.text_color(),
+            colour,
         );
         let c = egui::Rect::from_center_size(
             egui::pos2(
@@ -625,7 +649,8 @@ fn pinned_buttons(ui: &mut Ui, mode: Mode, pins: &[&'static Tool], cx: &mut Cx) 
         let on = t.blocked(cx.snap).is_none();
         let sel = t.selected(cx.st, *cx.show_debug);
         let name = t.button_name();
-        let r = big_button(ui, t.icon, &name, &name, mode == Mode::Full, on, sel);
+        let label = t.ribbon_label();
+        let r = big_button(ui, t.icon, label, &name, mode == Mode::Full, on, sel);
         tool_card(&r, t, cx.snap, false);
         if r.clicked() {
             t.run(cx.snap, cx.st, cx.show_debug, cx.actions);

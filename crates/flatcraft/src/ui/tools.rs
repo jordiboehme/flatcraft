@@ -307,6 +307,10 @@ pub struct Tool {
     pub description: &'static str,
     pub style: Style,
     pub section: Option<Section>,
+    /// The label of its big button when the title is too long for the
+    /// ribbon ("Pattern" for "Rectangular pattern..."); see
+    /// [`Tool::ribbon_label`].
+    pub label: Option<&'static str>,
 }
 
 const fn tool(
@@ -327,11 +331,19 @@ const fn tool(
         description,
         style,
         section: None,
+        label: None,
     }
 }
 
 const fn in_section(mut t: Tool, section: Section) -> Tool {
     t.section = Some(section);
+    t
+}
+
+/// A big button whose title is too long for the ribbon: it shows `label`
+/// there, and its full title everywhere else.
+const fn labelled(mut t: Tool, label: &'static str) -> Tool {
+    t.label = Some(label);
     t
 }
 
@@ -383,14 +395,17 @@ pub const TOOLS: [Tool; 45] = [
         Big,
         "Turn the selected picture into cut lines with your own settings. Tracing follows the edges between dark and light.",
     ),
-    tool(
-        "test_patterns",
-        Act::TestPatterns,
-        "Test patterns",
-        Icon::TestPatterns,
-        G::Add,
-        Big,
-        "Add the test sheet: small shapes that show how well blade and settings cut. Cut it first on a new machine or material.",
+    labelled(
+        tool(
+            "test_patterns",
+            Act::TestPatterns,
+            "Test patterns",
+            Icon::TestPatterns,
+            G::Add,
+            Big,
+            "Add the test sheet: small shapes that show how well blade and settings cut. Cut it first on a new machine or material.",
+        ),
+        "Tests",
     ),
     tool(
         "duplicate",
@@ -410,23 +425,29 @@ pub const TOOLS: [Tool; 45] = [
         Big,
         "Many copies of one object in columns and rows. It opens the Rectangular pattern panel.",
     ),
-    tool(
-        "pattern.rectangular",
-        Act::RectangularPattern,
-        "Rectangular pattern...",
-        Icon::RectangularPattern,
-        G::Edit,
-        Big,
-        "Copies of one object in columns and rows, with the gap you choose. Sticker sheet, engage!",
+    labelled(
+        tool(
+            "pattern.rectangular",
+            Act::RectangularPattern,
+            "Rectangular pattern...",
+            Icon::RectangularPattern,
+            G::Edit,
+            Big,
+            "Copies of one object in columns and rows, with the gap you choose. Sticker sheet, engage!",
+        ),
+        "Pattern",
     ),
-    tool(
-        "pattern.circular",
-        Act::CircularPattern,
-        "Circular pattern...",
-        Icon::CircularPattern,
-        G::Edit,
-        Big,
-        "Copies around a centre point, like the numbers on a clock.",
+    labelled(
+        tool(
+            "pattern.circular",
+            Act::CircularPattern,
+            "Circular pattern...",
+            Icon::CircularPattern,
+            G::Edit,
+            Big,
+            "Copies around a centre point, like the numbers on a clock.",
+        ),
+        "Circular",
     ),
     tool(
         "delete",
@@ -635,14 +656,17 @@ pub const TOOLS: [Tool; 45] = [
         Big,
         "Packs the selected objects onto the cutting area, Tetris style, in one click. Everything else stays where you put it, and the packed objects fit around it. Nothing selected: it packs every visible object. It uses the gap you last chose in the Auto arrange panel.",
     ),
-    tool(
-        "auto_arrange.panel",
-        Act::AutoArrangePanel,
-        "Auto arrange...",
-        Icon::AutoArrangePanel,
-        G::Arrange,
-        Big,
-        "Packs the selected objects onto the cutting area, Tetris style, with the gap you choose. Everything else stays where you put it, and the packed objects fit around it. Nothing selected: it packs every visible object. A preview shows where they land.",
+    labelled(
+        tool(
+            "auto_arrange.panel",
+            Act::AutoArrangePanel,
+            "Auto arrange...",
+            Icon::AutoArrangePanel,
+            G::Arrange,
+            Big,
+            "Packs the selected objects onto the cutting area, Tetris style, with the gap you choose. Everything else stays where you put it, and the packed objects fit around it. Nothing selected: it packs every visible object. A preview shows where they land.",
+        ),
+        "Arrange...",
     ),
     in_section(
         tool(
@@ -752,41 +776,53 @@ pub const TOOLS: [Tool; 45] = [
         Big,
         "Show rulers in millimetres along the edges of the canvas.",
     ),
-    tool(
-        "view.kept",
-        Act::KeptWaste,
-        "Show kept and waste",
-        Icon::Layers,
-        G::Show,
-        Big,
-        "Shows what you keep after cutting as plain paper and the waste, the part you throw away, with a light hatch. Each object's Keep setting decides it: a sticker keeps its shape, a stencil keeps the sheet. The Cut workspace always shows it. It needs a job that can be planned.",
+    labelled(
+        tool(
+            "view.kept",
+            Act::KeptWaste,
+            "Show kept and waste",
+            Icon::Layers,
+            G::Show,
+            Big,
+            "Shows what you keep after cutting as plain paper and the waste, the part you throw away, with a light hatch. Each object's Keep setting decides it: a sticker keeps its shape, a stencil keeps the sheet. The Cut workspace always shows it. It needs a job that can be planned.",
+        ),
+        "Kept & waste",
     ),
-    tool(
-        "panel.objects",
-        Act::ObjectsPanel,
-        "Objects panel",
-        Icon::PanelLeft,
-        G::Panels,
-        Big,
-        "The list of everything on the mat. Hide, skip, rename or pick objects there.",
+    labelled(
+        tool(
+            "panel.objects",
+            Act::ObjectsPanel,
+            "Objects panel",
+            Icon::PanelLeft,
+            G::Panels,
+            Big,
+            "The list of everything on the mat. Hide, skip, rename or pick objects there.",
+        ),
+        "Objects",
     ),
-    tool(
-        "panel.settings",
-        Act::SettingsPanel,
-        "Settings panel",
-        Icon::PanelRight,
-        G::Panels,
-        Big,
-        "What is cut and how: cut mode, plotter, mat, material, speed and force.",
+    labelled(
+        tool(
+            "panel.settings",
+            Act::SettingsPanel,
+            "Settings panel",
+            Icon::PanelRight,
+            G::Panels,
+            Big,
+            "What is cut and how: cut mode, plotter, mat, material, speed and force.",
+        ),
+        "Settings",
     ),
-    tool(
-        "panel.debug",
-        Act::DebugPanel,
-        "Debug panel",
-        Icon::Debug,
-        G::Panels,
-        Big,
-        "For the curious: what the app planned and what goes to the plotter. You do not need it to cut.",
+    labelled(
+        tool(
+            "panel.debug",
+            Act::DebugPanel,
+            "Debug panel",
+            Icon::Debug,
+            G::Panels,
+            Big,
+            "For the curious: what the app planned and what goes to the plotter. You do not need it to cut.",
+        ),
+        "Debug",
     ),
 ];
 
@@ -919,6 +955,14 @@ impl Tool {
             .iter()
             .any(|t| t.id != self.id && t.title.trim_end_matches("...") == short);
         if taken { self.title } else { short }
+    }
+
+    /// What its big button shows on the ribbon: its short label, or else
+    /// [`Tool::short_title`]. The card, the lists, the pins and search keep
+    /// the full title, and the button keeps [`Tool::button_name`] as its
+    /// accessible name.
+    pub fn ribbon_label(&self) -> &'static str {
+        self.label.unwrap_or_else(|| self.short_title())
     }
 
     /// The accessible name of its pinned button.

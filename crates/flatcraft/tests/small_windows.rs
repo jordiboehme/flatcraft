@@ -287,20 +287,22 @@ fn a_listed_action_works_and_closes_the_list() {
         ),
         "every pin does not fit 900 pt"
     );
+    // Edit folds to its tile at 900 pt (Transform, used more, only goes
+    // icon-only there since the ribbon polish of Task 63c).
     assert!(
-        h.query_by_role_and_label(Role::Button, "Mirror vertically")
+        h.query_by_role_and_label(Role::Button, "Duplicate")
             .is_none(),
-        "the Transform group is a tile"
+        "the Edit group is a tile"
     );
-    h.get_by_role_and_label(Role::Button, "Transform").click();
+    h.get_by_role_and_label(Role::Button, "Edit").click();
     h.run_plan();
     let undo = undo_len(&s);
-    h.get_by_label("Mirror vertically (Transform)").click();
+    h.get_by_label("Duplicate (Edit)").click();
     h.run_plan();
     wait_for_workers(&mut h);
-    assert_eq!(undo_len(&s), undo + 1, "mirrored from the list");
+    assert_eq!(undo_len(&s), undo + 1, "duplicated from the list");
     assert!(
-        h.query_by_label("Mirror vertically (Transform)").is_none(),
+        h.query_by_label("Duplicate (Edit)").is_none(),
         "the list closed"
     );
 }

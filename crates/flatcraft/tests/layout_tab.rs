@@ -207,7 +207,9 @@ fn at_1400_pt_no_group_of_layout_is_folded() {
 
 #[test]
 fn linked_files_folds_first() {
-    for (width, height) in [(900.0, 600.0), (1100.0, 900.0)] {
+    // Since the ribbon polish (Task 63c) the whole Layout tab fits at
+    // 1100 pt; at 1000 pt it folds as far as 1100 pt did before.
+    for (width, height) in [(900.0, 600.0), (1000.0, 900.0)] {
         let dir = tempfile::tempdir().unwrap();
         let s = session(&dir);
         let a = import_square(&s);
@@ -237,7 +239,7 @@ fn linked_files_folds_first() {
             Mode::Collapsed,
             "{width}: Size is never a tile"
         );
-        if width == 1100.0 {
+        if width == 1000.0 {
             // Add keeps its labels; Edit keeps its buttons.
             assert_eq!(mode(GroupId::Add), Mode::Full, "{width}: Add");
             assert_ne!(mode(GroupId::Edit), Mode::Collapsed, "{width}: Edit");
