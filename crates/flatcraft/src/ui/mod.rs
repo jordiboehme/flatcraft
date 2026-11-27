@@ -2433,6 +2433,22 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
         || rail_dot
         || report_check;
     let snap = (workspace != Workspace::Home).then(|| prepare::snapshot_with(app, &ctx, wants_job));
+    // The workers' results are taken on every frame, whatever shows: a
+    // check, plan or simulation that runs when the person goes Home ends
+    // there (and Home's pictures behind Prepare or Cut), so no worker
+    // stays busy until its workspace shows again.
+    if let Some((doc, rev, input)) = app.ui.prepare.object_hints.poll(&ctx) {
+        lock(&app.session).offer_cut_geometry(doc, rev, &input);
+    }
+    if snap.is_none() {
+        if let Some((doc, rev, input)) = app.ui.cut.poll(&ctx) {
+            lock(&app.session).offer_cut_geometry(doc, rev, &input);
+        }
+        app.ui.cut.sim.poll(&ctx, &app.session);
+        app.ui.prepare.cache.collect();
+    } else {
+        app.ui.home.collect(&ctx);
+    }
     if let Some(snap) = &snap {
         // A plan that landed this frame was built on the worker; its cut
         // geometry goes back into the document's cache.
@@ -2450,10 +2466,8 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
         // The object inspector's hints follow the document and the
         // selection, checked on a worker; not while a drag or a nudge
         // burst changes the document every frame, and not while the Job
-        // view hides them (the last check shows meanwhile).
-        if let Some((doc, rev, input)) = app.ui.prepare.object_hints.poll(&ctx) {
-            lock(&app.session).offer_cut_geometry(doc, rev, &input);
-        }
+        // view hides them (the last check shows meanwhile). A finished
+        // check is taken above, on every frame.
         let p = &app.ui.prepare;
         if workspace == Workspace::Prepare
             && !p.panels.collapsed(rails::SidePanel::Settings)

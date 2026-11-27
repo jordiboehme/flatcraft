@@ -355,6 +355,13 @@ impl SimState {
         self.pump_compare(session, snap);
     }
 
+    /// Takes a run the worker finished (and starts a queued one) without a
+    /// snapshot and without waiting: for frames that show no document
+    /// (Home), so a run never stays running there.
+    pub fn poll(&mut self, ctx: &egui::Context, session: &SharedSession) {
+        self.pump(ctx, session, std::time::Instant::now());
+    }
+
     /// Starts the queued run when the worker is free, and takes a run it
     /// finished: waits until `deadline` for one it just started.
     fn pump(&mut self, ctx: &egui::Context, session: &SharedSession, deadline: std::time::Instant) {

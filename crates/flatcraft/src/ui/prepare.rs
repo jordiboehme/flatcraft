@@ -739,8 +739,9 @@ impl ShapeCache {
 
     /// Takes the shapes the worker finished. A worker that died is
     /// dropped with what it was building, so those shapes are asked for
-    /// again (and built inline, see `submit`).
-    fn collect(&mut self) {
+    /// again (and built inline, see `submit`). Prepare's snapshot calls
+    /// it, the window on Home.
+    pub fn collect(&mut self) {
         let Some(done) = &self.done else { return };
         loop {
             match done.try_recv() {

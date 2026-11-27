@@ -407,8 +407,10 @@ impl HomeState {
         self.job.is_some()
     }
 
-    /// Takes the pictures the worker finished.
-    fn collect(&mut self, ctx: &egui::Context) {
+    /// Takes the pictures the worker finished. Home calls it while it
+    /// shows, the window on every other frame, so the worker never stays
+    /// busy behind another workspace.
+    pub fn collect(&mut self, ctx: &egui::Context) {
         let Some(rx) = &self.job else {
             return;
         };

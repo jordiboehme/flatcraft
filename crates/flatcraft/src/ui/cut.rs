@@ -292,6 +292,13 @@ impl CutState {
         self.pump(ctx, deadline)
     }
 
+    /// Takes a plan the worker finished (and starts a queued one) without
+    /// a snapshot and without waiting: for frames that show no document
+    /// (Home), so a plan never stays running there.
+    pub fn poll(&mut self, ctx: &egui::Context) -> Option<(u64, u64, JobInput)> {
+        self.pump(ctx, std::time::Instant::now())
+    }
+
     /// Starts the queued plan when the worker is free, and takes a plan it
     /// finished: waits until `deadline` for one it just started.
     fn pump(

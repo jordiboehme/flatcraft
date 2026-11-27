@@ -4,7 +4,8 @@ mod common;
 use common::RunPlan;
 
 use common::{
-    FakePicker, SQUARE_SVG, app, harness_sized, harness_with, session, wait_for_source_check,
+    FakePicker, SQUARE_SVG, app, harness_sized, harness_with, session, wait_for_long,
+    wait_for_source_check,
 };
 use egui::accesskit::Role;
 use egui_kittest::kittest::Queryable as _;
@@ -561,4 +562,45 @@ fn a_broken_thumbnail_is_drawn_again() {
     .unwrap();
     let p = tiny_skia::Pixmap::decode_png(&png).expect("a picture that decodes");
     assert_eq!(p.width().max(p.height()), 512);
+}
+
+#[test]
+fn a_hints_check_that_ends_on_home_frees_the_worker() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let dir = tempfile::tempdir().unwrap();
+    let svg = dir.path().join("star.svg");
+    std::fs::write(&svg, SQUARE_SVG).unwrap();
+    let s = session(&dir);
+    s.lock().unwrap().doc_mut().dirty = true;
+    let picker = FakePicker::answering([svg.clone()]);
+    let mut h = harness_with(&dir, s.clone(), |a| a.with_file_picker(picker));
+    // The check waits for the gate, like a slow machine.
+    let open = Arc::new(AtomicBool::new(false));
+    let gate = open.clone();
+    app_mut(&mut h)
+        .ui
+        .prepare
+        .object_hints
+        .set_checker(Arc::new(move |input, ids, stop| {
+            while !gate.load(Ordering::SeqCst) {
+                if stop() {
+                    return None;
+                }
+                std::thread::yield_now();
+            }
+            flatcraft_engine::report::check_selection_until(input, ids, stop)
+        }));
+    h.get_by_role_and_label(Role::Button, "Import design...")
+        .click();
+    wait_for_long(&mut h);
+    assert_eq!(app(&h).ui.workspace, Workspace::Prepare);
+    assert!(app(&h).ui.prepare.object_hints.busy(), "the check runs");
+    // Home while it runs; it ends there.
+    h.get_by_role_and_label(Role::Button, "Home").click();
+    h.step();
+    assert_eq!(app(&h).ui.workspace, Workspace::Home);
+    open.store(true, Ordering::SeqCst);
+    wait_until(&mut h, |a| a.ui.prepare.object_hints.busy());
+    assert_eq!(app(&h).ui.workspace, Workspace::Home);
 }
