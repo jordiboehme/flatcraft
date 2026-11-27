@@ -4,7 +4,8 @@ mod common;
 use common::RunPlan;
 
 use common::{
-    FakePicker, app, app_mut, harness, harness_with, import_square, session, wait_for_source_check,
+    FakePicker, app, app_mut, capture, harness, harness_with, import_square, session,
+    wait_for_source_check,
 };
 use egui::accesskit::Role;
 use egui_kittest::kittest::Queryable as _;
@@ -291,14 +292,6 @@ fn closing_a_dirty_tab_can_save_it_first() {
     assert!(s.lock().unwrap().doc().document.objects.is_empty());
 }
 
-fn root_commands(h: &common::AppHarness) -> Vec<egui::ViewportCommand> {
-    common::OutputLog::of(&h.ctx).viewport()
-}
-
-fn asks_to_close(h: &common::AppHarness) -> bool {
-    root_commands(h).contains(&egui::ViewportCommand::Close)
-}
-
 #[test]
 fn quit_with_unsaved_work_asks_first_and_cancel_keeps_the_app() {
     let dir = tempfile::tempdir().unwrap();
@@ -306,14 +299,18 @@ fn quit_with_unsaved_work_asks_first_and_cancel_keeps_the_app() {
     import_square(&s);
     let mut h = harness(&dir, s.clone(), false);
     let ctx = h.ctx.clone();
-    app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
-    h.run_plan();
+    let got = capture(&mut h, |h| {
+        app_mut(h).apply(&ctx, vec![Action::Quit]);
+        h.run_plan();
+    });
     h.get_by_label("Save changes to Untitled 1?");
-    assert!(!asks_to_close(&h));
-    h.get_by_role_and_label(Role::Button, "Cancel").click();
-    h.run_plan();
+    assert!(!got.closes());
+    let got = capture(&mut h, |h| {
+        h.get_by_role_and_label(Role::Button, "Cancel").click();
+        h.run_plan();
+    });
     assert!(h.query_by_label("Save changes to Untitled 1?").is_none());
-    assert!(!asks_to_close(&h));
+    assert!(!got.closes());
     assert!(!app(&h).ui.closing);
     assert_eq!(s.lock().unwrap().docs[0].document.objects.len(), 1);
 }
@@ -363,8 +360,8 @@ fn discard_on_quit_closes_the_window() {
         .or_default()
         .events
         .push(egui::ViewportEvent::Close);
-    h.step();
-    assert!(!root_commands(&h).contains(&egui::ViewportCommand::CancelClose));
+    let got = capture(&mut h, |h| h.step());
+    assert!(!got.viewport.contains(&egui::ViewportCommand::CancelClose));
 }
 
 #[test]
@@ -379,8 +376,8 @@ fn the_window_close_button_asks_too() {
         .or_default()
         .events
         .push(egui::ViewportEvent::Close);
-    h.step();
-    assert!(root_commands(&h).contains(&egui::ViewportCommand::CancelClose));
+    let got = capture(&mut h, |h| h.step());
+    assert!(got.viewport.contains(&egui::ViewportCommand::CancelClose));
     h.run_plan();
     h.get_by_label("Save changes to Untitled 1?");
 }
@@ -422,12 +419,14 @@ fn a_cancelled_save_all_keeps_the_app_open() {
     app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
     h.run_plan();
     // The app bar has a Save button too; the dialog is drawn last.
-    h.get_all_by_role_and_label(Role::Button, "Save")
-        .last()
-        .unwrap()
-        .click();
-    h.run_plan();
-    assert!(!asks_to_close(&h));
+    let got = capture(&mut h, |h| {
+        h.get_all_by_role_and_label(Role::Button, "Save")
+            .last()
+            .unwrap()
+            .click();
+        h.run_plan();
+    });
+    assert!(!got.closes());
     assert!(!app(&h).ui.closing);
     assert!(s.lock().unwrap().doc().dirty);
 }

@@ -3,7 +3,7 @@
 mod common;
 use common::RunPlan;
 
-use common::{FakeRevealer, app, app_mut, copied, harness_with, session};
+use common::{FakeRevealer, app, app_mut, capture, harness_with, session};
 use egui::accesskit::Role;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use flatcraft::ui::Unsaved;
@@ -51,9 +51,11 @@ fn reveal_and_copy_path_act_on_the_tab_file() {
     h.run_plan();
     assert_eq!(*revealed.0.lock().unwrap(), std::slice::from_ref(&path));
     open_menu(&mut h, "Stickers");
-    h.get_by_role_and_label(Role::Button, "Copy path").click();
-    h.step();
-    assert_eq!(copied(&h), Some(path.display().to_string()));
+    let got = capture(&mut h, |h| {
+        h.get_by_role_and_label(Role::Button, "Copy path").click();
+        h.step();
+    });
+    assert_eq!(got.copied(), Some(path.display().to_string()));
 }
 
 #[test]

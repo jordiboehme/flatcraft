@@ -11,17 +11,15 @@ use flatcraft::ui::help::{self, HelpItem, SHORTCUTS};
 use flatcraft::ui::prepare::SelectTool;
 use flatcraft::ui::{Action, about};
 
-fn opened(h: &AppHarness) -> Vec<String> {
-    common::OutputLog::of(&h.ctx).urls()
-}
-
-/// Opens the Help popup and clicks an item; the output log has
-/// what the click asked for (see `common::OutputLog`).
-fn pick(h: &mut AppHarness, item: HelpItem) {
+/// Opens the Help popup, clicks an item and returns what the click asked of
+/// the platform (see `common::capture`).
+fn pick(h: &mut AppHarness, item: HelpItem) -> common::Captured {
     h.get_by_role_and_label(Role::Button, "Help").click();
     h.run_plan();
-    h.get_by_label(item.label()).click();
-    h.step();
+    common::capture(h, |h| {
+        h.get_by_label(item.label()).click();
+        h.step();
+    })
 }
 
 #[test]
@@ -39,9 +37,9 @@ fn the_help_menu_lists_its_items() {
 fn user_guide_opens_the_readme() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(&dir, session(&dir), false);
-    pick(&mut h, HelpItem::UserGuide);
+    let got = pick(&mut h, HelpItem::UserGuide);
     assert_eq!(
-        opened(&h),
+        got.urls(),
         vec!["https://github.com/jordiboehme/flatcraft#readme".to_string()]
     );
 }
@@ -50,9 +48,9 @@ fn user_guide_opens_the_readme() {
 fn ask_for_your_plotter_opens_the_plotter_form() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(&dir, session(&dir), false);
-    pick(&mut h, HelpItem::AskPlotter);
+    let got = pick(&mut h, HelpItem::AskPlotter);
     assert_eq!(
-        opened(&h),
+        got.urls(),
         vec![
             "https://github.com/jordiboehme/flatcraft/issues/new?template=plotter_support.yml"
                 .to_string()
@@ -64,8 +62,7 @@ fn ask_for_your_plotter_opens_the_plotter_form() {
 fn report_a_problem_fills_in_version_build_and_system() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(&dir, session(&dir), false);
-    pick(&mut h, HelpItem::ReportProblem);
-    let urls = opened(&h);
+    let urls = pick(&mut h, HelpItem::ReportProblem).urls();
     assert_eq!(urls.len(), 1, "{urls:?}");
     let url = &urls[0];
     assert!(
@@ -92,10 +89,10 @@ fn report_a_problem_fills_in_version_build_and_system() {
 fn about_item_opens_the_dialog_on_every_platform() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(&dir, session(&dir), false);
-    pick(&mut h, HelpItem::About);
+    let got = pick(&mut h, HelpItem::About);
     h.run_plan();
     assert!(app(&h).ui.about.open);
-    assert!(opened(&h).is_empty());
+    assert!(got.urls().is_empty());
 }
 
 #[test]

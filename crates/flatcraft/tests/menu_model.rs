@@ -933,24 +933,20 @@ fn pending_send(dir: &tempfile::TempDir) -> SharedSession {
     s
 }
 
-fn closes(h: &AppHarness) -> bool {
-    common::OutputLog::of(&h.ctx)
-        .viewport()
-        .contains(&egui::ViewportCommand::Close)
-}
-
 #[test]
 fn quit_with_a_pending_send_asks_first() {
     let dir = tempfile::tempdir().unwrap();
     let s = pending_send(&dir);
     let mut h = harness(&dir, s.clone(), true);
     let ctx = h.ctx.clone();
-    app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
-    h.run_plan();
+    let got = common::capture(&mut h, |h| {
+        app_mut(h).apply(&ctx, vec![Action::Quit]);
+        h.run_plan();
+    });
     assert_eq!(app(&h).ui.unsaved, Some(Unsaved::PendingSend));
     h.get_by_label("Quit while an agent waits?");
     h.get_by_label("An agent is waiting for your OK to send a cut.");
-    assert!(!closes(&h) && !app(&h).ui.closing);
+    assert!(!got.closes() && !app(&h).ui.closing);
     // Cancel keeps the window and the request.
     h.get_by_role_and_label(egui::accesskit::Role::Button, "Cancel")
         .click();
@@ -974,7 +970,6 @@ struct Fixture {
     h: AppHarness,
     picker: common::FakePicker,
     revealed: common::FakeRevealer,
-    output: common::OutputLog,
     recent: Vec<PathBuf>,
 }
 
@@ -1018,14 +1013,12 @@ fn fixture() -> Fixture {
     h.run_plan();
     // Not fitted and not at 100%, so both zoom items have something to do.
     app_mut(&mut h).ui.prepare.view.px_per_mm = 5.0;
-    let output = common::OutputLog::of(&h.ctx);
     Fixture {
         _dir: dir,
         s,
         h,
         picker,
         revealed,
-        output,
         recent: vec![PathBuf::from("/nowhere/a.flatcraft")],
     }
 }
@@ -1039,12 +1032,11 @@ fn effects(f: &Fixture) -> String {
             .execute("document.state", json!({}), Origin::User)
             .unwrap();
     let docs = f.s.lock().unwrap().docs.len();
-    let commands = f.output.text();
     let p = &a.ui.prepare;
     let requests = f.picker.requests.lock().unwrap().len();
     let revealed = f.revealed.0.lock().unwrap().len();
     format!(
-        "{doc} {docs} {requests} {revealed} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {commands}",
+        "{doc} {docs} {requests} {revealed} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}",
         a.ui.workspace,
         (
             p.rename.is_some(),
@@ -1114,11 +1106,18 @@ fn every_enabled_menu_item_does_something_when_clicked() {
             .action(doc, &f.recent)
             .unwrap_or_else(|| panic!("{cmd:?}"));
         let ctx = f.h.ctx.clone();
-        app_mut(&mut f.h).apply(&ctx, vec![action]);
         // Some items start a worker (the hole finder of Pick on the mat)
         // that asks for a repaint when it is done: settle by the clock.
-        settle(&mut f.h);
-        assert_ne!(effects(&f), before, "{cmd:?} did nothing");
+        // What the click asked of the platform (open a URL, close) is what
+        // it sent while it ran, over every frame of the settling.
+        let sent = common::capture(&mut f.h, |h| {
+            app_mut(h).apply(&ctx, vec![action]);
+            settle(h);
+        });
+        assert!(
+            sent != common::Captured::default() || effects(&f) != before,
+            "{cmd:?} did nothing"
+        );
     }
 }
 

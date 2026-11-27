@@ -18,6 +18,8 @@
 //!   `common::OutputLog`, which records every frame. State that every
 //!   frame sets again (the cursor, the painted shapes, the repaint delay)
 //!   is fine, with a `// output:` comment on the line or just above.
+//!   Known gap: `let o = h.output();` followed by a field read on a later
+//!   line is not seen by the scan; review catches it.
 //!
 //! The scan works on the code with comments and string contents removed
 //! and all whitespace dropped, so split calls and arguments over several

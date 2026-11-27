@@ -377,14 +377,16 @@ impl flatcraft::ui::files::Revealer for FakeRevealer {
 /// commands (open a URL, copy text) and the viewport commands (close). A
 /// harness keeps only the last frame's output, and a frame that a worker
 /// asks for in between would wipe a command the click sent. Every harness
-/// of [`harness_sized`] records from its first frame; read it with
-/// [`OutputLog::of`] and [`OutputLog::clear`] it before the click to check.
+/// of [`harness_sized`] records from its first frame. A test never reads the
+/// log as a whole (an earlier command would let a check pass that the action
+/// under test did not earn); it reads what one action produced, with
+/// [`capture`].
 #[derive(Clone, Default)]
-pub struct OutputLog(Arc<Mutex<(Vec<egui::OutputCommand>, Vec<egui::ViewportCommand>)>>);
+struct OutputLog(Arc<Mutex<Captured>>);
 
 impl OutputLog {
     /// The log of `ctx`; the first call starts recording.
-    pub fn of(ctx: &egui::Context) -> Self {
+    fn of(ctx: &egui::Context) -> Self {
         let id = egui::Id::NULL;
         if let Some(log) = ctx.data(|d| d.get_temp::<Self>(id)) {
             return log;
@@ -395,38 +397,67 @@ impl OutputLog {
         log
     }
 
-    /// Forgets what was recorded so far.
-    pub fn clear(&self) {
-        let mut g = self.0.lock().unwrap();
-        g.0.clear();
-        g.1.clear();
+    fn mark(&self) -> (usize, usize) {
+        let g = self.0.lock().unwrap();
+        (g.commands.len(), g.viewport.len())
     }
 
-    /// The output commands recorded since the last [`clear`](Self::clear).
-    pub fn commands(&self) -> Vec<egui::OutputCommand> {
-        self.0.lock().unwrap().0.clone()
+    fn since(&self, (c, v): (usize, usize)) -> Captured {
+        let g = self.0.lock().unwrap();
+        Captured {
+            commands: g.commands[c..].to_vec(),
+            viewport: g.viewport[v..].to_vec(),
+        }
     }
+}
 
-    /// The viewport commands recorded since the last clear.
-    pub fn viewport(&self) -> Vec<egui::ViewportCommand> {
-        self.0.lock().unwrap().1.clone()
-    }
+/// The output commands and viewport commands that one [`capture`] saw.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Captured {
+    pub commands: Vec<egui::OutputCommand>,
+    pub viewport: Vec<egui::ViewportCommand>,
+}
 
-    /// The URLs the window asked to open since the last clear.
+impl Captured {
+    /// The URLs the window asked to open.
     pub fn urls(&self) -> Vec<String> {
-        self.commands()
-            .into_iter()
+        self.commands
+            .iter()
             .filter_map(|c| match c {
-                egui::OutputCommand::OpenUrl(u) => Some(u.url),
+                egui::OutputCommand::OpenUrl(u) => Some(u.url.clone()),
                 _ => None,
             })
             .collect()
     }
 
-    /// Everything recorded so far, as one string.
-    pub fn text(&self) -> String {
-        format!("{:?} {:?}", self.commands(), self.viewport())
+    /// The text the window last put on the clipboard.
+    pub fn copied(&self) -> Option<String> {
+        self.commands.iter().rev().find_map(|c| match c {
+            egui::OutputCommand::CopyText(t) => Some(t.clone()),
+            _ => None,
+        })
     }
+
+    /// Whether the window asked its viewport to close.
+    pub fn closes(&self) -> bool {
+        self.viewport.contains(&egui::ViewportCommand::Close)
+    }
+
+    /// Whether nothing at all was asked.
+    pub fn is_empty(&self) -> bool {
+        self.commands.is_empty() && self.viewport.is_empty()
+    }
+}
+
+/// Runs `action` and returns only the commands the window sent while it
+/// ran, over every frame the action ran (and no earlier one). The action
+/// includes the waits that follow the click, so an extra frame under load
+/// cannot wipe the command.
+pub fn capture(h: &mut AppHarness, action: impl FnOnce(&mut AppHarness)) -> Captured {
+    let log = OutputLog::of(&h.ctx);
+    let mark = log.mark();
+    action(h);
+    log.since(mark)
 }
 
 struct OutputPlugin(OutputLog);
@@ -438,24 +469,12 @@ impl egui::plugin::Plugin for OutputPlugin {
 
     fn output_hook(&mut self, _ctx: &egui::Context, output: &mut egui::FullOutput) {
         let mut g = (self.0).0.lock().unwrap();
-        g.0.extend(output.platform_output.commands.iter().cloned());
+        g.commands
+            .extend(output.platform_output.commands.iter().cloned());
         for v in output.viewport_output.values() {
-            g.1.extend(v.commands.iter().cloned());
+            g.viewport.extend(v.commands.iter().cloned());
         }
     }
-}
-
-/// The text the window last put on the clipboard, if any (see
-/// [`OutputLog`]).
-pub fn copied(h: &AppHarness) -> Option<String> {
-    OutputLog::of(&h.ctx)
-        .commands()
-        .into_iter()
-        .rev()
-        .find_map(|c| match c {
-            egui::OutputCommand::CopyText(t) => Some(t),
-            _ => None,
-        })
 }
 
 /// The text a field shows (its accessible value).

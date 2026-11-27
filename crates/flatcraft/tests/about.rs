@@ -106,11 +106,11 @@ fn the_quotes_are_word_for_word() {
 
 /// Clicks a button and returns the URLs the next frame asked to open.
 fn opened_urls(h: &mut AppHarness, button: &str) -> Vec<String> {
-    let log = common::OutputLog::of(&h.ctx);
-    log.clear();
-    h.get_by_role_and_label(Role::Button, button).click();
-    h.step();
-    log.urls()
+    common::capture(h, |h| {
+        h.get_by_role_and_label(Role::Button, button).click();
+        h.step();
+    })
+    .urls()
 }
 
 #[test]

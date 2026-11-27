@@ -37,41 +37,23 @@ fn rect(h: &AppHarness, role: Role, name: &str) -> Rect {
     h.get_by_role_and_label(role, name).rect()
 }
 
-/// The viewport commands of the last frame.
-fn commands(h: &AppHarness) -> Vec<egui::ViewportCommand> {
-    // output: read right after one step, never after a wait
-    h.output()
-        .viewport_output
-        .get(&egui::ViewportId::ROOT)
-        .map(|v| v.commands.clone())
-        .unwrap_or_default()
-}
-
-fn starts_drag(h: &AppHarness) -> bool {
-    commands(h)
-        .iter()
-        .any(|c| matches!(c, egui::ViewportCommand::StartDrag))
-}
-
 /// Presses at `at`, moves 30 pt to the right in steps and reports whether
 /// any frame asked the window to start a drag.
 fn drag_from(h: &mut AppHarness, at: Pos2) -> bool {
-    let mut started = false;
     h.hover_at(at);
     h.step();
-    h.drag_at(at);
-    h.step();
-    started |= starts_drag(h);
-    for dx in [5.0, 10.0, 20.0, 30.0] {
-        h.hover_at(at + egui::vec2(dx, 0.0));
+    let got = capture(h, |h| {
+        h.drag_at(at);
         h.step();
-        started |= starts_drag(h);
-    }
-    h.drop_at(at + egui::vec2(30.0, 0.0));
-    h.step();
-    started |= starts_drag(h);
+        for dx in [5.0, 10.0, 20.0, 30.0] {
+            h.hover_at(at + egui::vec2(dx, 0.0));
+            h.step();
+        }
+        h.drop_at(at + egui::vec2(30.0, 0.0));
+        h.step();
+    });
     h.run_plan();
-    started
+    got.viewport.contains(&egui::ViewportCommand::StartDrag)
 }
 
 #[test]
@@ -229,12 +211,12 @@ fn double_click(
             modifiers: egui::Modifiers::NONE,
         });
     }
-    let mut out = Vec::new();
-    for _ in 0..3 {
-        h.step();
-        out.extend(commands(&h));
-    }
-    out
+    capture(&mut h, |h| {
+        for _ in 0..3 {
+            h.step();
+        }
+    })
+    .viewport
 }
 
 fn empty_space(h: &AppHarness) -> Pos2 {
