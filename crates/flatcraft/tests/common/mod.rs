@@ -105,6 +105,14 @@ pub fn harness_sized(
             flatcraft_engine::simulate::compute(input)
         });
         let repaint = ctx.clone();
+        app.ui
+            .prepare
+            .object_hints
+            .set_checker(std::sync::Arc::new(move |input, ids, stop| {
+                slow_worker(&repaint);
+                flatcraft_engine::report::check_selection_until(input, ids, stop)
+            }));
+        let repaint = ctx.clone();
         app.long.set_runner(move |session, work| {
             slow_worker(&repaint);
             ui::long::run(session, work)
@@ -122,24 +130,57 @@ pub fn harness_sized(
 /// count of frames, so a busy machine only makes it slower.
 pub fn settle(h: &mut AppHarness) {
     let start = std::time::Instant::now();
-    // The Cut plan and the window's long commands run on workers too.
-    let busy = |h: &AppHarness| {
-        h.state().as_ref().is_some_and(|a| {
-            a.ui.cut.planning()
-                || a.ui.cut.sim.busy()
-                || a.ui.cut.kept.pending()
-                || a.long.busy()
-                || a.ui.prepare.object_hints.busy()
-        })
-    };
-    while h.run_ok().is_none() || busy(h) {
+    while h.run_ok().is_none() || landing(app(h)) {
         assert!(
             start.elapsed() < WORKER_TIMEOUT,
-            "the window did not settle within {WORKER_TIMEOUT:?}"
+            "the window did not settle within {WORKER_TIMEOUT:?} ({})",
+            report(h)
         );
         h.step();
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
+}
+
+/// The workers that still run, by name: the source check, the shape
+/// worker, the Cut plan, the simulation, the kept mask, a long command,
+/// the object inspector's hints and Home's pictures. Each one asks for a
+/// frame when it ends, and the window takes its result on every frame,
+/// whatever workspace shows.
+pub fn workers(app: &FlatCraftApp) -> Vec<&'static str> {
+    [
+        ("source check", app.source_check_job.is_some()),
+        ("shapes", app.ui.prepare.cache.building() > 0),
+        ("plan", app.ui.cut.planning()),
+        ("simulation", app.ui.cut.sim.busy()),
+        ("kept", app.ui.cut.kept.pending()),
+        ("long command", app.long.busy()),
+        ("hints", app.ui.prepare.object_hints.busy()),
+        ("home pictures", app.ui.home.busy()),
+    ]
+    .into_iter()
+    .filter_map(|(name, busy)| busy.then_some(name))
+    .collect()
+}
+
+/// The workers whose results land in the window (the plan, the
+/// simulation, the kept mask, a long command, the hints): a test waits
+/// for them before it reads what they change.
+pub fn landing(app: &FlatCraftApp) -> bool {
+    app.ui.cut.planning()
+        || app.ui.cut.sim.busy()
+        || app.ui.cut.kept.pending()
+        || app.long.busy()
+        || app.ui.prepare.object_hints.busy()
+}
+
+/// Which workers run and why the last frame was painted, for a timeout.
+fn report(h: &AppHarness) -> String {
+    format!(
+        "busy {:?}, workspace {:?}, repaint causes {:?}",
+        workers(app(h)),
+        app(h).ui.workspace,
+        h.ctx.repaint_causes()
+    )
 }
 
 /// Selects nothing, so the inspector shows the Job panel (with a
@@ -270,27 +311,20 @@ pub fn slow_worker(ctx: &egui::Context) {
 /// Longest wait for the source check and the shape worker.
 pub const WORKER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Runs frames until no source check is in flight and the shape worker has
-/// nothing left to build, then lets the window settle. See [`wait_until`].
+/// Runs frames until no worker runs (see [`workers`]), the shape worker
+/// included, then lets the window settle. See [`wait_until`].
 pub fn wait_for_workers(h: &mut AppHarness) {
-    wait_until(h, |app| {
-        app.source_check_job.is_some()
-            || app.ui.prepare.cache.building() > 0
-            || app.ui.cut.planning()
-            || app.ui.cut.sim.busy()
-            || app.ui.cut.kept.pending()
-            || app.long.busy()
-            || app.ui.prepare.object_hints.busy()
-    });
+    wait_until(h, |app| !workers(app).is_empty());
 }
 
-/// Runs frames until no source check and no long command is in flight,
-/// then lets the window settle. For frames that may start a check (entering
-/// Prepare, a new or switched document). Opening a project or a sample is a
-/// long command on a worker that switches the document only when it lands,
-/// so it is waited for too. The shape worker may stay busy.
+/// Runs frames until no source check and no long command is in flight and
+/// the workers that land in the window ended (see [`landing`]), then lets
+/// the window settle. For frames that may start a check (entering
+/// Prepare, a new or switched document). Opening a project or a sample is
+/// a long command on a worker that switches the document only when it
+/// lands, so it is waited for too. The shape worker may stay busy.
 pub fn wait_for_source_check(h: &mut AppHarness) {
-    wait_until(h, |app| app.source_check_job.is_some() || app.long.busy());
+    wait_until(h, |app| app.source_check_job.is_some() || landing(app));
 }
 
 /// Runs frames until the long commands (import, trace, reload, open,
@@ -301,10 +335,11 @@ pub fn wait_for_long(h: &mut AppHarness) {
     wait_until(h, |app| app.long.busy());
 }
 
-/// Runs frames until `busy` is false and the window settled. While a worker
-/// is busy it steps one frame at a time (`Harness::step`), because
-/// `Harness::run` fails when the worker keeps asking for repaints. Fails
-/// after [`WORKER_TIMEOUT`].
+/// Runs frames until `busy` is false and the window settled. Every worker
+/// asks for a frame when it ends, so this waits for that event, frame by
+/// frame (`Harness::step`), because `Harness::run` fails while a worker
+/// keeps asking for repaints. [`WORKER_TIMEOUT`] only ends a wait that
+/// would never end; it then names the workers that still run.
 pub fn wait_until(h: &mut AppHarness, busy: impl Fn(&FlatCraftApp) -> bool) {
     let start = std::time::Instant::now();
     loop {
@@ -315,11 +350,8 @@ pub fn wait_until(h: &mut AppHarness, busy: impl Fn(&FlatCraftApp) -> bool) {
         }
         assert!(
             start.elapsed() < WORKER_TIMEOUT,
-            "the source check or the shape worker did not finish within {WORKER_TIMEOUT:?} (plan {} sim {} long {} causes {:?})",
-            app(h).ui.cut.planning(),
-            app(h).ui.cut.sim.busy(),
-            app(h).long.busy(),
-            h.ctx.repaint_causes(),
+            "the workers did not finish within {WORKER_TIMEOUT:?} ({})",
+            report(h)
         );
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
@@ -356,6 +388,21 @@ pub fn field_text(h: &AppHarness, label: &str) -> String {
         .accesskit_node()
         .value()
         .unwrap_or_default()
+}
+
+/// Two clicks at `at` in a fixed number of frames: each press and
+/// release takes one frame (`Harness::step`), never a wait for workers in
+/// between. A test frame lasts a quarter second of egui time, and a wait
+/// steps as many frames as a busy worker needs, so the second click would
+/// come late on a slow machine. Set `max_double_click_delay` (about 2 s)
+/// and let the last click age out first.
+pub fn double_click_at(h: &mut AppHarness, at: egui::Pos2) {
+    for _ in 0..2 {
+        h.drag_at(at);
+        h.step();
+        h.drop_at(at);
+        h.step();
+    }
 }
 
 fn press_at(h: &mut AppHarness, at: egui::Pos2) {
@@ -401,8 +448,7 @@ pub fn check_click_rules(h: &mut AppHarness, label: &str) {
     for _ in 0..8 {
         h.step();
     }
-    press_at(h, start);
-    press_at(h, start);
+    double_click_at(h, start);
     h.run();
     h.event(egui::Event::Text("7".into()));
     h.run();
@@ -436,12 +482,6 @@ pub trait RunPlan {
 
 impl RunPlan for AppHarness {
     fn run_plan(&mut self) {
-        wait_until(self, |app| {
-            app.ui.cut.planning()
-                || app.ui.cut.sim.busy()
-                || app.ui.cut.kept.pending()
-                || app.long.busy()
-                || app.ui.prepare.object_hints.busy()
-        });
+        wait_until(self, landing);
     }
 }

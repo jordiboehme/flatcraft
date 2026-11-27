@@ -6,7 +6,10 @@
 mod common;
 use common::RunPlan;
 
-use common::{AppHarness, app, app_mut, harness, import_square, session, to_prepare, undo_len};
+use common::{
+    AppHarness, app, app_mut, double_click_at, harness, import_square, session, to_prepare,
+    undo_len,
+};
 use egui::accesskit::Role;
 use egui::{Key, Modifiers, Pos2, Vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
@@ -790,8 +793,7 @@ fn a_double_click_selects_the_whole_value() {
     for _ in 0..8 {
         h.step();
     }
-    click_at(&mut h, at);
-    click_at(&mut h, at);
+    double_click_at(&mut h, at);
     h.run_plan();
     h.get_by_label("Width (mm)").type_text("7");
     h.run_plan();

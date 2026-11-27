@@ -4,7 +4,9 @@
 mod common;
 use common::RunPlan;
 
-use common::{AppHarness, app, app_mut, harness_sized, harness_steps, session, to_prepare};
+use common::{
+    AppHarness, app, app_mut, double_click_at, harness_sized, harness_steps, session, to_prepare,
+};
 use egui::accesskit::{Role, Toggled};
 use egui::{Modifiers, Rect};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
@@ -657,8 +659,7 @@ fn a_number_field_takes_a_calculation_and_a_double_click_selects_it_all() {
     for _ in 0..8 {
         h.step();
     }
-    click_at(&mut h, at);
-    click_at(&mut h, at);
+    double_click_at(&mut h, at);
     h.run_plan();
     // With only "5" selected this would read "7,.0", which has a dot and
     // a comma; the whole value replaced reads "7,", that is 7.
