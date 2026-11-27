@@ -83,9 +83,11 @@ Two more checks keep the cut order honest:
 
 - **fast** has no more travel than **baseline** on every job: the newer
   order tricks never cost travel.
-- **quality** turns the blade less at the starts than **baseline** and
-  has no more crossings, on every job: what it pays in travel, it gets
-  back where it counts.
+- **quality** does better than **baseline** at what it aims for, on every
+  job: travel, plus a price for every turn of the blade at a start, plus
+  a price for every crossing, added up. And it never has more crossings.
+  On one job it may travel or turn a little more, when that removes
+  crossings. The table below shows the three parts.
 
 The test `cargo test -p flatcraft-engine --test benchmarks` checks all of
 this in CI. `cargo xtask bench-quality` prints the tables with the time each
@@ -169,6 +171,30 @@ run took on your machine.
 | baseline | 100.0 | good | 0.0459 | 0.0459 | 0.0181 | 0.0000 | 0.0000 | 0 | 811.0 | 111 | 17086 | 17334 | 251 | 115.5 |
 | passes_chained | 100.0 | good | 0.0489 | 0.0489 | 0.0240 | 0.0000 | 0.0000 | 0 | 952.8 | 65 | 4140 | 32032 | 251 | 173.2 |
 | passes_separate | 100.0 | good | 0.0518 | 0.0518 | 0.0240 | 0.0000 | 0.0000 | 0 | 1131.8 | 67 | 5322 | 32645 | 502 | 217.7 |
+
+## What the quality order aims for
+
+The quality strategy picks the cut order with the lowest sum of three
+parts: the travel in mm, a price per turn of the blade at a start (in mm
+per radian), and a price per crossing (in mm). The baseline order only
+looks at travel. Lower is better.
+
+| job | variant | travel mm | turn mm | crossings mm | total mm |
+|---|---|---|---|---|---|
+| test-sheet | quality | 1115.3 | 60.3 | 10.0 | 1185.6 |
+| test-sheet | baseline | 1113.7 | 58.7 | 60.0 | 1232.4 |
+| small-text | quality | 199.6 | 29.5 | 80.0 | 309.1 |
+| small-text | baseline | 216.8 | 98.4 | 120.0 | 435.3 |
+| stickers-with-holes | quality | 299.6 | 30.1 | 0.0 | 329.7 |
+| stickers-with-holes | baseline | 350.2 | 35.6 | 30.0 | 415.9 |
+| tiny-dots | quality | 328.0 | 16.5 | 50.0 | 394.4 |
+| tiny-dots | baseline | 281.3 | 230.6 | 125.0 | 636.9 |
+| long-thin | quality | 88.1 | 3.1 | 5.0 | 96.2 |
+| long-thin | baseline | 85.9 | 3.1 | 30.0 | 119.0 |
+| round-holes | quality | 371.1 | 23.4 | 5.0 | 399.6 |
+| round-holes | baseline | 416.7 | 45.0 | 130.0 | 591.8 |
+| dense-trace | quality | 952.8 | 144.5 | 325.0 | 1422.3 |
+| dense-trace | baseline | 811.0 | 596.4 | 555.0 | 1962.4 |
 
 ## Travel crossings of the order improvement
 

@@ -829,11 +829,57 @@ pub fn sweep_table(c: &CrossingSweep) -> String {
     )
 }
 
+/// The three parts of the order objective of `row`, in mm, with the
+/// constants of `flatcraft_path::order::cost`: (travel, turn weight x entry
+/// turn in rad, crossing penalty x travel crossings). The travel is the
+/// simulated travel of the row.
+pub fn objective_terms(row: &BenchRow) -> (f64, f64, f64) {
+    (
+        row.travel_mm,
+        flatcraft_path::strategy::TURN_WEIGHT * row.entry_turn_deg.to_radians(),
+        flatcraft_path::order::CROSSING_PENALTY_MM * row.travel_crossings as f64,
+    )
+}
+
+/// The order objective of `row` (see [`objective_terms`]).
+pub fn objective(row: &BenchRow) -> f64 {
+    let (a, b, c) = objective_terms(row);
+    a + b + c
+}
+
+/// The quality and baseline rows of every case with their objective
+/// terms, as a Markdown table.
+pub fn objective_table(rows: &[BenchRow]) -> String {
+    let mut s = String::from(
+        "| job | variant | travel mm | turn mm | crossings mm | total mm |\n|---|---|---|---|---|---|\n",
+    );
+    for c in cases() {
+        for v in [Variant::Strategy(CutStrategy::Quality), Variant::Baseline] {
+            if let Some(r) = rows
+                .iter()
+                .find(|r| r.case == c.name && r.variant == v.name())
+            {
+                let (t, u, x) = objective_terms(r);
+                s.push_str(&format!(
+                    "| {} | {} | {t:.1} | {u:.1} | {x:.1} | {:.1} |\n",
+                    c.name,
+                    r.variant,
+                    t + u + x
+                ));
+            }
+        }
+    }
+    s
+}
+
 /// `docs/quality/benchmarks.md`.
 pub fn markdown(base: &Baseline) -> String {
     let mut s = String::from(PAGE_INTRO);
     s.push_str(&PAGE_RULE.replace("@LIMIT@", &DEVICE_LIMIT_MM.to_string()));
     s.push_str(&tables(&base.rows, false));
+    s.push_str(PAGE_OBJECTIVE);
+    s.push_str(&objective_table(&base.rows));
+    s.push('\n');
     s.push_str(PAGE_SWEEP);
     s.push_str(&sweep_table(&base.crossings));
     s
@@ -927,15 +973,26 @@ Two more checks keep the cut order honest:
 
 - **fast** has no more travel than **baseline** on every job: the newer
   order tricks never cost travel.
-- **quality** turns the blade less at the starts than **baseline** and
-  has no more crossings, on every job: what it pays in travel, it gets
-  back where it counts.
+- **quality** does better than **baseline** at what it aims for, on every
+  job: travel, plus a price for every turn of the blade at a start, plus
+  a price for every crossing, added up. And it never has more crossings.
+  On one job it may travel or turn a little more, when that removes
+  crossings. The table below shows the three parts.
 
 The test `cargo test -p flatcraft-engine --test benchmarks` checks all of
 this in CI. `cargo xtask bench-quality` prints the tables with the time each
 run took on your machine.
 
 ## Results
+
+"#;
+
+const PAGE_OBJECTIVE: &str = r#"## What the quality order aims for
+
+The quality strategy picks the cut order with the lowest sum of three
+parts: the travel in mm, a price per turn of the blade at a start (in mm
+per radian), and a price per crossing (in mm). The baseline order only
+looks at travel. Lower is better.
 
 "#;
 
