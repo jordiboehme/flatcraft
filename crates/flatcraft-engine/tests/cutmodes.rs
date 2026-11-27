@@ -581,6 +581,20 @@ fn rects() -> impl Strategy<Value = Vec<(f64, f64, f64, f64)>> {
     })
 }
 
+/// [`rects`], each shifted by 0, 0.004 or 0.008 mm in x and y, so edges
+/// also come within the join tolerance of each other without meeting.
+fn jittered_rects() -> impl Strategy<Value = Vec<(f64, f64, f64, f64)>> {
+    (rects(), proptest::collection::vec((0u8..3, 0u8..3), 4)).prop_map(|(r, j)| {
+        r.into_iter()
+            .zip(j)
+            .map(|((x0, y0, x1, y1), (jx, jy))| {
+                let (dx, dy) = (f64::from(jx) * 0.004, f64::from(jy) * 0.004);
+                (x0 + dx, y0 + dy, x1 + dx, y1 + dy)
+            })
+            .collect()
+    })
+}
+
 fn doc_of(rects: &[(f64, f64, f64, f64)], mode: CutMode) -> (Document, Vec<ObjectId>) {
     let mut doc = Document::new(job_settings());
     let ids = rects
@@ -611,22 +625,6 @@ fn segments(g: &CutGeometry, ids: &[ObjectId]) -> Vec<(Point, Point)> {
     out
 }
 
-/// The length two segments share when they lie on one line.
-fn shared_length(a: (Point, Point), b: (Point, Point)) -> f64 {
-    let d = a.1 - a.0;
-    let len = d.hypot();
-    if len == 0.0 {
-        return 0.0;
-    }
-    let off = |p: Point| d.cross(p - a.0).abs() / len;
-    if off(b.0) > 1e-6 || off(b.1) > 1e-6 {
-        return 0.0;
-    }
-    let t = |p: Point| d.dot(p - a.0) / len;
-    let (b0, b1) = (t(b.0).min(t(b.1)), t(b.0).max(t(b.1)));
-    (b1.min(len) - b0.max(0.0)).max(0.0)
-}
-
 fn check_cut_once(rects: &[(f64, f64, f64, f64)]) {
     let (doc, ids) = doc_of(rects, CutMode::VisibleOutline);
     let g = geometry(&doc);
@@ -637,7 +635,7 @@ fn check_cut_once(rects: &[(f64, f64, f64, f64)]) {
         segs.iter().any(|(a, b)| {
             let d = *b - *a;
             let t = ((p - *a).dot(d) / d.hypot2()).clamp(0.0, 1.0);
-            (*a + d * t).distance(p) < 1e-6
+            (*a + d * t).distance(p) <= 0.011
         })
     };
     for (k, r) in rects.iter().enumerate() {
@@ -657,11 +655,14 @@ fn check_cut_once(rects: &[(f64, f64, f64, f64)]) {
             }
         }
     }
+    // No two cuts run along each other, on one line or a hair apart
+    // (within the join tolerance); short crossings where a cut meets a
+    // front edge do not count.
     for i in 0..segs.len() {
         for j in i + 1..segs.len() {
-            let shared = shared_length(segs[i], segs[j]);
+            let shared = shared_length_within(segs[i], segs[j], 0.011);
             assert!(
-                shared < 1e-6,
+                shared < 0.035,
                 "cut twice: {:?} and {:?} share {shared} mm ({rects:?})",
                 segs[i],
                 segs[j]
@@ -704,7 +705,7 @@ proptest! {
     #![proptest_config(ci_config(48))]
 
     #[test]
-    fn visible_outline_never_cuts_an_edge_twice(r in rects()) {
+    fn visible_outline_never_cuts_an_edge_twice(r in jittered_rects()) {
         check_cut_once(&r);
     }
 
@@ -719,7 +720,7 @@ proptest! {
 
     #[test]
     #[ignore = "random cases; run with --ignored"]
-    fn visible_outline_never_cuts_an_edge_twice_full(r in rects()) {
+    fn visible_outline_never_cuts_an_edge_twice_full(r in jittered_rects()) {
         check_cut_once(&r);
     }
 
@@ -1181,4 +1182,264 @@ fn cross_object_pass_timing() {
             );
         }
     }
+}
+
+#[test]
+fn a_step_inside_a_group_passes_one_sibling() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = square(&mut s, 10.0, 10.0, 10.0, "a");
+    let b = square(&mut s, 30.0, 10.0, 10.0, "b");
+    let e = square(&mut s, 50.0, 10.0, 10.0, "e");
+    let c = square(&mut s, 70.0, 10.0, 10.0, "c");
+    run(&mut s, "object.group", json!({ "ids": [a, b, e] }));
+    // One step among the three members, never out of the group.
+    reorder(&mut s, &[a], "forward");
+    assert_eq!(order(&s), [b, a, e, c]);
+    reorder(&mut s, &[a], "forward");
+    assert_eq!(order(&s), [b, e, a, c]);
+    let r = reorder(&mut s, &[a], "forward");
+    assert_eq!(r["changed"], false, "the front of its group");
+    reorder(&mut s, &[a], "backward");
+    assert_eq!(order(&s), [b, a, e, c]);
+}
+
+#[test]
+fn a_step_inside_nested_groups_passes_a_sibling_group_as_a_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let a = square(&mut s, 10.0, 10.0, 10.0, "a");
+    let b = square(&mut s, 30.0, 10.0, 10.0, "b");
+    let e = square(&mut s, 50.0, 10.0, 10.0, "e");
+    let f = square(&mut s, 70.0, 10.0, 10.0, "f");
+    let c = square(&mut s, 90.0, 10.0, 10.0, "c");
+    // Outer group {a, inner {b, e}, f}.
+    let inner = run(&mut s, "object.group", json!({ "ids": [b, e] }))["group_id"]
+        .as_u64()
+        .unwrap();
+    run(&mut s, "object.group", json!({ "ids": [a, inner, f] }));
+    // a steps over the inner group as one sibling.
+    reorder(&mut s, &[a], "forward");
+    assert_eq!(order(&s), [b, e, a, f, c]);
+    // b steps inside the inner group only.
+    reorder(&mut s, &[b], "forward");
+    assert_eq!(order(&s), [e, b, a, f, c]);
+    assert_eq!(reorder(&mut s, &[b], "forward")["changed"], false);
+    // The inner group is at the back of the outer group already; a step
+    // forward passes a, as a whole.
+    assert_eq!(reorder(&mut s, &[inner], "backward")["changed"], false);
+    reorder(&mut s, &[inner], "forward");
+    assert_eq!(order(&s), [a, e, b, f, c]);
+    // f steps back over the inner group as a whole.
+    reorder(&mut s, &[f], "backward");
+    assert_eq!(order(&s), [a, f, e, b, c]);
+}
+
+// ---------------------------------------------------------------- review fixes
+
+#[test]
+fn a_near_coincident_edge_is_cut_once() {
+    // The front square sits 0.004 mm lower than the back's top edge: the
+    // back's top edge along it lies just outside the front, within the
+    // join tolerance. Only the front cuts it.
+    let mut doc = Document::new(job_settings());
+    let back = add(
+        &mut doc,
+        "back",
+        vec![filled(rect(0.0, 0.0, 20.0, 20.0))],
+        CutMode::VisibleOutline,
+    );
+    let front = add(
+        &mut doc,
+        "front",
+        vec![filled(rect(10.0, 0.004, 30.0, 20.004))],
+        CutMode::ObjectOutlines,
+    );
+    let g = geometry(&doc);
+    let segs = segments(&g, &[back, front]);
+    for i in 0..segs.len() {
+        for j in i + 1..segs.len() {
+            let shared = shared_length_within(segs[i], segs[j], 0.011);
+            assert!(
+                shared < 0.035,
+                "{:?} and {:?} share {shared}",
+                segs[i],
+                segs[j]
+            );
+        }
+    }
+    // The back still meets the front: nothing of its edge outside the
+    // band is lost.
+    assert!(
+        (total_length(&g, &[back]) - 40.0).abs() < 0.05,
+        "{}",
+        total_length(&g, &[back])
+    );
+}
+
+/// The length two segments share when they lie on one line, or within
+/// `off` of it.
+fn shared_length_within(a: (Point, Point), b: (Point, Point), off: f64) -> f64 {
+    let d = a.1 - a.0;
+    let len = d.hypot();
+    if len == 0.0 {
+        return 0.0;
+    }
+    let dist = |p: Point| d.cross(p - a.0).abs() / len;
+    if dist(b.0) > off || dist(b.1) > off {
+        return 0.0;
+    }
+    let t = |p: Point| d.dot(p - a.0) / len;
+    let (b0, b1) = (t(b.0).min(t(b.1)), t(b.0).max(t(b.1)));
+    (b1.min(len) - b0.max(0.0)).max(0.0)
+}
+
+#[test]
+fn a_front_sliver_that_is_not_cut_covers_nothing() {
+    // A filled strip 0.1 mm wide: below half the blade offset, so it is
+    // not cut, and it must not cover the back's edge either.
+    let mut doc = Document::new(job_settings());
+    let back = add(
+        &mut doc,
+        "back",
+        vec![filled(rect(0.0, 0.0, 20.0, 20.0))],
+        CutMode::VisibleOutline,
+    );
+    let sliver = add(
+        &mut doc,
+        "sliver",
+        vec![filled(rect(19.95, -5.0, 20.05, 25.0))],
+        CutMode::ObjectOutlines,
+    );
+    let g = geometry(&doc);
+    assert!(g.pieces(sliver).is_empty());
+    assert_eq!(g.pieces(back).len(), 1);
+    assert!(closed(&g.pieces(back)[0].path), "{:?}", g.pieces(back));
+}
+
+#[test]
+fn a_seen_sliver_is_dropped_with_the_warning() {
+    // The front covers all of the back but a 0.1 mm strip on the right.
+    let mut doc = Document::new(job_settings());
+    let back = add(
+        &mut doc,
+        "back",
+        vec![filled(rect(0.0, 0.0, 20.0, 20.0))],
+        CutMode::VisibleOutline,
+    );
+    add(
+        &mut doc,
+        "front",
+        vec![filled(rect(-5.0, -5.0, 19.9, 25.0))],
+        CutMode::ObjectOutlines,
+    );
+    let g = geometry(&doc);
+    assert!(g.pieces(back).is_empty(), "{:?}", g.pieces(back));
+    assert_eq!(g.facts(back).slivers, 1);
+    assert!(
+        g.warnings.iter().any(|w| w.contains("'back'")),
+        "{:?}",
+        g.warnings
+    );
+    assert!(!g.regions.contains_key(&back), "no kept outline for it");
+}
+
+#[test]
+fn a_stroked_seen_sliver_is_cut_once_along_its_middle() {
+    let mut doc = Document::new(job_settings());
+    let mut plate = filled(rect(0.0, 0.0, 20.0, 20.0));
+    plate.paint.stroke = Some(StrokeInfo {
+        width_mm: 0.3,
+        join: Join::Round,
+        cap: Cap::Round,
+    });
+    let back = add(&mut doc, "back", vec![plate], CutMode::VisibleOutline);
+    add(
+        &mut doc,
+        "front",
+        vec![filled(rect(-5.0, -5.0, 19.9, 25.0))],
+        CutMode::ObjectOutlines,
+    );
+    let g = geometry(&doc);
+    let pieces = g.pieces(back);
+    assert_eq!(pieces.len(), 1, "{pieces:?}");
+    // Along the middle of the strip, x = 19.95 (a blunt end starts at a
+    // corner, half the width off the middle).
+    let v = vertices(&pieces[0].path);
+    for p in &v {
+        assert!((p.x - 19.95).abs() <= 0.05 + 1e-6, "{v:?}");
+    }
+    for p in &v[1..v.len() - 1] {
+        assert!((p.x - 19.95).abs() < 1e-3, "{v:?}");
+    }
+    assert_eq!(g.facts(back).slivers, 0);
+}
+
+#[test]
+fn a_thin_seen_strip_is_named_in_a_hint() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let back = square(&mut s, 20.0, 20.0, 40.0, "back");
+    // The front leaves a 0.2 mm strip of the back on the right.
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="200mm" viewBox="0 0 200 200"><rect x="10" y="10" width="49.8" height="60"/></svg>"#;
+    run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": svg, "name": "front" }),
+    );
+    set_mode(&mut s, &[back], "visible_outline");
+    let all = issues(&mut s);
+    let hint = all
+        .iter()
+        .find(|i| i["code"] == "objects_close")
+        .unwrap_or_else(|| panic!("{all:?}"));
+    let msg = hint["message"].as_str().unwrap();
+    assert!(
+        msg.contains("'front' leaves only a 0.2 mm strip of 'back'"),
+        "{msg}"
+    );
+    assert_eq!(fix_labels(hint), ["Ignore for this object pair"]);
+}
+
+#[test]
+fn a_front_line_without_area_keeps_the_overlap_hint() {
+    // A centre-line stroke covers nothing: the back is cut through it.
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let back = square(&mut s, 20.0, 20.0, 40.0, "back");
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="200mm" viewBox="0 0 200 200"><path d="M10 40 H80" fill="none" stroke="black" stroke-width="0.3"/></svg>"#;
+    run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": svg, "name": "line" }),
+    );
+    set_mode(&mut s, &[back], "visible_outline");
+    assert!(
+        issues(&mut s)
+            .iter()
+            .any(|i| i["code"] == "objects_overlap"),
+        "{:?}",
+        issues(&mut s)
+    );
+}
+
+#[test]
+fn the_overlap_hint_names_the_merged_outline() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let w = square(&mut s, 20.0, 20.0, 40.0, "W");
+    let m = square(&mut s, 50.0, 20.0, 40.0, "M");
+    set_mode(&mut s, &[w, m], "merged_outline");
+    // X overlaps M only.
+    square(&mut s, 85.0, 30.0, 20.0, "X");
+    let all = issues(&mut s);
+    let overlap = all
+        .iter()
+        .find(|i| i["code"] == "objects_overlap")
+        .unwrap_or_else(|| panic!("{all:?}"));
+    let msg = overlap["message"].as_str().unwrap();
+    assert!(
+        msg.starts_with("The merged outline of 'W' and 'X'"),
+        "{msg}"
+    );
 }

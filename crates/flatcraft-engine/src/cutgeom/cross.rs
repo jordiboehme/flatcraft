@@ -60,6 +60,9 @@ pub(crate) struct Painted {
     /// A fill without stroke that gives nothing to cut (no area, or
     /// thinner than the tolerance).
     pub no_area: bool,
+    /// Filled shapes without stroke thinner than the knife's narrowest
+    /// feature: not cut and not covering (counted as slivers).
+    pub slivers: usize,
 }
 
 fn tolerance_of(tol: f64) -> f64 {
@@ -149,12 +152,29 @@ pub(crate) fn painted(
                 }
             }
             if !fill.is_empty() {
-                out.area = boolean(&fill, &[], rule, tol)
-                    .into_iter()
-                    .flatten()
-                    .collect();
+                // As in object outlines (`fill_edges`): a shape thinner
+                // than the knife's narrowest feature is not cut as a
+                // shape, so it covers nothing either. A stroked one is cut
+                // once, along its middle: that is a line.
+                for shape in boolean(&fill, &[], rule, tol) {
+                    let w = mean_width(std::slice::from_ref(&shape));
+                    if w < tol {
+                        continue;
+                    }
+                    if w < min_width {
+                        match stroke_width {
+                            Some(_) => out.lines.extend(super::sliver_once(&shape, &[], min_width)),
+                            None => out.slivers += 1,
+                        }
+                        continue;
+                    }
+                    out.area.extend(shape);
+                }
             }
-            out.no_area = out.area.is_empty() && out.lines.is_empty() && paint.stroke.is_none();
+            out.no_area = out.area.is_empty()
+                && out.lines.is_empty()
+                && out.slivers == 0
+                && paint.stroke.is_none();
         }
         (fill, Some(style)) => {
             out.area = outlined_area(&placed, fill, &style, tol)
@@ -206,6 +226,7 @@ pub(crate) fn weld(
             if p.no_area {
                 facts.no_area += 1;
             }
+            facts.slivers += p.slivers;
             if !p.area.is_empty() {
                 makers.push((m, i));
                 contours.extend(p.area.iter().cloned());
@@ -264,20 +285,26 @@ pub(crate) fn weld(
 /// The pieces of one object in visible outline, alone: the cuts of each
 /// source path (`pieces`, cut as object outlines) without what its later
 /// paths (`painted`) cover, and whether anything was left out.
-pub(crate) fn visible_alone(pieces: &[CutPiece], painted: &[Painted]) -> (Vec<CutPiece>, bool) {
+pub(crate) fn visible_alone(
+    pieces: &[CutPiece],
+    painted: &[Painted],
+    tol: f64,
+) -> (Vec<CutPiece>, bool) {
     let mut out = Vec::new();
     let mut clipped = false;
     for piece in pieces {
         let later = piece
             .source
             .map_or(&[][..], |i| painted.get(i + 1..).unwrap_or_default());
-        let b = piece.path.bounding_box();
+        // Grown by the join tolerance: an edge just outside counts too.
+        let near = super::CLOSE_TOLERANCE_MM;
+        let b = piece.path.bounding_box().inflate(near, near);
         let cover: Vec<Contour> = later
             .iter()
             .filter(|p| p.area_box.is_some_and(|a| boxes_meet(a, b)))
             .flat_map(|p| p.area.iter().cloned())
             .collect();
-        let (parts, changed) = clip_piece(piece, &cover, super::BOUNDS_TOLERANCE_MM);
+        let (parts, changed) = clip_piece(piece, &cover, tol);
         clipped |= changed;
         out.extend(parts);
     }
@@ -320,12 +347,32 @@ fn clip_piece(piece: &CutPiece, cover: &[Contour], tol: f64) -> (Vec<CutPiece>, 
     };
     let cover = cover.to_vec();
     let clipped: Vec<Contour> = lines.clip_by_as::<i64>(&cover, OverlayFill::NonZero, rule);
+    // A part that runs along the edge of the cover within the join
+    // tolerance, just outside it, is that edge too: the shape in front
+    // cuts it, so it is left out (cut once, not twice a hair apart). A
+    // short part that crosses the band (where the cut meets the front
+    // shape's edge) stays.
+    let band = edge_band(&cover, super::CLOSE_TOLERANCE_MM);
+    let away: Vec<Contour> = clipped.clip_by_as::<i64>(&band, OverlayFill::NonZero, rule);
+    let along: Vec<Contour> = clipped.clip_by_as::<i64>(
+        &band,
+        OverlayFill::NonZero,
+        ClipRule {
+            invert: false,
+            boundary_included: false,
+        },
+    );
+    let crossing = along
+        .into_iter()
+        .filter(|c| length(std::slice::from_ref(c)) <= 3.0 * super::CLOSE_TOLERANCE_MM);
+    let kept: Vec<Contour> = away.into_iter().chain(crossing).collect();
     let before = length(&lines);
-    if (before - length(&clipped)).abs() <= 1e-9 * before.max(1.0) {
+    if (before - length(&kept)).abs() <= 1e-9 * before.max(1.0) {
         return (vec![piece.clone()], false);
     }
-    let pieces = chain_once(&clipped)
+    let pieces = chain_once(&kept)
         .into_iter()
+        .map(|c| straight(&c))
         .filter(|c| c.len() >= 2)
         .map(|c| {
             let closed = c.len() >= 4 && c.first() == c.last();
@@ -347,6 +394,53 @@ fn clip_piece(piece: &CutPiece, cover: &[Contour], tol: f64) -> (Vec<CutPiece>, 
         })
         .collect();
     (pieces, true)
+}
+
+/// `line` without the vertices that lie on a straight run (where the
+/// clips split a segment), so a clipped edge stays one segment.
+fn straight(line: &[[f64; 2]]) -> Contour {
+    let mut out: Contour = Vec::with_capacity(line.len());
+    for &p in line {
+        if out.len() >= 2 {
+            let (a, b) = (out[out.len() - 2], out[out.len() - 1]);
+            let (u, v) = ([b[0] - a[0], b[1] - a[1]], [p[0] - b[0], p[1] - b[1]]);
+            let cross = u[0] * v[1] - u[1] * v[0];
+            let dot = u[0] * v[0] + u[1] * v[1];
+            let scale = u[0].hypot(u[1]) * v[0].hypot(v[1]);
+            if dot > 0.0 && cross.abs() <= 1e-9 * scale {
+                out.pop();
+            }
+        }
+        out.push(p);
+    }
+    out
+}
+
+/// One rectangle per edge of the closed `contours`, `half` to each side,
+/// all wound the same way: the band along their edges.
+fn edge_band(contours: &[Contour], half: f64) -> Vec<Contour> {
+    let mut out = Vec::new();
+    for c in contours {
+        let n = c.len();
+        for k in 0..n {
+            let (a, b) = (c[k], c[(k + 1) % n]);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let len = dx.hypot(dy);
+            if len <= 0.0 {
+                continue;
+            }
+            // Grown a little along the edge too, so the corners are in.
+            let (ux, uy) = (dx * half / len, dy * half / len);
+            let (nx, ny) = (-uy, ux);
+            out.push(vec![
+                [a[0] - ux - nx, a[1] - uy - ny],
+                [b[0] + ux - nx, b[1] + uy - ny],
+                [b[0] + ux + nx, b[1] + uy + ny],
+                [a[0] - ux + nx, a[1] - uy + ny],
+            ]);
+        }
+    }
+    out
 }
 
 /// Boxes sorted into a grid of cells about one box wide, built once, for
@@ -395,10 +489,17 @@ impl BoxGrid {
     }
 
     /// The cells of `b`, or `None` when they are too many.
+    /// Huge or broken coordinates (beyond the i64 range, NaN) never
+    /// overflow: such a box is "too many cells".
     fn span(&self, b: Rect) -> Option<(i64, i64, i64, i64)> {
-        let c = |v: f64| (v / self.cell).floor() as i64;
-        let (x0, y0, x1, y1) = (c(b.x0), c(b.y0), c(b.x1), c(b.y1));
-        ((x1 - x0 + 1).saturating_mul(y1 - y0 + 1) <= MAX_GRID_CELLS).then_some((x0, y0, x1, y1))
+        let c = |v: f64| {
+            let k = (v / self.cell).floor();
+            (k.is_finite() && k.abs() < 1e15).then_some(k as i64)
+        };
+        let (x0, y0, x1, y1) = (c(b.x0)?, c(b.y0)?, c(b.x1)?, c(b.y1)?);
+        let w = x1.checked_sub(x0)?.checked_add(1)?;
+        let h = y1.checked_sub(y0)?.checked_add(1)?;
+        (w > 0 && h > 0 && w.checked_mul(h)? <= MAX_GRID_CELLS).then_some((x0, y0, x1, y1))
     }
 
     /// Calls `f` once with the index of every box that meets `b`, in no
@@ -569,20 +670,55 @@ pub(super) fn apply(objects: &[JobObject], out: &mut CutGeometry, tol: f64, min_
             let mut pieces = Vec::new();
             let mut clipped = out.solo[&o.id].clipped;
             for piece in base.iter() {
-                let cover = cover_of(k, piece.path.bounding_box());
+                // Grown by the join tolerance: an edge just outside a
+                // front shape is its edge too.
+                let near = super::CLOSE_TOLERANCE_MM;
+                let cover = cover_of(k, piece.path.bounding_box().inflate(near, near));
                 let (parts, changed) = clip_piece(piece, &cover, tol);
                 clipped |= changed;
                 pieces.extend(parts);
             }
             let covered = !base.is_empty() && pieces.is_empty();
+            let mut facts = out.facts(o.id);
+            let mut seen = Vec::new();
             // The outline of what is left of a clipped object: its pieces
             // are no rings, so the plan reads this for what is kept.
-            let region = (clipped && !covered && o.visible && o.cut_enabled).then(|| {
+            let mut region = Vec::new();
+            if clipped && !covered {
                 let (own, own_box) = area_of(k);
                 let cover = own_box.map_or_else(Vec::new, |b| cover_of(k, b));
-                visible_region(&own, &cover, tol)
-            });
-            visible.push((o.id, covered, pieces, region));
+                let stroked = o.geometry.iter().any(|p| p.paint.stroke.is_some());
+                for shape in visible_region(&own, &cover, tol) {
+                    let w = mean_width(std::slice::from_ref(&shape));
+                    seen.push((w, contours_box(&shape)));
+                    if w >= min_width {
+                        region.extend(shape);
+                        continue;
+                    }
+                    // A seen strip thinner than the knife's narrowest
+                    // feature, as for any filled sliver: its own cut is
+                    // dropped (the front shape's cut stays), and a stroked
+                    // one is cut once, along its middle.
+                    let source = thin_strip(&mut pieces, &shape);
+                    if w >= tol {
+                        match stroked
+                            .then(|| super::sliver_once(&shape, &[], min_width))
+                            .flatten()
+                        {
+                            Some(path) => pieces.push(CutPiece {
+                                source,
+                                label: source
+                                    .and_then(|i| o.geometry.get(i))
+                                    .and_then(|p| p.label.clone()),
+                                path,
+                            }),
+                            None => facts.slivers += 1,
+                        }
+                    }
+                }
+            }
+            let region = (o.visible && o.cut_enabled && !region.is_empty()).then_some(region);
+            visible.push((o.id, covered, pieces, region, facts, seen));
         }
     }
 
@@ -607,8 +743,12 @@ pub(super) fn apply(objects: &[JobObject], out: &mut CutGeometry, tol: f64, min_
             out.merged_into.insert(id, back_id);
         }
     }
-    for (id, covered, pieces, region) in visible {
+    for (id, covered, pieces, region, facts, seen) in visible {
         out.per_object.insert(id, std::sync::Arc::new(pieces));
+        out.facts.insert(id, facts);
+        if !seen.is_empty() {
+            out.seen_shapes.insert(id, seen);
+        }
         if covered {
             out.covered.insert(id);
         }
@@ -618,10 +758,40 @@ pub(super) fn apply(objects: &[JobObject], out: &mut CutGeometry, tol: f64, min_
     }
 }
 
-/// The painted area `own` without what `cover` covers: the outline of what
-/// is seen of a visible outline, outer edges and holes. Every edge of it
-/// is cut, by the object itself or by a shape in front.
-fn visible_region(own: &[Contour], cover: &[Contour], tol: f64) -> Vec<Contour> {
+/// Takes the pieces of a visible outline that run along the seen strip
+/// `shape` (every vertex on its edge) out of `pieces`, and gives the
+/// source path of the first one.
+fn thin_strip(pieces: &mut Vec<CutPiece>, shape: &[Contour]) -> Option<usize> {
+    let edges: Vec<Contour> = shape
+        .iter()
+        .filter_map(|c| {
+            let mut c = c.clone();
+            c.push(*c.first()?);
+            Some(c)
+        })
+        .collect();
+    let refs: Vec<&[[f64; 2]]> = edges.iter().map(Vec::as_slice).collect();
+    let index = super::NearIndex::new(&refs, 1e-3);
+    let mut source = None;
+    pieces.retain(|p| {
+        let on = p
+            .path
+            .elements()
+            .iter()
+            .filter_map(|e| e.end_point())
+            .all(|q| index.near([q.x, q.y]));
+        if on {
+            source = source.or(p.source);
+        }
+        !on
+    });
+    source
+}
+
+/// The painted area `own` without what `cover` covers, as shapes (an
+/// outer edge and its holes): what is seen of a visible outline. Every
+/// edge of it is cut, by the object itself or by a shape in front.
+fn visible_region(own: &[Contour], cover: &[Contour], tol: f64) -> Vec<Vec<Contour>> {
     if own.is_empty() {
         return Vec::new();
     }
@@ -636,8 +806,13 @@ fn visible_region(own: &[Contour], cover: &[Contour], tol: f64) -> Vec<Contour> 
     FloatOverlay::with_subj_and_clip_custom(&own, &cover, options, Solver::default())
         .overlay(rule, OverlayFill::NonZero)
         .into_iter()
-        .flatten()
-        .filter(|c| c.len() >= 3)
+        .map(|shape| {
+            shape
+                .into_iter()
+                .filter(|c| c.len() >= 3)
+                .collect::<Vec<_>>()
+        })
+        .filter(|shape| !shape.is_empty())
         .collect()
 }
 
@@ -731,6 +906,34 @@ pub(crate) mod tests {
                 "{mode:?}: {small} tests for 100 objects, {large} for 400"
             );
         }
+    }
+
+    /// Coordinates far beyond the i64 range of the cells, or not finite,
+    /// never overflow or walk billions of cells: such a box is tested on
+    /// every query, and such a query tests every box.
+    #[test]
+    fn the_box_grid_takes_huge_coordinates() {
+        let boxes = vec![
+            Some(Rect::new(0.0, 0.0, 1.0, 1.0)),
+            Some(Rect::new(1e25, 1e25, 1e25 + 1.0, 1e25 + 1.0)),
+            Some(Rect::new(-1e300, -1e300, 1e300, 1e300)),
+            Some(Rect::new(f64::NAN, 0.0, 1.0, 1.0)),
+        ];
+        let grid = BoxGrid::new(boxes);
+        for q in [
+            Rect::new(-1e30, -1e30, 1.0, 1.0),
+            Rect::new(1e25, 1e25, 1e25 + 1.0, 1e25 + 1.0),
+            Rect::new(0.5, 0.5, 0.6, 0.6),
+        ] {
+            let mut got = Vec::new();
+            grid.query(q, |i| got.push(i));
+            got.sort_unstable();
+            assert!(got.contains(&2), "{q:?}: {got:?}");
+        }
+        let mut got = Vec::new();
+        grid.query(Rect::new(0.5, 0.5, 0.6, 0.6), |i| got.push(i));
+        got.sort_unstable();
+        assert_eq!(got, [0, 2]);
     }
 
     #[test]

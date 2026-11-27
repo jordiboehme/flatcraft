@@ -223,6 +223,10 @@ pub struct CutGeometry {
     /// The outline of what is seen of each shown, cut object in visible
     /// outline whose pieces were clipped (see [`CutGeometry::kept_regions`]).
     pub regions: BTreeMap<ObjectId, Arc<Vec<Contour>>>,
+    /// What is seen of each clipped object in visible outline, shape by
+    /// shape: its mean width (mm) and its box. The report warns about seen
+    /// strips too thin to cut cleanly.
+    pub seen_shapes: BTreeMap<ObjectId, Vec<(f64, Option<Rect>)>>,
     solo: BTreeMap<ObjectId, Solo>,
     /// Object ids in document order, with what the cross-object modes
     /// read of them.
@@ -440,7 +444,7 @@ fn object_pieces_clipped(
                 .iter()
                 .map(|p| cross::painted(p, options, affine, tol, min_width_mm))
                 .collect();
-            let (pieces, clipped) = cross::visible_alone(&pieces, &painted);
+            let (pieces, clipped) = cross::visible_alone(&pieces, &painted, tol);
             (pieces, facts, bounds, clipped)
         }
     }
@@ -1058,7 +1062,11 @@ fn fill_edges(
 /// - When neither can be built and checked: the longest of the stroked
 ///   centre lines `centre` that runs along the shape, else the shape's
 ///   outer contour. One line either way.
-fn sliver_once(shape: &[Contour], centre: &[Contour], min_width: f64) -> Option<BezPath> {
+pub(crate) fn sliver_once(
+    shape: &[Contour],
+    centre: &[Contour],
+    min_width: f64,
+) -> Option<BezPath> {
     let reach = 4.0 * min_width.max(HAIRLINE_MM);
     let built = match shape {
         [outer, hole] => mid_ring(outer, hole, reach),

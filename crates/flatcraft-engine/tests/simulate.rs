@@ -897,3 +897,70 @@ fn a_float_run_job_is_never_sent() {
     assert!(!device.job.simulation_only);
     assert!(!device.job.job.bytes.is_empty());
 }
+
+// ------------------------------------------------------------ visible outline
+
+/// A back plate with two counters, in visible outline, and a front plate
+/// over its right part that covers no counter.
+fn lettered_plates(s: &mut Session) -> (u64, u64) {
+    let back = import(
+        s,
+        r#"<path fill-rule="evenodd" d="M20 20h80v40h-80z M30 30h10v20h-10z M50 30h10v20h-10z"/>"#,
+    );
+    let front = import(s, r#"<rect x="80" y="10" width="40" height="60"/>"#);
+    run(
+        s,
+        "object.set_cut_options",
+        json!({ "ids": [back], "mode": "visible_outline" }),
+    );
+    (back, front)
+}
+
+#[test]
+fn a_visible_outline_frees_nothing_before_its_counters_are_cut() {
+    let d = dirs();
+    let mut s = session(&d);
+    run(&mut s, "job.set_media", json!({ "id": "no-mat" }));
+    let (back, front) = lettered_plates(&mut s);
+    let input = flatcraft_engine::job::JobInput::of(&s).unwrap();
+    let plan = flatcraft_engine::job::build_input(&input).unwrap().plan;
+    let cuts: Vec<&flatcraft_path::Toolpath> = plan
+        .toolpaths
+        .iter()
+        .filter(|t| t.kind == flatcraft_path::ToolpathKind::Cut && t.pass == 1)
+        .collect();
+    let at = |f: &dyn Fn(&flatcraft_path::Toolpath) -> bool| -> Vec<usize> {
+        cuts.iter()
+            .enumerate()
+            .filter(|(_, t)| f(t))
+            .map(|(k, _)| k)
+            .collect()
+    };
+    let counters = at(&|t| t.source.object.0 == back && t.closed);
+    let outline = at(&|t| t.source.object.0 == back && !t.closed);
+    let front_ring = at(&|t| t.source.object.0 == front);
+    assert_eq!(counters.len(), 2, "{cuts:?}");
+    assert!(!outline.is_empty() && front_ring.len() == 1);
+    // The back piece comes free with the last cut of its outline: its own
+    // open path or the front ring that closes it.
+    let freed = outline.iter().chain(&front_ring).max().unwrap();
+    assert!(
+        counters.iter().all(|c| c < freed),
+        "counters {counters:?}, outline {outline:?}, front {front_ring:?}"
+    );
+    // The counters are holes of the piece: the outside is kept.
+    for c in &counters {
+        assert_eq!(cuts[*c].keep, flatcraft_path::KeepSide::Outside);
+    }
+}
+
+#[test]
+fn lead_ins_of_a_visible_outline_stay_out_of_kept_material() {
+    let d = dirs();
+    let mut s = plotter_session(&d, "host", HOST, 0.3);
+    lettered_plates(&mut s);
+    let r = run(&mut s, "job.simulate", json!({}));
+    assert_eq!(r["simulated"], true, "{r}");
+    let into = r["metrics"]["max_into_kept_mm"].as_f64().unwrap();
+    assert_eq!(into, 0.0, "{r}");
+}

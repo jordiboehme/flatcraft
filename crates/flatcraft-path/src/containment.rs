@@ -263,6 +263,132 @@ pub fn build(paths: &[Toolpath]) -> ContainmentTree {
     }
 }
 
+/// Lets the kept-material outlines `regions` take the place of the rings
+/// their objects do not cut as one piece (a visible outline, cut as open
+/// paths that end on the cuts of the objects in front).
+///
+/// For every outer ring of a region whose object has open paths on that
+/// outline, the longest of those open paths stands for the missing ring
+/// in the cut order: every path that lies inside the outline and has no
+/// smaller container inside it becomes its child, so the holes and inner
+/// pieces are cut before the piece can come free (R8, holes first). The
+/// ring depths count the outline too, so keep sides (and the depth of the
+/// object's own rings) are those of a closed outline.
+pub fn adopt_regions(tree: &mut ContainmentTree, paths: &[Toolpath], regions: &Regions) {
+    for (object, rings) in regions {
+        let rings: Vec<&[Point]> = rings
+            .iter()
+            .filter(|r| r.len() >= 3)
+            .map(Vec::as_slice)
+            .collect();
+        let shapes: Vec<(Rect, f64)> = rings
+            .iter()
+            .map(|r| (bbox(r).unwrap_or(Rect::ZERO), signed_area(r).abs()))
+            .collect();
+        // Outer rings lie in an even number of the region's rings.
+        let outers = (0..rings.len()).filter(|&a| {
+            let around = (0..rings.len())
+                .filter(|&b| {
+                    b != a
+                        && nested(
+                            rings[a],
+                            shapes[a].0,
+                            shapes[a].1,
+                            rings[b],
+                            shapes[b].0,
+                            shapes[b].1,
+                        )
+                })
+                .count();
+            around % 2 == 0
+        });
+        for o in outers.collect::<Vec<_>>() {
+            let (ring, (ob, oa)) = (rings[o], shapes[o]);
+            let grown = ob.inflate(ON_OUTLINE_MM, ON_OUTLINE_MM);
+            let on_outline = |j: usize| {
+                let t = &paths[j];
+                !t.closed
+                    && t.source.object == *object
+                    && bbox(&t.points).is_some_and(|b| box_in(b, grown))
+                    && t.points.iter().all(|p| near_ring(*p, ring, ON_OUTLINE_MM))
+            };
+            // The open path that stands for the outline: the longest.
+            let Some(stand) = (0..paths.len())
+                .filter(|&j| on_outline(j))
+                .max_by(|&a, &b| {
+                    crate::clean::length(&paths[a].points)
+                        .total_cmp(&crate::clean::length(&paths[b].points))
+                        .then(b.cmp(&a))
+                })
+            else {
+                continue;
+            };
+            let inside = |j: usize| -> bool {
+                let t = &paths[j];
+                if t.closed {
+                    let lap = t.lap();
+                    bbox(lap).is_some_and(|b| nested(lap, b, signed_area(lap).abs(), ring, ob, oa))
+                } else if !bbox(&t.points).is_some_and(|b| box_in(b, grown)) {
+                    false
+                } else {
+                    // On the outline counts as inside, as for any ring.
+                    let hits: Vec<Option<bool>> = t
+                        .points
+                        .iter()
+                        .map(|p| {
+                            if near_ring(*p, ring, ON_OUTLINE_MM) {
+                                None
+                            } else {
+                                point_in_ring(*p, ring)
+                            }
+                        })
+                        .collect();
+                    hits.contains(&Some(true)) && !hits.contains(&Some(false))
+                }
+            };
+            let within: Vec<bool> = (0..paths.len())
+                .map(|j| j != stand && !on_outline(j) && inside(j))
+                .collect();
+            for j in (0..paths.len()).filter(|&j| within[j]) {
+                tree.depth[j] += 1;
+                if paths[j].source.object == *object {
+                    tree.own_depth[j] += 1;
+                }
+                // A container inside the outline stays the parent.
+                if tree.parent[j].is_none_or(|p| !within[p]) {
+                    tree.parent[j] = Some(stand);
+                }
+            }
+        }
+    }
+    let n = tree.parent.len();
+    tree.children = vec![Vec::new(); n];
+    tree.roots.clear();
+    for j in 0..n {
+        match tree.parent[j] {
+            Some(p) => tree.children[p].push(j),
+            None => tree.roots.push(j),
+        }
+    }
+}
+
+/// How far a cut may lie from a region's outline and still be on it, in
+/// millimetres: the region and the cut come from different booleans and
+/// the cut is cleaned within the tolerance since, so they agree only
+/// within about a plotter step.
+const ON_OUTLINE_MM: f64 = 0.05;
+
+/// True when `p` lies within `reach` of an edge of the closed `ring`.
+fn near_ring(p: Point, ring: &[Point], reach: f64) -> bool {
+    let n = ring.len();
+    (0..n).any(|i| {
+        kurbo::Line::new(ring[i], ring[(i + 1) % n])
+            .nearest(p, 0.0)
+            .distance_sq
+            <= reach * reach
+    })
+}
+
 /// (path index, box, absolute area) of a closed path.
 type Ring = (usize, Rect, f64);
 
@@ -1059,6 +1185,44 @@ mod tests {
         assert!(kept.is_kept(Point::new(15.0, 15.0)));
         assert!(!kept.is_kept(Point::new(6.5, 6.5)), "the hole counts once");
         assert!(!kept.is_kept(Point::new(30.0, 30.0)));
+    }
+
+    /// The seen outline of a clipped visible outline stands in for its
+    /// missing ring: its counters become children of its longest open
+    /// path (cut before it), and count as holes for keep sides. The front
+    /// object's ring, which closes the piece, is not adopted.
+    #[test]
+    fn an_open_outline_adopts_the_paths_inside_its_region() {
+        // Object 1: a plate (0..40 x 0..20) cut as an open path that ends
+        // on object 2's ring (30..50), with one counter.
+        let design = vec![
+            tpo(
+                1,
+                &[(30.0, 0.0), (0.0, 0.0), (0.0, 20.0), (30.0, 20.0)],
+                false,
+            ),
+            sqo(1, 5.0, 5.0, 10.0, 15.0),
+            sqo(2, 30.0, -5.0, 50.0, 25.0),
+        ];
+        let region: Vec<Point> = [(0.0, 0.0), (30.0, 0.0), (30.0, 20.0), (0.0, 20.0)]
+            .map(Point::from)
+            .to_vec();
+        let counter: Vec<Point> = [(5.0, 5.0), (10.0, 5.0), (10.0, 15.0), (5.0, 15.0)]
+            .map(Point::from)
+            .to_vec();
+        let mut tree = build(&design);
+        assert_eq!(tree.parent[1], None, "no ring holds the counter");
+        let regions = Regions::from([(ObjectId(1), vec![region, counter])]);
+        adopt_regions(&mut tree, &design, &regions);
+        assert_eq!(tree.parent[1], Some(0), "the counter comes first");
+        assert_eq!(tree.parent[2], None, "the front ring is not inside");
+        assert_eq!(tree.children[0], vec![1]);
+        assert_eq!(tree.roots, vec![0, 2]);
+        assert_eq!(tree.own_depth[1], 1);
+        assert_eq!(
+            keep_side(&tree, 1, true, KeepMode::Pieces),
+            KeepSide::Outside
+        );
     }
 
     /// A square ring of object `id`.

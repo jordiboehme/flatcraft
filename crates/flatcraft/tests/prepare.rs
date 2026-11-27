@@ -1551,7 +1551,9 @@ fn the_order_actions_are_in_the_arrange_list_dimmed_with_reasons() {
         flatcraft::ui::tools::by_id("order.back")
             .unwrap()
             .blocked(&snap),
-        Some("Already at the back: nothing lies behind the selection.")
+        Some(
+            "Already at the back: nothing lies behind the selection (in its group, when it is in one)."
+        )
     );
     assert_eq!(panel_rows(&h, &["first", "second"]), ["first", "second"]);
     let before = undo_len(&s);

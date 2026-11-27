@@ -1503,7 +1503,14 @@ fn touching_boxes(boxes: &[Rect]) -> Vec<(usize, usize)> {
     for (i, b) in boxes.iter().enumerate() {
         let (x0, x1) = range(b.x0, b.x1);
         let (y0, y1) = range(b.y0, b.y1);
-        if (x1 - x0 + 1).saturating_mul(y1 - y0 + 1) > MAX_CELLS {
+        // Checked: a huge coordinate saturates the cell numbers, and
+        // their difference would overflow.
+        let cells = x1
+            .checked_sub(x0)
+            .and_then(|w| w.checked_add(1))
+            .zip(y1.checked_sub(y0).and_then(|h| h.checked_add(1)))
+            .and_then(|(w, h)| w.checked_mul(h));
+        if cells.is_none_or(|c| c > MAX_CELLS) {
             huge.push(i);
             continue;
         }
@@ -1607,22 +1614,27 @@ fn pair_issues(input: &JobInput, ids: Option<&[ObjectId]>, limits: &Limits) -> V
             continue;
         };
         let mut pair = pair_of(la, lb, limit, tolerance);
-        // A visible outline behind the other object is clipped by it: its
-        // cut ends on the front object's edge and never runs through it,
-        // so the knife does not cut through both.
+        // A visible outline behind an object with painted area is clipped
+        // by it: its cut ends on the front object's edge and never runs
+        // through it, so the knife does not cut through both. What it
+        // leaves to see can be a strip too thin to cut cleanly, though:
+        // (width, back, front).
+        let mut thin: Option<(f64, &JobObject, &JobObject)> = None;
         if matches!(pair, Some(Pair::Overlap)) {
             let at = |o: &JobObject| input.objects.iter().position(|x| x.id == o.id);
-            let back = if at(a) < at(b) { a } else { b };
-            if back.cut.mode == CutMode::VisibleOutline {
+            let (back, front) = if at(a) < at(b) { (a, b) } else { (b, a) };
+            if back.cut.mode == CutMode::VisibleOutline && covers(input, front) {
                 pair = None;
+                thin = thin_seen_strip(&cut, back, front, limit).map(|w| (w, back, front));
             }
         }
         let group = (a.unit == b.unit && a.unit != a.id && b.unit != b.id).then_some(a.unit);
-        if let (Some(g), Some(p)) = (group, &pair) {
-            let code = match p {
-                Pair::Overlap => Code::ObjectsOverlap,
-                Pair::Close { .. } => Code::ObjectsClose,
-            };
+        let in_group = match (&pair, thin) {
+            (Some(Pair::Overlap), _) => Some(Code::ObjectsOverlap),
+            (Some(Pair::Close { .. }), _) | (None, Some(_)) => Some(Code::ObjectsClose),
+            (None, None) => None,
+        };
+        if let (Some(g), Some(code)) = (group, in_group) {
             if input.ignored_groups.contains(&g) || ignored(code, a, b) {
                 continue;
             }
@@ -1651,8 +1663,8 @@ fn pair_issues(input: &JobInput, ids: Option<&[ObjectId]>, limits: &Limits) -> V
                     paths: 0,
                     message: format!(
                         "{} and {} overlap, so the knife cuts through both.",
-                        quoted(&a.name),
-                        quoted(&b.name)
+                        capitalized(&seen_name(&cut, a)),
+                        seen_name(&cut, b)
                     ),
                     hint: OBJECTS_OVERLAP_HINT.into(),
                     fixes: merge_fix(input, a, b)
@@ -1672,8 +1684,8 @@ fn pair_issues(input: &JobInput, ids: Option<&[ObjectId]>, limits: &Limits) -> V
                     paths: 0,
                     message: format!(
                         "{} and {} are only {} apart. The strip between them is too thin to cut cleanly or to weed (peel the waste away), and the blade may tear it.",
-                        quoted(&a.name),
-                        quoted(&b.name),
+                        capitalized(&seen_name(&cut, a)),
+                        seen_name(&cut, b),
                         mm(gap)
                     ),
                     hint: objects_close_hint(limit),
@@ -1681,6 +1693,27 @@ fn pair_issues(input: &JobInput, ids: Option<&[ObjectId]>, limits: &Limits) -> V
                 });
             }
             _ => {}
+        }
+        if let Some((width, back, front)) = thin
+            && !ignored(Code::ObjectsClose, a, b)
+        {
+            out.push(Issue {
+                code: Code::ObjectsClose,
+                severity: Severity::Info,
+                object_ids: vec![a.id.0, b.id.0],
+                paths: 0,
+                message: format!(
+                    "{} leaves only a {} strip of {} to see. The strip is too thin to cut cleanly or to weed (peel the waste away), and the blade may tear it.",
+                    capitalized(&seen_name(&cut, front)),
+                    mm(width),
+                    seen_name(&cut, back)
+                ),
+                hint: format!(
+                    "Move the front object so at least {} of the one behind shows, or so it covers that edge completely. If the thin strip is on purpose, ignore this hint for the pair.",
+                    mm(limit)
+                ),
+                fixes: vec![ignore_fix(Code::ObjectsClose, a, b)],
+            });
         }
     }
     for (group, pairs, mut ids) in in_groups {
@@ -1726,6 +1759,53 @@ struct PairContext<'a> {
     cuttable: &'a [(&'a JobObject, Rect)],
     grown: &'a [Rect],
     near: &'a [(usize, usize)],
+}
+
+/// True when `o` has painted area (a fill, or a stroke cut as an
+/// outline): only such an object covers what lies behind it in visible
+/// outline. A centre-line stroke or an all-lines line covers nothing.
+fn covers(input: &JobInput, o: &JobObject) -> bool {
+    let affine = o.transform.affine(o.local_bounds);
+    o.geometry
+        .iter()
+        .any(|p| !cutgeom::painted_area(p, &o.cut, affine, input.tolerance_mm()).is_empty())
+}
+
+/// The width of the narrowest strip that `front` leaves to see of the
+/// visible outline `back`, when it is thinner than `limit`. Only strips
+/// near `front` count.
+fn thin_seen_strip(
+    cut: &cutgeom::CutGeometry,
+    back: &JobObject,
+    front: &JobObject,
+    limit: f64,
+) -> Option<f64> {
+    let near = cut.bounds(front.id)?.inflate(limit, limit);
+    cut.seen_shapes
+        .get(&back.id)?
+        .iter()
+        .filter(|(w, b)| *w < limit && b.is_some_and(|b| b.overlaps(near)))
+        .map(|(w, _)| *w)
+        .reduce(f64::min)
+}
+
+/// How the person knows `o` on the canvas: its name, or "the merged
+/// outline of 'X'" when `o` holds a weld of several objects.
+fn seen_name(cut: &cutgeom::CutGeometry, o: &JobObject) -> String {
+    if cut.merged_into.values().any(|b| *b == o.id) {
+        format!("the merged outline of {}", quoted(&o.name))
+    } else {
+        quoted(&o.name)
+    }
+}
+
+/// `text` with its first letter upper case, to start a sentence.
+fn capitalized(text: &str) -> String {
+    let mut c = text.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect(),
+        None => String::new(),
+    }
 }
 
 /// "Merge into one outline": sets `a` and `b` to merged outline, so they
@@ -2151,6 +2231,18 @@ pub(crate) mod tests {
     }
 
     use super::*;
+
+    /// A huge coordinate saturates the cell numbers: the box is compared
+    /// with every other one instead of overflowing or walking all cells.
+    #[test]
+    fn touching_boxes_takes_huge_coordinates() {
+        let boxes = [
+            Rect::new(0.0, 0.0, 1.0, 1.0),
+            Rect::new(-1e30, -1e30, 1e30, 1e30),
+            Rect::new(1e25, 1e25, 1e25 + 1.0, 1e25 + 1.0),
+        ];
+        assert_eq!(touching_boxes(&boxes), vec![(0, 1), (1, 2)]);
+    }
 
     /// `n` objects of four shapes (squares, circles, triangles, thin
     /// bars) on a grid at 9.2 mm, 25 to a row, so neighbouring squares are

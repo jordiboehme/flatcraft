@@ -234,10 +234,10 @@ impl ReorderTo {
     pub fn refusal(self) -> &'static str {
         match self {
             ReorderTo::Front | ReorderTo::Forward => {
-                "Already in front: nothing lies in front of the selection."
+                "Already in front: nothing lies in front of the selection (in its group, when it is in one)."
             }
             ReorderTo::Backward | ReorderTo::Back => {
-                "Already at the back: nothing lies behind the selection."
+                "Already at the back: nothing lies behind the selection (in its group, when it is in one)."
             }
         }
     }
@@ -246,8 +246,10 @@ impl ReorderTo {
 /// The document order `order` after moving the objects `leaves` to `to`.
 /// What moves as one is a unit of `tree` (a whole group, or an object
 /// picked on its own): its objects end up next to each other, in their
-/// order. A step forward or back passes one other object, or a whole
-/// group with all of its objects that are not moving. Equal to `order`
+/// order. A step forward or back passes one sibling at the unit's own
+/// level: inside a group, the next member (or member group), and nothing
+/// at the end of the group; at the top level, the next object or whole
+/// group. Equal to `order`
 /// when nothing can move that way.
 pub fn reordered(
     order: &[ObjectId],
@@ -266,16 +268,19 @@ pub fn reordered(
     let forward = to == ReorderTo::Forward;
     let mut order = order.to_vec();
     let at = |order: &[ObjectId], id: ObjectId| order.iter().position(|x| *x == id);
-    let mut blocks: Vec<Vec<ObjectId>> = tree
+    // (the unit, its objects that move)
+    let mut blocks: Vec<(ObjectId, Vec<ObjectId>)> = tree
         .units(leaves)
         .into_iter()
         .map(|u| {
-            tree.leaves_of(u)
+            let objects = tree
+                .leaves_of(u)
                 .into_iter()
                 .filter(|l| chosen.contains(l))
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            (u, objects)
         })
-        .filter(|b| !b.is_empty())
+        .filter(|(_, b)| !b.is_empty())
         .collect();
     // The block nearest the way it moves goes first, so blocks keep
     // their order among themselves.
@@ -283,25 +288,42 @@ pub fn reordered(
         let p = b.iter().filter_map(|id| at(order, *id));
         if forward { p.max() } else { p.min() }
     };
-    blocks.sort_by_key(|b| edge(&order, b));
+    blocks.sort_by_key(|(_, b)| edge(&order, b));
     if forward {
         blocks.reverse();
     }
-    for block in blocks {
+    for (unit, block) in blocks {
         let Some(end) = edge(&order, &block) else {
             continue;
         };
+        // Inside a group the unit steps among its siblings only: at the
+        // end of its group it stays.
+        let scope = tree.parent(unit);
+        let sibling =
+            |o: &&ObjectId| !chosen.contains(*o) && scope.is_none_or(|g| tree.within(**o, g));
         let next = if forward {
-            order[end + 1..].iter().find(|o| !chosen.contains(o))
+            order[end + 1..].iter().find(sibling)
         } else {
-            order[..end].iter().rev().find(|o| !chosen.contains(o))
+            order[..end].iter().rev().find(sibling)
         };
         let Some(&next) = next else {
             continue;
         };
-        // The whole unit of the object passed, without what moves.
+        // What is passed is the sibling at the moving unit's own level
+        // that holds `next`: the child of their nearest common group (a
+        // sibling object, or a sibling group as a whole), without what
+        // moves.
+        let around: std::collections::BTreeSet<ObjectId> =
+            tree.ancestors(unit).into_iter().collect();
+        let mut passed = next;
+        for g in tree.ancestors(next) {
+            if around.contains(&g) {
+                break;
+            }
+            passed = g;
+        }
         let other: Vec<ObjectId> = tree
-            .leaves_of(tree.top(next))
+            .leaves_of(passed)
             .into_iter()
             .filter(|l| !chosen.contains(l))
             .collect();
@@ -354,5 +376,5 @@ command!(
     mutates: true,
     params: ReorderParams,
     run: run_reorder,
-    description: "Changes which objects lie in front, in one undo step (the window's Bring to front Shift+Cmd+], Bring forward Cmd+], Send backward Cmd+[ and Send to back Shift+Cmd+[, Ctrl on Windows and Linux). The stacking order is the document order (document.state lists objects in it): later objects lie in front. It decides what the visible_outline cut mode covers, and how the canvas draws overlaps. to: front puts them in front of everything, back behind everything, forward one step in front of the next object, backward one step behind the object right behind. A whole group moves as one block and is passed as one block; its objects end up next to each other. Objects picked inside a group move on their own. Nothing moves on the mat. Already in front (or at the back) changes nothing and records no undo step. An empty ids list means the current selection. Returns {ids (the objects moved), order (every object id in the new order, back to front), changed}.",
+    description: "Changes which objects lie in front, in one undo step (the window's Bring to front Shift+Cmd+], Bring forward Cmd+], Send backward Cmd+[ and Send to back Shift+Cmd+[, Ctrl on Windows and Linux). The stacking order is the document order (document.state lists objects in it): later objects lie in front. It decides what the visible_outline cut mode covers, and how the canvas draws overlaps. to: front puts them in front of everything, back behind everything, forward one step in front of the next sibling, backward one step behind the sibling right behind; a sibling is an object or a whole group at the same level, so a group is passed as one block. A whole group moves as one block; its objects end up next to each other. Objects picked inside a group move on their own and step only among the members of their group (at the end of the group they stay). Nothing moves on the mat. Already in front (or at the back) changes nothing and records no undo step. An empty ids list means the current selection. Returns {ids (the objects moved), order (every object id in the new order, back to front), changed}.",
 );

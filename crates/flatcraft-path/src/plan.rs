@@ -592,7 +592,9 @@ pub fn plan_with_regions(
     // tree. One closure gives the keep mode of each object to the keep
     // sides, the weeds and the kept material.
     let mode_of = |o: ObjectId| s.keep_mode(o);
-    let tree = containment::build(&toolpaths);
+    let mut tree = containment::build(&toolpaths);
+    // A clipped visible outline: its seen outline stands in for its ring.
+    containment::adopt_regions(&mut tree, &toolpaths, regions);
     for (i, t) in toolpaths.iter_mut().enumerate() {
         t.keep = containment::keep_side(&tree, i, t.closed, mode_of(t.source.object));
     }
