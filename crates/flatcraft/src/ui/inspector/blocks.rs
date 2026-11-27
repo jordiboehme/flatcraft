@@ -494,6 +494,29 @@ fn tokens(ui: &Ui) -> Tokens {
     }
 }
 
+/// A line that is always there, one row high, with `text` (maybe empty)
+/// on it: a state that comes and goes ("Checking...") never moves what
+/// is below it. The text is cut short on its one line.
+pub fn status_line(ui: &mut Ui, text: &str, color: Color32) -> Response {
+    let h = ui.text_style_height(&egui::TextStyle::Body);
+    let w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
+    if !text.is_empty() {
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, text));
+        set_name(ui, &resp, text);
+        one_line(
+            ui.painter(),
+            text,
+            FontId::proportional(12.0),
+            color,
+            egui::pos2(rect.left(), rect.center().y),
+            w,
+            Align::LEFT,
+        );
+    }
+    resp
+}
+
 /// A short dimmed line inside a section (an explanation, a "why").
 pub fn note(ui: &mut Ui, text: &str, color: Color32) -> Response {
     ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).wrap())

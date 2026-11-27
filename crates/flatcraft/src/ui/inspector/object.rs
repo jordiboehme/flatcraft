@@ -18,6 +18,7 @@
 
 use egui::{Response, Ui, vec2};
 use flatcraft_core::document::{CutMode, KeepMode, StrokeMode};
+use flatcraft_engine::job::JobInput;
 use flatcraft_engine::report::Issue;
 use serde_json::json;
 
@@ -68,7 +69,7 @@ pub const FIELDS: [(SizeField, &str); 6] = [
 /// Every setting and action of the object inspector, as (section id,
 /// accessible name), for the reachability test: each one is in its
 /// section, at most one fold away. The Source actions depend on the
-/// object (a file, a picture) and are listed by [`source_items`].
+/// object (a file, a picture): they are [`SOURCE_ITEMS`], always shown.
 pub const SETTINGS: [(&str, &str); 26] = [
     (CUT, "Cut mode"),
     (CUT, "Keep"),
@@ -125,8 +126,9 @@ fn common<T: PartialEq + Copy>(mut values: impl Iterator<Item = T>) -> Option<T>
 /// - One group: "Group 'Badge'", its objects under it.
 /// - One object: its name, with "· in group Badge" when it is in a group;
 ///   its size, its file, "Picture" and its linked copies under it.
-/// - More: "2 objects", their names under it, with "· in group Badge"
-///   when they share a group.
+/// - More: "2 objects" ("1 group and 2 objects" when groups are among
+///   them), their names under it, with "· in group Badge" when they share
+///   a group.
 pub fn heading(snap: &Snapshot) -> (String, String) {
     let units = snap.units();
     let parent = |id: u64| {
@@ -191,8 +193,31 @@ pub fn heading(snap: &Snapshot) -> (String, String) {
             if let Some(p) = in_group(many) {
                 sub = format!("{sub} · in group {p}");
             }
-            (format!("{} objects", many.len()), sub)
+            (count_units(snap, many), sub)
         }
+    }
+}
+
+/// "3 objects", "2 groups", "1 group and 2 objects": what the selection
+/// moves as, counted as the canvas counts it.
+pub fn count_units(snap: &Snapshot, units: &[u64]) -> String {
+    let groups = units.iter().filter(|u| snap.is_group(**u)).count();
+    let objects = units.len() - groups;
+    let word = |n: usize, one: &str, many: &str| {
+        if n == 1 {
+            format!("1 {one}")
+        } else {
+            format!("{n} {many}")
+        }
+    };
+    match (groups, objects) {
+        (0, n) => word(n, "object", "objects"),
+        (g, 0) => word(g, "group", "groups"),
+        (g, n) => format!(
+            "{} and {}",
+            word(g, "group", "groups"),
+            word(n, "object", "objects")
+        ),
     }
 }
 
@@ -214,7 +239,7 @@ pub fn panel(
     cut(ui, st, snap, t, actions);
     position(ui, st, snap, t, actions);
     arrange(ui, st, snap, show_debug, actions);
-    source(ui, st, snap, t, actions);
+    source(ui, st, snap, actions);
     hints(ui, st, snap, t, actions);
 }
 
@@ -359,8 +384,13 @@ fn cut_body(
             json!({ "strokes": v }),
         ));
     }
-    if let Some(n) = snap.linked_reach() {
-        let r = blocks::note(ui, &format!("Applies to {n} linked copies"), t.text_dim);
+    // One line, always there, so the sections below never move.
+    let text = snap
+        .linked_reach()
+        .map(|n| format!("Applies to {n} linked copies"))
+        .unwrap_or_default();
+    let r = blocks::status_line(ui, &text, t.text_dim);
+    if !text.is_empty() {
         groups::card(
             &r,
             "Linked copies",
@@ -409,10 +439,11 @@ fn position(
             // Its fields are on screen: an edit in them stays open.
             st.inspector_fields = true;
             let mut wh = [egui::Rect::NOTHING; 2];
+            let b = canvas::live_box(snap, st);
             for (field, label) in FIELDS {
-                let card = ribbon::inspector_card(field, snap, st);
+                let card = ribbon::inspector_card(field);
                 let r = blocks::row(ui, label, &card, None, |ui| {
-                    ribbon::inspector_field(ui, field, st, snap, actions)
+                    ribbon::inspector_field(ui, field, b, st, snap, actions)
                 });
                 match field {
                     SizeField::Width => wh[0] = r.widget.rect,
@@ -426,9 +457,13 @@ fn position(
             let left = wh[0].right() + 4.0;
             let column = egui::Rect::from_x_y_ranges(left..=left + h, wh[0].top()..=wh[1].bottom());
             ribbon::keep_aspect(ui, FieldPlace::Inspector, st, snap, column, wh, true);
-            if let Some(n) = snap.linked_reach() {
-                let text = format!("Scales all {n} linked copies");
-                let r = blocks::note(ui, &text, t.text_dim);
+            // One line, always there.
+            let text = snap
+                .linked_reach()
+                .map(|n| format!("Scales all {n} linked copies"))
+                .unwrap_or_default();
+            let r = blocks::status_line(ui, &text, t.text_dim);
+            if !text.is_empty() {
                 groups::card(
                     &r,
                     &text,
@@ -591,69 +626,118 @@ fn arrange_body(
             }
         },
     );
-    // Groups and linked copies: text buttons, they say what they do
-    // ("Remove 2 objects from group").
-    let wanted = [
-        Item::Group,
-        Item::Ungroup,
-        Item::LinkCopies,
-        Item::UnlinkCopies,
-    ];
-    let offered: Vec<Item> = context_menu::items(snap, st, &ids)
-        .into_iter()
-        .flatten()
-        .filter(|i| wanted.contains(i))
-        .collect();
+    // Groups and linked copies: always the same four buttons, dimmed
+    // with their reason when they do not apply, so the section keeps its
+    // height whatever is selected.
     blocks::actions_row(
         ui,
         "Groups",
         "Group objects so they move, scale and turn as one. Linked copies share their source, cut options and scale.",
         |ui| {
-            for item in offered {
-                item_button(ui, item, st, snap, &ids, actions);
+            for (item, icon) in GROUP_ITEMS {
+                item_button(ui, item, icon, st, snap, &ids, actions);
             }
         },
     );
 }
 
-/// A context menu item as a small text button, with its card and why it
-/// is dimmed. A click runs it as the menu runs it.
+/// The buttons of Arrange's Groups row, with their icons.
+pub const GROUP_ITEMS: [(Item, Icon); 4] = [
+    (Item::Group, Icon::Group),
+    (Item::Ungroup, Icon::Ungroup),
+    (Item::LinkCopies, Icon::Linked),
+    (Item::UnlinkCopies, Icon::BrokenLink),
+];
+
+/// The buttons of the Source section, with their icons.
+pub const SOURCE_ITEMS: [(Item, Icon); 5] = [
+    (Item::RevealSource, Icon::SvgFile),
+    (Item::CopySourcePath, Icon::Duplicate),
+    (Item::Reload, Icon::Reload),
+    (Item::Reconnect, Icon::Plug),
+    (Item::TraceAgain, Icon::Trace),
+];
+
+/// Why Link copies is dimmed for these objects.
+pub const LINKED_ALREADY: &str = "These are linked copies already.";
+pub const OTHER_DESIGNS: &str =
+    "Only copies of one design can be linked. These come from different designs.";
+/// Why Unlink is dimmed.
+pub const NOT_A_LINKED_COPY: &str = "None of these is a linked copy.";
+/// Why the file actions are dimmed for objects without a file.
+pub const NOT_LINKED: &str = "Not linked to a file: these objects were not imported from one, so there is no file to show or read again.";
+/// Why Reload is dimmed while the file is gone.
+pub const FILE_GONE: &str = "The file is not where it was. Use Reconnect source first.";
+/// Why Reconnect is dimmed while the file is where it was.
+pub const FILE_THERE: &str = "The file is where it was, so there is nothing to reconnect.";
+/// Why Trace again is dimmed for drawings.
+pub const NOT_A_PICTURE: &str = "Only pictures can be traced again. These are drawings.";
+
+/// Why a Groups or Source button cannot run on `ids` now: the context
+/// menu's reason, or why the menu would not list it.
+pub fn item_why(
+    item: Item,
+    snap: &Snapshot,
+    st: &PrepareState,
+    ids: &[u64],
+) -> Option<&'static str> {
+    let objs: Vec<_> = ids.iter().filter_map(|id| snap.object(*id)).collect();
+    let linked = objs.iter().any(|o| o.link.is_some());
+    let broken = objs
+        .iter()
+        .any(|o| o.link.is_some() && st.sources.broken(o.id));
+    let whole = objs
+        .iter()
+        .any(|o| o.link.is_some() && !st.sources.broken(o.id));
+    let menu = || item.why(snap, st, ids);
+    match item {
+        Item::LinkCopies => {
+            let one = objs.first().and_then(|o| o.link_group).is_some()
+                && objs.iter().all(|o| o.link_group == objs[0].link_group);
+            if one {
+                Some(LINKED_ALREADY)
+            } else if objs.len() > 1 && !objs.iter().all(|o| o.same_source(objs[0])) {
+                Some(OTHER_DESIGNS)
+            } else {
+                menu()
+            }
+        }
+        Item::UnlinkCopies => (!objs.iter().any(|o| o.link_group.is_some()))
+            .then_some(NOT_A_LINKED_COPY)
+            .or_else(menu),
+        Item::RevealSource | Item::CopySourcePath => {
+            if !objs.iter().any(|o| o.source_link.is_some()) {
+                Some(NOT_LINKED)
+            } else {
+                menu()
+            }
+        }
+        Item::Reload if !linked => Some(NOT_LINKED),
+        Item::Reload if !whole => Some(FILE_GONE),
+        Item::Reconnect if !linked => Some(NOT_LINKED),
+        Item::Reconnect if !broken => Some(FILE_THERE),
+        Item::TraceAgain if !objs.iter().any(|o| o.raster) => Some(NOT_A_PICTURE),
+        _ => menu(),
+    }
+}
+
+/// A context menu item as a small icon button, named by its text, with
+/// its card and why it is dimmed. A click runs it as the menu runs it.
 fn item_button(
     ui: &mut Ui,
     item: Item,
+    icon: Icon,
     st: &mut PrepareState,
     snap: &Snapshot,
     ids: &[u64],
     actions: &mut Vec<Action>,
 ) {
     let text = item.text(snap, ids);
-    let why = item.why(snap, st, ids);
-    let r = ui.add_enabled(why.is_none(), egui::Button::new(&text));
-    set_name(ui, &r, &text);
-    groups::card(&r, &text, item.card_text(snap, ids), why, false);
-    if r.clicked() {
+    let why = item_why(item, snap, st, ids);
+    let r = icon_button(ui, icon, &text, &text, item.card_text(snap, ids), why);
+    if r.clicked() && why.is_none() {
         context_menu::run_item(item, snap, st, ids, actions);
     }
-}
-
-/// The Source actions offered for the selection, in the panel's order:
-/// those the context menu offers for it.
-pub fn source_items(snap: &Snapshot, st: &PrepareState) -> Vec<Item> {
-    let ids: Vec<u64> = snap.selection.iter().copied().collect();
-    let offered: Vec<Item> = context_menu::items(snap, st, &ids)
-        .into_iter()
-        .flatten()
-        .collect();
-    [
-        Item::RevealSource,
-        Item::CopySourcePath,
-        Item::Reload,
-        Item::Reconnect,
-        Item::TraceAgain,
-    ]
-    .into_iter()
-    .filter(|i| offered.contains(i))
-    .collect()
 }
 
 /// What the File row says: the file's name, "2 files", or that there is
@@ -666,10 +750,7 @@ pub fn source_file(snap: &Snapshot) -> (String, String) {
     paths.sort();
     paths.dedup();
     match paths.as_slice() {
-        [] => (
-            "Not linked to a file".into(),
-            "These objects were not imported from a file (test shapes, for example), so there is no file to read again.".into(),
-        ),
+        [] => ("Not linked to a file".into(), NOT_LINKED.into()),
         [one] => (
             one.file_name()
                 .map(|f| f.to_string_lossy().into_owned())
@@ -686,13 +767,7 @@ pub fn source_file(snap: &Snapshot) -> (String, String) {
     }
 }
 
-fn source(
-    ui: &mut Ui,
-    st: &mut PrepareState,
-    snap: &Snapshot,
-    t: &Tokens,
-    actions: &mut Vec<Action>,
-) {
+fn source(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Vec<Action>) {
     let (file, card) = source_file(snap);
     let mut summary = file.clone();
     if snap.selected().any(|o| st.sources.broken(o.id)) {
@@ -708,18 +783,10 @@ fn source(
         |ui| {
             blocks::value_row(ui, "File", &card, &file);
             let ids: Vec<u64> = snap.selection.iter().copied().collect();
-            let items = source_items(snap, st);
-            if items.is_empty() {
-                blocks::note(
-                    ui,
-                    "Nothing to read again: there is no file behind these objects.",
-                    t.text_dim,
-                );
-                return;
-            }
+            // The same buttons in every case, dimmed with their reason.
             blocks::actions_row(ui, "", SOURCE_CARD, |ui| {
-                for item in items {
-                    item_button(ui, item, st, snap, &ids, actions);
+                for (item, icon) in SOURCE_ITEMS {
+                    item_button(ui, item, icon, st, snap, &ids, actions);
                 }
             });
         },
@@ -729,19 +796,97 @@ fn source(
 
 // ---------------------------------------------------------------- hints
 
-/// The report's issues for the selected objects, checked again when the
-/// document, the profiles or the selection changed (`FlatCraftApp`
-/// checks them before the frame is drawn, never during a drag).
-#[derive(Debug, Clone, Default)]
+/// What the hints are checked for: the document, its revision, the
+/// profiles' revision and the selection.
+type HintKey = (u64, u64, u64, Vec<u64>);
+
+/// Checks objects of a job input: `report::check_selection`; tests
+/// replace it (a slow one, one that notes its thread).
+pub type HintChecker = std::sync::Arc<
+    dyn Fn(
+            &JobInput,
+            &[flatcraft_core::document::ObjectId],
+        ) -> (flatcraft_engine::report::Report, bool)
+        + Send
+        + Sync,
+>;
+
+/// A finished check: the issues, or `None` when there was no plotter or
+/// material to check with.
+type Checked = (HintKey, Option<Vec<Issue>>);
+
+/// What the worker sends back: the check, and the input when its cut
+/// geometry is the whole document's (it goes back into the cache).
+type Landed = (Checked, Option<JobInput>);
+
+/// The report's issues for the selected objects, for the object
+/// inspector's Hints. The check runs on a worker thread, one at a time,
+/// keyed by document, revision, profiles and selection; a frame never
+/// waits for it. Meanwhile the last result for the same document and
+/// selection shows, faded.
 pub struct Hints {
-    /// What they were checked for: document, its revision, the profiles'
-    /// revision and the selection.
-    key: Option<(u64, u64, u64, Vec<u64>)>,
-    issues: Vec<Issue>,
+    done: Option<Checked>,
+    running: Option<(HintKey, std::sync::mpsc::Receiver<Landed>)>,
+    /// The newest check asked for while one runs.
+    queued: Option<(HintKey, Option<JobInput>)>,
+    checker: HintChecker,
+    /// How many checks were started (tests).
+    pub started: u64,
+}
+
+impl std::fmt::Debug for Hints {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Hints")
+            .field("done", &self.done.as_ref().map(|(k, _)| k))
+            .field("running", &self.running.is_some())
+            .field("queued", &self.queued.as_ref().map(|(k, _)| k))
+            .finish()
+    }
+}
+
+/// A copy keeps the finished check but not the worker's.
+impl Clone for Hints {
+    fn clone(&self) -> Self {
+        Self {
+            done: self.done.clone(),
+            running: None,
+            queued: None,
+            checker: self.checker.clone(),
+            started: self.started,
+        }
+    }
+}
+
+impl Default for Hints {
+    fn default() -> Self {
+        Self {
+            done: None,
+            running: None,
+            queued: None,
+            checker: std::sync::Arc::new(|input, ids| {
+                flatcraft_engine::report::check_selection(input, ids)
+            }),
+            started: 0,
+        }
+    }
+}
+
+/// What the Hints section shows for the snapshot's document and
+/// selection.
+#[derive(Debug, Clone, Copy)]
+pub struct HintsView<'a> {
+    /// The last finished check of these objects; `None` before the first.
+    pub issues: Option<&'a [Issue]>,
+    /// The document or the profiles changed since: it is shown faded.
+    pub stale: bool,
+    /// A check of the current state runs or waits.
+    pub checking: bool,
+    /// There is no plotter or material to check with.
+    pub no_profiles: bool,
 }
 
 impl Hints {
-    fn key_of(snap: &Snapshot) -> (u64, u64, u64, Vec<u64>) {
+    fn key_of(snap: &Snapshot) -> HintKey {
         (
             snap.doc_id,
             snap.doc_rev,
@@ -750,37 +895,117 @@ impl Hints {
         )
     }
 
-    /// The document, the profiles or the selection changed since the
-    /// last check.
-    pub fn stale(&self, snap: &Snapshot) -> bool {
-        self.key.as_ref() != Some(&Self::key_of(snap))
+    /// Checks with `f` instead of the engine (tests).
+    pub fn set_checker(&mut self, f: HintChecker) {
+        self.checker = f;
     }
 
-    /// Stores the issues found for `snap` (at the document's revision
-    /// `rev`, which may be newer than the snapshot's).
-    pub fn store(&mut self, snap: &Snapshot, rev: u64, issues: Vec<Issue>) {
-        let mut key = Self::key_of(snap);
-        key.1 = rev;
-        self.key = Some(key);
-        self.issues = issues;
+    /// A check runs or waits.
+    pub fn busy(&self) -> bool {
+        self.running.is_some() || self.queued.is_some()
     }
 
-    /// The issues of the snapshot's document and selection, `None` when
-    /// they were checked for another document or selection (a tab switch
-    /// never shows the other document's hints). During a drag the last
-    /// check stays.
-    pub fn of(&self, snap: &Snapshot) -> Option<&[Issue]> {
-        let (doc, _, _, ids) = self.key.as_ref()?;
-        let now: Vec<u64> = snap.selection.iter().copied().collect();
-        (*doc == snap.doc_id && *ids == now).then_some(self.issues.as_slice())
+    /// The current state was checked, or its check runs or waits.
+    pub fn asked(&self, snap: &Snapshot) -> bool {
+        let key = Self::key_of(snap);
+        self.done.as_ref().is_some_and(|(k, _)| *k == key)
+            || self.running.as_ref().is_some_and(|(k, _)| *k == key)
+            || self.queued.as_ref().is_some_and(|(k, _)| *k == key)
+    }
+
+    /// Asks for a check of `snap`'s state with `input` (`None`: no
+    /// plotter or material). It starts now when no check runs, else after
+    /// the one that runs (a newer ask replaces an older waiting one).
+    pub fn ask(&mut self, ctx: &egui::Context, snap: &Snapshot, input: Option<JobInput>) {
+        self.queued = Some((Self::key_of(snap), input));
+        self.pump(ctx);
+    }
+
+    /// Takes a finished check (and starts the waiting one). Returns the
+    /// input of a check whose cut geometry is the whole document's, with
+    /// its document and revision, for the document's cache. Never waits.
+    pub fn poll(&mut self, ctx: &egui::Context) -> Option<(u64, u64, JobInput)> {
+        let mut offer = None;
+        if let Some((_, rx)) = &self.running {
+            match rx.try_recv() {
+                Ok((checked, input)) => {
+                    let (doc, rev) = (checked.0.0, checked.0.1);
+                    offer = input.map(|i| (doc, rev, i));
+                    self.done = Some(checked);
+                    self.running = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                // The worker died: forget it; the next frame asks again.
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.running = None,
+            }
+        }
+        self.pump(ctx);
+        offer
+    }
+
+    /// Starts the waiting check when none runs.
+    fn pump(&mut self, ctx: &egui::Context) {
+        if self.running.is_some() {
+            return;
+        }
+        let Some((key, input)) = self.queued.take() else {
+            return;
+        };
+        let Some(input) = input else {
+            self.done = Some((key, None));
+            return;
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let checker = self.checker.clone();
+        let repaint = ctx.clone();
+        let k = key.clone();
+        let spawned = std::thread::Builder::new()
+            .name("flatcraft-hints".into())
+            .spawn(move || {
+                let ids: Vec<flatcraft_core::document::ObjectId> =
+                    k.3.iter()
+                        .map(|i| flatcraft_core::document::ObjectId(*i))
+                        .collect();
+                let (report, whole) = checker(&input, &ids);
+                let input = (whole && input.built_cut_geometry().is_some()).then_some(input);
+                let _ = tx.send(((k, Some(report.issues)), input));
+                repaint.request_repaint();
+            });
+        if spawned.is_err() {
+            eprintln!("flatcraft: cannot start the hints worker");
+            return;
+        }
+        self.started += 1;
+        self.running = Some((key, rx));
+    }
+
+    /// What to show for `snap`'s document and selection. A check of
+    /// another document or selection is never shown (a tab switch never
+    /// shows the other document's hints).
+    pub fn view(&self, snap: &Snapshot) -> HintsView<'_> {
+        let key = Self::key_of(snap);
+        let same = |k: &HintKey| k.0 == key.0 && k.3 == key.3;
+        let done = self.done.as_ref().filter(|(k, _)| same(k));
+        let checking = self.running.as_ref().is_some_and(|(k, _)| *k == key)
+            || self.queued.as_ref().is_some_and(|(k, _)| *k == key);
+        HintsView {
+            issues: done.and_then(|(_, i)| i.as_deref()),
+            stale: done.is_some_and(|(k, _)| *k != key),
+            checking,
+            no_profiles: done.is_some_and(|(k, i)| *k == key && i.is_none()),
+        }
     }
 }
 
-/// The hints for the selection, the most severe first, and how many of
+/// The hints of `view` to show, the most severe first, and how many of
 /// them the import report on the canvas shows now (those are left out
 /// here, so no hint shows twice).
-pub fn hint_issues<'a>(st: &'a PrepareState, snap: &Snapshot) -> (Vec<&'a Issue>, usize) {
-    let checked = st.object_hints.of(snap).unwrap_or_default();
+pub fn hint_issues<'a>(
+    st: &PrepareState,
+    snap: &Snapshot,
+    view: &HintsView<'a>,
+) -> (Vec<&'a Issue>, usize) {
+    let checked = view.issues.unwrap_or_default();
     let card: Vec<&Issue> = st
         .report
         .as_ref()
@@ -815,66 +1040,98 @@ pub fn on_the_card(n: usize) -> String {
 
 /// What the Hints section says when there is nothing to tell.
 pub const NO_HINTS: &str = "Nothing to tell. These objects are good to go.";
+/// While the objects are checked.
+pub const CHECKING: &str = "Checking these objects...";
+/// When there is nothing to check with.
+pub const NO_PROFILES: &str = "Pick a plotter and a material to check these objects.";
+/// Why the buttons of an older check are dimmed.
+pub const STALE_FIX: &str = "Wait a moment: these objects changed and are checked again.";
 
-fn hints(
-    ui: &mut Ui,
-    st: &mut PrepareState,
-    snap: &Snapshot,
-    t: &Tokens,
-    actions: &mut Vec<Action>,
-) {
-    let (issues, on_card) = hint_issues(st, snap);
-    let issues: Vec<Issue> = issues.into_iter().cloned().collect();
+/// At most this many hint cards; the rest is counted.
+pub const MAX_CARDS: usize = 8;
+
+/// "and 3 more hints. Select fewer objects to see them."
+pub fn more_hints(n: usize) -> String {
+    if n == 1 {
+        "And 1 more hint. Select fewer objects to see it.".into()
+    } else {
+        format!("And {n} more hints. Select fewer objects to see them.")
+    }
+}
+
+fn hints(ui: &mut Ui, st: &PrepareState, snap: &Snapshot, t: &Tokens, actions: &mut Vec<Action>) {
+    let view = st.object_hints.view(snap);
+    let (issues, on_card) = hint_issues(st, snap, &view);
+    let summary = if view.issues.is_none() && view.checking {
+        "checking".to_string()
+    } else {
+        hints_summary(issues.len() + on_card)
+    };
     blocks::section(
         ui,
         HINTS,
         "Hints",
         HINTS_CARD,
-        &hints_summary(issues.len() + on_card),
+        &summary,
         true,
         |ui| {
+            // One line, always there: what the check is doing.
+            let status = if view.checking {
+                CHECKING
+            } else if view.no_profiles {
+                NO_PROFILES
+            } else if on_card > 0 {
+                ""
+            } else if view.issues.is_some_and(|_| issues.is_empty()) {
+                NO_HINTS
+            } else {
+                ""
+            };
+            blocks::status_line(ui, status, t.text_dim);
             if on_card > 0 {
                 blocks::note(ui, &on_the_card(on_card), t.text_dim);
             }
-            if issues.is_empty() {
-                if on_card == 0 {
-                    blocks::note(ui, NO_HINTS, t.text_dim);
+            ui.scope(|ui| {
+                if view.stale {
+                    ui.multiply_opacity(0.5);
                 }
-                return;
-            }
-            for (n, issue) in issues.iter().enumerate() {
-                if n > 0 {
-                    ui.add_space(t.spacing / 2.0);
+                for (n, issue) in issues.iter().take(MAX_CARDS).enumerate() {
+                    if n > 0 {
+                        ui.add_space(t.spacing / 2.0);
+                    }
+                    let fixes: Vec<_> = issue
+                        .fixes
+                        .iter()
+                        .filter_map(|f| Some((f, report::fix_action(snap.doc_id, f)?)))
+                        .collect();
+                    let why = view.stale.then_some(STALE_FIX);
+                    let buttons: Vec<HintButton> = fixes
+                        .iter()
+                        .map(|(f, _)| HintButton {
+                            label: &f.label,
+                            card: &f.description,
+                            why,
+                        })
+                        .collect();
+                    // Without a fix the hint says what to do.
+                    let detail = buttons.is_empty().then_some(issue.hint.as_str());
+                    if let Some(i) = blocks::hint_card_with(
+                        ui,
+                        t,
+                        None,
+                        Some((issue.code.title(), &issue.hint)),
+                        &issue.message,
+                        detail,
+                        // An error stops the cut: red, like the import card.
+                        issue.severity == flatcraft_engine::report::Severity::Error,
+                        &buttons,
+                    ) {
+                        actions.push(fixes[i].1.clone());
+                    }
                 }
-                let fixes: Vec<_> = issue
-                    .fixes
-                    .iter()
-                    .filter_map(|f| Some((f, report::fix_action(snap.doc_id, f)?)))
-                    .collect();
-                let buttons: Vec<HintButton> = fixes
-                    .iter()
-                    .map(|(f, _)| HintButton {
-                        label: &f.label,
-                        card: &f.description,
-                        why: None,
-                    })
-                    .collect();
-                // Without a fix the hint says what to do.
-                let detail = buttons.is_empty().then_some(issue.hint.as_str());
-                let title = issue.code.title();
-                if let Some(i) = blocks::hint_card_with(
-                    ui,
-                    t,
-                    None,
-                    Some((title, &issue.hint)),
-                    &issue.message,
-                    detail,
-                    // An error stops the cut: red, like the import card.
-                    issue.severity == flatcraft_engine::report::Severity::Error,
-                    &buttons,
-                ) {
-                    actions.push(fixes[i].1.clone());
-                }
+            });
+            if issues.len() > MAX_CARDS {
+                blocks::note(ui, &more_hints(issues.len() - MAX_CARDS), t.text_dim);
             }
         },
         None,

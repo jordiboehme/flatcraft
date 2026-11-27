@@ -600,6 +600,13 @@ impl CutSeed {
     }
 }
 
+impl CutSeed {
+    /// The cached build it starts from.
+    pub fn seed(&self) -> Option<Arc<CutGeometry>> {
+        self.seed.clone()
+    }
+}
+
 impl PartialEq for CutSeed {
     fn eq(&self, _: &Self) -> bool {
         true

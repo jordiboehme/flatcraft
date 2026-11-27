@@ -125,7 +125,11 @@ pub fn settle(h: &mut AppHarness) {
     // The Cut plan and the window's long commands run on workers too.
     let busy = |h: &AppHarness| {
         h.state().as_ref().is_some_and(|a| {
-            a.ui.cut.planning() || a.ui.cut.sim.busy() || a.ui.cut.kept.pending() || a.long.busy()
+            a.ui.cut.planning()
+                || a.ui.cut.sim.busy()
+                || a.ui.cut.kept.pending()
+                || a.long.busy()
+                || a.ui.prepare.object_hints.busy()
         })
     };
     while h.run_ok().is_none() || busy(h) {
@@ -276,6 +280,7 @@ pub fn wait_for_workers(h: &mut AppHarness) {
             || app.ui.cut.sim.busy()
             || app.ui.cut.kept.pending()
             || app.long.busy()
+            || app.ui.prepare.object_hints.busy()
     });
 }
 
@@ -436,6 +441,7 @@ impl RunPlan for AppHarness {
                 || app.ui.cut.sim.busy()
                 || app.ui.cut.kept.pending()
                 || app.long.busy()
+                || app.ui.prepare.object_hints.busy()
         });
     }
 }

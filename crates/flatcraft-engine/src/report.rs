@@ -753,6 +753,109 @@ pub fn check(input: &JobInput, ids: Option<&[ObjectId]>) -> Report {
     report
 }
 
+/// [`check`] of the objects `ids` that builds the cut geometry only of the
+/// objects the result can depend on, not of the whole document:
+///
+/// - the objects themselves and their linked copies;
+/// - every object a merged or visible outline among them is cut together
+///   with (a weld's box is the box of all of it), as far as that reaches;
+/// - every object whose box comes near one of those (a pair);
+/// - the groups those move with, and every object within the largest
+///   move a Move apart fix may try (it must not bring them near another);
+/// - and again what a merged or visible outline among those reaches.
+///
+/// The boxes are [`cutgeom::loose_bounds`]: never smaller than what is
+/// cut, and found without cutting. Gives the same report as
+/// `check(input, Some(ids))`. The flag is true when that took every object
+/// of the input: its cut geometry is then the document's and may go back
+/// into the document's cache.
+pub fn check_selection(input: &JobInput, ids: &[ObjectId]) -> (Report, bool) {
+    let limits = Limits::of(input);
+    let limit = gap_limit_mm(limits.min_feature_mm);
+    let tol = limits.tolerance_mm;
+    let objects = &input.objects;
+    let n = objects.len();
+    // Boxes that hold all an object cuts, without cutting it: a box too
+    // large only adds an object, never leaves one out.
+    let boxes: Vec<Option<Rect>> = objects.iter().map(cutgeom::loose_bounds).collect();
+    let near = |a: Option<Rect>, b: Option<Rect>, by: f64| matches!((a, b), (Some(a), Some(b)) if a.inflate(by, by).overlaps(b));
+    // Merged and visible outlines are cut with the objects over them,
+    // and those with theirs: a walk from every needed object.
+    let cross_closure = |need: &mut Vec<bool>| {
+        let mut todo: Vec<usize> = (0..n).filter(|&i| need[i]).collect();
+        while let Some(i) = todo.pop() {
+            for j in 0..n {
+                if need[j] {
+                    continue;
+                }
+                let cross =
+                    objects[i].cut.mode.is_cross_object() || objects[j].cut.mode.is_cross_object();
+                if cross && near(boxes[i], boxes[j], tol) {
+                    need[j] = true;
+                    todo.push(j);
+                }
+            }
+        }
+    };
+    let mut need: Vec<bool> = objects.iter().map(|o| ids.contains(&o.id)).collect();
+    let links: std::collections::BTreeSet<_> = objects
+        .iter()
+        .zip(&need)
+        .filter(|(_, n)| **n)
+        .filter_map(|(o, _)| o.link_group)
+        .collect();
+    for (i, o) in objects.iter().enumerate() {
+        if o.link_group.is_some_and(|g| links.contains(&g)) {
+            need[i] = true;
+        }
+    }
+    cross_closure(&mut need);
+    // Their pairs.
+    let core: Vec<usize> = (0..n).filter(|&i| need[i]).collect();
+    for j in 0..n {
+        if core.iter().any(|&i| near(boxes[i], boxes[j], limit + tol)) {
+            need[j] = true;
+        }
+    }
+    // What a pair's object moves with, and where a move may take it.
+    let units: std::collections::BTreeSet<ObjectId> = (0..n)
+        .filter(|&i| need[i])
+        .map(|i| objects[i].unit)
+        .collect();
+    for (i, o) in objects.iter().enumerate() {
+        if units.contains(&o.unit) {
+            need[i] = true;
+        }
+    }
+    let movers: Vec<usize> = (0..n).filter(|&i| need[i]).collect();
+    let reach = movers
+        .iter()
+        .filter_map(|&i| boxes[i])
+        .map(|b| b.width().max(b.height()))
+        .fold(0.0_f64, f64::max)
+        * 2.0
+        + 2.0 * limit
+        + tol;
+    for j in 0..n {
+        if movers.iter().any(|&i| near(boxes[i], boxes[j], reach)) {
+            need[j] = true;
+        }
+    }
+    cross_closure(&mut need);
+    if need.iter().all(|n| *n) {
+        return (check(input, Some(ids)), true);
+    }
+    let mut narrow = input.clone();
+    narrow.objects = objects
+        .iter()
+        .zip(&need)
+        .filter(|(_, n)| **n)
+        .map(|(o, _)| o.clone())
+        .collect();
+    narrow.cut = crate::job::CutSeed::new(input.cut.seed());
+    (check(&narrow, Some(ids)), false)
+}
+
 /// The ids of `o` and its linked copies (only `o` when it is not linked),
 /// in document order: a fix of shared settings changes all of them.
 fn members(input: &JobInput, o: &JobObject) -> Vec<u64> {

@@ -122,10 +122,16 @@ impl SizeField {
 }
 
 /// The field `field` as it shows now: its label, name, card and value.
-/// The ribbon and the object inspector both draw it from here.
-fn number_field_of(field: SizeField, snap: &Snapshot, st: &PrepareState) -> NumberField<'static> {
+/// The ribbon and the object inspector both draw it from here. `b` is the
+/// selection's live box ([`canvas::live_box`]), worked out once a frame
+/// by the caller.
+fn number_field_of(
+    field: SizeField,
+    snap: &Snapshot,
+    st: &PrepareState,
+    b: Option<kurbo::Rect>,
+) -> NumberField<'static> {
     let any = !snap.selection.is_empty();
-    let b = canvas::live_box(snap, st);
     let nf = |label, widest, name, setting, value: Option<f64>| NumberField {
         field,
         label,
@@ -199,7 +205,11 @@ fn number_field_of(field: SizeField, snap: &Snapshot, st: &PrepareState) -> Numb
 
 /// The card of a field: what it is, and how to type a calculation.
 fn field_card(nf: &NumberField) -> String {
-    calc::with_hint(nf.setting.card(), nf.field.spec().kind)
+    card_of(nf.field, nf.setting)
+}
+
+fn card_of(field: SizeField, setting: Setting) -> String {
+    calc::with_hint(setting.card(), field.spec().kind)
 }
 
 /// Why the fields are dimmed.
@@ -253,19 +263,28 @@ fn number_field(ui: &mut Ui, nf: NumberField, cx: &mut Cx) -> egui::Rect {
 pub fn inspector_field(
     ui: &mut Ui,
     field: SizeField,
+    b: Option<kurbo::Rect>,
     st: &mut PrepareState,
     snap: &Snapshot,
     actions: &mut Vec<Action>,
 ) -> egui::Response {
-    let nf = number_field_of(field, snap, st);
+    let nf = number_field_of(field, snap, st, b);
     field_edit(ui, nf, FieldPlace::Inspector, st, snap, actions, |ui, _| {
         ui.available_width()
     })
 }
 
 /// The card of a field in the object inspector: the ribbon's card.
-pub fn inspector_card(field: SizeField, snap: &Snapshot, st: &PrepareState) -> String {
-    field_card(&number_field_of(field, snap, st))
+pub fn inspector_card(field: SizeField) -> String {
+    let setting = match field {
+        SizeField::X => Setting::PositionX,
+        SizeField::Y => Setting::PositionY,
+        SizeField::Width => Setting::Width,
+        SizeField::Height => Setting::Height,
+        SizeField::Percent => Setting::ScalePercent,
+        SizeField::Angle => Setting::Angle,
+    };
+    card_of(field, setting)
 }
 
 /// The text field of a number field in `place`, `width(ui, text)` wide:
@@ -1169,8 +1188,9 @@ fn size_group(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
 
 /// The first column: X above Y, the top-left corner of the selection box.
 fn size_xy(ui: &mut Ui, cx: &mut Cx) {
+    let b = canvas::live_box(cx.snap, cx.st);
     for field in [SizeField::X, SizeField::Y] {
-        let nf = number_field_of(field, cx.snap, cx.st);
+        let nf = number_field_of(field, cx.snap, cx.st, b);
         number_field(ui, nf, cx);
         ui.end_row();
     }
@@ -1179,11 +1199,12 @@ fn size_xy(ui: &mut Ui, cx: &mut Cx) {
 /// The second column: W above H. Returns the rects of the two fields.
 fn size_wh(ui: &mut Ui, cx: &mut Cx) -> [egui::Rect; 2] {
     let mut rects = [egui::Rect::NOTHING; 2];
+    let b = canvas::live_box(cx.snap, cx.st);
     for (i, field) in [SizeField::Width, SizeField::Height]
         .into_iter()
         .enumerate()
     {
-        let nf = number_field_of(field, cx.snap, cx.st);
+        let nf = number_field_of(field, cx.snap, cx.st, b);
         rects[i] = number_field(ui, nf, cx);
         ui.end_row();
     }
@@ -1192,7 +1213,8 @@ fn size_wh(ui: &mut Ui, cx: &mut Cx) -> [egui::Rect; 2] {
 
 /// The Angle under the %, with the rotate icon as its label.
 fn size_angle(ui: &mut Ui, cx: &mut Cx) {
-    let nf = number_field_of(SizeField::Angle, cx.snap, cx.st);
+    // The Angle needs no box.
+    let nf = number_field_of(SizeField::Angle, cx.snap, cx.st, None);
     number_field(ui, nf, cx);
     ui.end_row();
 }
@@ -1205,7 +1227,8 @@ const SIZE_GRID_GAP: egui::Vec2 = egui::vec2(4.0, 4.0);
 
 /// The third column: % above the Angle.
 fn size_scale(ui: &mut Ui, cx: &mut Cx) {
-    let nf = number_field_of(SizeField::Percent, cx.snap, cx.st);
+    // The % needs no box.
+    let nf = number_field_of(SizeField::Percent, cx.snap, cx.st, None);
     number_field(ui, nf, cx);
     ui.end_row();
     size_angle(ui, cx);

@@ -1004,11 +1004,14 @@ fn every_object_setting_is_reachable() {
             h.run_plan();
         }
         reachable_objects(&mut h, &object::SETTINGS);
-        // The Source actions of a linked file.
+        // The Source actions, always all of them.
         let sn = snap(&mut h);
-        let items = object::source_items(&sn, &app(&h).ui.prepare);
-        assert!(items.len() >= 3, "{items:?}");
-        let names: Vec<String> = items.iter().map(|i| i.text(&sn, &[])).collect();
+        let ids: Vec<u64> = sn.selection.iter().copied().collect();
+        let names: Vec<String> = object::SOURCE_ITEMS
+            .iter()
+            .chain(&object::GROUP_ITEMS)
+            .map(|(i, _)| i.text(&sn, &ids))
+            .collect();
         let source: Vec<(&str, &str)> =
             names.iter().map(|n| (object::SOURCE, n.as_str())).collect();
         reachable_objects(&mut h, &source);
@@ -1055,6 +1058,8 @@ fn tab_switch_never_shows_other_document_values() {
         h.step();
         the(&h, "2 objects");
         assert_eq!(value(&h, "Keep"), "Mixed");
+        // The hints are checked on a worker; never the other document's.
+        h.run_plan();
         the(&h, "Move apart");
         app_mut(&mut h).apply(&ctx, vec![flatcraft::ui::Action::Switch(second)]);
         h.step();
@@ -1065,6 +1070,8 @@ fn tab_switch_never_shows_other_document_values() {
             h.query_by_label("Move apart").is_none(),
             "no hint of the other document"
         );
+        h.run_plan();
+        assert!(h.query_by_label("Move apart").is_none());
     }
 }
 
@@ -1155,4 +1162,202 @@ fn every_object_section_has_a_plain_card() {
         assert!(!text.contains('\u{2014}'), "{text}");
         assert!(text.ends_with('.'), "{text}");
     }
+}
+
+#[test]
+fn sections_keep_their_place_whatever_is_selected() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    {
+        let mut st = s.lock().unwrap();
+        st.prefs.panel_settings = PanelUser::Open;
+        for id in [object::POSITION, object::ARRANGE, object::SOURCE] {
+            st.prefs.panel_sections.insert(id.into(), true);
+        }
+    }
+    // A plain object, linked copies, a group and an object with a file.
+    let plain = import_square(&s);
+    let k = import_square(&s);
+    run(&s, "object.move", json!({ "ids": [k], "x_mm": 100.0 }));
+    let copy = run(&s, "object.duplicate", json!({ "ids": [k] }));
+    let k2 = copy["ids"][0]
+        .as_u64()
+        .or_else(|| copy["id"].as_u64())
+        .unwrap();
+    run(&s, "object.link", json!({ "ids": [k, k2] }));
+    let g1 = import_square(&s);
+    let g2 = import_square(&s);
+    run(
+        &s,
+        "object.move",
+        json!({ "ids": [g1], "x_mm": 20.0, "y_mm": 150.0 }),
+    );
+    run(
+        &s,
+        "object.move",
+        json!({ "ids": [g2], "x_mm": 80.0, "y_mm": 150.0 }),
+    );
+    run(&s, "object.group", json!({ "ids": [g1, g2] }));
+    let file = dir.path().join("logo.svg");
+    std::fs::write(&file, common::SQUARE_SVG).unwrap();
+    let linked = run(&s, "object.import", json!({ "path": file }))["id"]
+        .as_u64()
+        .unwrap();
+    run(
+        &s,
+        "object.move",
+        json!({ "ids": [linked], "x_mm": 150.0, "y_mm": 150.0 }),
+    );
+    run(&s, "object.select", json!({ "ids": [plain] }));
+    let mut h = harness_sized(&dir, s.clone(), [1400.0, 1600.0], 8, |a| a);
+    to_prepare(&mut h);
+    wait_for_workers(&mut h);
+    let headers = |h: &AppHarness| -> Vec<egui::Rect> {
+        object::SECTIONS
+            .iter()
+            .map(|(_, name)| h.get_by_label(name).rect())
+            .collect()
+    };
+    let first = headers(&h);
+    for ids in [vec![k], vec![g1, g2], vec![linked], vec![plain]] {
+        run(&s, "object.select", json!({ "ids": ids }));
+        h.run_plan();
+        assert_eq!(headers(&h), first, "{ids:?}");
+    }
+}
+
+#[test]
+fn hints_are_checked_off_the_ui_thread_and_the_last_check_shows_faded() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    let dir = tempfile::tempdir().unwrap();
+    let ids = std::cell::Cell::new((0, 0));
+    let (s, mut h) = window(&dir, 1400.0, |s| {
+        let (a, b) = two_squares(s);
+        run(
+            s,
+            "object.move",
+            json!({ "ids": [b], "x_mm": 70.3, "y_mm": 20.0 }),
+        );
+        ids.set((a, b));
+    });
+    let (a, b) = ids.get();
+    // A checker that notes its thread and waits until it is let go.
+    let open = Arc::new(AtomicBool::new(false));
+    let threads = Arc::new(Mutex::new(Vec::new()));
+    let (gate, seen) = (open.clone(), threads.clone());
+    app_mut(&mut h)
+        .ui
+        .prepare
+        .object_hints
+        .set_checker(Arc::new(move |input, ids| {
+            seen.lock().unwrap().push(std::thread::current().id());
+            while !gate.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            flatcraft_engine::report::check_selection(input, ids)
+        }));
+    run(&s, "object.select", json!({ "ids": [a, b] }));
+    // Frames go on while the check waits: it says it checks, nothing else.
+    for _ in 0..5 {
+        h.step();
+    }
+    the(&h, object::CHECKING);
+    assert!(h.query_by_label("Move apart").is_none());
+    open.store(true, Ordering::SeqCst);
+    h.run_plan();
+    the(&h, "Move apart");
+    assert!(in_inspector(&h, object::CHECKING).is_empty());
+    let ui = std::thread::current().id();
+    assert!(!threads.lock().unwrap().is_empty());
+    assert!(threads.lock().unwrap().iter().all(|t| *t != ui));
+    // A change: the last check shows, faded, its buttons dimmed with the
+    // reason, until the new one lands.
+    open.store(false, Ordering::SeqCst);
+    run(
+        &s,
+        "object.move",
+        json!({ "ids": [b], "x_mm": 70.4, "y_mm": 20.0 }),
+    );
+    for _ in 0..5 {
+        h.step();
+    }
+    the(&h, object::CHECKING);
+    let fix = &in_inspector(&h, "Move apart")[0];
+    assert!(fix.accesskit_node().is_disabled());
+    open.store(true, Ordering::SeqCst);
+    h.run_plan();
+    let fix = &in_inspector(&h, "Move apart")[0];
+    assert!(!fix.accesskit_node().is_disabled());
+    // The Job view hides the hints: no check runs for it.
+    job_line(&h).click();
+    h.run_plan();
+    let started = app(&h).ui.prepare.object_hints.started;
+    run(
+        &s,
+        "object.move",
+        json!({ "ids": [b], "x_mm": 70.5, "y_mm": 20.0 }),
+    );
+    h.run_plan();
+    assert_eq!(app(&h).ui.prepare.object_hints.started, started);
+    // Back to the objects: checked again.
+    job_line(&h).click();
+    h.run_plan();
+    assert_eq!(app(&h).ui.prepare.object_hints.started, started + 1);
+}
+
+#[test]
+fn hints_say_when_there_is_nothing_to_check_with_and_count_the_rest() {
+    let dir = tempfile::tempdir().unwrap();
+    // No material: nothing to check with, and never "good to go".
+    let (s, mut h) = window(&dir, 1400.0, |s| {
+        let id = selection_all(s)[0];
+        s.lock().unwrap().doc_mut().document.job.material_id = "gone".into();
+        run(s, "object.select", json!({ "ids": [id] }));
+    });
+    assert!(snap(&mut h).material.is_none());
+    the(&h, object::NO_PROFILES);
+    assert!(in_inspector(&h, object::NO_HINTS).is_empty());
+    assert!(!painted_text(&h, object::NO_HINTS));
+    // Many hints: the first ones as cards, the rest counted.
+    let tiny = r#"<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="200mm" viewBox="0 0 200 200"><rect x="20" y="20" width="10" height="10"/><rect x="40" y="20" width="0.5" height="0.5"/></svg>"#;
+    run(&s, "document.new", json!({}));
+    let mut all = Vec::new();
+    for k in 0..(object::MAX_CARDS + 3) {
+        let id = run(
+            &s,
+            "object.import_svg",
+            json!({ "svg": tiny, "name": format!("t{k}") }),
+        )["id"]
+            .as_u64()
+            .unwrap();
+        let (x, y) = ((k % 5) as f64 * 50.0, (k / 5) as f64 * 50.0);
+        run(
+            &s,
+            "object.move",
+            json!({ "ids": [id], "x_mm": x, "y_mm": y }),
+        );
+        all.push(id);
+    }
+    run(&s, "object.select", json!({ "ids": all }));
+    h.run_plan();
+    let sn = snap(&mut h);
+    let st = &app(&h).ui.prepare;
+    let view = st.object_hints.view(&sn);
+    let n = object::hint_issues(st, &sn, &view).0.len();
+    assert!(n > object::MAX_CARDS, "{n}");
+    let more = object::more_hints(n - object::MAX_CARDS);
+    let at = egui::pos2(job_line(&h).rect().center().x, 600.0);
+    for _ in 0..30 {
+        if !in_inspector(&h, &more).is_empty() {
+            break;
+        }
+        wheel_down(&mut h, at);
+    }
+    the(&h, &more);
+    let cards = painted(&h)
+        .iter()
+        .filter(|sh| matches!(sh, Shape::Text(t) if t.galley.text() == "Tiny shapes"))
+        .count();
+    assert!(cards <= object::MAX_CARDS, "{cards}");
 }

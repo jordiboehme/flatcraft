@@ -1038,42 +1038,31 @@ impl FlatCraftApp {
         self.toast(toast.with_detail("The report shows when you open its tab."));
     }
 
-    /// Checks the selected objects again for the object inspector's
-    /// Hints when the document, the profiles or the selection changed. The
-    /// input is taken under the lock, the check (it builds the cut
-    /// geometry) runs without it, and the geometry is offered back.
-    fn object_hints(&mut self, snap: &prepare::Snapshot) {
-        let (Some(plotter), Some(material)) = (&snap.plotter, &snap.material) else {
-            self.ui
-                .prepare
-                .object_hints
-                .store(snap, snap.doc_rev, Vec::new());
-            return;
-        };
-        let (input, rev) = {
-            let s = lock(&self.session);
-            let st = s.doc();
-            if st.id() != snap.doc_id {
-                return;
+    /// Asks for a check of the selected objects for the object
+    /// inspector's Hints when the document, the profiles or the selection
+    /// changed. The input is taken under the lock; the check runs on the
+    /// hints worker (`inspector::object::Hints`), never in this frame.
+    fn ask_object_hints(&mut self, ctx: &egui::Context, snap: &prepare::Snapshot) {
+        let input = match (&snap.plotter, &snap.material) {
+            (Some(plotter), Some(material)) => {
+                let s = lock(&self.session);
+                let st = s.doc();
+                if st.id() != snap.doc_id || st.revision() != snap.doc_rev {
+                    // Changed since the snapshot: the next frame asks.
+                    return;
+                }
+                Some(
+                    flatcraft_engine::job::JobInput::from_parts(
+                        &st.document,
+                        plotter.clone(),
+                        material,
+                    )
+                    .with_seed(st.cached_cut_geometry()),
+                )
             }
-            let input = flatcraft_engine::job::JobInput::from_parts(
-                &st.document,
-                plotter.clone(),
-                material,
-            )
-            .with_seed(st.cached_cut_geometry());
-            (input, st.revision())
+            _ => None,
         };
-        let ids: Vec<flatcraft_core::document::ObjectId> = snap
-            .selection
-            .iter()
-            .map(|i| flatcraft_core::document::ObjectId(*i))
-            .collect();
-        let found = flatcraft_engine::report::check(&input, Some(&ids));
-        if input.built_cut_geometry().is_some() {
-            lock(&self.session).offer_cut_geometry(snap.doc_id, rev, &input);
-        }
-        self.ui.prepare.object_hints.store(snap, rev, found.issues);
+        self.ui.prepare.object_hints.ask(ctx, snap, input);
     }
 
     /// Opens the stencil hint card (`stencil_island`) for the Stencil
@@ -2453,17 +2442,21 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
             .update(&ctx, &app.session, snap, deadline, simulating);
         app.ui.prepare.sheet_kept = cut::sheet_kept_now(&app.ui.cut, snap);
         // The object inspector's hints follow the document and the
-        // selection; not while a drag or a nudge burst changes the
-        // document every frame (the last check shows meanwhile).
+        // selection, checked on a worker; not while a drag or a nudge
+        // burst changes the document every frame, and not while the Job
+        // view hides them (the last check shows meanwhile).
+        if let Some((doc, rev, input)) = app.ui.prepare.object_hints.poll(&ctx) {
+            lock(&app.session).offer_cut_geometry(doc, rev, &input);
+        }
         let p = &app.ui.prepare;
         if workspace == Workspace::Prepare
             && !p.panels.collapsed(rails::SidePanel::Settings)
-            && !snap.selection.is_empty()
+            && inspector::shows_objects(p, snap)
             && p.drag.is_none()
             && p.nudge.is_none()
-            && p.object_hints.stale(snap)
+            && !p.object_hints.asked(snap)
         {
-            app.object_hints(snap);
+            app.ask_object_hints(&ctx, snap);
         }
         if report_check && let Some(card) = &mut app.ui.prepare.report {
             card.refresh(snap);
