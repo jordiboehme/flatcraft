@@ -1117,6 +1117,11 @@ impl FlatCraftApp {
 
     /// Updates what Prepare shows after a command ran.
     fn after_command(&mut self, command: &str, result: &Value) {
+        // A click on the selection (again) tries a check that could not
+        // start once more.
+        if command == "object.select" {
+            self.ui.prepare.object_hints.forget_failure();
+        }
         let doc_id = lock(&self.session).doc().id();
         let ids = |v: &Value| -> Vec<u64> {
             v.as_array()

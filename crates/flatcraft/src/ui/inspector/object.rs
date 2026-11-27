@@ -955,6 +955,21 @@ impl Hints {
         self.fail_spawns = yes;
     }
 
+    /// Forgets a check that could not be started, so the next frame
+    /// tries again (the person selected the objects again).
+    pub fn forget_failure(&mut self) {
+        if matches!(self.done, Some((_, Outcome::Failed))) {
+            self.done = None;
+        }
+    }
+
+    /// How many stopped checks may still run (tests).
+    pub fn stopping(&mut self) -> usize {
+        use std::sync::atomic::Ordering;
+        self.stopping.retain(|ended| !ended.load(Ordering::SeqCst));
+        self.stopping.len()
+    }
+
     /// A check runs or waits.
     pub fn busy(&self) -> bool {
         self.running.is_some() || self.queued.is_some()
@@ -990,8 +1005,14 @@ impl Hints {
                     self.running = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                // The worker died: forget it; the next frame asks again.
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.running = None,
+                // The worker died (a panic): the objects cannot be checked
+                // now; no frame tries again until they or the document
+                // change, or they are selected again.
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    if let Some(r) = self.running.take() {
+                        self.done = Some((r.0, Outcome::Failed));
+                    }
+                }
             }
         }
         self.pump(ctx);
@@ -1037,6 +1058,15 @@ impl Hints {
             std::thread::Builder::new()
                 .name("flatcraft-hints".into())
                 .spawn(move || {
+                    // Says it ended also when the check panics, so its
+                    // slot among the stopping checks frees.
+                    struct Ended(std::sync::Arc<std::sync::atomic::AtomicBool>);
+                    impl Drop for Ended {
+                        fn drop(&mut self) {
+                            self.0.store(true, Ordering::SeqCst);
+                        }
+                    }
+                    let _ended = Ended(ended2);
                     let ids: Vec<flatcraft_core::document::ObjectId> =
                         k.3.iter()
                             .map(|i| flatcraft_core::document::ObjectId(*i))
@@ -1047,7 +1077,6 @@ impl Hints {
                             (whole && input.built_cut_geometry().is_some()).then_some(input);
                         let _ = tx.send(((k, Outcome::Issues(report.issues)), input));
                     }
-                    ended2.store(true, Ordering::SeqCst);
                     repaint.request_repaint();
                 })
                 .map(|_| ())

@@ -1446,3 +1446,226 @@ fn a_worker_that_cannot_start_is_said_once_and_not_tried_every_frame() {
     assert_eq!(app(&h).ui.prepare.object_hints.tried, tried + 1);
     assert_eq!(app(&h).ui.prepare.object_hints.started, 0);
 }
+
+/// Three squares in a row, far apart, nothing selected.
+fn three_squares(s: &SharedSession) -> (u64, u64, u64) {
+    let (a, b) = two_squares(s);
+    let c = import_square(s);
+    run(s, "object.move", json!({ "ids": [c], "x_mm": 180.0 }));
+    run(s, "object.select", json!({ "ids": [] }));
+    (a, b, c)
+}
+
+/// Runs frames until no stopped check still runs.
+fn wait_stopped(h: &mut AppHarness) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while app_mut(h).ui.prepare.object_hints.stopping() > 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a stopped check never ended"
+        );
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn a_panicking_check_frees_its_slot_and_says_it_cannot_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let ids = std::cell::Cell::new((0, 0, 0));
+    let (s, mut h) = window(&dir, 1400.0, |s| ids.set(three_squares(s)));
+    let (a, b, _) = ids.get();
+    app_mut(&mut h)
+        .ui
+        .prepare
+        .object_hints
+        .set_checker(std::sync::Arc::new(|input, ids, stop| {
+            if ids.len() == 2 {
+                // Stopped, it panics instead of giving up.
+                while !stop() {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                panic!("a check that panics (test)");
+            }
+            if ids.len() == 1 && ids[0].0 % 2 == 0 {
+                panic!("a check that panics at once (test)");
+            }
+            flatcraft_engine::report::check_selection_until(input, ids, stop)
+        }));
+    run(&s, "object.select", json!({ "ids": [a, b] }));
+    for _ in 0..3 {
+        h.step();
+    }
+    // A new selection stops it; the panic still frees its slot.
+    let odd = if a % 2 == 1 { a } else { b };
+    let even = if a % 2 == 0 { a } else { b };
+    run(&s, "object.select", json!({ "ids": [odd] }));
+    h.run_plan();
+    wait_stopped(&mut h);
+    // A check that panics while it runs: the objects cannot be checked,
+    // and no frame tries again.
+    run(&s, "object.select", json!({ "ids": [even] }));
+    h.run_plan();
+    the(&h, object::CANNOT_CHECK);
+    let tried = app(&h).ui.prepare.object_hints.tried;
+    for _ in 0..10 {
+        h.step();
+    }
+    assert_eq!(app(&h).ui.prepare.object_hints.tried, tried);
+}
+
+#[test]
+fn selecting_again_tries_a_check_that_could_not_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, mut h) = window(&dir, 1400.0, |_| {});
+    app_mut(&mut h).ui.prepare.object_hints.fail_spawns(true);
+    let id = selection_all(&s)[0];
+    run(&s, "object.select", json!({ "ids": [id] }));
+    h.run_plan();
+    the(&h, object::CANNOT_CHECK);
+    // The same objects selected again, as a click does: tried again.
+    app_mut(&mut h).ui.prepare.object_hints.fail_spawns(false);
+    let doc = s.lock().unwrap().doc().id();
+    let ctx = h.ctx.clone();
+    app_mut(&mut h).apply(
+        &ctx,
+        vec![flatcraft::ui::Action::run(
+            doc,
+            "object.select",
+            json!({ "ids": [id] }),
+        )],
+    );
+    h.run_plan();
+    assert!(in_inspector(&h, object::CANNOT_CHECK).is_empty());
+    assert!(painted_text(&h, object::NO_HINTS));
+    assert_eq!(app(&h).ui.prepare.object_hints.started, 1);
+}
+
+#[test]
+fn a_stopped_check_that_still_answers_is_never_shown_or_cached() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    let dir = tempfile::tempdir().unwrap();
+    let ids = std::cell::Cell::new((0, 0));
+    let (s, mut h) = window(&dir, 1400.0, |s| {
+        let (a, b) = two_squares(s);
+        run(
+            s,
+            "object.move",
+            json!({ "ids": [b], "x_mm": 70.3, "y_mm": 20.0 }),
+        );
+        ids.set((a, b));
+    });
+    let (a, b) = ids.get();
+    let gate = Arc::new(AtomicBool::new(false));
+    let built = Arc::new(Mutex::new(None));
+    let (g, out) = (gate.clone(), built.clone());
+    app_mut(&mut h)
+        .ui
+        .prepare
+        .object_hints
+        .set_checker(Arc::new(move |input, ids, stop| {
+            if ids.len() == 2 {
+                // Ignores the stop flag and answers anyway, with the whole
+                // document's geometry.
+                while !g.load(Ordering::SeqCst) {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                *out.lock().unwrap() = Some(input.cut_geometry());
+                let all = flatcraft_engine::report::check(input, None);
+                return Some((all, true));
+            }
+            flatcraft_engine::report::check_selection_until(input, ids, stop)
+        }));
+    run(&s, "object.select", json!({ "ids": [a, b] }));
+    for _ in 0..3 {
+        h.step();
+    }
+    run(&s, "object.select", json!({ "ids": [a] }));
+    h.run_plan();
+    the(&h, "Move apart");
+    gate.store(true, Ordering::SeqCst);
+    wait_stopped(&mut h);
+    for _ in 0..5 {
+        h.step();
+    }
+    // Its answer is for a selection that is gone: not shown...
+    let sn = snap(&mut h);
+    let view = app(&h).ui.prepare.object_hints.view(&sn);
+    assert!(view.issues.is_some() && !view.stale && !view.checking);
+    assert_eq!(sn.selection.iter().copied().collect::<Vec<_>>(), vec![a]);
+    // ...and its geometry never went into the document's cache.
+    let stale = built
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the stopped check built");
+    let cached = s.lock().unwrap().doc().cached_cut_geometry();
+    assert!(cached.is_none_or(|c| !Arc::ptr_eq(&c, &stale)));
+    // Selecting both again asks a new check, not the stopped one's.
+    let started = app(&h).ui.prepare.object_hints.started;
+    run(&s, "object.select", json!({ "ids": [a, b] }));
+    h.run_plan();
+    assert_eq!(app(&h).ui.prepare.object_hints.started, started + 1);
+}
+
+#[test]
+fn with_two_stopped_checks_winding_down_the_newest_starts_when_one_ends() {
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    let dir = tempfile::tempdir().unwrap();
+    let ids = std::cell::Cell::new((0, 0, 0));
+    let (s, mut h) = window(&dir, 1400.0, |s| ids.set(three_squares(s)));
+    let (a, b, c) = ids.get();
+    // Checks of two or three objects ignore the stop flag and wait for
+    // their own gate; one object is quick.
+    let gates: Arc<Mutex<BTreeMap<Vec<u64>, Arc<AtomicBool>>>> = Default::default();
+    for set in [vec![a, b, c], vec![a, b], vec![b, c]] {
+        gates
+            .lock()
+            .unwrap()
+            .insert(set, Arc::new(AtomicBool::new(false)));
+    }
+    let g = gates.clone();
+    app_mut(&mut h)
+        .ui
+        .prepare
+        .object_hints
+        .set_checker(Arc::new(move |input, ids, stop| {
+            let key: Vec<u64> = ids.iter().map(|i| i.0).collect();
+            let gate = g.lock().unwrap().get(&key).cloned();
+            if let Some(gate) = gate {
+                while !gate.load(Ordering::SeqCst) {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                return None;
+            }
+            flatcraft_engine::report::check_selection_until(input, ids, stop)
+        }));
+    let open = |set: Vec<u64>| gates.lock().unwrap()[&set].store(true, Ordering::SeqCst);
+    for set in [vec![a, b, c], vec![a, b], vec![b, c]] {
+        run(&s, "object.select", json!({ "ids": set }));
+        for _ in 0..3 {
+            h.step();
+        }
+    }
+    // Two stopped checks still run, the third runs: the newest waits.
+    assert_eq!(app_mut(&mut h).ui.prepare.object_hints.stopping(), 2);
+    run(&s, "object.select", json!({ "ids": [a] }));
+    for _ in 0..5 {
+        h.step();
+    }
+    the(&h, object::CHECKING);
+    let started = app(&h).ui.prepare.object_hints.started;
+    assert_eq!(started, 3, "the newest waits for a slot");
+    // One stopped check ends: the newest starts and lands.
+    open(vec![a, b, c]);
+    h.run_plan();
+    assert_eq!(app(&h).ui.prepare.object_hints.started, started + 1);
+    assert!(in_inspector(&h, object::CHECKING).is_empty());
+    assert!(painted_text(&h, object::NO_HINTS));
+    open(vec![a, b]);
+    open(vec![b, c]);
+    wait_stopped(&mut h);
+}
