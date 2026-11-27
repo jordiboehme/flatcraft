@@ -143,7 +143,8 @@ fn quality_order_beats_baseline_on_its_objective() {
     let mut misses = Vec::new();
     for pair in all.chunks(2) {
         let (q, b) = (&pair[0], &pair[1]);
-        if bench::objective(q) > bench::objective(b) {
+        // The margins are 47 mm and more; 1e-6 only keeps float noise out.
+        if bench::objective(q) > bench::objective(b) + 1e-6 {
             misses.push(format!(
                 "{}: quality objective {:.3} > baseline {:.3}",
                 q.case,
@@ -244,4 +245,42 @@ fn benchmarks_page_matches_the_baseline() {
         "docs/quality/benchmarks.md is not the page of baseline.json (run cargo xtask bench-quality --write)"
     );
     assert!(!page.contains('\u{2014}') && !page.contains('\u{2013}'));
+}
+
+#[test]
+fn row_rule_catches_a_dropped_turn_weight_or_crossing_penalty() {
+    // The committed rows, doctored: Quality's row with the entry turn the
+    // order gets without a turn weight (the Fast row), and with the
+    // crossings it gets without the crossing penalty (the Baseline row).
+    // Both must count as regressions, on travel staying the same.
+    let base = baseline();
+    let row = |case: &str, variant: &str| {
+        base.rows
+            .iter()
+            .find(|r| r.case == case && r.variant == variant)
+            .unwrap()
+            .clone()
+    };
+    for case in ["test-sheet", "small-text", "dense-trace"] {
+        let quality = row(case, "quality");
+        let no_turn_weight = bench::BenchRow {
+            entry_turn_deg: row(case, "fast").entry_turn_deg,
+            ..quality.clone()
+        };
+        let found = bench::row_regressions(&quality, &no_turn_weight);
+        assert!(
+            found.iter().any(|r| r.contains("entry_turn_deg")),
+            "{case}: {found:?}"
+        );
+        let no_crossing_penalty = bench::BenchRow {
+            travel_crossings: row(case, "baseline").travel_crossings,
+            ..quality.clone()
+        };
+        let found = bench::row_regressions(&quality, &no_crossing_penalty);
+        assert!(
+            found.iter().any(|r| r.contains("travel_crossings")),
+            "{case}: {found:?}"
+        );
+        assert!(bench::row_regressions(&quality, &quality).is_empty());
+    }
 }

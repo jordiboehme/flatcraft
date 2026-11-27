@@ -622,6 +622,19 @@ pub mod rule {
     pub const TRAVEL_FACTOR: f64 = 1.05;
     /// Segments may grow by this factor.
     pub const SEGMENTS_FACTOR: f64 = 1.10;
+    /// Travel crossings may grow by this many.
+    pub const CROSSINGS_SLACK: usize = 1;
+    /// The entry turn may grow by this factor ...
+    pub const TURN_FACTOR: f64 = 1.05;
+    /// ... plus this, deg.
+    pub const TURN_SLACK_DEG: f64 = 1.0;
+    /// Lifts may grow by this factor.
+    pub const LIFTS_FACTOR: f64 = 1.05;
+    /// The order objective (`super::objective`) may grow by this factor.
+    pub const OBJECTIVE_FACTOR: f64 = 1.05;
+    /// The improved crossings of the sweep, summed, may grow by this
+    /// factor (plus `super::SWEEP_SLACK`).
+    pub const SWEEP_TOTAL_FACTOR: f64 = 1.05;
 }
 
 /// Every way `now` is worse than `base` beyond the rule, as text.
@@ -691,6 +704,39 @@ pub fn row_regressions(base: &BenchRow, now: &BenchRow) -> Vec<String> {
             now.max_into_kept_mm, base.max_into_kept_mm
         ));
     }
+    // The order: what the strategy is for. Without these a dropped turn
+    // weight or crossing penalty would pass on travel alone.
+    if now.travel_crossings > base.travel_crossings + rule::CROSSINGS_SLACK {
+        out.push(format!(
+            "{id}: travel_crossings {} > {} + {}",
+            now.travel_crossings,
+            base.travel_crossings,
+            rule::CROSSINGS_SLACK
+        ));
+    }
+    let turn = base.entry_turn_deg * rule::TURN_FACTOR + rule::TURN_SLACK_DEG;
+    if now.entry_turn_deg > turn + eps {
+        out.push(format!(
+            "{id}: entry_turn_deg {} > {turn:.6} (baseline {})",
+            now.entry_turn_deg, base.entry_turn_deg
+        ));
+    }
+    if now.lifts as f64 > base.lifts as f64 * rule::LIFTS_FACTOR {
+        out.push(format!(
+            "{id}: lifts {} > {} x {}",
+            now.lifts,
+            base.lifts,
+            rule::LIFTS_FACTOR
+        ));
+    }
+    let limit = objective(base) * rule::OBJECTIVE_FACTOR;
+    if objective(now) > limit + eps {
+        out.push(format!(
+            "{id}: order objective {:.3} > {limit:.3} (baseline {:.3})",
+            objective(now),
+            objective(base)
+        ));
+    }
     out
 }
 
@@ -730,6 +776,13 @@ pub fn regressions(base: &Baseline, rows: &[BenchRow], sweep: &CrossingSweep) ->
         out.push(format!(
             "crossing sweep: the improvement removes crossings on {} jobs (baseline {})",
             sweep.fewer, b.fewer
+        ));
+    }
+    let total = b.improved_crossings as f64 * rule::SWEEP_TOTAL_FACTOR + SWEEP_SLACK as f64;
+    if sweep.improved_crossings as f64 > total {
+        out.push(format!(
+            "crossing sweep: {} crossings after the improvement > {total:.1} (baseline {})",
+            sweep.improved_crossings, b.improved_crossings
         ));
     }
     out
@@ -959,6 +1012,11 @@ Every strategy row must stay as good as its row in
 - each mm number grows by at most 5 % plus 0.002 mm,
 - travel grows by at most 5 %,
 - segments grow by at most 10 %,
+- crossings grow by at most 1,
+- the turn at the starts grows by at most 5 % plus 1 degree,
+- lifts grow by at most 5 %,
+- what the order aims for (travel plus the price of turns and crossings,
+  see below) grows by at most 5 %,
 - pushes and the cut into kept material never grow, not even a little.
 
 The strategy rows (except tiny-dots) also stay within the device limit of
@@ -1006,6 +1064,7 @@ and with the first nearest-neighbour order alone, and counts the crossings
 in the simulation. The rule: the number of jobs the improvement makes
 worse never grows, and the number it makes better never drops, give or
 take 2 jobs (another computer's maths library can tip one close call the
-other way).
+other way). The crossings left after the improvement, all jobs together,
+grow by at most 5 % plus 2.
 
 "#;

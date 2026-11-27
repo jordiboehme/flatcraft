@@ -72,6 +72,11 @@ Every strategy row must stay as good as its row in
 - each mm number grows by at most 5 % plus 0.002 mm,
 - travel grows by at most 5 %,
 - segments grow by at most 10 %,
+- crossings grow by at most 1,
+- the turn at the starts grows by at most 5 % plus 1 degree,
+- lifts grow by at most 5 %,
+- what the order aims for (travel plus the price of turns and crossings,
+  see below) grows by at most 5 %,
 - pushes and the cut into kept material never grow, not even a little.
 
 The strategy rows (except tiny-dots) also stay within the device limit of
@@ -206,7 +211,8 @@ and with the first nearest-neighbour order alone, and counts the crossings
 in the simulation. The rule: the number of jobs the improvement makes
 worse never grows, and the number it makes better never drops, give or
 take 2 jobs (another computer's maths library can tip one close call the
-other way).
+other way). The crossings left after the improvement, all jobs together,
+grow by at most 5 % plus 2.
 
 | jobs | fewer crossings | more | same | crossings, construction alone | crossings, improved |
 |---|---|---|---|---|---|
