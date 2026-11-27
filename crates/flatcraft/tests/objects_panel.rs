@@ -133,14 +133,14 @@ fn search_filters_without_changing_selection() {
     // The selection is what it was; the header tells that it is hidden.
     assert_eq!(selection(&s), vec![sc.star]);
     let note = objects::filter_note(1, 1);
-    assert_eq!(note, "1 selected, 1 hidden");
+    assert_eq!(note, "1 selected, 1 not shown");
     assert!(h.query_by_label(&note).is_some(), "the header says it");
-    // Its card says by what.
-    assert!(objects::FILTER_NOTE_CARD.contains("hidden by the filter"));
-    // A match that is selected is not hidden: no note.
+    // Its card says what that means.
+    assert!(objects::FILTER_NOTE_CARD.contains("the filter leaves them out"));
+    // A match that is selected is not filtered out: no note.
     exec(&s, "object.select", json!({ "ids": [sc.circle] }));
     h.run_plan();
-    assert!(h.query_by_label_contains(" hidden").is_none());
+    assert!(h.query_by_label_contains("not shown").is_none());
     exec(&s, "object.select", json!({ "ids": [sc.star] }));
     h.run_plan();
     // A filter that matches nothing says so.
@@ -456,7 +456,7 @@ fn the_folded_objects_rail_says_filtered() {
     let name = rail.accesskit_node().label().unwrap_or_default();
     assert!(name.contains(rails::FILTERED), "{name}");
     let sum = rails::objects_summary_filtered(&snap(&mut h), "circ");
-    assert_eq!(sum.parts.last().map(String::as_str), Some(rails::FILTERED));
+    assert_eq!(sum.parts[1], rails::FILTERED, "right after the count");
     assert!(rails::filtered_card("circ").contains("\"circ\""));
     // Its card explains it.
     h.ctx
@@ -509,4 +509,41 @@ fn a_filter_field_that_is_not_drawn_never_takes_an_escape() {
         app(&h).ui.prepare.objects_filter,
         Some((doc, "circ".to_string()))
     );
+}
+
+#[test]
+fn filtered_survives_a_long_rail_summary_cut_short() {
+    // Many counts and a short window: the rail text is cut short, and
+    // "filtered" still shows, right after the count.
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let sc = scene(&s);
+    exec(
+        &s,
+        "object.select",
+        json!({ "ids": [sc.star, sc.circle, sc.square] }),
+    );
+    exec(
+        &s,
+        "object.set_visible",
+        json!({ "ids": [sc.circle], "visible": false }),
+    );
+    exec(
+        &s,
+        "object.set_cut",
+        json!({ "ids": [sc.square], "cut": false }),
+    );
+    let mut h = harness_sized(&dir, s.clone(), [900.0, 300.0], 8, |a| a);
+    to_prepare(&mut h);
+    h.run_plan();
+    set_filter(&mut h, &s, "circ");
+    let left = painted(&h)
+        .into_iter()
+        .find_map(|sh| match sh {
+            egui::Shape::Text(t) if t.angle < 0.0 => Some(t.galley.text().to_string()),
+            _ => None,
+        })
+        .expect("the left rail's text");
+    assert!(left.ends_with("..."), "cut short: {left}");
+    assert!(left.starts_with("4 objects · filtered"), "{left}");
 }

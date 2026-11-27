@@ -313,12 +313,14 @@ pub fn objects_summary(snap: &Snapshot) -> Summary {
 pub const FILTERED: &str = "filtered";
 
 /// [`objects_summary`] while the Objects list is filtered by `filter`
-/// (nothing changes when it is empty): "filtered" after the counts.
+/// (nothing changes when it is empty): "filtered" right after the object
+/// count.
 pub fn objects_summary_filtered(snap: &Snapshot, filter: &str) -> Summary {
     let mut s = objects_summary(snap);
     let f = filter.trim();
     if !f.is_empty() {
-        s.parts.push(FILTERED.to_string());
+        // Right after the count, so a rail cut short never drops it.
+        s.parts.insert(1, FILTERED.to_string());
         s.filter = Some(f.to_string());
     }
     s

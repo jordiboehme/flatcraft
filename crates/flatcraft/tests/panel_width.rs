@@ -292,7 +292,8 @@ fn the_playback_bar_takes_clicks_after_the_pointer_moved() {
     assert!(tl.visible() < tl.total, "{} of {}", tl.visible(), tl.total);
 }
 
-/// Every resizable side panel draws its content through
+/// Every resizable side panel (`.resizable(true)` or any expression)
+/// draws its content through
 /// `rails::panel_body`, so content that over-asks can never widen it.
 #[test]
 fn every_resizable_side_panel_holds_its_content_to_its_width() {
@@ -304,7 +305,12 @@ fn every_resizable_side_panel_holds_its_content_to_its_width() {
             continue;
         }
         let src = std::fs::read_to_string(&path).unwrap();
-        for (at, _) in src.match_indices(".resizable(true)") {
+        for (at, _) in src.match_indices(".resizable(") {
+            // `.resizable(false)` cannot grow; any other value (true or an
+            // expression) may.
+            if src[at..].starts_with(".resizable(false)") {
+                continue;
+            }
             // Only side panels (windows resize on their own terms).
             let before = &src[..at];
             let start = before.rfind("egui::").unwrap_or(0);
