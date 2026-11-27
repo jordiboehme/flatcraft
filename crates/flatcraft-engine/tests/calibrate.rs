@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use flatcraft_device::ProfileStore;
 use flatcraft_device::gpgl::check_safe;
 use flatcraft_engine::calibrate::{self, NEEDS_HOST, TILE_MM, TILE_PITCH_MM};
+use flatcraft_engine::cutlog::{Calibration, Verdict};
 use flatcraft_engine::job::{JobInput, WAITING};
 use flatcraft_engine::prefs::Preferences;
 use flatcraft_engine::session::{CommandError, Origin, Session, UnlockedHook};
@@ -274,6 +275,58 @@ fn offset_series_sends_to_file_output() {
     assert!(bytes.ends_with(b"H\x03"));
     let last = s.doc().last_sent().unwrap();
     assert_eq!(last.plan.compensation, AppliedCompensation::HostCalibration);
+}
+
+/// A sent series is a calibration cut in the cut log: job.history says
+/// so with its offsets, and even rated good it never counts as the
+/// material's last cut, last good cut or cut to rate. A design cut does.
+#[test]
+fn a_sent_series_is_a_calibration_cut_in_the_cut_log() {
+    let d = dirs();
+    let mut s = host_session(&d, 0.3);
+    let v = run(
+        &mut s,
+        "tools.offset_series",
+        json!({ "offsets_mm": OFFSETS, "send": true }),
+    );
+    let id = v["sent"]["cut_log_entry"].as_str().unwrap().to_string();
+    let material = s.doc().document.job.material_id.clone();
+    s.record_outcome(&id, Verdict::Good, "0.3 looks best")
+        .unwrap();
+
+    let log = s.cut_log();
+    let e = log.get(&id).unwrap();
+    assert_eq!(
+        e.calibration,
+        Some(Calibration::OffsetSeries {
+            offsets_mm: OFFSETS.to_vec()
+        })
+    );
+    assert!(log.last_good(&material).is_none());
+    assert!(log.last_time(&material).is_none());
+    assert!(log.to_rate(&material).is_none());
+    assert!(log.has_cut(&material), "it was cut on this material");
+
+    let h = run(&mut s, "job.history", json!({}));
+    let entry = &h["entries"][0];
+    assert_eq!(entry["calibration"]["kind"], "offset_series");
+    assert_eq!(entry["calibration"]["offsets_mm"], json!(OFFSETS));
+
+    // A design cut after it is the material's cut, and has no calibration.
+    run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": SQUARE, "name": "sq" }),
+    );
+    let sent = run(&mut s, "job.send", json!({}));
+    let design = sent["cut_log_entry"].as_str().unwrap().to_string();
+    s.record_outcome(&design, Verdict::Good, "").unwrap();
+    let log = s.cut_log();
+    assert_eq!(log.last_good(&material).unwrap().id, design);
+    assert_eq!(log.last_time(&material).unwrap().id, design);
+    assert_eq!(log.get(&design).unwrap().calibration, None);
+    let h = run(&mut s, "job.history", json!({}));
+    assert!(h["entries"][0].get("calibration").is_none());
 }
 
 #[test]

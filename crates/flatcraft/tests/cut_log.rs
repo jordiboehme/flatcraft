@@ -166,6 +166,24 @@ fn only_a_cut_on_a_plotter_asks_right_after_the_send() {
     assert!(d.about.contains("Adhesive vinyl"), "{}", d.about);
 }
 
+/// A calibration cut (an offset test series) is never asked about, even
+/// on a plotter, and its line says what it was.
+#[test]
+fn a_calibration_cut_is_not_asked_about() {
+    let (dir, _s, _h) = sent_once();
+    let mut e = cutlog::read(dir.path()).entries[0].clone();
+    e.target = Target::Usb;
+    e.calibration = Some(cutlog::Calibration::OffsetSeries {
+        offsets_mm: vec![0.25, 0.3],
+    });
+    assert!(outcome::after_send(&e).is_none());
+    assert!(
+        outcome::cut_text(&e).contains(", offset test series, "),
+        "{}",
+        outcome::cut_text(&e)
+    );
+}
+
 #[test]
 fn rate_asks_about_the_newest_unrated_cut_while_the_line_shows_the_rated_one() {
     let (dir, s, mut h, _now) = sent_once_with_clock();

@@ -80,10 +80,16 @@ fn passes(n: u32) -> String {
     }
 }
 
-/// "2026-11-26, Vinyl on File Output (GPGL Cameo 2), force 12, 2 passes".
+/// "2026-11-26, Vinyl on File Output (GPGL Cameo 2), force 12, 2 passes",
+/// with "offset test series, " after the day for a calibration cut.
 pub fn cut_text(e: &CutEntry) -> String {
+    let what = if e.is_calibration() {
+        "offset test series, "
+    } else {
+        ""
+    };
     format!(
-        "{}, {} on {}, force {}, {}",
+        "{}, {what}{} on {}, force {}, {}",
         day(&e.date),
         e.material,
         e.plotter,
@@ -108,9 +114,12 @@ pub fn last_time_text(e: &CutEntry) -> String {
     )
 }
 
-/// Opens the question after a send when the cut was on a plotter.
+/// Opens the question after a send when the cut was on a plotter. A
+/// calibration cut is never asked about: the person picks the best tile
+/// of it, it is not good or bad.
 pub fn after_send(entry: &CutEntry) -> Option<OutcomeDialog> {
-    cutlog::asks_after(&entry.target).then(|| OutcomeDialog::about(entry))
+    (cutlog::asks_after(&entry.target) && !entry.is_calibration())
+        .then(|| OutcomeDialog::about(entry))
 }
 
 /// A thumb button that shows whether it is picked.

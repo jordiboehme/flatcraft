@@ -366,6 +366,9 @@ pub fn build(input: &SeriesInput) -> Result<Series, CommandError> {
             covered_warnings: Vec::new(),
             sent: None,
             built_for: plotter.clone(),
+            calibration: Some(crate::cutlog::Calibration::OffsetSeries {
+                offsets_mm: input.offsets_mm.clone(),
+            }),
         },
         tiles,
     })

@@ -67,6 +67,9 @@ pub struct JobResult {
     /// The plotter profile the job was built for, with every setting as
     /// it was then. [`send_built`] refuses to send it with another one.
     pub built_for: PlotterProfile,
+    /// What a calibration job tests (an offset series); `None` for the
+    /// job of a design. Its cut log entry carries it.
+    pub calibration: Option<cutlog::Calibration>,
 }
 
 /// The failure when a built job is sent with another plotter profile than
@@ -996,6 +999,7 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         covered_warnings,
         sent: None,
         built_for: plotter.clone(),
+        calibration: None,
     })
 }
 
@@ -1191,7 +1195,8 @@ pub fn send_built(
     // Only a checked job can be sent or wait for confirmation.
     let job = checked(result.job.clone())?;
     let sum = summary(&result);
-    let log = log_entry(s, &sum, result.job.bytes.len(), plotter, &name);
+    let mut log = log_entry(s, &sum, result.job.bytes.len(), plotter, &name);
+    log.calibration = result.calibration.clone();
     if decision == GateDecision::NeedsConfirmation {
         s.request_confirmation(
             name,
@@ -1254,6 +1259,7 @@ fn log_entry(
             travel_mm: summary.travel_mm,
         },
         target: cutlog::Target::Usb,
+        calibration: None,
         outcome: None,
     }
 }

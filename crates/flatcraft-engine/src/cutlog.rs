@@ -67,6 +67,17 @@ pub enum Target {
     Usb,
 }
 
+/// What a calibration cut tested. Such a cut is not a cut of a design:
+/// it never counts as the material's last cut or last good cut, and it is
+/// not rated good or bad (the person picks the best tile instead).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Calibration {
+    /// A blade offset test series (`tools.offset_series`): one tile per
+    /// host offset, left to right.
+    OffsetSeries { offsets_mm: Vec<f64> },
+}
+
 /// The size of a job.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct JobSize {
@@ -105,6 +116,10 @@ pub struct CutEntry {
     pub keep_mode: Option<String>,
     pub size: JobSize,
     pub target: Target,
+    /// Set for a calibration cut ([`Calibration`]); entries of design cuts
+    /// have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calibration: Option<Calibration>,
     /// How it went: merged in from the outcome lines when the log is read,
     /// never written in this line.
     #[serde(skip)]
@@ -136,6 +151,19 @@ pub struct CutLog {
     pub plain_diagnostics: Vec<String>,
 }
 
+impl CutEntry {
+    /// True for a calibration cut ([`Calibration`]).
+    pub fn is_calibration(&self) -> bool {
+        self.calibration.is_some()
+    }
+
+    /// A cut of a design with this material: what the material's last
+    /// cut, last good cut and the cut to rate are taken from.
+    fn design_cut_with(&self, material_id: &str) -> bool {
+        self.material_id == material_id && !self.is_calibration()
+    }
+}
+
 impl CutLog {
     /// The entry with this id.
     pub fn get(&self, id: &str) -> Option<&CutEntry> {
@@ -143,39 +171,40 @@ impl CutLog {
     }
 
     /// The cut "Rate the cut of ..." asks about for this material: the
-    /// newest one nobody rated yet.
+    /// newest design cut nobody rated yet.
     pub fn to_rate(&self, material_id: &str) -> Option<&CutEntry> {
         self.entries
             .iter()
             .rev()
-            .find(|e| e.material_id == material_id && e.outcome.is_none())
+            .find(|e| e.design_cut_with(material_id) && e.outcome.is_none())
     }
 
-    /// The newest cut with this material that the person rated good: the
-    /// troubleshooter's "Last good cut with this material".
+    /// The newest design cut with this material that the person rated
+    /// good: the troubleshooter's "Last good cut with this material".
     pub fn last_good(&self, material_id: &str) -> Option<&CutEntry> {
         self.entries.iter().rev().find(|e| {
-            e.material_id == material_id
+            e.design_cut_with(material_id)
                 && e.outcome
                     .as_ref()
                     .is_some_and(|o| o.verdict == Verdict::Good)
         })
     }
 
-    /// True when the log has a cut with this material: the material
-    /// picker suggests a test cut for one that was never cut.
+    /// True when the log has a cut with this material, a calibration cut
+    /// too: the material picker suggests a test cut for one that was
+    /// never cut.
     pub fn has_cut(&self, material_id: &str) -> bool {
         self.entries.iter().any(|e| e.material_id == material_id)
     }
 
-    /// The cut the Job card recalls for this material: the newest with an
-    /// outcome, else the newest.
+    /// The design cut the Job card recalls for this material: the newest
+    /// with an outcome, else the newest.
     pub fn last_time(&self, material_id: &str) -> Option<&CutEntry> {
         let mut with_material = self
             .entries
             .iter()
             .rev()
-            .filter(|e| e.material_id == material_id);
+            .filter(|e| e.design_cut_with(material_id));
         let newest = with_material.clone().next();
         with_material.find(|e| e.outcome.is_some()).or(newest)
     }
