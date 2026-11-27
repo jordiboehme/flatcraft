@@ -150,3 +150,105 @@ fn prepare_panels(ppp: f32) {
     assert!(app(&h).ui.prepare.panel.is_some());
     sweep(&mut h, "Arrange");
 }
+
+/// Moves the pointer over the stage panel and the canvas for 400 frames,
+/// as a person does for a while before reaching for the bar. (A panel
+/// that grew 2 pt per frame took the whole window by then.)
+fn wander(h: &mut AppHarness) {
+    for i in 0..400 {
+        let x = 600.0 + (i as f32 * 37.0) % 790.0;
+        let y = 160.0 + (i as f32 * 53.0) % 600.0;
+        h.event(Event::PointerMoved(Pos2::new(x, y)));
+        h.step();
+    }
+    h.run_plan();
+}
+
+/// A click at `at` in two frames, without waiting for the window to
+/// settle after it: playback keeps asking for frames until it ends, so a
+/// wait would only return once it stopped.
+fn press(h: &mut AppHarness, at: Pos2) {
+    h.drag_at(at);
+    h.step();
+    h.drop_at(at);
+    h.step();
+}
+
+/// The rect of the control `name` in the bottom bar, which must lie
+/// under the canvas, never under the stage panel (that would take its
+/// clicks), and leave the canvas most of the window.
+fn bar_control(h: &AppHarness, name: &str) -> Rect {
+    let r = h.get_by_label(name).rect();
+    let c = app(h).ui.cut.canvas_rect;
+    assert!(c.width() > 600.0, "the canvas keeps its room: {c:?}");
+    assert!(
+        r.width() > 4.0 && r.left() >= c.left() && r.right() <= c.right() && r.top() >= c.bottom(),
+        "{name} at {r:?}, canvas {c:?}"
+    );
+    r
+}
+
+#[test]
+fn the_playback_bar_takes_clicks_after_the_pointer_moved() {
+    let host = "{ Host = { offset_mm = 0.3, pivot_threshold_deg = 0.0 } }";
+    let (_d, mut h) = window_with(1.0, Some(host));
+    app_mut(&mut h).ui.workspace = Workspace::Cut;
+    wait_for_workers(&mut h);
+    // A while on the first step, where the panel once grew.
+    wander(&mut h);
+    // Simulate: the run lands and its numbers show.
+    app_mut(&mut h).ui.cut.stage = Stage::Simulate;
+    wait_for_workers(&mut h);
+    wander(&mut h);
+    assert!(
+        h.query_by_label("Time (estimate)").is_some(),
+        "the simulation landed"
+    );
+    let total = app(&h).ui.cut.sim.clock.total_mm;
+    assert!(total > 0.0);
+    // The time slider takes a click: the head goes there.
+    let slider = bar_control(&h, "Time");
+    click_at(&mut h, slider.left_center() + egui::vec2(8.0, 0.0));
+    let at = app(&h).ui.cut.sim.clock.t_mm;
+    assert!(at < total, "the click moved the time: {at} of {total}");
+    // A speed button and Play take clicks; playback moves on.
+    let p = bar_control(&h, "Speed 4x").center();
+    click_at(&mut h, p);
+    assert_eq!(app(&h).ui.cut.sim.clock.speed, 4.0);
+    let p = bar_control(&h, "Play").center();
+    press(&mut h, p);
+    assert!(
+        app(&h).ui.cut.sim.clock.playing.is_some(),
+        "Play took the click"
+    );
+    let first = app(&h).ui.cut.sim.clock.t_mm;
+    for _ in 0..3 {
+        h.step();
+    }
+    assert!(app(&h).ui.cut.sim.clock.t_mm > first, "playback moves on");
+    let p = bar_control(&h, "Stop").center();
+    press(&mut h, p);
+    assert!(
+        app(&h).ui.cut.sim.clock.playing.is_none(),
+        "Stop took the click"
+    );
+    h.run_plan();
+    // Path: the same bar for the toolpath.
+    app_mut(&mut h).ui.cut.stage = Stage::Path;
+    wait_for_workers(&mut h);
+    wander(&mut h);
+    let p = bar_control(&h, "Play").center();
+    press(&mut h, p);
+    assert!(
+        app(&h).ui.cut.timeline.playing.is_some(),
+        "Play took the click"
+    );
+    let p = bar_control(&h, "Stop").center();
+    press(&mut h, p);
+    assert!(app(&h).ui.cut.timeline.playing.is_none());
+    h.run_plan();
+    let slider = bar_control(&h, "Toolpath");
+    click_at(&mut h, slider.left_center() + egui::vec2(8.0, 0.0));
+    let tl = &app(&h).ui.cut.timeline;
+    assert!(tl.visible() < tl.total, "{} of {}", tl.visible(), tl.total);
+}
