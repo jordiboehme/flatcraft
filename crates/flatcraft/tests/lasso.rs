@@ -467,3 +467,31 @@ fn the_tool_cards_name_the_keys_of_each_system() {
         );
     }
 }
+
+/// Stickers on a backing sheet: the Lasso tool, started over the sheet,
+/// picks the two stickers it goes around and leaves the sheet.
+#[test]
+fn a_lasso_on_a_backing_sheet_picks_the_stickers_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, [a, b, _]) = three(&dir);
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="300mm" height="300mm" viewBox="0 0 300 300"><rect x="5" y="5" width="285" height="85"/></svg>"#;
+    let sheet = exec(
+        &s,
+        "object.import_svg",
+        json!({ "svg": svg, "name": "sheet" }),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    exec(
+        &s,
+        "object.reorder",
+        json!({ "ids": [sheet], "to": "back" }),
+    );
+    exec(&s, "object.select", json!({ "ids": [] }));
+    let (mut h, v) = rig(&dir, s.clone());
+    app_mut(&mut h).ui.prepare.select_tool = SelectTool::Lasso;
+    let around_ab =
+        [(12.0, 12.0), (178.0, 12.0), (178.0, 80.0), (12.0, 80.0)].map(|(x, y)| at(&v, x, y));
+    trace(&mut h, &around_ab, Modifiers::NONE);
+    assert_eq!(selection(&s), [a, b]);
+}

@@ -127,8 +127,9 @@ impl Lasso {
     }
 
     /// Whether the shape touches the outline `lines` (moved by `offset`):
-    /// a point of it inside, a line crossing the shape's edge, or the
-    /// shape lying inside one of its closed rings.
+    /// a point of it inside, or a line crossing the shape's edge. A lasso
+    /// drawn inside a ring does neither, so stickers lassoed on a backing
+    /// sheet do not bring the sheet along.
     fn touches(&self, bbox: Rect, lines: &[(&[Point], bool)], offset: Vec2) -> bool {
         if lines
             .iter()
@@ -137,25 +138,13 @@ impl Lasso {
             return true;
         }
         let edges = self.edges_near(bbox);
-        if lines.iter().any(|(pts, closed)| {
+        lines.iter().any(|(pts, closed)| {
             segments(pts, *closed).any(|(a, b)| {
                 edges
                     .iter()
                     .any(|e| cross(a + offset, b + offset, e.0, e.1))
             })
-        }) {
-            return true;
-        }
-        // No crossing and no point inside: the shape is either apart or
-        // wholly inside a ring (one of its points tells).
-        let p = self.points[0] - offset;
-        let mut inside = false;
-        for (pts, closed) in lines {
-            if *closed && pts.len() > 2 && inside_ring(pts, p) {
-                inside = !inside;
-            }
-        }
-        inside
+        })
     }
 }
 
@@ -528,13 +517,11 @@ mod tests {
     }
 
     #[test]
-    fn a_lasso_inside_a_ring_touches_it() {
+    fn a_lasso_inside_a_ring_does_not_touch_it() {
         let ring = square(0.0, 0.0, 10.0);
         let small = lasso(&[(4.0, 4.0), (6.0, 4.0), (5.0, 6.0)]);
         let b = Rect::new(0.0, 0.0, 10.0, 10.0);
-        assert!(small.touches(b, &[(&ring[..], true)], Vec2::ZERO));
-        // An open line around it does not hold it.
-        assert!(!small.touches(b, &[(&ring[..], false)], Vec2::ZERO));
+        assert!(!small.touches(b, &[(&ring[..], true)], Vec2::ZERO));
         assert!(!small.holds(b, &[(&ring[..], true)], Vec2::ZERO));
     }
 

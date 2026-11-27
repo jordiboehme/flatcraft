@@ -255,3 +255,19 @@ fn the_box_test_skips_far_objects_among_2000() {
     );
     assert!(picked.outline_tests <= 16, "{}", picked.outline_tests);
 }
+
+/// Stickers on a backing sheet: a lasso around two of them picks those
+/// two, not the sheet it was drawn inside.
+#[test]
+fn a_lasso_inside_a_backing_sheet_leaves_the_sheet() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(dir.path());
+    let sheet = square(&mut s, 10.0, 10.0, 150.0);
+    let a = square(&mut s, 30.0, 30.0, 20.0);
+    let b = square(&mut s, 70.0, 30.0, 20.0);
+    let c = square(&mut s, 110.0, 30.0, 20.0);
+    let ab = around(bounds(&s, a).union(bounds(&s, b)), 3.0);
+    let out = select_in(&mut s, json!({ "points_mm": ab, "touch": true }));
+    assert_eq!(out["selection"], json!([a, b]));
+    assert!(!selection(&s).contains(&sheet) && !selection(&s).contains(&c));
+}
