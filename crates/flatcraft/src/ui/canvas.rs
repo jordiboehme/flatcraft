@@ -651,18 +651,79 @@ fn outline_at(snap: &Snapshot, view: &CanvasView, at: Pos2, selection: kurbo::Re
         .rev()
         .filter(|o| o.visible && !snap.selection.contains(&o.id))
         .filter(|o| o.bounds().is_some_and(|b| !contains(b, selection)))
-        .find(|o| {
-            let c = o.transform.center_mm.to_vec2();
-            o.shape.lines.iter().any(|l| {
-                let pts: Vec<kurbo::Point> = l.points.iter().map(|p| *p + c).collect();
-                let closing = (l.closed && pts.len() > 2).then(|| (pts[pts.len() - 1], pts[0]));
-                pts.windows(2)
-                    .map(|w| (w[0], w[1]))
-                    .chain(closing)
-                    .any(|(a, b)| segment_distance(mm, a, b) <= reach)
-            })
-        })
+        .find(|o| near_outline(o, mm, reach))
         .map(|o| o.id)
+}
+
+/// How far from an object's line a click still hits it, in points.
+pub const LINE_PICK: f32 = 4.0;
+
+/// The segments of a drawn line, closing ones included, in object space.
+fn line_segments(
+    l: &super::prepare::Line,
+) -> impl Iterator<Item = (kurbo::Point, kurbo::Point)> + '_ {
+    let pts = &l.points;
+    let closing = (l.closed && pts.len() > 2).then(|| (pts[pts.len() - 1], pts[0]));
+    pts.windows(2).map(|w| (w[0], w[1])).chain(closing)
+}
+
+/// Whether `mm` lies within `reach` mm of one of the lines of `o`, or of
+/// the painted edge of a stroke (half its width out).
+fn near_outline(o: &ObjView, mm: kurbo::Point, reach: f64) -> bool {
+    let p = mm - o.transform.center_mm.to_vec2();
+    o.shape.lines.iter().any(|l| {
+        let r = reach + l.stroke_mm / 2.0;
+        line_segments(l).any(|(a, b)| segment_distance(p, a, b) <= r)
+    })
+}
+
+/// Whether `mm` lies in a filled area of `o`: inside a filled path by its
+/// fill rule (a hole of an even-odd sheet is not filled).
+fn in_fill(o: &ObjView, mm: kurbo::Point) -> bool {
+    use flatcraft_core::geometry::FillRule;
+    let p = mm - o.transform.center_mm.to_vec2();
+    let mut paths: std::collections::BTreeMap<usize, (FillRule, i32)> = Default::default();
+    for l in &o.shape.lines {
+        let Some(rule) = l.fill else { continue };
+        let pts = &l.points;
+        if pts.len() < 3 {
+            continue;
+        }
+        // The winding number of the ring (a filled open line closes).
+        let mut wind: i32 = 0;
+        for i in 0..pts.len() {
+            let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+            let side = (b - a).cross(p - a);
+            if a.y <= p.y {
+                if b.y > p.y && side > 0.0 {
+                    wind += 1;
+                }
+            } else if b.y <= p.y && side < 0.0 {
+                wind -= 1;
+            }
+        }
+        let e = paths.entry(l.path).or_insert((rule, 0));
+        e.1 += match rule {
+            FillRule::NonZero => wind,
+            FillRule::EvenOdd => wind.abs() % 2,
+        };
+    }
+    paths.values().any(|(rule, w)| match rule {
+        FillRule::NonZero => *w != 0,
+        FillRule::EvenOdd => w % 2 != 0,
+    })
+}
+
+/// Whether a click at `mm` hits `o`, as vector apps do: on its painted
+/// area (a fill) or within `reach` mm of its line, not anywhere in its box,
+/// so the open middle of a frame is empty mat. An object with no lines
+/// yet (a picture not traced, a shape still being built) is hit in its box.
+fn hits(o: &ObjView, mm: kurbo::Point, reach: f64) -> bool {
+    let Some(b) = o.bounds() else { return false };
+    if !b.inflate(reach, reach).contains(mm) {
+        return false;
+    }
+    o.shape.lines.is_empty() || near_outline(o, mm, reach) || in_fill(o, mm)
 }
 
 /// The distance from `p` to the segment `a`-`b`.
@@ -677,17 +738,22 @@ fn segment_distance(p: kurbo::Point, a: kurbo::Point, b: kurbo::Point) -> f64 {
     (p - (a + d * t)).hypot()
 }
 
-/// The topmost visible object under `at`, with 3 points of slack.
+/// The topmost visible object under `at`: on its line or its fill (see
+/// [`hits`]). A selected object is also hit anywhere in its own box, with 3
+/// points of slack, so the selection stays easy to grab and drag.
 fn object_at(snap: &Snapshot, view: &CanvasView, at: Pos2) -> Option<u64> {
     let mm = view.screen_to_mm(at);
+    let reach = f64::from(LINE_PICK / view.px_per_mm);
     let slack = f64::from(3.0 / view.px_per_mm);
     snap.objects
         .iter()
         .rev()
         .filter(|o| o.visible)
         .find(|o| {
-            o.bounds()
-                .is_some_and(|b| b.inflate(slack, slack).contains(mm))
+            hits(o, mm, reach)
+                || (snap.selection.contains(&o.id)
+                    && o.bounds()
+                        .is_some_and(|b| b.inflate(slack, slack).contains(mm)))
         })
         .map(|o| o.id)
 }
@@ -1762,9 +1828,11 @@ fn pointer(
                     current: mm,
                 })
             }
-            Hit::Rotate(_) | Hit::Nothing => {
-                frame(lasso_tool || help::held(mods, PrepareKey::Lasso))
-            }
+            // Option (Alt) alone: AltGr on Windows and Linux keyboards
+            // reports Ctrl+Alt and must not start a lasso.
+            Hit::Rotate(_) | Hit::Nothing => frame(
+                lasso_tool || (help::held(mods, PrepareKey::Lasso) && !mods.ctrl && !mods.command),
+            ),
         };
     }
     if let Some(p) = resp.interact_pointer_pos() {
@@ -1836,7 +1904,6 @@ fn pointer(
                 toggle,
                 lasso,
             }) => {
-                let toggle = toggle || help::held(mods, PrepareKey::ToggleInSelection);
                 let mut points = lasso.clone().unwrap_or_else(|| vec![start]);
                 points.push(current);
                 let screen = points.iter().fold(Rect::NOTHING, |r, p| {
@@ -1898,6 +1965,11 @@ fn click_at(
         Hit::Object(id) => {
             let (picked, inside) = pick(snap, st, id, deep);
             st.entered = inside.map(|g| (doc_id, g));
+            // The Objects panel's Shift range starts at the row clicked
+            // here (the object, or its group as one row).
+            if let [row] = snap.units_of(&picked).as_slice() {
+                st.list_anchor = Some((doc_id, *row));
+            }
             if toggle {
                 let unit: Vec<ObjectId> = picked.into_iter().map(ObjectId).collect();
                 combined(snap, &[unit], true)

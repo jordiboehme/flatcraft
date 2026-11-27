@@ -193,7 +193,7 @@ pub const GROUP_ROW_HINT: &str = "A group: its objects act as one. Click to sele
 pub fn list_keys_hint(os: super::help::Os) -> String {
     let cmd = super::help::modifier_names(egui::Modifiers::COMMAND, os);
     format!(
-        "{cmd}+click adds a row to the selection or takes it out; Shift+click selects every row from the last one you clicked."
+        "{cmd}+click adds a row to the selection or takes it out; Shift+click selects every row from the last one you clicked, and {cmd}+Shift+click adds those rows."
     )
 }
 
@@ -256,8 +256,9 @@ pub fn list_rows(snap: &Snapshot, st: &PrepareState) -> Vec<u64> {
 /// Finder, Explorer and Illustrator's layers: a plain click selects the
 /// row, Cmd+click (Ctrl+click) flips it in or out of the selection, and
 /// Shift+click selects every row from the last plain or Cmd click to this
-/// one. A group row stands for all its objects; a row inside a group is
-/// picked inside it.
+/// one (Cmd+Shift adds the range). A group row stands for all its objects;
+/// a row inside a group is picked inside it. Hidden objects in the range
+/// are selected too: their rows are in the list.
 fn row_click(
     st: &mut PrepareState,
     snap: &Snapshot,
@@ -284,7 +285,13 @@ fn row_click(
         // Inside a group when every row of the range is in it.
         let inside = parent(node).filter(|g| range.iter().all(|r| parent(*r) == Some(*g)));
         st.entered = inside.map(|g| (doc_id, g));
-        let mut ids: Vec<u64> = Vec::new();
+        // Cmd+Shift (Ctrl+Shift) adds the range to the selection, as in
+        // Finder; Shift alone replaces it.
+        let mut ids: Vec<u64> = if mods.command {
+            snap.selection.iter().copied().collect()
+        } else {
+            Vec::new()
+        };
         for r in range {
             for l in snap.leaves_of(*r) {
                 if !ids.contains(&l) {

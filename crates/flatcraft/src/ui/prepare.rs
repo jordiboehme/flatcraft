@@ -463,6 +463,14 @@ pub struct Line {
     pub points: Vec<kurbo::Point>,
     pub closed: bool,
     pub colour: Option<[u8; 3]>,
+    /// The index of the object's path it comes from: the lines of one
+    /// path fill together.
+    pub path: usize,
+    /// How the source path is filled, `None` when it is not: a click
+    /// inside a filled area hits the object (see `canvas::object_at`).
+    pub fill: Option<flatcraft_core::geometry::FillRule>,
+    /// The width of the source path's stroke as placed, mm (0 without).
+    pub stroke_mm: f64,
 }
 
 /// An object's placed paths and engine bounds, relative to its centre.
@@ -795,7 +803,21 @@ pub fn build_shape(input: &ShapeInput) -> Shape {
     let mut o = input.object();
     o.transform.center_mm = kurbo::Point::ORIGIN;
     let mut lines = Vec::new();
-    for p in o.placed_paths() {
+    let scale = o
+        .transform
+        .affine(o.local_bounds)
+        .determinant()
+        .abs()
+        .sqrt();
+    for (index, p) in o.placed_paths().into_iter().enumerate() {
+        let start_line = |pt: kurbo::Point| Line {
+            points: vec![pt],
+            closed: false,
+            colour: p.color,
+            path: index,
+            fill: p.paint.fill,
+            stroke_mm: p.paint.stroke.map_or(0.0, |st| st.width_mm * scale),
+        };
         let mut current: Option<Line> = None;
         kurbo::flatten(
             p.path.elements().iter().copied(),
@@ -807,11 +829,7 @@ pub fn build_shape(input: &ShapeInput) -> Shape {
                     {
                         lines.push(l);
                     }
-                    current = Some(Line {
-                        points: vec![pt],
-                        closed: false,
-                        colour: p.color,
-                    });
+                    current = Some(start_line(pt));
                 }
                 kurbo::PathEl::LineTo(pt) => {
                     // A repeated point draws nothing.
@@ -833,11 +851,7 @@ pub fn build_shape(input: &ShapeInput) -> Shape {
                         if l.points.len() > 1 {
                             lines.push(l);
                         }
-                        current = Some(Line {
-                            points: vec![start],
-                            closed: false,
-                            colour: p.color,
-                        });
+                        current = Some(start_line(start));
                     }
                 }
                 _ => {}

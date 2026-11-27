@@ -293,7 +293,7 @@ pub fn select_card(os: Os) -> String {
     let toggle = drag_key(os, PrepareKey::ToggleInSelection);
     let key = key_name(PrepareKey::SelectTool);
     format!(
-        "Click an object to select it, or drag on the empty mat to draw a box: it selects every object that lies fully inside. Hold {toggle} to flip objects in or out of the selection, and {lasso} when you start the drag to draw a lasso instead. Key: {key}."
+        "Click an object to select it: on its line, or inside it where it is filled. Drag on the empty mat, or in the open middle of a frame, to draw a box: it selects every object that lies fully inside. Hold {toggle} when you click or start the drag to flip objects in or out of the selection, and {lasso} when you start the drag to draw a lasso instead. Key: {key}."
     )
 }
 
@@ -304,7 +304,7 @@ pub fn lasso_card(os: Os) -> String {
     let key = key_name(PrepareKey::LassoTool);
     let back = key_name(PrepareKey::SelectTool);
     let mut s = format!(
-        "Draw a free shape around what you want, like a cowboy with a rope: when you let go, every object the dashed line touches or encloses is selected. Good for packed layouts where a box would catch too much. Hold {toggle} to flip objects in or out of the selection. Esc cancels the lasso, or goes back to the Select tool. You can also hold {lasso} and drag on the empty mat with the Select tool. Key: {key} (back with {back} or Esc)."
+        "Draw a free shape around what you want, like a cowboy with a rope: when you let go, every object the dashed line touches or encloses is selected. Good for packed layouts where a box would catch too much. A lasso drawn wholly inside a shape does not pick it: cross its line. Hold {toggle} when you start to flip objects in or out of the selection. Esc cancels the lasso and goes back to the Select tool. You can also hold {lasso} and drag on the empty mat with the Select tool. Key: {key} (back with {back} or Esc)."
     );
     if os == Os::Linux {
         s.push_str(&format!(

@@ -3134,3 +3134,54 @@ fn a_field_message_does_not_come_back_when_the_panel_opens_again() {
     h.run_plan();
     assert!(h.query_by_label(msg).is_none(), "an old message is gone");
 }
+
+/// Ctrl+click as Windows and Linux report it (Ctrl and the command flag)
+/// toggles a row; Cmd+Shift adds a range; a canvas click moves the start
+/// of the range.
+#[test]
+fn objects_panel_ctrl_click_toggles_and_cmd_shift_adds_a_range() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let ids: Vec<u64> = (0..4).map(|i| square_at(&s, 60.0 * i as f64)).collect();
+    let (a, b, c, d) = (ids[0], ids[1], ids[2], ids[3]);
+    select(&s, &[]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let row = |h: &mut AppHarness, i: usize, m: Modifiers| {
+        h.get_all_by_role_and_label(Role::Button, "square")
+            .nth(i)
+            .unwrap()
+            .click_modifiers(m);
+        h.run_plan();
+    };
+    let ctrl = Modifiers {
+        ctrl: true,
+        command: true,
+        ..Modifiers::NONE
+    };
+    row(&mut h, 0, Modifiers::NONE);
+    row(&mut h, 3, ctrl);
+    assert_eq!(selection(&s), [a, d]);
+    row(&mut h, 3, ctrl);
+    assert_eq!(selection(&s), [a]);
+    // From the anchor (d, the last Ctrl+click) up to c, added.
+    row(&mut h, 2, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert_eq!(selection(&s), [a, c, d]);
+    // A click on b on the canvas makes b the start of the next range.
+    let bb = bounds(&s, b);
+    let f = |k: &str| bb[k].as_f64().unwrap();
+    let view = known_view(&mut h, kurbo::Point::new(f("x0"), f("y0")));
+    let p = view.mm_to_screen(kurbo::Point::new(
+        (f("x0") + f("x1")) / 2.0,
+        (f("y0") + f("y1")) / 2.0,
+    ));
+    h.hover_at(p);
+    h.run_plan();
+    h.drag_at(p);
+    h.run_plan();
+    h.drop_at(p);
+    h.run_plan();
+    assert_eq!(selection(&s), [b]);
+    row(&mut h, 3, Modifiers::SHIFT);
+    assert_eq!(selection(&s), [b, c, d]);
+}

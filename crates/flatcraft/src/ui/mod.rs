@@ -2815,11 +2815,13 @@ fn prepare_keys(
         return;
     }
     // Escape while a box or lasso is drawn cancels it: the selection
-    // stays as it was.
+    // stays as it was. A lasso of the Lasso tool also goes back to the
+    // Select tool, in the same press.
     if matches!(st.drag, Some(prepare::Drag::Frame { .. }))
         && help::pressed(ctx, help::PrepareKey::ClearSelection)
     {
         st.drag = None;
+        st.select_tool = prepare::SelectTool::Select;
         return;
     }
     // While the keep picker is on, Escape cancels it and the other keys

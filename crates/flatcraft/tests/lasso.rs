@@ -228,7 +228,7 @@ fn shift_flips_objects_with_the_lasso_the_box_and_a_click() {
 }
 
 #[test]
-fn escape_cancels_a_lasso_then_leaves_the_lasso_tool() {
+fn one_escape_cancels_a_lasso_and_leaves_the_lasso_tool() {
     let dir = tempfile::tempdir().unwrap();
     let (s, [a, ..]) = three(&dir);
     let (mut h, v) = rig(&dir, s.clone());
@@ -252,10 +252,11 @@ fn escape_cancels_a_lasso_then_leaves_the_lasso_tool() {
     h.run_plan();
     h.drop_at(path[4]);
     h.run_plan();
-    // Nothing changed, the tool stays.
+    // The same press went back to the Select tool; the selection stays.
     assert_eq!(selection(&s), [a]);
-    assert_eq!(app(&h).ui.prepare.select_tool, SelectTool::Lasso);
-    // Escape again: back to the Select tool, the selection stays.
+    assert_eq!(app(&h).ui.prepare.select_tool, SelectTool::Select);
+    // Esc with the Lasso tool on and no lasso drawn also goes back.
+    app_mut(&mut h).ui.prepare.select_tool = SelectTool::Lasso;
     h.key_press(Key::Escape);
     h.run_plan();
     assert_eq!(app(&h).ui.prepare.select_tool, SelectTool::Select);
@@ -494,4 +495,193 @@ fn a_lasso_on_a_backing_sheet_picks_the_stickers_only() {
         [(12.0, 12.0), (178.0, 12.0), (178.0, 80.0), (12.0, 80.0)].map(|(x, y)| at(&v, x, y));
     trace(&mut h, &around_ab, Modifiers::NONE);
     assert_eq!(selection(&s), [a, b]);
+}
+
+/// The placed box of `id`: x0, y0, x1, y1 in mm.
+fn box_of(s: &SharedSession, id: u64) -> [f64; 4] {
+    let st = exec(s, "document.state", json!({}));
+    let o = st["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["id"] == id)
+        .unwrap()["bounds_mm"]
+        .clone();
+    ["x0", "y0", "x1", "y1"].map(|k| o[k].as_f64().unwrap())
+}
+
+fn import(s: &SharedSession, body: &str, name: &str) -> u64 {
+    let svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="300mm" height="300mm" viewBox="0 0 300 300">{body}</svg>"#
+    );
+    exec(s, "object.import_svg", json!({ "svg": svg, "name": name }))["id"]
+        .as_u64()
+        .unwrap()
+}
+
+/// An unfilled frame around a square, and a filled square apart. The
+/// frame's open middle is empty mat; its line and the filled square's
+/// inside are the objects.
+fn frame_and_squares(dir: &tempfile::TempDir) -> (SharedSession, u64, u64, u64) {
+    let s = session(dir);
+    let frame = import(
+        &s,
+        r#"<rect x="10" y="10" width="160" height="80" fill="none" stroke="black" stroke-width="1"/>"#,
+        "frame",
+    );
+    let inner = import(
+        &s,
+        r#"<rect x="60" y="35" width="20" height="20"/>"#,
+        "inner",
+    );
+    let filled = import(
+        &s,
+        r#"<rect x="200" y="20" width="50" height="50"/>"#,
+        "filled",
+    );
+    exec(&s, "object.select", json!({ "ids": [] }));
+    (s, frame, inner, filled)
+}
+
+#[test]
+fn a_drag_in_the_open_middle_of_a_frame_draws_a_box() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, frame, inner, _) = frame_and_squares(&dir);
+    let (mut h, v) = rig(&dir, s.clone());
+    let before = box_of(&s, frame);
+    let ib = box_of(&s, inner);
+    // From inside the frame, away from its line, around the inner square.
+    trace(
+        &mut h,
+        &[
+            at(&v, ib[0] - 10.0, ib[1] - 10.0),
+            at(&v, ib[2] + 10.0, ib[3] + 10.0),
+        ],
+        Modifiers::NONE,
+    );
+    assert_eq!(selection(&s), [inner]);
+    assert_eq!(box_of(&s, frame), before, "the frame did not move");
+    // A click there is a click on the empty mat.
+    click(&mut h, at(&v, ib[0] - 10.0, ib[1] - 10.0), Modifiers::NONE);
+    assert!(selection(&s).is_empty());
+}
+
+#[test]
+fn a_drag_on_a_frame_line_moves_it_and_a_filled_shape_moves_from_inside() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, frame, _, filled) = frame_and_squares(&dir);
+    let (mut h, v) = rig(&dir, s.clone());
+    let fb = box_of(&s, frame);
+    // On the frame's left line (its stroke is 1 mm wide).
+    let on_line = at(&v, fb[0] + 0.5, (fb[1] + fb[3]) / 2.0);
+    trace(
+        &mut h,
+        &[on_line, on_line + Vec2::new(20.0, 0.0)],
+        Modifiers::NONE,
+    );
+    assert_eq!(selection(&s), [frame]);
+    let moved = box_of(&s, frame);
+    assert!((moved[0] - fb[0] - 10.0).abs() < 1e-6, "{moved:?}");
+    // Selected, the frame is grabbed in its open middle too.
+    let mid = at(&v, (moved[0] + moved[2]) / 2.0, moved[1] + 8.0);
+    trace(&mut h, &[mid, mid + Vec2::new(0.0, 20.0)], Modifiers::NONE);
+    assert!((box_of(&s, frame)[1] - moved[1] - 10.0).abs() < 1e-6);
+    // The filled square moves from its inside.
+    let sb = box_of(&s, filled);
+    let inside = at(&v, (sb[0] + sb[2]) / 2.0, (sb[1] + sb[3]) / 2.0);
+    trace(
+        &mut h,
+        &[inside, inside + Vec2::new(0.0, 20.0)],
+        Modifiers::NONE,
+    );
+    assert_eq!(selection(&s), [filled]);
+    assert!((box_of(&s, filled)[1] - sb[1] - 10.0).abs() < 1e-6);
+}
+
+/// A backing sheet with a hole (even-odd): the hole is not painted, so a
+/// drag there draws a box; the sheet itself is grabbed on its paper.
+#[test]
+fn the_hole_of_a_sheet_is_empty_mat() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let sheet = import(
+        &s,
+        r#"<path fill-rule="evenodd" d="M 10 10 H 170 V 90 H 10 Z M 40 30 H 140 V 75 H 40 Z"/>"#,
+        "sheet",
+    );
+    let inner = import(
+        &s,
+        r#"<rect x="80" y="45" width="10" height="10"/>"#,
+        "inner",
+    );
+    exec(&s, "object.select", json!({ "ids": [] }));
+    let (mut h, v) = rig(&dir, s.clone());
+    let sb = box_of(&s, sheet);
+    let ib = box_of(&s, inner);
+    trace(
+        &mut h,
+        &[
+            at(&v, ib[0] - 5.0, ib[1] - 5.0),
+            at(&v, ib[2] + 5.0, ib[3] + 5.0),
+        ],
+        Modifiers::NONE,
+    );
+    assert_eq!(selection(&s), [inner]);
+    // On the paper between the edge and the hole: the sheet.
+    click(
+        &mut h,
+        at(&v, sb[0] + 10.0, (sb[1] + sb[3]) / 2.0),
+        Modifiers::NONE,
+    );
+    assert_eq!(selection(&s), [sheet]);
+}
+
+#[test]
+fn option_drag_on_an_object_moves_it_and_ctrl_option_draws_no_lasso() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, [a, b, _]) = three(&dir);
+    let (mut h, v) = rig(&dir, s.clone());
+    let before = box_of(&s, a);
+    trace(
+        &mut h,
+        &[at(&v, 45.0, 45.0), at(&v, 55.0, 45.0)],
+        Modifiers::ALT,
+    );
+    assert_eq!(selection(&s), [a]);
+    assert!((box_of(&s, a)[0] - before[0] - 10.0).abs() < 1e-6, "moved");
+    // Ctrl+Alt (AltGr on Windows and Linux) on the empty mat draws a box:
+    // only what is fully inside, so b, touched, is not picked.
+    let ctrl_alt = Modifiers {
+        alt: true,
+        ctrl: true,
+        ..Modifiers::NONE
+    };
+    trace(&mut h, &over_a_into_b(&v), ctrl_alt);
+    assert!(!selection(&s).contains(&b));
+}
+
+#[test]
+fn shift_counts_when_the_drag_starts_not_when_it_ends() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, [a, _, c]) = three(&dir);
+    let (mut h, v) = rig(&dir, s.clone());
+    exec(&s, "object.select", json!({ "ids": [a] }));
+    h.run_plan();
+    // Shift pressed just before letting go: the box replaces.
+    let (from, to) = (at(&v, 210.0, 10.0), at(&v, 280.0, 80.0));
+    h.hover_at(from);
+    h.run_plan();
+    h.drag_at(from);
+    h.run_plan();
+    for t in [0.5, 1.0] {
+        h.hover_at(from + (to - from) * t);
+        h.run_plan();
+    }
+    h.event(Event::ModifiersChanged(Modifiers::SHIFT));
+    h.run_plan();
+    h.drop_at(to);
+    h.run_plan();
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    h.run_plan();
+    assert_eq!(selection(&s), [c]);
 }
