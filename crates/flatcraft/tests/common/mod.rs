@@ -417,15 +417,6 @@ pub fn click_at(h: &mut AppHarness, at: egui::Pos2) {
     wait_until(h, landing);
 }
 
-/// [`click_at`] that ends with `Harness::run`.
-fn press_at(h: &mut AppHarness, at: egui::Pos2) {
-    h.drag_at(at);
-    h.step();
-    h.drop_at(at);
-    h.step();
-    h.run();
-}
-
 /// Checks the click rules of the number field `label` (see
 /// `ui::calc`): a single click places the cursor, a double-click and Tab
 /// (here Tab out and Shift-Tab back) select the whole value, so typing
@@ -435,17 +426,17 @@ pub fn check_click_rules(h: &mut AppHarness, label: &str) {
     let shown = field_text(h, label);
     let esc = |h: &mut AppHarness| {
         h.key_press(egui::Key::Escape);
-        h.run();
-        h.run();
+        wait_until(h, landing);
+        wait_until(h, landing);
     };
     // A single click past the end: the digit is added.
     let r = h.get_by_label(label).rect();
     let end = egui::pos2(r.right() - 2.0, r.center().y);
     h.hover_at(end);
-    h.run();
-    press_at(h, end);
+    wait_until(h, landing);
+    click_at(h, end);
     h.event(egui::Event::Text("5".into()));
-    h.run();
+    wait_until(h, landing);
     assert_eq!(
         field_text(h, label),
         format!("{shown}5"),
@@ -463,9 +454,9 @@ pub fn check_click_rules(h: &mut AppHarness, label: &str) {
         h.step();
     }
     double_click_at(h, start);
-    h.run();
+    wait_until(h, landing);
     h.event(egui::Event::Text("7".into()));
-    h.run();
+    wait_until(h, landing);
     assert_eq!(field_text(h, label), "7", "{label}: double-click");
     esc(h);
     h.ctx
@@ -475,13 +466,13 @@ pub fn check_click_rules(h: &mut AppHarness, label: &str) {
     }
     // Tab out and Shift-Tab back in: all of it is replaced.
     h.get_by_label(label).click();
-    h.run();
+    wait_until(h, landing);
     h.key_press(egui::Key::Tab);
-    h.run();
+    wait_until(h, landing);
     h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Tab);
-    h.run();
+    wait_until(h, landing);
     h.event(egui::Event::Text("7".into()));
-    h.run();
+    wait_until(h, landing);
     assert_eq!(field_text(h, label), "7", "{label}: Tab");
     esc(h);
     assert_eq!(field_text(h, label), shown, "{label}: Esc");
