@@ -685,3 +685,91 @@ fn shift_counts_when_the_drag_starts_not_when_it_ends() {
     h.run_plan();
     assert_eq!(selection(&s), [c]);
 }
+
+/// An unselected filled square under a corner's rotate zone is hit as a
+/// click hits it: a drag there moves it instead of turning the selection.
+#[test]
+fn a_filled_object_in_the_rotate_zone_is_picked_not_rotated() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import(&s, r#"<rect x="20" y="20" width="50" height="50"/>"#, "a");
+    let b = import(&s, r#"<rect x="71" y="71" width="50" height="50"/>"#, "b");
+    exec(&s, "object.select", json!({ "ids": [a] }));
+    let (mut h, v) = rig(&dir, s.clone());
+    let (ab, bb) = (box_of(&s, a), box_of(&s, b));
+    // 4 mm inside b from its corner: 14 pt from a's corner (in the zone),
+    // 8 pt from b's lines (no line hit): only the fill hits.
+    let p = at(&v, bb[0] + 4.0, bb[1] + 4.0);
+    assert!(p.distance(at(&v, ab[2], ab[3])) < flatcraft::ui::canvas::ROTATE_REACH);
+    trace(&mut h, &[p, p + Vec2::new(0.0, 20.0)], Modifiers::NONE);
+    assert_eq!(selection(&s), [b]);
+    assert!((box_of(&s, b)[1] - bb[1] - 10.0).abs() < 1e-6, "b moved");
+    let state = exec(&s, "document.state", json!({}));
+    let a_state = state["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["id"] == a)
+        .unwrap()
+        .clone();
+    assert_eq!(
+        a_state["transform"]["rotation_deg"].as_f64(),
+        Some(0.0),
+        "a was not turned"
+    );
+}
+
+/// A selected frame in front of a smaller square: a click on the square
+/// picks it (a direct hit wins over the selection's open box), a click in
+/// the open middle keeps the frame.
+#[test]
+fn a_small_object_inside_a_selected_frame_stays_clickable() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let inner = import(
+        &s,
+        r#"<rect x="60" y="35" width="20" height="20"/>"#,
+        "inner",
+    );
+    let frame = import(
+        &s,
+        r#"<rect x="10" y="10" width="160" height="80" fill="none" stroke="black" stroke-width="1"/>"#,
+        "frame",
+    );
+    exec(&s, "object.select", json!({ "ids": [frame] }));
+    let (mut h, v) = rig(&dir, s.clone());
+    let ib = box_of(&s, inner);
+    click(
+        &mut h,
+        at(&v, (ib[0] + ib[2]) / 2.0, (ib[1] + ib[3]) / 2.0),
+        Modifiers::NONE,
+    );
+    assert_eq!(selection(&s), [inner]);
+    exec(&s, "object.select", json!({ "ids": [frame] }));
+    h.run_plan();
+    click(&mut h, at(&v, ib[0] - 15.0, ib[1]), Modifiers::NONE);
+    assert_eq!(selection(&s), [frame]);
+}
+
+/// The hover hit test runs again only when the pointer moves or what it
+/// reads changes; frames over the same point reuse it.
+#[test]
+fn the_hover_hit_test_runs_only_when_something_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, [a, ..]) = three(&dir);
+    let (mut h, v) = rig(&dir, s.clone());
+    let runs = |h: &AppHarness| app(h).ui.prepare.hit_memo.runs.get();
+    h.hover_at(at(&v, 45.0, 45.0));
+    h.run_plan();
+    let first = runs(&h);
+    for _ in 0..5 {
+        h.step();
+    }
+    assert_eq!(runs(&h), first, "the same point is not tested again");
+    h.hover_at(at(&v, 46.0, 45.0));
+    h.run_plan();
+    assert_eq!(runs(&h), first + 1, "a move tests again");
+    exec(&s, "object.select", json!({ "ids": [a] }));
+    h.run_plan();
+    assert_eq!(runs(&h), first + 2, "a new selection tests again");
+}

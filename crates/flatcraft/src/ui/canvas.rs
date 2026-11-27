@@ -610,6 +610,64 @@ pub fn leave_group(snap: &Snapshot, st: &mut PrepareState) -> Option<Vec<u64>> {
     Some(snap.leaves_of(g))
 }
 
+/// The last hit test and what it depended on: the hover card asks every
+/// frame, and testing the fill of a large traced picture is not free, so
+/// the test runs again only when the pointer moved, the view changed, or
+/// the document, the selection or a shape did.
+#[derive(Debug, Clone, Default)]
+pub struct HitMemo {
+    last: std::cell::RefCell<Option<(HitKey, Hit)>>,
+    /// How many hit tests really ran (not answered from the memo).
+    pub runs: std::cell::Cell<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct HitKey {
+    doc_id: u64,
+    doc_rev: u64,
+    view: CanvasView,
+    at: Pos2,
+    /// The selection and every object's shape (its cached allocation) and
+    /// centre, hashed.
+    state: u64,
+}
+
+impl HitKey {
+    fn of(snap: &Snapshot, view: &CanvasView, at: Pos2) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        snap.selection.hash(&mut h);
+        for o in &snap.objects {
+            o.id.hash(&mut h);
+            o.visible.hash(&mut h);
+            (std::sync::Arc::as_ptr(&o.shape) as usize).hash(&mut h);
+            o.transform.center_mm.x.to_bits().hash(&mut h);
+            o.transform.center_mm.y.to_bits().hash(&mut h);
+        }
+        Self {
+            doc_id: snap.doc_id,
+            doc_rev: snap.doc_rev,
+            view: *view,
+            at,
+            state: h.finish(),
+        }
+    }
+}
+
+/// [`hit_test`], answered from `memo` when nothing it reads changed.
+fn hit_test_memo(snap: &Snapshot, view: &CanvasView, memo: &HitMemo, at: Pos2) -> Hit {
+    let key = HitKey::of(snap, view, at);
+    if let Some((k, hit)) = memo.last.borrow().as_ref()
+        && *k == key
+    {
+        return *hit;
+    }
+    memo.runs.set(memo.runs.get() + 1);
+    let hit = hit_test(snap, view, at);
+    *memo.last.borrow_mut() = Some((key, hit));
+    hit
+}
+
 fn hit_test(snap: &Snapshot, view: &CanvasView, at: Pos2) -> Hit {
     if let Some(b) = selection_box(snap) {
         let screen = view.rect_to_screen(b);
@@ -634,12 +692,12 @@ fn hit_test(snap: &Snapshot, view: &CanvasView, at: Pos2) -> Hit {
     object_at(snap, view, at).map_or(Hit::Nothing, Hit::Object)
 }
 
-/// The topmost visible object that is not selected and has one of its
-/// outlines within [`HANDLE_PICK`] of `at`, leaving out objects whose box
-/// holds the whole selection box `selection` (mm).
+/// The topmost visible object that is not selected and is hit at `at` as
+/// a click hits it (on its line or fill, see [`hits`]), leaving out
+/// objects whose box holds the whole selection box `selection` (mm).
 fn outline_at(snap: &Snapshot, view: &CanvasView, at: Pos2, selection: kurbo::Rect) -> Option<u64> {
     let mm = view.screen_to_mm(at);
-    let reach = f64::from(HANDLE_PICK / view.px_per_mm);
+    let reach = f64::from(LINE_PICK / view.px_per_mm);
     // With a hair of slack: shapes that share an edge come out of the
     // import a few nanometres apart.
     let contains = |outer: kurbo::Rect, inner: kurbo::Rect| {
@@ -651,7 +709,7 @@ fn outline_at(snap: &Snapshot, view: &CanvasView, at: Pos2, selection: kurbo::Re
         .rev()
         .filter(|o| o.visible && !snap.selection.contains(&o.id))
         .filter(|o| o.bounds().is_some_and(|b| !contains(b, selection)))
-        .find(|o| near_outline(o, mm, reach))
+        .find(|o| hits(o, mm, reach))
         .map(|o| o.id)
 }
 
@@ -720,7 +778,14 @@ fn in_fill(o: &ObjView, mm: kurbo::Point) -> bool {
 /// yet (a picture not traced, a shape still being built) is hit in its box.
 fn hits(o: &ObjView, mm: kurbo::Point, reach: f64) -> bool {
     let Some(b) = o.bounds() else { return false };
-    if !b.inflate(reach, reach).contains(mm) {
+    // The box may leave out the outer half of a thick stroke.
+    let stroke = o
+        .shape
+        .lines
+        .iter()
+        .map(|l| l.stroke_mm / 2.0)
+        .fold(0.0, f64::max);
+    if !b.inflate(reach + stroke, reach + stroke).contains(mm) {
         return false;
     }
     o.shape.lines.is_empty() || near_outline(o, mm, reach) || in_fill(o, mm)
@@ -739,21 +804,23 @@ fn segment_distance(p: kurbo::Point, a: kurbo::Point, b: kurbo::Point) -> f64 {
 }
 
 /// The topmost visible object under `at`: on its line or its fill (see
-/// [`hits`]). A selected object is also hit anywhere in its own box, with 3
-/// points of slack, so the selection stays easy to grab and drag.
+/// [`hits`]). Only when no object is hit that way, a selected object is
+/// hit anywhere in its own box (3 points of slack), so the selection stays
+/// easy to grab, while smaller objects inside a selected frame stay
+/// clickable (as in Illustrator).
 fn object_at(snap: &Snapshot, view: &CanvasView, at: Pos2) -> Option<u64> {
     let mm = view.screen_to_mm(at);
     let reach = f64::from(LINE_PICK / view.px_per_mm);
     let slack = f64::from(3.0 / view.px_per_mm);
-    snap.objects
-        .iter()
-        .rev()
-        .filter(|o| o.visible)
-        .find(|o| {
-            hits(o, mm, reach)
-                || (snap.selection.contains(&o.id)
+    let shown = || snap.objects.iter().rev().filter(|o| o.visible);
+    shown()
+        .find(|o| hits(o, mm, reach))
+        .or_else(|| {
+            shown().find(|o| {
+                snap.selection.contains(&o.id)
                     && o.bounds()
-                        .is_some_and(|b| b.inflate(slack, slack).contains(mm)))
+                        .is_some_and(|b| b.inflate(slack, slack).contains(mm))
+            })
         })
         .map(|o| o.id)
 }
@@ -920,7 +987,7 @@ pub fn show(
         && let Some(p) = resp.interact_pointer_pos()
     {
         // The same hit test as the left click.
-        st.context = Some(match hit_test(snap, &st.view, p) {
+        st.context = Some(match hit_test_memo(snap, &st.view, &st.hit_memo, p) {
             Hit::Object(id) => {
                 let (ids, inside) = pick(snap, st, id, false);
                 if !ids.iter().any(|i| snap.selection.contains(i)) {
@@ -1434,7 +1501,7 @@ fn handle_card(ui: &Ui, resp: &egui::Response, snap: &Snapshot, st: &mut Prepare
         return;
     }
     let Some(at) = resp.hover_pos() else { return };
-    let hit = hit_test(snap, &st.view, at);
+    let hit = hit_test_memo(snap, &st.view, &st.hit_memo, at);
     match look(hit, ui.input(|i| i.modifiers)) {
         Look::Resize(i) => ui.ctx().set_cursor_icon(handle_cursor(i)),
         Look::Rotate => st.rotate_cursor = Some(at),
@@ -1773,7 +1840,7 @@ fn pointer(
             .or(resp.interact_pointer_pos())
             .unwrap_or_default();
         let mm = st.view.screen_to_mm(origin);
-        let hit = hit_test(snap, &st.view, origin);
+        let hit = hit_test_memo(snap, &st.view, &st.hit_memo, origin);
         let lasso_tool = st.select_tool == SelectTool::Lasso;
         // The box or lasso: Option (Alt) at the start draws a lasso; Shift
         // flips what it picks.
@@ -1953,7 +2020,7 @@ fn click_at(
     actions: &mut Vec<Action>,
 ) {
     let doc_id = snap.doc_id;
-    let hit = match hit_test(snap, &st.view, p) {
+    let hit = match hit_test_memo(snap, &st.view, &st.hit_memo, p) {
         // Inside the selection box a double-click still reaches the
         // object under the pointer.
         Hit::Handle(_) | Hit::Rotate(_) if deep => {

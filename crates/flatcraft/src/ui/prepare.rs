@@ -351,6 +351,8 @@ pub struct PrepareState {
     /// The row of the Objects panel a Shift+click selects a range from:
     /// the last row clicked without Shift (document, object or group).
     pub list_anchor: Option<(u64, u64)>,
+    /// The canvas's last hit test (see `canvas::HitMemo`).
+    pub hit_memo: super::canvas::HitMemo,
     /// Where the canvas painted its rotate cursor last frame (egui has no
     /// rotate cursor, so it hides the pointer and paints one), if it did.
     pub rotate_cursor: Option<Pos2>,
@@ -446,6 +448,7 @@ impl Default for PrepareState {
             entered: None,
             open_groups: BTreeSet::new(),
             list_anchor: None,
+            hit_memo: Default::default(),
             rotate_cursor: None,
             rename: None,
             ribbon_layout: None,
