@@ -49,6 +49,9 @@ use crate::session::{CommandError, Origin, Session, internal_error};
 ///   on a send by its numbers.
 /// - `job.simulate` and `job.compare_strategies` store the simulation as
 ///   the document's last one, and an agent decides on its grade.
+/// - `tools.offset_series` places its row away from the document's
+///   objects and is planned for the profiles; with `send` it is sent only
+///   when both are as they were ([`series`]).
 /// - `document.preview` and `document.check`: an agent decides its next
 ///   step from the picture or the issues, so they must show the document
 ///   as it is.
@@ -66,6 +69,7 @@ pub fn stale_policy(id: &str) -> Option<&'static str> {
         "job.preview" => "the job was planned",
         "job.simulate" => "the job was simulated",
         "job.compare_strategies" => "the strategies were compared",
+        "tools.offset_series" => "the offset series was planned",
         "document.preview" => "the preview was drawn",
         "document.check" => "the objects were checked",
         "document.export" => "the file was exported",
@@ -250,6 +254,7 @@ fn execute_on(
             },
             PreparedExport::write,
         ),
+        "tools.offset_series" => series(session, doc, params, origin, what),
         _ if rebases(id) => rebase(session, doc, id, params, origin, what),
         _ => split(
             session,
@@ -430,6 +435,97 @@ fn split<T>(
         return compute(id, None, || finish(done));
     }
     Err(changed_error(what))
+}
+
+/// `tools.offset_series` off the lock (`crate::calibrate`): the snapshot
+/// and the checks under the lock, the planning and the simulation of the
+/// tiles without it, then the reply and the send under it again, on the
+/// real session, so a send that waits for the person is the session's
+/// pending send. It runs on a document as it was snapshot; when the
+/// document or the profiles changed meanwhile, it runs once more.
+fn series(
+    session: &Mutex<Session>,
+    doc: Option<u64>,
+    params: Value,
+    origin: Origin,
+    what: &str,
+) -> Result<Value, CommandError> {
+    let id = "tools.offset_series";
+    for _ in 0..TRIES {
+        let (input, send, key, hook) = {
+            let mut s = lock(session);
+            begin(&mut s, origin);
+            let p: crate::commands::tools::OffsetSeriesParams =
+                crate::commands::parse(params.clone())?;
+            let index = target(&s, doc, id)?;
+            let active = std::mem::replace(&mut s.active, index);
+            let input = crate::calibrate::prepare(&s, &p.offsets_mm, p.send, origin);
+            s.active = active;
+            (input?, p.send, Key::of(&s, index), s.unlocked_hook.clone())
+        };
+        let run = compute(id, hook, || crate::calibrate::compute(input));
+        let mut s = lock(session);
+        let Ok(index) = s.doc_index(key.doc_id) else {
+            s.prune_pending();
+            if doc.is_some() {
+                return Err(closed(id));
+            }
+            continue;
+        };
+        // An agent's command reads the active document: another one
+        // active now is a change too.
+        if Key::of(&s, index) != key || (doc.is_none() && index != s.active) {
+            s.prune_pending();
+            continue;
+        }
+        let finish = FinishSeries {
+            run: Mutex::new(Some(run?)),
+            send,
+        };
+        let active = std::mem::replace(&mut s.active, index);
+        let result = s.run_prepared(&finish, origin);
+        s.active = active.min(s.docs.len().saturating_sub(1));
+        return result;
+    }
+    Err(changed_error(what))
+}
+
+/// A series planned and simulated off the lock, finished (the reply, the
+/// send) as the command `tools.offset_series`, with its bookkeeping: a
+/// panic in the send rolls the session back.
+struct FinishSeries {
+    run: Mutex<Option<crate::calibrate::SeriesRun>>,
+    send: bool,
+}
+
+impl Command for FinishSeries {
+    fn id(&self) -> &'static str {
+        "tools.offset_series"
+    }
+    fn title(&self) -> &'static str {
+        "Offset test series"
+    }
+    fn description(&self) -> &'static str {
+        "Finishes an offset series planned off the session lock."
+    }
+    fn params_schema(&self) -> schemars::Schema {
+        schemars::schema_for!(crate::commands::NoParams)
+    }
+    fn mutates_document(&self) -> bool {
+        false
+    }
+    fn changes_session(&self) -> bool {
+        true
+    }
+    fn run(&self, s: &mut Session, _: Value, origin: Origin) -> Result<Value, CommandError> {
+        let run = self
+            .run
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .ok_or_else(|| internal_error("tools.offset_series"))?;
+        crate::calibrate::finish(s, run, self.send, origin)
+    }
 }
 
 /// What `project.open` reads: a file, or a project's bytes and the name

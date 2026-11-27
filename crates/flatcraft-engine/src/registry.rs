@@ -93,6 +93,7 @@ static ALL: &[&dyn Command] = &[
     &job::JobTroubleshoot,
     &tools::ToolsTestPatterns,
     &tools::ToolsTestShape,
+    &tools::ToolsOffsetSeries,
     &tools::DocumentPreview,
     &export::DocumentExport,
 ];

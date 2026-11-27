@@ -436,7 +436,7 @@ fn left_out(plan: &CutPlan, collapsed: &[usize]) -> Vec<bool> {
 
 /// How many paths of `plan` the emitter left out. A path counts once:
 /// only its first pass is looked at, the alignment stroke never.
-fn paths_not_cut(plan: &CutPlan, collapsed: &[usize]) -> usize {
+pub(crate) fn paths_not_cut(plan: &CutPlan, collapsed: &[usize]) -> usize {
     plan.toolpaths
         .iter()
         .zip(left_out(plan, collapsed))
@@ -732,6 +732,74 @@ pub fn build_input(input: &JobInput) -> Result<JobResult, CommandError> {
     build_classified(input).map_err(|f| f.error)
 }
 
+/// The pipeline settings of `input` on `media`, whose cutting area is
+/// `area`: the material values for this plotter, then the job overrides.
+/// The job build and the offset series (`crate::calibrate`) both start
+/// from it. Refused when the passes do not fit the plotter.
+pub(crate) fn pipeline_settings(
+    input: &JobInput,
+    media: &flatcraft_device::Media,
+    area: kurbo::Rect,
+) -> Result<PipelineSettings, CommandError> {
+    let JobInput {
+        job,
+        plotter,
+        material,
+        ..
+    } = input;
+    let passes = job.passes.unwrap_or(material.passes);
+    let [lo, hi] = plotter.passes_range;
+    if passes < lo.max(1) || passes > hi {
+        let from = if job.passes.is_some() {
+            "The pass override"
+        } else {
+            "The material"
+        };
+        return Err(CommandError::Refused(format!(
+            "{from} asks for {passes} passes, but this plotter takes {} to {hi}. Set passes in the job settings or pick another material.",
+            lo.max(1)
+        )));
+    }
+    let strategy = StrategySettings::for_strategy(job.strategy);
+    Ok(PipelineSettings {
+        flatten_tolerance_mm: plotter.flatten_tolerance_mm,
+        join_tolerance_mm: JOIN_TOLERANCE_MM,
+        overcut_mm: material.overcut_mm,
+        passes,
+        reverse_alternate_passes: material.reverse_alternate_passes,
+        strategy,
+        direction: plotter.ring_direction,
+        compensation: compensation(plotter, media, &strategy),
+        corner_mode: corner_mode(material.corner_mode),
+        // M3 sets the alignment stroke.
+        alignment_stroke: None,
+        // Without a mat the feed motor moves the sheet: cut it in bands.
+        monotonic_feed: media.kind == MediaKind::NoMat,
+        // Half a plotter step: anything shorter moves no motor at all.
+        min_cut_mm: 0.5 / plotter.units_per_mm,
+        weed: job.weed,
+        weed_units: input.weed_units(),
+        keep_modes: input.keep_modes(),
+        ..PipelineSettings::with_defaults(area, plotter.home_mm(media))
+    })
+}
+
+/// Speed, force and track enhancing of `input`'s job: the job overrides,
+/// else the material's values.
+pub(crate) fn cut_settings(input: &JobInput) -> CutSettings {
+    let JobInput {
+        job,
+        plotter,
+        material,
+        ..
+    } = input;
+    CutSettings {
+        speed: job.speed.unwrap_or(material.speed),
+        force: job.force.unwrap_or(material.force),
+        track_enhancing: material.track_enhancing && plotter.capabilities.track_enhancing,
+    }
+}
+
 /// [`build_input`], and a failure says whether it was "nothing to cut".
 pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
     let JobInput {
@@ -825,42 +893,7 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         }
     }
 
-    let passes = job.passes.unwrap_or(material.passes);
-    let [lo, hi] = plotter.passes_range;
-    if passes < lo.max(1) || passes > hi {
-        let from = if job.passes.is_some() {
-            "The pass override"
-        } else {
-            "The material"
-        };
-        return Err(CommandError::Refused(format!(
-            "{from} asks for {passes} passes, but this plotter takes {} to {hi}. Set passes in the job settings or pick another material.",
-            lo.max(1)
-        ))
-        .into());
-    }
-    let strategy = StrategySettings::for_strategy(job.strategy);
-    let pipeline = PipelineSettings {
-        flatten_tolerance_mm: plotter.flatten_tolerance_mm,
-        join_tolerance_mm: JOIN_TOLERANCE_MM,
-        overcut_mm: material.overcut_mm,
-        passes,
-        reverse_alternate_passes: material.reverse_alternate_passes,
-        strategy,
-        direction: plotter.ring_direction,
-        compensation: compensation(plotter, media, &strategy),
-        corner_mode: corner_mode(material.corner_mode),
-        // M3 sets the alignment stroke.
-        alignment_stroke: None,
-        // Without a mat the feed motor moves the sheet: cut it in bands.
-        monotonic_feed: media.kind == MediaKind::NoMat,
-        // Half a plotter step: anything shorter moves no motor at all.
-        min_cut_mm: 0.5 / plotter.units_per_mm,
-        weed: job.weed,
-        weed_units: input.weed_units(),
-        keep_modes: input.keep_modes(),
-        ..PipelineSettings::with_defaults(area, plotter.home_mm(media))
-    };
+    let pipeline = pipeline_settings(input, media, area)?;
     let cut_plan = plan(&placed, &pipeline).map_err(|e| match e {
         PlanError::Empty => {
             let nothing_to_cut = true;
@@ -932,11 +965,7 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         warnings.push(weed_box_blocked_warning(cut_plan.blocked_weed_boxes));
     }
 
-    let settings = CutSettings {
-        speed: job.speed.unwrap_or(material.speed),
-        force: job.force.unwrap_or(material.force),
-        track_enhancing: material.track_enhancing && plotter.capabilities.track_enhancing,
-    };
+    let settings = cut_settings(input);
     let emitted = emit_plan(&cut_plan, objects, &cut, plotter, &media_id, &settings)?;
     let not_cut = paths_not_cut(&cut_plan, &emitted.collapsed);
     if not_cut > 0 {

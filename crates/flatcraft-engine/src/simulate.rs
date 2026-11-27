@@ -220,7 +220,7 @@ pub fn snapshot(
     })
 }
 
-fn sim_error(e: SimError) -> CommandError {
+pub(crate) fn sim_error(e: SimError) -> CommandError {
     match e {
         SimError::TooManySamples { .. } => CommandError::Refused(e.to_string()),
         SimError::NonFinite { .. } | SimError::BladeOffset { .. } => {

@@ -1,4 +1,5 @@
-//! Tools: the test pattern sheet and document previews.
+//! Tools: the test pattern sheet, the test shape, the blade offset test
+//! series and document previews.
 
 use std::path::{Path, PathBuf};
 
@@ -147,6 +148,40 @@ command!(
     params: super::NoParams,
     run: run_test_shape,
     description: "Puts the test shape on the mat: the 30 mm square with a 10 mm hole from the test sheet, as the object 'Test shape', selected. It goes to the first free spot of the cutting area, reading from the top-left row by row, at least 5 mm away from every other object (hidden and skipped ones too). If the test shape is already there, it moves to that spot instead of adding a second one. Cut it first to check that the knife cuts through, the hole drops out and the size is right. Refused when there is no room. Returns {id, added (false when it moved the one already there), bounds_mm: {x0, y0, x1, y1}}.",
+);
+
+// ---------------------------------------------------------------- tools.offset_series
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OffsetSeriesParams {
+    /// The host offsets to test, mm: 2 to 7 of them, each from 0.05 to 1.0, one tile each, left to right.
+    pub offsets_mm: Vec<f64>,
+    /// Also send the series to the plotter, like job.send (default false).
+    #[serde(default)]
+    pub send: bool,
+}
+
+fn run_offset_series(
+    s: &mut Session,
+    p: OffsetSeriesParams,
+    origin: Origin,
+) -> Result<Value, CommandError> {
+    use crate::calibrate;
+    let input = calibrate::prepare(s, &p.offsets_mm, p.send, origin)?;
+    let run = calibrate::compute(input)?;
+    calibrate::finish(s, run, p.send, origin)
+}
+
+command!(
+    ToolsOffsetSeries,
+    id: "tools.offset_series",
+    title: "Offset test series",
+    mutates: false,
+    session: true,
+    params: OffsetSeriesParams,
+    run: run_offset_series,
+    description: "Plans a blade offset test series for a plotter preset with Host knife compensation: one 25 x 25 mm tile per offset in offsets_mm (2 to 7 offsets, each 0.05 to 1.0 mm), in a row 30 mm apart, from the top-left of the cutting area (or the first free spot at least 5 mm away from every object). Each tile holds a 10 mm square, a 90 and a 30 degree star tip and circles of radius 0.5 and 1 mm, and is cut with FlatCraft steering the blade for its own offset. Cut the row, look at the corners and circles, and put the offset of the best tile into the plotter preset in the Profiles window (agents cannot change presets). The series is not added to the document. Every tile is also simulated on the plotter's device grid for a blade of the preset's real blade_offset_mm, and ranked by max_hausdorff_mm (how far the blade tip strays from the line at worst; rank 1 is the smallest): when the real blade offset is right, the tile with that offset should win. With send (default false) the series goes to the plotter like job.send: File Output writes offset-series.<ext> and its listing; for a USB plotter an agent needs the preference 'Allow agents to start cuts', else a session with a window waits for the person to confirm (the call returns a refusal that says it is waiting) and a headless session refuses. Refused when the preset has no host compensation or the row does not fit. Returns {doc_id, document_name, blade_offset_mm, best_offset_mm, tiles: [{offset_mm, bounds_mm: {x0, y0, x1, y1}, max_hausdorff_mm, grade (good, fair or poor), score, rank}], toolpaths, cut_mm, travel_mm, speed, force, passes, warnings: [text], sent (null, or the reply of job.send: {files, bytes_sent, toolpaths, cut_mm, travel_mm, warnings, cut_log_entry or cut_log_error})}.",
 );
 
 // ---------------------------------------------------------------- document.preview
