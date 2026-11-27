@@ -353,7 +353,22 @@ fn reachable(h: &mut AppHarness, settings: &[(&str, &str)]) {
         assert!(window.contains_rect(r), "{label} at {r:?} in {window:?}");
         // The inspector's column, not under the canvas.
         assert!(r.left() > window.width() * 0.5, "{label} at {r:?}");
+        assert_card(h, label);
     }
+}
+
+/// Hovering the widget named `label` shows its card, titled `label`.
+fn assert_card(h: &mut AppHarness, label: &str) {
+    let before = h.query_all_by_label(label).count();
+    h.get_by_label(label).hover();
+    h.run_plan();
+    assert!(
+        h.query_all_by_label(label).count() > before,
+        "{label} shows no card"
+    );
+    // Away again, so the card covers nothing the next step clicks.
+    h.hover_at(egui::pos2(1.0, 1.0));
+    h.run_plan();
 }
 
 #[test]
@@ -364,6 +379,12 @@ fn every_job_setting_is_reachable() {
             s.lock().unwrap().prefs.panel_settings = PanelUser::None;
         });
         open_right_panel(&mut h);
+        // Every section header has its card too.
+        for (_, title) in job::SECTIONS {
+            h.get_by_label(title).scroll_to_me();
+            h.run_plan();
+            assert_card(&mut h, title);
+        }
         reachable(&mut h, &job::SETTINGS);
         // With a selection: its cut options and the job, all reachable.
         let id = selection_all(&s)[0];
@@ -446,4 +467,70 @@ fn escape_order_card_then_job_view_then_canvas() {
     h.run_plan();
     let sn = snap(&mut h);
     assert!(!inspector::job_over_selection(&app(&h).ui.prepare, &sn));
+}
+
+#[test]
+fn escape_cancels_a_lasso_in_progress_before_the_card_and_the_job_view() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, mut h) = window(&dir, 1400.0, |_| {});
+    let id = selection_all(&s)[0];
+    run(&s, "object.select", json!({ "ids": [id] }));
+    h.run_plan();
+    let sn = snap(&mut h);
+    flatcraft::ui::arrange::open(
+        &mut app_mut(&mut h).ui.prepare,
+        &sn,
+        flatcraft::ui::arrange::PanelKind::MoveCopy,
+    );
+    h.run_plan();
+    job_line(&h).click();
+    h.run_plan();
+    app_mut(&mut h).ui.prepare.select_tool = prepare::SelectTool::Lasso;
+    h.run_plan();
+    // A lasso drawn on the empty mat, still held.
+    let c = app(&h).ui.prepare.canvas_rect.center() + egui::vec2(60.0, 60.0);
+    let path = [
+        c,
+        c + egui::vec2(30.0, 0.0),
+        c + egui::vec2(30.0, 30.0),
+        c + egui::vec2(0.0, 30.0),
+    ];
+    h.hover_at(path[0]);
+    h.run_plan();
+    h.drag_at(path[0]);
+    h.run_plan();
+    for p in &path[1..] {
+        h.hover_at(*p);
+        h.run_plan();
+    }
+    assert!(matches!(
+        app(&h).ui.prepare.drag,
+        Some(prepare::Drag::Frame { .. })
+    ));
+    // 1: the lasso in progress goes (and the Lasso tool with it); the
+    // card and the Job view stay. A held gesture comes first, so the
+    // card never closes under a running drag.
+    h.key_press(Key::Escape);
+    h.run_plan();
+    assert!(app(&h).ui.prepare.drag.is_none());
+    assert_eq!(app(&h).ui.prepare.select_tool, prepare::SelectTool::Select);
+    assert!(app(&h).ui.prepare.panel.is_some());
+    assert_eq!(view(&h), InspectorView::Job);
+    h.drop_at(path[3]);
+    h.run_plan();
+    assert_eq!(selection(&s), vec![id]);
+    // 2: the card.
+    h.key_press(Key::Escape);
+    h.run_plan();
+    assert!(app(&h).ui.prepare.panel.is_none());
+    assert_eq!(view(&h), InspectorView::Job);
+    // 3: the Job view.
+    h.key_press(Key::Escape);
+    h.run_plan();
+    assert_eq!(view(&h), InspectorView::Selection);
+    assert_eq!(selection(&s), vec![id]);
+    // 4: the canvas clears the selection.
+    h.key_press(Key::Escape);
+    h.run_plan();
+    assert!(selection(&s).is_empty());
 }
