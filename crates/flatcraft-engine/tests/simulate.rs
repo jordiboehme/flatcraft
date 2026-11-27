@@ -819,3 +819,51 @@ fn tip_colours_follow_a_mid_grey_mat() {
         "the green of the grey mat's set"
     );
 }
+
+/// The float simulation measures the algorithm alone: host compensation
+/// plans in exact floats (axis points off the device grid) and the result
+/// meets the algorithm limit, while the device run plans every point on a
+/// device unit. Before Task 16 the float run simulated the plan rounded
+/// for the device and read the rounding (0.018 mm on a 50 mm square).
+#[test]
+fn float_simulation_plans_in_floats() {
+    let d = dirs();
+    let mut s = plotter_session(&d, "host", HOST, 0.3);
+    import(
+        &mut s,
+        r#"<rect x="20" y="20" width="50" height="50"/><circle cx="120" cy="60" r="20"/>"#,
+    );
+    let plotter = s.profiles.plotter("host").unwrap();
+    let media = plotter
+        .media_or_first(&s.doc().document.job.media_id)
+        .unwrap()
+        .0
+        .clone();
+    let grid = device_grid(&plotter, &media);
+    let off_grid = |r: &simulate::SimRun| {
+        r.job
+            .plan
+            .toolpaths
+            .iter()
+            .flat_map(|t| t.runs())
+            .any(|run| {
+                run.points.iter().any(|&q| {
+                    let (u, v) = (grid.to_units(q), grid.rounded_units(q));
+                    (u.x - v.x).abs() > 1e-6 || (u.y - v.y).abs() > 1e-6
+                })
+            })
+    };
+    let float = simulate::compute(simulate::snapshot(&s, None, SimGrid::Float).unwrap()).unwrap();
+    let device = simulate::compute(simulate::snapshot(&s, None, SimGrid::Device).unwrap()).unwrap();
+    assert!(
+        off_grid(&float),
+        "the float run was planned for the device grid"
+    );
+    assert!(!off_grid(&device), "the device run has points off the grid");
+    let m = &float.result.as_ref().unwrap().metrics;
+    assert!(
+        m.max_hausdorff_mm.max(m.max_correspondence_mm) <= flatcraft_sim::ALGORITHM_LIMIT_MM,
+        "{}",
+        m.max_hausdorff_mm
+    );
+}

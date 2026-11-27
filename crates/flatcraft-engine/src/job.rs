@@ -808,6 +808,22 @@ pub(crate) fn cut_settings(input: &JobInput) -> CutSettings {
 
 /// [`build_input`], and a failure says whether it was "nothing to cut".
 pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
+    build_planned(input, PlanUnits::Device)
+}
+
+/// What units host compensation plans for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlanUnits {
+    /// The plotter's device grid: what is sent.
+    Device,
+    /// Exact floats, no rounding: the algorithm alone. Only the float
+    /// simulation (`simulate::SimGrid::Float`) builds this; such a job is
+    /// never sent.
+    Float,
+}
+
+/// [`build_classified`], with host compensation planned for `units`.
+pub(crate) fn build_planned(input: &JobInput, units: PlanUnits) -> Result<JobResult, BuildFailure> {
     let JobInput {
         objects,
         job,
@@ -899,7 +915,10 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         }
     }
 
-    let pipeline = pipeline_settings(input, media, area)?;
+    let mut pipeline = pipeline_settings(input, media, area)?;
+    if let (PlanUnits::Float, Compensation::Host(h)) = (units, &mut pipeline.compensation) {
+        h.device_grid = None;
+    }
     let cut_plan = plan(&placed, &pipeline).map_err(|e| match e {
         PlanError::Empty => {
             let nothing_to_cut = true;

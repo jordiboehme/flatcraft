@@ -81,7 +81,8 @@ pub enum SimGrid {
     /// Every run point is snapped to the device grid first: what the
     /// plotter really gets. The commands use this.
     Device,
-    /// No rounding: the algorithm alone.
+    /// No rounding: the algorithm alone. Host compensation plans in exact
+    /// floats (no device grid) and the simulator snaps nothing. Never sent.
     Float,
 }
 
@@ -296,7 +297,13 @@ pub fn compute(input: SimInput) -> Result<SimRun, CommandError> {
         key,
         hook: _,
     } = input;
-    let job = job::build_classified(&input).map_err(|f| f.error)?;
+    // The float run plans in floats too, so it measures the algorithm
+    // alone; a plan rounded for the device would read the rounding.
+    let units = match key.grid {
+        SimGrid::Device => job::PlanUnits::Device,
+        SimGrid::Float => job::PlanUnits::Float,
+    };
+    let job = job::build_planned(&input, units).map_err(|f| f.error)?;
     let plotter = &input.plotter;
     let (media, _) = crate::commands::effective_media(plotter, &input.job)?;
     let plan_index: Vec<usize> = job::cut_mask(&job)
