@@ -137,6 +137,7 @@ fn the_default_name_follows_the_project_file() {
             include_skipped: false,
         })],
     );
+    common::wait_for_long(&mut h);
     let reqs = picker.requests.lock().unwrap().clone();
     assert_eq!(reqs[0].file_name.as_deref(), Some("Star Badge.pdf"));
     assert_eq!(reqs[0].directory.as_deref(), Some(dir.path()));

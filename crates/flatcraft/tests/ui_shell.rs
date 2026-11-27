@@ -188,6 +188,7 @@ fn open_adds_to_recent_projects() {
     let mut h = harness(&dir, session(&dir), false);
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![Action::Open(path.clone())]);
+    common::wait_for_long(&mut h);
     assert_eq!(app(&h).ui.workspace, Workspace::Prepare);
     assert_eq!(Preferences::load(dir.path()).recent_projects, [path]);
 }
@@ -212,6 +213,7 @@ fn a_recent_project_save_keeps_what_another_window_stored() {
         .unwrap();
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![Action::Open(path.clone())]);
+    common::wait_for_long(&mut h);
     let stored = Preferences::load(dir.path());
     assert_eq!(stored.recent_projects, [path]);
     assert!(stored.auto_reload, "the other window's change survives");

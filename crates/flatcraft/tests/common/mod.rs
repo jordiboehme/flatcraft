@@ -99,6 +99,11 @@ pub fn harness_sized(
             slow_worker(&repaint);
             flatcraft_engine::job::build_classified(input)
         });
+        let repaint = ctx.clone();
+        app.long.set_runner(move |session, work| {
+            slow_worker(&repaint);
+            ui::long::run(session, work)
+        });
     }
     *h.state_mut() = Some(setup(app));
     settle(&mut h);
@@ -251,11 +256,21 @@ pub fn wait_for_workers(h: &mut AppHarness) {
     });
 }
 
-/// Runs frames until no source check is in flight, then lets the window
-/// settle. For frames that may start a check (entering Prepare, a new or
-/// switched document); the shape worker may stay busy.
+/// Runs frames until no source check and no long command is in flight,
+/// then lets the window settle. For frames that may start a check (entering
+/// Prepare, a new or switched document). Opening a project or a sample is a
+/// long command on a worker that switches the document only when it lands,
+/// so it is waited for too. The shape worker may stay busy.
 pub fn wait_for_source_check(h: &mut AppHarness) {
-    wait_until(h, |app| app.source_check_job.is_some());
+    wait_until(h, |app| app.source_check_job.is_some() || app.long.busy());
+}
+
+/// Runs frames until the long commands (import, trace, reload, open,
+/// export) the window queued have landed, then lets the window settle.
+/// `FlatCraftApp::apply` waits only [`flatcraft::ui::long::LONG_WAIT`] for
+/// one, so a test reads their result only after this.
+pub fn wait_for_long(h: &mut AppHarness) {
+    wait_until(h, |app| app.long.busy());
 }
 
 /// Runs frames until `busy` is false and the window settled. While a worker

@@ -206,6 +206,7 @@ fn a_recent_project_open_in_a_tab_switches_to_it() {
     let mut h = harness_with(&dir, s.clone(), |a| a.with_file_picker(picker));
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![flatcraft::ui::Action::Open(path.clone())]);
+    common::wait_for_long(&mut h);
     let opened = s.lock().unwrap().doc().id();
     // Go to Cut, then a new document, then Home.
     app_mut(&mut h).ui.workspace = Workspace::Cut;
@@ -346,6 +347,7 @@ fn pictures_come_from_the_project_file_and_refresh_on_save() {
     // picture and Home reads it again.
     let ctx = h.ctx.clone();
     app_mut(&mut h).apply(&ctx, vec![flatcraft::ui::Action::Open(path.clone())]);
+    common::wait_for_long(&mut h);
     let doc = s.lock().unwrap().doc().id();
     s.lock()
         .unwrap()
@@ -416,6 +418,7 @@ fn the_recent_list_keeps_more_than_the_menu_shows() {
             .execute("project.save", json!({ "path": p }), Origin::User)
             .unwrap();
         app_mut(&mut h).apply(&ctx, vec![flatcraft::ui::Action::Open(p)]);
+        common::wait_for_long(&mut h);
     }
     let st = s.lock().unwrap();
     assert_eq!(st.prefs.recent_projects.len(), flatcraft::ui::MAX_RECENT);

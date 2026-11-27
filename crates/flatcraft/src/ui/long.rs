@@ -117,11 +117,15 @@ pub fn next_text(command: &str) -> &'static str {
 /// A finished long command: what it was and what it gave.
 pub type Done = (LongJob, Result<Value, CommandError>);
 
+/// What runs a long command's work on the worker.
+type Runner = Arc<dyn Fn(&SharedSession, Work) -> Result<Value, CommandError> + Send + Sync>;
+
 /// The queue of long commands and the one that runs.
 pub struct LongJobs {
     queue: VecDeque<LongJob>,
     running: Option<(LongJob, Receiver<Result<Value, CommandError>>)>,
     repaint: egui::Context,
+    runner: Runner,
 }
 
 impl LongJobs {
@@ -130,7 +134,17 @@ impl LongJobs {
             queue: VecDeque::new(),
             running: None,
             repaint: ctx.clone(),
+            runner: Arc::new(run),
         }
+    }
+
+    /// Runs the work with `f` instead of the engine's unlocked path
+    /// (tests: a slow worker). [`run`] is the engine's path.
+    pub fn set_runner(
+        &mut self,
+        f: impl Fn(&SharedSession, Work) -> Result<Value, CommandError> + Send + Sync + 'static,
+    ) {
+        self.runner = Arc::new(f);
     }
 
     /// The busy note while a long command runs or waits: what runs, and
@@ -174,15 +188,16 @@ impl LongJobs {
             let work = job.work.clone();
             let shared = session.clone();
             let repaint = self.repaint.clone();
+            let runner = self.runner.clone();
             let spawned = std::thread::Builder::new()
                 .name("flatcraft-long".into())
                 .spawn(move || {
-                    let _ = tx.send(run(&shared, work));
+                    let _ = tx.send(runner(&shared, work));
                     repaint.request_repaint();
                 });
             if spawned.is_err() {
                 // No thread: run it here rather than never.
-                let result = run(session, job.work.clone());
+                let result = (self.runner)(session, job.work.clone());
                 return Some((job, result));
             }
             self.running = Some((job, rx));
@@ -216,7 +231,7 @@ impl std::fmt::Debug for LongJobs {
 }
 
 /// Runs `work` as the person, off the session lock.
-fn run(session: &SharedSession, work: Work) -> Result<Value, CommandError> {
+pub fn run(session: &SharedSession, work: Work) -> Result<Value, CommandError> {
     use flatcraft_engine::unlocked;
     match work {
         Work::Command {

@@ -730,15 +730,15 @@ fn trace_button_opens_the_dialog_and_apply_retraces() {
     let before = undo_len(&s);
     // Trace opens the dialog; Apply is one retrace.
     h.get_by_role_and_label(Role::Button, "Trace").click();
-    h.run_steps(3);
+    h.run_plan();
     assert!(app(&h).ui.trace.is_some());
     assert_eq!(undo_len(&s), before);
     // Settings that change the result: an Apply that changes nothing
     // records no undo step.
     h.get_by_label("Invert").click();
-    h.run_steps(3);
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Apply").click();
-    h.run_steps(3);
+    h.run_plan();
     assert!(app(&h).ui.toasts.is_empty(), "{:?}", app(&h).ui.toasts);
     assert_eq!(undo_len(&s), before + 1);
 }
