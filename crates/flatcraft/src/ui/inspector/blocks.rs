@@ -552,13 +552,6 @@ fn header(
     open
 }
 
-/// A section header whose open state the caller keeps (the Objects
-/// panel's Notes): it looks and reads like every section's. Returns the
-/// state after this frame's click.
-pub fn toggle_header(ui: &mut Ui, title: &str, card: &str, open: bool) -> bool {
-    header_row(ui, title, title, card, "", open, Kind::Section)
-}
-
 /// Draws a header with the state `open` and returns it after a click.
 fn header_row(
     ui: &mut Ui,

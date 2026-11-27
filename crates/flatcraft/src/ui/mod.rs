@@ -2918,8 +2918,12 @@ fn prepare_keys(
         return;
     }
     // Escape in another text field (the search box) only leaves it: egui
-    // dropped its focus, the panel and the selection stay.
+    // dropped its focus, the panel and the selection stay. In the Objects
+    // filter it also clears the filter, and only that.
     if st.text_focus_elsewhere && help::pressed(ctx, help::PrepareKey::ClearSelection) {
+        if st.objects_filter_keys {
+            st.objects_filter = None;
+        }
         return;
     }
     // Escape on an open list (a ribbon group's list) only closes it: egui

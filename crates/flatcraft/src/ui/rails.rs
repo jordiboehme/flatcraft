@@ -306,8 +306,9 @@ fn mode_word(m: CutMode) -> &'static str {
     super::settings::mode_name(m)
 }
 
-/// The Cut and Job rail: the selection with its cut mode (or "mixed"),
-/// then plotter, material, speed, force and passes.
+/// The Cut and Job rail: the selection as the inspector's heading names
+/// it, with its cut mode ("Star: Object outlines", "2 objects: mixed"),
+/// then the job line's parts: plotter, material, mat and strategy.
 pub fn settings_summary(snap: &Snapshot, dot: Dot) -> Summary {
     let mut parts = Vec::new();
     let selected: Vec<_> = snap.selected().collect();
@@ -317,27 +318,16 @@ pub fn settings_summary(snap: &Snapshot, dot: Dot) -> Summary {
         } else {
             "mixed"
         };
-        parts.push(format!("{} selected: {mode}", selected.len()));
+        let (title, _) = super::inspector::object::heading(snap);
+        parts.push(format!("{title}: {mode}"));
     }
-    parts.push(
-        snap.plotter
-            .as_ref()
-            .map_or(snap.job.plotter_id.clone(), |p| p.name.clone()),
-    );
-    parts.push(
-        snap.material
-            .as_ref()
-            .map_or(snap.job.material_id.clone(), |m| m.name.clone()),
-    );
-    if let Some(m) = &snap.material {
-        parts.push(format!("Speed {}", snap.job.speed.unwrap_or(m.speed)));
-        parts.push(format!("Force {}", snap.job.force.unwrap_or(m.force)));
-        parts.push(count(
-            snap.job.passes.unwrap_or(m.passes) as usize,
-            "pass",
-            "passes",
-        ));
-    }
+    let job = super::inspector::job::summary(snap, dot, false);
+    parts.extend([
+        job.plotter_short.unwrap_or(job.plotter),
+        job.material,
+        job.mat,
+        job.strategy,
+    ]);
     Summary {
         parts,
         dot: Some(dot),
@@ -675,6 +665,19 @@ pub fn collapse_button(ui: &mut Ui, kind: SidePanel, side: Side) -> bool {
 /// A panel's heading with the collapse chevron at the right end. Returns
 /// true when the chevron was clicked.
 pub fn header(ui: &mut Ui, kind: SidePanel, side: Side, heading: &str) -> bool {
+    header_with_note(ui, kind, side, heading, None)
+}
+
+/// [`header`] with a dimmed note between the heading and the chevron
+/// (its text and its hover card): a state that comes and goes sits in
+/// the header's one line, cut short when it does not fit.
+pub fn header_with_note(
+    ui: &mut Ui,
+    kind: SidePanel,
+    side: Side,
+    heading: &str,
+    note: Option<(&str, &str)>,
+) -> bool {
     let mut clicked = false;
     let w = ui.available_width();
     ui.allocate_ui_with_layout(
@@ -685,6 +688,19 @@ pub fn header(ui: &mut Ui, kind: SidePanel, side: Side, heading: &str) -> bool {
             ui.label(egui::RichText::new(heading).font(super::metrics::heading()));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 clicked = collapse_button(ui, kind, side);
+                if let Some((text, card)) = note {
+                    let dim = Tokens::of(ui.visuals()).text_dim;
+                    let r = ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(text)
+                                .font(super::metrics::secondary())
+                                .color(dim),
+                        )
+                        .truncate()
+                        .selectable(false),
+                    );
+                    groups::card(&r, text, card, None, false);
+                }
             });
         },
     );

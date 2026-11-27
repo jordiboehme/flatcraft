@@ -1579,9 +1579,10 @@ fn panel_rows(h: &AppHarness, names: &[&str]) -> Vec<String> {
     let mut rows: Vec<(f32, String)> = names
         .iter()
         .map(|n| {
-            // The row comes first; the details below repeat the name.
+            // The Objects row (a button); the inspector's heading repeats
+            // the name.
             let y = h
-                .query_all_by_label(n)
+                .query_all_by_role_and_label(Role::Button, n)
                 .map(|node| node.rect().min.y)
                 .fold(f32::INFINITY, f32::min);
             (y, n.to_string())

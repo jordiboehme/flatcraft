@@ -374,8 +374,12 @@ pub struct PrepareState {
     /// Where the ribbon drew its tab row, its panel and its tools row,
     /// last frame (see `ribbon::show`).
     pub ribbon_layout: Option<super::ribbon::Layout>,
-    /// The Notes section under Objects is open.
-    pub notes_open: bool,
+    /// The filter typed over the Objects list, with its document (UI
+    /// state only, never saved; another document starts unfiltered).
+    pub objects_filter: Option<(u64, String)>,
+    /// The Objects filter field had the keys at the end of the last
+    /// frame: an Escape now clears the filter.
+    pub objects_filter_keys: bool,
     /// Counts the times a notes field got the keyboard: the typing of one
     /// visit to a field is one undo step (see `objects::notes`).
     pub notes_burst: u64,
@@ -476,7 +480,8 @@ impl Default for PrepareState {
             rotate_cursor: None,
             rename: None,
             ribbon_layout: None,
-            notes_open: true,
+            objects_filter: None,
+            objects_filter_keys: false,
             notes_burst: 0,
             inspector: Default::default(),
             inspector_key: None,

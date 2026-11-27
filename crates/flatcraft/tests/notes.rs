@@ -35,10 +35,20 @@ fn type_into(h: &mut AppHarness, label: &str, text: &str) {
     h.run_plan();
 }
 
+/// Opens the Notes at the bottom of the Objects panel (folded at first).
+fn open_notes(h: &mut AppHarness) {
+    if h.query_by_label("Project notes").is_none() {
+        h.get_by_role_and_label(Role::Button, "Notes").click();
+        h.run_plan();
+    }
+}
+
+/// Prepare with the Notes open.
 fn in_prepare(dir: &tempfile::TempDir, s: SharedSession) -> AppHarness {
     let mut h = harness_with(dir, s, |a| a);
     to_prepare(&mut h);
     h.run_plan();
+    open_notes(&mut h);
     h
 }
 
@@ -303,6 +313,7 @@ fn the_notes_stay_reachable_in_a_short_window_with_many_objects() {
     let mut h = harness_sized(&dir, s.clone(), [1400.0, 700.0], 8, |a| a);
     to_prepare(&mut h);
     h.run_plan();
+    open_notes(&mut h);
     h.get_by_label("Project notes").scroll_to_me();
     h.run_plan();
     h.run_plan();

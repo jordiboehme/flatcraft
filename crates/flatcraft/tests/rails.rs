@@ -129,35 +129,30 @@ fn one_object_is_not_plural() {
 fn settings_summary_names_the_selection_and_the_job() {
     let (_d, s, mut h, ids) = four(1400.0);
     let parts = |h: &mut AppHarness| rails::settings_summary(&snap(h), Dot::Ready).parts;
-    run(
-        &s,
-        "job.set_overrides",
-        json!({ "speed": 4, "force": 12, "passes": 2 }),
-    );
-    h.run_plan();
+    // The selection as the inspector's heading names it, with its mode,
+    // then the job line: plotter, material, mat and strategy.
     let p = parts(&mut h);
-    assert_eq!(p[0], "1 selected: Object outlines");
-    assert_eq!(&p[3..], ["Speed 4", "Force 12", "2 passes"]);
+    assert_eq!(p[0], "square: Object outlines");
+    let job = flatcraft::ui::inspector::job::summary(&snap(&mut h), Dot::Ready, false);
+    let plotter = job.plotter_short.clone().unwrap_or(job.plotter.clone());
+    assert_eq!(&p[1..], [plotter, job.material, job.mat, job.strategy]);
     // Same mode on two objects, then mixed.
     run(&s, "object.select", json!({ "ids": [ids[0], ids[1]] }));
     h.run_plan();
-    assert_eq!(parts(&mut h)[0], "2 selected: Object outlines");
+    assert_eq!(parts(&mut h)[0], "2 objects: Object outlines");
     run(
         &s,
         "object.set_cut_options",
         json!({ "ids": [ids[1]], "mode": "all_lines" }),
     );
     h.run_plan();
-    assert_eq!(parts(&mut h)[0], "2 selected: mixed");
+    assert_eq!(parts(&mut h)[0], "2 objects: mixed");
     // No selection: the job only.
     run(&s, "object.select", json!({ "ids": [] }));
     h.run_plan();
     let p = parts(&mut h);
-    assert!(!p[0].contains("selected"), "{p:?}");
-    assert_eq!(&p[2..], ["Speed 4", "Force 12", "2 passes"]);
-    run(&s, "job.set_overrides", json!({ "passes": 1 }));
-    h.run_plan();
-    assert_eq!(parts(&mut h).last().unwrap(), "1 pass");
+    assert_eq!(p.len(), 4, "{p:?}");
+    assert!(!p[0].contains(':'), "{p:?}");
 }
 
 #[test]
@@ -478,7 +473,7 @@ fn rail_text_is_turned_and_stays_inside_the_rail() {
         .find(|t| t.angle > 0.0)
         .expect("right rail reads top to bottom");
     assert!(left.galley.text().starts_with("4 objects"));
-    assert!(right.galley.text().starts_with("1 selected"));
+    assert!(right.galley.text().starts_with("square: Object outlines"));
     assert!(!left.galley.text().ends_with("..."), "it fits whole");
     assert_text_inside(&h, "Objects", left, false);
     assert_text_inside(&h, "Cut and Job", right, true);
@@ -514,8 +509,9 @@ fn a_long_summary_ends_in_dots_and_never_runs_past_the_rail() {
     );
     let left = shapes.iter().find(|t| t.angle < 0.0).unwrap();
     assert_text_inside(&h, "Objects", left, false);
-    // The tooltip and the name still hold everything.
-    assert!(has(&h, "Speed"));
+    // The tooltip and the name still hold everything, to the strategy.
+    let sum = rails::settings_summary(&snap(&mut h), Dot::Ready);
+    assert!(has(&h, sum.parts.last().unwrap()), "{sum:?}");
 }
 
 #[test]

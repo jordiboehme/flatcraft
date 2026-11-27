@@ -1,9 +1,13 @@
-//! The Objects panel: one row per object with its kind, name, a mark for
-//! linked copies, file status, an eye to show or hide it and scissors to
-//! skip its cut. The two toggles are quiet until the row is hovered, and
-//! clear when the object is hidden or skipped. Below the list, the
-//! project's notes. What a selected object is (its name, size, file and
-//! linked copies) is in the inspector on the right.
+//! The Objects panel: a filter field, then one row per object with its
+//! kind, name, a mark for linked copies, file status, an eye to show or
+//! hide it and scissors to skip its cut. The two toggles are quiet until
+//! the row is hovered, and clear when the object is hidden or skipped. The
+//! filter only hides rows: the selection stays as it is, and the header
+//! says how many selected objects it hides. At the bottom, the project's
+//! notes, folded to their first words. What a selected object is (its
+//! name, size, file and linked copies) is in the inspector on the right.
+
+use std::collections::BTreeSet;
 
 use egui::{Rect, RichText, Ui};
 use serde_json::json;
@@ -41,15 +45,34 @@ pub fn show(
     actions: &mut Vec<Action>,
 ) {
     super::inspector::blocks::panel_spacing(ui);
-    if super::rails::header(ui, SidePanel::Objects, Side::Left, "Objects") {
+    let query = filter_text(st, snap).to_string();
+    let shown = shown_rows(snap, &query);
+    let note = shown.as_ref().and_then(|shown| {
+        let hidden = snap
+            .selection
+            .iter()
+            .filter(|id| !shown.contains(id))
+            .count();
+        (hidden > 0).then(|| filter_note(snap.selection.len(), hidden))
+    });
+    let note = note.as_deref().map(|n| (n, FILTER_NOTE_CARD));
+    if super::rails::header_with_note(ui, SidePanel::Objects, Side::Left, "Objects", note) {
         st.panels.set_collapsed(SidePanel::Objects, true);
     }
-    // One scroll area for the whole panel, so the Notes below the list stay
-    // reachable in a short window. The list keeps its own, at most 60 % of
-    // the panel's height.
-    let list_h = ui.available_height() * 0.6;
+    filter_field(ui, st, snap);
+    // The Notes sit at the bottom of the panel; the list fills the room
+    // between the filter and them, and scrolls on its own.
+    let panel_h = ui.available_height();
+    egui::Panel::bottom("flatcraft-objects-notes")
+        .resizable(false)
+        .show_separator_line(false)
+        .frame(egui::Frame::new())
+        .show(ui, |ui| {
+            super::inspector::blocks::panel_spacing(ui);
+            notes(ui, st, snap, actions, panel_h * NOTES_MAX_SHARE);
+        });
     egui::ScrollArea::vertical()
-        .id_salt("flatcraft-objects-panel")
+        .id_salt("flatcraft-objects-list")
         .auto_shrink([false, false])
         .show(ui, |ui| {
             super::inspector::blocks::panel_spacing(ui);
@@ -58,21 +81,154 @@ pub fn show(
                     RichText::new("Nothing here yet. Import a design to get started.")
                         .color(t.text_dim),
                 );
+            } else if shown.as_ref().is_some_and(|s| s.is_empty()) {
+                ui.add(
+                    egui::Label::new(RichText::new(NO_MATCH).color(t.text_dim))
+                        .wrap()
+                        .selectable(false),
+                );
             }
-            egui::ScrollArea::vertical()
-                .id_salt("flatcraft-objects-list")
-                .auto_shrink([false, true])
-                .max_height(list_h)
-                .show(ui, |ui| {
-                    tree_rows(ui, st, snap, t, actions, None, 0);
-                    top_level_drop(ui, snap, t, actions);
-                });
-            notes(ui, st, snap, actions);
+            tree_rows(ui, st, snap, t, actions, shown.as_ref(), None, 0);
+            top_level_drop(ui, snap, t, actions);
         });
 }
 
+// ---------------------------------------------------------------- filter
+
+/// The accessible name of the filter field.
+pub const FILTER_NAME: &str = "Filter objects by name";
+/// What the empty filter field says.
+pub const FILTER_PLACEHOLDER: &str = "Find the droids you seek...";
+/// The card of the filter field.
+pub const FILTER_CARD: &str = "Type part of a name to show only the rows that have it. Upper and lower case do not matter. A group whose name matches shows all its members. The filter only hides rows in this list: what is selected stays selected, and the mat shows everything. Press Esc in the field to clear it.";
+/// The card of the filter field while there is nothing to filter.
+pub const FILTER_EMPTY_WHY: &str =
+    "There are no objects yet. Import a design, then type here to find one by its name.";
+/// What the list says when the filter matches no row.
+pub const NO_MATCH: &str = "Nothing matches. These are not the droids you are looking for.";
+/// The card of the header's note while selected rows are hidden.
+pub const FILTER_NOTE_CARD: &str = "Some selected objects have no row now because the filter hides them. They are still selected: the inspector and every action work on them. Clear the filter (Esc in the field) to see their rows again.";
+
+/// The header's note: "2 selected, 1 hidden by the filter".
+pub fn filter_note(selected: usize, hidden: usize) -> String {
+    format!("{selected} selected, {hidden} hidden by the filter")
+}
+
+/// The filter typed for this document ("" when none).
+pub fn filter_text<'a>(st: &'a PrepareState, snap: &Snapshot) -> &'a str {
+    match &st.objects_filter {
+        Some((doc, text)) if *doc == snap.doc_id => text,
+        _ => "",
+    }
+}
+
+/// The rows the filter `query` lets through (objects and groups), or
+/// `None` while it is empty (every row shows). A row shows when its name
+/// has the query in it (any case), when a group above it matches (the
+/// members of a matching group stay under it), or, for a group, when
+/// something inside it matches. While a filter is on, every group that
+/// shows is drawn open; the groups the person folded open stay as they
+/// were for when the filter is cleared.
+pub fn shown_rows(snap: &Snapshot, query: &str) -> Option<BTreeSet<u64>> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return None;
+    }
+    fn walk(
+        snap: &Snapshot,
+        parent: Option<u64>,
+        q: &str,
+        inherited: bool,
+        out: &mut BTreeSet<u64>,
+    ) -> bool {
+        let mut any = false;
+        for node in snap
+            .tree
+            .children(parent.map(flatcraft_core::document::ObjectId))
+        {
+            let id = node.0;
+            let me = inherited
+                || snap
+                    .name_of(id)
+                    .is_some_and(|n| n.to_lowercase().contains(q));
+            if snap.is_group(id) {
+                let inner = walk(snap, Some(id), q, me, out);
+                if me || inner {
+                    out.insert(id);
+                    any = true;
+                }
+            } else if me && snap.object(id).is_some() {
+                out.insert(id);
+                any = true;
+            }
+        }
+        any
+    }
+    let mut out = BTreeSet::new();
+    walk(snap, None, &q, false, &mut out);
+    Some(out)
+}
+
+/// The filter field: a panel row under the header. Escape in it clears
+/// the filter and leaves the field (see `prepare_keys`); the next Escape
+/// goes on as before (it clears the selection).
+fn filter_field(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot) {
+    let mut text = filter_text(st, snap).to_string();
+    let w = ui.available_width();
+    let (row, _) = ui.allocate_exact_size(egui::vec2(w, metrics::ROW), egui::Sense::hover());
+    let field = Rect::from_center_size(row.center(), egui::vec2(w, metrics::CONTROL));
+    let enabled = !snap.objects.is_empty();
+    let resp = ui
+        .scope_builder(egui::UiBuilder::new().max_rect(field), |ui| {
+            ui.add_enabled(
+                enabled,
+                egui::TextEdit::singleline(&mut text)
+                    .hint_text(FILTER_PLACEHOLDER)
+                    .desired_width(f32::INFINITY)
+                    .min_size(egui::vec2(w, metrics::CONTROL)),
+            )
+        })
+        .inner;
+    super::settings::set_name(ui, &resp, FILTER_NAME);
+    let why = (!enabled).then_some(FILTER_EMPTY_WHY);
+    super::groups::card(&resp, "Filter", FILTER_CARD, why, false);
+    // Escape in the field clears it: egui drops the focus before the
+    // keys of Prepare run, so they clear it (`prepare_keys`) when the
+    // field had the keys last frame.
+    st.objects_filter_keys = resp.has_focus();
+    st.objects_filter = (!text.is_empty()).then_some((snap.doc_id, text));
+}
+
+// ---------------------------------------------------------------- notes
+
+/// The id of the Notes section (its open state is kept in the
+/// preferences, `panel_sections`).
+pub const NOTES_SECTION: &str = "left.notes";
+/// At most this share of the panel's height goes to the open Notes; the
+/// rest scrolls inside them, so the list keeps its room.
+const NOTES_MAX_SHARE: f32 = 0.45;
+/// The longest summary the folded Notes header (and its card) holds.
+const NOTES_SUMMARY_MAX: usize = 400;
+
+/// What the folded Notes header shows: the notes on one line (the header
+/// cuts it short, the card holds it), else the description, else nothing.
+pub fn notes_summary(notes: &str, description: &str) -> String {
+    let text = if notes.trim().is_empty() {
+        description
+    } else {
+        notes
+    };
+    let one: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one.chars().count() > NOTES_SUMMARY_MAX {
+        let cut: String = one.chars().take(NOTES_SUMMARY_MAX).collect();
+        format!("{cut}...")
+    } else {
+        one
+    }
+}
+
 /// The card of the Notes heading in the Objects panel.
-pub const NOTES_HINT: &str = "Shows or hides the notes of this project: a one-line description and what to remember the next time you cut it.";
+pub const NOTES_HINT: &str = "Shows or hides the notes of this project: a one-line description and what to remember the next time you cut it. Folded, the header shows their first words.";
 /// The card of the description field.
 pub const DESCRIPTION_HINT: &str = "One line that says what this project is. The Start page shows it under the name, and so does the tab's card. It is saved in the project file.";
 /// The card of the notes field.
@@ -105,15 +261,43 @@ pub fn section_toggle(ui: &mut Ui, title: &str, open: bool, hint: &str) -> bool 
     resp.clicked()
 }
 
-/// The Notes section: the project's one-line description and its notes.
-/// Each visit to a field is one undo step: the typing goes in as it
-/// happens (`document.set_notes` with a coalesce key per visit), so the
-/// document is unsaved at once and Undo takes the whole visit back.
-fn notes(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Vec<Action>) {
-    st.notes_open = super::inspector::blocks::toggle_header(ui, "Notes", NOTES_HINT, st.notes_open);
-    if !st.notes_open {
-        return;
-    }
+/// The Notes section, folded at first: the project's one-line description
+/// and its notes, at most `max_h` high (the rest scrolls). Each visit to a
+/// field is one undo step: the typing goes in as it happens
+/// (`document.set_notes` with a coalesce key per visit), so the document
+/// is unsaved at once and Undo takes the whole visit back.
+fn notes(
+    ui: &mut Ui,
+    st: &mut PrepareState,
+    snap: &Snapshot,
+    actions: &mut Vec<Action>,
+    max_h: f32,
+) {
+    let summary = notes_summary(&snap.notes, &snap.description);
+    super::inspector::blocks::section(
+        ui,
+        NOTES_SECTION,
+        "Notes",
+        NOTES_HINT,
+        &summary,
+        false,
+        |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("flatcraft-objects-notes-body")
+                .max_height(max_h)
+                // The panel holding the Notes is as tall as they were
+                // last frame: without this the body would fit that old
+                // height and the panel would never grow to show it.
+                .min_scrolled_height(max_h)
+                .auto_shrink([false, true])
+                .show(ui, |ui| notes_fields(ui, st, snap, actions));
+        },
+        None,
+    );
+}
+
+/// The description and notes fields of the Notes section.
+fn notes_fields(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Vec<Action>) {
     ui.spacing_mut().item_spacing.y = metrics::SPACE_4;
     let doc_id = snap.doc_id;
     super::settings::painted_label(ui, "Description");
@@ -174,6 +358,9 @@ struct RowDrag {
     ids: Vec<u64>,
 }
 
+/// The card of a group's fold arrow while a filter is on.
+pub const FOLD_WHILE_FILTERING: &str = "While you filter the list, every group that shows is open, so you see what matches. Clear the filter (Esc in the field) to fold or open groups again.";
+
 /// The card of a group row.
 pub const GROUP_ROW_HINT: &str = "A group: its objects act as one. Click to select the whole group, click the arrow to see its members. Drag a row onto a group to put it in, or below the list to take it out. Double-click to rename.";
 
@@ -199,22 +386,27 @@ pub const OBJECT_ROW_HINT: &str = "An object on the mat. Click to select it. Dou
 
 /// The rows of the children of `parent` (the top level for `None`), in
 /// order, with the members of open groups under their group.
+#[allow(clippy::too_many_arguments)]
 fn tree_rows(
     ui: &mut Ui,
     st: &mut PrepareState,
     snap: &Snapshot,
     t: &Tokens,
     actions: &mut Vec<Action>,
+    shown: Option<&BTreeSet<u64>>,
     parent: Option<u64>,
     depth: usize,
 ) {
     let parent_id = parent.map(flatcraft_core::document::ObjectId);
     for node in snap.tree.children(parent_id) {
         let id = node.0;
+        if !passes(shown, id) {
+            continue;
+        }
         if snap.is_group(id) {
-            group_row(ui, st, snap, id, depth, t, actions);
-            if st.open_groups.contains(&(snap.doc_id, id)) {
-                tree_rows(ui, st, snap, t, actions, Some(id), depth + 1);
+            group_row(ui, st, snap, id, depth, shown.is_some(), t, actions);
+            if shows_members(st, snap, shown, id) {
+                tree_rows(ui, st, snap, t, actions, shown, Some(id), depth + 1);
             }
         } else if let Some(o) = snap.object(id) {
             object_row(ui, st, snap, o, depth, t, actions);
@@ -222,27 +414,55 @@ fn tree_rows(
     }
 }
 
+/// Whether the row `id` passes the filter (`shown`, `None` when off).
+fn passes(shown: Option<&BTreeSet<u64>>, id: u64) -> bool {
+    shown.is_none_or(|s| s.contains(&id))
+}
+
+/// Whether the group `id` shows its members: when the person folded it
+/// open, and every group that shows while a filter is on.
+fn shows_members(
+    st: &PrepareState,
+    snap: &Snapshot,
+    shown: Option<&BTreeSet<u64>>,
+    id: u64,
+) -> bool {
+    shown.is_some() || st.open_groups.contains(&(snap.doc_id, id))
+}
+
 /// The rows of the list in order (objects and groups), the members of
-/// open groups under their group, as [`tree_rows`] draws them.
+/// open groups under their group, as [`tree_rows`] draws them: only the
+/// rows the filter shows, so a Shift+click range never takes a row the
+/// person cannot see.
 pub fn list_rows(snap: &Snapshot, st: &PrepareState) -> Vec<u64> {
-    fn walk(snap: &Snapshot, st: &PrepareState, parent: Option<u64>, out: &mut Vec<u64>) {
+    fn walk(
+        snap: &Snapshot,
+        st: &PrepareState,
+        shown: Option<&BTreeSet<u64>>,
+        parent: Option<u64>,
+        out: &mut Vec<u64>,
+    ) {
         for node in snap
             .tree
             .children(parent.map(flatcraft_core::document::ObjectId))
         {
             let id = node.0;
+            if !passes(shown, id) {
+                continue;
+            }
             if snap.is_group(id) {
                 out.push(id);
-                if st.open_groups.contains(&(snap.doc_id, id)) {
-                    walk(snap, st, Some(id), out);
+                if shows_members(st, snap, shown, id) {
+                    walk(snap, st, shown, Some(id), out);
                 }
             } else if snap.object(id).is_some() {
                 out.push(id);
             }
         }
     }
+    let shown = shown_rows(snap, filter_text(st, snap));
     let mut out = Vec::new();
-    walk(snap, st, None, &mut out);
+    walk(snap, st, shown.as_ref(), None, &mut out);
     out
 }
 
@@ -401,12 +621,14 @@ fn drag_and_drop(
 
 /// A group's row: the fold arrow, the group icon, its name and size, and
 /// the eye and scissors for all its objects.
+#[allow(clippy::too_many_arguments)]
 fn group_row(
     ui: &mut Ui,
     st: &mut PrepareState,
     snap: &Snapshot,
     id: u64,
     depth: usize,
+    filtering: bool,
     t: &Tokens,
     actions: &mut Vec<Action>,
 ) {
@@ -414,7 +636,9 @@ fn group_row(
     let leaves = snap.leaves_of(id);
     let name = snap.name_of(id).unwrap_or_default();
     let selected = !leaves.is_empty() && leaves.iter().all(|l| snap.selection.contains(l));
-    let open = st.open_groups.contains(&(doc_id, id));
+    // While a filter is on, every group that shows is open; the fold
+    // arrow waits (dimmed) until the filter is cleared.
+    let open = filtering || st.open_groups.contains(&(doc_id, id));
     let (rect, row) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), ROW_HEIGHT),
         egui::Sense::click_and_drag(),
@@ -458,6 +682,8 @@ fn group_row(
         ),
         egui::Vec2::splat(metrics::ICON_BUTTON),
     );
+    // It keeps its click while dimmed, so a click on it never picks the
+    // row under it.
     let fold = ui.interact(
         arrow,
         ui.make_persistent_id(("group-fold", id)),
@@ -469,12 +695,14 @@ fn group_row(
         format!("Open {name}")
     };
     fold.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::accesskit::Role::Button, true, fold_name.clone())
+        egui::WidgetInfo::labeled(egui::accesskit::Role::Button, !filtering, fold_name.clone())
     });
     super::groups::card(
         &fold,
         &fold_name,
-        if open {
+        if filtering {
+            FOLD_WHILE_FILTERING
+        } else if open {
             "Folds the group away, so the list shows it as one row. Its members stay as they are."
         } else {
             "Shows the members of this group under it, so you can pick, hide or rename one alone."
@@ -482,7 +710,7 @@ fn group_row(
         None,
         false,
     );
-    if fold.clicked() {
+    if fold.clicked() && !filtering {
         if open {
             st.open_groups.remove(&(doc_id, id));
         } else {
@@ -495,11 +723,16 @@ fn group_row(
         Icon::ChevronRight
     };
     let tex = icons::texture_colored(ui.ctx(), chevron, metrics::ICON_COMPACT, t.text_dim);
+    let tint = if filtering {
+        egui::Color32::WHITE.gamma_multiply(0.4)
+    } else {
+        egui::Color32::WHITE
+    };
     ui.painter().image(
         tex.id(),
         egui::Rect::from_center_size(arrow.center(), egui::Vec2::splat(metrics::ICON_COMPACT)),
         Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-        egui::Color32::WHITE,
+        tint,
     );
     let mut text = left;
     text.set_left(arrow.right() + metrics::SPACE_2);
