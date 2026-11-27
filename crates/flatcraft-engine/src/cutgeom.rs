@@ -151,6 +151,8 @@ pub(crate) struct Solo {
     pieces: Arc<Vec<CutPiece>>,
     facts: PieceFacts,
     bounds: Option<Rect>,
+    /// True if a visible outline left out what its own later paths cover.
+    clipped: bool,
     /// The painted parts of each source path, worked out the first time a
     /// cross-object mode asks (shared by every build that keeps this solo).
     painted: Arc<std::sync::OnceLock<Vec<cross::Painted>>>,
@@ -161,12 +163,14 @@ impl Solo {
         #[cfg(test)]
         tests::OBJECT_CUTS.with(|n| n.set(n.get() + 1));
         let affine = o.transform.affine(o.local_bounds);
-        let (pieces, facts, bounds) = object_pieces(&o.geometry, &o.cut, affine, tol, min_width_mm);
+        let (pieces, facts, bounds, clipped) =
+            object_pieces_clipped(&o.geometry, &o.cut, affine, tol, min_width_mm);
         Self {
             key: PieceKey::of(o),
             pieces: Arc::new(pieces),
             facts,
             bounds,
+            clipped,
             painted: Default::default(),
         }
     }
@@ -216,6 +220,9 @@ pub struct CutGeometry {
     /// Objects in visible outline whose every outline is covered by
     /// objects in front of them, so nothing of them is cut.
     pub covered: std::collections::BTreeSet<ObjectId>,
+    /// The outline of what is seen of each shown, cut object in visible
+    /// outline whose pieces were clipped (see [`CutGeometry::kept_regions`]).
+    pub regions: BTreeMap<ObjectId, Arc<Vec<Contour>>>,
     solo: BTreeMap<ObjectId, Solo>,
     /// Object ids in document order, with what the cross-object modes
     /// read of them.
@@ -238,6 +245,24 @@ impl CutGeometry {
     /// What the cut of object `id` left out.
     pub fn facts(&self, id: ObjectId) -> PieceFacts {
         self.facts.get(&id).copied().unwrap_or_default()
+    }
+
+    /// The kept-material outlines of the objects `wanted` says are cut:
+    /// a clipped visible outline is no ring, so the plan reads what is
+    /// seen of it as its rings (see
+    /// `flatcraft_path::KeptMaterial::from_toolpaths_and_regions`).
+    pub fn kept_regions(&self, wanted: impl Fn(ObjectId) -> bool) -> flatcraft_path::Regions {
+        self.regions
+            .iter()
+            .filter(|(id, _)| wanted(**id))
+            .map(|(id, rings)| {
+                let rings = rings
+                    .iter()
+                    .map(|c| c.iter().map(|p| Point::new(p[0], p[1])).collect())
+                    .collect();
+                (*id, rings)
+            })
+            .collect()
     }
 
     /// True if this is the geometry of exactly `objects` (same ids in the
@@ -367,9 +392,25 @@ pub fn object_pieces(
     tol: f64,
     min_width_mm: f64,
 ) -> (Vec<CutPiece>, PieceFacts, Option<Rect>) {
+    let (pieces, facts, bounds, _) =
+        object_pieces_clipped(geometry, options, affine, tol, min_width_mm);
+    (pieces, facts, bounds)
+}
+
+/// [`object_pieces`], and whether a visible outline left out what its own
+/// later paths cover.
+fn object_pieces_clipped(
+    geometry: &[CutPath],
+    options: &CutOptions,
+    affine: Affine,
+    tol: f64,
+    min_width_mm: f64,
+) -> (Vec<CutPiece>, PieceFacts, Option<Rect>, bool) {
     match options.mode {
         CutMode::AllLines | CutMode::ObjectOutlines => {
-            outline_pieces(geometry, options, affine, tol, min_width_mm)
+            let (pieces, facts, bounds) =
+                outline_pieces(geometry, options, affine, tol, min_width_mm);
+            (pieces, facts, bounds, false)
         }
         CutMode::MergedOutline => {
             let painted: Vec<cross::Painted> = geometry
@@ -386,7 +427,7 @@ pub fn object_pieces(
                     min_width_mm,
                 },
             );
-            (pieces, facts, bounds)
+            (pieces, facts, bounds, false)
         }
         CutMode::VisibleOutline => {
             let outlines = CutOptions {
@@ -399,8 +440,8 @@ pub fn object_pieces(
                 .iter()
                 .map(|p| cross::painted(p, options, affine, tol, min_width_mm))
                 .collect();
-            let pieces = cross::visible_alone(&pieces, &painted);
-            (pieces, facts, bounds)
+            let (pieces, clipped) = cross::visible_alone(&pieces, &painted);
+            (pieces, facts, bounds, clipped)
         }
     }
 }

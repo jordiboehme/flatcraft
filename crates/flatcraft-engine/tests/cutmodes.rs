@@ -631,6 +631,32 @@ fn check_cut_once(rects: &[(f64, f64, f64, f64)]) {
     let (doc, ids) = doc_of(rects, CutMode::VisibleOutline);
     let g = geometry(&doc);
     let segs = segments(&g, &ids);
+    // Nothing seen is left uncut: a point on a rectangle's edge that no
+    // rectangle in front covers (inside or on its edge) lies on a cut.
+    let near = |p: Point| {
+        segs.iter().any(|(a, b)| {
+            let d = *b - *a;
+            let t = ((p - *a).dot(d) / d.hypot2()).clamp(0.0, 1.0);
+            (*a + d * t).distance(p) < 1e-6
+        })
+    };
+    for (k, r) in rects.iter().enumerate() {
+        let corners = [(r.0, r.1), (r.2, r.1), (r.2, r.3), (r.0, r.3)];
+        for e in 0..4 {
+            let (a, b) = (corners[e], corners[(e + 1) % 4]);
+            for m in 0..40 {
+                let t = (f64::from(m) + 0.5) / 40.0;
+                let p = Point::new(a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+                let hidden = rects[k + 1..]
+                    .iter()
+                    .any(|f| p.x >= f.0 && p.x <= f.2 && p.y >= f.1 && p.y <= f.3);
+                assert!(
+                    hidden || near(p),
+                    "{p:?} of rect {k} is not cut ({rects:?})"
+                );
+            }
+        }
+    }
     for i in 0..segs.len() {
         for j in i + 1..segs.len() {
             let shared = shared_length(segs[i], segs[j]);
@@ -886,12 +912,7 @@ fn the_overlap_hint_offers_merge_and_the_fix_clears_it() {
     let before = s.doc().undo.undo_len();
     run(&mut s, "object.set_cut_options", fix["args"].clone());
     assert_eq!(s.doc().undo.undo_len(), before + 1, "one undo step");
-    assert!(
-        issues(&mut s)
-            .iter()
-            .all(|i| i["code"] != "objects_overlap"),
-        "the hint is gone"
-    );
+    assert_eq!(issues(&mut s), Vec::<Value>::new(), "the hint is gone");
     // Undo brings both modes back, and the hint.
     run(&mut s, "edit.undo", json!({}));
     assert!(
@@ -931,18 +952,74 @@ fn merge_is_not_offered_when_it_would_not_weld() {
     );
 }
 
+/// Its open pieces are no open paths, and its cut stops at the front
+/// object's edge, so the knife does not cut through both: no hint at all.
 #[test]
-fn a_visible_outline_is_not_reported_as_open() {
+fn a_visible_outline_behind_raises_no_issue() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = session(&dir);
     let back = square(&mut s, 20.0, 20.0, 40.0, "back");
     square(&mut s, 40.0, 40.0, 40.0, "front");
     set_mode(&mut s, &[back], "visible_outline");
-    assert!(
-        issues(&mut s).iter().all(|i| i["code"] != "open_paths"),
-        "{:?}",
-        issues(&mut s)
+    assert_eq!(issues(&mut s), Vec::<Value>::new());
+}
+
+#[test]
+fn merge_is_never_offered_for_a_visible_outline() {
+    // The front object is in visible outline: nothing covers it, so both
+    // rings are cut through each other, but merging would undo the mode.
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    square(&mut s, 20.0, 20.0, 40.0, "back");
+    let front = square(&mut s, 40.0, 40.0, 40.0, "front");
+    set_mode(&mut s, &[front], "visible_outline");
+    let all = issues(&mut s);
+    let overlap = all.iter().find(|i| i["code"] == "objects_overlap").unwrap();
+    assert_eq!(fix_labels(overlap), ["Ignore for this object pair"]);
+}
+
+#[test]
+fn what_is_seen_of_a_visible_outline_is_kept_and_weeded_around() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let back = square(&mut s, 20.0, 20.0, 40.0, "back");
+    square(&mut s, 40.0, 40.0, 40.0, "front");
+    set_mode(&mut s, &[back], "visible_outline");
+    run(
+        &mut s,
+        "job.set_weeding",
+        json!({ "box": true, "lines": "both", "spacing_mm": 5 }),
     );
+    let input = JobInput::of(&s).unwrap();
+    let plan = job::build_input(&input).unwrap().plan;
+    // The seen part of the back square and the front square are kept,
+    // the sheet around them is waste.
+    assert!(plan.kept.is_kept(Point::new(25.0, 25.0)));
+    assert!(plan.kept.is_kept(Point::new(55.0, 30.0)));
+    assert!(plan.kept.is_kept(Point::new(70.0, 70.0)));
+    assert!(!plan.kept.is_kept(Point::new(10.0, 10.0)));
+    // Weed lines run in the waste only: none crosses the back's seen part.
+    let seen = |p: &Point| {
+        p.x > 20.0 + 1e-6
+            && p.x < 60.0 - 1e-6
+            && p.y > 20.0 + 1e-6
+            && p.y < 60.0 - 1e-6
+            && !(p.x > 40.0 && p.y > 40.0)
+    };
+    let weeds: Vec<_> = plan
+        .toolpaths
+        .iter()
+        .filter(|t| t.kind == flatcraft_path::plan::ToolpathKind::Weed)
+        .collect();
+    assert!(!weeds.is_empty());
+    for t in weeds {
+        for w in t.points.windows(2) {
+            for k in 0..=10 {
+                let p = w[0].lerp(w[1], f64::from(k) / 10.0);
+                assert!(!seen(&p), "a weed line crosses the back at {p:?}");
+            }
+        }
+    }
 }
 
 #[test]

@@ -12,7 +12,7 @@ use kurbo::{BezPath, PathEl, Point, Rect, Vec2};
 
 use flatcraft_core::geometry::RingDirection;
 
-use crate::containment::{self, KeepMode, KeptMaterial};
+use crate::containment::{self, KeepMode, KeptMaterial, Regions};
 use crate::knife::{self, Compensation, CornerMode};
 use crate::strategy::StrategySettings;
 use crate::{clean, flatten, order, passes, weed};
@@ -528,6 +528,18 @@ fn lines_of_flat(
 ///     with the job's kept material built from the first lap of each
 ///     ordered `Cut` ring (Ruling F3)
 pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanError> {
+    plan_with_regions(input, s, &Regions::new())
+}
+
+/// [`plan`], with kept-material outlines that stand for the rings of the
+/// objects they list (see [`KeptMaterial::from_toolpaths_and_regions`]):
+/// the kept material, the weeds and host compensation read them; they are
+/// never cut.
+pub fn plan_with_regions(
+    input: &[PlacedPath],
+    s: &PipelineSettings,
+    regions: &Regions,
+) -> Result<CutPlan, PlanError> {
     validate(s)?;
     let flat: Vec<BezPath> = input
         .iter()
@@ -587,7 +599,14 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
     let toolpaths = order::order(toolpaths, &tree, s.home, s);
     // Weeds read the design as one lap each, before passes and overcut.
     let unit_of = |o: ObjectId| s.weed_units.get(&o).copied().unwrap_or(o);
-    let weeds = weed::generate(&toolpaths, mode_of, unit_of, s.cutting_area, &s.weed);
+    let weeds = weed::generate_with_regions(
+        &toolpaths,
+        regions,
+        mode_of,
+        unit_of,
+        s.cutting_area,
+        &s.weed,
+    );
     let toolpaths = weed::sequence(toolpaths, &weeds, s);
     let mut toolpaths = if s.chain_closed_passes {
         passes::chain(
@@ -607,7 +626,8 @@ pub fn plan(input: &[PlacedPath], s: &PipelineSettings) -> Result<CutPlan, PlanE
 
     // Ruling F3: `from_toolpaths` reads `lap()` of pass 1, never `points`,
     // so chained laps and passes never cancel a ring.
-    let kept = KeptMaterial::from_toolpaths(&toolpaths, mode_of, s.cutting_area);
+    let kept =
+        KeptMaterial::from_toolpaths_and_regions(&toolpaths, regions, mode_of, s.cutting_area);
     let (compensation, rounding) = knife::apply_rounded(&mut toolpaths, s, &kept, s.start_heading);
     let (end, end_heading) = knife::end_state(&toolpaths, s.home, s.start_heading);
 

@@ -25,12 +25,12 @@ pub mod strategy;
 pub mod weed;
 
 pub use clean::Polyline;
-pub use containment::{KeepMode, KeptMaterial, Region, RegionHit, keep_for};
+pub use containment::{KeepMode, KeptMaterial, Region, RegionHit, Regions, keep_for};
 pub use knife::{Compensation, CornerMode, HostSettings};
 pub use plan::{
     ASSUMED_START_HEADING, AlignmentStroke, AppliedCompensation, AxisRun, CORNER_DEG, CutPlan,
     KeepSide, PathRef, PipelineSettings, PlacedPath, PlanError, SettingsField, Toolpath,
-    ToolpathKind, WASTE_SEG, plan, shape_lines,
+    ToolpathKind, WASTE_SEG, plan, plan_with_regions, shape_lines,
 };
 pub use quantize::DeviceGrid;
 pub use strategy::StrategySettings;

@@ -15,7 +15,8 @@ use flatcraft_device::{
 };
 use flatcraft_path::{
     AppliedCompensation, Compensation, CornerMode, CutPlan, HostSettings, PathRef,
-    PipelineSettings, PlacedPath, PlanError, StrategySettings, Toolpath, ToolpathKind, knife, plan,
+    PipelineSettings, PlacedPath, PlanError, StrategySettings, Toolpath, ToolpathKind, knife,
+    plan_with_regions,
 };
 use serde_json::{Value, json};
 
@@ -977,7 +978,12 @@ pub(crate) fn build_planned(input: &JobInput, units: PlanUnits) -> Result<JobRes
     if let (PlanUnits::Float, Compensation::Host(h)) = (units, &mut pipeline.compensation) {
         h.device_grid = None;
     }
-    let cut_plan = plan(&placed, &pipeline).map_err(|e| match e {
+    // A clipped visible outline is no ring: what is seen of it stands
+    // for its rings in the kept material and the weeds.
+    let placed_ids: std::collections::BTreeSet<ObjectId> =
+        placed.iter().map(|p| p.source.object).collect();
+    let regions = cut.kept_regions(|id| placed_ids.contains(&id));
+    let cut_plan = plan_with_regions(&placed, &pipeline, &regions).map_err(|e| match e {
         PlanError::Empty => {
             let nothing_to_cut = true;
             let mut text = String::from("Nothing to cut: no visible object has cut paths.");
@@ -1485,6 +1491,7 @@ fn transport_error(e: TransportError) -> CommandError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flatcraft_path::plan;
 
     #[test]
     fn weed_box_warnings_read_right() {

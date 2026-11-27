@@ -254,7 +254,7 @@ pub(crate) fn weld(
                     Some(b) if boxes_meet(b, line.bounding_box()) => kept.as_slice(),
                     _ => &[],
                 };
-                pieces.extend(clip_piece(&piece, cover, tol));
+                pieces.extend(clip_piece(&piece, cover, tol).0);
             }
         }
     }
@@ -263,9 +263,10 @@ pub(crate) fn weld(
 
 /// The pieces of one object in visible outline, alone: the cuts of each
 /// source path (`pieces`, cut as object outlines) without what its later
-/// paths (`painted`) cover.
-pub(crate) fn visible_alone(pieces: &[CutPiece], painted: &[Painted]) -> Vec<CutPiece> {
+/// paths (`painted`) cover, and whether anything was left out.
+pub(crate) fn visible_alone(pieces: &[CutPiece], painted: &[Painted]) -> (Vec<CutPiece>, bool) {
     let mut out = Vec::new();
+    let mut clipped = false;
     for piece in pieces {
         let later = piece
             .source
@@ -276,9 +277,11 @@ pub(crate) fn visible_alone(pieces: &[CutPiece], painted: &[Painted]) -> Vec<Cut
             .filter(|p| p.area_box.is_some_and(|a| boxes_meet(a, b)))
             .flat_map(|p| p.area.iter().cloned())
             .collect();
-        out.extend(clip_piece(piece, &cover, super::BOUNDS_TOLERANCE_MM));
+        let (parts, changed) = clip_piece(piece, &cover, super::BOUNDS_TOLERANCE_MM);
+        clipped |= changed;
+        out.extend(parts);
     }
-    out
+    (out, clipped)
 }
 
 /// The parts of `piece` outside the painted area `cover` (oriented
@@ -286,9 +289,9 @@ pub(crate) fn visible_alone(pieces: &[CutPiece], painted: &[Painted]) -> Vec<Cut
 /// `cover` is left out: the shape in front cuts it. `piece` itself when
 /// nothing of it is covered, so a ring stays closed; otherwise open paths,
 /// joined where they meet. Curves are flattened within `tol / 2`.
-fn clip_piece(piece: &CutPiece, cover: &[Contour], tol: f64) -> Vec<CutPiece> {
+fn clip_piece(piece: &CutPiece, cover: &[Contour], tol: f64) -> (Vec<CutPiece>, bool) {
     if cover.is_empty() {
-        return vec![piece.clone()];
+        return (vec![piece.clone()], false);
     }
     let mut lines: Vec<Contour> = Vec::new();
     for sub in subpaths(piece.path.iter()) {
@@ -319,9 +322,9 @@ fn clip_piece(piece: &CutPiece, cover: &[Contour], tol: f64) -> Vec<CutPiece> {
     let clipped: Vec<Contour> = lines.clip_by_as::<i64>(&cover, OverlayFill::NonZero, rule);
     let before = length(&lines);
     if (before - length(&clipped)).abs() <= 1e-9 * before.max(1.0) {
-        return vec![piece.clone()];
+        return (vec![piece.clone()], false);
     }
-    chain_once(&clipped)
+    let pieces = chain_once(&clipped)
         .into_iter()
         .filter(|c| c.len() >= 2)
         .map(|c| {
@@ -342,7 +345,8 @@ fn clip_piece(piece: &CutPiece, cover: &[Contour], tol: f64) -> Vec<CutPiece> {
                 path,
             }
         })
-        .collect()
+        .collect();
+    (pieces, true)
 }
 
 /// True if the painted areas `a` and `b` overlap with an area larger than
@@ -453,6 +457,7 @@ pub(super) fn apply(objects: &[JobObject], out: &mut CutGeometry, tol: f64, min_
             .filter(|p| p.area_box.is_some())
             .collect();
         let mut pieces = Vec::new();
+        let mut clipped = out.solo[&o.id].clipped;
         for piece in base.iter() {
             let b = piece.path.bounding_box();
             let cover: Vec<Contour> = front
@@ -460,9 +465,27 @@ pub(super) fn apply(objects: &[JobObject], out: &mut CutGeometry, tol: f64, min_
                 .filter(|p| p.area_box.is_some_and(|a| boxes_meet(a, b)))
                 .flat_map(|p| p.area.iter().cloned())
                 .collect();
-            pieces.extend(clip_piece(piece, &cover, tol));
+            let (parts, changed) = clip_piece(piece, &cover, tol);
+            clipped |= changed;
+            pieces.extend(parts);
         }
-        visible.push((o.id, !base.is_empty() && pieces.is_empty(), pieces));
+        let covered = !base.is_empty() && pieces.is_empty();
+        // The outline of what is left of a clipped object: its pieces are
+        // no rings, so the plan reads this for what is kept.
+        let region = (clipped && !covered && o.visible && o.cut_enabled).then(|| {
+            let (own, own_box) = area_of(k);
+            let cover: Vec<Contour> = front
+                .iter()
+                .filter(|p| {
+                    p.area_box
+                        .zip(own_box)
+                        .is_some_and(|(a, b)| boxes_meet(a, b))
+                })
+                .flat_map(|p| p.area.iter().cloned())
+                .collect();
+            visible_region(&own, &cover, tol)
+        });
+        visible.push((o.id, covered, pieces, region));
     }
 
     for (back, group, pieces, facts) in welded {
@@ -486,12 +509,38 @@ pub(super) fn apply(objects: &[JobObject], out: &mut CutGeometry, tol: f64, min_
             out.merged_into.insert(id, back_id);
         }
     }
-    for (id, covered, pieces) in visible {
+    for (id, covered, pieces, region) in visible {
         out.per_object.insert(id, std::sync::Arc::new(pieces));
         if covered {
             out.covered.insert(id);
         }
+        if let Some(region) = region.filter(|r| !r.is_empty()) {
+            out.regions.insert(id, std::sync::Arc::new(region));
+        }
     }
+}
+
+/// The painted area `own` without what `cover` covers: the outline of what
+/// is seen of a visible outline, outer edges and holes. Every edge of it
+/// is cut, by the object itself or by a shape in front.
+fn visible_region(own: &[Contour], cover: &[Contour], tol: f64) -> Vec<Contour> {
+    if own.is_empty() {
+        return Vec::new();
+    }
+    let mut options = OverlayOptions::<f64>::default();
+    options.min_output_area = tol * tol;
+    let (own, cover) = (own.to_vec(), cover.to_vec());
+    let rule = if cover.is_empty() {
+        OverlayRule::Subject
+    } else {
+        OverlayRule::Difference
+    };
+    FloatOverlay::with_subj_and_clip_custom(&own, &cover, options, Solver::default())
+        .overlay(rule, OverlayFill::NonZero)
+        .into_iter()
+        .flatten()
+        .filter(|c| c.len() >= 3)
+        .collect()
 }
 
 /// True if `a` and `b` would weld when both were set to merged outline:

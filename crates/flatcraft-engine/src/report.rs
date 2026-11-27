@@ -1606,7 +1606,17 @@ fn pair_issues(input: &JobInput, ids: Option<&[ObjectId]>, limits: &Limits) -> V
         let (Some(la), Some(lb)) = (lines_of(i), lines_of(j)) else {
             continue;
         };
-        let pair = pair_of(la, lb, limit, tolerance);
+        let mut pair = pair_of(la, lb, limit, tolerance);
+        // A visible outline behind the other object is clipped by it: its
+        // cut ends on the front object's edge and never runs through it,
+        // so the knife does not cut through both.
+        if matches!(pair, Some(Pair::Overlap)) {
+            let at = |o: &JobObject| input.objects.iter().position(|x| x.id == o.id);
+            let back = if at(a) < at(b) { a } else { b };
+            if back.cut.mode == CutMode::VisibleOutline {
+                pair = None;
+            }
+        }
         let group = (a.unit == b.unit && a.unit != a.id && b.unit != b.id).then_some(a.unit);
         if let (Some(g), Some(p)) = (group, &pair) {
             let code = match p {
@@ -1723,9 +1733,16 @@ struct PairContext<'a> {
 /// Offered only when they would weld (shown, cut, the same keep mode,
 /// painted areas that overlap): then the hint is gone after it. Not
 /// offered for objects that are only close: merging does not bridge a gap,
-/// so the hint would stay.
+/// so the hint would stay. Not offered when either object is in visible
+/// outline, which the person chose for overlaps.
 fn merge_fix(input: &JobInput, a: &JobObject, b: &JobObject) -> Option<Fix> {
-    if !cutgeom::would_weld(a, b, input.tolerance_mm(), input.min_width_mm()) {
+    // A visible outline is a choice about overlaps already: merging would
+    // undo it.
+    let visible = |o: &JobObject| o.cut.mode == CutMode::VisibleOutline;
+    if visible(a)
+        || visible(b)
+        || !cutgeom::would_weld(a, b, input.tolerance_mm(), input.min_width_mm())
+    {
         return None;
     }
     let linked = members(input, a).len() > 1 || members(input, b).len() > 1;

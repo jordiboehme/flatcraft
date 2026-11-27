@@ -457,6 +457,11 @@ struct KeptObject<'a> {
     mode: KeepMode,
 }
 
+/// Kept-material outlines that stand for an object's own rings (see
+/// [`KeptMaterial::from_toolpaths_and_regions`]): closed rings in mat mm,
+/// outer edges and holes, never cut themselves.
+pub type Regions = std::collections::BTreeMap<ObjectId, Vec<Vec<Point>>>;
+
 /// The edge of a grid cell of [`KeptMaterial`], in millimetres.
 const CELL_MM: f64 = 1.0;
 
@@ -515,22 +520,46 @@ impl KeptMaterial {
         mode_of: impl Fn(ObjectId) -> KeepMode,
         cutting_area: Rect,
     ) -> Self {
+        Self::from_toolpaths_and_regions(toolpaths, &Regions::new(), mode_of, cutting_area)
+    }
+
+    /// [`KeptMaterial::from_toolpaths`], where the rings of `regions`
+    /// stand for the rings of the objects they list: an object whose cut
+    /// is not made of its own rings (a visible outline, whose covered
+    /// parts are cut by the objects in front) gives the outline of what is
+    /// left of it here instead. Its own closed toolpaths are then left out,
+    /// so no ring counts twice.
+    pub fn from_toolpaths_and_regions(
+        toolpaths: &[Toolpath],
+        regions: &Regions,
+        mode_of: impl Fn(ObjectId) -> KeepMode,
+        cutting_area: Rect,
+    ) -> Self {
         let mut index: HashMap<ObjectId, usize> = HashMap::new();
         let mut objects: Vec<KeptObject> = Vec::new();
-        for t in toolpaths
-            .iter()
-            .filter(|t| t.closed && t.kind == ToolpathKind::Cut && t.pass == 1)
-        {
-            let o = t.source.object;
-            let k = *index.entry(o).or_insert_with(|| {
+        let mut object = |o: ObjectId, objects: &mut Vec<KeptObject>| {
+            *index.entry(o).or_insert_with(|| {
                 objects.push(KeptObject {
                     id: o,
                     rings: Vec::new(),
                     mode: mode_of(o),
                 });
                 objects.len() - 1
-            });
+            })
+        };
+        for t in toolpaths
+            .iter()
+            .filter(|t| t.closed && t.kind == ToolpathKind::Cut && t.pass == 1)
+            .filter(|t| !regions.contains_key(&t.source.object))
+        {
+            let k = object(t.source.object, &mut objects);
             objects[k].rings.push(t.lap());
+        }
+        for (o, rings) in regions {
+            let k = object(*o, &mut objects);
+            objects[k]
+                .rings
+                .extend(rings.iter().filter(|r| r.len() >= 3).map(Vec::as_slice));
         }
         Self::with_modes(&objects, cutting_area)
     }
@@ -997,6 +1026,39 @@ mod tests {
                 path_index: 0,
             },
         )
+    }
+
+    /// A region stands for the rings of its object: the object's own
+    /// closed toolpaths are left out, so a ring never counts twice, and
+    /// what the region encloses is kept even where the object's own cut is
+    /// an open path.
+    #[test]
+    fn regions_stand_for_the_rings_of_their_object() {
+        let area = Rect::new(-100.0, -100.0, 100.0, 100.0);
+        // Object 1 cuts an open "L" and one closed ring (a hole); its
+        // region is a 20 mm square with that hole.
+        let design = [
+            tpo(
+                1,
+                &[(10.0, 20.0), (0.0, 20.0), (0.0, 0.0), (20.0, 0.0)],
+                false,
+            ),
+            sqo(1, 5.0, 5.0, 8.0, 8.0),
+        ];
+        let square: Vec<Point> = [(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]
+            .map(Point::from)
+            .to_vec();
+        let hole: Vec<Point> = [(5.0, 5.0), (8.0, 5.0), (8.0, 8.0), (5.0, 8.0)]
+            .map(Point::from)
+            .to_vec();
+        let plain = KeptMaterial::from_toolpaths(&design, |_| KeepMode::Pieces, area);
+        assert!(!plain.is_kept(Point::new(15.0, 15.0)), "no ring around it");
+        let regions = Regions::from([(ObjectId(1), vec![square, hole])]);
+        let kept =
+            KeptMaterial::from_toolpaths_and_regions(&design, &regions, |_| KeepMode::Pieces, area);
+        assert!(kept.is_kept(Point::new(15.0, 15.0)));
+        assert!(!kept.is_kept(Point::new(6.5, 6.5)), "the hole counts once");
+        assert!(!kept.is_kept(Point::new(30.0, 30.0)));
     }
 
     /// A square ring of object `id`.

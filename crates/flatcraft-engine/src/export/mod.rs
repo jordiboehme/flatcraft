@@ -131,8 +131,15 @@ fn weed_shapes(
     // The keep mode of each object, as in the plan.
     let units = input.weed_units();
     let keep = input.keep_modes();
-    let weeds = flatcraft_path::weed::generate(
+    // A clipped visible outline is no ring: what is seen of it stands for
+    // its rings, as in the plan.
+    let exported: std::collections::BTreeSet<_> = design.iter().map(|t| t.source.object).collect();
+    let regions = input
+        .cut_geometry()
+        .kept_regions(|id| exported.contains(&id));
+    let weeds = flatcraft_path::weed::generate_with_regions(
         design,
+        &regions,
         |o| keep.get(&o).copied().unwrap_or_default(),
         |o| units.get(&o).copied().unwrap_or(o),
         area,

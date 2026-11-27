@@ -36,7 +36,7 @@ use flatcraft_core::document::{ObjectId, WeedSettings};
 use flatcraft_core::geometry::RingDirection;
 use kurbo::{Point, Rect};
 
-use crate::containment::{self, KeepMode, KeptMaterial};
+use crate::containment::{self, KeepMode, KeptMaterial, Regions};
 use crate::feed::{self, BAND_MM};
 use crate::plan::{KeepSide, PathRef, PipelineSettings, Toolpath, ToolpathKind};
 use crate::rings;
@@ -123,6 +123,20 @@ pub fn generate(
     area: Rect,
     s: &WeedSettings,
 ) -> Weeds {
+    generate_with_regions(design, &Regions::new(), mode_of, unit_of, area, s)
+}
+
+/// [`generate`], with the kept-material outlines `regions` that stand for
+/// the rings of the objects they list (see
+/// [`KeptMaterial::from_toolpaths_and_regions`]).
+pub fn generate_with_regions(
+    design: &[Toolpath],
+    regions: &Regions,
+    mode_of: impl Fn(ObjectId) -> KeepMode,
+    unit_of: impl Fn(ObjectId) -> ObjectId,
+    area: Rect,
+    s: &WeedSettings,
+) -> Weeds {
     let mut out = Weeds::default();
     let design: Vec<&Toolpath> = design
         .iter()
@@ -135,7 +149,7 @@ pub fn generate(
         return out;
     };
     let owned: Vec<Toolpath> = design.iter().map(|t| (*t).clone()).collect();
-    let kept = KeptMaterial::from_toolpaths(&owned, mode_of, area);
+    let kept = KeptMaterial::from_toolpaths_and_regions(&owned, regions, mode_of, area);
     let m = s.margin_mm;
     // (design bounds, region) per group: the region is the box (clamped
     // to the cutting area) whether or not the box is cut.
