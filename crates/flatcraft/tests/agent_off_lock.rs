@@ -602,3 +602,87 @@ fn quitting_with_unsaved_changes_still_asks_about_the_running_import() {
     );
     assert!(!common::app(&h).ui.closing);
 }
+
+#[test]
+fn a_drop_that_lands_in_another_tab_says_what_failed_and_keeps_its_report() {
+    use flatcraft::ui::Action;
+    let dir = tempfile::tempdir().unwrap();
+    let s = common::session(&dir);
+    let mut h = import_harness(&dir, &s, 0);
+    let png = dir.path().join("square.png");
+    let svg = dir.path().join("shape.svg");
+    std::fs::write(&svg, r#"<svg xmlns="http://www.w3.org/2000/svg" width="50mm" height="50mm" viewBox="0 0 50 50"><rect x="10" y="10" width="20" height="20"/></svg>"#).unwrap();
+    let broken = dir.path().join("broken.svg");
+    std::fs::write(&broken, "not an svg").unwrap();
+    let g = gate(&s);
+    let a = s.lock().unwrap().doc().id();
+    let ctx = h.ctx.clone();
+    common::app_mut(&mut h).apply(&ctx, vec![Action::Dropped(vec![png, svg, broken])]);
+    assert_eq!(
+        g.entered.recv_timeout(WORKER_TIMEOUT).unwrap(),
+        "object.import"
+    );
+    s.lock()
+        .unwrap()
+        .execute("document.new", json!({}), Origin::User)
+        .unwrap();
+    h.step();
+    g.release.send(()).unwrap();
+    common::settle(&mut h);
+    let name = common::app(&h).doc_name(a);
+    let toasts: Vec<String> = common::app(&h)
+        .ui
+        .toasts
+        .iter()
+        .map(|t| t.text.clone())
+        .collect();
+    assert!(
+        toasts.iter().any(|t| t.starts_with(&format!(
+            "Imported 2 files into {name}. 1 file could not be imported: broken.svg."
+        ))),
+        "{toasts:?}"
+    );
+    assert!(common::app(&h).ui.prepare.report.is_none(), "no card on b");
+    // Opening a's tab shows its report.
+    s.lock()
+        .unwrap()
+        .execute("document.switch", json!({ "doc_id": a }), Origin::User)
+        .unwrap();
+    common::settle(&mut h);
+    let card = common::app(&h)
+        .ui
+        .prepare
+        .report
+        .as_ref()
+        .expect("a's report");
+    assert_eq!(card.doc_id, a);
+    assert!(common::app(&h).ui.prepare.waiting_reports.is_empty());
+}
+
+#[test]
+fn the_end_of_a_quit_round_asks_about_a_waiting_agent() {
+    use flatcraft::ui::{Action, Unsaved, UnsavedChoice};
+    let dir = tempfile::tempdir().unwrap();
+    let s = common::session(&dir);
+    common::import_square(&s);
+    {
+        let mut g = s.lock().unwrap();
+        g.execute(
+            "job.set_plotter",
+            json!({ "id": "silhouette-cameo-2" }),
+            Origin::User,
+        )
+        .unwrap();
+        // An agent's USB send waits for the person.
+        g.execute("job.send", json!({}), Origin::Agent).unwrap_err();
+        assert!(g.pending_send().is_some());
+    }
+    let mut h = common::harness(&dir, s.clone(), true);
+    let ctx = h.ctx.clone();
+    common::app_mut(&mut h).apply(&ctx, vec![Action::Quit]);
+    let asked = common::app(&h).ui.unsaved.clone().expect("asks");
+    assert!(matches!(asked, Unsaved::Quit { .. }), "{asked:?}");
+    common::app_mut(&mut h).apply(&ctx, vec![Action::Unsaved(asked, UnsavedChoice::Discard)]);
+    assert_eq!(common::app(&h).ui.unsaved, Some(Unsaved::PendingSend));
+    assert!(!common::app(&h).ui.closing);
+}

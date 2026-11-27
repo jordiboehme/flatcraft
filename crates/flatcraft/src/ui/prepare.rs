@@ -296,6 +296,9 @@ pub struct PrepareState {
     pub speed_eleven: Option<Eleven>,
     /// The report of the last import, until dismissed or all fixed.
     pub report: Option<super::report::ImportCard>,
+    /// Reports of imports that landed in a tab that was not active: each
+    /// shows when its tab becomes active.
+    pub waiting_reports: std::collections::BTreeMap<u64, super::report::ImportCard>,
     /// Move the view to these objects on the next frame ("Show me").
     pub center_on: Option<Vec<u64>>,
     pub sources: SourceStatus,
@@ -407,6 +410,7 @@ impl Default for PrepareState {
             nudge: None,
             speed_eleven: None,
             report: None,
+            waiting_reports: Default::default(),
             center_on: None,
             sources: SourceStatus::default(),
             source_memory: HashMap::new(),

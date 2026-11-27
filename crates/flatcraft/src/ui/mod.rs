@@ -917,11 +917,11 @@ impl FlatCraftApp {
         let landed = v["doc_id"].as_u64();
         match job.then {
             long::Then::Command { doc_id } => match landed.or(doc_id) {
-                Some(d) if d != active => self.landed_elsewhere(command, d),
+                Some(d) if d != active => self.landed_elsewhere(command, d, &v),
                 _ => self.after_command(command, &v),
             },
             long::Then::ImportToPrepare => match landed {
-                Some(d) if d != active => self.landed_elsewhere(command, d),
+                Some(d) if d != active => self.landed_elsewhere(command, d, &v),
                 _ => {
                     self.after_command(command, &v);
                     self.ui.workspace = Workspace::Prepare;
@@ -949,19 +949,78 @@ impl FlatCraftApp {
     }
 
     /// A long command landed in the document `doc_id`, which is not the
-    /// active one now: its report card and selection belong to that tab,
-    /// so only a toast names where it went. Nothing touches the active
-    /// document.
-    fn landed_elsewhere(&mut self, command: &str, doc_id: u64) {
+    /// active one now: its report card waits for that tab (it shows when
+    /// the tab becomes active), and a toast names where it went, with the
+    /// files that failed and how many warnings there are. Nothing touches
+    /// the active document.
+    fn landed_elsewhere(&mut self, command: &str, doc_id: u64, v: &Value) {
         let name = self.doc_name(doc_id);
-        let what = match command {
-            "object.import" | "object.import_svg" => format!("Imported into {name}."),
+        let count = |n: usize, one: &str, many: &str| {
+            if n == 1 {
+                format!("1 {one}")
+            } else {
+                format!("{n} {many}")
+            }
+        };
+        let failed: Vec<String> = v["failed"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|f| f["path"].as_str())
+            .map(|path| display_name(Path::new(path)))
+            .collect();
+        let warnings = v["warnings"].as_array().map_or(0, Vec::len);
+        let mut text = match command {
+            "object.import" | "object.import_svg" => match v["imported"].as_array() {
+                Some(ids) => format!(
+                    "Imported {} into {name}.",
+                    count(ids.len(), "file", "files")
+                ),
+                None => format!("Imported into {name}."),
+            },
             "object.retrace" => format!("Traced the picture in {name}."),
             "object.reload" => format!("Read the files again in {name}."),
             "object.relink" => format!("Linked the file in {name}."),
             _ => format!("Done in {name}."),
         };
-        self.toast(Toast::info(what).with_detail("Open its tab to see the result."));
+        if !failed.is_empty() {
+            text.push_str(&format!(
+                " {} could not be imported: {}.",
+                count(failed.len(), "file", "files"),
+                failed.join(", ")
+            ));
+        }
+        if warnings > 0 {
+            text.push_str(&format!(" {}.", count(warnings, "warning", "warnings")));
+        }
+        // The card waits for its tab.
+        let title = match v["imported"].as_array() {
+            Some(ids) if ids.len() == 1 => Some("Imported 1 file".to_string()),
+            Some(ids) => Some(format!("Imported {} files", ids.len())),
+            None if command == "object.import" || command == "object.import_svg" => {
+                let id = v["id"].as_u64();
+                let s = lock(&self.session);
+                let object = s.doc_index(doc_id).ok().and_then(|i| {
+                    id.and_then(|id| {
+                        s.docs[i]
+                            .document
+                            .get(flatcraft_core::document::ObjectId(id))
+                            .map(|o| o.name.clone())
+                    })
+                });
+                Some(format!("Imported '{}'", object.unwrap_or_default()))
+            }
+            None => None,
+        };
+        if let Some(card) = title.and_then(|t| report::ImportCard::from_result(doc_id, t, v)) {
+            self.ui.prepare.waiting_reports.insert(doc_id, card);
+        }
+        let toast = if failed.is_empty() {
+            Toast::info(text)
+        } else {
+            Toast::warning(text)
+        };
+        self.toast(toast.with_detail("The report shows when you open its tab."));
     }
 
     /// Opens the stencil hint card (`stencil_island`) for the Stencil
@@ -1715,6 +1774,8 @@ impl FlatCraftApp {
             // Never quit straight away while a long command still runs:
             // ask first. A document it changes is asked about after it.
             None if self.long.busy() => self.ui.unsaved = Some(Unsaved::Busy { answered }),
+            // As the plain Quit does: a waiting agent is asked about last.
+            None if self.send_waiting() => self.ui.unsaved = Some(Unsaved::PendingSend),
             None => self.close_window(ctx),
         }
     }
@@ -2237,6 +2298,15 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
     // One wait budget for the whole frame (long commands and the plan).
     app.frame_deadline = Some(Instant::now() + long::LONG_WAIT);
     app.pump_long();
+    // An import report that waited for its tab shows now that it is open.
+    {
+        let active = lock(&app.session).doc().id();
+        let p = &mut app.ui.prepare;
+        p.waiting_reports.retain(|d, _| open.contains(d));
+        if let Some(card) = p.waiting_reports.remove(&active) {
+            p.report = Some(card);
+        }
+    }
     // A quit that waited for a long command goes on once it is done.
     if let Some(Unsaved::Busy { answered }) = &app.ui.unsaved
         && !app.long.busy()
