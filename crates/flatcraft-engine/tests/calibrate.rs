@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use flatcraft_device::ProfileStore;
 use flatcraft_device::gpgl::check_safe;
 use flatcraft_engine::calibrate::{self, NEEDS_HOST, TILE_MM, TILE_PITCH_MM};
-use flatcraft_engine::cutlog::{Calibration, Verdict};
+use flatcraft_engine::cutlog::{CALIBRATION_NOT_RATED, Calibration, Verdict};
 use flatcraft_engine::job::{JobInput, WAITING};
 use flatcraft_engine::prefs::Preferences;
 use flatcraft_engine::session::{CommandError, Origin, Session, UnlockedHook};
@@ -160,6 +160,7 @@ fn offset_series_builds_one_tile_per_offset() {
         assert!(t["grade"].is_string(), "{t}");
     }
     assert_eq!(v["sent"], Value::Null);
+    assert_eq!(v["waiting_for_confirmation"], false);
     assert_eq!(v["toolpaths"], r.toolpaths_cut());
     assert!(
         files(d.out.path()).is_empty(),
@@ -284,6 +285,27 @@ fn offset_series_sends_to_file_output() {
 fn a_sent_series_is_a_calibration_cut_in_the_cut_log() {
     let d = dirs();
     let mut s = host_session(&d, 0.3);
+    // A stencil design out of the row's way, and the Fast strategy: the
+    // series' entry names its own pieces and the strategy it was planned
+    // with, never the document's keep mode.
+    let sq = run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": SQUARE, "name": "sq" }),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [sq], "x_mm": 150.0, "y_mm": 150.0 }),
+    );
+    run(
+        &mut s,
+        "object.set_keep",
+        json!({ "ids": [sq], "keep": "stencil" }),
+    );
+    run(&mut s, "job.set_strategy", json!({ "strategy": "fast" }));
     let v = run(
         &mut s,
         "tools.offset_series",
@@ -291,8 +313,11 @@ fn a_sent_series_is_a_calibration_cut_in_the_cut_log() {
     );
     let id = v["sent"]["cut_log_entry"].as_str().unwrap().to_string();
     let material = s.doc().document.job.material_id.clone();
-    s.record_outcome(&id, Verdict::Good, "0.3 looks best")
-        .unwrap();
+    assert_eq!(
+        s.record_outcome(&id, Verdict::Good, "0.3 looks best"),
+        Err(CALIBRATION_NOT_RATED.to_string()),
+        "a calibration cut is not rated"
+    );
 
     let log = s.cut_log();
     let e = log.get(&id).unwrap();
@@ -311,13 +336,11 @@ fn a_sent_series_is_a_calibration_cut_in_the_cut_log() {
     let entry = &h["entries"][0];
     assert_eq!(entry["calibration"]["kind"], "offset_series");
     assert_eq!(entry["calibration"]["offsets_mm"], json!(OFFSETS));
+    assert_eq!(entry["keep_mode"], "pieces");
+    assert_eq!(entry["strategy"], "fast");
+    assert_eq!(entry["outcome"], Value::Null);
 
     // A design cut after it is the material's cut, and has no calibration.
-    run(
-        &mut s,
-        "object.import_svg",
-        json!({ "svg": SQUARE, "name": "sq" }),
-    );
     let sent = run(&mut s, "job.send", json!({}));
     let design = sent["cut_log_entry"].as_str().unwrap().to_string();
     s.record_outcome(&design, Verdict::Good, "").unwrap();
@@ -327,6 +350,7 @@ fn a_sent_series_is_a_calibration_cut_in_the_cut_log() {
     assert_eq!(log.get(&design).unwrap().calibration, None);
     let h = run(&mut s, "job.history", json!({}));
     assert!(h["entries"][0].get("calibration").is_none());
+    assert_eq!(h["entries"][0]["keep_mode"], "stencil");
 }
 
 #[test]
@@ -361,14 +385,20 @@ fn agent_usb_offset_series_headless_is_refused() {
 fn agent_usb_offset_series_with_window_waits() {
     let d = dirs();
     let s = Arc::new(Mutex::new(usb_host_session(&d, true)));
-    let e = unlocked::execute(
+    let v = unlocked::execute(
         &s,
         "tools.offset_series",
         json!({ "offsets_mm": OFFSETS, "send": true }),
         Origin::Agent,
     )
-    .unwrap_err();
-    assert_eq!(e, CommandError::Refused(WAITING.into()));
+    .unwrap();
+    // The ranking comes back while the send waits, with the wait as a
+    // field.
+    assert_eq!(v["waiting_for_confirmation"], true, "{v}");
+    assert_eq!(v["note"], WAITING);
+    assert_eq!(v["sent"], Value::Null);
+    assert_eq!(v["tiles"].as_array().unwrap().len(), 3);
+    assert_eq!(v["best_offset_mm"], 0.3);
     let s = s.lock().unwrap();
     let pending = s.pending_send().expect("the send waits for the person");
     assert_eq!(pending.doc, s.doc().id());
@@ -535,4 +565,94 @@ fn the_tile_holds_the_brief_shapes() {
     }
     assert!(svg.contains(r#"width="10" height="10""#));
     assert!(svg.contains(r#"r="0.5""#) && svg.contains(r#"r="1""#));
+}
+
+/// Tile names show the offset rounded, never float noise.
+#[test]
+fn tile_names_round_the_offset() {
+    assert_eq!(calibrate::tile_name(0.1 + 0.2), "Offset 0.3 mm");
+    assert_eq!(calibrate::tile_name(0.25), "Offset 0.25 mm");
+    assert_eq!(calibrate::tile_name(1.0), "Offset 1 mm");
+    assert_eq!(calibrate::tile_name(0.325), "Offset 0.325 mm");
+    let d = dirs();
+    let s = host_session(&d, 0.3);
+    let r = calibrate::offset_series(&s, &[0.1 + 0.2, 0.35]).unwrap();
+    let notes: Vec<&str> = r.job.listing.iter().map(|l| l.note.as_str()).collect();
+    assert!(
+        notes.iter().any(|n| n.contains("'Offset 0.3 mm'")),
+        "{notes:?}"
+    );
+    assert!(notes.iter().all(|n| !n.contains("0.30000")), "{notes:?}");
+}
+
+/// The compensated runs (lead-ins, corner arcs, overcut) of the smallest
+/// and largest offset stay inside the cutting area of an uncalibrated mat
+/// and near their own tile.
+#[test]
+fn compensated_runs_stay_inside_the_cutting_area() {
+    let d = dirs();
+    let mut s = host_session(&d, 0.3);
+    let area = cutting_area(&mut s);
+    assert_eq!(area.x0, 5.0, "an uncalibrated mat keeps 5 mm");
+    let input = calibrate::prepare(&s, &[0.05, 1.0], false, Origin::User).unwrap();
+    let series = calibrate::build(&input).unwrap();
+    assert_eq!(
+        series.tiles[0].bounds_mm.x0, area.x0,
+        "the row touches the area's edge"
+    );
+    assert_eq!(series.tiles[0].bounds_mm.y0, area.y0);
+    for t in &series.tiles {
+        let near = t.bounds_mm.inflate(1.5, 1.5);
+        let mut runs = 0;
+        for tp in &t.plan.toolpaths {
+            assert!(tp.axis.is_some(), "host compensated");
+            for r in tp.runs() {
+                runs += 1;
+                for p in &r.points {
+                    assert!(area.contains(*p), "{p:?} outside the cutting area {area:?}");
+                    assert!(
+                        near.contains(*p),
+                        "{p:?} too far from its tile {:?}",
+                        t.bounds_mm
+                    );
+                }
+            }
+        }
+        assert!(runs >= 5, "offset {} has {runs} runs", t.offset_mm);
+    }
+}
+
+/// Without a mat the row lies inside one feed band, even when objects
+/// push it down across a band line, so the head never goes back a band.
+#[test]
+fn a_no_mat_row_stays_inside_one_feed_band() {
+    use flatcraft_path::feed::{BAND_MM, band_of};
+    let d = dirs();
+    let mut s = host_session(&d, 0.3);
+    run(&mut s, "job.set_media", json!({ "id": "no-mat" }));
+    let area = cutting_area(&mut s);
+    // A strip across the whole width, 25 mm tall: the first free spot
+    // would be 5 mm below it, and a 25 mm row would cross the line at 50.
+    let w = area.width();
+    let strip = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}mm" height="25mm" viewBox="0 0 {w} 25"><rect x="0" y="0" width="{w}" height="25"/></svg>"#
+    );
+    let id = run(
+        &mut s,
+        "object.import_svg",
+        json!({ "svg": strip, "name": "strip" }),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [id], "x_mm": area.x0, "y_mm": area.y0 }),
+    );
+    let input = calibrate::prepare(&s, &OFFSETS, false, Origin::User).unwrap();
+    let series = calibrate::build(&input).unwrap();
+    let y0 = series.tiles[0].bounds_mm.y0;
+    assert_eq!(y0, BAND_MM, "the row starts at the next band line");
+    let bands: Vec<usize> = series.job.plan.toolpaths.iter().map(band_of).collect();
+    assert!(bands.iter().all(|&b| b == bands[0]), "{bands:?}");
 }

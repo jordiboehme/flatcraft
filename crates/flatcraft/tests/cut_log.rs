@@ -184,6 +184,53 @@ fn a_calibration_cut_is_not_asked_about() {
     );
 }
 
+/// Should the question open for a calibration cut, nothing in it can be
+/// picked and Save says why; the session refuses its rating too.
+#[test]
+fn a_calibration_cut_cannot_be_rated() {
+    let (dir, s, mut h) = sent_once();
+    let mut e = cutlog::read(dir.path()).entries[0].clone();
+    e.calibration = Some(cutlog::Calibration::OffsetSeries {
+        offsets_mm: vec![0.25, 0.3],
+    });
+    let d = OutcomeDialog::about(&e);
+    assert!(d.calibration);
+    app_mut(&mut h).ui.outcome = Some(d);
+    h.run_plan();
+    assert!(dialog_open(&h));
+    for label in ["It went well", "It did not go well", "Save"] {
+        assert!(
+            in_dialog(&h, label).accesskit_node().is_disabled(),
+            "{label} is dimmed"
+        );
+    }
+    assert!(!cutlog::CALIBRATION_NOT_RATED.contains('\u{2014}'));
+
+    // A real calibration entry: the session refuses its rating.
+    let series = cutlog::CutEntry {
+        id: "calib-1".into(),
+        ..e
+    };
+    let line = serde_json::json!({ "kind": "cut" });
+    let mut text = serde_json::to_value(&series).unwrap();
+    text.as_object_mut()
+        .unwrap()
+        .extend(line.as_object().unwrap().clone());
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(dir.path().join(cutlog::FILE))
+        .unwrap();
+    use std::io::Write as _;
+    writeln!(f, "{text}").unwrap();
+    drop(f);
+    assert_eq!(
+        s.lock()
+            .unwrap()
+            .record_outcome("calib-1", Verdict::Good, ""),
+        Err(cutlog::CALIBRATION_NOT_RATED.to_string())
+    );
+}
+
 #[test]
 fn rate_asks_about_the_newest_unrated_cut_while_the_line_shows_the_rated_one() {
     let (dir, s, mut h, _now) = sent_once_with_clock();

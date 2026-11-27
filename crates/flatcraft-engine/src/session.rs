@@ -1102,15 +1102,20 @@ impl Session {
     /// The person said how the cut `entry` went: appends it to the cut
     /// log. GUI only, not a registry command: agents read the log
     /// (`job.history`) but never write it. An entry that is not in the
-    /// log is refused.
+    /// log is refused, and so is a calibration cut
+    /// ([`crate::cutlog::CALIBRATION_NOT_RATED`]).
     pub fn record_outcome(
         &mut self,
         entry: &str,
         verdict: crate::cutlog::Verdict,
         note: &str,
     ) -> Result<(), String> {
-        if self.cut_log().get(entry).is_none() {
-            return Err(format!("the cut log has no cut {entry}"));
+        match self.cut_log().get(entry) {
+            None => return Err(format!("the cut log has no cut {entry}")),
+            Some(e) if e.is_calibration() => {
+                return Err(crate::cutlog::CALIBRATION_NOT_RATED.to_string());
+            }
+            Some(_) => {}
         }
         let outcome = crate::cutlog::Outcome {
             verdict,

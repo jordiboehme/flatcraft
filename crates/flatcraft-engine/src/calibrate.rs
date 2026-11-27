@@ -114,9 +114,17 @@ pub fn offset_tile_svg() -> String {
     s
 }
 
-/// The name of the tile for `offset_mm`, as the listing notes show it.
+/// The name of the tile for `offset_mm`, as the listing notes show it:
+/// the offset rounded to a micrometre, without trailing zeros ("Offset
+/// 0.3 mm", also for 0.1 + 0.2).
 pub fn tile_name(offset_mm: f64) -> String {
-    format!("Offset {offset_mm} mm")
+    format!("Offset {} mm", offset_text(offset_mm))
+}
+
+/// `mm` rounded to three decimals, without trailing zeros.
+fn offset_text(mm: f64) -> String {
+    let text = format!("{mm:.3}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 /// Checks the offsets of a series: 2 to 7 of them, each from 0.05 to
@@ -217,6 +225,25 @@ fn no_room(size: Vec2) -> CommandError {
     ))
 }
 
+/// Where the row of `size` goes: the first free spot of `area`, keeping
+/// [`GAP_MM`] from every box of `taken`. With feed bands (no mat) the row
+/// lies inside one band ([`flatcraft_path::feed::BAND_MM`]), so cutting
+/// tile after tile never feeds the sheet back.
+fn row_spot(area: Rect, taken: &[Rect], size: Vec2, banded: bool) -> Option<Point> {
+    use flatcraft_path::feed::BAND_MM;
+    if !banded {
+        return crate::placement::free_spot(area, taken, size, GAP_MM);
+    }
+    let first = (area.y0 / BAND_MM).floor().max(0.0) as usize;
+    (first..)
+        .map(|k| k as f64 * BAND_MM)
+        .take_while(|y| *y < area.y1)
+        .find_map(|y| {
+            let band = Rect::new(area.x0, area.y0.max(y), area.x1, area.y1.min(y + BAND_MM));
+            crate::placement::free_spot(band, taken, size, GAP_MM)
+        })
+}
+
 /// The tile objects of a series whose row starts at `origin`.
 fn tile_objects(offsets_mm: &[f64], origin: Point) -> Result<Vec<JobObject>, CommandError> {
     let svg = offset_tile_svg();
@@ -305,8 +332,7 @@ pub fn build(input: &SeriesInput) -> Result<Series, CommandError> {
         .iter()
         .filter_map(|o| crate::report::object_bounds(job_input, o))
         .collect();
-    let origin =
-        crate::placement::free_spot(area, &taken, size, GAP_MM).ok_or_else(|| no_room(size))?;
+    let origin = row_spot(area, &taken, size, base.monotonic_feed).ok_or_else(|| no_room(size))?;
 
     let objects = tile_objects(&input.offsets_mm, origin)?;
     let cut = cutgeom::objects_cut_geometry(
@@ -369,6 +395,7 @@ pub fn build(input: &SeriesInput) -> Result<Series, CommandError> {
             calibration: Some(crate::cutlog::Calibration::OffsetSeries {
                 offsets_mm: input.offsets_mm.clone(),
             }),
+            strategy: job_input.job.strategy,
         },
         tiles,
     })
@@ -520,6 +547,7 @@ pub fn report_json(run: &SeriesRun) -> Value {
         "passes": sum.passes,
         "warnings": sum.warnings,
         "sent": null,
+        "waiting_for_confirmation": false,
     })
 }
 
@@ -539,7 +567,16 @@ pub fn finish(
             .profiles
             .plotter(&s.doc().document.job.plotter_id)
             .map_err(crate::commands::profile_error)?;
-        out["sent"] = job::send_built(s, &plotter, run.series.job, SERIES_NAME.into(), origin)?;
+        match job::send_built(s, &plotter, run.series.job, SERIES_NAME.into(), origin) {
+            Ok(sent) => out["sent"] = sent,
+            // The send waits for the person in the window: the ranking
+            // still comes back, with the wait as a field.
+            Err(CommandError::Refused(text)) if text == job::WAITING => {
+                out["waiting_for_confirmation"] = true.into();
+                out["note"] = text.into();
+            }
+            Err(e) => return Err(e),
+        }
     }
     Ok(crate::commands::landed(s, out))
 }

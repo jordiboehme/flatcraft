@@ -78,6 +78,9 @@ pub enum Calibration {
     OffsetSeries { offsets_mm: Vec<f64> },
 }
 
+/// Why a calibration cut cannot be rated good or bad.
+pub const CALIBRATION_NOT_RATED: &str = "This was an offset test series, not a cut of your design, so it is not rated good or bad. Look at the tiles, pick the one that came out best and put its offset into the plotter preset in the Profiles window.";
+
 /// The size of a job.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct JobSize {

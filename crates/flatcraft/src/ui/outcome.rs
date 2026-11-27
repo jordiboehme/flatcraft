@@ -37,6 +37,10 @@ pub struct OutcomeDialog {
     pub about: String,
     pub verdict: Option<Verdict>,
     pub note: String,
+    /// The cut is a calibration cut: nothing in the question can be
+    /// picked, and the dimmed Save says why
+    /// ([`cutlog::CALIBRATION_NOT_RATED`]).
+    pub calibration: bool,
 }
 
 impl OutcomeDialog {
@@ -51,6 +55,7 @@ impl OutcomeDialog {
                 .as_ref()
                 .map(|o| o.note.clone())
                 .unwrap_or_default(),
+            calibration: entry.is_calibration(),
         }
     }
 }
@@ -123,15 +128,25 @@ pub fn after_send(entry: &CutEntry) -> Option<OutcomeDialog> {
 }
 
 /// A thumb button that shows whether it is picked.
-fn thumb(ui: &mut Ui, icon: Icon, label: &str, on: bool, hint: &str) -> bool {
+fn thumb(
+    ui: &mut Ui,
+    icon: Icon,
+    label: &str,
+    on: bool,
+    hint: &str,
+    why_not: Option<&str>,
+) -> bool {
     let tex = icons::texture(ui.ctx(), icon, ICON_SIZE);
     let image = egui::Image::from_texture(egui::load::SizedTexture::new(
         tex.id(),
         egui::Vec2::splat(ICON_SIZE),
     ));
-    let r = ui.add(egui::Button::image_and_text(image, label).selected(on));
+    let r = ui.add_enabled(
+        why_not.is_none(),
+        egui::Button::image_and_text(image, label).selected(on),
+    );
     set_name(ui, &r, label);
-    super::groups::card(&r, label, hint, None, false);
+    super::groups::card(&r, label, hint, why_not, false);
     r.clicked()
 }
 
@@ -152,6 +167,7 @@ pub fn show(
         .primary_hint("Keeps your answer in the cut log on this computer. The job settings show it the next time you pick this material.")
         .cancel("Not now")
         .cancel_hint("Closes the question without saving anything. You can answer later from the job settings.");
+    let why_not = d.calibration.then_some(cutlog::CALIBRATION_NOT_RATED);
     let answer = dialog.show_with(ctx, t, |ui| {
         ui.add_space(t.spacing);
         ui.horizontal(|ui| {
@@ -161,6 +177,7 @@ pub fn show(
                 "It went well",
                 d.verdict == Some(Verdict::Good),
                 "The cut came out as it should: clean edges, the pieces weed well.",
+                why_not,
             ) {
                 d.verdict = Some(Verdict::Good);
             }
@@ -170,13 +187,15 @@ pub fn show(
                 "It did not go well",
                 d.verdict == Some(Verdict::Bad),
                 "Something was off: it did not cut through, it tore, or the pieces moved. Say what in the note, so you know what to change next time.",
+                why_not,
             ) {
                 d.verdict = Some(Verdict::Bad);
             }
         });
         ui.add_space(t.spacing / 2.0);
         ui.label(RichText::new("A few words (you may leave it empty)").color(t.text_dim));
-        let r = ui.add(
+        let r = ui.add_enabled(
+            why_not.is_none(),
             egui::TextEdit::singleline(&mut d.note)
                 .hint_text("Force 14 cut clean, weed slowly")
                 .desired_width(f32::INFINITY),
@@ -186,14 +205,17 @@ pub fn show(
             &r,
             "Note",
             "What you want to remember about this cut: what worked, what to change next time.",
-            None,
+            why_not,
             false,
         );
+        if let Some(why) = why_not {
+            return Some(why.to_string());
+        }
         d.verdict.is_none().then(|| PICK_FIRST.to_string())
     });
     match answer {
         Some(Answer::Primary) => {
-            if let Some(verdict) = d.verdict {
+            if let Some(verdict) = d.verdict.filter(|_| !d.calibration) {
                 actions.push(Action::RecordOutcome {
                     entry: d.entry.clone(),
                     verdict,

@@ -70,6 +70,9 @@ pub struct JobResult {
     /// What a calibration job tests (an offset series); `None` for the
     /// job of a design. Its cut log entry carries it.
     pub calibration: Option<cutlog::Calibration>,
+    /// The cut strategy the job was planned with; its cut log entry
+    /// names it.
+    pub strategy: flatcraft_core::document::CutStrategy,
 }
 
 /// The failure when a built job is sent with another plotter profile than
@@ -1000,6 +1003,7 @@ pub fn build_classified(input: &JobInput) -> Result<JobResult, BuildFailure> {
         sent: None,
         built_for: plotter.clone(),
         calibration: None,
+        strategy: job.strategy,
     })
 }
 
@@ -1196,6 +1200,13 @@ pub fn send_built(
     let job = checked(result.job.clone())?;
     let sum = summary(&result);
     let mut log = log_entry(s, &sum, result.job.bytes.len(), plotter, &name);
+    // The entry names what the job really cut: its own strategy, and for
+    // a calibration row only pieces (its tiles), never the document's
+    // keep modes.
+    log.strategy = result.strategy;
+    if result.calibration.is_some() {
+        log.keep_mode = Some(KeepMode::Pieces.key().to_string());
+    }
     log.calibration = result.calibration.clone();
     if decision == GateDecision::NeedsConfirmation {
         s.request_confirmation(
