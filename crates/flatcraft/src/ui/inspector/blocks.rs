@@ -32,6 +32,10 @@ pub struct JobSummary {
     pub selection: bool,
     /// The Job panel shows over a selection: a click goes back.
     pub open: bool,
+    /// The line sits in the Cut workspace: there `selection` means the
+    /// stage panel shows another step than Device & Material, and a click
+    /// goes there, where the Job panel is.
+    pub cut: bool,
 }
 
 impl JobSummary {
@@ -50,7 +54,11 @@ impl JobSummary {
 
 /// The card of the job line.
 pub fn job_line_card(s: &JobSummary) -> String {
-    let back = if s.open {
+    let back = if s.cut && s.selection {
+        "Click it to go to Device & Material, where you change the job."
+    } else if s.cut {
+        "The Job panel is right below, in Device & Material."
+    } else if s.open {
         "You see the Job panel over your selection now. Click again, or press Esc, to go back to the selection."
     } else if s.selection {
         "Click it to see only the job, over your selection. Click again, or press Esc, to go back to the selection."
@@ -1023,6 +1031,51 @@ pub fn value_row(ui: &mut Ui, label: &str, card: &str, value: &str) -> Response 
         resp
     })
     .widget
+}
+
+/// A data line: the dimmed label in the section's label column and the
+/// value in normal ink, one text line high with [`metrics::ROW_GAP`]
+/// under it (a number to read, not a control). Both are labels, so a
+/// screen reader reads the text; both are cut short on their line and
+/// carry the hover card. `why` dims the line and says why in the card.
+/// Returns the label.
+pub fn data_row(ui: &mut Ui, label: &str, card: &str, value: &str, why: Option<&str>) -> Response {
+    let label_w = label_width(ui, label) + DOT_W;
+    let w = ui.available_width();
+    let line = metrics::line_height(ui, &metrics::body());
+    let (rect, _) = ui.allocate_exact_size(vec2(w, line + metrics::ROW_GAP), Sense::hover());
+    let on = why.is_none();
+    let tk = tokens(ui);
+    let builder = egui::UiBuilder::new()
+        .max_rect(rect)
+        .layout(Layout::left_to_right(Align::Min));
+    ui.scope_builder(builder, |ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let slot = Rect::from_min_size(rect.min, vec2(label_w, line));
+        let l = ui
+            .scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(slot.with_max_x(slot.right() - metrics::SPACE_4))
+                    .layout(Layout::left_to_right(Align::Min)),
+                |ui| {
+                    ui.add_enabled(
+                        on,
+                        egui::Label::new(RichText::new(label).color(tk.text_dim)).truncate(),
+                    )
+                },
+            )
+            .inner;
+        // The value starts at the label column's end.
+        ui.add_space((slot.right() - ui.cursor().left()).max(0.0));
+        groups::card(&l, label, card, why, false);
+        let v = ui.add_enabled(
+            on,
+            egui::Label::new(RichText::new(value).color(tk.text)).truncate(),
+        );
+        groups::card(&v, label, card, why, false);
+        l
+    })
+    .inner
 }
 
 // ---------------------------------------------------------------- hint cards

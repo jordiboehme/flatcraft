@@ -117,8 +117,13 @@ pub const SIM_SLIDER_CARD: &str = "Drag to move the head along the job. Everythi
 pub const SIM_SPEED_CARD: &str = "How fast Play runs. At 1x the head moves 50 mm per second on screen, about the speed of a real cut. Slow it to 0.25x to watch a corner, speed it up to 4x for a big job.";
 /// The hover card of Play in Simulate.
 pub const SIM_PLAY_CARD: &str = "Plays the cut from the start, the head and the blade tip as they move. It starts over when it is at the end.";
+/// The hover card of the time slider in firmware mode, where the sent
+/// path plays.
+pub const SENT_SLIDER_CARD: &str = "Drag to move the head along the path the plotter is sent. Everything up to this point is drawn: the cuts, and dotted the travel where the knife is up. The number is how far the head has travelled, in mm.";
+/// The hover card of Play in firmware mode.
+pub const SENT_PLAY_CARD: &str = "Plays the path the plotter is sent, from the start: the cut order, the travel and each time the knife goes up and down. It starts over when it is at the end.";
 /// Why the simulation timeline is dimmed.
-pub const SIM_NOTHING: &str = "Nothing to play yet: the simulation has not finished, or firmware mode is on, where FlatCraft does not simulate the knife.";
+pub const SIM_NOTHING: &str = "Nothing to play yet: the simulation has not finished.";
 
 /// Where the simulation timeline stands.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -203,8 +208,8 @@ pub fn speed_label(speed: f64) -> String {
 }
 
 /// The timeline row of the Simulate stage. `has` is false while there is
-/// nothing to play.
-pub fn show_sim(ui: &mut Ui, clock: &mut SimClock, has: bool, t: &Tokens) {
+/// nothing to play; `sent` plays the sent path (firmware mode).
+pub fn show_sim(ui: &mut Ui, clock: &mut SimClock, has: bool, sent: bool, t: &Tokens) {
     let now = ui.input(|i| i.time);
     if clock.tick(now) {
         ui.ctx().request_repaint();
@@ -219,7 +224,8 @@ pub fn show_sim(ui: &mut Ui, clock: &mut SimClock, has: bool, t: &Tokens) {
             }
         } else {
             let r = card_icon_button(ui, Icon::Play, "Play", has);
-            super::groups::card(&r, "Play", SIM_PLAY_CARD, why, false);
+            let card = if sent { SENT_PLAY_CARD } else { SIM_PLAY_CARD };
+            super::groups::card(&r, "Play", card, why, false);
             if r.clicked() {
                 clock.play(now);
                 ui.ctx().request_repaint();
@@ -244,7 +250,12 @@ pub fn show_sim(ui: &mut Ui, clock: &mut SimClock, has: bool, t: &Tokens) {
             egui::Slider::new(&mut at, 0.0..=clock.total_mm.max(1.0)).show_value(false),
         );
         set_name(ui, &resp, "Time");
-        super::groups::card(&resp, "Time", SIM_SLIDER_CARD, why, false);
+        let card = if sent {
+            SENT_SLIDER_CARD
+        } else {
+            SIM_SLIDER_CARD
+        };
+        super::groups::card(&resp, "Time", card, why, false);
         if resp.changed() {
             clock.t_mm = at.min(clock.total_mm);
             clock.playing = None;

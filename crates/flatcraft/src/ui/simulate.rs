@@ -36,8 +36,16 @@ pub const SIMULATING: &str = "Simulating...";
 pub const SIMULATING_CARD: &str = "FlatCraft is running the knife over your latest change: where the blade tip really goes at every corner and start. The faded lines are the simulation before it. Everything else in the window keeps working meanwhile.";
 
 /// The note on the canvas in firmware mode.
-pub const FIRMWARE_CANVAS: &str =
-    "Not simulated: the plotter's firmware steers the blade. This is the commanded path.";
+pub const FIRMWARE_CANVAS: &str = "The sent path: the plotter adds its own knife compensation.";
+
+/// The grade line in firmware mode: nothing is graded.
+pub const NOT_GRADED: &str = "Not graded: the plotter compensates the knife";
+
+/// The one-line note under it.
+pub const FIRMWARE_LINE: &str = "The plotter adds its own knife compensation.";
+
+/// The card of the grade line in firmware mode.
+pub const NOT_GRADED_CARD: &str = "With firmware compensation the plotter turns the blade around every corner itself. FlatCraft cannot look inside the plotter, so it does not grade the cut and colours nothing green, amber or red. Play still shows what is sent: the cut order, the travel and each time the knife goes up and down.";
 
 /// The radius and the width of a worst spot's ring, in points, at every
 /// zoom: it marks the place without hiding it.
@@ -273,11 +281,7 @@ impl SimState {
 
     /// Makes `run` the simulation of `key`.
     fn take(&mut self, key: SimKey, run: Result<Arc<SimRun>, CommandError>) {
-        let total = run
-            .as_ref()
-            .ok()
-            .and_then(|r| r.display.last())
-            .map_or(0.0, |s| s.t_mm);
+        let total = run.as_ref().map_or(0.0, |r| total_mm(r));
         self.clock.reset(total);
         // A queued copy of the same state would only run again for nothing.
         if self.queued.as_ref().is_some_and(|q| q.key == key) {
@@ -542,6 +546,16 @@ impl SimState {
     }
 }
 
+/// The head travel of `run`, mm: the simulated samples, or in firmware
+/// mode the sent path from the home (its travel and its cuts).
+pub fn total_mm(run: &SimRun) -> f64 {
+    if run.result.is_some() {
+        run.display.last().map_or(0.0, |s| s.t_mm)
+    } else {
+        run.commanded.travel_mm + run.commanded.cut_mm
+    }
+}
+
 // ---------------------------------------------------------------- colours
 
 /// The panel colour of a deviation: within [`END_TO_END_LIMIT_MM`] good,
@@ -714,8 +728,7 @@ pub fn draw(painter: &egui::Painter, run: &SimRun, d: &DrawInput) -> (usize, usi
     let fade = if d.faded { 0.35 } else { 1.0 };
     let travel = d.contrast.gamma_multiply(0.45 * fade);
     if run.result.is_none() {
-        draw_commanded(painter, run, d.view, d.mat, travel, fade);
-        return (0, 0);
+        return draw_commanded(painter, run, d, travel, fade);
     }
     let samples: &[DisplaySample] = &run.display;
     let t_mm = if d.faded { f64::INFINITY } else { d.t_mm };
@@ -841,22 +854,45 @@ pub fn draw(painter: &egui::Painter, run: &SimRun, d: &DrawInput) -> (usize, usi
     (drawn_down, total_down)
 }
 
-/// Firmware mode: the commanded path, as the plotter gets it, in a colour
-/// that is never a grade colour.
+/// Moves `left` mm along the line from `a` to `b`: the point reached,
+/// and true when the whole line fits.
+fn advance(a: kurbo::Point, b: kurbo::Point, left: &mut f64) -> (kurbo::Point, bool) {
+    let len = a.distance(b);
+    if *left >= len {
+        *left -= len;
+        (b, true)
+    } else {
+        let f = if len > 0.0 {
+            (*left / len).max(0.0)
+        } else {
+            0.0
+        };
+        *left = 0.0;
+        (lerp(a, b, f), false)
+    }
+}
+
+/// Firmware mode: the sent path, as the plotter gets it, up to `d.t_mm`
+/// of head travel from the home: travel dotted, cuts in a colour that is
+/// never a grade colour, and the head where the time stands. Returns
+/// the cut segments drawn and the run's total.
 fn draw_commanded(
     painter: &egui::Painter,
     run: &SimRun,
-    view: &CanvasView,
-    mat: [u8; 3],
+    d: &DrawInput,
     travel: Color32,
     fade: f32,
-) {
+) -> (usize, usize) {
     let ink = Stroke::new(
         2.0,
-        canvas::rgb(flatcraft_core::colour::commanded_colour(mat)).gamma_multiply(fade),
+        canvas::rgb(flatcraft_core::colour::commanded_colour(d.mat)).gamma_multiply(fade),
     );
+    let screen = |p: kurbo::Point| d.view.mm_to_screen(p);
+    let mut left = if d.faded { f64::INFINITY } else { d.t_mm };
+    let mut drawn = 0;
+    let mut head = None;
     let mut at = run.job.plan.home;
-    for &i in &run.plan_index {
+    'runs: for &i in &run.plan_index {
         let Some(tp) = run.job.plan.toolpaths.get(i) else {
             continue;
         };
@@ -864,22 +900,50 @@ fn draw_commanded(
             let Some(&first) = r.points.first() else {
                 continue;
             };
-            painter.extend(egui::Shape::dotted_line(
-                &[view.mm_to_screen(at), view.mm_to_screen(first)],
-                travel,
-                5.0,
-                0.9,
-            ));
+            let (end, whole) = advance(at, first, &mut left);
+            if at.distance(end) > 0.0 {
+                painter.extend(egui::Shape::dotted_line(
+                    &[screen(at), screen(end)],
+                    travel,
+                    5.0,
+                    0.9,
+                ));
+            }
+            if !whole {
+                head = Some(end);
+                break 'runs;
+            }
             let mut line = Vec::with_capacity(r.points.len());
-            for p in &r.points {
-                push_point(&mut line, view.mm_to_screen(*p));
+            line.push(screen(first));
+            let mut stop = false;
+            for w in r.points.windows(2) {
+                let (end, whole) = advance(w[0], w[1], &mut left);
+                push_point(&mut line, screen(end));
+                if !whole {
+                    head = Some(end);
+                    stop = true;
+                    break;
+                }
+                drawn += 1;
             }
             if line.len() > 1 {
                 painter.add(egui::Shape::line(line, ink));
             }
+            if stop {
+                break 'runs;
+            }
             at = *r.points.last().unwrap_or(&first);
         }
     }
+    // The head where the time stands, while not at the end.
+    if !d.faded
+        && let Some(h) = head
+    {
+        let h = screen(h);
+        painter.circle_stroke(h, 5.0, Stroke::new(1.5, d.contrast));
+        painter.circle_filled(h, 2.5, d.contrast);
+    }
+    (drawn, run.commanded.segments)
 }
 
 /// The rings of the worst spots, each a small button: its card says what
@@ -971,21 +1035,159 @@ fn mm(v: f64) -> String {
     format!("{v:.3} mm")
 }
 
-/// A row of the metrics grid: a label with its card, and the value.
-fn row(ui: &mut Ui, name: &str, card: &str, value: String) {
-    let r = ui.label(name);
-    super::groups::card(&r, name, card, None, false);
-    ui.label(value);
-    ui.end_row();
-}
-
 /// The card of the grade.
 pub const GRADE_CARD: &str = "How well the blade follows your lines, after a full simulation of the drag knife: its tip trails a little behind the head, so it can cut a corner short or start off the line. Good means at least 98 % of the line is on target, every spot is within 0.06 mm of the line, nothing you keep is cut and the blade is never pushed. Fair means at least 90 % of the line is on target and nothing you keep is cut, but some spots stray, the blade is pushed or a little of the line is missed. Poor means the blade cuts into material you keep or less than 90 % of the line is on target. The reason after the grade says what counts most.";
 
 /// The card of the share of the line on target.
 pub const ON_TARGET_CARD: &str = "How much of your line the blade cuts within the limit, in percent. It only counts the line itself: a cut into material you keep or a pushed blade makes the grade worse even when this is high.";
 
-/// The stage panel of Simulate for a finished run.
+/// The ids of the Simulate stage's sections.
+pub const NUMBERS: &str = "sim.numbers";
+pub const HINTS: &str = "sim.hints";
+pub const SPOTS: &str = "sim.spots";
+pub const STRATEGIES: &str = "sim.strategies";
+pub const LEGEND: &str = "sim.legend";
+
+/// The cards of those sections.
+pub const NUMBERS_CARD: &str = "The numbers of the simulated cut: how far the blade tip strays, what it misses, how far it cuts and travels, and a rough time.";
+pub const SENT_NUMBERS_CARD: &str = "The numbers of the path the plotter is sent: how far it cuts and travels, how often the knife lifts, and a rough time.";
+pub const HINTS_CARD: &str = "What the simulation noticed about this job and this simulation.";
+pub const SPOTS_CARD: &str = "The places where the blade tip strays most from your line, beyond the limit. Click one to zoom in on it.";
+pub const STRATEGIES_CARD: &str = COMPARE_CARD;
+pub const LEGEND_CARD: &str =
+    "What the lines and areas on the mat mean. Hover a row to learn more.";
+
+/// Why Worst spots is dimmed in firmware mode.
+pub const NO_SPOTS_FIRMWARE: &str =
+    "The plotter compensates the knife itself, so FlatCraft has no worst spots to show.";
+
+/// A metric: its name, its card and its value.
+type Metric = (&'static str, &'static str, String);
+
+fn metrics_of(run: &SimRun) -> Vec<Metric> {
+    match &run.result {
+        Some(r) => {
+            let m = &r.metrics;
+            vec![
+                (
+                    "Worst miss",
+                    "The farthest the blade tip strays from your line anywhere in the job. Within 0.06 mm it is green on the mat.",
+                    mm(m.max_hausdorff_mm),
+                ),
+                (
+                    "Worst corner",
+                    "The farthest the tip misses a corner. A drag knife cuts corners short unless FlatCraft or the plotter steers it around them.",
+                    mm(m.max_corner_deviation_mm),
+                ),
+                (
+                    "Closure gap",
+                    "How far the end of a closed cut misses its start. A gap leaves the piece hanging by a thread.",
+                    mm(m.max_closure_gap_mm),
+                ),
+                (
+                    "Not cut through",
+                    "The length of line the blade never reaches. The piece will not come out there.",
+                    format!("{:.1} mm", m.uncut_mm),
+                ),
+                (
+                    "Into kept material",
+                    "The deepest the blade tip goes into a part you keep, for example while it turns. Zero is what you want.",
+                    mm(m.max_into_kept_mm),
+                ),
+                (
+                    "Blade pushed",
+                    "Moves where the head pushes the blade from behind instead of pulling it. That can tear the material.",
+                    m.pushed.to_string(),
+                ),
+                (
+                    "Cut length",
+                    "How far the blade cuts, waste moves included.",
+                    super::cut::mm_text(m.cut_mm),
+                ),
+                (
+                    "Travel",
+                    "How far the head moves with the blade up, between cuts.",
+                    super::cut::mm_text(m.travel_mm),
+                ),
+                (
+                    "Lifts",
+                    "How often the blade goes up. Each lift and drop costs a little time.",
+                    m.lifts.to_string(),
+                ),
+                (
+                    "Time (estimate)",
+                    "A rough guess of the cut time at this speed, from the moves and the lifts. Real plotters vary.",
+                    time_text(run.estimate_s),
+                ),
+            ]
+        }
+        None => {
+            let c = &run.commanded;
+            vec![
+                (
+                    "Cut length",
+                    "How far the head moves with the blade down.",
+                    super::cut::mm_text(c.cut_mm),
+                ),
+                (
+                    "Travel",
+                    "How far the head moves with the blade up, between cuts.",
+                    super::cut::mm_text(c.travel_mm),
+                ),
+                (
+                    "Segments",
+                    "The straight moves the plotter gets. Curves are sent as many short ones.",
+                    c.segments.to_string(),
+                ),
+                ("Lifts", "How often the blade goes up.", c.lifts.to_string()),
+                (
+                    "Largest turn per vertex",
+                    "The largest change of direction between two segments of a curve. Small numbers mean smooth curves.",
+                    format!("{:.1} deg", c.max_turn_per_vertex_deg),
+                ),
+                (
+                    "Time (estimate)",
+                    "A rough guess of the cut time at this speed, from the moves and the lifts. Real plotters vary.",
+                    time_text(run.estimate_s),
+                ),
+            ]
+        }
+    }
+}
+
+/// The grade line: a dot in the grade's colour (none in firmware mode,
+/// where nothing is graded) and the text, with its card.
+fn grade_line_ui(
+    ui: &mut Ui,
+    text: &str,
+    colour: Option<Color32>,
+    card: (&str, &str),
+    why: Option<&str>,
+) {
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let (rect, _) = ui.allocate_exact_size(
+            Vec2::new(
+                metrics::SPACE_16,
+                metrics::line_height(ui, &metrics::heading()),
+            ),
+            Sense::hover(),
+        );
+        if let Some(c) = colour {
+            ui.painter().circle_filled(rect.center(), 6.0, c);
+        }
+        let g = ui.add_enabled(
+            why.is_none(),
+            egui::Label::new(RichText::new(text).font(metrics::heading())).wrap(),
+        );
+        super::groups::card(&g, card.0, card.1, why, false);
+    });
+}
+
+/// The stage panel of Simulate for a finished run: the grade and its
+/// note, then the sections Numbers, Hints, Worst spots, Strategies and
+/// Legend. In firmware mode nothing is graded: no grade colour, no worst
+/// spots, and the numbers are of the sent path.
 pub fn panel(
     ui: &mut Ui,
     st: &mut SimState,
@@ -994,97 +1196,180 @@ pub fn panel(
     t: &Tokens,
     actions: &mut Vec<Action>,
 ) -> Option<kurbo::Point> {
+    use super::inspector::blocks;
     let run = &cur.run;
     let mut centre = None;
+    let firmware = run.result.is_none();
     match &run.result {
         Some(r) => {
             let m = &r.metrics;
             // The grade and why first; the score after it, as what it is.
-            ui.horizontal_top(|ui| {
-                let (rect, _) = ui.allocate_exact_size(
-                    Vec2::new(
-                        metrics::SPACE_16,
-                        metrics::line_height(ui, &metrics::heading()),
-                    ),
-                    Sense::hover(),
-                );
-                ui.painter()
-                    .circle_filled(rect.center(), 6.0, grade_colour(m.grade, t));
-                let g = ui.add(
-                    egui::Label::new(RichText::new(grade_line(m)).font(metrics::heading())).wrap(),
-                );
-                super::groups::card(&g, "Grade", GRADE_CARD, None, false);
-            });
-            let s = ui.label(RichText::new(on_target_text(m.score)).color(t.text_dim));
+            grade_line_ui(
+                ui,
+                &grade_line(m),
+                Some(grade_colour(m.grade, t)),
+                ("Grade", GRADE_CARD),
+                None,
+            );
+            let s = blocks::status_line(ui, &on_target_text(m.score), t.text_dim);
             super::groups::card(&s, "On target", ON_TARGET_CARD, None, false);
-            ui.add_space(metrics::SPACE_4);
-            egui::Grid::new("flatcraft-sim-metrics")
-                .num_columns(2)
-                .spacing([metrics::SPACE_16, metrics::ROW_GAP])
-                .show(ui, |ui| {
-                    row(ui, "Worst miss", "The farthest the blade tip strays from your line anywhere in the job. Within 0.06 mm it is green on the mat.", mm(m.max_hausdorff_mm));
-                    row(ui, "Worst corner", "The farthest the tip misses a corner. A drag knife cuts corners short unless FlatCraft or the plotter steers it around them.", mm(m.max_corner_deviation_mm));
-                    row(ui, "Closure gap", "How far the end of a closed cut misses its start. A gap leaves the piece hanging by a thread.", mm(m.max_closure_gap_mm));
-                    row(ui, "Not cut through", "The length of line the blade never reaches. The piece will not come out there.", format!("{:.1} mm", m.uncut_mm));
-                    row(ui, "Into kept material", "The deepest the blade tip goes into a part you keep, for example while it turns. Zero is what you want.", mm(m.max_into_kept_mm));
-                    row(ui, "Blade pushed", "Moves where the head pushes the blade from behind instead of pulling it. That can tear the material.", m.pushed.to_string());
-                    row(ui, "Cut length", "How far the blade cuts, waste moves included.", super::cut::mm_text(m.cut_mm));
-                    row(ui, "Travel", "How far the head moves with the blade up, between cuts.", super::cut::mm_text(m.travel_mm));
-                    row(ui, "Lifts", "How often the blade goes up. Each lift and drop costs a little time.", m.lifts.to_string());
-                    row(ui, "Time (estimate)", "A rough guess of the cut time at this speed, from the moves and the lifts. Real plotters vary.", time_text(run.estimate_s));
-                });
         }
         None => {
-            ui.label(RichText::new("Not simulated").font(metrics::heading()));
-            ui.label(simulate::FIRMWARE_NOTE);
-            ui.add_space(metrics::SPACE_4);
-            let c = &run.commanded;
-            egui::Grid::new("flatcraft-sim-metrics")
-                .num_columns(2)
-                .spacing([metrics::SPACE_16, metrics::ROW_GAP])
-                .show(ui, |ui| {
-                    row(ui, "Cut length", "How far the head moves with the blade down.", super::cut::mm_text(c.cut_mm));
-                    row(ui, "Travel", "How far the head moves with the blade up, between cuts.", super::cut::mm_text(c.travel_mm));
-                    row(ui, "Segments", "The straight moves the plotter gets. Curves are sent as many short ones.", c.segments.to_string());
-                    row(ui, "Lifts", "How often the blade goes up.", c.lifts.to_string());
-                    row(ui, "Largest turn per vertex", "The largest change of direction between two segments of a curve. Small numbers mean smooth curves.", format!("{:.1} deg", c.max_turn_per_vertex_deg));
-                    row(ui, "Time (estimate)", "A rough guess of the cut time at this speed, from the moves and the lifts. Real plotters vary.", time_text(run.estimate_s));
-                });
+            let card = format!("{NOT_GRADED_CARD}\n\n{}", simulate::FIRMWARE_NOTE);
+            grade_line_ui(ui, NOT_GRADED, None, ("Grade", &card), None);
+            let s = blocks::status_line(ui, FIRMWARE_LINE, t.text_dim);
+            super::groups::card(&s, "Knife compensation", &card, None, false);
         }
     }
-    for w in &run.warnings {
-        ui.label(RichText::new(w).color(t.warn_text));
-    }
-    if run.result.is_some() {
-        ui.add_space(metrics::SPACE_8);
-        ui.label(RichText::new("Worst spots").font(metrics::section_title()));
-        if cur.spots.is_empty() {
-            ui.label(
-                RichText::new("None beyond the limit. Clean cut, Mr. Sulu.").color(t.text_dim),
-            );
-        }
-        for (i, spot) in cur.spots.iter().enumerate() {
-            let text = format!("{}. {}", i + 1, spot.label);
-            let r = ui.button(text);
-            let name = spot_name(i);
-            super::groups::card(&r, &name, &spot_card(spot), None, false);
-            if r.clicked() {
-                centre = Some(spot.at);
+    let rows = metrics_of(run);
+    let summary = match &run.result {
+        Some(r) => format!(
+            "worst miss {} · {}",
+            mm(r.metrics.max_hausdorff_mm),
+            time_text(run.estimate_s)
+        ),
+        None => format!(
+            "travel {:.0} mm · {}",
+            run.commanded.travel_mm,
+            time_text(run.estimate_s)
+        ),
+    };
+    let card = if firmware {
+        SENT_NUMBERS_CARD
+    } else {
+        NUMBERS_CARD
+    };
+    blocks::section(
+        ui,
+        NUMBERS,
+        "Numbers",
+        card,
+        &summary,
+        true,
+        |ui| {
+            let names: Vec<&str> = rows.iter().map(|r| r.0).collect();
+            blocks::labels(ui, &names);
+            for (name, card, value) in &rows {
+                blocks::data_row(ui, name, card, value, None);
             }
-        }
-    }
-    ui.add_space(metrics::SPACE_8);
-    compare(ui, st, snap, t, actions);
-    ui.add_space(metrics::SPACE_8);
-    legend(ui, snap, run, t);
+        },
+        None,
+    );
+    let n = run.warnings.len();
+    blocks::section(
+        ui,
+        HINTS,
+        "Hints",
+        HINTS_CARD,
+        &super::cut::hints_summary(n),
+        true,
+        |ui| {
+            if n == 0 {
+                blocks::status_line(ui, "Nothing to tell.", t.text_dim);
+                return;
+            }
+            for (i, w) in run.warnings.iter().enumerate() {
+                if i > 0 {
+                    ui.add_space(metrics::SPACE_4);
+                }
+                blocks::hint_card(ui, t, None, None, w, &[]);
+            }
+            ui.add_space(metrics::SPACE_4);
+        },
+        None,
+    );
+    let spots = match cur.spots.len() {
+        _ if firmware => "not in firmware mode".to_string(),
+        0 => "none".to_string(),
+        1 => "1 spot".to_string(),
+        n => format!("{n} spots"),
+    };
+    blocks::section(
+        ui,
+        SPOTS,
+        "Worst spots",
+        SPOTS_CARD,
+        &spots,
+        true,
+        |ui| {
+            if firmware {
+                let r = ui.add_enabled(
+                    false,
+                    egui::Label::new(RichText::new(NO_SPOTS_FIRMWARE).color(t.text_dim)).wrap(),
+                );
+                super::groups::card(
+                    &r,
+                    "Worst spots",
+                    SPOTS_CARD,
+                    Some(NO_SPOTS_FIRMWARE),
+                    false,
+                );
+                ui.add_space(metrics::ROW_GAP);
+                return;
+            }
+            if cur.spots.is_empty() {
+                blocks::status_line(
+                    ui,
+                    "None beyond the limit. Clean cut, Mr. Sulu.",
+                    t.text_dim,
+                );
+            }
+            for (i, spot) in cur.spots.iter().enumerate() {
+                let text = format!("{}. {}", i + 1, spot.label);
+                let r = ui.button(text);
+                let name = spot_name(i);
+                super::groups::card(&r, &name, &spot_card(spot), None, false);
+                if r.clicked() {
+                    centre = Some(spot.at);
+                }
+                ui.add_space(metrics::ROW_GAP);
+            }
+        },
+        None,
+    );
+    let compared = if st.comparing() {
+        COMPARING.to_string()
+    } else if st.compared(snap).is_some() {
+        "compared".to_string()
+    } else {
+        "not compared yet".to_string()
+    };
+    blocks::section(
+        ui,
+        STRATEGIES,
+        "Strategies",
+        STRATEGIES_CARD,
+        &compared,
+        true,
+        |ui| {
+            ui.spacing_mut().item_spacing.y = metrics::ROW_GAP;
+            compare(ui, st, snap, t, actions);
+            ui.add_space(metrics::ROW_GAP);
+        },
+        None,
+    );
+    blocks::section(
+        ui,
+        LEGEND,
+        "Legend",
+        LEGEND_CARD,
+        if firmware {
+            "sent path, travel, kept, waste"
+        } else {
+            "head, tip, travel, spots, kept, waste"
+        },
+        true,
+        |ui| legend(ui, snap, run, t),
+        None,
+    );
     centre
 }
 
-/// The panel rows while a simulation runs: the note, and the grade and
-/// metrics rows with "..." (so nothing jumps).
+/// The panel while a simulation runs: the grade with "...", and the
+/// Numbers section with "Simulating..." in its header and its rows
+/// dimmed with "..." (so nothing jumps).
 pub fn running_panel(ui: &mut Ui, t: &Tokens) {
-    let note = ui.label(RichText::new(SIMULATING).color(t.text_dim));
-    super::groups::card(&note, SIMULATING, SIMULATING_CARD, None, false);
+    use super::inspector::blocks;
     ui.horizontal(|ui| {
         ui.spinner();
         let r = ui.add_enabled(
@@ -1093,25 +1378,31 @@ pub fn running_panel(ui: &mut Ui, t: &Tokens) {
         );
         super::groups::card(&r, "Grade", GRADE_CARD, Some(SIMULATING_CARD), false);
     });
-    egui::Grid::new("flatcraft-sim-metrics")
-        .num_columns(2)
-        .spacing([metrics::SPACE_16, metrics::ROW_GAP])
-        .show(ui, |ui| {
-            for name in [
-                "Worst miss",
-                "Worst corner",
-                "Cut length",
-                "Travel",
-                "Time (estimate)",
-            ] {
+    let note = blocks::status_line(ui, "", t.text_dim);
+    super::groups::card(&note, SIMULATING, SIMULATING_CARD, None, false);
+    let names = [
+        "Worst miss",
+        "Worst corner",
+        "Cut length",
+        "Travel",
+        "Time (estimate)",
+    ];
+    blocks::section_live(
+        ui,
+        NUMBERS,
+        "Numbers",
+        NUMBERS_CARD,
+        SIMULATING,
+        SIMULATING,
+        true,
+        |ui| {
+            blocks::labels(ui, &names);
+            for name in names {
                 // Dimmed, and their cards say why.
-                for text in [name, "..."] {
-                    let r = ui.add_enabled(false, egui::Label::new(text));
-                    super::groups::card(&r, name, SIMULATING_CARD, Some(SIMULATING_CARD), false);
-                }
-                ui.end_row();
+                blocks::data_row(ui, name, SIMULATING_CARD, "...", Some(SIMULATING_CARD));
             }
-        });
+        },
+    );
 }
 
 /// The legend rows of the Simulate stage: name and hover card.
@@ -1226,8 +1517,6 @@ fn compare(ui: &mut Ui, st: &mut SimState, snap: &Snapshot, t: &Tokens, actions:
         }
         return;
     };
-    let heading = ui.label(RichText::new(COMPARE).font(metrics::section_title()));
-    super::groups::card(&heading, COMPARE, COMPARE_CARD, None, false);
     let runs = match rows {
         Ok(r) => r,
         Err(e) => {

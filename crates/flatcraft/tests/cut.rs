@@ -1017,3 +1017,104 @@ fn the_window_and_the_engine_share_the_cut_geometry() {
         &s.lock().unwrap().cut_geometry().unwrap()
     ));
 }
+
+/// The section headers (buttons) shown now.
+fn has_section(h: &AppHarness, title: &str) -> bool {
+    h.query_by_role_and_label(Role::Button, title).is_some()
+}
+
+#[test]
+fn stage_one_is_the_job_panel() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let mut h = harness(&dir, s, false);
+    to_cut(&mut h);
+    assert_eq!(app(&h).ui.cut.stage, Stage::Device);
+    // The Job panel's own sections, the same component as in Prepare.
+    for (_, title) in flatcraft::ui::inspector::job::SECTIONS {
+        assert!(has_section(&h, title), "{title}");
+    }
+    assert!(has_section(&h, "Transport"));
+    // The job line is shared: on top of the stage panel, with the panel's
+    // collapse button.
+    let line = h.get_by_label_contains("Job: ");
+    assert_eq!(line.accesskit_node().role(), Role::Button);
+    let heading = h.get_by_label(&Stage::Device.title()).rect();
+    assert!(line.rect().bottom() <= heading.top());
+    assert!(h.query_by_label("Collapse the Cut stage panel").is_some());
+    // From another step a click on the job line goes back to the job.
+    stage(&mut h, "Path");
+    h.get_by_label_contains("Job: ").click();
+    h.run_plan();
+    assert_eq!(app(&h).ui.cut.stage, Stage::Device);
+}
+
+#[test]
+fn cut_panels_use_sections_with_summaries() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    run(
+        &s,
+        "document.set_notes",
+        json!({ "notes": "Tape the corners down." }),
+    );
+    let mut h = harness(&dir, s, false);
+    to_cut(&mut h);
+    stage(&mut h, "Path");
+    for title in ["Plan", "Hints", "Legend"] {
+        assert!(has_section(&h, title), "Path: {title}");
+    }
+    // Folded, a section shows its one-line summary.
+    let job = app(&h).ui.cut.job().unwrap();
+    let summary = format!("1 path · {}", mm_text(job.plan.cut_mm));
+    assert!(!painted_texts(&h).contains(&summary));
+    let plan = h.get_by_role_and_label(Role::Button, "Plan").rect();
+    common::click_at(&mut h, plan.center());
+    h.run_plan();
+    assert!(h.query_by_label("Cut length").is_none(), "folded");
+    assert!(painted_texts(&h).contains(&summary), "{summary}");
+    // The fold is remembered for the window, in the preferences.
+    assert_eq!(
+        app(&h)
+            .session
+            .lock()
+            .unwrap()
+            .prefs
+            .panel_sections
+            .get(flatcraft::ui::cut::PLAN),
+        Some(&false)
+    );
+    stage(&mut h, "Simulate");
+    for title in ["Numbers", "Hints", "Worst spots", "Strategies", "Legend"] {
+        assert!(has_section(&h, title), "Simulate: {title}");
+    }
+    stage(&mut h, "Send");
+    for title in ["Job", "Hints", "Notes"] {
+        assert!(has_section(&h, title), "Send: {title}");
+    }
+}
+
+#[test]
+fn playback_bar_hidden_in_device_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    import_square(&s);
+    let mut h = harness(&dir, s, false);
+    to_cut(&mut h);
+    assert_eq!(app(&h).ui.cut.stage, Stage::Device);
+    assert!(h.query_by_label("Toolpath").is_none());
+    assert!(h.query_by_label("Play").is_none());
+    let device = app(&h).ui.cut.canvas_rect;
+    // From Path on it shows, and the canvas makes room for it.
+    stage(&mut h, "Path");
+    let bar = h.get_by_label("Toolpath").rect();
+    let path = app(&h).ui.cut.canvas_rect;
+    assert!(path.bottom() < device.bottom(), "{path:?} {device:?}");
+    assert!(bar.top() >= path.bottom());
+    stage(&mut h, "Simulate");
+    assert!(h.query_by_label("Time").is_some());
+    stage(&mut h, "Send");
+    assert!(h.query_by_label("Toolpath").is_some());
+}

@@ -84,6 +84,7 @@ pub fn summary(snap: &Snapshot, dot: Dot, open: bool) -> JobSummary {
         dot,
         selection: !snap.selection.is_empty(),
         open,
+        cut: false,
     }
 }
 

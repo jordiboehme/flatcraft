@@ -27,6 +27,7 @@ use flatcraft_engine::job::{
 use super::canvas::{self, CanvasView};
 use super::collapse::{self, Group, Mode};
 use super::icons::Icon;
+use super::inspector::blocks;
 use super::prepare::Snapshot;
 use super::rails::{self, Side, SidePanel};
 use super::theme::Tokens;
@@ -178,8 +179,6 @@ pub struct CutState {
     pub labels: LabelCache,
     /// The kept and waste overlay of the plan, for Cut and Prepare.
     pub kept: super::kept::KeptCache,
-    /// The project's notes above the send button are open.
-    pub notes_open: bool,
     /// The Simulate stage: the simulation, its timeline and the strategy
     /// comparison.
     pub sim: super::simulate::SimState,
@@ -207,7 +206,6 @@ impl Default for CutState {
             transport: None,
             labels: LabelCache::default(),
             kept: super::kept::KeptCache::default(),
-            notes_open: true,
             sim: super::simulate::SimState::default(),
             sim_line: None,
         }
@@ -611,7 +609,7 @@ impl Status {
                     ),
                 }
             }
-            Status::NotSimulated => "The plotter's firmware steers the blade, so the knife is not simulated. Simulate shows the commanded path.".into(),
+            Status::NotSimulated => "The plotter's firmware steers the blade, so the knife is not simulated or graded. Simulate plays the sent path.".into(),
             Status::Simulating => "FlatCraft is simulating the cut for your latest change.".into(),
             Status::NotRun => format!("Open {} to play the cut and grade it.", stage.name()),
             Status::SimFailed => "The simulation failed. Simulate says why.".into(),
@@ -862,30 +860,14 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
             )
             .show(ui, |ui| {
                 rails::panel_body(ui, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        stage_panel(ui, app, snap, actions);
-                    });
+                    stage_panel(ui, app, snap, actions);
                 });
             });
     }
-    egui::Panel::bottom("flatcraft-timeline")
-        .frame(
-            egui::Frame::new()
-                .fill(t.panel)
-                .inner_margin(metrics::SPACE_8),
-        )
-        .show(ui, |ui| {
-            let cut = &mut app.ui.cut;
-            if cut.stage == Stage::Simulate {
-                let has = cut
-                    .sim
-                    .current(snap)
-                    .is_some_and(|c| c.as_ref().is_ok_and(|c| c.run.result.is_some()));
-                timeline::show_sim(ui, &mut cut.sim.clock, has, &t);
-            } else {
-                timeline::show(ui, &mut cut.timeline, &t);
-            }
-        });
+    // Nothing plays in Device & Material: the canvas gets the room.
+    if app.ui.cut.stage != Stage::Device {
+        playback_bar(ui, &mut app.ui.cut, snap, &t);
+    }
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(t.bg))
         .show(ui, |ui| {
@@ -901,22 +883,111 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
         });
 }
 
-/// The plan's problem in a red box, in the words of the refusal.
-fn error_box(ui: &mut Ui, e: &CommandError, t: &Tokens) {
-    egui::Frame::new()
-        .fill(t.danger.gamma_multiply(0.12))
-        .stroke(Stroke::new(1.0, t.danger))
-        .corner_radius(t.radius)
-        .inner_margin(metrics::SPACE_8)
+/// The playback bar under the canvas: the toolpath timeline in Path and
+/// Send, the simulation's time in Simulate. In firmware mode Simulate
+/// plays the sent path: the cut order, the travel and the knife lifts.
+fn playback_bar(ui: &mut Ui, cut: &mut CutState, snap: &Snapshot, t: &Tokens) {
+    egui::Panel::bottom("flatcraft-timeline")
+        .frame(
+            egui::Frame::new()
+                .fill(t.panel)
+                .inner_margin(metrics::SPACE_8),
+        )
         .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(RichText::new("Houston, we have a problem").font(metrics::section_title()));
-            ui.label(person_text(e));
+            if cut.stage == Stage::Simulate {
+                let run = match cut.sim.current(snap) {
+                    Some(Ok(c)) => Some(c.run.clone()),
+                    _ => None,
+                };
+                let has = run.is_some() && cut.sim.clock.total_mm > 0.0;
+                let sent = run.as_ref().is_some_and(|r| r.result.is_none());
+                timeline::show_sim(ui, &mut cut.sim.clock, has, sent, t);
+            } else {
+                timeline::show(ui, &mut cut.timeline, t);
+            }
         });
 }
 
-/// Why the plan failed: every reason with its fixes when the engine
-/// classified it, else the refusal in a red box.
+/// The plan's problem as a red hint card, in the words of the refusal.
+fn error_card(ui: &mut Ui, e: &CommandError, t: &Tokens) {
+    blocks::hint_card_with(
+        ui,
+        t,
+        None,
+        Some((super::report::nothing_title(false), PROBLEM_CARD)),
+        &person_text(e),
+        None,
+        true,
+        &[],
+    );
+}
+
+/// The card of the problem's title.
+pub const PROBLEM_CARD: &str =
+    "Something stops this cut. The text says what, and a button fixes it where FlatCraft can.";
+
+/// The label of the "Show me" button of a hint card.
+const SHOW_ME: &str = "Show me";
+
+/// Issues as hint cards, the most serious first: the issue's title, its
+/// message, and a button per fix plus "Show me" when it names objects.
+/// An issue without a fix says what to do.
+pub fn issue_cards(
+    ui: &mut Ui,
+    issues: &[&flatcraft_engine::report::Issue],
+    doc_id: u64,
+    t: &Tokens,
+    actions: &mut Vec<Action>,
+) {
+    for (n, issue) in issues.iter().enumerate() {
+        if n > 0 {
+            ui.add_space(metrics::SPACE_4);
+        }
+        let fixes: Vec<_> = issue
+            .fixes
+            .iter()
+            .filter_map(|f| Some((f, super::report::fix_action(doc_id, f)?)))
+            .collect();
+        let mut buttons: Vec<blocks::HintButton> = fixes
+            .iter()
+            .map(|(f, _)| blocks::HintButton {
+                label: &f.label,
+                card: &f.description,
+                why: None,
+            })
+            .collect();
+        let show_me = !issue.object_ids.is_empty();
+        if show_me {
+            buttons.push(blocks::HintButton {
+                label: SHOW_ME,
+                card: super::report::SHOW_ME_HINT,
+                why: None,
+            });
+        }
+        let detail = fixes.is_empty().then_some(issue.hint.as_str());
+        let clicked = blocks::hint_card_with(
+            ui,
+            t,
+            None,
+            Some((issue.code.title(), &issue.hint)),
+            &issue.message,
+            detail,
+            issue.severity == flatcraft_engine::report::Severity::Error,
+            &buttons,
+        );
+        match clicked {
+            Some(i) if i < fixes.len() => actions.push(fixes[i].1.clone()),
+            Some(_) => actions.push(Action::ShowMe {
+                doc_id,
+                ids: issue.object_ids.clone(),
+            }),
+            None => {}
+        }
+    }
+}
+
+/// Why the plan failed, as hint cards: a red title line, then every
+/// reason with its fixes when the engine classified it, else the refusal.
 fn problem(
     ui: &mut Ui,
     st: &CutState,
@@ -926,60 +997,166 @@ fn problem(
     actions: &mut Vec<Action>,
 ) {
     if st.issues.is_empty() {
-        error_box(ui, e, t);
+        error_card(ui, e, t);
     } else {
-        super::report::reasons_box(ui, &st.issues, st.nothing_to_cut, doc_id, t, actions);
+        reasons(ui, &st.issues, st.nothing_to_cut, doc_id, t, actions);
     }
 }
 
-/// Paths, cut length and travel length of a plan.
-///
-/// "Weed paths" always shows; dimmed, with the reason, while weeding is
-/// off.
-fn stats(ui: &mut Ui, job: &JobResult, snap: &Snapshot) {
-    let why = weed_why(snap, job.plan.kept.sheet_kept_besides(|_| false));
-    let weeding = why.is_none();
-    egui::Grid::new("flatcraft-cut-stats")
-        .num_columns(2)
-        .spacing([metrics::SPACE_16, metrics::ROW_GAP])
-        .show(ui, |ui| {
-            ui.label("Paths");
-            ui.label(job.toolpaths_cut().to_string());
-            ui.end_row();
-            let r = ui.add_enabled(weeding, egui::Label::new("Weed paths"));
-            super::groups::card(
-                &r,
-                "Weed paths",
-                "The weed box and weed lines in the cut, counted in Paths too. They are dashed blue on the mat and cut after the design. Change them in Device & Material, under Weeding.",
-                why,
-                false,
-            );
-            ui.add_enabled(weeding, egui::Label::new(weed_count(job).to_string()));
-            ui.end_row();
-            ui.label("Cut length");
-            ui.label(mm_text(job.plan.cut_mm));
-            ui.end_row();
-            ui.label("Travel length");
-            ui.label(mm_text(job.plan.travel_mm));
-            ui.end_row();
-        });
+/// What stops the cut: a red title line and a hint card per reason.
+fn reasons(
+    ui: &mut Ui,
+    issues: &[flatcraft_engine::report::Issue],
+    nothing_to_cut: bool,
+    doc_id: u64,
+    t: &Tokens,
+    actions: &mut Vec<Action>,
+) {
+    let title = super::report::nothing_title(nothing_to_cut);
+    let lead = if nothing_to_cut {
+        "The knife is ready, but nothing is in its way. The cards below say why."
+    } else {
+        "This is what stops the cut. The cards below say what to do."
+    };
+    let r = blocks::status_line(ui, title, t.danger);
+    super::groups::card(&r, title, lead, None, false);
+    let list = super::report::by_severity(issues.iter());
+    issue_cards(ui, &list, doc_id, t, actions);
 }
 
-/// The stats rows while the plan of the latest change is built: the same
-/// rows (so nothing jumps), with "..." for every number, and the note.
-fn planning_stats(ui: &mut Ui, t: &Tokens) {
-    let note = ui.label(RichText::new(PLANNING).color(t.text_dim));
-    super::groups::card(&note, PLANNING, PLANNING_CARD, None, false);
-    egui::Grid::new("flatcraft-cut-stats")
-        .num_columns(2)
-        .spacing([metrics::SPACE_16, metrics::ROW_GAP])
-        .show(ui, |ui| {
-            for row in ["Paths", "Weed paths", "Cut length", "Travel length"] {
-                ui.add_enabled(false, egui::Label::new(row));
-                ui.add_enabled(false, egui::Label::new("..."));
-                ui.end_row();
+/// The ids of the Cut workspace's own sections.
+pub const PLAN: &str = "cut.plan";
+pub const HINTS: &str = "cut.hints";
+pub const LEGEND: &str = "cut.legend";
+pub const TRANSPORT: &str = "cut.transport";
+pub const SEND_JOB: &str = "cut.send";
+pub const NOTES: &str = "cut.notes";
+
+/// The cards of those sections.
+pub const PLAN_CARD: &str = "The numbers of the planned cut: how many paths the knife cuts, how far it cuts and how far it moves with the knife up.";
+pub const HINTS_CARD: &str = "What FlatCraft noticed about this job before you cut: things that will not cut well. A button fixes it where it can.";
+pub const LEGEND_CARD: &str =
+    "What the lines and areas on the mat mean. Hover a row to learn more.";
+pub const TRANSPORT_CARD: &str =
+    "How the job leaves FlatCraft: over USB to the plotter, or as a file into a folder.";
+pub const SEND_JOB_CARD: &str =
+    "What is sent: the plotter, where it goes, the numbers of the cut and the cut values.";
+
+/// What the Hints section says when there is nothing to tell.
+pub const NO_HINTS: &str = "Nothing to tell. This job is good to go.";
+
+/// The names of the plan rows, in order.
+const PLAN_ROWS: [&str; 4] = ["Paths", "Weed paths", "Cut length", "Travel length"];
+
+/// The cards of the plan rows, in the order of [`PLAN_ROWS`].
+const PLAN_ROW_CARDS: [&str; 4] = [
+    "How many paths the knife cuts, weed paths included.",
+    "The weed box and weed lines in the cut, counted in Paths too. They are dashed blue on the mat and cut after the design. Change them in Device & Material, under Weeding.",
+    "How far the knife cuts with the blade down.",
+    "How far the head moves with the blade up, between cuts.",
+];
+
+/// "3 paths · 601.5 mm".
+fn plan_summary(job: &JobResult) -> String {
+    let n = job.toolpaths_cut();
+    let paths = if n == 1 {
+        "1 path".to_string()
+    } else {
+        format!("{n} paths")
+    };
+    format!("{paths} · {}", mm_text(job.plan.cut_mm))
+}
+
+/// The plan rows: paths, weed paths, cut length and travel length.
+/// "Weed paths" always shows; dimmed, with the reason, while weeding is
+/// off.
+fn plan_rows(ui: &mut Ui, job: &JobResult, snap: &Snapshot) {
+    let why = weed_why(snap, job.plan.kept.sheet_kept_besides(|_| false));
+    let values = [
+        job.toolpaths_cut().to_string(),
+        weed_count(job).to_string(),
+        mm_text(job.plan.cut_mm),
+        mm_text(job.plan.travel_mm),
+    ];
+    for (i, name) in PLAN_ROWS.into_iter().enumerate() {
+        let dim = if i == 1 { why } else { None };
+        blocks::data_row(ui, name, PLAN_ROW_CARDS[i], &values[i], dim);
+    }
+}
+
+/// The plan rows while the plan of the latest change is built: the same
+/// rows (so nothing jumps), dimmed with "..." for every number.
+fn planning_rows(ui: &mut Ui) {
+    for (i, name) in PLAN_ROWS.into_iter().enumerate() {
+        blocks::data_row(ui, name, PLAN_ROW_CARDS[i], "...", Some(PLANNING_CARD));
+    }
+}
+
+/// The Plan section: the plan's numbers, "Planning..." in its header while
+/// the plan of the latest change is built.
+fn plan_section(ui: &mut Ui, st: &CutState, snap: &Snapshot) {
+    let planning = st.planning() && st.plan.is_none();
+    let job = st.job();
+    let summary = match &job {
+        _ if planning => PLANNING.to_string(),
+        Some(job) => plan_summary(job),
+        None => "not planned".to_string(),
+    };
+    let live = if planning { PLANNING } else { "" };
+    blocks::section_live(ui, PLAN, "Plan", PLAN_CARD, &summary, live, true, |ui| {
+        blocks::labels(ui, &PLAN_ROWS);
+        match &job {
+            Some(job) => plan_rows(ui, job, snap),
+            None => planning_rows(ui),
+        }
+    });
+}
+
+/// "1 hint", "3 hints", "none".
+pub fn hints_summary(n: usize) -> String {
+    super::inspector::object::hints_summary(n)
+}
+
+/// The Hints section of the job: its warnings, then its issues with their
+/// fix buttons. A warning an issue says again (with a fix) is left out.
+fn hints_section(ui: &mut Ui, job: &JobResult, doc_id: u64, t: &Tokens, actions: &mut Vec<Action>) {
+    let warnings: Vec<&String> = job
+        .warnings
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !job.covered_warnings.contains(i))
+        .map(|(_, w)| w)
+        .collect();
+    let n = warnings.len() + job.issues.len();
+    blocks::section(
+        ui,
+        HINTS,
+        "Hints",
+        HINTS_CARD,
+        &hints_summary(n),
+        true,
+        |ui| {
+            if n == 0 {
+                blocks::status_line(ui, NO_HINTS, t.text_dim);
+                return;
             }
-        });
+            for (i, w) in warnings.iter().enumerate() {
+                if i > 0 {
+                    ui.add_space(metrics::SPACE_4);
+                }
+                blocks::hint_card(ui, t, None, None, w, &[]);
+            }
+            if !job.issues.is_empty() {
+                if !warnings.is_empty() {
+                    ui.add_space(metrics::SPACE_4);
+                }
+                let list = super::report::by_severity(job.issues.iter());
+                issue_cards(ui, &list, doc_id, t, actions);
+            }
+            ui.add_space(metrics::SPACE_4);
+        },
+        None,
+    );
 }
 
 /// How many weed paths are cut: the weed part of the job's cut
@@ -995,76 +1172,76 @@ pub fn mm_text(mm: f64) -> String {
     format!("{mm:.1} mm")
 }
 
-/// The job's warnings, then its issues with their fix buttons. A warning
-/// an issue says again (with a fix) is left out.
-fn warnings(ui: &mut Ui, job: &JobResult, doc_id: u64, t: &Tokens, actions: &mut Vec<Action>) {
-    for (i, w) in job.warnings.iter().enumerate() {
-        if !job.covered_warnings.contains(&i) {
-            ui.label(RichText::new(w).color(t.warn_text));
-        }
-    }
-    if !job.issues.is_empty() {
-        ui.add_space(metrics::SPACE_4);
-        let list = super::report::by_severity(job.issues.iter());
-        super::report::issue_list(ui, &list, doc_id, t, true, actions);
-    }
-}
-
+/// The stage panel: the job line (shared with Prepare's inspector) with
+/// the panel's collapse button, the stage's heading, and the stage's
+/// sections in a scroll area. A click on the job line goes to Device &
+/// Material, where the Job panel is.
 fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut Vec<Action>) {
     let t = app.tokens;
-    let st = &app.ui.cut;
-    let stage = st.stage;
-    let title = stage.title();
-    if rails::header(ui, SidePanel::Stage, Side::Right, &title) {
+    let stage = app.ui.cut.stage;
+    blocks::panel_spacing(ui);
+    let dot = rails::job_dot(snap, Some(&app.ui.cut));
+    let mut summary = super::inspector::job::summary(snap, dot, false);
+    summary.cut = true;
+    summary.selection = stage != Stage::Device;
+    let line = blocks::job_line(
+        ui,
+        &summary,
+        &t,
+        &rails::collapse_name(SidePanel::Stage),
+        &rails::collapse_card(SidePanel::Stage),
+    );
+    if line.collapse.clicked() {
         app.ui.prepare.panels.set_collapsed(SidePanel::Stage, true);
     }
-    // The lines of a stage sit ROW_GAP apart, as the controls of two
-    // panel rows do. Data lines (label and value) stay one text line high.
-    ui.spacing_mut().item_spacing.y = metrics::ROW_GAP;
-    ui.add_space(metrics::SPACE_4);
+    if line.job.clicked() && stage != Stage::Device {
+        app.ui.cut.stage = Stage::Device;
+    }
+    ui.add_space(metrics::SPACE_8);
+    let status = stage_status(stage, &app.ui.cut, snap);
+    blocks::heading(ui, &stage.title(), &status, stage.hint());
+    egui::ScrollArea::vertical()
+        .id_salt(("flatcraft-cut-stage", stage.number()))
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            blocks::panel_spacing(ui);
+            stage_body(ui, app, snap, stage, actions);
+        });
+}
+
+fn stage_body(
+    ui: &mut Ui,
+    app: &mut FlatCraftApp,
+    snap: &Snapshot,
+    stage: Stage,
+    actions: &mut Vec<Action>,
+) {
+    let t = app.tokens;
+    let st = &app.ui.cut;
     match stage {
         Stage::Device => {
             // Why nothing cuts, before the settings: the first thing seen
             // on entering Cut.
             if matches!(st.plan, Some(Err(_))) && !st.issues.is_empty() {
-                super::report::reasons_box(
-                    ui,
-                    &st.issues,
-                    st.nothing_to_cut,
-                    snap.doc_id,
-                    &t,
-                    actions,
-                );
+                reasons(ui, &st.issues, st.nothing_to_cut, snap.doc_id, &t, actions);
                 ui.add_space(metrics::SPACE_8);
             }
-            // The Job panel's rows, with the side panels' spacing.
-            ui.scope(|ui| {
-                super::inspector::blocks::panel_spacing(ui);
-                super::inspector::job::panel(ui, &mut app.ui.prepare, snap, &t, actions);
-            });
+            // The Job panel, the same component as in Prepare.
+            super::inspector::job::panel(ui, &mut app.ui.prepare, snap, &t, actions);
             super::materials::iron_on_reminder(ui, snap, &t, actions);
             if let Some(tr) = &app.ui.cut.transport {
-                ui.separator();
-                ui.label(RichText::new("Transport").font(metrics::section_title()));
-                ui.label(transport_text(tr, snap));
+                transport_section(ui, tr, snap, &t);
             }
         }
         Stage::Path => match &st.plan {
-            Some(Ok(job)) => {
-                stats(ui, job, snap);
-                warnings(ui, job, snap.doc_id, &t, actions);
-                ui.add_space(metrics::SPACE_8);
-                legend(ui, snap, job, &t);
-                ui.label(
-                    RichText::new(
-                        "Numbers show the cut order, dots the starts and arrows the direction.",
-                    )
-                    .color(t.text_dim),
-                );
-            }
             Some(Err(e)) => problem(ui, st, e, snap.doc_id, &t, actions),
-            None if st.planning() => planning_stats(ui, &t),
-            None => {}
+            plan => {
+                plan_section(ui, st, snap);
+                if let Some(Ok(job)) = plan {
+                    hints_section(ui, job, snap.doc_id, &t, actions);
+                    legend_section(ui, snap, job, &t);
+                }
+            }
         },
         Stage::Simulate => {
             let cut = &mut app.ui.cut;
@@ -1077,77 +1254,165 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
                         cut.view = super::simulate::centred(&cut.view, cut.canvas_rect, at);
                     }
                 }
-                (_, Some(Err(e))) => error_box(ui, &e, &t),
+                (_, Some(Err(e))) => error_card(ui, &e, &t),
                 (_, None) if cut.sim.simulating() => super::simulate::running_panel(ui, &t),
                 (_, None) => {}
             }
         }
-        Stage::Send => {
-            let ok = matches!(st.plan, Some(Ok(_)));
-            let planning = st.planning() && st.plan.is_none();
-            if let Some(p) = &snap.plotter {
-                ui.label(RichText::new(&p.name).font(metrics::section_title()));
-                ui.label(RichText::new(transport_text(&p.transport, snap)).color(t.text_dim));
-                ui.add_space(metrics::SPACE_4);
-            }
-            match &st.plan {
-                Some(Ok(job)) => {
-                    stats(ui, job, snap);
-                    ui.label(format!(
-                        "Speed {}, force {}, {}",
-                        job.settings.speed,
-                        job.settings.force,
-                        passes_text(job)
-                    ));
-                    warnings(ui, job, snap.doc_id, &t, actions);
-                }
-                Some(Err(e)) => problem(ui, st, e, snap.doc_id, &t, actions),
-                None if st.planning() => planning_stats(ui, &t),
-                None => {}
-            }
-            super::materials::iron_on_reminder(ui, snap, &t, actions);
-            ui.add_space(metrics::SPACE_8);
-            send_notes(ui, &mut app.ui.cut, snap, &t);
-            let label = send_label(snap);
-            let hint = if ok {
-                "Punch it, Chewie."
-            } else if planning {
-                PLANNING_SEND
-            } else {
-                "Fix the problem above first."
+        Stage::Send => send_body(ui, app, snap, actions),
+    }
+}
+
+/// The Transport section of Device & Material: where the job goes.
+fn transport_section(ui: &mut Ui, tr: &TransportSpec, snap: &Snapshot, t: &Tokens) {
+    let text = transport_text(tr, snap);
+    let short = match tr {
+        TransportSpec::File { .. } => "File Output",
+        TransportSpec::Usb { .. } => "USB",
+    };
+    blocks::section(
+        ui,
+        TRANSPORT,
+        "Transport",
+        TRANSPORT_CARD,
+        short,
+        true,
+        |ui| {
+            let r = ui.add(egui::Label::new(RichText::new(&text).color(t.text)).wrap());
+            super::groups::card(&r, "Transport", TRANSPORT_CARD, None, false);
+            ui.add_space(metrics::ROW_GAP);
+        },
+        None,
+    );
+}
+
+/// The Send stage: what is sent, its hints, the project's notes, and the
+/// send and troubleshoot buttons.
+fn send_body(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut Vec<Action>) {
+    let t = app.tokens;
+    let st = &app.ui.cut;
+    let ok = matches!(st.plan, Some(Ok(_)));
+    let planning = st.planning() && st.plan.is_none();
+    match &st.plan {
+        Some(Err(e)) => problem(ui, st, e, snap.doc_id, &t, actions),
+        plan => {
+            let job = match plan {
+                Some(Ok(job)) => Some(job.clone()),
+                _ => None,
             };
-            let tex = super::icons::texture(ui.ctx(), super::icons::Icon::Send, super::ICON_SIZE);
-            let image = egui::Image::from_texture(egui::load::SizedTexture::new(
-                tex.id(),
-                Vec2::splat(super::ICON_SIZE),
-            ));
-            let r = ui
-                .add_enabled(ok, egui::Button::image_and_text(image, label.as_str()))
-                .on_hover_text(hint)
-                .on_disabled_hover_text(hint);
-            settings::set_name(ui, &r, &label);
-            if r.clicked() {
-                actions.push(Action::Send {
-                    doc_id: snap.doc_id,
-                });
-            }
-            // After a cut: what to check when it went wrong. It stays
-            // usable when this job cannot be cut, the cut may be older.
-            ui.add_space(metrics::SPACE_8);
-            let r = ui.button(super::troubleshoot::LABEL);
-            super::groups::card(
-                &r,
-                super::troubleshoot::TITLE,
-                super::troubleshoot::OPEN_HINT,
-                None,
-                false,
+            let summary = match (&job, &snap.plotter) {
+                _ if planning => PLANNING.to_string(),
+                (Some(job), _) => plan_summary(job),
+                (None, Some(p)) => p.name.clone(),
+                (None, None) => "not planned".into(),
+            };
+            let live = if planning { PLANNING } else { "" };
+            blocks::section_live(
+                ui,
+                SEND_JOB,
+                "Job",
+                SEND_JOB_CARD,
+                &summary,
+                live,
+                true,
+                |ui| {
+                    blocks::labels(
+                        ui,
+                        &["Plotter", "Sends to", "Travel length", "Speed", "Force"],
+                    );
+                    if let Some(p) = &snap.plotter {
+                        blocks::data_row(ui, "Plotter", PLOTTER_ROW_CARD, &p.name, None);
+                        let to = transport_text(&p.transport, snap);
+                        let card = format!("{SENDS_TO_CARD} Now: {to}.");
+                        blocks::data_row(ui, "Sends to", &card, &to, None);
+                    }
+                    match &job {
+                        Some(job) => {
+                            plan_rows(ui, job, snap);
+                            let s = &job.settings;
+                            blocks::data_row(
+                                ui,
+                                "Speed",
+                                SPEED_ROW_CARD,
+                                &s.speed.to_string(),
+                                None,
+                            );
+                            blocks::data_row(
+                                ui,
+                                "Force",
+                                FORCE_ROW_CARD,
+                                &s.force.to_string(),
+                                None,
+                            );
+                            blocks::data_row(
+                                ui,
+                                "Passes",
+                                PASSES_ROW_CARD,
+                                &passes_text(job),
+                                None,
+                            );
+                        }
+                        None => planning_rows(ui),
+                    }
+                },
             );
-            if r.clicked() {
-                actions.push(Action::Troubleshoot);
+            if let Some(job) = &job {
+                hints_section(ui, job, snap.doc_id, &t, actions);
             }
         }
     }
+    send_notes(ui, snap, &t);
+    super::materials::iron_on_reminder(ui, snap, &t, actions);
+    ui.add_space(metrics::SPACE_8);
+    let label = send_label(snap);
+    let hint = if ok {
+        "Punch it, Chewie."
+    } else if planning {
+        PLANNING_SEND
+    } else {
+        "Fix the problem above first."
+    };
+    let tex = super::icons::texture(ui.ctx(), super::icons::Icon::Send, super::ICON_SIZE);
+    let image = egui::Image::from_texture(egui::load::SizedTexture::new(
+        tex.id(),
+        Vec2::splat(super::ICON_SIZE),
+    ));
+    let r = ui
+        .add_enabled(ok, egui::Button::image_and_text(image, label.as_str()))
+        .on_hover_text(hint)
+        .on_disabled_hover_text(hint);
+    settings::set_name(ui, &r, &label);
+    if r.clicked() {
+        actions.push(Action::Send {
+            doc_id: snap.doc_id,
+        });
+    }
+    // After a cut: what to check when it went wrong. It stays usable when
+    // this job cannot be cut, the cut may be older.
+    ui.add_space(metrics::SPACE_8);
+    let r = ui.button(super::troubleshoot::LABEL);
+    super::groups::card(
+        &r,
+        super::troubleshoot::TITLE,
+        super::troubleshoot::OPEN_HINT,
+        None,
+        false,
+    );
+    if r.clicked() {
+        actions.push(Action::Troubleshoot);
+    }
 }
+
+/// The cards of the Send stage's rows.
+pub const PLOTTER_ROW_CARD: &str =
+    "The plotter preset this job is cut with. Change it in Device & Material.";
+pub const SENDS_TO_CARD: &str =
+    "Where the job goes: over USB to the plotter, or as a file into this folder.";
+pub const SPEED_ROW_CARD: &str = "How fast the knife moves while it cuts, from 1 (slow) to the plotter's top speed. Change it in Device & Material, under Cut values.";
+pub const FORCE_ROW_CARD: &str =
+    "How hard the knife presses down. Change it in Device & Material, under Cut values.";
+pub const PASSES_ROW_CARD: &str =
+    "How often the knife cuts each line. Change it in Device & Material, under Cut values.";
 
 /// The legend rows of the Path stage: name and hover card.
 pub const LEGEND_CUT: (&str, &str) = (
@@ -1220,6 +1485,29 @@ pub enum LegendSample {
 /// is dimmed (`None` while it applies).
 pub type LegendRow<'a> = ((&'a str, &'a str), LegendSample, Color32, Option<&'a str>);
 
+/// The legend of the Path view as a section, with the note on the order
+/// numbers.
+fn legend_section(ui: &mut Ui, snap: &Snapshot, job: &JobResult, t: &Tokens) {
+    blocks::section(
+        ui,
+        LEGEND,
+        "Legend",
+        LEGEND_CARD,
+        "cut, weed, travel, kept, waste",
+        true,
+        |ui| {
+            legend(ui, snap, job, t);
+            blocks::note(
+                ui,
+                "Numbers show the cut order, dots the starts and arrows the direction.",
+                t.text_dim,
+            );
+            ui.add_space(metrics::ROW_GAP);
+        },
+        None,
+    );
+}
+
 /// A small legend of the Path view: a short line of each kind, drawn on
 /// the mat colour with the canvas's own strokes and colours. The weed row
 /// is dimmed, with the reason, while weeding is off.
@@ -1256,6 +1544,13 @@ fn legend(ui: &mut Ui, snap: &Snapshot, job: &JobResult, t: &Tokens) {
 /// Draws legend rows on the mat colour `mat`; `contrast` is the mat's
 /// contrast colour.
 pub fn legend_rows(ui: &mut Ui, mat: [u8; 3], contrast: Color32, rows: &[LegendRow]) {
+    ui.scope(|ui| legend_lines(ui, mat, contrast, rows));
+}
+
+/// [`legend_rows`] as data lines: one text line high, ROW_GAP apart.
+fn legend_lines(ui: &mut Ui, mat: [u8; 3], contrast: Color32, rows: &[LegendRow]) {
+    let line = metrics::line_height(ui, &metrics::body());
+    ui.spacing_mut().interact_size.y = line;
     for &((name, hint), sample, colour, why) in rows {
         let on = why.is_none();
         // A dimmed row fades its sample like egui fades a disabled label.
@@ -1308,35 +1603,45 @@ pub fn legend_rows(ui: &mut Ui, mat: [u8; 3], contrast: Color32, rows: &[LegendR
                 }
             }
             super::groups::card(&r, name, hint, why, false);
+            ui.add_space(metrics::SPACE_8);
             let l = ui.add_enabled(on, egui::Label::new(name));
             super::groups::card(&l, name, hint, why, false);
         });
+        ui.add_space(metrics::ROW_GAP);
     }
 }
 
 /// The card of the Notes heading above the send button.
 pub const SEND_NOTES_HINT: &str = "The notes you keep with this project, right before you cut, so nothing is forgotten. Edit them in Prepare, under Objects.";
 
-/// The project's notes above the send button, under a "Notes" heading
-/// that folds them away. Nothing shows when the project has no notes.
-fn send_notes(ui: &mut Ui, st: &mut CutState, snap: &Snapshot, t: &Tokens) {
-    if snap.notes.trim().is_empty() {
+/// The project's notes above the send button, in a "Notes" section that
+/// folds them away. Nothing shows when the project has no notes.
+fn send_notes(ui: &mut Ui, snap: &Snapshot, t: &Tokens) {
+    let notes = snap.notes.trim();
+    if notes.is_empty() {
         return;
     }
-    if super::objects::section_toggle(ui, "Notes", st.notes_open, SEND_NOTES_HINT) {
-        st.notes_open = !st.notes_open;
-    }
-    if st.notes_open {
-        egui::Frame::new()
-            .fill(t.accent_prepare.gamma_multiply(0.10))
-            .corner_radius(t.radius)
-            .inner_margin(metrics::SPACE_8)
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.add(egui::Label::new(snap.notes.trim_end()).wrap());
-            });
-    }
-    ui.add_space(metrics::SPACE_8);
+    let first = notes.lines().next().unwrap_or_default();
+    blocks::section(
+        ui,
+        NOTES,
+        "Notes",
+        SEND_NOTES_HINT,
+        first,
+        true,
+        |ui| {
+            egui::Frame::new()
+                .fill(t.accent_prepare.gamma_multiply(0.10))
+                .corner_radius(t.radius)
+                .inner_margin(metrics::CARD_PAD)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.add(egui::Label::new(snap.notes.trim_end()).wrap());
+                });
+            ui.add_space(metrics::SPACE_4);
+        },
+        None,
+    );
 }
 
 fn passes_text(job: &JobResult) -> String {

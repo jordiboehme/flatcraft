@@ -15,7 +15,6 @@ use flatcraft::ui::cut::{Stage, stage_status};
 use flatcraft::ui::simulate::{self as sim, quality_color, tip_colour};
 use flatcraft::ui::theme::Tokens;
 use flatcraft_engine::session::{Origin, UnlockedHook};
-use flatcraft_engine::simulate::FIRMWARE_NOTE;
 use flatcraft_mcp::SharedSession;
 use flatcraft_sim::END_TO_END_LIMIT_MM;
 use serde_json::{Value, json};
@@ -117,14 +116,71 @@ fn firmware_mode_shows_commanded_path_note() {
     common::import_square(&s);
     let mut h = harness(&dir, s, false);
     to_simulate(&mut h);
-    assert!(h.query_by_label(FIRMWARE_NOTE).is_some());
-    assert!(h.query_by_label("Not simulated").is_some());
+    // Nothing is graded; one line says why.
+    assert!(h.query_by_label(sim::NOT_GRADED).is_some());
+    assert!(h.query_by_label(sim::FIRMWARE_LINE).is_some());
     assert!(h.query_by_label("Commanded path").is_some());
     assert!(painted_texts(&h).contains(&sim::FIRMWARE_CANVAS.to_string()));
     assert_eq!(simulate_status(&mut h), "Not simulated");
-    // Nothing to play: the timeline is dimmed.
+    // The sent path plays: the timeline is enabled.
     use egui_kittest::kittest::NodeT as _;
-    assert!(h.get_by_label("Time").accesskit_node().is_disabled());
+    assert!(!h.get_by_label("Time").accesskit_node().is_disabled());
+    assert!(!h.get_by_label("Play").accesskit_node().is_disabled());
+}
+
+#[test]
+fn firmware_mode_plays_the_sent_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    common::import_square(&s);
+    let mut h = harness(&dir, s, false);
+    to_simulate(&mut h);
+    // The clock runs over the sent path: its travel and its cuts.
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    let cur = app(&h).ui.cut.sim.current(&snap).cloned().unwrap().unwrap();
+    assert!(cur.run.result.is_none(), "firmware mode");
+    let c = cur.run.commanded;
+    let clock = app(&h).ui.cut.sim.clock;
+    assert!((clock.total_mm - (c.travel_mm + c.cut_mm)).abs() < 1e-9);
+    assert_eq!(clock.t_mm, clock.total_mm, "a new run shows all of it");
+    let (all, total) = app(&h).ui.cut.sim.drawn_down;
+    assert_eq!((all, total), (c.segments, c.segments));
+    // Play starts from the start; frames draw more of the path.
+    h.get_by_label("Play").click();
+    h.step();
+    h.step();
+    assert!(app(&h).ui.cut.sim.clock.playing.is_some());
+    let first = app(&h).ui.cut.sim.drawn_down.0;
+    assert!(first < total, "{first} of {total}");
+    let start = Instant::now();
+    while app(&h).ui.cut.sim.drawn_down.0 <= first {
+        assert!(start.elapsed() < Duration::from_secs(10), "playback stuck");
+        h.step();
+    }
+    // Scrubbing halfway draws the first part of the path only.
+    h.get_by_label("Stop").click();
+    h.step();
+    h.step();
+    app_mut(&mut h).ui.cut.sim.clock.t_mm = c.travel_mm.min(clock.total_mm) / 4.0;
+    h.step();
+    assert!(app(&h).ui.cut.sim.drawn_down.0 < total);
+    // No grade and no deviation colours: nothing green on the mat.
+    let mat = flatcraft::ui::canvas::mat_rgb(&snap);
+    let colours: Vec<_> = (0..3)
+        .map(|i| tip_colour(mat, [0.0, 0.1, 1.0][i]).unwrap())
+        .collect();
+    let graded = painted(&h).iter().any(|s| match s {
+        egui::Shape::Path(p) => colours
+            .iter()
+            .any(|c| p.stroke.color == egui::epaint::ColorMode::Solid(*c)),
+        _ => false,
+    });
+    assert!(!graded, "a deviation colour is painted");
+    for word in ["Good", "Fair", "Poor"] {
+        assert!(h.query_by_label(word).is_none(), "{word}");
+    }
+    assert!(h.query_by_label(sim::NOT_GRADED).is_some());
 }
 
 #[test]
