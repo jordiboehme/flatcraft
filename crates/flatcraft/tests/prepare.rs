@@ -2666,7 +2666,7 @@ fn cmd_a_selects_all_visible_objects() {
 }
 
 #[test]
-fn a_frame_on_the_empty_canvas_selects_what_it_touches() {
+fn a_frame_on_the_empty_canvas_selects_what_lies_fully_inside() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     let a = import_square(&s);
@@ -2678,30 +2678,33 @@ fn a_frame_on_the_empty_canvas_selects_what_it_touches() {
     to_prepare(&mut h);
     let view = known_view(&mut h, kurbo::Point::new(f(&bb, "x0"), f(&bb, "y0")));
     let pt = |x: f64, y: f64| view.mm_to_screen(kurbo::Point::new(x, y));
-    // From above-left of a to the middle of b: a and b, not c.
-    let (top, mid) = (f(&ba, "y0") - 5.0, (f(&bb, "y0") + f(&bb, "y1")) / 2.0);
+    // From above-left of a to past the middle of b: a is fully inside, b
+    // only touched.
+    let (top, bottom) = (f(&ba, "y0") - 5.0, f(&ba, "y1") + 5.0);
     drag(
         &mut h,
         pt(f(&ba, "x0") - 5.0, top),
-        pt((f(&bb, "x0") + f(&bb, "x1")) / 2.0, mid),
+        pt((f(&bb, "x0") + f(&bb, "x1")) / 2.0, bottom),
     );
-    assert_eq!(selection(&s), [a, b]);
+    assert_eq!(selection(&s), [a]);
     assert!(app(&h).ui.prepare.drag.is_none());
-    // Shift adds c.
-    let around_c = (pt(f(&bc, "x0") - 2.0, top), pt(f(&bc, "x1") + 2.0, mid));
-    h.event(Event::ModifiersChanged(Modifiers::SHIFT));
-    drag(&mut h, around_c.0, around_c.1);
-    h.event(Event::ModifiersChanged(Modifiers::NONE));
-    h.run_plan();
-    assert_eq!(selection(&s), [a, b, c]);
+    // Shift flips c in, and out again.
+    let around_c = (pt(f(&bc, "x0") - 2.0, top), pt(f(&bc, "x1") + 2.0, bottom));
+    for want in [vec![a, c], vec![a]] {
+        h.event(Event::ModifiersChanged(Modifiers::SHIFT));
+        drag(&mut h, around_c.0, around_c.1);
+        h.event(Event::ModifiersChanged(Modifiers::NONE));
+        h.run_plan();
+        assert_eq!(selection(&s), want);
+    }
     // Without Shift the frame replaces the selection.
     drag(&mut h, around_c.0, around_c.1);
     assert_eq!(selection(&s), [c]);
-    // A frame that touches nothing clears it.
+    // A frame with nothing inside clears it.
     drag(
         &mut h,
         pt(f(&bc, "x1") + 10.0, top),
-        pt(f(&bc, "x1") + 30.0, mid),
+        pt(f(&bc, "x1") + 30.0, bottom),
     );
     assert!(selection(&s).is_empty());
 }

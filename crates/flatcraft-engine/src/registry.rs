@@ -1,7 +1,8 @@
 //! Command registry. The GUI, the MCP server and tests call the same commands.
 
 use crate::commands::{
-    arrange, check, edit, export, group, job, notes, object, profiles, project, sources, tools,
+    arrange, check, edit, export, group, job, notes, object, profiles, project, selection, sources,
+    tools,
 };
 use crate::session::{CommandError, Origin, Session};
 
@@ -53,6 +54,7 @@ static ALL: &[&dyn Command] = &[
     &sources::ObjectRelink,
     &sources::ObjectUnlink,
     &object::ObjectSelect,
+    &selection::SelectionSetInPolygon,
     &object::ObjectSetVisible,
     &object::ObjectSetCut,
     &object::ObjectRename,

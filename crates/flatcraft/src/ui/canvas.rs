@@ -11,9 +11,11 @@ use serde_json::json;
 
 use super::context_menu;
 use super::help::{self, PrepareKey};
-use super::prepare::{Drag, NUDGE_BURST, Nudge, ObjView, PrepareState, Snapshot};
+use super::prepare::{Drag, NUDGE_BURST, Nudge, ObjView, PrepareState, SelectTool, Snapshot};
 use super::theme::Tokens;
 use super::{Action, fonts};
+use flatcraft_core::document::ObjectId;
+use flatcraft_engine::lasso::{self, Lasso, Outlines};
 
 /// Points per millimetre at 100 %: the CSS reference of 96 points per inch.
 pub const PX_PER_MM_100: f32 = 96.0 / 25.4;
@@ -722,20 +724,72 @@ fn drag_preview(drag: Option<&Drag>, snap: &Snapshot, id: u64) -> Option<kurbo::
     }
 }
 
-/// The visible objects whose placed bounds touch `frame` (mm), in
-/// document order.
-fn framed(snap: &Snapshot, frame: kurbo::Rect) -> Vec<u64> {
-    let f = frame.abs();
-    snap.objects
-        .iter()
-        .filter(|o| o.visible)
-        .filter(|o| {
-            o.bounds()
-                .is_some_and(|b| b.x0 <= f.x1 && b.x1 >= f.x0 && b.y0 <= f.y1 && b.y1 >= f.y0)
-        })
-        .map(|o| o.id)
+/// The snapshot's objects as the lasso reads them: the cached shapes the
+/// canvas draws and their boxes of what is cut.
+struct SnapOutlines<'a> {
+    by_id: std::collections::HashMap<u64, &'a ObjView>,
+}
+
+impl<'a> SnapOutlines<'a> {
+    fn of(snap: &'a Snapshot) -> Self {
+        Self {
+            by_id: snap.objects.iter().map(|o| (o.id, o)).collect(),
+        }
+    }
+}
+
+impl Outlines for SnapOutlines<'_> {
+    fn visible(&self, id: ObjectId) -> bool {
+        self.by_id.get(&id.0).is_some_and(|o| o.visible)
+    }
+
+    fn bounds(&self, id: ObjectId) -> Option<kurbo::Rect> {
+        self.by_id.get(&id.0)?.bounds()
+    }
+
+    fn with_lines(&self, id: ObjectId, f: &mut lasso::LinesVisitor<'_>) -> bool {
+        let Some(o) = self.by_id.get(&id.0) else {
+            return false;
+        };
+        let lines: Vec<(&[kurbo::Point], bool)> = o
+            .shape
+            .lines
+            .iter()
+            .map(|l| (l.points.as_slice(), l.closed))
+            .collect();
+        f(&lines, o.transform.center_mm.to_vec2())
+    }
+}
+
+/// What the lasso `l` picks on the canvas, the same rule as
+/// `selection.set_in_polygon`: inside the group the person is in, its
+/// members; elsewhere whole groups. `touch` for the lasso, fully inside
+/// for the box.
+pub fn lasso_pick(snap: &Snapshot, st: &PrepareState, l: &Lasso, touch: bool) -> lasso::Picked {
+    let within = entered(snap, st).map(ObjectId);
+    lasso::pick(&snap.tree, &SnapOutlines::of(snap), l, touch, within)
+}
+
+/// The selection after a pick of `units`: they replace it, or with
+/// `toggle` (Shift) each flips in or out of it.
+fn combined(snap: &Snapshot, units: &[Vec<ObjectId>], toggle: bool) -> Vec<u64> {
+    let current: Vec<ObjectId> = snap.selection.iter().map(|i| ObjectId(*i)).collect();
+    let mode = if toggle {
+        lasso::Mode::Toggle
+    } else {
+        lasso::Mode::Replace
+    };
+    lasso::combine(&current, units, mode)
+        .into_iter()
+        .map(|i| i.0)
         .collect()
 }
+
+/// A lasso or box smaller than this on screen, in points, is a click.
+pub const TINY_LASSO: f32 = 2.0;
+
+/// A lasso point is kept only this far from the last one, in points.
+const LASSO_STEP: f32 = 1.5;
 
 /// Draws the canvas into `rect` and handles the pointer.
 pub fn show(
@@ -887,11 +941,36 @@ pub fn show(
     }
     // Over the selection box, which would hide the outline otherwise.
     draw_did_not_fit(&painter, snap, &view, t.danger, &did_not_fit);
-    if let Some(Drag::Frame { start, current, .. }) = &st.drag {
-        let r = view.rect_to_screen(kurbo::Rect::from_points(*start, *current));
-        let pick = rgb(selection_colour(mat_rgb));
-        painter.rect_filled(r, 0.0, pick.gamma_multiply(0.12));
-        painter.rect_stroke(r, 0.0, Stroke::new(1.0, pick), egui::StrokeKind::Middle);
+    match &st.drag {
+        Some(Drag::Frame {
+            start,
+            current,
+            lasso: None,
+            ..
+        }) => {
+            let r = view.rect_to_screen(kurbo::Rect::from_points(*start, *current));
+            let pick = rgb(selection_colour(mat_rgb));
+            painter.rect_filled(r, 0.0, pick.gamma_multiply(0.12));
+            painter.rect_stroke(r, 0.0, Stroke::new(1.0, pick), egui::StrokeKind::Middle);
+        }
+        // The lasso's path as a dashed line that closes back to its start.
+        Some(Drag::Frame {
+            current,
+            lasso: Some(points),
+            ..
+        }) => {
+            let pick = rgb(selection_colour(mat_rgb));
+            let mut path: Vec<Pos2> = points.iter().map(|p| view.mm_to_screen(*p)).collect();
+            path.push(view.mm_to_screen(*current));
+            path.push(path[0]);
+            painter.extend(egui::Shape::dashed_line(
+                &path,
+                Stroke::new(1.5, pick),
+                6.0,
+                4.0,
+            ));
+        }
+        _ => {}
     }
     if st.show_rulers {
         draw_rulers(&painter, rect, &view, t);
@@ -1280,6 +1359,11 @@ fn draw_selection(
 /// Over a handle or the rotate zone (and not dragging): its cursor and
 /// its card.
 fn handle_card(ui: &Ui, resp: &egui::Response, snap: &Snapshot, st: &mut PrepareState) {
+    // A lasso being drawn, or the Lasso tool ready: the cross aims.
+    let lassoing = matches!(st.drag, Some(Drag::Frame { lasso: Some(_), .. }));
+    if lassoing {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    }
     if st.drag.is_some() {
         return;
     }
@@ -1288,6 +1372,9 @@ fn handle_card(ui: &Ui, resp: &egui::Response, snap: &Snapshot, st: &mut Prepare
     match look(hit, ui.input(|i| i.modifiers)) {
         Look::Resize(i) => ui.ctx().set_cursor_icon(handle_cursor(i)),
         Look::Rotate => st.rotate_cursor = Some(at),
+        Look::Plain if st.select_tool == SelectTool::Lasso => {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair)
+        }
         Look::Plain => {}
     }
     let (title, card, why) = match hit {
@@ -1585,10 +1672,9 @@ fn pointer(
     st: &mut PrepareState,
     actions: &mut Vec<Action>,
 ) {
-    let (space, shift, mods, wheels, zoom, hover) = ui.input(|i| {
+    let (space, mods, wheels, zoom, hover) = ui.input(|i| {
         (
             i.key_down(help::pan_key()),
-            i.modifiers.shift,
             i.modifiers,
             wheel_events(&i.raw.events),
             i.zoom_delta(),
@@ -1622,7 +1708,23 @@ fn pointer(
             .unwrap_or_default();
         let mm = st.view.screen_to_mm(origin);
         let hit = hit_test(snap, &st.view, origin);
+        let lasso_tool = st.select_tool == SelectTool::Lasso;
+        // The box or lasso: Option (Alt) at the start draws a lasso; Shift
+        // flips what it picks.
+        let frame = |lasso: bool| {
+            Some(Drag::Frame {
+                doc_id,
+                start: mm,
+                current: mm,
+                toggle: help::held(mods, PrepareKey::ToggleInSelection),
+                lasso: lasso.then(|| vec![mm]),
+            })
+        };
         st.drag = match hit {
+            // The Lasso tool lassos from over objects too, so a packed
+            // layout can be picked from; handles and the rotate zone keep
+            // their meaning.
+            Hit::Object(_) if lasso_tool => frame(true),
             // The rotate zone, or a corner with Cmd (macOS) or Ctrl held.
             Hit::Rotate(_) | Hit::Handle(_) if look(hit, mods) == Look::Rotate => {
                 rotate_drag(snap, mm)
@@ -1660,13 +1762,9 @@ fn pointer(
                     current: mm,
                 })
             }
-            // A selection frame; Shift adds what it touches.
-            Hit::Rotate(_) | Hit::Nothing => Some(Drag::Frame {
-                doc_id,
-                start: mm,
-                current: mm,
-                add: shift,
-            }),
+            Hit::Rotate(_) | Hit::Nothing => {
+                frame(lasso_tool || help::held(mods, PrepareKey::Lasso))
+            }
         };
     }
     if let Some(p) = resp.interact_pointer_pos() {
@@ -1679,6 +1777,16 @@ fn pointer(
         ) = &mut st.drag
         {
             *current = mm;
+        }
+        if let Some(Drag::Frame {
+            lasso: Some(points),
+            ..
+        }) = &mut st.drag
+            && points
+                .last()
+                .is_none_or(|l| st.view.mm_to_screen(*l).distance(p) >= LASSO_STEP)
+        {
+            points.push(mm);
         }
     }
     // Shift and Option count while the handle is dragged, up to the drop.
@@ -1725,21 +1833,29 @@ fn pointer(
                 doc_id,
                 start,
                 current,
-                add,
+                toggle,
+                lasso,
             }) => {
-                let mut ids: Vec<u64> = if add || shift {
-                    snap.selection.iter().copied().collect()
-                } else {
-                    Vec::new()
-                };
-                // A framed member brings its whole group, as a click does.
-                for id in framed(snap, kurbo::Rect::from_points(start, current)) {
-                    for i in pick(snap, st, id, false).0 {
-                        if !ids.contains(&i) {
-                            ids.push(i);
-                        }
-                    }
+                let toggle = toggle || help::held(mods, PrepareKey::ToggleInSelection);
+                let mut points = lasso.clone().unwrap_or_else(|| vec![start]);
+                points.push(current);
+                let screen = points.iter().fold(Rect::NOTHING, |r, p| {
+                    r.union(Rect::from_min_size(st.view.mm_to_screen(*p), Vec2::ZERO))
+                });
+                if screen.width() < TINY_LASSO && screen.height() < TINY_LASSO {
+                    // Hardly moved: a click where it began.
+                    let at = st.view.mm_to_screen(start);
+                    click_at(snap, st, at, false, toggle, actions);
+                    return;
                 }
+                let shape = match &lasso {
+                    Some(_) => Lasso::new(points),
+                    None => Lasso::rect(kurbo::Rect::from_points(start, current)),
+                };
+                let units = shape.map_or_else(Vec::new, |l| {
+                    lasso_pick(snap, st, &l, lasso.is_some()).units
+                });
+                let ids = combined(snap, &units, toggle);
                 actions.push(Action::run(doc_id, "object.select", json!({ "ids": ids })));
             }
             _ => {}
@@ -1752,39 +1868,51 @@ fn pointer(
     if (resp.clicked() || resp.double_clicked())
         && let Some(p) = resp.interact_pointer_pos()
     {
-        let hit = match hit_test(snap, &st.view, p) {
-            // Inside the selection box a double-click still reaches the
-            // object under the pointer.
-            Hit::Handle(_) | Hit::Rotate(_) if deep => {
-                object_at(snap, &st.view, p).map_or(Hit::Nothing, Hit::Object)
-            }
-            other => other,
-        };
-        let ids: Vec<u64> = match hit {
-            Hit::Object(id) => {
-                let (picked, inside) = pick(snap, st, id, deep);
-                st.entered = inside.map(|g| (doc_id, g));
-                if shift {
-                    let mut ids: Vec<u64> = snap.selection.iter().copied().collect();
-                    for i in picked {
-                        if !ids.contains(&i) {
-                            ids.push(i);
-                        }
-                    }
-                    ids
-                } else {
-                    picked
-                }
-            }
-            Hit::Handle(_) | Hit::Rotate(_) => return,
-            Hit::Nothing if shift => return,
-            Hit::Nothing => {
-                st.entered = None;
-                Vec::new()
-            }
-        };
-        actions.push(Action::run(doc_id, "object.select", json!({ "ids": ids })));
+        let toggle = help::held(mods, PrepareKey::ToggleInSelection);
+        click_at(snap, st, p, deep, toggle, actions);
     }
+}
+
+/// A click at `p`: picks what is under it (`deep` goes into its group),
+/// or clears the selection on the empty mat. With `toggle` (Shift) the
+/// picked object or group flips in or out of the selection instead, and
+/// the empty mat changes nothing.
+fn click_at(
+    snap: &Snapshot,
+    st: &mut PrepareState,
+    p: Pos2,
+    deep: bool,
+    toggle: bool,
+    actions: &mut Vec<Action>,
+) {
+    let doc_id = snap.doc_id;
+    let hit = match hit_test(snap, &st.view, p) {
+        // Inside the selection box a double-click still reaches the
+        // object under the pointer.
+        Hit::Handle(_) | Hit::Rotate(_) if deep => {
+            object_at(snap, &st.view, p).map_or(Hit::Nothing, Hit::Object)
+        }
+        other => other,
+    };
+    let ids: Vec<u64> = match hit {
+        Hit::Object(id) => {
+            let (picked, inside) = pick(snap, st, id, deep);
+            st.entered = inside.map(|g| (doc_id, g));
+            if toggle {
+                let unit: Vec<ObjectId> = picked.into_iter().map(ObjectId).collect();
+                combined(snap, &[unit], true)
+            } else {
+                picked
+            }
+        }
+        Hit::Handle(_) | Hit::Rotate(_) => return,
+        Hit::Nothing if toggle => return,
+        Hit::Nothing => {
+            st.entered = None;
+            Vec::new()
+        }
+    };
+    actions.push(Action::run(doc_id, "object.select", json!({ "ids": ids })));
 }
 
 /// A click with Cmd (macOS) or Ctrl held picks one member of a group.

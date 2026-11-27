@@ -166,6 +166,17 @@ pub enum PrepareKey {
     RotateOnCorner,
     /// Held while rotating: the angle snaps to 15 degree steps.
     SnapAngle,
+    /// The Select tool: a drag on the empty canvas draws a selection box.
+    SelectTool,
+    /// The Lasso tool: a drag draws a free shape.
+    LassoTool,
+    /// Dragging on the empty canvas draws a selection box (no key).
+    SelectBox,
+    /// Held when a drag on the empty canvas starts: it draws a lasso.
+    Lasso,
+    /// Held while clicking or while drawing a box or lasso: each picked
+    /// object flips in or out of the selection.
+    ToggleInSelection,
 }
 
 /// The systems FlatCraft names keys for. Each has its own table of drag
@@ -195,10 +206,20 @@ impl Os {
 /// angles everywhere; Option (macOS) or Alt scales from the centre; Cmd
 /// (macOS, as in Keynote and Sketch) or Ctrl (Windows, Linux) on a corner
 /// rotates. The rotate zone needs no key. Key rows get `NONE`.
+///
+/// Selecting follows the apps people know: a drag on the empty canvas
+/// draws a box that takes what is fully inside (Inkscape, LightBurn);
+/// Option or Alt at the start of that drag draws a lasso that takes what
+/// its line touches or encloses (Inkscape's Alt-drag touch path, the
+/// Silhouette Studio lasso); Shift flips what is clicked or framed in or
+/// out of the selection (Illustrator, Figma, Inkscape). The Lasso tool is
+/// L (Photoshop), the Select tool V (Illustrator, Figma).
 pub const fn drag_modifiers(os: Os, action: PrepareKey) -> Modifiers {
     match action {
-        PrepareKey::FlipKeepAspect | PrepareKey::SnapAngle => Modifiers::SHIFT,
-        PrepareKey::ScaleFromCentre => Modifiers::ALT,
+        PrepareKey::FlipKeepAspect | PrepareKey::SnapAngle | PrepareKey::ToggleInSelection => {
+            Modifiers::SHIFT
+        }
+        PrepareKey::ScaleFromCentre | PrepareKey::Lasso => Modifiers::ALT,
         PrepareKey::RotateOnCorner => match os {
             Os::MacOs => Modifiers::MAC_CMD,
             Os::Windows | Os::Linux => Modifiers::CTRL,
@@ -264,6 +285,41 @@ pub fn angle_card(os: Os) -> String {
     format!(
         "How far the selection is turned, in degrees clockwise (0 to 360). Type an angle to turn each selected object about its own centre; with several objects turned different ways the field says Mixed. It counts when you leave the field (Tab, Enter or a click elsewhere); Esc puts the old value back. To turn by hand, drag just outside a corner, or hold {rotate} and drag a corner."
     )
+}
+
+/// The hover card of the Select tool on `os`.
+pub fn select_card(os: Os) -> String {
+    let lasso = drag_key(os, PrepareKey::Lasso);
+    let toggle = drag_key(os, PrepareKey::ToggleInSelection);
+    let key = key_name(PrepareKey::SelectTool);
+    format!(
+        "Click an object to select it, or drag on the empty mat to draw a box: it selects every object that lies fully inside. Hold {toggle} to flip objects in or out of the selection, and {lasso} when you start the drag to draw a lasso instead. Key: {key}."
+    )
+}
+
+/// The hover card of the Lasso tool on `os`.
+pub fn lasso_card(os: Os) -> String {
+    let lasso = drag_key(os, PrepareKey::Lasso);
+    let toggle = drag_key(os, PrepareKey::ToggleInSelection);
+    let key = key_name(PrepareKey::LassoTool);
+    let back = key_name(PrepareKey::SelectTool);
+    let mut s = format!(
+        "Draw a free shape around what you want, like a cowboy with a rope: when you let go, every object the dashed line touches or encloses is selected. Good for packed layouts where a box would catch too much. Hold {toggle} to flip objects in or out of the selection. Esc cancels the lasso, or goes back to the Select tool. You can also hold {lasso} and drag on the empty mat with the Select tool. Key: {key} (back with {back} or Esc)."
+    );
+    if os == Os::Linux {
+        s.push_str(&format!(
+            " Some desktops use {lasso}-drag to move windows: if so, use this tool or change that key in your desktop settings."
+        ));
+    }
+    s
+}
+
+/// The key of a key row of the table ("L").
+fn key_name(action: PrepareKey) -> String {
+    rows(action)
+        .find_map(Shortcut::key)
+        .map(|k| k.name().to_string())
+        .unwrap_or_default()
 }
 
 /// The arrow keys of [`PrepareKey::Nudge`] (the table lists them as one row).
@@ -404,7 +460,7 @@ const fn while_dragging(what: &'static str, action: PrepareKey) -> Shortcut {
 /// Every shortcut the app has. The key handler runs the entries with a
 /// `run`, in this order (a Shift variant before its plain key), and the
 /// shortcuts sheet lists all of them.
-pub const SHORTCUTS: [Shortcut; 31] = [
+pub const SHORTCUTS: [Shortcut; 36] = [
     global(
         CMD_SHIFT,
         Key::S,
@@ -515,8 +571,20 @@ pub const SHORTCUTS: [Shortcut; 31] = [
     prepare(
         Modifiers::NONE,
         Key::Escape,
-        "Close the panel, leave the group, or clear the selection",
+        "Close the panel, cancel the lasso, go back to the Select tool, leave the group, or clear the selection",
         PrepareKey::ClearSelection,
+    ),
+    prepare(
+        Modifiers::NONE,
+        Key::V,
+        "Select tool: a drag on the empty mat draws a box",
+        PrepareKey::SelectTool,
+    ),
+    prepare(
+        Modifiers::NONE,
+        Key::L,
+        "Lasso tool: a drag draws a free shape",
+        PrepareKey::LassoTool,
     ),
     prepare(
         Modifiers::NONE,
@@ -543,6 +611,18 @@ pub const SHORTCUTS: [Shortcut; 31] = [
     while_dragging(
         "While rotating: turn in 15 degree steps",
         PrepareKey::SnapAngle,
+    ),
+    while_dragging(
+        "Drag on the empty mat: select what lies fully inside the box",
+        PrepareKey::SelectBox,
+    ),
+    while_dragging(
+        "Start a drag on the empty mat: draw a lasso, it selects all it touches",
+        PrepareKey::Lasso,
+    ),
+    while_dragging(
+        "While clicking, or drawing a box or lasso: flip objects in or out of the selection",
+        PrepareKey::ToggleInSelection,
     ),
 ];
 

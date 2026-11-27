@@ -125,6 +125,10 @@ pub enum Icon {
     RouteTravel,
     /// "Pick on the mat...", the keep picker.
     Pipette,
+    /// The Select tool of the Select/Lasso toggle.
+    Pointer,
+    /// The Lasso tool of the Select/Lasso toggle.
+    Lasso,
 }
 
 macro_rules! svg {
@@ -134,7 +138,7 @@ macro_rules! svg {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 90] = [
+    pub const ALL: [Icon; 92] = [
         Icon::Import,
         Icon::Trace,
         Icon::Duplicate,
@@ -225,6 +229,8 @@ impl Icon {
         Icon::Plotter,
         Icon::RouteTravel,
         Icon::Pipette,
+        Icon::Pointer,
+        Icon::Lasso,
     ];
 
     /// The plain icon a framed "to the cutting area" icon is made from.
@@ -332,6 +338,8 @@ impl Icon {
             Icon::Plotter => svg!("plotter"),
             Icon::RouteTravel => svg!("route-travel"),
             Icon::Pipette => svg!("pipette"),
+            Icon::Pointer => svg!("mouse-pointer-2"),
+            Icon::Lasso => svg!("lasso"),
             Icon::AlignLeftArea
             | Icon::AlignCentreArea
             | Icon::AlignRightArea

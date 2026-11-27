@@ -8,6 +8,7 @@ pub mod cutlog;
 pub mod export;
 pub mod gate;
 pub mod job;
+pub mod lasso;
 mod memo;
 pub mod patterns;
 pub mod placement;

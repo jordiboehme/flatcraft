@@ -266,13 +266,38 @@ fn drag(h: &mut AppHarness, from: Pos2, to: Pos2) {
     h.run_plan();
 }
 
+/// The placed box of `id`: x0, y0, x1, y1 in mm.
+fn box_of(s: &SharedSession, id: u64) -> [f64; 4] {
+    let st = exec(s, "document.state", json!({}));
+    let o = st["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["id"] == id)
+        .unwrap()["bounds_mm"]
+        .clone();
+    ["x0", "y0", "x1", "y1"].map(|k| o[k].as_f64().unwrap())
+}
+
 #[test]
-fn a_frame_around_one_member_selects_its_whole_group() {
+fn a_frame_takes_a_group_only_when_all_of_it_is_inside() {
     let dir = tempfile::tempdir().unwrap();
     let (s, [a, b, _], _) = grouped(&dir);
     let (mut h, v) = rig(&dir, s.clone());
-    // From empty mat below the first square, up over part of it.
-    drag(&mut h, at(&v, 10.0, 90.0), at(&v, 40.0, 40.0));
+    let (ba, bb) = (box_of(&s, a), box_of(&s, b));
+    // Around the whole first member only: the group is not fully inside.
+    drag(
+        &mut h,
+        at(&v, ba[0] - 5.0, ba[3] + 5.0),
+        at(&v, ba[2] + 5.0, ba[1] - 5.0),
+    );
+    assert!(selection(&s).is_empty());
+    // Around both members: the whole group.
+    drag(
+        &mut h,
+        at(&v, ba[0] - 5.0, ba[3] + 5.0),
+        at(&v, bb[2] + 5.0, bb[1] - 5.0),
+    );
     assert_eq!(selection(&s), vec![a, b]);
 }
 

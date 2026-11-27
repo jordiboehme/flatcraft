@@ -613,8 +613,10 @@ fn the_keyboard_page_lists_the_drag_modifiers() {
     } else {
         ("Alt+drag", "Ctrl+drag")
     };
-    h.get_by_label(option);
+    // Option (Alt) scales from the centre and starts a lasso.
+    assert_eq!(h.get_all_by_label(option).count(), 2);
     h.get_by_label(cmd);
+    h.get_by_label("Start a drag on the empty mat: draw a lasso, it selects all it touches");
     h.get_by_label("While dragging a corner handle: rotate instead of resize");
     h.get_by_label("Drag just outside a corner of the selection: rotate it");
     h.get_by_label("While rotating: turn in 15 degree steps");

@@ -8,6 +8,7 @@ use egui::accesskit::Role;
 use egui::{Key, Modifiers};
 use egui_kittest::kittest::Queryable as _;
 use flatcraft::ui::help::{self, HelpItem, SHORTCUTS};
+use flatcraft::ui::prepare::SelectTool;
 use flatcraft::ui::{Action, about};
 
 fn opened(h: &AppHarness) -> Vec<String> {
@@ -229,6 +230,14 @@ fn every_prepare_key_does_what_the_sheet_says() {
             }
             Key::Delete | Key::Backspace => assert_eq!(objects(), 1, "{who}"),
             Key::Escape => assert_eq!(selection(), 0, "{who}"),
+            Key::L => assert_eq!(app(&h).ui.prepare.select_tool, SelectTool::Lasso, "{who}"),
+            // From the Lasso tool back to Select.
+            Key::V => {
+                app_mut(&mut h).ui.prepare.select_tool = SelectTool::Lasso;
+                h.key_press_modifiers(s.modifiers, key);
+                h.run_plan();
+                assert_eq!(app(&h).ui.prepare.select_tool, SelectTool::Select, "{who}")
+            }
             // One object: nothing to group or ungroup, nothing changes
             // (tests/groups.rs presses them on a real group).
             Key::G => assert_eq!(common::undo_len(&sess), undo_before, "{who}"),
@@ -345,10 +354,11 @@ fn space_drag_pans_the_canvas() {
 fn the_sheet_lists_the_handle_modifiers() {
     use help::Os;
     use help::PrepareKey::{
-        FlipKeepAspect, RotateOnCorner, RotateZone, ScaleFromCentre, SnapAngle,
+        FlipKeepAspect, Lasso, RotateOnCorner, RotateZone, ScaleFromCentre, SelectBox, SnapAngle,
+        ToggleInSelection,
     };
     let drags: Vec<_> = SHORTCUTS.iter().filter(|s| s.is_drag()).collect();
-    assert_eq!(drags.len(), 5);
+    assert_eq!(drags.len(), 8);
     let (option, cmd) = if cfg!(target_os = "macos") {
         ("Option+drag", "Cmd+drag")
     } else {
@@ -357,7 +367,17 @@ fn the_sheet_lists_the_handle_modifiers() {
     let keys: Vec<String> = drags.iter().map(|s| s.keys()).collect();
     assert_eq!(
         keys,
-        ["drag", "Shift+drag", option, cmd, "Shift+drag"].map(String::from)
+        [
+            "drag",
+            "Shift+drag",
+            option,
+            cmd,
+            "Shift+drag",
+            "drag",
+            option,
+            "Shift+drag"
+        ]
+        .map(String::from)
     );
     // The rows hold the modifiers of this system's table.
     for s in &drags {
@@ -377,16 +397,25 @@ fn the_sheet_lists_the_handle_modifiers() {
     let rotate = help::drag_modifiers(Os::CURRENT, RotateOnCorner);
     assert!(help::held(rotate, RotateOnCorner));
     assert!(!help::held(Modifiers::ALT, RotateOnCorner));
-    // The rotate zone needs no key: it is never "held".
+    // The rotate zone and the box need no key: they are never "held".
     assert!(!help::held(Modifiers::NONE, RotateZone));
+    assert!(!help::held(Modifiers::NONE, SelectBox));
+    assert!(help::held(Modifiers::ALT, Lasso));
+    assert!(!help::held(Modifiers::SHIFT, Lasso));
+    assert!(help::held(Modifiers::SHIFT, ToggleInSelection));
     // A drag row is never taken for a key press.
     assert!(drags.iter().all(|s| s.run.is_none()));
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(&dir, session(&dir), false);
     app_mut(&mut h).ui.show_shortcuts = true;
     h.run_plan();
-    assert_eq!(h.get_all_by_label("Shift+drag").count(), 2);
-    h.get_by_label(option);
+    assert_eq!(h.get_all_by_label("Shift+drag").count(), 3);
+    assert_eq!(h.get_all_by_label("drag").count(), 2);
+    assert_eq!(h.get_all_by_label(option).count(), 2);
+    h.get_by_label("Drag on the empty mat: select what lies fully inside the box");
+    h.get_by_label(
+        "While clicking, or drawing a box or lasso: flip objects in or out of the selection",
+    );
     h.get_by_label(cmd);
     h.get_by_label("While dragging a handle: scale from the centre");
     h.get_by_label("Drag just outside a corner of the selection: rotate it");

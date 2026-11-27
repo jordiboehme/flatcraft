@@ -10,6 +10,7 @@ pub mod notes;
 pub mod object;
 pub mod profiles;
 pub mod project;
+pub mod selection;
 pub mod sources;
 pub mod tools;
 

@@ -98,6 +98,8 @@ except the two files below.
 | Device & Material (Cut stage), Plotters (Settings) | plotter (FlatCraft's own, MPL-2.0) |
 | Path (Cut stage) | route-travel (derived from route) |
 | Pick on the mat (Keep) | pipette |
+| Select tool | mouse-pointer-2 |
+| Lasso tool | lasso |
 | Simulate (Cut stage) | play |
 | Send (Cut stage) | send |
 | Bring to front | bring-to-front |

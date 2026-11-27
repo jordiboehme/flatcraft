@@ -28,8 +28,18 @@ use super::{Action, FlatCraftApp, lock, objects, settings};
 
 /// Linked files are checked at most this often.
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(2);
-/// Curves are drawn as polylines this close to the true curve, in mm.
-const DRAW_TOLERANCE_MM: f64 = 0.02;
+/// Curves are drawn as polylines this close to the true curve, in mm: the
+/// lasso tests the same lines (`selection.set_in_polygon` too).
+const DRAW_TOLERANCE_MM: f64 = flatcraft_engine::lasso::OUTLINE_TOLERANCE_MM;
+
+/// What a drag on the empty canvas draws: a selection box, or a lasso (the
+/// Select/Lasso toggle of the Layout tab, keys V and L).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SelectTool {
+    #[default]
+    Select,
+    Lasso,
+}
 
 /// The ribbon tabs of Prepare.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
@@ -101,14 +111,18 @@ pub enum Drag {
         /// Shift is held: 15 degree steps.
         snap: bool,
     },
-    /// A selection frame drawn from the empty canvas. On release it selects
-    /// the visible objects whose placed bounds it touches; with `add`
-    /// (Shift) they join the selection.
+    /// A selection box or lasso drawn from the empty canvas (see
+    /// `flatcraft_engine::lasso`). On release the box selects the shown
+    /// objects fully inside it, the lasso every one its line touches or
+    /// encloses; with `toggle` (Shift) each picked one flips in the
+    /// selection instead.
     Frame {
         doc_id: u64,
         start: kurbo::Point,
         current: kurbo::Point,
-        add: bool,
+        toggle: bool,
+        /// The lasso's points in mm, from `start`; `None` for a box.
+        lasso: Option<Vec<kurbo::Point>>,
     },
 }
 
@@ -287,6 +301,8 @@ pub struct PrepareState {
     pub fields: Fields,
     /// The search hits stay open (see `ribbon::search_box`).
     pub search_open: bool,
+    /// What a drag on the canvas draws (see [`SelectTool`]).
+    pub select_tool: SelectTool,
     pub drag: Option<Drag>,
     /// The burst of arrow-key nudges going on, if any.
     pub nudge: Option<Nudge>,
@@ -406,6 +422,7 @@ impl Default for PrepareState {
             stencil_told: Default::default(),
             fields: Fields::default(),
             search_open: false,
+            select_tool: SelectTool::default(),
             drag: None,
             nudge: None,
             speed_eleven: None,

@@ -2814,6 +2814,14 @@ fn prepare_keys(
     if st.popup_was_open && help::pressed(ctx, help::PrepareKey::ClearSelection) {
         return;
     }
+    // Escape while a box or lasso is drawn cancels it: the selection
+    // stays as it was.
+    if matches!(st.drag, Some(prepare::Drag::Frame { .. }))
+        && help::pressed(ctx, help::PrepareKey::ClearSelection)
+    {
+        st.drag = None;
+        return;
+    }
     // While the keep picker is on, Escape cancels it and the other keys
     // wait: the selection it works on must not change under it.
     if st.keep_pick.is_some() {
@@ -2827,6 +2835,18 @@ fn prepare_keys(
     // focus on Escape before this runs.
     if st.panel.is_some() && help::pressed(ctx, help::PrepareKey::ClearSelection) {
         st.panel = None;
+        return;
+    }
+    // The Select/Lasso toggle; Escape takes the Lasso tool back to Select.
+    if help::pressed(ctx, help::PrepareKey::LassoTool) {
+        st.select_tool = prepare::SelectTool::Lasso;
+        return;
+    }
+    if help::pressed(ctx, help::PrepareKey::SelectTool)
+        || (st.select_tool == prepare::SelectTool::Lasso
+            && help::pressed(ctx, help::PrepareKey::ClearSelection))
+    {
+        st.select_tool = prepare::SelectTool::Select;
         return;
     }
     let select_all = help::pressed(ctx, help::PrepareKey::SelectAll);

@@ -845,7 +845,13 @@ fn bar_groups<'a>(ui: &Ui, tab: RibbonTab) -> Vec<Group<Cx<'a>>> {
     tools::groups_of(tab)
         .map(|def| match def.id {
             GroupId::Add => g(def.id, |ui, m, cx| plain(ui, m, GroupId::Add, cx)),
-            GroupId::Edit => g(def.id, |ui, m, cx| plain(ui, m, GroupId::Edit, cx)),
+            GroupId::Edit => g(def.id, |ui, m, cx| {
+                let extras = Extras {
+                    inline: Some(select_toggle),
+                    in_list: Some(|ui, cx| select_toggle(ui, Mode::List, cx)),
+                };
+                groups::show(ui, m, GroupId::Edit, extras, cx)
+            }),
             GroupId::Files => g(def.id, |ui, m, cx| plain(ui, m, GroupId::Files, cx)),
             GroupId::Size => g(def.id, size_group),
             GroupId::Transform => g(def.id, |ui, m, cx| {
@@ -1347,6 +1353,40 @@ fn each_switch(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
     .changed()
     {
         cx.actions.push(Action::RememberEach(f.each));
+    }
+}
+
+/// The Select/Lasso toggle: what a drag on the canvas draws. Two
+/// switches, one on; on the bar they stand one above the other.
+fn select_toggle(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
+    use super::prepare::SelectTool;
+    let rows = [
+        (
+            SelectTool::Select,
+            Icon::Pointer,
+            "Select",
+            Setting::SelectTool,
+        ),
+        (SelectTool::Lasso, Icon::Lasso, "Lasso", Setting::LassoTool),
+    ];
+    let label = matches!(mode, Mode::Full | Mode::List);
+    let mut draw = |ui: &mut Ui| {
+        for (tool, icon, text, setting) in rows {
+            let on = cx.st.select_tool == tool;
+            let resp = groups::compact_switch(ui, icon, text, label, true, on);
+            groups::card(&resp, text, setting.card(), None, false);
+            if resp.clicked() {
+                cx.st.select_tool = tool;
+            }
+        }
+    };
+    if mode == Mode::List {
+        draw(ui);
+    } else {
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            draw(ui);
+        });
     }
 }
 

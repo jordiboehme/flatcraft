@@ -70,7 +70,7 @@ pub const GROUPS: [GroupDef; 9] = [
         tab: RibbonTab::Layout,
         title: "Edit",
         icon: Icon::Pencil,
-        description: "Copy or remove what you selected: one copy, many copies, or copies in rows or around a centre. Undo takes back any step.",
+        description: "Pick what to work on, then copy or remove it: one copy, many copies, or copies in rows or around a centre. The Select and Lasso switches decide what a drag on the empty mat draws: a box or a free shape. Undo takes back any step.",
         fold: fold(7, Some(9)),
     },
     GroupDef {
@@ -796,7 +796,7 @@ pub const TOOLS: [Tool; 45] = [
 /// the one accent part that tells what happens, in the accent colour.
 /// Every other child is ink. Every icon of an action, a group or a
 /// switch has an entry; the framed Align icons use their base icon's.
-pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 53] = [
+pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 55] = [
     (Icon::Import, &[2], &[0, 1]),
     (Icon::Trace, &[], &[2]),
     (Icon::TestPatterns, &[0], &[1]),
@@ -858,6 +858,8 @@ pub const ICON_ROLES: [(Icon, &[usize], &[usize]); 53] = [
     // The keep picker: the glass tube is paper, the drop at its tip the
     // accent (the part you pick).
     (Icon::Pipette, &[0], &[2]),
+    (Icon::Pointer, &[], &[0]),
+    (Icon::Lasso, &[], &[0]),
 ];
 
 /// The paper and accent children of `icon` (see [`ICON_ROLES`]); `None`
@@ -1306,6 +1308,10 @@ static HANDLE_CARD: LazyLock<String> =
     LazyLock::new(|| super::help::handle_card(super::help::Os::CURRENT));
 static ROTATE_CARD: LazyLock<String> =
     LazyLock::new(|| super::help::rotate_card(super::help::Os::CURRENT));
+static SELECT_CARD: LazyLock<String> =
+    LazyLock::new(|| super::help::select_card(super::help::Os::CURRENT));
+static LASSO_CARD: LazyLock<String> =
+    LazyLock::new(|| super::help::lasso_card(super::help::Os::CURRENT));
 static ANGLE_CARD: LazyLock<String> =
     LazyLock::new(|| super::help::angle_card(super::help::Os::CURRENT));
 
@@ -1324,6 +1330,8 @@ pub enum Setting {
     ScaleHandle,
     RotateZone,
     EachObject,
+    SelectTool,
+    LassoTool,
     Search,
     CutMode,
     Strokes,
@@ -1403,7 +1411,7 @@ pub enum Setting {
 }
 
 impl Setting {
-    pub const ALL: [Setting; 87] = [
+    pub const ALL: [Setting; 89] = [
         Setting::PositionX,
         Setting::PositionY,
         Setting::Width,
@@ -1415,6 +1423,8 @@ impl Setting {
         Setting::ScaleHandle,
         Setting::RotateZone,
         Setting::EachObject,
+        Setting::SelectTool,
+        Setting::LassoTool,
         Setting::Search,
         Setting::CutMode,
         Setting::Strokes,
@@ -1538,6 +1548,8 @@ impl Setting {
             }
             Setting::ScaleHandle => HANDLE_CARD.as_str(),
             Setting::RotateZone => ROTATE_CARD.as_str(),
+            Setting::SelectTool => SELECT_CARD.as_str(),
+            Setting::LassoTool => LASSO_CARD.as_str(),
             Setting::Angle => ANGLE_CARD.as_str(),
             Setting::EachObject => {
                 "Separate shapes (on): the Rotate and Mirror buttons and the % field work on each selected object about its own centre. One dashed frame (off): the selection moves as one piece, like Voltron. A group always counts as one object and turns about its own centre. The Angle field sets the angle of each object on its own, and a group turns as one piece to its own angle. Turning by hand on the mat always turns the selection as one piece."
@@ -1842,7 +1854,7 @@ mod tests {
             .iter()
             .map(|t| t.icon)
             .chain(GROUPS.iter().map(|g| g.icon))
-            .chain([Icon::EachObject, Icon::AsGroup]);
+            .chain([Icon::EachObject, Icon::AsGroup, Icon::Pointer, Icon::Lasso]);
         for icon in icons {
             let (paper, accent) = icon_roles(icon).unwrap_or_else(|| panic!("{icon:?}"));
             assert!(!accent.is_empty(), "{icon:?} has no accent part");
