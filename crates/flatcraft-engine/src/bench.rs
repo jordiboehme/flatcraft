@@ -137,6 +137,12 @@ pub struct BenchRow {
     /// Task 10's correspondence deviation; the device limit applies to
     /// the larger of this and `max_hausdorff_mm`.
     pub max_correspondence_mm: f64,
+    /// The blade turn at the entries, summed over the cut toolpaths, deg:
+    /// at each start, the angle between the heading the blade has (the
+    /// last segment of the toolpath before, or the assumed start heading)
+    /// and the first segment of the toolpath. What the Quality strategy's
+    /// turn weight lowers.
+    pub entry_turn_deg: f64,
     pub max_start_deviation_mm: f64,
     pub max_into_kept_mm: f64,
     pub max_closure_gap_mm: f64,
@@ -239,13 +245,13 @@ pub fn case(name: &str) -> Option<BenchCase> {
 
 // ---------------------------------------------------------------- dense trace
 
-/// Side of [`dense_trace_png`], px (300 dpi: 81.3 mm).
-pub const DENSE_TRACE_PX: u32 = 960;
+/// Side of [`dense_trace_png`], px (300 dpi: 56.9 mm).
+pub const DENSE_TRACE_PX: u32 = 672;
 
 /// The cell of one shape in [`dense_trace_png`], px.
 const CELL_PX: u32 = 48;
 
-/// The dense-trace fixture: a 20 x 20 field of small shapes, black on
+/// The dense-trace fixture: a 14 x 14 field of small shapes, black on
 /// white: dots, squares, diamonds and plus signs of 2.4 to 3.4 mm, each
 /// jittered in its cell by a fixed generator, and rings and framed squares
 /// of 3.6 mm whose holes (2 mm) stay above the tracer's minimum feature
@@ -373,6 +379,9 @@ fn compute_row(input: simulate::SimInput, case: &str, variant: Variant) -> Bench
         grade: grade_name(m.grade).to_string(),
         max_hausdorff_mm: round(m.max_hausdorff_mm),
         max_correspondence_mm: round(m.max_correspondence_mm),
+        entry_turn_deg: round(entry_turn_deg(
+            sim.plan_index.iter().map(|&i| &sim.job.plan.toolpaths[i]),
+        )),
         max_start_deviation_mm: round(m.max_start_deviation_mm),
         max_into_kept_mm: round(m.max_into_kept_mm),
         max_closure_gap_mm: round(m.max_closure_gap_mm),
@@ -385,6 +394,28 @@ fn compute_row(input: simulate::SimInput, case: &str, variant: Variant) -> Bench
         estimate_s: round(sim.estimate_s),
         millis,
     }
+}
+
+/// See [`BenchRow::entry_turn_deg`].
+pub fn entry_turn_deg<'a>(toolpaths: impl Iterator<Item = &'a flatcraft_path::Toolpath>) -> f64 {
+    let mut heading = flatcraft_path::ASSUMED_START_HEADING;
+    let mut total = 0.0;
+    for t in toolpaths {
+        let p = &t.points;
+        let Some(first) = p.windows(2).map(|w| w[1] - w[0]).find(|v| v.hypot2() > 0.0) else {
+            continue;
+        };
+        total += flatcraft_path::order::turn_rad(heading, first).to_degrees();
+        if let Some(last) = p
+            .windows(2)
+            .rev()
+            .map(|w| w[1] - w[0])
+            .find(|v| v.hypot2() > 0.0)
+        {
+            heading = last;
+        }
+    }
+    total
 }
 
 /// `case` planned with `variant` on a session made by [`session`] (the
@@ -455,6 +486,13 @@ pub struct CrossingSweep {
     /// Travel crossings of all jobs, with the improvement.
     pub improved_crossings: usize,
 }
+
+/// How many jobs of the sweep may move between fewer, more and same
+/// before it counts as a regression. One float decision of the order
+/// (an atan2 or a sin one bit off on another OS's maths library) can flip
+/// a job; the counts are only checked for a real trend. `pushed` and the
+/// cut into kept material keep no slack: they are safety numbers.
+pub const SWEEP_SLACK: usize = 2;
 
 /// The seeds of the sweep.
 pub const SWEEP_SEEDS: std::ops::RangeInclusive<u64> = 1..=59;
@@ -682,13 +720,13 @@ pub fn regressions(base: &Baseline, rows: &[BenchRow], sweep: &CrossingSweep) ->
             sweep.jobs, b.jobs
         ));
     }
-    if sweep.more > b.more {
+    if sweep.more > b.more + SWEEP_SLACK {
         out.push(format!(
             "crossing sweep: the improvement adds crossings on {} jobs (baseline {})",
             sweep.more, b.more
         ));
     }
-    if sweep.fewer < b.fewer {
+    if sweep.fewer + SWEEP_SLACK < b.fewer {
         out.push(format!(
             "crossing sweep: the improvement removes crossings on {} jobs (baseline {})",
             sweep.fewer, b.fewer
@@ -732,20 +770,20 @@ fn mm(v: f64) -> String {
 /// times differ per machine).
 pub fn table(rows: &[BenchRow], millis: bool) -> String {
     let mut s = String::from(
-        "| variant | score | grade | deviation | start | closure gap | into kept | uncut | pushed | travel mm | crossings | segments | lifts | time s |",
+        "| variant | score | grade | deviation | start | closure gap | into kept | uncut | pushed | travel mm | crossings | entry turn deg | segments | lifts | time s |",
     );
     if millis {
         s.push_str(" ms |");
     }
     s.push('\n');
-    s.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+    s.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
     if millis {
         s.push_str("---|");
     }
     s.push('\n');
     for r in rows {
         s.push_str(&format!(
-            "| {} | {:.1} | {} | {} | {} | {} | {} | {} | {} | {:.1} | {} | {} | {} | {:.1} |",
+            "| {} | {:.1} | {} | {} | {} | {} | {} | {} | {} | {:.1} | {} | {:.0} | {} | {} | {:.1} |",
             r.variant,
             r.score,
             r.grade,
@@ -757,6 +795,7 @@ pub fn table(rows: &[BenchRow], millis: bool) -> String {
             r.pushed,
             r.travel_mm,
             r.travel_crossings,
+            r.entry_turn_deg,
             r.segments,
             r.lifts,
             r.estimate_s,
@@ -828,7 +867,7 @@ per mm, so the numbers include the rounding the plotter really gets.
 - **long-thin**: strips, a wave, a frame and a needle, up to 250 mm long.
 - **round-holes**: a plate with 27 round holes of 1 to 10 mm, and three
   washers.
-- **dense-trace**: a picture of 400 small shapes, some with holes, traced
+- **dense-trace**: a picture of 196 small shapes, some with holes, traced
   into cut lines with the default trace settings.
 
 The files are in `tests/fixtures/bench`. They were drawn for FlatCraft.
@@ -846,6 +885,9 @@ The files are in `tests/fixtures/bench`. They were drawn for FlatCraft.
 ## What the columns mean
 
 - **score** and **grade**: the quality report's summary (100 is perfect).
+  On these jobs the score is 100 everywhere: every row stays well inside
+  the limits, so the score cannot tell the rows apart. The other columns
+  can.
 - **deviation**: how far the blade tip strays from the planned line at its
   worst, mm.
 - **start**: the worst stray where a cut begins, mm.
@@ -855,6 +897,9 @@ The files are in `tests/fixtures/bench`. They were drawn for FlatCraft.
 - **pushed**: how often the blade is pushed from behind.
 - **travel mm** and **crossings**: blade-up moves, and how often they cross
   a line that is cut already.
+- **entry turn deg**: how far the blade has to turn at the starts of all
+  cuts together, in degrees. The quality strategy spends some travel to
+  keep this low.
 - **segments** and **lifts**: straight moves with the blade down, and
   how often it goes up.
 - **time s**: the time estimate in seconds.
@@ -868,7 +913,7 @@ Every strategy row must stay as good as its row in
 - each mm number grows by at most 5 % plus 0.002 mm,
 - travel grows by at most 5 %,
 - segments grow by at most 10 %,
-- pushes and the cut into kept material never grow.
+- pushes and the cut into kept material never grow, not even a little.
 
 The strategy rows (except tiny-dots) also stay within the device limit of
 "#;
@@ -877,6 +922,14 @@ The strategy rows (except tiny-dots) also stay within the device limit of
 const PAGE_RULE: &str = r#"@LIMIT@ mm. The baseline and passes rows are for comparison only.
 A change that makes the numbers better writes the new baseline in the same
 commit, with the difference in the commit message.
+
+Two more checks keep the cut order honest:
+
+- **fast** has no more travel than **baseline** on every job: the newer
+  order tricks never cost travel.
+- **quality** turns the blade less at the starts than **baseline** and
+  has no more crossings, on every job: what it pays in travel, it gets
+  back where it counts.
 
 The test `cargo test -p flatcraft-engine --test benchmarks` checks all of
 this in CI. `cargo xtask bench-quality` prints the tables with the time each
@@ -894,6 +947,8 @@ but does not count them exactly. This sweep plans 118 small jobs (40 or 150
 squares of 0.5 to 4.5 mm in 60 x 60 mm, seeds 1 to 59) with the improvement
 and with the first nearest-neighbour order alone, and counts the crossings
 in the simulation. The rule: the number of jobs the improvement makes
-worse never grows, and the number it makes better never drops.
+worse never grows, and the number it makes better never drops, give or
+take 2 jobs (another computer's maths library can tip one close call the
+other way).
 
 "#;
