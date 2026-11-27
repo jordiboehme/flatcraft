@@ -251,6 +251,12 @@ fn firmware_mode_is_not_simulated() {
     assert!(turn > 0.0 && turn < 30.0, "{turn}");
     assert!(r["metrics"]["segments"].as_u64().unwrap() > 10);
     assert_eq!(r["metrics"]["lifts"], 1);
+    let keys: Vec<&String> = r["metrics"].as_object().unwrap().keys().collect();
+    assert_eq!(
+        keys,
+        ["cut_mm", "lifts", "segments", "travel_mm"],
+        "the subset"
+    );
     assert!(r["estimate_s"].as_f64().unwrap() > 0.0);
     assert_eq!(r["worst_spots"], json!([]));
     let stored = s.last_sim().expect("stored");
@@ -516,4 +522,124 @@ fn grade_names_follow_the_sim() {
     assert_eq!(simulate::grade_name(Grade::Good), "good");
     assert_eq!(simulate::grade_name(Grade::Fair), "fair");
     assert_eq!(simulate::grade_name(Grade::Poor), "poor");
+}
+
+/// The extent in px of the ring colour within `win` px of pixel (x, y).
+fn ring_extent(png: &[u8], x: u32, y: u32, win: u32) -> (u32, u32) {
+    let img = image::load_from_memory(png).unwrap().to_rgb8();
+    let ring = flatcraft_engine::preview::RING;
+    let (mut x0, mut x1, mut y0, mut y1) = (u32::MAX, 0, u32::MAX, 0);
+    for py in y.saturating_sub(win)..(y + win).min(img.height()) {
+        for px in x.saturating_sub(win)..(x + win).min(img.width()) {
+            let p = img.get_pixel(px, py);
+            if [p[0], p[1], p[2]] == ring {
+                (x0, x1, y0, y1) = (x0.min(px), x1.max(px), y0.min(py), y1.max(py));
+            }
+        }
+    }
+    assert!(x0 <= x1, "a ring near ({x}, {y})");
+    (x1 - x0 + 1, y1 - y0 + 1)
+}
+
+/// The worst-spot rings have the same size in pixels at every image size.
+#[test]
+fn simulation_rings_keep_their_pixel_size() {
+    let d = dirs();
+    let mut s = plotter_session(&d, "pen", PEN, 0.3);
+    import(
+        &mut s,
+        r#"<path fill-rule="evenodd" d="M20 20h50v50h-50z M35 35h20v20h-20z"/>"#,
+    );
+    let spot = simulate::current(&mut s, None)
+        .unwrap()
+        .result
+        .as_ref()
+        .unwrap()
+        .metrics
+        .worst_spots[0];
+    let plotter = s
+        .profiles
+        .plotter(&s.doc().document.job.plotter_id)
+        .unwrap();
+    let media = plotter
+        .media_or_first(&s.doc().document.job.media_id)
+        .unwrap()
+        .0
+        .clone();
+    let r = flatcraft_engine::preview::RING_RADIUS_PX;
+    let w = flatcraft_engine::preview::RING_WIDTH_PX;
+    let want = 2.0 * r + w;
+    for max_px in [512, 4096] {
+        let png = render_png(&s, PreviewKind::Simulation, max_px).unwrap();
+        let scale = f64::from(max_px) / media.width_mm.max(media.height_mm);
+        let x = ((spot.at.x + media.grid.origin_x_mm) * scale) as u32;
+        let y = ((spot.at.y + media.grid.origin_y_mm) * scale) as u32;
+        let (ew, eh) = ring_extent(&png, x, y, (r + w) as u32 + 2);
+        for e in [ew, eh] {
+            assert!(
+                (f64::from(e) - f64::from(want)).abs() <= 3.0,
+                "{max_px} px: ring {e} px across, want about {want}"
+            );
+        }
+    }
+}
+
+/// A project thumbnail draws the cut geometry, like the canvas preview.
+#[test]
+fn thumbnail_draws_cut_geometry() {
+    let d = dirs();
+    let mut s = session(&d);
+    import(
+        &mut s,
+        r#"<line x1="23" y1="53.5" x2="123" y2="53.5" stroke="black" stroke-width="3"/>"#,
+    );
+    let plotter = s
+        .profiles
+        .plotter(&s.doc().document.job.plotter_id)
+        .unwrap();
+    let doc = s.doc().document.clone();
+    let max_px = 2048;
+    let thumb = flatcraft_engine::preview::render_document_png(&plotter, &doc, max_px).unwrap();
+    let canvas = render_png(&s, PreviewKind::Canvas, max_px).unwrap();
+    assert_eq!(thumb, canvas, "one drawing path");
+    let seeded = flatcraft_engine::preview::render_document_png_seeded(
+        &plotter,
+        &doc,
+        s.doc().cached_cut_geometry().as_ref(),
+        max_px,
+    )
+    .unwrap();
+    assert_eq!(seeded, canvas);
+}
+
+/// The 10 mm grid lines stop at the edge of the printed grid; the mat
+/// below it is plain margin.
+#[test]
+fn grid_lines_stop_at_the_grid_edge() {
+    let d = dirs();
+    let s = session(&d);
+    let png = render_png(&s, PreviewKind::Canvas, 1024).unwrap();
+    let plotter = s
+        .profiles
+        .plotter(&s.doc().document.job.plotter_id)
+        .unwrap();
+    let media = plotter
+        .media_or_first(&s.doc().document.job.media_id)
+        .unwrap()
+        .0;
+    assert!(media.height_mm > media.grid.origin_y_mm + media.grid.height_mm + 5.0);
+    let scale = 1024.0 / media.width_mm.max(media.height_mm);
+    let margin = flatcraft_core::colour::margin_colour(media.color);
+    let bottom = media.grid.origin_y_mm + media.grid.height_mm;
+    for k in 0..=30 {
+        let x_mm = media.grid.origin_x_mm + f64::from(k) * 10.0;
+        if x_mm > media.width_mm - 0.5 {
+            break;
+        }
+        let x = (x_mm * scale).round() as u32;
+        for y_mm in [bottom + 1.0, bottom + 5.0, media.height_mm - 1.0] {
+            let y = (y_mm * scale) as u32;
+            assert_eq!(pixel(&png, x.min(1023), y), margin, "x {x_mm} y {y_mm}");
+        }
+    }
 }

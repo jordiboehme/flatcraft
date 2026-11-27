@@ -442,6 +442,8 @@ pub struct SaveJob {
         Option<flatcraft_core::document::SourceLink>,
     )>,
     hook: Option<crate::session::SaveWriteHook>,
+    /// The document's cached cut geometry, to draw the thumbnail from.
+    cut_seed: Option<std::sync::Arc<crate::cutgeom::CutGeometry>>,
 }
 
 /// The first step of a save: checks the target, refreshes the paths of
@@ -485,6 +487,7 @@ pub fn begin_save(s: &mut Session, p: SaveParams, origin: Origin) -> Result<Save
         revision,
         previous,
         hook,
+        cut_seed: st.cached_cut_geometry(),
     })
 }
 
@@ -493,7 +496,13 @@ impl SaveJob {
     /// writes the archive crash-safely.
     pub fn write(&self) -> Result<(), CommandError> {
         let thumbnail = self.plotter.as_ref().and_then(|plotter| {
-            crate::preview::render_document_png(plotter, &self.document, project::THUMBNAIL_PX).ok()
+            crate::preview::render_document_png_seeded(
+                plotter,
+                &self.document,
+                self.cut_seed.as_ref(),
+                project::THUMBNAIL_PX,
+            )
+            .ok()
         });
         if let Some(hook) = &self.hook {
             (hook.0)(&self.target);

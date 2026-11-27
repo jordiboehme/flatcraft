@@ -40,8 +40,8 @@ pub enum PreviewKind {
 
 /// What [`draw`] puts on the mat.
 enum View<'a> {
-    /// The objects: their cut geometry when given, else their paths.
-    Canvas(Option<&'a crate::cutgeom::CutGeometry>),
+    /// The objects, by their cut geometry.
+    Canvas(&'a crate::cutgeom::CutGeometry),
     Path(&'a crate::job::JobResult),
     Simulation(&'a crate::simulate::SimRun),
 }
@@ -190,7 +190,7 @@ pub fn render_png(s: &Session, kind: PreviewKind, max_px: u32) -> Result<Vec<u8>
     match kind {
         PreviewKind::Canvas => {
             let cut = s.cut_geometry()?;
-            draw(&plotter, doc, View::Canvas(Some(&cut)), max_px)
+            draw(&plotter, doc, View::Canvas(&cut), max_px)
         }
         PreviewKind::Path => {
             let job = crate::job::build(s)?;
@@ -212,12 +212,33 @@ pub fn render_document_png(
     doc: &flatcraft_core::document::Document,
     max_px: u32,
 ) -> Result<Vec<u8>, CommandError> {
+    render_document_png_seeded(plotter, doc, None, max_px)
+}
+
+/// [`render_document_png`] with cut geometry to start from (the
+/// document's cached one, see `DocState::cached_cut_geometry`): only the
+/// objects it does not fit are cut again. The objects are drawn as the
+/// canvas preview draws them, by what is cut of them.
+pub fn render_document_png_seeded(
+    plotter: &flatcraft_device::PlotterProfile,
+    doc: &flatcraft_core::document::Document,
+    seed: Option<&std::sync::Arc<crate::cutgeom::CutGeometry>>,
+    max_px: u32,
+) -> Result<Vec<u8>, CommandError> {
     if !(MIN_PX..=MAX_PX).contains(&max_px) {
         return Err(CommandError::InvalidParams(format!(
             "max_px must be between {MIN_PX} and {MAX_PX}, not {max_px}"
         )));
     }
-    draw(plotter, doc, View::Canvas(None), max_px)
+    // The same tolerance and narrowest feature as a job input
+    // (`JobInput::tolerance_mm`, `JobInput::min_width_mm`).
+    let cut = crate::cutgeom::objects_cut_geometry(
+        &crate::job::JobInput::objects_of(doc),
+        plotter.flatten_tolerance_mm,
+        crate::report::min_width_mm(plotter.blade_offset_mm),
+        seed,
+    );
+    draw(plotter, doc, View::Canvas(&cut), max_px)
 }
 
 /// The canvas, path or simulation view of `doc`.
@@ -292,30 +313,18 @@ fn draw(
         View::Canvas(cut) => {
             for o in doc.objects.iter().filter(|o| o.visible) {
                 // What is cut of the object, in the colour of the source
-                // path each piece came from; without cut geometry (a
-                // thumbnail) the object's own paths.
-                let shapes: Vec<(BezPath, Option<[u8; 3]>)> = match cut {
-                    Some(cut) => cut
-                        .pieces(o.id)
-                        .iter()
-                        .map(|piece| {
-                            let colour = piece
-                                .source
-                                .and_then(|i| o.geometry.get(i))
-                                .and_then(|p| p.color)
-                                .or_else(|| o.geometry.iter().find_map(|p| p.color));
-                            (piece.path.clone(), colour)
-                        })
-                        .collect(),
-                    None => o
-                        .placed_paths()
-                        .into_iter()
-                        .map(|cp| (cp.path, cp.color))
-                        .collect(),
-                };
+                // path each piece came from.
+                let shapes = cut.pieces(o.id).iter().map(|piece| {
+                    let colour = piece
+                        .source
+                        .and_then(|i| o.geometry.get(i))
+                        .and_then(|p| p.color)
+                        .or_else(|| o.geometry.iter().find_map(|p| p.color));
+                    (&piece.path, colour)
+                });
                 for (path, colour) in shapes {
                     let c = colour.unwrap_or([0x22, 0x26, 0x2e]);
-                    if let Some(p) = to_skia(&path) {
+                    if let Some(p) = to_skia(path) {
                         // A skipped object is dimmed and dashed, as in the app.
                         let (alpha, dash) = if o.cut_enabled {
                             (255, None)
@@ -343,7 +352,6 @@ fn draw(
                 pm: &mut pm,
                 mat,
                 px_mm: px(1.0) as f32,
-                cell: (max_px as f32 / 512.0).round().max(1.0),
                 line: [lr, lg, lb],
                 cut: flatcraft_core::colour::cut_colour(media.color),
             };
@@ -432,8 +440,6 @@ struct Canvas<'a> {
     mat: Transform,
     /// One pixel in mm.
     px_mm: f32,
-    /// The size of one dot of the digit font, px.
-    cell: f32,
     /// The mat's contrast colour.
     line: [u8; 3],
     /// The cut colour on this mat.
@@ -454,6 +460,13 @@ pub fn deviation_colour(deviation_mm: f32) -> [u8; 3] {
     }
 }
 
+/// The colour of the rings around the worst spots.
+pub const RING: [u8; 3] = [0xc0, 0x1c, 0x8c];
+/// The radius of a worst spot's ring, px, at every image size.
+pub const RING_RADIUS_PX: f32 = 9.0;
+/// The line width of a worst spot's ring, px.
+pub const RING_WIDTH_PX: f32 = 2.5;
+
 /// The colour of blade-down waste moves (swivels, lead-ins, overshoots).
 const WASTE_INK: [u8; 3] = [0x5a, 0x6b, 0x8c];
 
@@ -472,7 +485,6 @@ fn draw_simulation(c: Canvas<'_>, run: &crate::simulate::SimRun) {
         pm,
         mat,
         px_mm,
-        cell,
         line,
         cut,
     } = c;
@@ -577,15 +589,16 @@ fn draw_simulation(c: Canvas<'_>, run: &crate::simulate::SimRun) {
         pb.line_to(b.tip.x as f32, b.tip.y as f32);
     }
     flush(pm, current, pb);
-    // The worst spots that are a problem: a ring each, a few pixels
-    // across. A spot within the limit is only the least good of a good
-    // cut, so it is not ringed.
-    let ring = paint(color(0xc0, 0x1c, 0x8c));
+    // The worst spots that are a problem: a ring each, the same number of
+    // pixels at every image size, so it marks the place without hiding
+    // it. A spot within the limit is only the least good of a good cut,
+    // so it is not ringed.
+    let ring = paint(color(RING[0], RING[1], RING[2]));
     let ring_stroke = Stroke {
-        width: 1.5 * cell * px_mm,
+        width: RING_WIDTH_PX * px_mm,
         ..Stroke::default()
     };
-    let radius = (1.0f32).max(6.0 * cell * px_mm);
+    let radius = RING_RADIUS_PX * px_mm;
     let limit = flatcraft_sim::END_TO_END_LIMIT_MM;
     for spot in result
         .metrics
