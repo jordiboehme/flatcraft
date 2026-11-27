@@ -1,70 +1,276 @@
 //! Rules for the window tests themselves, so a busy machine cannot make
 //! them flaky:
 //!
-//! - No bare `Harness::run` (`run`, `try_run`, `run_ok`): it fails when a
-//!   worker lands within its few frames. Use `run_plan` or
-//!   `common::wait_until`, which wait for the worker's event. A line that
-//!   truly needs it says why in a `// run:` comment on it or just above.
+//! - No bare `Harness::run` (`run`, `try_run`, `run_ok`, `run_steps`): it
+//!   fails, or steps a fixed count, when a worker lands within its few
+//!   frames. Use `run_plan` or `common::wait_until`, which wait for the
+//!   worker's event. A line that truly needs it says why in a `// run:`
+//!   comment on it or just above.
 //! - No click with a wait between press and release: egui counts a press
 //!   held longer than 0.8 s (about three test frames) as no click, and a
 //!   wait steps as many frames as a worker needs. Use `common::click_at`.
 //!   A press that is meant to be held says so in a `// held:` comment.
+//!
+//! The scan works on the code with comments and string contents removed
+//! and all whitespace dropped, so split calls and arguments over several
+//! lines match too. It cannot see everything: a press and a release of the
+//! same point written as different expressions, or more than
+//! [`PAIR_LINES`] lines apart, are left to review.
+
+/// How many lines after a press its release is looked for.
+const PAIR_LINES: usize = 12;
+
+/// The source as one string of code without comments, string contents or
+/// whitespace, the line (1-based) of each of its bytes, and the comment
+/// text of each line.
+struct Code {
+    code: String,
+    line: Vec<usize>,
+    comments: Vec<String>,
+}
+
+impl Code {
+    fn of(src: &str) -> Self {
+        let mut code = String::new();
+        let mut line = Vec::new();
+        let mut comments = vec![String::new()];
+        let mut n = 1;
+        let mut chars = src.chars().peekable();
+        let mut in_str = false;
+        let mut push = |c: char, n: usize, code: &mut String| {
+            code.push(c);
+            line.extend(std::iter::repeat_n(n, c.len_utf8()));
+        };
+        while let Some(c) = chars.next() {
+            if c == '\n' {
+                n += 1;
+                comments.push(String::new());
+                continue;
+            }
+            if in_str {
+                match c {
+                    '\\' => {
+                        chars.next();
+                    }
+                    '"' => {
+                        in_str = false;
+                        push('"', n, &mut code);
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+            match c {
+                '"' => {
+                    in_str = true;
+                    push('"', n, &mut code);
+                }
+                // A char literal: '"' must not open a string.
+                '\'' if chars.clone().nth(1) == Some('\'') => {
+                    chars.next();
+                    chars.next();
+                }
+                '/' if chars.peek() == Some(&'/') => {
+                    let mut text = String::from("/");
+                    while let Some(&d) = chars.peek() {
+                        if d == '\n' {
+                            break;
+                        }
+                        text.push(d);
+                        chars.next();
+                    }
+                    comments[n - 1].push_str(&text);
+                }
+                '/' if chars.peek() == Some(&'*') => {
+                    chars.next();
+                    let mut last = ' ';
+                    for d in chars.by_ref() {
+                        if d == '\n' {
+                            n += 1;
+                            comments.push(String::new());
+                        }
+                        if last == '*' && d == '/' {
+                            break;
+                        }
+                        last = d;
+                    }
+                }
+                c if c.is_whitespace() => {}
+                c => push(c, n, &mut code),
+            }
+        }
+        Self {
+            code,
+            line,
+            comments,
+        }
+    }
+
+    /// The line of the byte at `at`.
+    fn line_at(&self, at: usize) -> usize {
+        self.line.get(at).copied().unwrap_or(0)
+    }
+
+    /// Whether line `n` or the line above has a comment starting with `tag`.
+    fn allowed(&self, n: usize, tag: &str) -> bool {
+        let has = |n: usize| {
+            n >= 1
+                && self
+                    .comments
+                    .get(n - 1)
+                    .is_some_and(|c| c.contains(&format!("// {tag}:")))
+        };
+        has(n) || has(n.saturating_sub(1))
+    }
+
+    /// The text between the bracket opened just before `open` and its
+    /// closing one, and the index after it.
+    fn group(&self, open: usize, open_c: char, close_c: char) -> (&str, usize) {
+        let mut depth = 1;
+        for (j, c) in self.code[open..].char_indices() {
+            if c == open_c {
+                depth += 1;
+            } else if c == close_c {
+                depth -= 1;
+                if depth == 0 {
+                    return (&self.code[open..open + j], open + j + 1);
+                }
+            }
+        }
+        (&self.code[open..], self.code.len())
+    }
+}
 
 /// Lines (1-based) of `src` that call `Harness::run` without a `// run:`
 /// comment on the line or the line above.
 fn bare_runs(src: &str) -> Vec<usize> {
-    let lines: Vec<&str> = src.lines().collect();
+    let c = Code::of(src);
     let mut found = Vec::new();
-    for (i, line) in lines.iter().enumerate() {
-        let code = line.split("//").next().unwrap_or_default();
-        let calls = [".run()", ".try_run()", ".run_ok()"]
-            .iter()
-            .any(|c| code.contains(c));
-        let allowed =
-            line.contains("// run:") || (i > 0 && lines[i - 1].trim_start().starts_with("// run:"));
-        if calls && !allowed {
-            found.push(i + 1);
+    for call in [
+        ".run()",
+        ".try_run()",
+        ".run_ok()",
+        ".run_steps(",
+        "Harness::run(",
+    ] {
+        for (at, _) in c.code.match_indices(call) {
+            let n = c.line_at(at);
+            if !c.allowed(n, "run") {
+                found.push(n);
+            }
         }
     }
+    found.sort_unstable();
+    found.dedup();
     found
+}
+
+/// What happens to the pointer, in order.
+#[derive(Debug, PartialEq)]
+enum Step {
+    Press(String),
+    Release(String),
+    Move,
+    Wait,
+}
+
+/// A press argument without a trailing comma.
+fn point(arg: &str) -> String {
+    arg.trim_end_matches(',').to_string()
+}
+
+/// The pointer steps of the code, with the line each starts on.
+fn steps(c: &Code) -> Vec<(usize, Step)> {
+    let code = &c.code;
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < code.len() {
+        let rest = &code[i..];
+        let mut next = i + rest.chars().next().map_or(1, char::len_utf8);
+        if let Some(arg_at) = [".drag_at(", ".drop_at("]
+            .iter()
+            .find(|p| rest.starts_with(**p))
+            .map(|p| i + p.len())
+        {
+            let (arg, end) = c.group(arg_at, '(', ')');
+            out.push((
+                c.line_at(i),
+                if rest.starts_with(".drag_at(") {
+                    Step::Press(point(arg))
+                } else {
+                    Step::Release(point(arg))
+                },
+            ));
+            next = end;
+        } else if rest.starts_with("PointerButton{") {
+            let (fields, end) = c.group(i + "PointerButton{".len(), '{', '}');
+            let pos = fields
+                .split(',')
+                .find_map(|f| f.strip_prefix("pos:"))
+                .map(point);
+            if let Some(pos) = pos {
+                if fields.contains("pressed:true") {
+                    out.push((c.line_at(i), Step::Press(pos)));
+                } else if fields.contains("pressed:false") {
+                    out.push((c.line_at(i), Step::Release(pos)));
+                }
+            }
+            next = end;
+        } else if rest.starts_with(".hover_at(") || rest.starts_with("PointerMoved(") {
+            out.push((c.line_at(i), Step::Move));
+        } else if [
+            "run_plan(",
+            "wait_until(",
+            "wait_for_",
+            "settle(",
+            ".run_steps(",
+        ]
+        .iter()
+        .any(|w| rest.starts_with(w))
+        {
+            out.push((c.line_at(i), Step::Wait));
+        } else if let Some(range) = rest.strip_prefix("for_in0..") {
+            // A loop of more than three frames is a wait too.
+            let digits: String = range.chars().take_while(char::is_ascii_digit).collect();
+            let frames = digits.parse::<usize>().unwrap_or(usize::MAX);
+            if let Some(open) = rest.find('{') {
+                let (body, _) = c.group(i + open + 1, '{', '}');
+                if body.contains(".step()") && frames > 3 {
+                    out.push((c.line_at(i), Step::Wait));
+                }
+            }
+        }
+        i = next;
+    }
+    out
 }
 
 /// Lines (1-based) of `src` where a press at a point is followed by a wait
 /// and then a release at the same point, with no move in between, unless
 /// the press line or the line above has a `// held:` comment.
 fn held_clicks(src: &str) -> Vec<usize> {
-    let lines: Vec<&str> = src.lines().collect();
+    let c = Code::of(src);
+    let steps = steps(&c);
     let mut found = Vec::new();
-    for (i, line) in lines.iter().enumerate() {
-        let Some(at) = line.find(".drag_at(") else {
-            continue;
-        };
-        let arg_start = at + ".drag_at(".len();
-        let Some(len) = line[arg_start..].find(");") else {
-            continue;
-        };
-        let arg = &line[arg_start..arg_start + len];
-        let allowed = line.contains("// held:")
-            || (i > 0 && lines[i - 1].trim_start().starts_with("// held:"));
-        if allowed {
+    for (k, (n, step)) in steps.iter().enumerate() {
+        let Step::Press(at) = step else { continue };
+        if c.allowed(*n, "held") {
             continue;
         }
         let mut waited = false;
-        for next in lines.iter().skip(i + 1).take(12) {
-            if next.contains(".hover_at(") || next.contains(".drag_at(") {
+        for (m, next) in &steps[k + 1..] {
+            if *m > n + PAIR_LINES {
                 break;
             }
-            if next.contains(".drop_at(") {
-                if waited && next.contains(&format!(".drop_at({arg})")) {
-                    found.push(i + 1);
+            match next {
+                Step::Wait => waited = true,
+                Step::Release(to) => {
+                    if waited && to == at {
+                        found.push(*n);
+                    }
+                    break;
                 }
-                break;
-            }
-            if ["run_plan(", "wait_until(", "wait_for_", "settle("]
-                .iter()
-                .any(|w| next.contains(w))
-            {
-                waited = true;
+                Step::Press(_) | Step::Move => break,
             }
         }
     }
@@ -73,30 +279,66 @@ fn held_clicks(src: &str) -> Vec<usize> {
 
 #[test]
 fn the_rules_find_what_they_look_for() {
-    let src = "h.run();\n\
-               r.h.run_ok();\n\
-               // run: no worker in this harness\n\
-               h.run();\n\
-               h.run(); // run: no worker\n\
-               h.run_plan();\n\
-               // h.run();\n";
-    assert_eq!(bare_runs(src), vec![1, 2]);
-    let src = "h.drag_at(at);\n\
-               h.run_plan();\n\
-               h.drop_at(at);\n\
-               h.drag_at(p);\n\
-               h.step();\n\
-               h.drop_at(p);\n\
-               h.drag_at(from);\n\
-               h.run_plan();\n\
-               h.hover_at(to);\n\
-               h.run_plan();\n\
-               h.drop_at(to);\n\
-               // held: a long press is the point\n\
-               h.drag_at(at);\n\
-               h.run_plan();\n\
-               h.drop_at(at);\n";
-    assert_eq!(held_clicks(src), vec![1]);
+    let src = r#"h.run();
+r.h.run_ok();
+// run: no worker in this harness
+h.run();
+h.run(); // run: no worker
+h.run_plan();
+// h.run();
+h.run_steps(2);
+egui_kittest::Harness::run(&mut h);
+h
+    .run();
+let s = "// not a comment"; h.run();
+let t = "h.run()";
+"#;
+    assert_eq!(bare_runs(src), vec![1, 2, 8, 9, 11, 12]);
+    let src = r#"h.drag_at(at);
+h.run_plan();
+h.drop_at(at);
+h.drag_at(p);
+h.step();
+h.drop_at(p);
+h.drag_at(from);
+h.run_plan();
+h.hover_at(to);
+h.run_plan();
+h.drop_at(to);
+// held: a long press is the point
+h.drag_at(at);
+h.run_plan();
+h.drop_at(at);
+h.drag_at(
+    egui::pos2(1.0, 2.0),
+);
+h.run_plan();
+h.drop_at(egui::pos2(1.0, 2.0));
+h.drag_at(q);
+for _ in 0..8 {
+    h.step();
+}
+h.drop_at(q);
+h.drag_at(q);
+for _ in 0..2 {
+    h.step();
+}
+h.drop_at(q);
+h.event(egui::Event::PointerButton {
+    pos: at,
+    button: egui::PointerButton::Primary,
+    pressed: true,
+    modifiers: egui::Modifiers::NONE,
+});
+h.run_plan();
+h.event(egui::Event::PointerButton {
+    pos: at,
+    button: egui::PointerButton::Primary,
+    pressed: false,
+    modifiers: egui::Modifiers::NONE,
+});
+"#;
+    assert_eq!(held_clicks(src), vec![1, 16, 21, 31]);
 }
 
 #[test]

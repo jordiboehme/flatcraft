@@ -87,7 +87,7 @@ fn stored_settings(s: &SharedSession, id: u64) -> TraceSettings {
 /// so this steps a fixed number of frames instead of `run`.
 fn click_trace(h: &mut AppHarness) {
     h.get_by_role_and_label(Role::Button, "Trace").click();
-    h.run_steps(3);
+    h.run_steps(3); // run: the dialog opens in the click frame
     assert!(app(h).ui.trace.is_some(), "the Trace dialog did not open");
 }
 
