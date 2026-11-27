@@ -26,7 +26,7 @@ use flatcraft_path::{
 };
 use flatcraft_sim::{
     ALGORITHM_LIMIT_MM, DEVICE_LIMIT_MM, DeviceGrid, END_TO_END_LIMIT_MM, JobMetrics,
-    SAMPLE_STEP_FACTOR, SimSettings, SimTrace, measure_kept, simulate,
+    SAMPLE_STEP_FACTOR, SimSettings, SimTrace, measure_kept, simulate, source,
 };
 use kurbo::{Arc, BezPath, Circle, Point, Rect, Shape, Vec2};
 
@@ -1657,16 +1657,6 @@ fn emitted_host_job_is_the_planned_device_grid() {
     }
 }
 
-/// The distance of `q` from the source geometry of `c` (before flattening).
-fn source_distance(c: &Case, q: Point) -> f64 {
-    use kurbo::ParamCurveNearest as _;
-    c.input
-        .iter()
-        .flat_map(|pp| pp.path.segments())
-        .map(|seg| seg.nearest(q, 1e-9).distance_sq.sqrt())
-        .fold(f64::INFINITY, f64::min)
-}
-
 /// The 16 grid positions a quarter unit apart, plain and on a calibrated
 /// (scale 1.002 and 0.998), mirrored plotter: where the grid lies under
 /// the shapes changes how the pivot arcs round.
@@ -1689,101 +1679,11 @@ fn grid_positions() -> Vec<DeviceGrid> {
     out
 }
 
-/// The cut moves of `trace`: each move into a blade-down sample that cuts
-/// a `Cut` toolpath (not waste), as tip segments.
-fn cut_moves(out: &CutPlan, trace: &SimTrace) -> Vec<(Point, Point)> {
-    trace
-        .samples
-        .windows(2)
-        .filter(|w| {
-            let x = &w[1];
-            x.down
-                && w[0].down
-                && x.seg != WASTE_SEG
-                && out.toolpaths[x.toolpath].kind == ToolpathKind::Cut
-        })
-        .map(|w| (w[0].tip, w[1].tip))
-        .collect()
-}
-
-fn segment_distance(p: Point, a: Point, b: Point) -> f64 {
-    let ab = b - a;
-    let len2 = ab.hypot2();
-    if len2 == 0.0 {
-        return p.distance(a);
-    }
-    let t = ((p - a).dot(ab) / len2).clamp(0.0, 1.0);
-    p.distance(a + t * ab)
-}
-
-/// The cell size of [`CutIndex`]: a query looks one cell round its own, so
-/// any cut within this distance is found.
-const CELL_MM: f64 = 0.1;
-
-/// The cut moves in square cells of [`CELL_MM`], to find the cut near a
-/// point.
-struct CutIndex {
-    cells: std::collections::HashMap<(i64, i64), Vec<usize>>,
-    moves: Vec<(Point, Point)>,
-}
-
-impl CutIndex {
-    fn new(moves: Vec<(Point, Point)>) -> Self {
-        let cell = |v: f64| (v / CELL_MM).floor() as i64;
-        let mut cells: std::collections::HashMap<(i64, i64), Vec<usize>> = Default::default();
-        for (k, &(a, b)) in moves.iter().enumerate() {
-            for x in cell(a.x.min(b.x))..=cell(a.x.max(b.x)) {
-                for y in cell(a.y.min(b.y))..=cell(a.y.max(b.y)) {
-                    cells.entry((x, y)).or_default().push(k);
-                }
-            }
-        }
-        Self { cells, moves }
-    }
-
-    /// The distance from `p` to the nearest cut move, or infinity when no
-    /// cut lies within [`CELL_MM`].
-    fn distance(&self, p: Point) -> f64 {
-        let (cx, cy) = (
-            (p.x / CELL_MM).floor() as i64,
-            (p.y / CELL_MM).floor() as i64,
-        );
-        let mut best = f64::INFINITY;
-        for x in cx - 1..=cx + 1 {
-            for y in cy - 1..=cy + 1 {
-                for &k in self.cells.get(&(x, y)).into_iter().flatten() {
-                    let (a, b) = self.moves[k];
-                    best = best.min(segment_distance(p, a, b));
-                }
-            }
-        }
-        if best <= CELL_MM { best } else { f64::INFINITY }
-    }
-}
-
 /// The end-to-end deviation of a simulated job from the source geometry of
-/// `c`, both ways (Hausdorff): the largest distance of a cut tip from the
-/// source shapes (an over-cut), and the largest distance of a point of the
-/// source shapes, sampled every 0.01 mm, from the cut (an under-cut, such
-/// as a corner the tip never reaches). Returns (cut to source, source to
-/// cut).
+/// `c`, both ways ([`source::end_to_end`]): (cut to source, source to cut).
 fn end_to_end(c: &Case, out: &CutPlan, trace: &SimTrace) -> (f64, f64) {
-    use kurbo::ParamCurveArclen as _;
-    let moves = cut_moves(out, trace);
-    let cut_to_source = moves
-        .iter()
-        .map(|&(_, b)| source_distance(c, b))
-        .fold(0.0, f64::max);
-    let index = CutIndex::new(moves);
-    let mut source_to_cut = 0.0f64;
-    for seg in c.input.iter().flat_map(|pp| pp.path.segments()) {
-        let n = (seg.arclen(1e-6) / 0.01).ceil().max(1.0) as usize;
-        for k in 0..=n {
-            let q = kurbo::ParamCurve::eval(&seg, k as f64 / n as f64);
-            source_to_cut = source_to_cut.max(index.distance(q));
-        }
-    }
-    (cut_to_source, source_to_cut)
+    let paths: Vec<BezPath> = c.input.iter().map(|pp| pp.path.clone()).collect();
+    source::end_to_end(&source::source_segments(&paths), &out.toolpaths, trace)
 }
 
 /// The device output on `grids`, for the sheet and the probes at d 0.25

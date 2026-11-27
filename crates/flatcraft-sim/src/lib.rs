@@ -4,12 +4,14 @@
 //! blade offset `d` and moves only along the tip-to-axis direction. `model`
 //! holds the closed-form step along one straight axis segment, `trace` runs
 //! it over a list of toolpaths, `metrics` measures the trace against the
-//! intended paths and `report` adds the time estimate.
+//! intended paths, `source` measures it against the source shapes and
+//! `report` adds the time estimate.
 
 pub mod display;
 mod grid;
 pub mod metrics;
 pub mod report;
+pub mod source;
 pub mod trace;
 
 use flatcraft_path::ASSUMED_START_HEADING;
