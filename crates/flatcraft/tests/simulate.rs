@@ -478,14 +478,16 @@ fn the_bar_keeps_its_layout_while_simulating() {
     assert_eq!(tab_rects(&h), before);
 }
 
-#[test]
-fn a_comparison_that_ends_on_home_frees_the_worker() {
-    let dir = tempfile::tempdir().unwrap();
-    let s = plotter_session(&dir, "host", HOST);
-    common::import_square(&s);
-    let mut h = harness(&dir, s.clone(), false);
+/// Starts a comparison whose other strategies wait for a gate, goes Home
+/// while it runs, opens the gate and waits until it ended there.
+fn compare_ending_on_home(dir: &tempfile::TempDir) -> (SharedSession, u64, AppHarness) {
+    let s = plotter_session(dir, "host", HOST);
+    let id = common::import_square(&s);
+    let mut h = harness(dir, s.clone(), false);
     to_simulate(&mut h);
-    // The other strategies wait for the gate, like a slow machine.
+    // The other strategies wait for the gate, like a slow machine. The
+    // document's own strategy was simulated above and is reused.
+    let others = flatcraft_engine::simulate::STRATEGIES.len() - 1;
     let (release, gate) = mpsc::channel::<()>();
     let (entered_tx, entered) = mpsc::channel::<()>();
     let gate = Mutex::new(gate);
@@ -508,13 +510,42 @@ fn a_comparison_that_ends_on_home_frees_the_worker() {
     h.get_by_role_and_label(Role::Button, "Home").click();
     h.step();
     assert_eq!(app(&h).ui.workspace, Workspace::Home);
-    release.send(()).unwrap();
-    release.send(()).unwrap();
+    for _ in 0..others {
+        release.send(()).unwrap();
+    }
     common::wait_until(&mut h, |a| a.ui.cut.sim.busy());
     assert_eq!(app(&h).ui.workspace, Workspace::Home);
+    (s, id, h)
+}
+
+#[test]
+fn a_comparison_that_ends_on_home_frees_the_worker() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_s, _id, mut h) = compare_ending_on_home(&dir);
     // Back in Simulate, the comparison of the unchanged document shows.
     app_mut(&mut h).ui.workspace = Workspace::Cut;
     h.run_plan();
     assert_eq!(app(&h).ui.cut.stage, Stage::Simulate);
     assert!(h.query_by_label("Use Fast").is_some());
+}
+
+#[test]
+fn a_comparison_kept_on_home_is_dropped_when_the_document_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, id, mut h) = compare_ending_on_home(&dir);
+    // The square moves while Home shows: the comparison is of an old state.
+    run(
+        &s,
+        "object.move",
+        json!({ "ids": [id], "dx_mm": 5.0, "dy_mm": 0.0 }),
+    );
+    app_mut(&mut h).ui.workspace = Workspace::Cut;
+    h.run_plan();
+    assert_eq!(app(&h).ui.cut.stage, Stage::Simulate);
+    assert!(h.query_by_label("Use Fast").is_none(), "no stale rows");
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    assert!(app(&h).ui.cut.sim.compared(&snap).is_none());
+    // The button asks again.
+    h.get_by_label(sim::COMPARE);
 }
