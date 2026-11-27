@@ -252,15 +252,11 @@ fn a_group_rotate_that_could_not_reopen_is_refused() {
     let (a, b) = two(&mut s);
     // b near the far corner of the 1 km limit: an eighth of a turn about
     // the middle of a and b puts b's centre past it.
-    // 998 m each way in 100 moves: one move goes at most 10 m (its
-    // schema range).
-    for _ in 0..100 {
-        run(
-            &mut s,
-            "object.move",
-            json!({ "ids": [b], "dx_mm": 9_980.0, "dy_mm": 9_980.0 }),
-        );
-    }
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [b], "x_mm": 998_000.0, "y_mm": 998_000.0 }),
+    );
     let before = undo_len(&s);
     let ta = transform(&s, a);
     let e = s

@@ -1733,11 +1733,22 @@ fn a_move_beyond_1_km_is_refused() {
     let e = s
         .execute(
             "object.move",
-            json!({ "ids": [id], "center_mm": [2e6, 50.0] }),
+            // In the schema's range (1 km), but the object's centre lands
+            // past it.
+            json!({ "ids": [id], "x_mm": 999_999.0 }),
             Origin::User,
         )
         .unwrap_err();
     assert!(e.to_string().contains(TOO_LARGE), "{e}");
+    // Past the range: refused before the command runs.
+    let e = s
+        .execute(
+            "object.move",
+            json!({ "ids": [id], "center_mm": [2e6, 50.0] }),
+            Origin::User,
+        )
+        .unwrap_err();
+    assert!(matches!(e, CommandError::InvalidParams(_)), "{e}");
     assert_eq!(placed_bounds(&s, id), before);
 }
 

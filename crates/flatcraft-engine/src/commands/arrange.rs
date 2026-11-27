@@ -240,6 +240,13 @@ pub struct AutoParams {
 
 fn run_auto(s: &mut Session, p: AutoParams, _: Origin) -> Result<Value, CommandError> {
     // The range of spacing_mm is the schema's (checked by the registry).
+    // JSON has no NaN or infinity; this guards a caller that builds the
+    // params in code.
+    if !p.spacing_mm.is_finite() {
+        return Err(CommandError::InvalidParams(
+            "spacing_mm must be a number".into(),
+        ));
+    }
     let area = cutting_area(s)?;
     // Empty: the selection, and with nothing selected every visible object.
     let chosen = if p.ids.is_empty() {

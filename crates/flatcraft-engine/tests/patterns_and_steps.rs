@@ -246,6 +246,27 @@ fn bad_circular_params_change_nothing() {
     assert_eq!(s.doc().document.objects.len(), 1);
 }
 
+/// In-range values can still put a copy past 1 km: the object near
+/// (999 m, 999 m) and the circle about the mat's 0,0. Refused whole.
+#[test]
+fn a_circular_copy_past_1_km_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(dir.path());
+    let a = rect_at(&mut s, Point::new(999_000.0, 999_000.0));
+    let revision = s.doc().revision();
+    let e = s
+        .execute(
+            "object.circular_copies",
+            json!({ "ids": [a], "count": 8, "center_mm": [0.0, 0.0] }),
+            Origin::User,
+        )
+        .unwrap_err();
+    assert!(matches!(e, CommandError::Refused(_)), "{e:?}");
+    assert!(e.to_string().contains("1 km"), "{e}");
+    assert_eq!(s.doc().revision(), revision);
+    assert_eq!(s.doc().document.objects.len(), 1);
+}
+
 #[test]
 fn an_agent_makes_circular_copies() {
     let dir = tempfile::tempdir().unwrap();

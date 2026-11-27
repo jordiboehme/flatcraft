@@ -1004,7 +1004,15 @@ fn run_copies(s: &mut Session, p: CopiesParams, _: Origin) -> Result<Value, Comm
     let gap_x = p.gap_x_mm.unwrap_or(p.gap_mm);
     let gap_y = p.gap_y_mm.unwrap_or(p.gap_mm);
     // The ranges of count, the gaps and the columns are the schema's
-    // (checked by the registry before the command runs).
+    // (checked by the registry before the command runs). JSON has no NaN
+    // or infinity; this guards a caller that builds the params in code.
+    for (name, v) in [("gap_x_mm", gap_x), ("gap_y_mm", gap_y)] {
+        if !v.is_finite() {
+            return Err(CommandError::InvalidParams(format!(
+                "{name} must be a number"
+            )));
+        }
+    }
     let unit = ObjectId(p.id);
     check_node(&s.doc().document, unit)?;
     let area = cutting_area(s).ok();
@@ -1117,7 +1125,7 @@ pub struct CircularCopiesParams {
     #[schemars(range(min = -360, max = 360))]
     pub total_deg: f64,
     /// The centre of the circle [x, y] in mm. Default: the centre of the objects' common bounding box.
-    #[schemars(inner(range(min = -10000, max = 10000)))]
+    #[schemars(inner(range(min = -1e6, max = 1e6)))]
     pub center_mm: Option<[f64; 2]>,
     /// true (default): each copy also turns by its angle, like spokes. false: copies keep the original's rotation.
     #[serde(default = "default_true")]
@@ -1374,11 +1382,14 @@ pub struct MoveParams {
     /// Relative move along y in mm (down is positive), at most 10000 either way.
     #[schemars(range(min = -10000, max = 10000))]
     pub dy_mm: Option<f64>,
-    /// Absolute target [x, y] in mm for the centre of the objects' common bounding box. Do not combine with dx_mm/dy_mm or x_mm/y_mm.
+    /// Absolute target [x, y] in mm for the centre of the objects' common bounding box. Do not combine with dx_mm/dy_mm or x_mm/y_mm. At most 1 km (1000000 mm) either way.
+    #[schemars(inner(range(min = -1e6, max = 1e6)))]
     pub center_mm: Option<[f64; 2]>,
-    /// Absolute target in mm for the left edge of the objects' common bounding box (of the placed, rotated shapes). A missing y_mm keeps the box's top where it is. Do not combine with dx_mm/dy_mm or center_mm.
+    /// Absolute target in mm for the left edge of the objects' common bounding box (of the placed, rotated shapes). A missing y_mm keeps the box's top where it is. Do not combine with dx_mm/dy_mm or center_mm. At most 1 km (1000000 mm) either way.
+    #[schemars(range(min = -1e6, max = 1e6))]
     pub x_mm: Option<f64>,
-    /// Absolute target in mm for the top edge of the objects' common bounding box. A missing x_mm keeps the box's left edge where it is.
+    /// Absolute target in mm for the top edge of the objects' common bounding box. A missing x_mm keeps the box's left edge where it is. At most 1 km (1000000 mm) either way.
+    #[schemars(range(min = -1e6, max = 1e6))]
     pub y_mm: Option<f64>,
     /// Merges this move into the undo step of the move just before it when that one had the same key and the same ids and nothing else changed the document in between. For a burst of small moves (arrow-key nudges) that the person undoes as one.
     pub coalesce_key: Option<String>,

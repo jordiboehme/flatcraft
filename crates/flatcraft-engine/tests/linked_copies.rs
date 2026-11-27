@@ -1009,14 +1009,11 @@ fn scaling_that_pushes_a_linked_copy_past_1_km_changes_nothing() {
     let id = import_text(&mut s);
     let all = linked(&mut s, id, 1);
     // The copy sits near the 1 km limit; its 200 mm page still fits.
-    // 999.7 m in 100 moves: one move goes at most 10 m (its schema range).
-    for _ in 0..100 {
-        run(
-            &mut s,
-            "object.move",
-            json!({ "ids": [all[1]], "dx_mm": 9_997.0 }),
-        );
-    }
+    run(
+        &mut s,
+        "object.move",
+        json!({ "ids": [all[1]], "x_mm": 999_700.0 }),
+    );
     let before: Vec<_> = all.iter().map(|i| obj(&s, *i).transform).collect();
     let undo = undo_len(&s);
     let e = s

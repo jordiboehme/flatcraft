@@ -66,10 +66,14 @@ fn ranges_match_what_the_commands_accept() {
         range("object.duplicate", "offset_mm[1]"),
         both(-10000.0, 10000.0)
     );
+    // Absolute places: the session's 1 km limit.
     assert_eq!(
         range("object.circular_copies", "center_mm[1]"),
-        both(-10000.0, 10000.0)
+        both(-1e6, 1e6)
     );
+    assert_eq!(range("object.move", "x_mm"), both(-1e6, 1e6));
+    assert_eq!(range("object.move", "y_mm"), both(-1e6, 1e6));
+    assert_eq!(range("object.move", "center_mm[0]"), both(-1e6, 1e6));
 }
 
 /// A field starts with the schema's default; where the command has none,
