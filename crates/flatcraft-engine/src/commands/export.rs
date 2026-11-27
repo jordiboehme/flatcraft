@@ -28,6 +28,26 @@ pub struct ExportParams {
 }
 
 fn run_export(s: &mut Session, p: ExportParams, origin: Origin) -> Result<Value, CommandError> {
+    prepare_export(s, p, origin)?.write()
+}
+
+/// An export made and checked, ready to write (see [`prepare_export`]).
+pub(crate) struct PreparedExport {
+    path: PathBuf,
+    target: PathBuf,
+    bytes: Vec<u8>,
+    out: Value,
+}
+
+/// Everything of `document.export` but writing the file: checks the
+/// scope and the target and makes the bytes. An agent's export runs it
+/// off the session lock and writes only while the document is unchanged
+/// (`crate::unlocked`).
+pub(crate) fn prepare_export(
+    s: &mut Session,
+    p: ExportParams,
+    origin: Origin,
+) -> Result<PreparedExport, CommandError> {
     let selection: Vec<ObjectId> = s.doc().selection.iter().copied().collect();
     let scope = p
         .scope
@@ -45,16 +65,31 @@ fn run_export(s: &mut Session, p: ExportParams, origin: Origin) -> Result<Value,
     let doc = export::collect(&input, ids, p.include_skipped)?;
     let target = write_target(&p.path, &s.config_dir, origin)?;
     let bytes = export::write(&doc, p.format);
-    fsio::write_atomic_at(&target, &bytes)
-        .map_err(|e| CommandError::Failed(format!("cannot write {}: {e}", p.path.display())))?;
-    Ok(json!({
+    let out = json!({
         "path": p.path,
         "format": p.format.extension(),
         "objects": doc.objects.len(),
         "shapes": doc.shape_count(),
         "width_mm": doc.width_mm,
         "height_mm": doc.height_mm,
-    }))
+    });
+    Ok(PreparedExport {
+        path: p.path,
+        target,
+        bytes,
+        out,
+    })
+}
+
+impl PreparedExport {
+    /// Writes the file crash-safely to the checked target and returns
+    /// what `document.export` returns.
+    pub(crate) fn write(self) -> Result<Value, CommandError> {
+        fsio::write_atomic_at(&self.target, &self.bytes).map_err(|e| {
+            CommandError::Failed(format!("cannot write {}: {e}", self.path.display()))
+        })?;
+        Ok(self.out)
+    }
 }
 
 command!(

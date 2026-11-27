@@ -14,11 +14,13 @@
 //!    the same revision, with the same path and profiles, the result is
 //!    stored (`DocState::adopt`): the same undo step, dirty flag,
 //!    selection, last job and caches the command left. Otherwise nothing
-//!    is stored, and the command runs once more on a new snapshot (or
-//!    returns its result as it is, see [`Stale`]).
+//!    is stored, and the command runs once more on a new snapshot; when
+//!    the document changed again it fails with [`changed_error`].
 //!
-//! `project.open` reads no document, so only its rebuild runs without the
-//! lock and the document is placed at store time.
+//! `document.export` makes its bytes on the snapshot and writes the file
+//! only after that check, without the lock. `project.open` reads no
+//! document, so only its rebuild runs without the lock and the document
+//! is placed at store time.
 
 use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
@@ -26,49 +28,41 @@ use std::sync::{Mutex, PoisonError};
 use flatcraft_core::document::Document;
 use serde_json::Value;
 
+use crate::commands::export::{ExportParams, PreparedExport, prepare_export};
 use crate::commands::project::{OpenParams, install_open, load_open};
 use crate::registry::Command;
 use crate::session::{CommandError, Origin, Session, internal_error};
 
-/// What a command does when the document changed while it ran.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Stale {
-    /// Nothing is stored; the command runs once more on a new snapshot,
-    /// and if the document changed again it fails with
-    /// [`changed_error`]. The text says what was going on.
-    Retry(&'static str),
-    /// Nothing is stored, but the result is returned: it describes the
-    /// document as it was when the command began, and it already acted
-    /// on it (a written file).
-    Snapshot,
-}
-
-/// How each command that runs off the lock treats a document that changed
-/// meanwhile, or `None` for a command that runs under the lock.
-pub fn stale_policy(id: &str) -> Option<Stale> {
+/// What a command that runs off the lock was doing, for the error when
+/// the document changed on both tries ([`changed_error`]); `None` for a
+/// command that runs under the lock.
+///
+/// Every command here retries once: nothing built on an older state is
+/// stored or written, and the agent's request still holds on the new
+/// state, so one more try usually wins.
+/// - The imports, retrace, reload and relink change the document: their
+///   result on an older state would undo the change made meanwhile.
+/// - `job.preview` stores the plan as the last job, and an agent decides
+///   on a send by its numbers.
+/// - `document.preview` and `document.check`: an agent decides its next
+///   step from the picture or the issues, so they must show the document
+///   as it is.
+/// - `document.export` writes the file only when its bytes are of the
+///   document as it is.
+/// - `project.open` reads no document; only a change of the profiles (the
+///   blade offset of the rebuild) makes it stale.
+pub fn stale_policy(id: &str) -> Option<&'static str> {
     Some(match id {
-        // Changes the document: a result built on an older state would
-        // undo the change made meanwhile. The agent's intent still holds
-        // on the new state, so one more try usually wins.
-        "object.import" => Stale::Retry("the file was imported"),
-        "object.import_svg" => Stale::Retry("the SVG was imported"),
-        "object.retrace" => Stale::Retry("the image was traced"),
-        "object.reload" => Stale::Retry("the files were read again"),
-        "object.relink" => Stale::Retry("the file was read"),
-        // Stores the plan as the last job, and an agent decides on a send
-        // by its numbers: a plan of an older state would mislead.
-        "job.preview" => Stale::Retry("the job was planned"),
-        // An agent looks at the picture or the issues to decide what to
-        // do next, so they must show the document as it is now.
-        "document.preview" => Stale::Retry("the preview was drawn"),
-        "document.check" => Stale::Retry("the objects were checked"),
-        // The file is written when the result is known; writing it again
-        // would only replace it. Like a save, it holds the document as it
-        // was when the command began.
-        "document.export" => Stale::Snapshot,
-        // Reads no document; only a change of the profiles (the blade
-        // offset of the trace) makes its rebuild stale.
-        "project.open" => Stale::Retry("the project was opened"),
+        "object.import" => "the file was imported",
+        "object.import_svg" => "the SVG was imported",
+        "object.retrace" => "the image was traced",
+        "object.reload" => "the files were read again",
+        "object.relink" => "the file was read",
+        "job.preview" => "the job was planned",
+        "document.preview" => "the preview was drawn",
+        "document.check" => "the objects were checked",
+        "document.export" => "the file was exported",
+        "project.open" => "the project was opened",
         _ => return None,
     })
 }
@@ -81,7 +75,7 @@ pub fn runs_unlocked(id: &str) -> bool {
 /// The error of a command whose document changed on both tries.
 pub fn changed_error(what: &str) -> CommandError {
     CommandError::Failed(format!(
-        "The document changed while {what}, so nothing was stored. Try again."
+        "The document changed while {what}, so the result was dropped. Try again."
     ))
 }
 
@@ -149,13 +143,45 @@ pub fn execute(
     params: Value,
     origin: Origin,
 ) -> Result<Value, CommandError> {
-    let Some(policy) = stale_policy(id) else {
+    let Some(what) = stale_policy(id) else {
         return lock(session).execute(id, params, origin);
     };
-    if id == "project.open" {
-        return open(session, params, origin, policy);
+    match id {
+        "project.open" => open(session, params, origin, what),
+        "document.export" => split(
+            session,
+            id,
+            origin,
+            what,
+            |scratch| {
+                let p: ExportParams = crate::commands::parse(params.clone())?;
+                prepare_export(scratch, p, origin)
+            },
+            PreparedExport::write,
+        ),
+        _ => split(
+            session,
+            id,
+            origin,
+            what,
+            |scratch| scratch.execute(id, params.clone(), origin),
+            Ok,
+        ),
     }
-    for attempt in 1..=TRIES {
+}
+
+/// The three steps of the module doc: `run` on a snapshot without the
+/// lock, the check and the store under it, then `finish` (a file write)
+/// without it again, only for a result that was stored.
+fn split<T>(
+    session: &Mutex<Session>,
+    id: &str,
+    origin: Origin,
+    what: &str,
+    run: impl Fn(&mut Session) -> Result<T, CommandError>,
+    finish: impl FnOnce(T) -> Result<Value, CommandError>,
+) -> Result<Value, CommandError> {
+    for _ in 0..TRIES {
         let (mut scratch, key, base, hook) = {
             let mut s = lock(session);
             begin(&mut s, origin);
@@ -166,25 +192,26 @@ pub fn execute(
                 s.unlocked_hook.clone(),
             )
         };
-        let result = compute(id, hook, || scratch.execute(id, params.clone(), origin));
-        let mut s = lock(session);
-        if Key::of(&s) == key {
-            let twin = scratch
-                .docs
-                .pop()
-                .expect("a scratch session has one document");
-            s.doc_mut().adopt(&base, twin);
+        let result = compute(id, hook, || run(&mut scratch));
+        {
+            let mut s = lock(session);
+            let fresh = Key::of(&s) == key;
+            if fresh {
+                let twin = scratch
+                    .docs
+                    .pop()
+                    .expect("a scratch session has one document");
+                s.doc_mut().adopt(&base, twin);
+            }
             s.prune_pending();
-            return result;
+            if !fresh {
+                continue;
+            }
         }
-        s.prune_pending();
-        match policy {
-            Stale::Snapshot => return result,
-            Stale::Retry(what) if attempt == TRIES => return Err(changed_error(what)),
-            Stale::Retry(_) => {}
-        }
+        let done = result?;
+        return compute(id, None, || finish(done));
     }
-    unreachable!("the last try returns")
+    Err(changed_error(what))
 }
 
 /// `project.open` off the lock: the file is read and its shapes rebuilt
@@ -195,13 +222,10 @@ fn open(
     session: &Mutex<Session>,
     params: Value,
     origin: Origin,
-    policy: Stale,
+    what: &str,
 ) -> Result<Value, CommandError> {
-    let Stale::Retry(what) = policy else {
-        unreachable!("project.open retries")
-    };
     let id = "project.open";
-    for attempt in 1..=TRIES {
+    for _ in 0..TRIES {
         let (p, profiles, hook) = {
             let mut s = lock(session);
             begin(&mut s, origin);
@@ -212,9 +236,6 @@ fn open(
         let mut s = lock(session);
         if s.profiles.revision() != profiles.revision() {
             s.prune_pending();
-            if attempt == TRIES {
-                return Err(changed_error(what));
-            }
             continue;
         }
         let (document, warnings) = match loaded {
@@ -229,7 +250,7 @@ fn open(
         };
         return s.run_prepared(&install, origin);
     }
-    unreachable!("the last try returns")
+    Err(changed_error(what))
 }
 
 /// A project read and rebuilt off the lock, opened as the command

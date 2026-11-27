@@ -367,15 +367,17 @@ fn a_document_that_keeps_changing_gives_a_clear_error() {
 }
 
 #[test]
-fn an_export_returns_the_document_it_began_with() {
+fn an_export_is_written_only_from_the_document_as_it_is() {
     let dir = tempfile::tempdir().unwrap();
     let s = shared(dir.path());
     let id = add_svg(&s);
     let tries = Arc::new(AtomicUsize::new(0));
     let t = tries.clone();
     set_hook(&s, move |s, _| {
-        t.fetch_add(1, Ordering::SeqCst);
-        nudge(s, id);
+        // The person moves the object while the first try makes the file.
+        if t.fetch_add(1, Ordering::SeqCst) == 0 {
+            nudge(s, id);
+        }
     });
     let path = dir.path().join("cut.svg");
     let r = unlocked_run(
@@ -385,8 +387,36 @@ fn an_export_returns_the_document_it_began_with() {
     )
     .unwrap();
     assert_eq!(r["objects"], 1);
-    assert_eq!(tries.load(Ordering::SeqCst), 1, "the file is written once");
-    assert!(path.exists());
+    assert_eq!(tries.load(Ordering::SeqCst), 2, "made once more");
+    // The file shows the moved object: the same file as an export now.
+    let now = dir.path().join("now.svg");
+    locked_run(
+        &s,
+        "document.export",
+        json!({ "path": now, "format": "svg" }),
+    )
+    .unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), std::fs::read(&now).unwrap());
+
+    // A document that keeps changing: no file at all.
+    let t = tries.clone();
+    set_hook(&s, move |s, _| {
+        t.fetch_add(1, Ordering::SeqCst);
+        nudge(s, id);
+    });
+    tries.store(0, Ordering::SeqCst);
+    let other = dir.path().join("other.svg");
+    let r = unlocked_run(
+        &s,
+        "document.export",
+        json!({ "path": other, "format": "svg" }),
+    );
+    assert_eq!(r, Err(changed_error("the file was exported")));
+    assert_eq!(tries.load(Ordering::SeqCst), 2);
+    assert!(
+        !other.exists(),
+        "nothing built on an older state is written"
+    );
 }
 
 #[test]
