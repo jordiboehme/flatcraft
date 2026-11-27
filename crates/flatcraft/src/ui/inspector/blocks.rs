@@ -12,7 +12,7 @@ use super::super::icons::{self, Icon};
 use super::super::rails::Dot;
 use super::super::settings::set_name;
 use super::super::theme::Tokens;
-use super::super::{Action, fonts};
+use super::super::{Action, fonts, metrics};
 
 // ---------------------------------------------------------------- job line
 
@@ -64,14 +64,33 @@ pub fn job_line_card(s: &JobSummary) -> String {
     )
 }
 
-/// The height of the job line, in points.
-pub const JOB_LINE_H: f32 = 30.0;
+/// The height of the job line: one panel row.
+pub const JOB_LINE_H: f32 = metrics::ROW;
 
-/// The job line: the state dot, the summary on one line (cut short with
-/// "..." when it does not fit, the card holds all of it) and a chevron.
-/// The whole line is one button.
-pub fn job_line(ui: &mut Ui, s: &JobSummary, t: &Tokens) -> Response {
+/// What the job line did this frame.
+pub struct JobLine {
+    /// The job part (the dot, the summary and its chevron).
+    pub job: Response,
+    /// The panel's collapse button at its right end.
+    pub collapse: Response,
+}
+
+/// The job line: one bordered element a row high. On the left the job
+/// part, a button of its own: the state dot, the summary on one line (cut
+/// short with "...", the card holds all of it) and a chevron. On the right,
+/// after a thin divider, the panel's collapse button.
+pub fn job_line(
+    ui: &mut Ui,
+    s: &JobSummary,
+    t: &Tokens,
+    collapse_name: &str,
+    collapse_card: &str,
+) -> JobLine {
     let w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(vec2(w, JOB_LINE_H), Sense::hover());
+    let side = metrics::ICON_BUTTON + metrics::SPACE_4;
+    let job_rect = Rect::from_min_max(rect.min, egui::pos2(rect.right() - side, rect.bottom()));
+    let fold_rect = Rect::from_min_max(egui::pos2(rect.right() - side, rect.top()), rect.max);
     // With nothing selected the Job panel is already below: the line only
     // shows, a click does nothing.
     let sense = if s.selection {
@@ -79,16 +98,23 @@ pub fn job_line(ui: &mut Ui, s: &JobSummary, t: &Tokens) -> Response {
     } else {
         Sense::hover()
     };
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, JOB_LINE_H), sense);
+    let resp = ui.interact(job_rect, Id::unique("flatcraft-job-line"), sense);
     let name = s.name();
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.as_str()));
     set_name(ui, &resp, &name);
+    let fold = ui.interact(
+        fold_rect,
+        Id::unique("flatcraft-job-line-fold"),
+        Sense::click(),
+    );
+    fold.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, collapse_name));
+    set_name(ui, &fold, collapse_name);
     if ui.is_rect_visible(rect) {
         let p = ui.painter();
         let hovered = resp.hovered() && s.selection;
         let border = if s.open {
             t.accent_prepare
-        } else if hovered {
+        } else if hovered || fold.hovered() {
             t.text_dim
         } else {
             t.border
@@ -96,17 +122,52 @@ pub fn job_line(ui: &mut Ui, s: &JobSummary, t: &Tokens) -> Response {
         p.rect(
             rect.shrink(0.5),
             t.radius,
-            if hovered { t.surface } else { t.panel },
+            t.panel,
+            egui::Stroke::NONE,
+            egui::StrokeKind::Inside,
+        );
+        // Hover is a light fill on the part under the pointer.
+        if hovered {
+            p.rect_filled(
+                job_rect.shrink(1.0),
+                egui::CornerRadius {
+                    nw: t.radius,
+                    sw: t.radius,
+                    ne: 0,
+                    se: 0,
+                },
+                t.surface,
+            );
+        }
+        if fold.hovered() {
+            p.rect_filled(
+                fold_rect.shrink(1.0),
+                egui::CornerRadius {
+                    nw: 0,
+                    sw: 0,
+                    ne: t.radius,
+                    se: t.radius,
+                },
+                t.surface,
+            );
+        }
+        p.rect_stroke(
+            rect.shrink(0.5),
+            t.radius,
             egui::Stroke::new(1.0, border),
             egui::StrokeKind::Inside,
         );
-        let dot = rect.left_center() + vec2(14.0, 0.0);
+        p.vline(
+            fold_rect.left(),
+            rect.y_range().shrink(metrics::SPACE_4),
+            egui::Stroke::new(1.0, t.border),
+        );
+        let dot = rect.left_center() + vec2(metrics::SPACE_12, 0.0);
         p.circle_filled(dot, 4.0, dot_colour(s.dot, t));
         // Down opens the Job view over the selection, left goes back. No
-        // chevron with nothing selected (nothing to open), so it never
-        // reads like the panel's fold button beside it.
-        let size = 14.0;
-        let mut right = rect.right() - 8.0;
+        // chevron with nothing selected (nothing to open).
+        let size = metrics::ICON_CHEVRON;
+        let mut right = job_rect.right() - metrics::SPACE_8;
         let icon = match (s.selection, s.open) {
             (false, _) => None,
             (true, false) => Some(Icon::ChevronDown),
@@ -114,24 +175,34 @@ pub fn job_line(ui: &mut Ui, s: &JobSummary, t: &Tokens) -> Response {
         };
         if let Some(icon) = icon {
             let tex = icons::texture(ui.ctx(), icon, size);
-            let icon_rect =
-                Rect::from_center_size(rect.right_center() - vec2(14.0, 0.0), vec2(size, size));
+            let icon_rect = Rect::from_center_size(
+                egui::pos2(right - size / 2.0, rect.center().y),
+                vec2(size, size),
+            );
             p.image(
                 tex.id(),
                 icon_rect,
                 Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                 t.text_dim,
             );
-            right = icon_rect.left() - 6.0;
+            right = icon_rect.left() - metrics::SPACE_4;
         }
-        let left = dot.x + 10.0;
+        let left = dot.x + metrics::SPACE_8;
         line_parts(
             p,
             s,
-            FontId::proportional(13.0),
+            metrics::body(),
             t.text,
             egui::pos2(left, rect.center().y),
             (right - left).max(0.0),
+        );
+        let icon = metrics::ICON_COMPACT;
+        let tex = icons::texture(ui.ctx(), Icon::ChevronRight, icon);
+        p.image(
+            tex.id(),
+            Rect::from_center_size(fold_rect.center(), vec2(icon, icon)),
+            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            if fold.hovered() { t.text } else { t.text_dim },
         );
     }
     let resp = if s.selection {
@@ -140,7 +211,11 @@ pub fn job_line(ui: &mut Ui, s: &JobSummary, t: &Tokens) -> Response {
         resp
     };
     groups::card(&resp, "Job", &job_line_card(s), None, false);
-    resp
+    groups::card(&fold, collapse_name, collapse_card, None, false);
+    JobLine {
+        job: resp,
+        collapse: fold,
+    }
 }
 
 /// The separator between the parts of the job line.
@@ -320,7 +395,7 @@ pub fn set_open(ctx: &egui::Context, id: &str, open: bool) {
 
 /// The height of a section header, in points. Fixed, so a changed
 /// summary never moves what is below it.
-pub const HEADER_H: f32 = 28.0;
+pub const HEADER_H: f32 = metrics::SECTION_HEADER;
 
 /// The id of a section's Advanced part.
 pub fn advanced_id(id: &str) -> String {
@@ -372,7 +447,7 @@ pub fn section_named(
 ) -> bool {
     let open = header(ui, id, title, name, card, summary, default_open, false);
     if open {
-        ui.add_space(2.0);
+        clear_labels(ui);
         body(ui);
         if let Some(advanced) = advanced {
             let id = advanced_id(id);
@@ -383,7 +458,7 @@ pub fn section_named(
                 advanced(ui);
             }
         }
-        ui.add_space(6.0);
+        clear_labels(ui);
     }
     open
 }
@@ -401,13 +476,36 @@ fn header(
     default_open: bool,
     sub: bool,
 ) -> bool {
-    let mut open = is_open(ui.ctx(), id, default_open);
+    let open = is_open(ui.ctx(), id, default_open);
+    let open = header_row(ui, title, name, card, summary, open, sub);
+    if open != is_open(ui.ctx(), id, default_open) {
+        set_open(ui.ctx(), id, open);
+    }
+    open
+}
+
+/// A section header whose open state the caller keeps (the Objects
+/// panel's Notes): it looks and reads like every section's. Returns the
+/// state after this frame's click.
+pub fn toggle_header(ui: &mut Ui, title: &str, card: &str, open: bool) -> bool {
+    header_row(ui, title, title, card, "", open, false)
+}
+
+/// Draws a header with the state `open` and returns it after a click.
+fn header_row(
+    ui: &mut Ui,
+    title: &str,
+    name: &str,
+    card: &str,
+    summary: &str,
+    mut open: bool,
+    sub: bool,
+) -> bool {
     let w = ui.available_width();
-    let h = if sub { HEADER_H - 4.0 } else { HEADER_H };
+    let h = if sub { metrics::SUB_HEADER } else { HEADER_H };
     let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
     if resp.clicked() {
         open = !open;
-        set_open(ui.ctx(), id, open);
     }
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
     set_name(ui, &resp, name);
@@ -440,9 +538,9 @@ fn header(
         let caret = if resp.hovered() { ink } else { dim };
         p.add(egui::Shape::convex_polygon(pts, caret, egui::Stroke::NONE));
         let font = if sub {
-            fonts::semibold(12.0)
+            fonts::semibold(metrics::TEXT_SECONDARY)
         } else {
-            fonts::semibold(13.0)
+            metrics::section_title()
         };
         let color = if sub { dim } else { ink };
         let left = rect.left() + 14.0;
@@ -456,12 +554,12 @@ fn header(
             Align::LEFT,
         );
         if !open && !summary.is_empty() {
-            let room = rect.right() - t.right() - 16.0;
+            let room = rect.right() - t.right() - metrics::SPACE_16;
             if room > 12.0 {
                 one_line(
                     p,
                     summary,
-                    FontId::proportional(12.0),
+                    metrics::secondary(),
                     dim,
                     egui::pos2(rect.right(), rect.center().y),
                     room,
@@ -498,7 +596,7 @@ fn tokens(ui: &Ui) -> Tokens {
 /// on it: a state that comes and goes ("Checking...") never moves what
 /// is below it. The text is cut short on its one line.
 pub fn status_line(ui: &mut Ui, text: &str, color: Color32) -> Response {
-    let h = ui.text_style_height(&egui::TextStyle::Body);
+    let h = metrics::ROW;
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
     if !text.is_empty() {
@@ -507,7 +605,7 @@ pub fn status_line(ui: &mut Ui, text: &str, color: Color32) -> Response {
         one_line(
             ui.painter(),
             text,
-            FontId::proportional(12.0),
+            metrics::secondary(),
             color,
             egui::pos2(rect.left(), rect.center().y),
             w,
@@ -519,7 +617,14 @@ pub fn status_line(ui: &mut Ui, text: &str, color: Color32) -> Response {
 
 /// A short dimmed line inside a section (an explanation, a "why").
 pub fn note(ui: &mut Ui, text: &str, color: Color32) -> Response {
-    ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).wrap())
+    ui.add(
+        egui::Label::new(
+            RichText::new(text)
+                .size(metrics::TEXT_SECONDARY)
+                .color(color),
+        )
+        .wrap(),
+    )
 }
 
 // ---------------------------------------------------------------- rows
@@ -544,11 +649,59 @@ pub struct RowResponse {
 }
 
 /// The width of the change dot's slot.
-const DOT_W: f32 = 12.0;
+const DOT_W: f32 = metrics::DOT_SLOT;
 
-/// The label column of a row in a panel `w` wide.
-pub fn label_width(w: f32) -> f32 {
-    (w * 0.38).clamp(72.0, 136.0)
+fn label_column_id(ui: &Ui) -> Id {
+    ui.scope_id().with("flatcraft-label-column")
+}
+
+/// Sets the label column of the rows that follow in this section: as
+/// wide as the longest of `labels` (within `metrics::LABEL_MIN` and
+/// `LABEL_MAX`). Every section calls it first with all its labels, so
+/// its rows line up and the column never changes from frame to frame.
+pub fn labels(ui: &Ui, labels: &[&str]) {
+    let font = metrics::body();
+    let widest = labels
+        .iter()
+        .map(|l| {
+            ui.painter()
+                .layout_no_wrap((*l).to_string(), font.clone(), Color32::PLACEHOLDER)
+                .size()
+                .x
+        })
+        .fold(0.0, f32::max);
+    let w = metrics::label_column(widest);
+    let id = label_column_id(ui);
+    ui.ctx().data_mut(|d| d.insert_temp(id, w));
+}
+
+/// Forgets the label column (a section's end).
+fn clear_labels(ui: &Ui) {
+    let id = label_column_id(ui);
+    ui.ctx().data_mut(|d| d.remove::<f32>(id));
+}
+
+/// The label column of a row labelled `label`: the section's, or one that
+/// fits this label alone.
+pub fn label_width(ui: &Ui, label: &str) -> f32 {
+    let id = label_column_id(ui);
+    ui.ctx().data(|d| d.get_temp::<f32>(id)).unwrap_or_else(|| {
+        let w = ui
+            .painter()
+            .layout_no_wrap(label.to_string(), metrics::body(), Color32::PLACEHOLDER)
+            .size()
+            .x;
+        metrics::label_column(w)
+    })
+}
+
+/// Sets the panel spacing on `ui`: controls [`metrics::CONTROL`] tall and
+/// no automatic room between widgets (rows and headers carry their own).
+pub fn panel_spacing(ui: &mut Ui) {
+    let s = ui.spacing_mut();
+    s.interact_size.y = metrics::CONTROL;
+    s.button_padding.y = metrics::SPACE_2;
+    s.item_spacing.y = 0.0;
 }
 
 /// A row: the dimmed label, the change dot, the value widget and the
@@ -575,11 +728,11 @@ pub fn row_dimmed(
     source: Option<SourceValue>,
     widget: impl FnOnce(&mut Ui) -> Response,
 ) -> RowResponse {
-    let h = ui.spacing().interact_size.y;
+    let h = metrics::CONTROL;
     let w = ui.available_width();
     let changed = source.as_ref().is_some_and(|s| s.changed);
-    let reset_w = h + 4.0;
-    let label_w = label_width(w);
+    let reset_w = h + metrics::SPACE_4;
+    let label_w = label_width(ui, label);
     let mut reset = None;
     let mut out = None;
     let card = match &source {
@@ -590,17 +743,21 @@ pub fn row_dimmed(
         Some(s) => format!("{card} This is the value of {}.", s.label),
         None => card.to_string(),
     };
-    ui.allocate_ui_with_layout(vec2(w, h), Layout::left_to_right(Align::Center), |ui| {
+    let (row_rect, _) = ui.allocate_exact_size(vec2(w, metrics::ROW), Sense::hover());
+    let builder = egui::UiBuilder::new()
+        .max_rect(row_rect)
+        .layout(Layout::left_to_right(Align::Center));
+    ui.scope_builder(builder, |ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         let (lr, lresp) = ui.allocate_exact_size(vec2(label_w, h), Sense::hover());
         let dim = tokens(ui).text_dim;
         one_line(
             ui.painter(),
             label,
-            egui::TextStyle::Body.resolve(ui.style()),
+            metrics::body(),
             dim,
             egui::pos2(lr.left(), lr.center().y),
-            lr.width() - 4.0,
+            lr.width() - metrics::SPACE_4,
             Align::LEFT,
         );
         groups::card(&lresp, label, &card, why, false);
@@ -621,7 +778,7 @@ pub fn row_dimmed(
         let ww = (ui.available_width() - reset_w).max(24.0);
         let r = ui
             .allocate_ui_with_layout(vec2(ww, h), Layout::left_to_right(Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.spacing_mut().item_spacing.x = metrics::SPACE_4;
                 widget(ui)
             })
             .inner;
@@ -632,7 +789,7 @@ pub fn row_dimmed(
         };
         set_name(ui, &r, &name);
         groups::card(&r, label, &card, why, false);
-        ui.add_space(4.0);
+        ui.add_space(metrics::SPACE_4);
         match &source {
             Some(s) if s.changed => {
                 let name = format!("Reset {}", label.to_lowercase());
@@ -654,7 +811,6 @@ pub fn row_dimmed(
         }
         out = Some(r);
     });
-    ui.add_space(ui.spacing().item_spacing.y);
     RowResponse {
         widget: out.expect("the row draws its widget"),
         reset,
@@ -666,36 +822,41 @@ pub fn row_dimmed(
 /// own names and cards; `card` is the label's. They wrap to more lines
 /// when the panel is narrow. An empty label leaves the label column empty.
 pub fn actions_row(ui: &mut Ui, label: &str, card: &str, add: impl FnOnce(&mut Ui)) {
-    let h = ui.spacing().interact_size.y;
-    let w = ui.available_width();
-    let label_w = label_width(w);
+    // Each line of buttons is a row: the buttons sit in its middle.
+    let pad = (metrics::ROW - metrics::ICON_BUTTON) / 2.0;
+    let label_w = label_width(ui, label);
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
-        let (lr, lresp) = ui.allocate_exact_size(vec2(label_w + DOT_W, h), Sense::hover());
+        let (lr, lresp) =
+            ui.allocate_exact_size(vec2(label_w + DOT_W, metrics::ROW), Sense::hover());
         if !label.is_empty() {
             let dim = tokens(ui).text_dim;
             one_line(
                 ui.painter(),
                 label,
-                egui::TextStyle::Body.resolve(ui.style()),
+                metrics::body(),
                 dim,
                 egui::pos2(lr.left(), lr.center().y),
-                label_w - 4.0,
+                label_w - metrics::SPACE_4,
                 Align::LEFT,
             );
             groups::card(&lresp, label, card, None, false);
         }
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
-            add(ui);
+        ui.vertical(|ui| {
+            ui.add_space(pad);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(metrics::SPACE_4, 2.0 * pad);
+                ui.spacing_mut().interact_size.y = metrics::ICON_BUTTON;
+                add(ui);
+            });
+            ui.add_space(pad);
         });
     });
-    ui.add_space(ui.spacing().item_spacing.y);
 }
 
 /// The height of the heading under the job line ("Job", "2 objects"):
 /// the title and one line under it.
-pub const HEADING_H: f32 = 40.0;
+pub const HEADING_H: f32 = metrics::HEADING;
 
 /// The heading under the job line: what the panel shows ("2 objects",
 /// "Group 'Badge'") and one dimmed line under it ("Star, Circle · in
@@ -710,21 +871,26 @@ pub fn heading(ui: &mut Ui, title: &str, subtitle: &str, card: &str) -> Response
     if ui.is_rect_visible(rect) {
         let tk = tokens(ui);
         let p = ui.painter();
+        // The title in the top 20 pt, the line under it in the rest.
+        let title_h = metrics::ROW - metrics::SPACE_8;
         one_line(
             p,
             title,
-            fonts::semibold(16.0),
+            metrics::heading(),
             tk.text,
-            egui::pos2(rect.left(), rect.top() + 11.0),
+            egui::pos2(rect.left(), rect.top() + title_h / 2.0),
             w,
             Align::LEFT,
         );
         one_line(
             p,
             subtitle,
-            FontId::proportional(12.0),
+            metrics::secondary(),
             tk.text_dim,
-            egui::pos2(rect.left(), rect.top() + 30.0),
+            egui::pos2(
+                rect.left(),
+                rect.top() + title_h + (HEADING_H - title_h) / 2.0,
+            ),
             w,
             Align::LEFT,
         );
@@ -740,12 +906,12 @@ pub fn heading(ui: &mut Ui, title: &str, subtitle: &str, card: &str) -> Response
 
 /// The small reset arrow of a changed row.
 fn reset_button(ui: &mut Ui, name: &str) -> Response {
-    let size = 14.0;
+    let size = metrics::ICON_COMPACT;
     let tex = icons::texture(ui.ctx(), Icon::RotateLeft, size);
     let image =
         egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), vec2(size, size)))
             .alt_text(name);
-    let h = ui.spacing().interact_size.y;
+    let h = metrics::CONTROL;
     let r = ui.add_sized(vec2(h, h), egui::Button::image(image).frame(false));
     set_name(ui, &r, name);
     r
@@ -756,16 +922,16 @@ fn reset_button(ui: &mut Ui, name: &str) -> Response {
 /// readers it is a read-only field named after the row.
 pub fn value_row(ui: &mut Ui, label: &str, card: &str, value: &str) -> Response {
     row(ui, label, card, None, |ui| {
-        let size = vec2(ui.available_width(), ui.spacing().interact_size.y);
+        let size = vec2(ui.available_width(), metrics::CONTROL);
         let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
         let ink = tokens(ui).text;
         one_line(
             ui.painter(),
             value,
-            egui::TextStyle::Body.resolve(ui.style()),
+            metrics::body(),
             ink,
-            egui::pos2(rect.left() + 4.0, rect.center().y),
-            rect.width() - 4.0,
+            egui::pos2(rect.left() + metrics::SPACE_4, rect.center().y),
+            rect.width() - metrics::SPACE_4,
             Align::LEFT,
         );
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, label));
@@ -893,15 +1059,16 @@ pub fn hint_card_with(
         .fill(accent.gamma_multiply(0.10))
         .stroke(egui::Stroke::new(1.0, accent.gamma_multiply(0.6)))
         .corner_radius(t.radius)
-        .inner_margin(egui::Margin::same(8))
+        .inner_margin(egui::Margin::same(metrics::SPACE_8 as i8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = metrics::SPACE_4;
             if title.is_some() || dismiss.is_some() {
                 ui.horizontal(|ui| {
                     if let Some((title, card)) = title {
                         let r = ui.label(
                             RichText::new(title)
-                                .font(fonts::semibold(13.0))
+                                .font(metrics::section_title())
                                 .color(title_ink),
                         );
                         groups::card(&r, title, card, None, false);

@@ -431,8 +431,14 @@ fn missing_source_shows_reconnect_and_relink_works() {
     focus_window(&mut h);
     h.get_by_label("3 source files not found");
     assert_eq!(h.query_all_by_label("Source file not found").count(), 3);
-    // The details of the selected object show its last known path.
-    h.get_by_label(&old.join("a.svg").display().to_string());
+    // The inspector's Source card shows its last known path.
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    let (_, card) = flatcraft::ui::inspector::object::source_file(&snap);
+    assert!(
+        card.contains(&old.join("a.svg").display().to_string()),
+        "{card}"
+    );
     h.get_by_role_and_label(Role::Button, "Reconnect...")
         .click();
     h.run_plan();
@@ -476,6 +482,11 @@ fn unlink_forgets_the_missing_file() {
     to_prepare(&mut h);
     focus_window(&mut h);
     h.get_by_label("1 source file not found");
+    // In the inspector's Source section, which is folded at first.
+    select(&s, &[id]);
+    h.run_plan();
+    h.get_by_role_and_label(Role::Button, "Source").click();
+    h.run_plan();
     h.get_by_role_and_label(Role::Button, "Unlink file").click();
     h.run_plan();
     let st = s.lock().unwrap();
@@ -2392,9 +2403,13 @@ fn objects_panel_marks_linked_copies_and_unlinks_one() {
     // Three marks for four rows: the lone square has none.
     assert_eq!(h.get_all_by_label("Linked copy").count(), 3);
     assert_eq!(link_group(&s, lone), None);
-    h.get_by_label("Linked copy, one of 3. It shares the source, the cut options, the keep mode and the scale.");
+    // The inspector's heading says it; Arrange unlinks it.
+    assert!(painted_texts(&h).contains(&"1 of 3 linked copies".to_string()));
+    h.get_by_role_and_label(Role::Button, "Arrange objects")
+        .click();
+    h.run_plan();
     let before = undo_len(&s);
-    h.get_by_role_and_label(Role::Button, "Unlink copy").click();
+    h.get_by_role_and_label(Role::Button, "Unlink").click();
     h.run_plan();
     wait_for_workers(&mut h);
     assert_eq!(undo_len(&s), before + 1);
@@ -2414,10 +2429,41 @@ fn settings_say_how_many_linked_copies_an_edit_changes() {
     select(&s, &[all[2]]);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
-    h.get_by_label("Applies to 3 linked copies");
+    // The heading's second line and the Cut card say it; no line is kept
+    // free for it.
+    assert!(painted_texts(&h).contains(&"1 of 3 linked copies".to_string()));
+    let ctx = h.ctx.clone();
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    let note = flatcraft::ui::inspector::object::linked_note(&snap).unwrap();
+    assert!(note.contains("applies to all 3 linked copies"), "{note}");
+    // Two copies selected: the line counts every copy they reach.
+    select(&s, &[all[0], all[1]]);
+    h.run_plan();
+    assert!(
+        painted_texts(&h).contains(&"applies to 3 linked copies".to_string()),
+        "{:?}",
+        painted_texts(&h)
+    );
     select(&s, &[lone]);
     h.run_plan();
-    assert!(h.query_by_label("Applies to 3 linked copies").is_none());
+    assert!(
+        !painted_texts(&h)
+            .iter()
+            .any(|t| t.contains("linked copies"))
+    );
+    let snap = flatcraft::ui::prepare::snapshot(app_mut(&mut h), &ctx);
+    assert!(flatcraft::ui::inspector::object::linked_note(&snap).is_none());
+}
+
+/// Every text painted this frame.
+fn painted_texts(h: &AppHarness) -> Vec<String> {
+    painted(h)
+        .into_iter()
+        .filter_map(|s| match s {
+            egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+            _ => None,
+        })
+        .collect()
 }
 
 #[test]

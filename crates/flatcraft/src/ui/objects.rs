@@ -1,8 +1,9 @@
 //! The Objects panel: one row per object with its kind, name, a mark for
 //! linked copies, file status, an eye to show or hide it and scissors to
 //! skip its cut. The two toggles are quiet until the row is hovered, and
-//! clear when the object is hidden or skipped. Below the list, the details of a single selected object with its linked copies
-//! and its linked file, then the project's notes.
+//! clear when the object is hidden or skipped. Below the list, the
+//! project's notes. What a selected object is (its name, size, file and
+//! linked copies) is in the inspector on the right.
 
 use egui::{Rect, RichText, Ui};
 use serde_json::json;
@@ -12,15 +13,15 @@ use super::icons::{self, Icon};
 use super::prepare::{ObjView, PrepareState, Snapshot};
 use super::rails::{Side, SidePanel};
 use super::theme::Tokens;
-use super::{Action, ICON_SIZE, fonts};
+use super::{Action, ICON_SIZE, fonts, metrics};
 
 /// A small icon with an accessible name.
 fn badge(ui: &mut Ui, icon: Icon, name: &str, colour: egui::Color32) {
-    let tex = icons::texture_colored(ui.ctx(), icon, ICON_SIZE * 0.8, colour);
+    let tex = icons::texture_colored(ui.ctx(), icon, metrics::ICON_COMPACT, colour);
     ui.add(
         egui::Image::from_texture(egui::load::SizedTexture::new(
             tex.id(),
-            egui::Vec2::splat(ICON_SIZE * 0.8),
+            egui::Vec2::splat(metrics::ICON_COMPACT),
         ))
         .alt_text(name),
     )
@@ -34,10 +35,10 @@ pub fn show(
     t: &Tokens,
     actions: &mut Vec<Action>,
 ) {
+    super::inspector::blocks::panel_spacing(ui);
     if super::rails::header(ui, SidePanel::Objects, Side::Left, "Objects") {
         st.panels.set_collapsed(SidePanel::Objects, true);
     }
-    ui.add_space(t.spacing / 2.0);
     // One scroll area for the whole panel, so the Notes below the list stay
     // reachable in a short window. The list keeps its own, at most 60 % of
     // the panel's height.
@@ -46,6 +47,7 @@ pub fn show(
         .id_salt("flatcraft-objects-panel")
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            super::inspector::blocks::panel_spacing(ui);
             if snap.objects.is_empty() {
                 ui.label(
                     RichText::new("Nothing here yet. Import a design to get started.")
@@ -60,19 +62,7 @@ pub fn show(
                     tree_rows(ui, st, snap, t, actions, None, 0);
                     top_level_drop(ui, snap, t, actions);
                 });
-
-            let mut selected = snap.selected();
-            if let (Some(o), None) = (selected.next(), selected.next()) {
-                ui.separator();
-                details(ui, o, st, snap, t, actions);
-            } else if let [unit] = snap.units().as_slice()
-                && snap.is_group(*unit)
-            {
-                ui.separator();
-                group_details(ui, snap, *unit, t);
-            }
-            ui.separator();
-            notes(ui, st, snap, t, actions);
+            notes(ui, st, snap, actions);
         });
 }
 
@@ -114,19 +104,12 @@ pub fn section_toggle(ui: &mut Ui, title: &str, open: bool, hint: &str) -> bool 
 /// Each visit to a field is one undo step: the typing goes in as it
 /// happens (`document.set_notes` with a coalesce key per visit), so the
 /// document is unsaved at once and Undo takes the whole visit back.
-fn notes(
-    ui: &mut Ui,
-    st: &mut PrepareState,
-    snap: &Snapshot,
-    t: &Tokens,
-    actions: &mut Vec<Action>,
-) {
-    if section_toggle(ui, "Notes", st.notes_open, NOTES_HINT) {
-        st.notes_open = !st.notes_open;
-    }
+fn notes(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Vec<Action>) {
+    st.notes_open = super::inspector::blocks::toggle_header(ui, "Notes", NOTES_HINT, st.notes_open);
     if !st.notes_open {
         return;
     }
+    ui.spacing_mut().item_spacing.y = metrics::SPACE_4;
     let doc_id = snap.doc_id;
     super::settings::painted_label(ui, "Description");
     let mut description = snap.description.clone();
@@ -150,7 +133,7 @@ fn notes(
             }),
         ));
     }
-    ui.add_space(t.spacing / 2.0);
+    ui.add_space(metrics::SPACE_4);
     super::settings::painted_label(ui, "Notes");
     let mut notes = snap.notes.clone();
     let r = ui.add(
@@ -177,7 +160,7 @@ fn notes(
 }
 
 /// How far a member's row is indented per group level.
-const INDENT: f32 = 16.0;
+const INDENT: f32 = metrics::INDENT;
 
 /// A row dragged in the list: the objects or groups it moves into or out
 /// of a group.
@@ -455,11 +438,14 @@ fn group_row(
     }
     let mut left = rect;
     left.set_left(rect.left() + depth as f32 * INDENT);
-    left.set_right(rect.right() - 2.0 * TOGGLE - 6.0);
+    left.set_right(rect.right() - 2.0 * TOGGLE - metrics::SPACE_8);
     // The fold arrow, a button of its own.
     let arrow = egui::Rect::from_center_size(
-        egui::pos2(left.left() + 6.0 + ICON_SIZE * 0.4, rect.center().y),
-        egui::Vec2::splat(ICON_SIZE),
+        egui::pos2(
+            left.left() + ROW_INSET + metrics::ICON_COMPACT / 2.0,
+            rect.center().y,
+        ),
+        egui::Vec2::splat(metrics::ICON_BUTTON),
     );
     let fold = ui.interact(
         arrow,
@@ -497,15 +483,15 @@ fn group_row(
     } else {
         Icon::ChevronRight
     };
-    let tex = icons::texture_colored(ui.ctx(), chevron, ICON_SIZE * 0.8, t.text_dim);
+    let tex = icons::texture_colored(ui.ctx(), chevron, metrics::ICON_COMPACT, t.text_dim);
     ui.painter().image(
         tex.id(),
-        egui::Rect::from_center_size(arrow.center(), egui::Vec2::splat(ICON_SIZE * 0.8)),
+        egui::Rect::from_center_size(arrow.center(), egui::Vec2::splat(metrics::ICON_COMPACT)),
         Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
         egui::Color32::WHITE,
     );
     let mut text = left;
-    text.set_left(arrow.right() + 2.0);
+    text.set_left(arrow.right() + metrics::SPACE_2);
     ui.scope_builder(
         egui::UiBuilder::new()
             .max_rect(text.shrink2(egui::vec2(0.0, 0.0)))
@@ -526,7 +512,10 @@ fn group_row(
     );
     let toggle_rect = |i: f32| {
         egui::Rect::from_center_size(
-            egui::pos2(rect.right() - 2.0 - TOGGLE * (1.5 - i), rect.center().y),
+            egui::pos2(
+                rect.right() - metrics::SPACE_2 - TOGGLE * (1.5 - i),
+                rect.center().y,
+            ),
             egui::Vec2::splat(TOGGLE),
         )
     };
@@ -596,33 +585,12 @@ fn group_row(
     row.context_menu(|ui| context_menu::show(ui, snap, st, actions));
 }
 
-/// What the panel says about one selected group.
-fn group_details(ui: &mut Ui, snap: &Snapshot, id: u64, t: &Tokens) {
-    let name = snap.name_of(id).unwrap_or_default();
-    ui.label(RichText::new(&name).font(fonts::medium(14.0)));
-    let n = snap.leaves_of(id).len();
-    if let Some(b) = snap.box_of(&snap.leaves_of(id)) {
-        ui.label(
-            RichText::new(format!(
-                "Group of {n} objects, {:.1} x {:.1} mm",
-                b.width(),
-                b.height()
-            ))
-            .color(t.text_dim),
-        );
-    }
-    ui.label(
-        RichText::new(
-            "It moves, turns and gets packed as one. Double-click a member on the mat to change it alone.",
-        )
-        .color(t.text_dim),
-    );
-}
-
-/// The height of a row: comfortable to click.
-const ROW_HEIGHT: f32 = 28.0;
-/// The side of a toggle button.
-const TOGGLE: f32 = 22.0;
+/// The height of a row: a panel row, as in the inspector.
+const ROW_HEIGHT: f32 = metrics::ROW;
+/// The side of a toggle button: a compact icon button.
+const TOGGLE: f32 = metrics::ICON_BUTTON;
+/// Room between a row's edge (its highlight) and its content.
+const ROW_INSET: f32 = metrics::SPACE_4;
 
 /// One row: a highlight when selected, the kind icon and the name, marks,
 /// and the two toggles on the right.
@@ -678,12 +646,12 @@ fn object_row(
     // past its fold arrow.
     let mut left = rect;
     if depth > 0 {
-        left.set_left(rect.left() + depth as f32 * INDENT + ICON_SIZE);
+        left.set_left(rect.left() + depth as f32 * INDENT + metrics::ICON_COMPACT);
     }
-    left.set_right(rect.right() - 2.0 * TOGGLE - 6.0);
+    left.set_right(rect.right() - 2.0 * TOGGLE - metrics::SPACE_8);
     ui.scope_builder(
         egui::UiBuilder::new()
-            .max_rect(left.shrink2(egui::vec2(6.0, 0.0)))
+            .max_rect(left.shrink2(egui::vec2(ROW_INSET, 0.0)))
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
         |ui| {
             let (icon, kind) = if o.raster {
@@ -714,7 +682,10 @@ fn object_row(
     // The toggles come after the row, so they win their clicks.
     let toggle_rect = |i: f32| {
         egui::Rect::from_center_size(
-            egui::pos2(rect.right() - 2.0 - TOGGLE * (1.5 - i), rect.center().y),
+            egui::pos2(
+                rect.right() - metrics::SPACE_2 - TOGGLE * (1.5 - i),
+                rect.center().y,
+            ),
             egui::Vec2::splat(TOGGLE),
         )
     };
@@ -832,9 +803,10 @@ fn toggle(
         }
         if alpha > 0.0 {
             let colour = if on { t.warn } else { t.text };
-            let tex = icons::texture_colored(ui.ctx(), icon, 14.0, colour);
+            let tex = icons::texture_colored(ui.ctx(), icon, metrics::ICON_COMPACT, colour);
             let tint = egui::Color32::WHITE.gamma_multiply(alpha);
-            let img = Rect::from_center_size(rect.center(), egui::Vec2::splat(14.0));
+            let img =
+                Rect::from_center_size(rect.center(), egui::Vec2::splat(metrics::ICON_COMPACT));
             ui.painter().image(
                 tex.id(),
                 img,
@@ -878,75 +850,4 @@ pub fn toggle_cut(snap: &Snapshot, o: &ObjView) -> Action {
         "object.set_cut",
         json!({ "ids": ids, "cut": !o.cut_enabled }),
     )
-}
-
-/// Name, kind, linked copies and linked file of one object.
-fn details(
-    ui: &mut Ui,
-    o: &ObjView,
-    st: &PrepareState,
-    snap: &Snapshot,
-    t: &Tokens,
-    actions: &mut Vec<Action>,
-) {
-    let doc_id = snap.doc_id;
-    let src = &st.sources;
-    ui.label(RichText::new(&o.name).font(fonts::medium(14.0)));
-    if let Some(b) = o.bounds() {
-        ui.label(
-            RichText::new(format!("{:.1} x {:.1} mm", b.width(), b.height())).color(t.text_dim),
-        );
-    }
-    if let Some(g) = o.link_group {
-        let n = snap.group_size(g);
-        ui.label(
-            RichText::new(format!(
-                "Linked copy, one of {n}. It shares the source, the cut options, the keep mode and the scale."
-            ))
-            .color(t.text_dim),
-        );
-        if ui
-            .button("Unlink copy")
-            .on_hover_text("Make this copy independent. The others stay linked.")
-            .clicked()
-        {
-            actions.push(Action::run(
-                doc_id,
-                "object.unlink_copies",
-                json!({ "ids": [o.id] }),
-            ));
-        }
-    }
-    let Some(path) = &o.link else {
-        ui.label(RichText::new("Not linked to a file").color(t.text_dim));
-        return;
-    };
-    ui.label(RichText::new("Linked file").color(t.text_dim));
-    ui.add(egui::Label::new(path.display().to_string()).wrap());
-    if src.missing.contains(&o.id) {
-        ui.colored_label(
-            t.danger,
-            "The file is gone. The project keeps its own copy.",
-        );
-    } else if src.unreadable.contains(&o.id) {
-        ui.colored_label(t.danger, "File can't be read");
-    } else if src.changed.contains(&o.id) {
-        ui.colored_label(t.accent_prepare, "The file has changed since the import.");
-    }
-    ui.horizontal(|ui| {
-        if src.broken(o.id) && ui.button("Reconnect file...").clicked() {
-            actions.push(Action::Reconnect { doc_id, id: o.id });
-        }
-        if ui
-            .button("Unlink file")
-            .on_hover_text("Forget the file. The object stays as it is.")
-            .clicked()
-        {
-            actions.push(Action::run(
-                doc_id,
-                "object.unlink",
-                json!({ "ids": [o.id] }),
-            ));
-        }
-    });
 }

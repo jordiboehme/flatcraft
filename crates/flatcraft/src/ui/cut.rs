@@ -427,9 +427,9 @@ pub fn send_label(snap: &Snapshot) -> String {
 
 /// Height of the stage bar: the ribbon's tools row, so Cut's bar is as
 /// tall as Prepare's groups.
-pub const BAR_HEIGHT: f32 = super::groups::ROW_HEIGHT;
+pub const BAR_HEIGHT: f32 = super::metrics::TOOLS_ROW;
 /// Size of the chevron between two steps, in points.
-const CHEVRON: f32 = 14.0;
+const CHEVRON: f32 = super::metrics::STEP_CHEVRON;
 
 impl Stage {
     /// The stage's icon on the bar.
@@ -692,7 +692,7 @@ pub fn stage_bar(
         .response
         .rect;
     // The same room between the buttons as on the ribbon.
-    ui.spacing_mut().item_spacing.x = super::groups::BUTTON_GAP;
+    ui.spacing_mut().item_spacing.x = super::metrics::BUTTON_GAP;
     let gap = ui.spacing().item_spacing.x;
     let mut rest = full;
     rest.set_right((debug.left() - gap).max(full.left()));
@@ -847,7 +847,11 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
         egui::Panel::right("flatcraft-cut-stage")
             .resizable(true)
             .default_size(280.0)
-            .frame(egui::Frame::new().fill(t.panel).inner_margin(t.spacing))
+            .frame(
+                egui::Frame::new()
+                    .fill(t.panel)
+                    .inner_margin(super::metrics::panel_margin()),
+            )
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     stage_panel(ui, app, snap, actions);
@@ -1016,7 +1020,11 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
                 );
                 ui.add_space(t.spacing);
             }
-            super::inspector::job::panel(ui, &mut app.ui.prepare, snap, &t, actions);
+            // The Job panel's rows, with the side panels' spacing.
+            ui.scope(|ui| {
+                super::inspector::blocks::panel_spacing(ui);
+                super::inspector::job::panel(ui, &mut app.ui.prepare, snap, &t, actions);
+            });
             super::materials::iron_on_reminder(ui, snap, &t, actions);
             if let Some(tr) = &app.ui.cut.transport {
                 ui.separator();

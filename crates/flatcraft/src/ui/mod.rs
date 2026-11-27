@@ -27,6 +27,7 @@ pub mod materials;
 #[cfg(target_os = "macos")]
 pub mod menu;
 pub mod menu_model;
+pub mod metrics;
 pub mod objects;
 pub mod outcome;
 pub mod prepare;

@@ -7,16 +7,14 @@ use egui::{Align2, Color32, CornerRadius, Key, Modifiers, Rect, Sense, Ui, Vec2,
 use super::icons::{self, Icon};
 use super::prepare::RibbonTab;
 use super::theme::Tokens;
-use super::{Action, FlatCraftApp, Workspace, cut, fonts, groups, ribbon as ribbon_tabs};
+use super::{Action, FlatCraftApp, Workspace, cut, fonts, groups, metrics, ribbon as ribbon_tabs};
 
 /// The workspaces the popup offers.
 pub const CHOICES: [Workspace; 2] = [Workspace::Prepare, Workspace::Cut];
 
-/// The height of the tile: the tab row and the ribbon panel.
-pub const TILE_HEIGHT: f32 =
-    ribbon_tabs::TAB_ROW + ribbon_tabs::PANEL_PAD.y + groups::ROW_HEIGHT + ribbon_tabs::PANEL_PAD.y;
-/// Room between the tile's edge and its text.
-const TILE_PAD: f32 = 14.0;
+// The tile's layout values live in `metrics`.
+pub use super::metrics::TILE_HEIGHT;
+use super::metrics::TILE_PAD;
 /// The width of the rows of the list.
 const LIST_WIDTH: f32 = 380.0;
 /// The height of one row of the list.
@@ -90,6 +88,10 @@ pub fn ribbon(
                                     // The panel's height, less its padding
                                     // and its 1 pt border.
                                     let inner = TILE_HEIGHT - 2.0 * ribbon_tabs::PANEL_PAD.y - 2.0;
+                                    debug_assert_eq!(
+                                        (inner - cut::BAR_HEIGHT) / 2.0,
+                                        cut_bar_offset()
+                                    );
                                     ui.set_min_height(inner);
                                     // The stage bar sits in the middle of the
                                     // panel's height.
@@ -202,7 +204,7 @@ fn switcher(ui: &mut Ui, app: &FlatCraftApp, actions: &mut Vec<Action>) {
 /// padding, nothing more.
 pub fn tile_width(ui: &Ui, w: Workspace) -> f32 {
     let name = ui.fonts_mut(|f| {
-        f.layout_no_wrap(w.name().to_owned(), fonts::semibold(14.0), Color32::WHITE)
+        f.layout_no_wrap(w.name().to_owned(), metrics::heading(), Color32::WHITE)
             .size()
             .x
     });
@@ -218,8 +220,39 @@ pub fn tile_width(ui: &Ui, w: Workspace) -> f32 {
     (name.max(sub + 14.0)).ceil() + 2.0 * TILE_PAD
 }
 
-/// The closed switcher: a colour bar on top, the icon, the name, and
-/// "Workspace" with a chevron, dimmed.
+/// The room above the Cut stage bar inside its panel: the panel is as
+/// tall as the tile, the bar sits in its middle.
+pub fn cut_bar_offset() -> f32 {
+    let inner = TILE_HEIGHT - 2.0 * metrics::RIBBON_PAD.y - 2.0;
+    (inner - cut::BAR_HEIGHT) / 2.0
+}
+
+/// The top of the tile's bottom line ("Workspace" and its chevron) in a
+/// tile whose top is `top`: on the baseline of the text beside it. In
+/// Prepare that is the group footers ("Add", "Edit"), in Cut the steps'
+/// status lines.
+pub fn bottom_line_top(ui: &Ui, w: Workspace, top: f32) -> f32 {
+    match w {
+        Workspace::Cut => {
+            // The stage panel's border, its padding, then the bar.
+            let bar_top = top + 1.0 + metrics::RIBBON_PAD.y + cut_bar_offset();
+            groups::step_detail_top(ui, bar_top + cut::BAR_HEIGHT / 2.0)
+        }
+        _ => {
+            let footer = top
+                + metrics::TAB_ROW
+                + metrics::RIBBON_PAD.y
+                + metrics::BIG_HEIGHT
+                + metrics::GROUP_GAP
+                + metrics::GROUP_FOOTER / 2.0;
+            groups::footer_text_top(ui, footer)
+        }
+    }
+}
+
+/// The closed switcher: a colour bar on top, the icon and the name in the
+/// middle, and "Workspace" with a chevron at the foot, on the line of the
+/// group footers beside it and drawn like them.
 fn tile(ui: &mut Ui, t: &Tokens, w: Workspace) -> egui::Response {
     let size = Vec2::new(tile_width(ui, w), TILE_HEIGHT);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
@@ -228,6 +261,7 @@ fn tile(ui: &mut Ui, t: &Tokens, w: Workspace) -> egui::Response {
     }
     let accent = w.accent(t);
     let radius = t.ribbon_radius;
+    let lit = resp.hovered() || resp.has_focus();
     let fill = if resp.hovered() { t.surface } else { t.panel };
     let painter = ui.painter();
     painter.rect(
@@ -238,8 +272,9 @@ fn tile(ui: &mut Ui, t: &Tokens, w: Workspace) -> egui::Response {
         egui::StrokeKind::Inside,
     );
     // The colour bar on top.
+    let bar = 3.0;
     painter.rect_filled(
-        Rect::from_min_size(rect.min, Vec2::new(rect.width(), 3.0)),
+        Rect::from_min_size(rect.min, Vec2::new(rect.width(), bar)),
         CornerRadius {
             nw: radius,
             ne: radius,
@@ -248,9 +283,27 @@ fn tile(ui: &mut Ui, t: &Tokens, w: Workspace) -> egui::Response {
         },
         accent,
     );
-    let icon_size = 24.0;
-    let content = icon_size + 5.0 + 17.0 + 2.0 + 13.0;
-    let top = rect.top() + 3.0 + (rect.height() - 3.0 - content) / 2.0;
+    // The foot, like a group footer: Small text and a chevron, weak until
+    // hovered.
+    let colour = if lit {
+        ui.style().interact(&resp).text_color()
+    } else {
+        ui.visuals().weak_text_color()
+    };
+    let galley = ui.painter().layout_no_wrap(
+        "Workspace".to_owned(),
+        egui::TextStyle::Small.resolve(ui.style()),
+        colour,
+    );
+    let sub_y = bottom_line_top(ui, w, rect.top());
+    // The icon and the name, centred in the room above the foot.
+    let icon_size = metrics::ICON_BIG;
+    let gap = 5.0;
+    let name = ui
+        .painter()
+        .layout_no_wrap(w.name().to_owned(), metrics::heading(), t.text);
+    let content = icon_size + gap + name.size().y;
+    let top = rect.top() + bar + (sub_y - rect.top() - bar - content) / 2.0;
     let tex = icons::texture_colored(ui.ctx(), w.icon(), icon_size, accent);
     let painter = ui.painter();
     painter.image(
@@ -262,36 +315,24 @@ fn tile(ui: &mut Ui, t: &Tokens, w: Workspace) -> egui::Response {
         Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
         Color32::WHITE,
     );
-    let name_y = top + icon_size + 5.0;
-    painter.text(
-        egui::pos2(rect.center().x, name_y),
-        Align2::CENTER_TOP,
-        w.name(),
-        fonts::semibold(14.0),
+    let name_y = top + icon_size + gap;
+    painter.galley(
+        egui::pos2(rect.center().x - name.size().x / 2.0, name_y),
+        name,
         t.text,
     );
-    let sub_y = name_y + 17.0 + 2.0;
-    let galley = painter.layout_no_wrap(
-        "Workspace".to_owned(),
-        egui::FontId::proportional(10.5),
-        t.text_dim,
-    );
-    let chevron = 10.0;
+    let chevron = metrics::ICON_CHEVRON;
     let total = galley.size().x + 2.0 + chevron;
     let x0 = rect.center().x - total / 2.0;
-    painter.galley(egui::pos2(x0, sub_y), galley.clone(), t.text_dim);
-    let ctex = icons::texture_colored(ui.ctx(), Icon::ChevronDown, chevron, t.text_dim);
-    ui.painter().image(
-        ctex.id(),
+    let line_h = galley.size().y;
+    let text_w = galley.size().x;
+    painter.galley(egui::pos2(x0, sub_y), galley, colour);
+    groups::image(ui, Icon::ChevronDown, chevron).paint_at(
+        ui,
         Rect::from_center_size(
-            egui::pos2(
-                x0 + galley.size().x + 2.0 + chevron / 2.0,
-                sub_y + galley.size().y / 2.0 + 0.5,
-            ),
+            egui::pos2(x0 + text_w + 2.0 + chevron / 2.0, sub_y + line_h / 2.0),
             Vec2::splat(chevron),
         ),
-        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-        Color32::WHITE,
     );
     resp
 }

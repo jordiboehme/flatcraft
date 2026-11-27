@@ -13,7 +13,11 @@ use super::calc;
 use super::canvas;
 use super::collapse::{self, Group, Mode};
 use super::groups::{self, Cx, Extras};
+use super::metrics;
+// The ribbon's layout values live in `metrics`.
 use super::icons::Icon;
+use super::metrics::{FIELD_MARGIN, LOCK_COLUMN, SIZE_GRID_GAP};
+pub use super::metrics::{RIBBON_PAD as PANEL_PAD, SEARCH_WIDTH, TAB_ROW};
 use super::prepare::{FieldEdit, FieldPlace, Fields, PrepareState, RibbonTab, SizeField, Snapshot};
 use super::rails::SidePanel;
 use super::settings::set_name;
@@ -45,9 +49,6 @@ const MAX_MM: f64 = 10_000.0;
 
 /// The largest scale the % field takes.
 const MAX_PERCENT: f64 = 100_000.0;
-
-/// The inner margin of the ribbon's number fields.
-const FIELD_MARGIN: egui::Vec2 = egui::vec2(4.0, 2.0);
 
 /// The widest value a millimetre field of the ribbon shows as wide as it
 /// is: 4 digits and 2 decimals, more than any mat.
@@ -780,11 +781,6 @@ fn search_box(ui: &mut Ui, cx: &mut Cx) {
     }
 }
 
-/// Height of the tab row above the ribbon panel.
-pub const TAB_ROW: f32 = 22.0;
-/// Room between the ribbon panel's border and its tools.
-pub const PANEL_PAD: egui::Vec2 = egui::vec2(4.0, 3.0);
-
 /// Where the ribbon drew its parts, for the tests and the next frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Layout {
@@ -859,9 +855,6 @@ fn mm(v: f64) -> String {
     format!("{v:.2}")
 }
 
-/// Width of the search box.
-pub const SEARCH_WIDTH: f32 = 200.0;
-
 /// The id of the ribbon's tool bar, for [`collapse::level`].
 pub fn bar_id() -> egui::Id {
     egui::Id::unique("flatcraft-ribbon-tools")
@@ -926,19 +919,19 @@ pub fn show(
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
             |ui| {
                 // As tall on every tab, so the ribbon does not jump.
-                ui.set_min_height(groups::ROW_HEIGHT);
-                ui.spacing_mut().item_spacing.x = groups::BUTTON_GAP;
+                ui.set_min_height(metrics::TOOLS_ROW);
+                ui.spacing_mut().item_spacing.x = metrics::BUTTON_GAP;
                 let tab = cx.st.tab;
                 let bar = bar_groups(ui, tab);
                 let sig = signature(tab, &cx);
-                collapse::show(ui, bar_id(), sig, groups::ROW_HEIGHT, &bar, &mut cx);
+                collapse::show(ui, bar_id(), sig, metrics::TOOLS_ROW, &bar, &mut cx);
             },
         )
         .response
         .rect;
     let tools = egui::Rect::from_min_size(
         tools.min,
-        egui::vec2(tools_rect.width(), groups::ROW_HEIGHT),
+        egui::vec2(tools_rect.width(), metrics::TOOLS_ROW),
     );
     let panel = egui::Rect::from_min_max(
         egui::pos2(full.left(), tab_row.bottom()),
@@ -1129,7 +1122,7 @@ fn switch(
 fn size_group(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
     let def = GroupId::Size.def();
     ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = groups::GROUP_GAP;
+        ui.spacing_mut().item_spacing.y = metrics::GROUP_GAP;
         // Three columns of two rows: X above Y, W above H, and % above
         // the Angle; each is a grid, so the labels line up. The Keep
         // aspect lock sits left of W and H, on a bracket that joins them.
@@ -1137,7 +1130,7 @@ fn size_group(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
             // Two rows fill the pins row's height, so the columns start at
             // its top (a grid does not centre itself in a row).
             ui.allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), groups::BIG_HEIGHT),
+                egui::vec2(ui.available_width(), metrics::BIG_HEIGHT),
                 egui::Layout::left_to_right(egui::Align::Min),
                 |ui| {
                     egui::Grid::new("flatcraft-size-xy")
@@ -1153,7 +1146,7 @@ fn size_group(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
                     // The grid ends with its own gap.
                     ui.add_space(-SIZE_GRID_GAP.x);
                     let (column, _) = ui.allocate_exact_size(
-                        egui::vec2(LOCK_COLUMN, groups::BIG_HEIGHT),
+                        egui::vec2(LOCK_COLUMN, metrics::BIG_HEIGHT),
                         egui::Sense::hover(),
                     );
                     ui.spacing_mut().item_spacing.x = gap;
@@ -1175,7 +1168,7 @@ fn size_group(ui: &mut Ui, mode: Mode, cx: &mut Cx) {
         });
         // Its title, like a group button, but nothing to open.
         let (rect, resp) = ui.allocate_exact_size(
-            egui::vec2(top.width(), groups::GROUP_BUTTON_HEIGHT),
+            egui::vec2(top.width(), metrics::GROUP_FOOTER),
             egui::Sense::hover(),
         );
         ui.painter().text(
@@ -1225,9 +1218,6 @@ fn size_angle(ui: &mut Ui, cx: &mut Cx) {
 /// The size of an icon that labels a field.
 const LABEL_ICON: f32 = 12.0;
 
-/// Room between the cells of the group's columns.
-const SIZE_GRID_GAP: egui::Vec2 = egui::vec2(4.0, 4.0);
-
 /// The third column: % above the Angle.
 fn size_scale(ui: &mut Ui, cx: &mut Cx) {
     // The % needs no box.
@@ -1236,9 +1226,6 @@ fn size_scale(ui: &mut Ui, cx: &mut Cx) {
     ui.end_row();
     size_angle(ui, cx);
 }
-
-/// The width of the Keep aspect column: the lock and the bracket's arms.
-const LOCK_COLUMN: f32 = 14.0;
 
 /// Where the lock's centre sits in its column, from the column's left:
 /// room for an open shackle on the left.

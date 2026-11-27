@@ -756,7 +756,11 @@ fn inspector_follows_selection_in_the_same_frame() {
     app_mut(&mut h).ui.prepare.entered = Some((doc, g));
     run(&s, "object.select", json!({ "ids": [b] }));
     h.step();
-    the(&h, "beta · in group Badge");
+    the(&h, "beta");
+    // The group is on the heading's second line.
+    let (_, sub) = object::heading(&snap(&mut h));
+    assert_eq!(sub, "in group Badge");
+    assert!(painted_text(&h, "in group Badge"));
     assert_eq!(value(&h, "Keep"), "Stencil");
 }
 

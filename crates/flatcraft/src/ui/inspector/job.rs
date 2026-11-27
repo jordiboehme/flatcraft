@@ -21,7 +21,7 @@ use super::super::settings::{
 use super::super::settings_window::strategy_name;
 use super::super::theme::Tokens;
 use super::super::tools::Setting;
-use super::super::{Action, groups, materials, outcome};
+use super::super::{Action, groups, materials, metrics, outcome};
 use super::blocks::{self, JobSummary, SourceValue};
 
 /// The ids of the Job panel's sections.
@@ -236,6 +236,7 @@ fn machine(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec<Action>) 
                 .iter()
                 .map(|p| (p.id.clone(), p.name.clone()))
                 .collect();
+            blocks::labels(ui, &["Plotter", "Mat", "Material"]);
             let mut picked = None;
             blocks::row(ui, "Plotter", PLOTTER_CARD, None, |ui| {
                 let (r, p) = combo(
@@ -339,6 +340,7 @@ fn values(
                 return;
             };
             let job = &snap.job;
+            blocks::labels(ui, &["Speed", "Force", "Passes"]);
             let rows = [
                 (
                     Override::Speed,
@@ -410,7 +412,7 @@ fn values(
                     Some(source),
                     |ui| {
                         let field = Field::plain().integer().range(f64::from(range[0]), max);
-                        let spec = Number::new(field).width(ui.available_width() - 8.0);
+                        let spec = Number::new(field).width(ui.available_width());
                         let spec = if which == Override::Speed {
                             spec.clamp()
                         } else {
@@ -484,6 +486,7 @@ fn order(ui: &mut Ui, snap: &Snapshot, actions: &mut Vec<Action>) {
                 "Short travel first. Use it for simple shapes when time counts.",
                 "Like Quality, but every outline comes after the holes and inner pieces, so the sheet holds together until the end.",
             ];
+            blocks::labels(ui, &["Strategy"]);
             let mut picked = None;
             blocks::row(ui, "Strategy", STRATEGY_CARD, None, |ui| {
                 let (r, p) = combo(
@@ -574,9 +577,17 @@ fn weed_mm(
         calc::hint(Kind::Length)
     );
     blocks::row_dimmed(ui, label, &card, why, None, |ui| {
+        // The field fills the value column, less the unit after it.
+        let unit = ui
+            .painter()
+            .layout_no_wrap("mm".into(), metrics::body(), egui::Color32::PLACEHOLDER)
+            .size()
+            .x;
+        let w = ui.available_width() - unit - ui.spacing().item_spacing.x;
         let spec = Number::new(Field::new(Kind::Length).range(lo, hi))
             .decimals(0, 2)
-            .unit("mm");
+            .unit("mm")
+            .width(w);
         let (r, t) = calc::number(ui, ("flatcraft-weed", label), why.is_none(), &mut v, &spec);
         typed = t;
         r
@@ -616,6 +627,16 @@ fn weeding(ui: &mut Ui, snap: &Snapshot, sheet_kept: bool, t: &Tokens, actions: 
         false,
         |ui| {
             let mut set = |params: Value| run(actions, snap, "job.set_weeding", params);
+            blocks::labels(
+                ui,
+                &[
+                    "Weed box",
+                    "Box margin",
+                    "One box per object",
+                    "Weed lines",
+                    "Line spacing",
+                ],
+            );
             // The settings stay usable: they apply again once no object
             // keeps the sheet.
             if sheet_kept {
@@ -780,7 +801,7 @@ fn preset_notes(ui: &mut Ui, heading: &str, preset: &str, notes: Option<&str>, t
     let Some(notes) = notes.map(str::trim_end).filter(|n| !n.trim().is_empty()) else {
         return false;
     };
-    ui.add_space(t.spacing / 2.0);
+    ui.add_space(metrics::SPACE_4);
     let r = ui.label(
         RichText::new(heading)
             .font(super::super::fonts::semibold(12.0))
@@ -832,6 +853,7 @@ fn advanced(ui: &mut Ui, snap: &Snapshot, t: &Tokens) {
                 m.name, m.name
             );
             let depth = m.blade_depth_hint.as_deref().unwrap_or("No hint");
+            blocks::labels(ui, &["Blade depth", "Overcut", "Track enhancing"]);
             blocks::value_row(
                 ui,
                 "Blade depth",
@@ -860,7 +882,7 @@ fn advanced(ui: &mut Ui, snap: &Snapshot, t: &Tokens) {
 /// how the newest cut nobody rated yet went.
 fn last_time(ui: &mut Ui, snap: &Snapshot, t: &Tokens, actions: &mut Vec<Action>) {
     if let Some(e) = &snap.last_time {
-        ui.add_space(t.spacing / 2.0);
+        ui.add_space(metrics::SPACE_4);
         let text = outcome::last_time_text(e);
         let r = ui.add(egui::Label::new(RichText::new(&text).color(t.text_dim)).wrap());
         super::super::groups::card(

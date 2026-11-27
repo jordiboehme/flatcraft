@@ -30,7 +30,7 @@ use super::super::settings::{
 };
 use super::super::theme::Tokens;
 use super::super::tools::{self, Act, AlignMode, AlignTo, Setting};
-use super::super::{Action, canvas, groups, keep_pick, report, ribbon};
+use super::super::{Action, canvas, groups, keep_pick, metrics, report, ribbon};
 use super::blocks::{self, HintButton};
 use super::job;
 use flatcraft_engine::commands::group::ReorderTo;
@@ -70,7 +70,7 @@ pub const FIELDS: [(SizeField, &str); 6] = [
 /// accessible name), for the reachability test: each one is in its
 /// section, at most one fold away. The Source actions depend on the
 /// object (a file, a picture): they are [`SOURCE_ITEMS`], always shown.
-pub const SETTINGS: [(&str, &str); 26] = [
+pub const SETTINGS: [(&str, &str); 27] = [
     (CUT, "Cut mode"),
     (CUT, "Keep"),
     (CUT, keep_pick::BUTTON),
@@ -97,6 +97,7 @@ pub const SETTINGS: [(&str, &str); 26] = [
     (ARRANGE, "Send to back"),
     (ARRANGE, "Group"),
     (SOURCE, "File"),
+    (SOURCE, UNLINK_FILE),
 ];
 
 /// The name of the switch that aligns to the cutting area.
@@ -121,14 +122,16 @@ fn common<T: PartialEq + Copy>(mut values: impl Iterator<Item = T>) -> Option<T>
     values.all(|v| v == first).then_some(first)
 }
 
-/// What the heading says: the title and the line under it.
+/// What the heading says: the title and the line under it. The line
+/// holds only what the panel shows nowhere else: the group the selection
+/// is in and its linked copies. Size, file and kind are in the sections
+/// below, so the line is often empty.
 ///
-/// - One group: "Group 'Badge'", its objects under it.
-/// - One object: its name, with "· in group Badge" when it is in a group;
-///   its size, its file, "Picture" and its linked copies under it.
+/// - One group: "Group 'Badge'", "2 objects · in group Sign" under it.
+/// - One object: its name, "in group Badge · 1 of 3 linked copies" under
+///   it.
 /// - More: "2 objects" ("1 group and 2 objects" when groups are among
-///   them), their names under it, with "· in group Badge" when they share
-///   a group.
+///   them), "in group Badge · applies to 3 linked copies" under it.
 pub fn heading(snap: &Snapshot) -> (String, String) {
     let units = snap.units();
     let parent = |id: u64| {
@@ -136,66 +139,47 @@ pub fn heading(snap: &Snapshot) -> (String, String) {
             .parent(flatcraft_core::document::ObjectId(id))
             .and_then(|g| snap.name_of(g.0))
     };
-    let names = |ids: &[u64]| {
-        ids.iter()
-            .filter_map(|id| snap.name_of(*id))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
     let in_group = |ids: &[u64]| {
         let first = ids.first().map(|id| parent(*id))?;
         let all = ids.iter().all(|id| parent(*id) == first);
         all.then_some(first).flatten()
     };
-    match units.as_slice() {
-        [] => (String::new(), String::new()),
+    let mut sub = Vec::new();
+    if let Some(p) = in_group(&units) {
+        sub.push(format!("in group {p}"));
+    }
+    let title = match units.as_slice() {
+        [] => return (String::new(), String::new()),
         [g] if snap.is_group(*g) => {
             let name = snap.name_of(*g).unwrap_or_default();
-            let members: Vec<u64> = snap
+            let n = snap
                 .tree
                 .children(Some(flatcraft_core::document::ObjectId(*g)))
-                .into_iter()
-                .map(|c| c.0)
-                .collect();
-            let mut sub = names(&members);
-            if let Some(p) = parent(*g) {
-                sub = format!("{sub} · in group {p}");
-            }
-            (format!("Group '{name}'"), sub)
+                .len();
+            sub.insert(
+                0,
+                if n == 1 {
+                    "1 object".into()
+                } else {
+                    format!("{n} objects")
+                },
+            );
+            format!("Group '{name}'")
         }
         [one] => {
-            let o = snap.object(*one);
-            let name = snap.name_of(*one).unwrap_or_default();
-            let title = match parent(*one) {
-                Some(p) => format!("{name} · in group {p}"),
-                None => name,
-            };
-            let mut sub = Vec::new();
-            if let Some(b) = snap.box_of(&[*one]) {
-                sub.push(format!("{} x {} mm", short(b.width()), short(b.height())));
-            }
-            if let Some(file) = o
-                .and_then(|o| o.source_link.as_ref())
-                .and_then(|l| l.path.file_name())
-            {
-                sub.push(file.to_string_lossy().into_owned());
-            }
-            if o.is_some_and(|o| o.raster) {
-                sub.push("Picture".into());
-            }
-            if let Some(g) = o.and_then(|o| o.link_group) {
+            if let Some(g) = snap.object(*one).and_then(|o| o.link_group) {
                 sub.push(format!("1 of {} linked copies", snap.group_size(g)));
             }
-            (title, sub.join(" · "))
+            snap.name_of(*one).unwrap_or_default()
         }
         many => {
-            let mut sub = names(many);
-            if let Some(p) = in_group(many) {
-                sub = format!("{sub} · in group {p}");
+            if let Some(n) = snap.linked_reach() {
+                sub.push(format!("applies to {n} linked copies"));
             }
-            (count_units(snap, many), sub)
+            count_units(snap, many)
         }
-    }
+    };
+    (title, sub.join(" · "))
 }
 
 /// "3 objects", "2 groups", "1 group and 2 objects": what the selection
@@ -224,6 +208,14 @@ pub fn count_units(snap: &Snapshot, units: &[u64]) -> String {
 /// The card of the heading.
 pub const HEADING_CARD: &str = "What the panel below changes: the selected objects. Click the job line above to see the job instead.";
 
+/// The sentence on linked copies in the heading's and the sections'
+/// cards, when the selection has some.
+pub fn linked_note(snap: &Snapshot) -> Option<String> {
+    snap.linked_reach().map(|n| {
+        format!("Linked copies share the cut options, the keep mode and the scale: a change here applies to all {n} linked copies. Unlink a copy in Arrange to change it alone.")
+    })
+}
+
 /// The object inspector: the heading and its sections.
 pub fn panel(
     ui: &mut Ui,
@@ -234,10 +226,13 @@ pub fn panel(
     actions: &mut Vec<Action>,
 ) {
     let (title, sub) = heading(snap);
-    blocks::heading(ui, &title, &sub, HEADING_CARD);
-    ui.add_space(t.spacing / 2.0);
-    cut(ui, st, snap, t, actions);
-    position(ui, st, snap, t, actions);
+    let card = match linked_note(snap) {
+        Some(n) => format!("{HEADING_CARD} {n}"),
+        None => HEADING_CARD.to_string(),
+    };
+    blocks::heading(ui, &title, &sub, &card);
+    cut(ui, st, snap, actions);
+    position(ui, st, snap, actions);
     arrange(ui, st, snap, show_debug, actions);
     source(ui, st, snap, actions);
     hints(ui, st, snap, t, actions);
@@ -251,29 +246,28 @@ pub fn cut_summary(snap: &Snapshot) -> String {
     format!("{mode} · {keep}")
 }
 
-fn cut(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, t: &Tokens, actions: &mut Vec<Action>) {
+fn cut(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Vec<Action>) {
+    let card = match linked_note(snap) {
+        Some(n) => format!("{CUT_CARD} {n}"),
+        None => CUT_CARD.to_string(),
+    };
     blocks::section(
         ui,
         CUT,
         "Cut",
-        CUT_CARD,
+        &card,
         &cut_summary(snap),
         true,
-        |ui| cut_body(ui, st, snap, t, actions),
+        |ui| cut_body(ui, st, snap, actions),
         None,
     );
 }
 
-fn cut_body(
-    ui: &mut Ui,
-    st: &mut PrepareState,
-    snap: &Snapshot,
-    t: &Tokens,
-    actions: &mut Vec<Action>,
-) {
+fn cut_body(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Vec<Action>) {
     let doc_id = snap.doc_id;
     let ids: Vec<u64> = snap.selection.iter().copied().collect();
-    let h = ui.spacing().interact_size.y;
+    let h = metrics::CONTROL;
+    blocks::labels(ui, &["Cut mode", "Keep", "Strokes"]);
 
     let mode = common(snap.selected().map(|o| o.cut.mode));
     let modes = CUT_MODES.map(|m| (m, mode_name(m).to_string()));
@@ -306,7 +300,7 @@ fn cut_body(
     let mut picked = None;
     let mut pick = false;
     blocks::row(ui, "Keep", Setting::Keep.card(), None, |ui| {
-        let w = (ui.available_width() - button_size(ui).x - 4.0).max(24.0);
+        let w = (ui.available_width() - button_size().x - metrics::SPACE_4).max(24.0);
         let (r, p) = ui
             .allocate_ui(vec2(w, h), |ui| {
                 job::combo(
@@ -384,21 +378,6 @@ fn cut_body(
             json!({ "strokes": v }),
         ));
     }
-    // One line, always there, so the sections below never move.
-    let text = snap
-        .linked_reach()
-        .map(|n| format!("Applies to {n} linked copies"))
-        .unwrap_or_default();
-    let r = blocks::status_line(ui, &text, t.text_dim);
-    if !text.is_empty() {
-        groups::card(
-            &r,
-            "Linked copies",
-            "Linked copies share the cut options, the keep mode and the scale. Unlink a copy in Arrange or the Objects panel to change it alone.",
-            None,
-            false,
-        );
-    }
 }
 
 /// "20", "20.5": a millimetre value for a summary.
@@ -420,24 +399,22 @@ pub fn position_summary(snap: &Snapshot, st: &PrepareState) -> String {
     }
 }
 
-fn position(
-    ui: &mut Ui,
-    st: &mut PrepareState,
-    snap: &Snapshot,
-    t: &Tokens,
-    actions: &mut Vec<Action>,
-) {
+fn position(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Vec<Action>) {
     let summary = position_summary(snap, st);
     blocks::section(
         ui,
         POSITION,
         "Position and size",
-        POSITION_CARD,
+        &match linked_note(snap) {
+            Some(n) => format!("{POSITION_CARD} {n}"),
+            None => POSITION_CARD.to_string(),
+        },
         &summary,
         false,
         |ui| {
             // Its fields are on screen: an edit in them stays open.
             st.inspector_fields = true;
+            blocks::labels(ui, &FIELDS.map(|(_, l)| l));
             let mut wh = [egui::Rect::NOTHING; 2];
             let b = canvas::live_box(snap, st);
             for (field, label) in FIELDS {
@@ -456,40 +433,24 @@ fn position(
             // This column is wider than the ribbon's (`LOCK_COLUMN`) on
             // purpose: it is the rows' reset slot, one button wide, so the
             // lock lines up with the reset arrows of the rows above it.
-            let h = ui.spacing().interact_size.y;
-            let left = wh[0].right() + 4.0;
+            let h = metrics::CONTROL;
+            let left = wh[0].right() + metrics::SPACE_4;
             let column = egui::Rect::from_x_y_ranges(left..=left + h, wh[0].top()..=wh[1].bottom());
             ribbon::keep_aspect(ui, FieldPlace::Inspector, st, snap, column, wh, true);
-            // One line, always there.
-            let text = snap
-                .linked_reach()
-                .map(|n| format!("Scales all {n} linked copies"))
-                .unwrap_or_default();
-            let r = blocks::status_line(ui, &text, t.text_dim);
-            if !text.is_empty() {
-                groups::card(
-                    &r,
-                    &text,
-                    "Linked copies share the scale. Each keeps its own place.",
-                    None,
-                    false,
-                );
-            }
         },
         None,
     );
 }
 
-/// The size of a small icon button: a square as high as a row.
-fn button_size(ui: &Ui) -> egui::Vec2 {
-    let h = ui.spacing().interact_size.y;
-    vec2(h + 4.0, h)
+/// The size of a small icon button.
+fn button_size() -> egui::Vec2 {
+    vec2(metrics::ICON_BUTTON, metrics::ICON_BUTTON)
 }
 
 /// The icon of a small button, fitting [`button_size`].
 /// A dimmed one is drawn faint, so it reads as not available.
 fn icon_image(ui: &Ui, icon: Icon, name: &str, dimmed: bool) -> egui::Image<'static> {
-    let size = (ui.spacing().interact_size.y - 4.0).clamp(12.0, 16.0);
+    let size = metrics::ICON_COMPACT;
     let image = groups::image(ui, icon, size).alt_text(name.to_string());
     if dimmed {
         image.tint(egui::Color32::WHITE.gamma_multiply(0.35))
@@ -510,9 +471,9 @@ fn icon_button(
 ) -> Response {
     let r = ui
         .add_enabled_ui(why.is_none(), |ui| {
-            ui.spacing_mut().button_padding = vec2(2.0, 2.0);
+            ui.spacing_mut().button_padding = vec2(metrics::SPACE_2, metrics::SPACE_2);
             ui.add_sized(
-                button_size(ui),
+                button_size(),
                 egui::Button::image(icon_image(ui, icon, name, why.is_some())),
             )
         })
@@ -537,9 +498,9 @@ fn tool_button(
     let why = tool.blocked(snap);
     let r = ui
         .add_enabled_ui(why.is_none(), |ui| {
-            ui.spacing_mut().button_padding = vec2(2.0, 2.0);
+            ui.spacing_mut().button_padding = vec2(metrics::SPACE_2, metrics::SPACE_2);
             ui.add_sized(
-                button_size(ui),
+                button_size(),
                 egui::Button::image(icon_image(ui, tool.icon, tool.title, why.is_some())),
             )
         })
@@ -589,6 +550,7 @@ fn arrange_body(
     actions: &mut Vec<Action>,
 ) {
     let ids: Vec<u64> = snap.selection.iter().copied().collect();
+    blocks::labels(ui, &["Align", "Distribute", "Order", "Groups"]);
     let to = AlignTo::of(st.fields.align_to_area);
     blocks::actions_row(ui, "Align", Item::Align.description(), |ui| {
         for mode in [
@@ -790,6 +752,7 @@ fn source(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Vec
         &summary,
         false,
         |ui| {
+            blocks::labels(ui, &["File"]);
             blocks::value_row(ui, "File", &card, &file);
             let ids: Vec<u64> = snap.selection.iter().copied().collect();
             // The same buttons in every case, dimmed with their reason.
@@ -797,10 +760,42 @@ fn source(ui: &mut Ui, st: &mut PrepareState, snap: &Snapshot, actions: &mut Vec
                 for (item, icon) in SOURCE_ITEMS {
                     item_button(ui, item, icon, st, snap, &ids, actions);
                 }
+                unlink_file_button(ui, snap, &ids, actions);
             });
         },
         None,
     );
+}
+
+/// The name of the Source button that forgets the file.
+pub const UNLINK_FILE: &str = "Unlink file";
+/// Its card.
+pub const UNLINK_FILE_CARD: &str = "Forget the file these objects were imported from. The objects stay as they are; FlatCraft no longer watches the file or reads it again. One step to undo.";
+
+/// The Source button that forgets the linked file (`object.unlink`),
+/// dimmed when no selected object has one.
+fn unlink_file_button(ui: &mut Ui, snap: &Snapshot, ids: &[u64], actions: &mut Vec<Action>) {
+    let linked: Vec<u64> = ids
+        .iter()
+        .copied()
+        .filter(|id| snap.object(*id).is_some_and(|o| o.link.is_some()))
+        .collect();
+    let why = linked.is_empty().then_some(NOT_LINKED);
+    let r = icon_button(
+        ui,
+        Icon::Close,
+        UNLINK_FILE,
+        UNLINK_FILE,
+        UNLINK_FILE_CARD,
+        why,
+    );
+    if r.clicked() && why.is_none() {
+        actions.push(Action::run(
+            snap.doc_id,
+            "object.unlink",
+            serde_json::json!({ "ids": linked }),
+        ));
+    }
 }
 
 // ---------------------------------------------------------------- hints
@@ -1203,7 +1198,9 @@ fn hints(ui: &mut Ui, st: &PrepareState, snap: &Snapshot, t: &Tokens, actions: &
         &summary,
         true,
         |ui| {
-            // One line, always there: what the check is doing.
+            // What the check is doing, when there is something to say. It
+            // is the last section, so the line coming and going moves
+            // nothing below it.
             let status = if view.checking {
                 CHECKING
             } else if view.no_profiles {
@@ -1217,7 +1214,9 @@ fn hints(ui: &mut Ui, st: &PrepareState, snap: &Snapshot, t: &Tokens, actions: &
             } else {
                 ""
             };
-            blocks::status_line(ui, status, t.text_dim);
+            if !status.is_empty() {
+                blocks::status_line(ui, status, t.text_dim);
+            }
             if on_card > 0 {
                 blocks::note(ui, &on_the_card(on_card), t.text_dim);
             }

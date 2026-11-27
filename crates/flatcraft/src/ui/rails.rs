@@ -594,32 +594,42 @@ pub fn show_rail(ui: &mut Ui, kind: SidePanel, side: Side, t: &Tokens, summary: 
     clicked
 }
 
-/// The chevron in a panel's header, which collapses the panel into its
-/// rail. Returns true when clicked. Put it at the right end of the header
-/// row with [`header`].
+/// The accessible name of the button that collapses the panel `kind`.
+pub fn collapse_name(kind: SidePanel) -> String {
+    format!("Collapse the {} panel", kind.title())
+}
+
+/// The hover card of the button that collapses the panel `kind`.
+pub fn collapse_card(kind: SidePanel) -> String {
+    format!(
+        "Folds this panel into a thin strip to give the canvas more room. The strip still shows a short summary. Click it to open the panel again. This is {}.",
+        kind.what()
+    )
+}
+
+/// The button in a panel's header that collapses the panel into its
+/// rail: a compact chevron button pointing to its side. Returns
+/// true when clicked. Put it at the right end of the header row with
+/// [`header`].
 pub fn collapse_button(ui: &mut Ui, kind: SidePanel, side: Side) -> bool {
     let icon = match side {
         Side::Left => Icon::ChevronLeft,
         Side::Right => Icon::ChevronRight,
     };
-    let name = format!("Collapse the {} panel", kind.title());
-    let tex = icons::texture(ui.ctx(), icon, super::ICON_SIZE);
-    let image = egui::Image::from_texture(egui::load::SizedTexture::new(
-        tex.id(),
-        vec2(super::ICON_SIZE, super::ICON_SIZE),
-    ))
-    .alt_text(&name);
-    let resp = ui.add(egui::Button::image(image));
-    groups::card(
-        &resp,
-        &name,
-        &format!(
-            "Folds this panel into a thin strip to give the canvas more room. The strip still shows a short summary. Click it to open the panel again. This is {}.",
-            kind.what()
-        ),
-        None,
-        false,
-    );
+    let name = collapse_name(kind);
+    let size = super::metrics::ICON_COMPACT;
+    let tex = icons::texture(ui.ctx(), icon, size);
+    let image =
+        egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), vec2(size, size)))
+            .alt_text(&name);
+    let b = super::metrics::ICON_BUTTON;
+    let resp = ui
+        .scope(|ui| {
+            ui.spacing_mut().interact_size.y = b;
+            ui.add_sized(vec2(b, b), egui::Button::image(image).frame(false))
+        })
+        .inner;
+    groups::card(&resp, &name, &collapse_card(kind), None, false);
     resp.clicked()
 }
 
@@ -627,11 +637,17 @@ pub fn collapse_button(ui: &mut Ui, kind: SidePanel, side: Side) -> bool {
 /// true when the chevron was clicked.
 pub fn header(ui: &mut Ui, kind: SidePanel, side: Side, heading: &str) -> bool {
     let mut clicked = false;
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(heading).font(fonts::semibold(14.0)));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            clicked = collapse_button(ui, kind, side);
-        });
-    });
+    let w = ui.available_width();
+    ui.allocate_ui_with_layout(
+        vec2(w, super::metrics::ROW),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_height(super::metrics::ROW);
+            ui.label(egui::RichText::new(heading).font(super::metrics::heading()));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                clicked = collapse_button(ui, kind, side);
+            });
+        },
+    );
     clicked
 }

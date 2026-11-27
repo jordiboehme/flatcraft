@@ -1540,8 +1540,12 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
     } else {
         egui::Panel::left("flatcraft-objects")
             .resizable(true)
-            .default_size(240.0)
-            .frame(egui::Frame::new().fill(t.panel).inner_margin(t.spacing))
+            .default_size(super::metrics::LEFT_PANEL_W)
+            .frame(
+                egui::Frame::new()
+                    .fill(t.panel)
+                    .inner_margin(super::metrics::panel_margin()),
+            )
             .show(ui, |ui| {
                 objects::show(ui, &mut app.ui.prepare, snap, &t, actions);
             });
@@ -1571,8 +1575,13 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
     } else {
         egui::Panel::right("flatcraft-settings")
             .resizable(true)
-            .default_size(320.0)
-            .frame(egui::Frame::new().fill(t.panel).inner_margin(t.spacing))
+            .default_size(super::metrics::RIGHT_PANEL_W)
+            // No right margin: the inspector keeps the panel's padding
+            // itself, and its scroll bar sits in it.
+            .frame(egui::Frame::new().fill(t.panel).inner_margin(egui::Margin {
+                right: 0,
+                ..super::metrics::panel_margin()
+            }))
             .show(ui, |ui| {
                 let dot = rails::job_dot(snap, Some(&app.ui.cut));
                 super::inspector::show(

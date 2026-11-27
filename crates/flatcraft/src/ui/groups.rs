@@ -24,25 +24,11 @@ use super::settings::set_name;
 use super::tools::{AlignTo, GroupDef, GroupId, Section, Style, Tool};
 use super::{Action, ICON_SIZE};
 
-/// Height of the row of pinned buttons, as tall as a big button. Two
-/// compact switches ([`COMPACT_HEIGHT`]) stack in it.
-pub const BIG_HEIGHT: f32 = 46.0;
-/// The narrowest a big button, a tile or a Cut step gets.
-pub const BIG_MIN_WIDTH: f32 = 40.0;
-/// Room left and right of a big button's label, and of a tile's title.
-const BIG_PAD_X: f32 = 4.0;
-/// Room above a big button's icon and under its label.
-const BIG_PAD_Y: f32 = 3.0;
-/// Height of the group button under the pinned buttons.
-pub const GROUP_BUTTON_HEIGHT: f32 = 14.0;
-/// Room between the pinned buttons and the group button: none, the group
-/// button is a quiet strip at the group's foot.
-pub const GROUP_GAP: f32 = 0.0;
-/// Room between two buttons of the ribbon and of the Cut bar, on every
-/// tab.
-pub const BUTTON_GAP: f32 = 4.0;
-/// Height of the tools row of the ribbon on every tab.
-pub const ROW_HEIGHT: f32 = BIG_HEIGHT + GROUP_GAP + GROUP_BUTTON_HEIGHT;
+// The ribbon's layout values live in `metrics`.
+use super::metrics::{
+    BIG_HEIGHT, BIG_MIN_WIDTH, BIG_PAD_X, BIG_PAD_Y, COMPACT_HEIGHT, GROUP_FOOTER, GROUP_GAP,
+    ICON_COMPACT as SMALL_ICON, SMALL_PADDING, TOOLS_ROW as ROW_HEIGHT,
+};
 
 /// The footer of every list.
 pub const FOOTER: &str = "Pinned actions show on the ribbon. Hover a row to pin or unpin it.";
@@ -266,6 +252,37 @@ fn paint_state(ui: &Ui, rect: egui::Rect, resp: &Response, selected: Option<bool
     }
 }
 
+/// Room between a step's icon and its title.
+const STEP_GAP: f32 = 3.0;
+
+/// The height of one line of `style`.
+fn line_height(ui: &Ui, style: egui::TextStyle) -> f32 {
+    ui.painter()
+        .layout_no_wrap(
+            "Ag".into(),
+            style.resolve(ui.style()),
+            egui::Color32::PLACEHOLDER,
+        )
+        .size()
+        .y
+}
+
+/// Where the top of a step's detail line sits in a step whose row is
+/// centred on `center_y` (as [`step_button`] draws it). The workspace
+/// tile puts its own bottom line there.
+pub fn step_detail_top(ui: &Ui, center_y: f32) -> f32 {
+    let title = line_height(ui, egui::TextStyle::Body);
+    let detail = line_height(ui, egui::TextStyle::Small);
+    let block = 24.0 + STEP_GAP + title + detail;
+    center_y - block / 2.0 + 24.0 + STEP_GAP + title
+}
+
+/// Where the top of a group footer's text sits in a footer centred on
+/// `center_y` (as the group button draws it).
+pub fn footer_text_top(ui: &Ui, center_y: f32) -> f32 {
+    center_y - line_height(ui, egui::TextStyle::Small) / 2.0
+}
+
 /// A step of the Cut bar, as tall as the ribbon's tools row
 /// ([`ROW_HEIGHT`]) and drawn like a big ribbon button: the 24 pt icon in
 /// the colours of `pal`, under it `title` in the ribbon tabs' font, and
@@ -316,7 +333,7 @@ pub fn step_button(
         if ui.is_rect_visible(rect) {
             let visuals = ui.style().interact(&resp);
             paint_state(ui, rect, &resp, Some(selected), on);
-            let gap = 3.0;
+            let gap = STEP_GAP;
             let block =
                 ICON + gap + title_g.size().y + detail_g.as_ref().map_or(0.0, |d| d.size().y);
             let top = rect.center().y - block / 2.0;
@@ -348,10 +365,6 @@ pub fn step_button(
     })
     .inner
 }
-
-/// Height of a compact button: two of them, or a row of small buttons,
-/// stack inside [`BIG_HEIGHT`].
-pub const COMPACT_HEIGHT: f32 = 22.0;
 
 /// A compact switch ("Each object", "Keep aspect"): a 16 pt icon, with
 /// its label at its right when `show_label` is on. It is a checkbox named
@@ -404,11 +417,6 @@ pub fn compact_switch(
     })
     .inner
 }
-
-/// Size of the icons of small buttons; two rows of them fit [`BIG_HEIGHT`].
-const SMALL_ICON: f32 = 16.0;
-/// The padding of a small button around its icon.
-const SMALL_PADDING: egui::Vec2 = egui::vec2(2.0, 2.0);
 
 /// A small icon button for a pinned direction. Its accessible name is
 /// `name`.
@@ -524,8 +532,7 @@ fn group_button(ui: &mut Ui, def: &GroupDef, width: f32) -> Response {
             .layout_no_wrap(def.title.to_string(), font, egui::Color32::PLACEHOLDER);
     let chevron = 12.0;
     let width = width.max(galley.size().x + chevron + 2.0 * BIG_PAD_X);
-    let (rect, _) =
-        ui.allocate_exact_size(egui::vec2(width, GROUP_BUTTON_HEIGHT), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, GROUP_FOOTER), egui::Sense::hover());
     let resp = ui.interact(rect, group_id(def.id), egui::Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::accesskit::Role::Button, true, def.title));
     if ui.is_rect_visible(rect) {

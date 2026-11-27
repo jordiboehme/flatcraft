@@ -9,7 +9,7 @@ use common::*;
 use egui::Rect;
 use egui::accesskit::Role;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
-use flatcraft::ui::groups::{BIG_HEIGHT, COMPACT_HEIGHT, ROW_HEIGHT};
+use flatcraft::ui::metrics::{BIG_HEIGHT, COMPACT_HEIGHT, TOOLS_ROW as ROW_HEIGHT};
 use flatcraft::ui::prepare::RibbonTab;
 use flatcraft::ui::ribbon::Layout;
 use flatcraft::ui::tools::{self, GroupId};

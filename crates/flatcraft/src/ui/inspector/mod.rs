@@ -17,8 +17,9 @@ pub mod object;
 use egui::Ui;
 
 use super::Action;
+use super::metrics;
 use super::prepare::{PrepareState, Snapshot};
-use super::rails::{Dot, Side, SidePanel};
+use super::rails::{Dot, SidePanel};
 use super::theme::Tokens;
 
 /// What the inspector shows. UI state only: no undo step, never saved.
@@ -90,18 +91,24 @@ pub fn show(
 ) {
     let open = job_over_selection(st, snap);
     let summary = job::summary(snap, dot, open);
-    let mut clicked = false;
-    let mut collapse = false;
-    let w = ui.available_width();
-    ui.allocate_ui_with_layout(
-        egui::vec2(w, blocks::JOB_LINE_H),
-        egui::Layout::right_to_left(egui::Align::Center),
-        |ui| {
-            collapse = super::rails::collapse_button(ui, SidePanel::Settings, Side::Right);
-            clicked = blocks::job_line(ui, &summary, t).clicked();
-        },
-    );
-    if collapse {
+    blocks::panel_spacing(ui);
+    // The panel has no right margin: the content keeps it here, so the
+    // scroll bar below can sit in it.
+    let pad = metrics::PANEL_PAD_X;
+    let w = (ui.available_width() - pad).max(0.0);
+    let line = ui
+        .allocate_ui(egui::vec2(w, blocks::JOB_LINE_H), |ui| {
+            blocks::job_line(
+                ui,
+                &summary,
+                t,
+                &super::rails::collapse_name(SidePanel::Settings),
+                &super::rails::collapse_card(SidePanel::Settings),
+            )
+        })
+        .inner;
+    let clicked = line.job.clicked();
+    if line.collapse.clicked() {
         st.panels.set_collapsed(SidePanel::Settings, true);
     }
     // With nothing selected the Job panel is below anyway: the line does
@@ -112,8 +119,15 @@ pub fn show(
             InspectorView::Job => InspectorView::Selection,
         };
     }
-    ui.add_space(t.spacing);
+    ui.add_space(metrics::SPACE_8);
     let objects = shows_objects(st, snap);
+    // A thin bar that fits the panel's right padding.
+    ui.spacing_mut().scroll = egui::style::ScrollStyle {
+        bar_width: metrics::SPACE_4,
+        bar_inner_margin: metrics::SPACE_4,
+        bar_outer_margin: metrics::SPACE_4,
+        ..egui::style::ScrollStyle::floating()
+    };
     egui::ScrollArea::vertical()
         .id_salt(if objects {
             "flatcraft-inspector-objects"
@@ -122,17 +136,15 @@ pub fn show(
         })
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            // Room for the scroll bar on the right, so it never lies over
-            // a reset arrow or the Keep aspect lock.
-            let bar = ui.spacing().scroll;
-            let room = bar.bar_width + bar.bar_inner_margin + bar.bar_outer_margin;
-            ui.set_max_width((ui.available_width() - room).max(0.0));
+            // The panel's right padding is the scroll bar's room, so the
+            // bar never lies over a reset arrow or the Keep aspect lock.
+            ui.set_max_width((ui.available_width() - pad).max(0.0));
+            blocks::panel_spacing(ui);
             if objects {
                 object::panel(ui, st, snap, t, show_debug, actions);
             } else {
                 let (line, card) = job_subtitle(st, snap);
                 blocks::heading(ui, "Job", line, card);
-                ui.add_space(t.spacing / 2.0);
                 job::panel(ui, st, snap, t, actions);
             }
         });
