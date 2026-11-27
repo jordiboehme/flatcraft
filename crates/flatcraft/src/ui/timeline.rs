@@ -185,6 +185,18 @@ impl SimClock {
     }
 }
 
+/// An icon-only button named `name` without a tooltip of its own: its
+/// hover card comes from `groups::card`, and two would stack.
+fn card_icon_button(ui: &mut Ui, icon: Icon, name: &str, enabled: bool) -> egui::Response {
+    let tex = super::icons::texture(ui.ctx(), icon, super::ICON_SIZE);
+    let image = egui::Image::from_texture(egui::load::SizedTexture::new(
+        tex.id(),
+        egui::Vec2::splat(super::ICON_SIZE),
+    ))
+    .alt_text(name);
+    ui.add_enabled(enabled, egui::Button::image(image))
+}
+
 /// The speed's label: "0.25x".
 pub fn speed_label(speed: f64) -> String {
     format!("{speed}x")
@@ -200,13 +212,13 @@ pub fn show_sim(ui: &mut Ui, clock: &mut SimClock, has: bool, t: &Tokens) {
     let why = (!has).then_some(SIM_NOTHING);
     ui.horizontal(|ui| {
         if clock.playing.is_some() {
-            let r = icon_button(ui, Icon::Close, "Stop", true);
+            let r = card_icon_button(ui, Icon::Close, "Stop", true);
             super::groups::card(&r, "Stop", "Stops the playback where it is.", None, false);
             if r.clicked() {
                 clock.playing = None;
             }
         } else {
-            let r = icon_button(ui, Icon::Play, "Play", has);
+            let r = card_icon_button(ui, Icon::Play, "Play", has);
             super::groups::card(&r, "Play", SIM_PLAY_CARD, why, false);
             if r.clicked() {
                 clock.play(now);

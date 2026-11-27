@@ -124,9 +124,9 @@ pub fn settle(h: &mut AppHarness) {
     let start = std::time::Instant::now();
     // The Cut plan and the window's long commands run on workers too.
     let busy = |h: &AppHarness| {
-        h.state()
-            .as_ref()
-            .is_some_and(|a| a.ui.cut.planning() || a.ui.cut.sim.busy() || a.long.busy())
+        h.state().as_ref().is_some_and(|a| {
+            a.ui.cut.planning() || a.ui.cut.sim.busy() || a.ui.cut.kept.pending() || a.long.busy()
+        })
     };
     while h.run_ok().is_none() || busy(h) {
         assert!(
@@ -258,6 +258,7 @@ pub fn wait_for_workers(h: &mut AppHarness) {
             || app.ui.prepare.cache.building() > 0
             || app.ui.cut.planning()
             || app.ui.cut.sim.busy()
+            || app.ui.cut.kept.pending()
             || app.long.busy()
     });
 }
@@ -415,7 +416,10 @@ pub trait RunPlan {
 impl RunPlan for AppHarness {
     fn run_plan(&mut self) {
         wait_until(self, |app| {
-            app.ui.cut.planning() || app.ui.cut.sim.busy() || app.long.busy()
+            app.ui.cut.planning()
+                || app.ui.cut.sim.busy()
+                || app.ui.cut.kept.pending()
+                || app.long.busy()
         });
     }
 }
