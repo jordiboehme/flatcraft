@@ -203,3 +203,117 @@ fn random_mats_get_the_same_report() {
         same(&input, &ids[3..9]);
     }
 }
+
+/// Imports a square `size` mm wide and puts it at `x`, `y`.
+fn square(s: &mut Session, name: &str, size: f64, x: f64, y: f64) -> u64 {
+    let body = format!(r#"<rect x="0" y="0" width="{size}" height="{size}"/>"#);
+    let svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{size}mm" height="{size}mm" viewBox="0 0 {size} {size}">{body}</svg>"#
+    );
+    let id = run(s, "object.import_svg", json!({ "name": name, "svg": svg }))["id"]
+        .as_u64()
+        .unwrap();
+    run(
+        s,
+        "object.move",
+        json!({ "ids": [id], "x_mm": x, "y_mm": y }),
+    );
+    id
+}
+
+/// A Move apart moves the whole group of the second object, also a far
+/// member, and must not bring that member near a third object: the
+/// narrowed check looks far enough around the far member. A third object
+/// is swept through the band around the member's possible landing places.
+#[test]
+fn a_grouped_mover_with_a_far_member_gets_the_same_report() {
+    let mut differs_from_none = 0;
+    for step in 0..24 {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = session(&dir);
+        // a and b nearly touch; b is grouped with a far member u; walls
+        // around b block the short moves, so the long ones are tried.
+        let a = square(&mut s, "a", 40.0, 100.0, 120.0);
+        let b = square(&mut s, "b", 40.0, 141.0, 120.0);
+        let u = square(&mut s, "u", 10.0, 250.0, 20.0);
+        run(&mut s, "object.group", json!({ "ids": [b, u] }));
+        square(&mut s, "right", 5.0, 181.8, 120.0);
+        // The third object, nearer and nearer the member's landing band.
+        let x = 250.0 - 100.0 + step as f64 * 4.0;
+        let c = square(&mut s, "c", 10.0, x, 20.0 + 11.5);
+        let input = JobInput::of(&s).unwrap();
+        for ids in [vec![a], vec![b], vec![u], vec![c], vec![a, b]] {
+            same(&input, &ids);
+        }
+        let full = report::check(&input, Some(&[ObjectId(a)])).to_json();
+        if full.to_string().contains("object.move") {
+            differs_from_none += 1;
+        }
+    }
+    assert!(differs_from_none > 0, "no Move apart was offered at all");
+}
+
+/// A sharp corner of a wide stroke with a high miter limit reaches far
+/// past its path: the loose box holds it, so a neighbour of that corner
+/// is found and the narrowed check matches the full one.
+#[test]
+fn a_high_miter_limit_corner_is_inside_the_loose_box() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    // A spike with a 4 mm stroke and miter limit 10, outlined: its corner
+    // needs a miter of about 8 widths, under the limit.
+    let spike = r#"<path d="M 10 55 L 90 45 L 10 35" fill="none" stroke="black" stroke-width="4" stroke-miterlimit="10" stroke-linejoin="miter"/>"#;
+    let id = put(&mut s, "spike", spike, 20.0, 20.0);
+    run(
+        &mut s,
+        "object.set_cut_options",
+        json!({ "ids": [id], "strokes": "outline" }),
+    );
+    let input = JobInput::of(&s).unwrap();
+    let o = input.objects.iter().find(|o| o.id.0 == id).unwrap();
+    let cut = input.cut_geometry().bounds(o.id).unwrap();
+    let loose = flatcraft_engine::cutgeom::loose_bounds(o).unwrap();
+    assert!(
+        loose.union(cut) == loose,
+        "the loose box {loose:?} holds the cut {cut:?}"
+    );
+    // The corner reaches further than two stroke widths past the path:
+    // a box grown only by that would miss it.
+    let affine = o.transform.affine(o.local_bounds);
+    let drawn = o
+        .geometry
+        .iter()
+        .map(|p| kurbo::Shape::bounding_box(&(affine * p.path.clone())))
+        .reduce(|a, b| a.union(b))
+        .unwrap();
+    let width = o.geometry[0].paint.stroke.unwrap().width_mm;
+    assert!(
+        cut.x1 - drawn.x1 > 2.0 * width,
+        "the miter reaches {} past the path",
+        cut.x1 - drawn.x1
+    );
+    // A neighbour just past the tip of the miter.
+    let tip = cut.x1;
+    let other = put(&mut s, "other", SQUARE, tip + 0.5, cut.center().y - 10.0);
+    let input = JobInput::of(&s).unwrap();
+    same(&input, &[id]);
+    same(&input, &[other]);
+}
+
+/// A check asked to stop gives up between objects or pairs.
+#[test]
+fn a_stopped_check_gives_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(&dir);
+    let ids = mat(&mut s);
+    let input = JobInput::of(&s).unwrap();
+    let all: Vec<ObjectId> = ids.iter().map(|i| ObjectId(*i)).collect();
+    assert!(report::check_selection_until(&input, &all, &|| true).is_none());
+    let asked = std::cell::Cell::new(0);
+    let later = || {
+        asked.set(asked.get() + 1);
+        asked.get() > 3
+    };
+    assert!(report::check_selection_until(&input, &all, &later).is_none());
+    assert!(report::check_selection_until(&input, &all, &|| false).is_some());
+}

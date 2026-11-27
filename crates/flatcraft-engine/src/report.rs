@@ -729,10 +729,24 @@ impl Limits {
 /// Linked copies share their cut options and scale, so an issue of those
 /// names every member once.
 pub fn check(input: &JobInput, ids: Option<&[ObjectId]>) -> Report {
+    check_until(input, ids, &|| false).expect("a check that is never stopped ends")
+}
+
+/// [`check`] that asks `stop` between objects and between pairs, and
+/// gives up (`None`) as soon as it says so: a window drops a check whose
+/// objects or document changed meanwhile.
+pub fn check_until(
+    input: &JobInput,
+    ids: Option<&[ObjectId]>,
+    stop: &dyn Fn() -> bool,
+) -> Option<Report> {
     let limits = Limits::of(input);
     let mut report = Report::default();
     let mut seen: Vec<(Code, Vec<u64>)> = Vec::new();
     for o in &input.objects {
+        if stop() {
+            return None;
+        }
         if ids.is_some_and(|ids| !ids.contains(&o.id)) {
             continue;
         }
@@ -749,8 +763,10 @@ pub fn check(input: &JobInput, ids: Option<&[ObjectId]>) -> Report {
             report.issues.push(i);
         }
     }
-    report.issues.extend(pair_issues(input, ids, &limits));
     report
+        .issues
+        .extend(pair_issues(input, ids, &limits, stop)?);
+    Some(report)
 }
 
 /// [`check`] of the objects `ids` that builds the cut geometry only of the
@@ -770,6 +786,16 @@ pub fn check(input: &JobInput, ids: Option<&[ObjectId]>) -> Report {
 /// of the input: its cut geometry is then the document's and may go back
 /// into the document's cache.
 pub fn check_selection(input: &JobInput, ids: &[ObjectId]) -> (Report, bool) {
+    check_selection_until(input, ids, &|| false).expect("a check that is never stopped ends")
+}
+
+/// [`check_selection`] that gives up (`None`) when `stop` says so, asked
+/// between objects and between pairs (see [`check_until`]).
+pub fn check_selection_until(
+    input: &JobInput,
+    ids: &[ObjectId],
+    stop: &dyn Fn() -> bool,
+) -> Option<(Report, bool)> {
     let limits = Limits::of(input);
     let limit = gap_limit_mm(limits.min_feature_mm);
     let tol = limits.tolerance_mm;
@@ -828,14 +854,15 @@ pub fn check_selection(input: &JobInput, ids: &[ObjectId]) -> (Report, bool) {
         }
     }
     let movers: Vec<usize> = (0..n).filter(|&i| need[i]).collect();
-    let reach = movers
+    // A Move apart shifts by at most 1.02 times (both sizes and two gap
+    // limits) plus 0.01 mm, and then looks a gap limit around every moved
+    // object, also a far member of the moved group.
+    let largest = movers
         .iter()
         .filter_map(|&i| boxes[i])
         .map(|b| b.width().max(b.height()))
-        .fold(0.0_f64, f64::max)
-        * 2.0
-        + 2.0 * limit
-        + tol;
+        .fold(0.0_f64, f64::max);
+    let reach = 1.02 * (2.0 * largest + 2.0 * limit) + limit + tol + 0.01;
     for j in 0..n {
         if movers.iter().any(|&i| near(boxes[i], boxes[j], reach)) {
             need[j] = true;
@@ -843,7 +870,7 @@ pub fn check_selection(input: &JobInput, ids: &[ObjectId]) -> (Report, bool) {
     }
     cross_closure(&mut need);
     if need.iter().all(|n| *n) {
-        return (check(input, Some(ids)), true);
+        return Some((check_until(input, Some(ids), stop)?, true));
     }
     let mut narrow = input.clone();
     narrow.objects = objects
@@ -853,7 +880,7 @@ pub fn check_selection(input: &JobInput, ids: &[ObjectId]) -> (Report, bool) {
         .map(|(o, _)| o.clone())
         .collect();
     narrow.cut = crate::job::CutSeed::new(input.cut.seed());
-    (check(&narrow, Some(ids)), false)
+    Some((check_until(&narrow, Some(ids), stop)?, false))
 }
 
 /// The ids of `o` and its linked copies (only `o` when it is not linked),
@@ -1660,7 +1687,12 @@ fn touching_boxes(boxes: &[Rect]) -> Vec<(usize, usize)> {
 /// word does not flood the report; pairs across groups or with a loose
 /// object stay one hint each. Pairs and groups the person turned off
 /// (`Document::ignored_pairs`, `Document::ignored_groups`) are left out.
-fn pair_issues(input: &JobInput, ids: Option<&[ObjectId]>, limits: &Limits) -> Vec<Issue> {
+fn pair_issues(
+    input: &JobInput,
+    ids: Option<&[ObjectId]>,
+    limits: &Limits,
+    stop: &dyn Fn() -> bool,
+) -> Option<Vec<Issue>> {
     let cut = input.cut_geometry();
     let tolerance = limits.tolerance_mm.max(0.01);
     let limit = gap_limit_mm(limits.min_feature_mm);
@@ -1709,6 +1741,9 @@ fn pair_issues(input: &JobInput, ids: Option<&[ObjectId]>, limits: &Limits) -> V
     // the group and the objects of its pairs.
     let mut in_groups: Vec<(ObjectId, usize, Vec<ObjectId>)> = Vec::new();
     for &(i, j) in &near {
+        if stop() {
+            return None;
+        }
         let (a, b) = (cuttable[i].0, cuttable[j].0);
         if !wanted(a) && !wanted(b) {
             continue;
@@ -1849,7 +1884,7 @@ fn pair_issues(input: &JobInput, ids: Option<&[ObjectId]>, limits: &Limits) -> V
             }],
         });
     }
-    out
+    Some(out)
 }
 
 /// What a "Move apart" looks at besides the pair: every cut object, its
