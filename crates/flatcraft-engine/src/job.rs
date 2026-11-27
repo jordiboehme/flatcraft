@@ -914,6 +914,18 @@ pub(crate) fn build_planned(input: &JobInput, units: PlanUnits) -> Result<JobRes
             ));
             continue;
         }
+        if cut.merged_into.contains_key(&o.id) {
+            // Welded into the merged outline of the group's backmost
+            // object, which holds the pieces and says what was left out.
+            continue;
+        }
+        if cut.covered.contains(&o.id) {
+            warnings.push(format!(
+                "'{}' is in visible outline and completely covered by objects in front of it, so nothing of it is cut.",
+                one_line(&o.name)
+            ));
+            continue;
+        }
         let before = placed.len();
         place_pieces(o.id, cut.pieces(o.id), &mut placed);
         let PieceFacts { no_area, slivers } = cut.facts(o.id);

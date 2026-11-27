@@ -172,8 +172,18 @@ pub fn collect(
     let tolerance = input.plotter.flatten_tolerance_mm;
     // The cut leaves out what is shorter than half a plotter step.
     let min_cut = 0.5 / input.plotter.units_per_mm;
-    let wanted = |o: &&JobObject| ids.is_none_or(|ids| ids.contains(&o.id));
     let cut = input.cut_geometry();
+    // A welded group's pieces belong to its backmost object: it is
+    // exported when any member is.
+    let wanted = |o: &&JobObject| {
+        ids.is_none_or(|ids| {
+            ids.contains(&o.id)
+                || cut
+                    .merged_into
+                    .iter()
+                    .any(|(member, back)| *back == o.id && ids.contains(member))
+        })
+    };
     let mut objects = Vec::new();
     let mut design = Vec::new();
     let (mut hidden, mut skipped) = (0, 0);

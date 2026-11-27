@@ -479,7 +479,7 @@ fn set_cut_options_refuses_bad_input() {
     for params in [
         json!({ "ids": [id], "auto_threshold_mm": 0.01 }),
         json!({ "ids": [id], "auto_threshold_mm": 11.0 }),
-        json!({ "ids": [id], "mode": "merged_outline" }),
+        json!({ "ids": [id], "mode": "welded_outline" }),
         json!({ "ids": [id], "strokes": "hairline" }),
         json!({ "ids": [id], "colour": "red" }),
         json!({ "ids": [id] }),

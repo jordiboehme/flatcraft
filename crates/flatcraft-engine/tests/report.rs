@@ -1070,7 +1070,10 @@ fn overlapping_objects_are_a_hint() {
         i["message"],
         "'left' and 'right' overlap, so the knife cuts through both."
     );
-    assert_eq!(i["fixes"][0]["label"], "Ignore for this object pair");
+    // Merging welds the two filled squares into one piece, so it is
+    // offered first.
+    assert_eq!(i["fixes"][0]["label"], "Merge into one outline");
+    assert_eq!(i["fixes"][1]["label"], "Ignore for this object pair");
     assert_eq!(pair_codes(&c), ["objects_overlap"]);
     // One inside the other, no line crossing: an overlap too.
     let mut t = self::t();
@@ -1165,7 +1168,7 @@ fn ignoring_a_pair_is_kept_in_the_project() {
     let mut t = self::t();
     let (a, b) = two_squares(&mut t.s, -5.0);
     let c = check(&mut t.s);
-    let fix = issue(&c, "objects_overlap")["fixes"][0].clone();
+    let fix = issue(&c, "objects_overlap")["fixes"][1].clone();
     assert_eq!(fix["command"], "document.ignore_issue");
     let undo = t.s.doc().undo.undo_len();
     apply(&mut t.s, &fix);

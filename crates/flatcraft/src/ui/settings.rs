@@ -57,10 +57,40 @@ fn common<T: PartialEq + Copy>(mut values: impl Iterator<Item = T>) -> Option<T>
     values.all(|v| v == first).then_some(first)
 }
 
-fn mode_name(m: CutMode) -> &'static str {
+/// The name of a cut mode in the Cut mode combo.
+pub fn mode_name(m: CutMode) -> &'static str {
     match m {
         CutMode::AllLines => "All lines",
         CutMode::ObjectOutlines => "Object outlines",
+        CutMode::MergedOutline => "Merged outline",
+        CutMode::VisibleOutline => "Visible outline",
+    }
+}
+
+/// The cut modes in the order the Cut mode combo lists them.
+pub const CUT_MODES: [CutMode; 4] = [
+    CutMode::ObjectOutlines,
+    CutMode::AllLines,
+    CutMode::MergedOutline,
+    CutMode::VisibleOutline,
+];
+
+/// The short hint of a cut mode, on its entry in the Cut mode combo: what
+/// it cuts and when to pick it.
+pub fn mode_hint(m: CutMode) -> &'static str {
+    match m {
+        CutMode::ObjectOutlines => {
+            "Cuts around every shape you can see, holes included, like the middle of an O. Shapes that overlap are each cut in full. The right pick for most designs."
+        }
+        CutMode::AllLines => {
+            "Cuts every line exactly as drawn, along its middle, whatever its fill or thickness. Use it for line art, score lines or a drawing made of single strokes."
+        }
+        CutMode::MergedOutline => {
+            "Welds overlapping shapes into one piece: one cut around all of them, none where they overlap. Every overlapping object must use this mode and the same Keep choice. The weld belongs to the object furthest back. Use it for joined script letters or a badge made of several shapes."
+        }
+        CutMode::VisibleOutline => {
+            "Cuts only what you can see: where an object in front covers this one, that part is not cut. An edge two shapes share is cut once. Objects added later lie in front of earlier ones, and a skipped object still covers. Use it for layered stickers and knockouts."
+        }
     }
 }
 
@@ -261,28 +291,29 @@ pub fn show(
         .show(ui, |ui| {
             let any = !selected.is_empty();
             let mode = common(selected.iter().map(|o| o.cut.mode));
-            let modes =
-                [CutMode::ObjectOutlines, CutMode::AllLines].map(|m| (m, mode_name(m).to_string()));
+            let modes = CUT_MODES.map(|m| (m, mode_name(m).to_string()));
             let text = match (any, mode) {
                 (false, _) => "",
                 (true, Some(m)) => mode_name(m),
                 (true, None) => "Mixed",
             };
-            if let Some(m) = combo(
+            if let Some(m) = combo_hinted(
                 ui,
                 "Cut mode",
                 Some(Setting::CutMode),
                 text,
                 &modes,
+                &CUT_MODES.map(mode_hint),
                 mode.as_ref(),
                 mode.as_ref(),
                 any,
+                None,
             ) {
-                let v = match m {
-                    CutMode::AllLines => "all_lines",
-                    CutMode::ObjectOutlines => "object_outlines",
-                };
-                run(actions, "object.set_cut_options", json!({ "mode": v }));
+                run(
+                    actions,
+                    "object.set_cut_options",
+                    json!({ "mode": m.key() }),
+                );
             }
             let keep = common(selected.iter().map(|o| o.keep));
             let kinds = [KeepMode::Pieces, KeepMode::Stencil, KeepMode::Both];

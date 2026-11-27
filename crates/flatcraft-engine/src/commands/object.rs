@@ -2099,6 +2099,10 @@ pub enum CutModeParam {
     AllLines,
     /// The outline of every visible shape: fills, plus strokes as set by strokes.
     ObjectOutlines,
+    /// One outline around overlapping objects that are all in merged_outline (and share their keep mode): the lines where they overlap are not cut.
+    MergedOutline,
+    /// Only the parts of the outlines that objects in front do not cover.
+    VisibleOutline,
 }
 
 impl From<CutModeParam> for CutMode {
@@ -2106,6 +2110,8 @@ impl From<CutModeParam> for CutMode {
         match m {
             CutModeParam::AllLines => CutMode::AllLines,
             CutModeParam::ObjectOutlines => CutMode::ObjectOutlines,
+            CutModeParam::MergedOutline => CutMode::MergedOutline,
+            CutModeParam::VisibleOutline => CutMode::VisibleOutline,
         }
     }
 }
@@ -2133,10 +2139,7 @@ impl From<StrokeModeParam> for StrokeMode {
 
 /// Cut options as `document.state` and `object.set_cut_options` report them.
 pub(crate) fn cut_json(c: &CutOptions) -> Value {
-    let mode = match c.mode {
-        CutMode::AllLines => "all_lines",
-        CutMode::ObjectOutlines => "object_outlines",
-    };
+    let mode = c.mode.key();
     let strokes = match c.strokes {
         StrokeMode::Auto => "auto",
         StrokeMode::CentreLine => "centre_line",
@@ -2151,9 +2154,9 @@ pub struct SetCutOptionsParams {
     /// Object ids; empty means the current selection.
     #[serde(default)]
     pub ids: Vec<u64>,
-    /// What is cut: all_lines or object_outlines. Omit to keep the current value.
+    /// What is cut: all_lines, object_outlines, merged_outline or visible_outline. Omit to keep the current value.
     pub mode: Option<CutModeParam>,
-    /// How strokes are cut in object_outlines: auto, centre_line or outline. Omit to keep the current value.
+    /// How strokes are cut in every mode but all_lines: auto, centre_line or outline. Omit to keep the current value.
     pub strokes: Option<StrokeModeParam>,
     /// Strokes at least this wide in mm (after scaling) are cut as outline in auto, 0.05 to 10. Omit to keep the current value.
     #[schemars(range(min = 0.05, max = 10.0))]
@@ -2213,7 +2216,7 @@ command!(
     mutates: true,
     params: SetCutOptionsParams,
     run: run_set_cut_options,
-    description: "Sets what is cut of each object (one undo step). mode: all_lines cuts every path as drawn (its centre line), whatever its fill or stroke; object_outlines (default) cuts the outline of every visible shape: fills, plus strokes as set by strokes. strokes: auto (default) cuts strokes at least auto_threshold_mm wide (default 1.5, the minimum feature size of the default blade, so a stroke outlined by default is never a hairline in document.check; range 0.05 to 10; measured after scaling) around their outline and thinner ones as centre line; centre_line cuts the path itself; outline cuts around the visible stroke shape with its corner and end style (sharp miter corners stay sharp). A path with a fill and an outline stroke is cut along the edge of fill and stroke together; holes stay holes. Different paths that overlap are each cut completely. Fields you omit keep their value; give at least one. Traced images are fills; the cut mode only normalises their outlines (direction and start point), what is cut stays the same. A filled path with a centre-line stroke is cut along the edge of its fill. Linked copies (see object.copies) share their cut options, so setting them on one sets them on all members of its group, in the same undo step. An empty ids list means the current selection. Returns {objects: [{id, cut: {mode, strokes, auto_threshold_mm}}]}, with every changed object, linked copies included.",
+    description: "Sets what is cut of each object (one undo step). mode: all_lines cuts every path as drawn (its centre line), whatever its fill or stroke; object_outlines (default) cuts the outline of every visible shape: fills, plus strokes as set by strokes; merged_outline welds: shown, cut objects in merged_outline whose painted shapes overlap (also through a chain of others) and that have the same keep mode are cut as one outline around all of them, so the lines where they overlap are not cut and holes stay holes, and lines without area (centre-line strokes) are cut only where they leave the merged shape; all its pieces belong to the backmost object of the weld (the first in document order), so that object's keep mode counts, and objects with another keep mode do not weld; use it for overlapping letters or shapes that should come out as one piece; visible_outline cuts only what is seen: objects later in the document lie in front (and later paths of one object in front of its earlier ones), every shown object with painted area (fill, or a stroke cut as outline) covers what lies behind it whatever its own mode, also when it is skipped, and only objects in visible_outline leave the covered parts out, so an edge two shapes share is cut once, by the one in front; a ring nothing covers stays closed, clipped rings become open paths; use it for layered designs like a sticker with a front layer. Merging and covering work across any objects, grouped or not, linked copies too; hidden objects never weld or cover. strokes: auto (default) cuts strokes at least auto_threshold_mm wide (default 1.5, the minimum feature size of the default blade, so a stroke outlined by default is never a hairline in document.check; range 0.05 to 10; measured after scaling) around their outline and thinner ones as centre line; centre_line cuts the path itself; outline cuts around the visible stroke shape with its corner and end style (sharp miter corners stay sharp). A path with a fill and an outline stroke is cut along the edge of fill and stroke together; holes stay holes. In all_lines and object_outlines, different paths that overlap are each cut completely. Fields you omit keep their value; give at least one. Traced images are fills; the cut mode only normalises their outlines (direction and start point), what is cut stays the same. A filled path with a centre-line stroke is cut along the edge of its fill. Linked copies (see object.copies) share their cut options, so setting them on one sets them on all members of its group, in the same undo step. An empty ids list means the current selection. Returns {objects: [{id, cut: {mode, strokes, auto_threshold_mm}}]}, with every changed object, linked copies included.",
 );
 
 // ---------------------------------------------------------------- keep

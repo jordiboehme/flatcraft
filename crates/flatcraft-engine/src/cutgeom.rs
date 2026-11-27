@@ -9,8 +9,9 @@
 //! painted area, with real counters kept as holes. A filled path with an
 //! outline stroke is cut along the edge of fill united with stroke. A
 //! subpath whose fill is hidden under its thin stroke is cut as a line.
-//! All booleans stay inside one path of one object; merging across objects is
-//! milestone 2.
+//! In all lines and object outlines every boolean stays inside one path of
+//! one object. Merged outline and visible outline look across objects and
+//! paths; they are worked out for the whole document in [`cross`].
 //!
 //! Error budget per cut path (tolerance `t`, the plotter's flatten
 //! tolerance, default 0.01 mm): stroker `t/4` plus flattening `t/4`, or
@@ -28,7 +29,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use flatcraft_core::document::{CutMode, CutOptions, Object, ObjectId, StrokeMode};
+use flatcraft_core::document::{CutMode, CutOptions, KeepMode, Object, ObjectId, StrokeMode};
 use flatcraft_core::geometry::{Cap, CutPath, FillRule, Join, Paint};
 use flatcraft_core::transform::Transform;
 use i_overlay::core::fill_rule::FillRule as OverlayFill;
@@ -59,7 +60,12 @@ pub const HAIRLINE_MM: f64 = 0.1;
 /// flatten tolerance).
 pub const BOUNDS_TOLERANCE_MM: f64 = 0.01;
 
-type Contour = Vec<[f64; 2]>;
+/// A flattened closed contour (or an open polyline), mat mm.
+pub type Contour = Vec<[f64; 2]>;
+
+mod cross;
+pub use cross::painted_area;
+pub(crate) use cross::would_weld;
 
 /// One cut path of an object, in mat mm: what the job, the export, the
 /// report and the window read. `source` is the index of the object's
@@ -84,8 +90,9 @@ pub struct PieceFacts {
     pub slivers: usize,
 }
 
-/// Everything an object's pieces depend on. The geometry `Arc` is held, so
-/// its address cannot be reused by other geometry while the key names it.
+/// Everything an object's own cut depends on. The geometry `Arc` is held,
+/// so its address cannot be reused by other geometry while the key names
+/// it.
 #[derive(Debug, Clone)]
 struct PieceKey {
     geometry: Arc<Vec<CutPath>>,
@@ -115,28 +122,106 @@ impl PieceKey {
     }
 }
 
+/// What the cross-object modes read of an object besides its own cut:
+/// whether it is shown and cut, and what is kept of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Flags {
+    visible: bool,
+    cut_enabled: bool,
+    keep: KeepMode,
+}
+
+impl Flags {
+    fn of(o: &JobObject) -> Self {
+        Self {
+            visible: o.visible,
+            cut_enabled: o.cut_enabled,
+            keep: o.keep,
+        }
+    }
+}
+
+/// The first layer of the cut geometry: what one object gives on its own,
+/// kept per object while its [`PieceKey`] fits. For the cross-object modes
+/// these are the object's pieces as if it were alone; the second layer
+/// ([`cross::apply`]) works out the final pieces from them on every build.
+#[derive(Debug, Clone)]
+pub(crate) struct Solo {
+    key: PieceKey,
+    pieces: Arc<Vec<CutPiece>>,
+    facts: PieceFacts,
+    bounds: Option<Rect>,
+    /// The painted parts of each source path, worked out the first time a
+    /// cross-object mode asks (shared by every build that keeps this solo).
+    painted: Arc<std::sync::OnceLock<Vec<cross::Painted>>>,
+}
+
+impl Solo {
+    fn cut(o: &JobObject, tol: f64, min_width_mm: f64) -> Self {
+        #[cfg(test)]
+        tests::OBJECT_CUTS.with(|n| n.set(n.get() + 1));
+        let affine = o.transform.affine(o.local_bounds);
+        let (pieces, facts, bounds) = object_pieces(&o.geometry, &o.cut, affine, tol, min_width_mm);
+        Self {
+            key: PieceKey::of(o),
+            pieces: Arc::new(pieces),
+            facts,
+            bounds,
+            painted: Default::default(),
+        }
+    }
+
+    /// The painted parts of each source path of `o` (whose key this is).
+    pub(crate) fn painted(&self, o: &JobObject, tol: f64, min_width_mm: f64) -> &[cross::Painted] {
+        self.painted.get_or_init(|| {
+            let affine = o.transform.affine(o.local_bounds);
+            o.geometry
+                .iter()
+                .map(|p| cross::painted(p, &o.cut, affine, tol, min_width_mm))
+                .collect()
+        })
+    }
+}
+
 /// The cut geometry of a whole document: the pieces of every object
 /// (hidden and skipped ones too, which the report checks), what each cut
 /// left out, and the warnings about it in document order. Built by
 /// [`document_cut_geometry`] and cached per document
 /// (`DocState::cut_geometry`); the job, the export, the report and the
 /// window all read this one copy.
+///
+/// Objects in a cross-object mode ([`CutMode::is_cross_object`]) are cut
+/// together, see [`cross`]: a welded group's pieces all belong to its
+/// backmost object (`merged_into` names it for the others, which have no
+/// pieces), and a visible outline leaves out what objects in front cover
+/// (`covered` lists the objects with nothing left).
 #[derive(Debug, Clone, Default)]
 pub struct CutGeometry {
     pub per_object: BTreeMap<ObjectId, Arc<Vec<CutPiece>>>,
     pub facts: BTreeMap<ObjectId, PieceFacts>,
     /// The box of what is cut of each object (see [`path_box`]): slivers
     /// that are not cut never count. Every check that measures an object
-    /// reads it here.
+    /// reads it here. For the cross-object modes it is the box of the
+    /// object's own outlines, which holds every piece it keeps; a welded
+    /// group's backmost object holds the box of the whole weld as well.
     pub bounds: BTreeMap<ObjectId, Option<Rect>>,
     pub warnings: Vec<String>,
     /// The flatten tolerance it was built with, mm.
     pub tolerance_mm: f64,
     /// The minimum feature width it was built with, mm.
     pub min_width_mm: f64,
-    keys: BTreeMap<ObjectId, PieceKey>,
-    /// Object ids in document order.
-    order: Vec<ObjectId>,
+    /// Objects welded into another object's merged outline: the object
+    /// that holds the pieces (the backmost of the group).
+    pub merged_into: BTreeMap<ObjectId, ObjectId>,
+    /// Objects in visible outline whose every outline is covered by
+    /// objects in front of them, so nothing of them is cut.
+    pub covered: std::collections::BTreeSet<ObjectId>,
+    solo: BTreeMap<ObjectId, Solo>,
+    /// Object ids in document order, with what the cross-object modes
+    /// read of them.
+    order: Vec<(ObjectId, Flags)>,
+    /// True if an object is in a cross-object mode: then the flags count.
+    cross: bool,
 }
 
 impl CutGeometry {
@@ -157,17 +242,18 @@ impl CutGeometry {
 
     /// True if this is the geometry of exactly `objects` (same ids in the
     /// same order, each with the same geometry `Arc`, placement, cut
-    /// options and name) at this tolerance and width. Cheap: nothing is
-    /// walked but the list.
+    /// options and name, and, when an object is in a cross-object mode,
+    /// the same visibility, cut flag and keep mode) at this tolerance and
+    /// width. Cheap: nothing is walked but the list.
     pub fn is_for(&self, objects: &[JobObject], tolerance_mm: f64, min_width_mm: f64) -> bool {
         same_f64(self.tolerance_mm, tolerance_mm)
             && same_f64(self.min_width_mm, min_width_mm)
             && self.order.len() == objects.len()
-            && self
-                .order
-                .iter()
-                .zip(objects)
-                .all(|(id, o)| *id == o.id && self.keys.get(id).is_some_and(|k| k.fits(o)))
+            && self.order.iter().zip(objects).all(|((id, flags), o)| {
+                *id == o.id
+                    && self.solo.get(id).is_some_and(|s| s.key.fits(o))
+                    && (!self.cross || *flags == Flags::of(o))
+            })
     }
 }
 
@@ -183,10 +269,12 @@ pub fn document_cut_geometry(doc: &Document, tol: f64, min_width_mm: f64) -> Cut
 }
 
 /// The cut geometry of `objects`. `previous` is an earlier build: when it
-/// is for exactly these objects it is returned as it is, else the pieces
-/// of every object it holds unchanged are taken over and only the others
-/// are cut again. So a stale `previous` costs nothing but time and can
-/// never give a wrong piece.
+/// is for exactly these objects it is returned as it is, else what every
+/// object gives on its own is taken over from it while the object is
+/// unchanged, and only the others are cut again. The cross-object modes
+/// are then worked out again from those, over the whole list, so a change
+/// to one object always reaches the objects that depend on it. A stale
+/// `previous` costs nothing but time and can never give a wrong piece.
 pub fn objects_cut_geometry(
     objects: &[JobObject],
     tol: f64,
@@ -206,44 +294,35 @@ pub fn objects_cut_geometry(
         ..CutGeometry::default()
     };
     for o in objects {
-        let kept = reuse.and_then(|p| {
-            let k = p.keys.get(&o.id).filter(|k| k.fits(o))?;
-            Some((
-                k.clone(),
-                p.per_object.get(&o.id)?.clone(),
-                p.facts(o.id),
-                p.bounds(o.id),
-            ))
-        });
-        let (key, pieces, facts, bounds) = match kept {
-            Some(k) => k,
-            None => {
-                #[cfg(test)]
-                tests::OBJECT_CUTS.with(|n| n.set(n.get() + 1));
-                let affine = o.transform.affine(o.local_bounds);
-                let (pieces, facts, bounds) =
-                    object_pieces(&o.geometry, &o.cut, affine, tol, min_width_mm);
-                (PieceKey::of(o), Arc::new(pieces), facts, bounds)
-            }
-        };
-        if facts.slivers > 0 {
+        let solo = reuse
+            .and_then(|p| p.solo.get(&o.id).filter(|s| s.key.fits(o)).cloned())
+            .unwrap_or_else(|| Solo::cut(o, tol, min_width_mm));
+        out.per_object.insert(o.id, solo.pieces.clone());
+        out.facts.insert(o.id, solo.facts);
+        out.bounds.insert(o.id, solo.bounds);
+        out.solo.insert(o.id, solo);
+        out.order.push((o.id, Flags::of(o)));
+        out.cross |= o.cut.mode.is_cross_object();
+    }
+    if out.cross {
+        cross::apply(objects, &mut out, tol, min_width_mm);
+    }
+    for o in objects {
+        let slivers = out.facts(o.id).slivers;
+        if slivers > 0 {
             out.warnings
-                .push(sliver_warning(&o.name, facts.slivers, min_width_mm));
+                .push(sliver_warning(&o.name, slivers, min_width_mm));
         }
-        out.order.push(o.id);
-        out.keys.insert(o.id, key);
-        out.per_object.insert(o.id, pieces);
-        out.facts.insert(o.id, facts);
-        out.bounds.insert(o.id, bounds);
     }
     Arc::new(out)
 }
 
-/// `primary` with the pieces of `extra` added for the objects `primary`
-/// does not hold, as a seed for [`objects_cut_geometry`]: a command that
-/// ran on a snapshot built the pieces of its new object there, and the
-/// current document's build takes them over. Only pieces whose key still
-/// fits are ever taken, so a seed never gives a wrong piece.
+/// `primary` with what the objects of `extra` give on their own added for
+/// the objects `primary` does not hold, as a seed for
+/// [`objects_cut_geometry`]: a command that ran on a snapshot built the
+/// pieces of its new object there, and the current document's build takes
+/// them over. Only the first layer is ever taken, and only while its key
+/// still fits, so a seed never gives a wrong piece.
 pub(crate) fn merged_seed(
     primary: &Arc<CutGeometry>,
     extra: &Arc<CutGeometry>,
@@ -254,16 +333,8 @@ pub(crate) fn merged_seed(
         return primary.clone();
     }
     let mut out = (**primary).clone();
-    for (id, key) in &extra.keys {
-        if out.keys.contains_key(id) {
-            continue;
-        }
-        if let Some(pieces) = extra.per_object.get(id) {
-            out.keys.insert(*id, key.clone());
-            out.per_object.insert(*id, pieces.clone());
-            out.facts.insert(*id, extra.facts(*id));
-            out.bounds.insert(*id, extra.bounds(*id));
-        }
+    for (id, solo) in &extra.solo {
+        out.solo.entry(*id).or_insert_with(|| solo.clone());
     }
     Arc::new(out)
 }
@@ -285,7 +356,57 @@ pub fn sliver_warning(name: &str, n: usize, width_mm: f64) -> String {
 
 /// The pieces of one object's source paths placed with `affine`, what the
 /// cut left out, and the box of what is cut ([`path_box`] of each path).
+/// The cross-object modes are cut as if the object were alone: a merged
+/// outline welds the object's own paths, a visible outline leaves out what
+/// its later paths cover. Their box is the box of the object outlines,
+/// which holds every piece.
 pub fn object_pieces(
+    geometry: &[CutPath],
+    options: &CutOptions,
+    affine: Affine,
+    tol: f64,
+    min_width_mm: f64,
+) -> (Vec<CutPiece>, PieceFacts, Option<Rect>) {
+    match options.mode {
+        CutMode::AllLines | CutMode::ObjectOutlines => {
+            outline_pieces(geometry, options, affine, tol, min_width_mm)
+        }
+        CutMode::MergedOutline => {
+            let painted: Vec<cross::Painted> = geometry
+                .iter()
+                .map(|p| cross::painted(p, options, affine, tol, min_width_mm))
+                .collect();
+            let (pieces, facts) = cross::weld(&[(geometry, &painted[..])], tol, min_width_mm);
+            let bounds = cut_bounds_of(
+                geometry,
+                options,
+                affine,
+                Knife {
+                    tolerance_mm: tol,
+                    min_width_mm,
+                },
+            );
+            (pieces, facts, bounds)
+        }
+        CutMode::VisibleOutline => {
+            let outlines = CutOptions {
+                mode: CutMode::ObjectOutlines,
+                ..*options
+            };
+            let (pieces, facts, bounds) =
+                outline_pieces(geometry, &outlines, affine, tol, min_width_mm);
+            let painted: Vec<cross::Painted> = geometry
+                .iter()
+                .map(|p| cross::painted(p, options, affine, tol, min_width_mm))
+                .collect();
+            let pieces = cross::visible_alone(&pieces, &painted);
+            (pieces, facts, bounds)
+        }
+    }
+}
+
+/// [`object_pieces`] for the modes that cut every path on its own.
+fn outline_pieces(
     geometry: &[CutPath],
     options: &CutOptions,
     affine: Affine,
@@ -489,13 +610,24 @@ pub(crate) fn bounds_memo_len() -> usize {
 }
 
 /// [`cut_bounds`] of geometry placed with `affine` and cut with `options`,
-/// worked out every time.
+/// worked out every time. The cross-object modes take the box of the
+/// object outlines: it holds every piece they cut, whatever the other
+/// objects do.
 pub fn cut_bounds_of(
     geometry: &[CutPath],
     options: &CutOptions,
     affine: Affine,
     knife: Knife,
 ) -> Option<Rect> {
+    let outlines = CutOptions {
+        mode: CutMode::ObjectOutlines,
+        ..*options
+    };
+    let options = if options.mode.is_cross_object() {
+        &outlines
+    } else {
+        options
+    };
     geometry
         .iter()
         .filter_map(|p| {
@@ -510,10 +642,10 @@ pub fn cut_bounds_of(
         .reduce(|a, b| a.union(b))
 }
 
-/// True if the cut of `path` is the edge of its fill (object outlines,
+/// True if the cut of `path` is the edge of its fill (an outline mode,
 /// a fill, no outline stroke): only such a cut can drop slivers.
 fn cuts_its_fill(path: &CutPath, options: &CutOptions, affine: Affine) -> bool {
-    options.mode == CutMode::ObjectOutlines
+    options.mode.cuts_outlines()
         && path.paint.fill.is_some()
         && outline_style(path.paint, options, affine).is_none()
 }
@@ -544,7 +676,7 @@ pub(crate) fn path_box(
 pub fn auto_centre_line_width(paint: Paint, options: &CutOptions, affine: Affine) -> Option<f64> {
     let s = paint.stroke?;
     let width = placed_width(s.width_mm, affine);
-    (options.mode == CutMode::ObjectOutlines
+    (options.mode.cuts_outlines()
         && options.strokes == StrokeMode::Auto
         && width.is_finite()
         && width < options.auto_threshold_mm)
@@ -554,10 +686,10 @@ pub fn auto_centre_line_width(paint: Paint, options: &CutOptions, affine: Affine
 /// The placed width of the stroke of `paint` when it is cut around its
 /// outline (both edges), else `None`.
 pub fn outline_width(paint: Paint, options: &CutOptions, affine: Affine) -> Option<f64> {
-    match options.mode {
-        CutMode::AllLines => None,
-        CutMode::ObjectOutlines => outline_style(paint, options, affine).map(|s| s.width),
+    if !options.mode.cuts_outlines() {
+        return None;
     }
+    outline_style(paint, options, affine).map(|s| s.width)
 }
 
 /// The box of the drawn shape of `path` as it is cut: the stroke outline
@@ -568,10 +700,11 @@ fn shape_bounds(path: &CutPath, options: &CutOptions, affine: Affine) -> Option<
         return None;
     }
     let centre = placed.bounding_box();
-    let style = match options.mode {
-        CutMode::AllLines => None,
-        CutMode::ObjectOutlines => outline_style(path.paint, options, affine),
-    };
+    let style = options
+        .mode
+        .cuts_outlines()
+        .then(|| outline_style(path.paint, options, affine))
+        .flatten();
     let Some(style) = style.filter(|_| is_finite(&placed)) else {
         return Some(centre);
     };
@@ -602,7 +735,9 @@ pub fn cut_path(
     cut_path_counted(path, options, placed_affine, tolerance_mm, min_width_mm).0
 }
 
-/// [`cut_path`], and how many filled slivers it dropped.
+/// [`cut_path`], and how many filled slivers it dropped. The cross-object
+/// modes cut one path as object outlines do: what other paths change is
+/// worked out by [`object_pieces`] and [`objects_cut_geometry`].
 pub fn cut_path_counted(
     path: &CutPath,
     options: &CutOptions,
@@ -613,7 +748,7 @@ pub fn cut_path_counted(
     let placed = placed_affine * &path.path;
     match options.mode {
         CutMode::AllLines => (vec![placed], 0),
-        CutMode::ObjectOutlines => {
+        CutMode::ObjectOutlines | CutMode::MergedOutline | CutMode::VisibleOutline => {
             let tolerance = if tolerance_mm.is_finite() {
                 tolerance_mm.max(MIN_TOLERANCE_MM)
             } else {
@@ -691,31 +826,7 @@ fn object_outlines(
                 .filter(|w| w.is_finite());
             return fill_edges(&placed, fill_rule(rule), stroke_width, tolerance, min_width);
         }
-        (fill, Some(style)) => {
-            let closed = close_meeting_ends(&placed);
-            let outline = kurbo::stroke(
-                closed.iter(),
-                &style,
-                &StrokeOpts::default(),
-                tolerance / 4.0,
-            );
-            let outline = contours(outline.iter(), tolerance / 4.0);
-            let outline = boolean(&outline, &[], OverlayFill::NonZero, tolerance);
-            let outline: Vec<Contour> = outline.into_iter().flatten().collect();
-            let bands = bands(&closed, style.width / 2.0, tolerance / 2.0);
-            let stroke = boolean(&outline, &bands, OverlayFill::NonZero, tolerance);
-            let stroke: Vec<Contour> = stroke.into_iter().flatten().collect();
-            match fill {
-                // Fill first, as its own rule, then united with the stroke.
-                Some(rule) => {
-                    let fill = contours(placed.iter(), tolerance / 2.0);
-                    let fill = boolean(&fill, &[], fill_rule(rule), tolerance);
-                    let fill: Vec<Contour> = fill.into_iter().flatten().collect();
-                    boolean(&fill, &stroke, OverlayFill::NonZero, tolerance)
-                }
-                None => stroke.into_iter().map(|c| vec![c]).collect(),
-            }
-        }
+        (fill, Some(style)) => outlined_area(&placed, fill, &style, tolerance),
     };
     let rings = shapes
         .iter()
@@ -724,6 +835,42 @@ fn object_outlines(
         .map(|c| ring(c))
         .collect();
     (rings, 0)
+}
+
+/// The painted area of the placed path `placed` with an outline stroke
+/// `style`: the stroke's outline, united with the fill (under its own
+/// rule) if it has one. Shapes of oriented contours (outer edges one way,
+/// holes the other), so a later boolean may read them with the non-zero
+/// rule.
+pub(crate) fn outlined_area(
+    placed: &BezPath,
+    fill: Option<FillRule>,
+    style: &Stroke,
+    tolerance: f64,
+) -> Vec<Vec<Contour>> {
+    let closed = close_meeting_ends(placed);
+    let outline = kurbo::stroke(
+        closed.iter(),
+        style,
+        &StrokeOpts::default(),
+        tolerance / 4.0,
+    );
+    let outline = contours(outline.iter(), tolerance / 4.0);
+    let outline = boolean(&outline, &[], OverlayFill::NonZero, tolerance);
+    let outline: Vec<Contour> = outline.into_iter().flatten().collect();
+    let bands = bands(&closed, style.width / 2.0, tolerance / 2.0);
+    let stroke = boolean(&outline, &bands, OverlayFill::NonZero, tolerance);
+    let stroke: Vec<Contour> = stroke.into_iter().flatten().collect();
+    match fill {
+        // Fill first, as its own rule, then united with the stroke.
+        Some(rule) => {
+            let fill = contours(placed.iter(), tolerance / 2.0);
+            let fill = boolean(&fill, &[], fill_rule(rule), tolerance);
+            let fill: Vec<Contour> = fill.into_iter().flatten().collect();
+            boolean(&fill, &stroke, OverlayFill::NonZero, tolerance)
+        }
+        None => stroke.into_iter().map(|c| vec![c]).collect(),
+    }
 }
 
 /// The cut paths of a fill with no stroke (`stroke_width` is `None`) or

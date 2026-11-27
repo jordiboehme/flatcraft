@@ -106,8 +106,8 @@ fn lenient_link<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<SourceL
     Ok(value.and_then(|v| serde_json::from_value(v).ok()))
 }
 
-/// What of an object is cut. Milestone 2 adds `MergedOutline` and
-/// `VisibleOutline` (they need polygon booleans).
+/// What of an object is cut. The two last modes look across objects (the
+/// engine's cut geometry works them out for the whole document).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CutMode {
@@ -117,9 +117,39 @@ pub enum CutMode {
     /// `StrokeMode`.
     #[default]
     ObjectOutlines,
+    /// One outline around everything painted: overlapping objects in this
+    /// mode (with the same keep mode) are welded into one shape.
+    MergedOutline,
+    /// Only what is seen: the parts of the outlines that objects in front
+    /// cover are left out.
+    VisibleOutline,
 }
 
-/// How strokes are cut in `CutMode::ObjectOutlines`.
+impl CutMode {
+    /// The name the project file, the commands and agents use.
+    pub fn key(self) -> &'static str {
+        match self {
+            CutMode::AllLines => "all_lines",
+            CutMode::ObjectOutlines => "object_outlines",
+            CutMode::MergedOutline => "merged_outline",
+            CutMode::VisibleOutline => "visible_outline",
+        }
+    }
+
+    /// True for every mode that cuts the edges of painted shapes (fills
+    /// and outlined strokes), that is every mode but `AllLines`.
+    pub fn cuts_outlines(self) -> bool {
+        self != CutMode::AllLines
+    }
+
+    /// True for the modes whose cut depends on other objects.
+    pub fn is_cross_object(self) -> bool {
+        matches!(self, CutMode::MergedOutline | CutMode::VisibleOutline)
+    }
+}
+
+/// How strokes are cut in the outline modes (every `CutMode` but
+/// `AllLines`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StrokeMode {

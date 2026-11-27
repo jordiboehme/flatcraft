@@ -2336,6 +2336,56 @@ fn cut_mode_on_a_linked_copy_changes_every_member_in_one_step() {
     );
 }
 
+#[test]
+fn the_cut_mode_combo_lists_the_cross_object_modes_with_hints() {
+    use flatcraft_core::document::CutMode;
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let a = import_square(&s);
+    select(&s, &[a]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    let before = undo_len(&s);
+    h.get_by_role_and_label(Role::ComboBox, "Cut mode").click();
+    h.run_plan();
+    for name in [
+        "Object outlines",
+        "All lines",
+        "Merged outline",
+        "Visible outline",
+    ] {
+        assert!(h.query_by_label(name).is_some(), "{name}");
+    }
+    h.get_by_label("Visible outline").click();
+    h.run_plan();
+    wait_for_workers(&mut h);
+    assert_eq!(undo_len(&s), before + 1);
+    let mode = s
+        .lock()
+        .unwrap()
+        .doc()
+        .document
+        .get(ObjectId(a))
+        .unwrap()
+        .cut
+        .mode;
+    assert_eq!(mode, CutMode::VisibleOutline);
+    // Every mode says what it does and when to use it, without an em-dash.
+    for m in flatcraft::ui::settings::CUT_MODES {
+        let hint = flatcraft::ui::settings::mode_hint(m);
+        assert!(
+            hint.contains("Use it") || hint.contains("right pick"),
+            "{hint}"
+        );
+        assert!(!hint.contains('\u{2014}'), "{hint}");
+    }
+    let card = flatcraft::ui::tools::Setting::CutMode.card();
+    for word in ["Merged outline", "Visible outline", "Keep", "furthest back"] {
+        assert!(card.contains(word), "{word}: {card}");
+    }
+    assert!(!card.contains('\u{2014}'));
+}
+
 // ---------------------------------------------------------------- multi-selection
 
 fn selection(s: &SharedSession) -> Vec<u64> {

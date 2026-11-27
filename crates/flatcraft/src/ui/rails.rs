@@ -303,10 +303,7 @@ pub fn objects_summary(snap: &Snapshot) -> Summary {
 }
 
 fn mode_word(m: CutMode) -> &'static str {
-    match m {
-        CutMode::AllLines => "All lines",
-        CutMode::ObjectOutlines => "Object outlines",
-    }
+    super::settings::mode_name(m)
 }
 
 /// The Cut and Job rail: the selection with its cut mode (or "mixed"),

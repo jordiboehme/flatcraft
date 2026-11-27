@@ -593,6 +593,18 @@ fn pieces_as(
 
 fn measure(input: &JobInput, o: &JobObject, options: &CutOptions, min_feature: f64) -> Shapes {
     let affine = o.transform.affine(o.local_bounds);
+    // A visible outline leaves its covered parts open on purpose: what is
+    // open, closed or small is measured on its outlines as drawn, so the
+    // open-paths check never undoes the person's choice.
+    let drawn = CutOptions {
+        mode: CutMode::ObjectOutlines,
+        ..*options
+    };
+    let options = if options.mode == CutMode::VisibleOutline {
+        &drawn
+    } else {
+        options
+    };
     let (pieces, facts) = pieces_as(input, o, options);
     let mut m = Shapes {
         hairline_widths: (f64::INFINITY, 0.0),
@@ -1633,7 +1645,10 @@ fn pair_issues(input: &JobInput, ids: Option<&[ObjectId]>, limits: &Limits) -> V
                         quoted(&b.name)
                     ),
                     hint: OBJECTS_OVERLAP_HINT.into(),
-                    fixes: vec![ignore_fix(Code::ObjectsOverlap, a, b)],
+                    fixes: merge_fix(input, a, b)
+                        .into_iter()
+                        .chain([ignore_fix(Code::ObjectsOverlap, a, b)])
+                        .collect(),
                 });
             }
             Some(Pair::Close { gap, .. }) if !ignored(Code::ObjectsClose, a, b) => {
@@ -1701,6 +1716,32 @@ struct PairContext<'a> {
     cuttable: &'a [(&'a JobObject, Rect)],
     grown: &'a [Rect],
     near: &'a [(usize, usize)],
+}
+
+/// "Merge into one outline": sets `a` and `b` to merged outline, so they
+/// are cut as one welded shape and the knife no longer cuts through both.
+/// Offered only when they would weld (shown, cut, the same keep mode,
+/// painted areas that overlap): then the hint is gone after it. Not
+/// offered for objects that are only close: merging does not bridge a gap,
+/// so the hint would stay.
+fn merge_fix(input: &JobInput, a: &JobObject, b: &JobObject) -> Option<Fix> {
+    if !cutgeom::would_weld(a, b, input.tolerance_mm(), input.min_width_mm()) {
+        return None;
+    }
+    let linked = members(input, a).len() > 1 || members(input, b).len() > 1;
+    let note = if linked {
+        " Their linked copies change together with them."
+    } else {
+        ""
+    };
+    Some(Fix {
+        label: "Merge into one outline".into(),
+        description: format!(
+            "Sets both objects to Merged outline, so they are cut as one piece: one cut around both and none where they overlap. One undo step.{note}"
+        ),
+        command: "object.set_cut_options".into(),
+        args: json!({ "ids": [a.id.0, b.id.0], "mode": "merged_outline" }),
+    })
 }
 
 /// "Ignore for this object pair": turns the hint `code` off for `a` and

@@ -75,6 +75,47 @@ fn roundtrip_keeps_sources_and_transforms() {
     assert_eq!(loaded.next_id, doc.next_id);
 }
 
+/// The cross-object cut modes are part of format version 1: they are
+/// written by name and read back, and the file stays version 1.
+#[test]
+fn the_cross_object_cut_modes_round_trip_in_version_1() {
+    use flatcraft_core::document::CutMode;
+    let mut doc = Document::new(job());
+    let modes = [
+        CutMode::AllLines,
+        CutMode::ObjectOutlines,
+        CutMode::MergedOutline,
+        CutMode::VisibleOutline,
+    ];
+    let ids: Vec<_> = modes
+        .iter()
+        .map(|m| {
+            let id = doc.add(
+                m.key().into(),
+                Source::Svg {
+                    name: "one.svg".into(),
+                    bytes: b"<svg/>".to_vec().into(),
+                },
+                vec![square(10.0)],
+            );
+            doc.get_mut(id).unwrap().cut.mode = *m;
+            id
+        })
+        .collect();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("p.flatcraft");
+    project::save(&doc, &path).unwrap();
+    let text = project_text(&path);
+    assert!(text.contains("\"merged_outline\"") && text.contains("\"visible_outline\""));
+    let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(json["format_version"], 1);
+    let loaded = project::load(&path).unwrap();
+    assert_eq!(loaded.format_version, 1);
+    for (id, m) in ids.iter().zip(modes) {
+        assert_eq!(loaded.get(*id).unwrap().cut.mode, m);
+    }
+}
+
 #[test]
 fn newer_format_is_refused() {
     let dir = tempfile::tempdir().unwrap();

@@ -1452,7 +1452,7 @@ impl Setting {
                 "Type a few letters of what you want to do, then pick it from the list or press Enter."
             }
             Setting::CutMode => {
-                "Object outlines cuts only the outside shape of each object. All lines also cuts the lines inside it, like the holes in a letter O."
+                "What the knife follows. Object outlines cuts around every shape you see, holes included. All lines cuts every line as drawn. Merged outline welds overlapping objects into one piece (they need the same Keep choice, and the weld belongs to the object furthest back). Visible outline leaves out what objects in front cover, so a shared edge is cut once. Hover a choice in the list to read more."
             }
             Setting::Strokes => {
                 "How a drawn line (a stroke) is cut. Centre line cuts along its middle. Outline cuts around its thickness. Auto picks one for each line."
