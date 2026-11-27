@@ -35,6 +35,12 @@ pub struct Tokens {
     pub ok: Color32,
     /// The rail dot of a job with warnings.
     pub warn: Color32,
+    /// The simulation grade on a panel (not on the mat: the mat picks its
+    /// own colours, `colour::deviation_colours`): within the limit,
+    /// within twice the limit, beyond.
+    pub quality_good: Color32,
+    pub quality_warn: Color32,
+    pub quality_bad: Color32,
     /// Icons: the paper shapes (the things that get cut) are filled with
     /// `icon_paper` and outlined with `icon_cut`, the part that tells what
     /// happens is `icon_accent`, the rest `icon_ink`.
@@ -74,6 +80,9 @@ impl Tokens {
             waste_hatch: Color32::from_rgba_unmultiplied_const(0x2A, 0x2F, 0x36, 0x66),
             ok: Color32::from_rgb(0x46, 0xC2, 0x7A),
             warn: Color32::from_rgb(0xE8, 0xB2, 0x3A),
+            quality_good: Color32::from_rgb(0x3F, 0xB9, 0x50),
+            quality_warn: Color32::from_rgb(0xF2, 0xA3, 0x3A),
+            quality_bad: Color32::from_rgb(0xE5, 0x48, 0x4D),
             icon_paper: Color32::from_rgb(0xF3, 0xEC, 0xDD),
             // Darker than the Cut accent, so the line shows on the paper.
             icon_cut: Color32::from_rgb(0xE8, 0x89, 0x2E),
@@ -102,6 +111,10 @@ impl Tokens {
             waste_hatch: Color32::from_rgba_unmultiplied_const(0x4A, 0x52, 0x5C, 0x80),
             ok: Color32::from_rgb(0x2F, 0x9E, 0x5B),
             warn: Color32::from_rgb(0xD9, 0x9A, 0x1E),
+            // Deeper than the dark theme's, so they reach 3:1 on white.
+            quality_good: Color32::from_rgb(0x1A, 0x7F, 0x45),
+            quality_warn: Color32::from_rgb(0xA8, 0x6A, 0x00),
+            quality_bad: Color32::from_rgb(0xC8, 0x2E, 0x34),
             icon_paper: Color32::from_rgb(0xFB, 0xF4, 0xE4),
             icon_cut: Color32::from_rgb(0xD9, 0x78, 0x2A),
             icon_accent: Color32::from_rgb(0x0F, 0x8A, 0x7E),
@@ -268,6 +281,17 @@ mod tests {
             }
             // The cut line must show against the paper it outlines.
             assert!(contrast(t.icon_cut, t.icon_paper) >= 2.0);
+        }
+    }
+
+    /// The grade dot and the grade text of the comparison read at 3:1 on
+    /// the panel in both themes.
+    #[test]
+    fn quality_colours_read_on_the_panel() {
+        for t in [Tokens::dark(), Tokens::light()] {
+            for c in [t.quality_good, t.quality_warn, t.quality_bad] {
+                assert!(contrast(c, t.panel) >= 3.0, "{c:?} on {:?}", t.panel);
+            }
         }
     }
 

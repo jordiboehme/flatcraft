@@ -506,7 +506,7 @@ pub const RING_WIDTH_PX: f32 = 2.5;
 pub const COMMANDED_WIDTH_PX: f32 = 2.5;
 
 /// The colour of blade-down waste moves (swivels, lead-ins, overshoots).
-const WASTE_INK: [u8; 3] = [0x5a, 0x6b, 0x8c];
+pub const WASTE_INK: [u8; 3] = [0x5a, 0x6b, 0x8c];
 
 /// How a stretch of tip moves is drawn.
 #[derive(Clone, Copy, PartialEq)]

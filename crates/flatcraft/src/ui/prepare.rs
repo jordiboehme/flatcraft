@@ -935,6 +935,9 @@ pub struct Snapshot {
     /// The document's revision (`DocState::revision`): it changes with
     /// every change of the document, undo and redo included.
     pub doc_rev: u64,
+    /// The profile store's revision (`ProfileStore::revision`): a
+    /// simulation is valid only for the profiles it was run with.
+    pub profiles_rev: u64,
     pub objects: Vec<ObjView>,
     /// The groups of objects over `objects` (see `flatcraft_core::nodes`).
     pub tree: Tree,
@@ -1235,6 +1238,7 @@ pub fn snapshot_with(app: &mut FlatCraftApp, ctx: &egui::Context, want_job: bool
             doc_id: st.id(),
             busy,
             doc_rev: st.revision(),
+            profiles_rev: s.profiles.revision(),
             objects,
             tree: st.document.tree(),
             selection: st.selection.iter().map(|i| i.0).collect(),

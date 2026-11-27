@@ -47,8 +47,6 @@ pub const ZOOM_HINT: &str = "Zoom in to see the order numbers";
 /// Dash and gap of a weed path on the canvas, in points.
 pub const WEED_DASH: f32 = 6.0;
 pub const WEED_GAP: f32 = 4.0;
-/// Text of the disabled Simulate stage.
-pub const SIMULATE_HINT: &str = "Not ready yet in this build: the knife simulator is still on the workbench. Path shows the cut order in the meantime.";
 
 /// The four steps of the stage bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -79,10 +77,6 @@ impl Stage {
             Stage::Simulate => 3,
             Stage::Send => 4,
         }
-    }
-
-    pub fn enabled(self) -> bool {
-        self != Stage::Simulate
     }
 }
 
@@ -185,6 +179,9 @@ pub struct CutState {
     pub kept: super::kept::KeptCache,
     /// The project's notes above the send button are open.
     pub notes_open: bool,
+    /// The Simulate stage: the simulation, its timeline and the strategy
+    /// comparison.
+    pub sim: super::simulate::SimState,
 }
 
 impl Default for CutState {
@@ -207,6 +204,7 @@ impl Default for CutState {
             labels: LabelCache::default(),
             kept: super::kept::KeptCache::default(),
             notes_open: true,
+            sim: super::simulate::SimState::default(),
         }
     }
 }
@@ -455,17 +453,12 @@ impl Stage {
                 "Shows the plan on the mat: the cut order, where each cut starts and which way it runs. Weed lines are extra cuts through the leftover vinyl, so it peels off easily. Go here before you cut, to see that the knife does what you expect."
             }
             Stage::Simulate => {
-                "Plays the cut with the real knife on screen, so you spot a torn corner before your vinyl does."
+                "Plays the cut with a model of the real knife. A drag knife's tip trails a little behind the head, so it can cut a corner short or start off the line. Green is on your line, amber close, red off. Go here before you cut to check the quality and compare the cut orders, so you spot a torn corner before your vinyl does."
             }
             Stage::Send => {
                 "Sends the job to the plotter over USB. With File Output it saves the job as a file instead, and nothing is cut. Go here last, when the path looks right and the mat is loaded."
             }
         }
-    }
-
-    /// Why the stage is dimmed, when it is.
-    pub fn blocked(self) -> Option<&'static str> {
-        (!self.enabled()).then_some(SIMULATE_HINT)
     }
 }
 
@@ -483,7 +476,16 @@ enum Status {
     NotPlanned,
     /// The plan of the latest change is being built.
     Planning,
-    NotReady,
+    /// The simulation's grade and score.
+    Graded(flatcraft_sim::Grade, u32),
+    /// Firmware mode: the knife is not simulated.
+    NotSimulated,
+    /// The simulation of the latest change runs.
+    Simulating,
+    /// Not simulated yet: Simulate was not opened for this state.
+    NotRun,
+    /// The simulation failed.
+    SimFailed,
     /// Ready to send; over USB when true, else to a file.
     Ready(bool),
 }
@@ -529,7 +531,11 @@ impl Status {
                 (_, Some(why)) => why,
                 _ => unplanned,
             },
-            Stage::Simulate => Status::NotReady,
+            Stage::Simulate => match (plan, missing) {
+                (_, Some(why)) => why,
+                (Some(Err(_)), _) => unplanned,
+                _ => sim_status(st, snap),
+            },
             Stage::Send => match (plan, missing, &snap.plotter) {
                 (_, Some(why), _) => why,
                 (Some(Ok(_)), None, Some(p)) => {
@@ -553,7 +559,13 @@ impl Status {
             Status::NeedsFix => "Needs a fix".into(),
             Status::NotPlanned => "Not planned yet".into(),
             Status::Planning => PLANNING.into(),
-            Status::NotReady => "Not ready yet".into(),
+            Status::Graded(g, score) => {
+                format!("{} · score {score}", super::simulate::grade_text(*g))
+            }
+            Status::NotSimulated => "Not simulated".into(),
+            Status::Simulating => super::simulate::SIMULATING.into(),
+            Status::NotRun => "Not run yet".into(),
+            Status::SimFailed => "Could not simulate".into(),
             Status::Ready(true) => "USB · ready".into(),
             Status::Ready(false) => "File · ready".into(),
         }
@@ -576,10 +588,43 @@ impl Status {
             Status::NeedsFix => "The job needs a fix first. Path says what.".into(),
             Status::NotPlanned => "The job is not planned yet.".into(),
             Status::Planning => "FlatCraft is planning the cut for your latest change.".into(),
-            Status::NotReady => format!("{} is not ready yet in this build.", stage.name()),
+            Status::Graded(g, score) => format!(
+                "The simulation grades the cut {}, score {score} of 100.",
+                super::simulate::grade_text(*g)
+            ),
+            Status::NotSimulated => "The plotter's firmware steers the blade, so the knife is not simulated. Simulate shows the commanded path.".into(),
+            Status::Simulating => "FlatCraft is simulating the cut for your latest change.".into(),
+            Status::NotRun => format!("Open {} to play the cut and grade it.", stage.name()),
+            Status::SimFailed => "The simulation failed. Simulate says why.".into(),
             Status::Ready(true) => "Ready to send to the plotter over USB.".into(),
             Status::Ready(false) => "Ready to write the job to a file.".into(),
         }
+    }
+}
+
+/// The Simulate status: "Not simulated" in firmware mode, else the grade
+/// of the current state's simulation. While a newer one runs, the line of
+/// the one before stays, so the bar does not jump.
+fn sim_status(st: &CutState, snap: &Snapshot) -> Status {
+    use flatcraft_engine::simulate::SimMode;
+    if super::simulate::mode_of(snap) == Some(SimMode::Firmware) {
+        return Status::NotSimulated;
+    }
+    let graded = |run: &flatcraft_engine::simulate::SimRun| {
+        run.result
+            .as_ref()
+            .map(|r| Status::Graded(r.metrics.grade, r.metrics.score.round() as u32))
+    };
+    match st.sim.current(snap) {
+        Some(Ok(c)) => graded(&c.run).unwrap_or(Status::NotSimulated),
+        Some(Err(_)) => Status::SimFailed,
+        None if st.sim.simulating() => st
+            .sim
+            .previous
+            .as_deref()
+            .and_then(graded)
+            .unwrap_or(Status::Simulating),
+        None => Status::NotRun,
     }
 }
 
@@ -719,7 +764,7 @@ fn stages(ui: &mut Ui, mode: Mode, bar: &mut Bar) {
                     &title,
                     detail,
                     stage.name(),
-                    stage.enabled(),
+                    true,
                     on,
                 )
             }
@@ -729,27 +774,22 @@ fn stages(ui: &mut Ui, mode: Mode, bar: &mut Bar) {
                 let b = egui::Button::image_and_text(img, text)
                     .selected(on)
                     .right_text(RichText::new(status).color(ui.visuals().weak_text_color()));
-                let r = ui.add_enabled(stage.enabled(), b);
+                let r = ui.add(b);
                 r.widget_info(|| {
-                    egui::WidgetInfo::selected(
-                        egui::accesskit::Role::Tab,
-                        stage.enabled(),
-                        on,
-                        stage.name(),
-                    )
+                    egui::WidgetInfo::selected(egui::accesskit::Role::Tab, true, on, stage.name())
                 });
                 r
             }
         };
         // The status line is in the card too, where the bar has no room
-        // for it; a dimmed stage's reason already says it.
-        let what = if mode == Mode::Full || stage.blocked().is_some() {
+        // for it.
+        let what = if mode == Mode::Full {
             stage.hint().to_string()
         } else {
             format!("{} {}", stage.hint(), bar.sentences[i])
         };
-        super::groups::card(&r, &stage.title(), &what, stage.blocked(), false);
-        if r.clicked() && stage.enabled() {
+        super::groups::card(&r, &stage.title(), &what, None, false);
+        if r.clicked() {
             bar.st.stage = stage;
             if mode == Mode::List {
                 ui.close();
@@ -783,7 +823,16 @@ pub fn show(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &mut 
     egui::Panel::bottom("flatcraft-timeline")
         .frame(egui::Frame::new().fill(t.panel).inner_margin(t.spacing))
         .show(ui, |ui| {
-            timeline::show(ui, &mut app.ui.cut.timeline, &t);
+            let cut = &mut app.ui.cut;
+            if cut.stage == Stage::Simulate {
+                let has = cut
+                    .sim
+                    .current(snap)
+                    .is_some_and(|c| c.as_ref().is_ok_and(|c| c.run.result.is_some()));
+                timeline::show_sim(ui, &mut cut.sim.clock, has, &t);
+            } else {
+                timeline::show(ui, &mut cut.timeline, &t);
+            }
         });
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(t.bg))
@@ -959,7 +1008,20 @@ fn stage_panel(ui: &mut Ui, app: &mut FlatCraftApp, snap: &Snapshot, actions: &m
             None => {}
         },
         Stage::Simulate => {
-            ui.label(SIMULATE_HINT);
+            let cut = &mut app.ui.cut;
+            match (&cut.plan, cut.sim.current(snap).cloned()) {
+                (Some(Err(e)), _) => problem(ui, cut, e, snap.doc_id, &t, actions),
+                (_, Some(Ok(cur))) => {
+                    if let Some(at) =
+                        super::simulate::panel(ui, &mut cut.sim, &cur, snap, &t, actions)
+                    {
+                        cut.view = super::simulate::centred(&cut.view, cut.canvas_rect, at);
+                    }
+                }
+                (_, Some(Err(e))) => error_box(ui, &e, &t),
+                (_, None) if cut.sim.simulating() => super::simulate::running_panel(ui, &t),
+                (_, None) => {}
+            }
         }
         Stage::Send => {
             let ok = matches!(st.plan, Some(Ok(_)));
@@ -1079,7 +1141,7 @@ pub fn weed_why(snap: &Snapshot, sheet_kept: bool) -> Option<&'static str> {
 
 /// How a legend sample is drawn.
 #[derive(Clone, Copy)]
-enum Sample {
+pub enum LegendSample {
     Solid,
     Dashed,
     Dotted,
@@ -1087,45 +1149,56 @@ enum Sample {
     Kept,
     /// A swatch of hatched waste.
     Waste,
+    /// A thin line (the head's path in Simulate).
+    Thin,
+    /// A thick line (the alignment stroke).
+    Thick,
+    /// A worst spot's ring.
+    Ring,
 }
+
+/// One legend row: its name and card, its sample, its colour, and why it
+/// is dimmed (`None` while it applies).
+pub type LegendRow<'a> = ((&'a str, &'a str), LegendSample, Color32, Option<&'a str>);
 
 /// A small legend of the Path view: a short line of each kind, drawn on
 /// the mat colour with the canvas's own strokes and colours. The weed row
 /// is dimmed, with the reason, while weeding is off.
 fn legend(ui: &mut Ui, snap: &Snapshot, job: &JobResult, t: &Tokens) {
+    use LegendSample as S;
     let mat = canvas::mat_rgb(snap);
     let contrast = canvas::rgb(canvas::contrast_colour(mat));
     let weed_why = weed_why(snap, job.plan.kept.sheet_kept_besides(|_| false));
-    let weeding = weed_why.is_none();
     let rows = [
         (
             LEGEND_CUT,
-            Sample::Solid,
+            S::Solid,
             canvas::rgb(canvas::cut_colour(mat)),
-            true,
+            None,
         ),
-        (
-            LEGEND_WEED,
-            Sample::Dashed,
-            canvas::weed_rgb(mat, t),
-            weeding,
-        ),
+        (LEGEND_WEED, S::Dashed, canvas::weed_rgb(mat, t), weed_why),
         (
             LEGEND_TRAVEL,
-            Sample::Dotted,
+            S::Dotted,
             contrast.gamma_multiply(0.45),
-            true,
+            None,
         ),
-        (LEGEND_KEPT, Sample::Kept, t.kept_paper, true),
+        (LEGEND_KEPT, S::Kept, t.kept_paper, None),
         (
             LEGEND_WASTE,
-            Sample::Waste,
+            S::Waste,
             super::kept::hatch_colour(mat, t),
-            true,
+            None,
         ),
     ];
-    for ((name, hint), sample, colour, on) in rows {
-        let why = if on { None } else { weed_why };
+    legend_rows(ui, mat, contrast, &rows);
+}
+
+/// Draws legend rows on the mat colour `mat`; `contrast` is the mat's
+/// contrast colour.
+pub fn legend_rows(ui: &mut Ui, mat: [u8; 3], contrast: Color32, rows: &[LegendRow]) {
+    for &((name, hint), sample, colour, why) in rows {
+        let on = why.is_none();
         // A dimmed row fades its sample like egui fades a disabled label.
         let fade = if on { 1.0 } else { 0.4 };
         let colour = colour.gamma_multiply(fade);
@@ -1138,10 +1211,16 @@ fn legend(ui: &mut Ui, snap: &Snapshot, job: &JobResult, t: &Tokens) {
                 rect.right_center() - Vec2::new(5.0, 0.0),
             ];
             match sample {
-                Sample::Solid => {
+                LegendSample::Solid => {
                     p.line_segment(line, Stroke::new(1.5, colour));
                 }
-                Sample::Dashed => {
+                LegendSample::Thin => {
+                    p.line_segment(line, Stroke::new(1.0, colour));
+                }
+                LegendSample::Thick => {
+                    p.line_segment(line, Stroke::new(3.0, colour));
+                }
+                LegendSample::Dashed => {
                     p.extend(egui::Shape::dashed_line(
                         &line,
                         Stroke::new(1.5, colour),
@@ -1149,10 +1228,13 @@ fn legend(ui: &mut Ui, snap: &Snapshot, job: &JobResult, t: &Tokens) {
                         WEED_GAP,
                     ));
                 }
-                Sample::Dotted => {
+                LegendSample::Dotted => {
                     p.extend(egui::Shape::dotted_line(&line, colour, 5.0, 0.9));
                 }
-                Sample::Kept => {
+                LegendSample::Ring => {
+                    p.circle_stroke(rect.center(), 5.5, Stroke::new(2.0, colour));
+                }
+                LegendSample::Kept => {
                     // Outlined, so paper reads on a paper mat too.
                     p.rect(
                         rect.shrink(3.0),
@@ -1162,7 +1244,7 @@ fn legend(ui: &mut Ui, snap: &Snapshot, job: &JobResult, t: &Tokens) {
                         egui::StrokeKind::Inside,
                     );
                 }
-                Sample::Waste => {
+                LegendSample::Waste => {
                     super::kept::hatch(p, rect.shrink(3.0), colour);
                 }
             }
@@ -1257,10 +1339,13 @@ fn cut_canvas(
             .draw(ui.ctx(), &painter, &view, &job, area, mat_rgb, t);
     }
     let job = st.job().filter(|_| st.stage != Stage::Device);
+    let sim_stage = st.stage == Stage::Simulate;
     // While the plan of the latest change is built, the last plan shows
-    // faded under a note; it never counts.
+    // faded under a note; it never counts. Simulate shows its own.
     let previous = match &st.previous {
-        Some(Ok(prev)) if job.is_none() && st.planning() && st.stage != Stage::Device => {
+        Some(Ok(prev))
+            if job.is_none() && st.planning() && st.stage != Stage::Device && !sim_stage =>
+        {
             Some(prev.clone())
         }
         _ => None,
@@ -1273,7 +1358,9 @@ fn cut_canvas(
     }
     let faded = if job.is_some() { 0.3 } else { 1.0 };
     canvas::draw_objects(&painter, snap, &view, mat_rgb, faded, true, |_| None);
-    if let Some(job) = &job {
+    if sim_stage {
+        sim_canvas(ui, &painter, rect, snap, st, t, (mat_rgb, contrast));
+    } else if let Some(job) = &job {
         let visible = st.visible_toolpaths();
         let crowded = draw_toolpaths(
             &painter,
@@ -1308,6 +1395,51 @@ fn cut_canvas(
     }
     canvas::draw_area(&painter, snap, &view, t, contrast);
     canvas::draw_rulers(&painter, rect, &view, t);
+}
+
+/// The Simulate stage on the canvas: the simulation of the current state
+/// up to the timeline's time with its worst spots ringed, or the one
+/// before faded under a note while it runs.
+fn sim_canvas(
+    ui: &Ui,
+    painter: &egui::Painter,
+    rect: Rect,
+    snap: &Snapshot,
+    st: &mut CutState,
+    t: &Tokens,
+    (mat, contrast): ([u8; 3], Color32),
+) {
+    use super::simulate::{self as sim, DrawInput};
+    let input = |view, t_mm, faded| DrawInput {
+        view,
+        mat,
+        contrast,
+        t,
+        t_mm,
+        faded,
+    };
+    match st.sim.current(snap).cloned() {
+        Some(Ok(cur)) => {
+            let view = st.view;
+            st.sim.drawn_down =
+                sim::draw(painter, &cur.run, &input(&view, st.sim.clock.t_mm, false));
+            if cur.run.result.is_none() {
+                sim::canvas_note(painter, rect, sim::FIRMWARE_CANVAS, t);
+            }
+            if let Some(at) = sim::rings(ui, painter, rect, &view, &cur.spots) {
+                st.view = sim::centred(&view, rect, at);
+            }
+        }
+        _ => {
+            st.sim.drawn_down = (0, 0);
+            if st.sim.simulating() {
+                if let Some(prev) = st.sim.previous.clone() {
+                    sim::draw(painter, &prev, &input(&st.view, f64::INFINITY, true));
+                }
+                sim::canvas_note(painter, rect, sim::SIMULATING, t);
+            }
+        }
+    }
 }
 
 /// Draws the first `visible` toolpaths: the cut lines, dotted travel moves

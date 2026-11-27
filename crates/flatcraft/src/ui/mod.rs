@@ -36,6 +36,7 @@ pub mod ribbon;
 pub mod rng;
 pub mod settings;
 pub mod settings_window;
+pub mod simulate;
 pub mod switcher;
 pub mod theme;
 pub mod timeline;
@@ -2375,6 +2376,12 @@ pub fn shell(ui: &mut egui::Ui, app: &mut FlatCraftApp) {
         if let Some((doc, rev, input)) = app.ui.cut.update_until(&ctx, snap, deadline) {
             lock(&app.session).offer_cut_geometry(doc, rev, &input);
         }
+        // The Simulate stage simulates on its own worker (see `simulate`).
+        let simulating = workspace == Workspace::Cut && app.ui.cut.stage == cut::Stage::Simulate;
+        app.ui
+            .cut
+            .sim
+            .update(&ctx, &app.session, snap, deadline, simulating);
         app.ui.prepare.sheet_kept = cut::sheet_kept_now(&app.ui.cut, snap);
         if report_check && let Some(card) = &mut app.ui.prepare.report {
             card.refresh(snap);

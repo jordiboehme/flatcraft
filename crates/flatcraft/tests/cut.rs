@@ -14,7 +14,7 @@ use common::{
 use egui::accesskit::{Role, Toggled};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use flatcraft::ui::Workspace;
-use flatcraft::ui::cut::{SIMULATE_HINT, Stage, mm_text, stage_status};
+use flatcraft::ui::cut::{Stage, mm_text, stage_status};
 use flatcraft::ui::files::Revealer;
 use flatcraft::ui::icons::{Icon, Palette};
 use flatcraft_engine::session::Origin;
@@ -209,7 +209,7 @@ fn status_lines_say_what_is_set_or_missing() {
         [
             "File Output · Copy paper",
             "Nothing to cut",
-            "Not ready yet",
+            "Nothing to cut",
             "Nothing to cut"
         ]
     );
@@ -221,7 +221,7 @@ fn status_lines_say_what_is_set_or_missing() {
         [
             "File Output · Copy paper",
             "Quality · 1 pass",
-            "Not ready yet",
+            "Not simulated",
             "File · ready"
         ]
     );
@@ -234,7 +234,7 @@ fn status_lines_say_what_is_set_or_missing() {
         [
             "Cameo 2 · Copy paper",
             "Quality · 2 passes · weed",
-            "Not ready yet",
+            "Not simulated",
             "USB · ready"
         ]
     );
@@ -246,14 +246,14 @@ fn status_lines_say_what_is_set_or_missing() {
         [
             "Pick a plotter",
             "Pick a plotter",
-            "Not ready yet",
+            "Pick a plotter",
             "Pick a plotter"
         ]
     );
 }
 
 #[test]
-fn simulate_stage_is_dimmed_with_its_reason() {
+fn simulate_stage_opens_and_explains_itself() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
     import_square(&s);
@@ -262,20 +262,18 @@ fn simulate_stage_is_dimmed_with_its_reason() {
         .global_style_mut(|st| st.interaction.tooltip_delay = 0.0);
     to_cut(&mut h);
     let node = h.get_by_role_and_label(Role::Tab, "Simulate");
-    assert!(node.accesskit_node().is_disabled());
+    assert!(!node.accesskit_node().is_disabled());
     node.click();
     h.run_plan();
-    assert_eq!(app(&h).ui.cut.stage, Stage::Device);
-    assert!(h.query_by_role_and_label(Role::Tab, "Path").is_some());
-    assert!(!SIMULATE_HINT.contains("milestone"), "{SIMULATE_HINT}");
-    assert!(SIMULATE_HINT.starts_with("Not ready yet"));
+    assert_eq!(app(&h).ui.cut.stage, Stage::Simulate);
+    let hint = Stage::Simulate.hint();
+    assert!(hint.contains("drag knife"), "{hint}");
     let at = h
         .get_by_role_and_label(Role::Tab, "Simulate")
         .rect()
         .center();
     h.hover_at(at);
-    wait_for_label(&mut h, SIMULATE_HINT);
-    h.get_by_label(Stage::Simulate.hint());
+    wait_for_label(&mut h, hint);
     // An enabled stage shows what it does.
     let at = h.get_by_role_and_label(Role::Tab, "Send").rect().center();
     h.hover_at(at);
@@ -360,7 +358,28 @@ fn the_bar_does_not_flicker_while_the_job_is_planned_again() {
 fn stage_texts_have_no_em_dash() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
-    let mut texts: Vec<String> = vec![SIMULATE_HINT.into()];
+    use flatcraft::ui::simulate as sim;
+    let mut texts: Vec<String> = [
+        sim::SIMULATING,
+        sim::SIMULATING_CARD,
+        sim::FIRMWARE_CANVAS,
+        sim::COMPARE_CARD,
+        sim::GRADE_CARD,
+        sim::LEGEND_HEAD.1,
+        sim::LEGEND_GOOD.1,
+        sim::LEGEND_WARN.1,
+        sim::LEGEND_BAD.1,
+        sim::LEGEND_WASTE_MOVE.1,
+        sim::LEGEND_ALIGNMENT.1,
+        sim::LEGEND_RING.1,
+        sim::LEGEND_COMMANDED.1,
+        flatcraft::ui::timeline::SIM_SLIDER_CARD,
+        flatcraft::ui::timeline::SIM_SPEED_CARD,
+        flatcraft::ui::timeline::SIM_PLAY_CARD,
+        flatcraft::ui::timeline::SIM_NOTHING,
+    ]
+    .map(String::from)
+    .to_vec();
     for stage in Stage::ALL {
         texts.extend([stage.name().into(), stage.title(), stage.hint().into()]);
     }

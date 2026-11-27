@@ -633,8 +633,7 @@ fn the_cut_bar_folds_to_numbers_then_to_a_list() {
             h.get_by_label(collapse::MORE).click();
             h.run_plan();
         }
-        // A folded step says its status in its card, in plain words; a
-        // dimmed one says it once, in its reason.
+        // A folded step says its status in its card, in plain words.
         if want == Level::Folded(1) {
             h.ctx
                 .global_style_mut(|st| st.interaction.tooltip_delay = 0.0);
@@ -657,12 +656,11 @@ fn the_cut_bar_folds_to_numbers_then_to_a_list() {
                 .rect()
                 .center();
             h.hover_at(at);
-            wait(&mut h, ui::cut::SIMULATE_HINT);
-            h.get_by_label(ui::cut::Stage::Simulate.hint());
+            // File Output steers the blade in its firmware.
+            wait(&mut h, "so the knife is not simulated");
             assert!(
-                h.query_by_label_contains("Simulate is not ready yet")
-                    .is_none(),
-                "the reason is said twice"
+                h.query_by_label_contains(ui::cut::Stage::Simulate.hint())
+                    .is_some()
             );
         }
         // Every stage is reachable and works.

@@ -100,6 +100,11 @@ pub fn harness_sized(
             flatcraft_engine::job::build_classified(input)
         });
         let repaint = ctx.clone();
+        app.ui.cut.sim.set_computer(move |input| {
+            slow_worker(&repaint);
+            flatcraft_engine::simulate::compute(input)
+        });
+        let repaint = ctx.clone();
         app.long.set_runner(move |session, work| {
             slow_worker(&repaint);
             ui::long::run(session, work)
@@ -121,7 +126,7 @@ pub fn settle(h: &mut AppHarness) {
     let busy = |h: &AppHarness| {
         h.state()
             .as_ref()
-            .is_some_and(|a| a.ui.cut.planning() || a.long.busy())
+            .is_some_and(|a| a.ui.cut.planning() || a.ui.cut.sim.busy() || a.long.busy())
     };
     while h.run_ok().is_none() || busy(h) {
         assert!(
@@ -252,6 +257,7 @@ pub fn wait_for_workers(h: &mut AppHarness) {
         app.source_check_job.is_some()
             || app.ui.prepare.cache.building() > 0
             || app.ui.cut.planning()
+            || app.ui.cut.sim.busy()
             || app.long.busy()
     });
 }
@@ -287,8 +293,9 @@ pub fn wait_until(h: &mut AppHarness, busy: impl Fn(&FlatCraftApp) -> bool) {
         }
         assert!(
             start.elapsed() < WORKER_TIMEOUT,
-            "the source check or the shape worker did not finish within {WORKER_TIMEOUT:?} (plan {} long {} causes {:?})",
+            "the source check or the shape worker did not finish within {WORKER_TIMEOUT:?} (plan {} sim {} long {} causes {:?})",
             app(h).ui.cut.planning(),
+            app(h).ui.cut.sim.busy(),
             app(h).long.busy(),
             h.ctx.repaint_causes(),
         );
@@ -407,6 +414,8 @@ pub trait RunPlan {
 
 impl RunPlan for AppHarness {
     fn run_plan(&mut self) {
-        wait_until(self, |app| app.ui.cut.planning() || app.long.busy());
+        wait_until(self, |app| {
+            app.ui.cut.planning() || app.ui.cut.sim.busy() || app.long.busy()
+        });
     }
 }
