@@ -348,6 +348,9 @@ pub struct PrepareState {
     pub entered: Option<(u64, u64)>,
     /// The groups folded open in the Objects panel, with their document.
     pub open_groups: BTreeSet<(u64, u64)>,
+    /// The row of the Objects panel a Shift+click selects a range from:
+    /// the last row clicked without Shift (document, object or group).
+    pub list_anchor: Option<(u64, u64)>,
     /// Where the canvas painted its rotate cursor last frame (egui has no
     /// rotate cursor, so it hides the pointer and paints one), if it did.
     pub rotate_cursor: Option<Pos2>,
@@ -442,6 +445,7 @@ impl Default for PrepareState {
             context: None,
             entered: None,
             open_groups: BTreeSet::new(),
+            list_anchor: None,
             rotate_cursor: None,
             rename: None,
             ribbon_layout: None,

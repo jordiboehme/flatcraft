@@ -520,12 +520,15 @@ fn source_checks_are_debounced() {
     assert!(app(&h).ui.prepare.sources.check_pending);
 }
 
+/// The Objects panel follows the list convention of Finder, Explorer and
+/// Illustrator's layers: a click selects one row, Cmd+click (Ctrl+click)
+/// flips one row, Shift+click selects the range from the last click.
 #[test]
-fn objects_panel_click_selects_and_shift_click_adds() {
+fn objects_panel_click_selects_cmd_click_toggles_and_shift_click_takes_a_range() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(&dir);
-    let a = import_square(&s);
-    let b = import_square(&s);
+    let ids: Vec<u64> = (0..4).map(|_| import_square(&s)).collect();
+    let (a, b, c, d) = (ids[0], ids[1], ids[2], ids[3]);
     let mut h = harness(&dir, s.clone(), false);
     to_prepare(&mut h);
     let sel = |s: &SharedSession| -> Vec<u64> {
@@ -537,21 +540,70 @@ fn objects_panel_click_selects_and_shift_click_adds() {
             .map(|i| i.0)
             .collect()
     };
-    let rows = h.get_all_by_role_and_label(Role::Button, "square");
-    let rects: Vec<_> = rows.map(|n| n.rect()).collect();
-    assert_eq!(rects.len(), 2);
+    assert_eq!(
+        h.get_all_by_role_and_label(Role::Button, "square").count(),
+        4
+    );
+    let row = |h: &mut AppHarness, i: usize, m: Modifiers| {
+        h.get_all_by_role_and_label(Role::Button, "square")
+            .nth(i)
+            .unwrap()
+            .click_modifiers(m);
+        h.run_plan();
+    };
+    row(&mut h, 0, Modifiers::NONE);
+    assert_eq!(sel(&s), [a]);
+    row(&mut h, 2, Modifiers::SHIFT);
+    assert_eq!(sel(&s), [a, b, c]);
+    // The range runs from the same row: a shorter one replaces it.
+    row(&mut h, 1, Modifiers::SHIFT);
+    assert_eq!(sel(&s), [a, b]);
+    row(&mut h, 3, Modifiers::COMMAND);
+    assert_eq!(sel(&s), [a, b, d]);
+    row(&mut h, 0, Modifiers::COMMAND);
+    assert_eq!(sel(&s), [b, d]);
+    // The Cmd+click on a moved the start of the range there.
+    row(&mut h, 2, Modifiers::SHIFT);
+    assert_eq!(sel(&s), [a, b, c]);
+    row(&mut h, 3, Modifiers::NONE);
+    assert_eq!(sel(&s), [d]);
+}
+
+/// A group row in a Shift range brings all its objects; Cmd+click on it
+/// flips the whole group.
+#[test]
+fn objects_panel_ranges_and_toggles_take_whole_groups() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(&dir);
+    let ids: Vec<u64> = (0..4).map(|_| import_square(&s)).collect();
+    let (a, b, c, d) = (ids[0], ids[1], ids[2], ids[3]);
+    s.lock()
+        .unwrap()
+        .execute("object.group", json!({ "ids": [b, c] }), Origin::User)
+        .unwrap();
+    select(&s, &[]);
+    let mut h = harness(&dir, s.clone(), false);
+    to_prepare(&mut h);
+    // Rows: a, the group, d.
     h.get_all_by_role_and_label(Role::Button, "square")
         .next()
         .unwrap()
         .click();
     h.run_plan();
-    assert_eq!(sel(&s), [a]);
     h.get_all_by_role_and_label(Role::Button, "square")
-        .nth(1)
+        .last()
         .unwrap()
         .click_modifiers(Modifiers::SHIFT);
     h.run_plan();
-    assert_eq!(sel(&s), [a, b]);
+    assert_eq!(selection(&s), [a, b, c, d]);
+    h.get_by_label_contains("group of 2 objects")
+        .click_modifiers(Modifiers::COMMAND);
+    h.run_plan();
+    assert_eq!(selection(&s), [a, d]);
+    h.get_by_label_contains("group of 2 objects")
+        .click_modifiers(Modifiers::COMMAND);
+    h.run_plan();
+    assert_eq!(selection(&s), [a, b, c, d]);
 }
 
 #[test]

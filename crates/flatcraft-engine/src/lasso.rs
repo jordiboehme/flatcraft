@@ -321,37 +321,48 @@ pub fn pick(
 }
 
 /// The selection after a pick: the picked `units` (see [`Picked::units`])
-/// replace `current`, join it, leave it or toggle in it.
-pub fn combine(current: &[ObjectId], units: &[Vec<ObjectId>], mode: Mode) -> Vec<ObjectId> {
-    let picked: Vec<ObjectId> = units.iter().flatten().copied().collect();
+/// replace `current`, join it, leave it or toggle in it. Sets keep it
+/// O(n log n) for thousands of objects. Generic over the id so a test can
+/// count its comparisons.
+pub fn combine<T: Ord + Copy>(current: &[T], units: &[Vec<T>], mode: Mode) -> Vec<T> {
+    use std::collections::BTreeSet;
+    let picked = || units.iter().flatten().copied();
+    let had: BTreeSet<T> = current.iter().copied().collect();
     match mode {
-        Mode::Replace => picked,
-        Mode::Toggle => {
+        Mode::Replace => picked().collect(),
+        Mode::Add => {
+            let mut seen = had;
             let mut out = current.to_vec();
+            out.extend(picked().filter(|p| seen.insert(*p)));
+            out
+        }
+        Mode::Remove => {
+            let gone: BTreeSet<T> = picked().collect();
+            current
+                .iter()
+                .copied()
+                .filter(|c| !gone.contains(c))
+                .collect()
+        }
+        Mode::Toggle => {
+            // A unit that is all selected leaves; any other joins whole.
+            let mut gone = BTreeSet::new();
+            let mut seen = had.clone();
+            let mut joined = Vec::new();
             for u in units {
-                if u.iter().all(|i| current.contains(i)) {
-                    out.retain(|i| !u.contains(i));
+                if u.iter().all(|i| had.contains(i)) {
+                    gone.extend(u.iter().copied());
                 } else {
-                    out.extend(
-                        u.iter()
-                            .filter(|i| !out.contains(i))
-                            .copied()
-                            .collect::<Vec<_>>(),
-                    );
+                    joined.extend(u.iter().copied().filter(|i| seen.insert(*i)));
                 }
             }
-            out
+            current
+                .iter()
+                .copied()
+                .filter(|c| !gone.contains(c))
+                .chain(joined)
+                .collect()
         }
-        Mode::Add => {
-            let mut out = current.to_vec();
-            out.extend(picked.iter().filter(|p| !current.contains(p)));
-            out
-        }
-        Mode::Remove => current
-            .iter()
-            .copied()
-            .filter(|c| !picked.contains(c))
-            .collect(),
     }
 }
 
@@ -359,17 +370,22 @@ pub fn combine(current: &[ObjectId], units: &[Vec<ObjectId>], mode: Mode) -> Vec
 /// flattened with [`OUTLINE_TOLERANCE_MM`] (what the canvas draws) and
 /// the box of what is cut.
 pub struct DocumentOutlines<'a> {
-    doc: &'a Document,
+    /// The objects by id, indexed once: `Document::get` searches the list,
+    /// which would make a pick over every object quadratic.
+    objects: std::collections::HashMap<ObjectId, &'a Object>,
     knife: Knife,
 }
 
 impl<'a> DocumentOutlines<'a> {
     pub fn new(doc: &'a Document, knife: Knife) -> Self {
-        Self { doc, knife }
+        Self {
+            objects: doc.objects.iter().map(|o| (o.id, o)).collect(),
+            knife,
+        }
     }
 
     fn object(&self, id: ObjectId) -> Option<&'a Object> {
-        self.doc.get(id)
+        self.objects.get(&id).copied()
     }
 }
 
@@ -539,5 +555,109 @@ mod tests {
         let group = vec![id(&[2, 3])];
         assert_eq!(combine(&cur, &group, Mode::Toggle), id(&[1, 2, 3]));
         assert_eq!(combine(&id(&[1, 2, 3]), &group, Mode::Toggle), id(&[1]));
+    }
+
+    use std::cell::Cell;
+
+    thread_local! {
+        static COMPARISONS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// An id that counts how often it is compared.
+    #[derive(Debug, Clone, Copy)]
+    struct Counted(u64);
+
+    impl PartialEq for Counted {
+        fn eq(&self, other: &Self) -> bool {
+            COMPARISONS.with(|c| c.set(c.get() + 1));
+            self.0 == other.0
+        }
+    }
+    impl Eq for Counted {}
+    impl PartialOrd for Counted {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+    impl Ord for Counted {
+        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            COMPARISONS.with(|c| c.set(c.get() + 1));
+            self.0.cmp(&other.0)
+        }
+    }
+
+    /// 2000 selected objects and 2000 picked: every mode stays near
+    /// n log n comparisons (a list search per id would be millions).
+    #[test]
+    fn combine_compares_n_log_n_times_for_thousands() {
+        let n = 2000u64;
+        let current: Vec<Counted> = (0..n).map(Counted).collect();
+        let units: Vec<Vec<Counted>> = (n / 2..n + n / 2).map(|i| vec![Counted(i)]).collect();
+        // n log2 n with room for the set's constant: about 22 000 x 8.
+        let limit = (n as f64 * (n as f64).log2() * 8.0) as usize;
+        for mode in [Mode::Replace, Mode::Add, Mode::Remove, Mode::Toggle] {
+            COMPARISONS.with(|c| c.set(0));
+            let out = combine(&current, &units, mode);
+            let count = COMPARISONS.with(Cell::get);
+            assert!(
+                count <= limit,
+                "{mode:?}: {count} comparisons, limit {limit}"
+            );
+            let want = match mode {
+                Mode::Replace | Mode::Toggle => n as usize,
+                Mode::Add => (n + n / 2) as usize,
+                Mode::Remove => (n / 2) as usize,
+            };
+            assert_eq!(out.len(), want, "{mode:?}");
+        }
+    }
+
+    /// Outlines that count how often the pick asks them.
+    struct CountingBoxes {
+        n: u64,
+        visible: Cell<usize>,
+        bounds: Cell<usize>,
+        lines: Cell<usize>,
+    }
+
+    impl Outlines for CountingBoxes {
+        fn visible(&self, _: ObjectId) -> bool {
+            self.visible.set(self.visible.get() + 1);
+            true
+        }
+        fn bounds(&self, id: ObjectId) -> Option<Rect> {
+            self.bounds.set(self.bounds.get() + 1);
+            // A row of 1 mm squares, 2 mm apart.
+            (id.0 < self.n).then(|| {
+                let x = 2.0 * id.0 as f64;
+                Rect::new(x, 0.0, x + 1.0, 1.0)
+            })
+        }
+        fn with_lines(&self, _: ObjectId, f: &mut LinesVisitor<'_>) -> bool {
+            self.lines.set(self.lines.get() + 1);
+            f(&[], Vec2::ZERO)
+        }
+    }
+
+    /// A pick over 2000 objects asks each object once: one visible and
+    /// one box test per object, and an outline only for the ones near.
+    #[test]
+    fn pick_asks_each_object_once_among_2000() {
+        let n = 2000u64;
+        let tree = Tree::new(Vec::new(), (0..n).map(|i| (ObjectId(i), None)).collect());
+        let shapes = CountingBoxes {
+            n,
+            visible: Cell::new(0),
+            bounds: Cell::new(0),
+            lines: Cell::new(0),
+        };
+        // Around the first five squares.
+        let l = Lasso::rect(Rect::new(-0.5, -0.5, 9.5, 1.5)).unwrap();
+        let got = pick(&tree, &shapes, &l, false, None);
+        assert_eq!(got.ids.len(), 5);
+        assert_eq!(shapes.visible.get(), n as usize);
+        assert_eq!(shapes.bounds.get(), n as usize);
+        assert_eq!(shapes.lines.get(), 5);
+        assert_eq!(got.outline_tests, 5);
     }
 }

@@ -189,6 +189,20 @@ struct RowDrag {
 /// The card of a group row.
 pub const GROUP_ROW_HINT: &str = "A group: its objects act as one. Click to select the whole group, click the arrow to see its members. Drag a row onto a group to put it in, or below the list to take it out. Double-click to rename.";
 
+/// How clicks pick rows, with the keys of `os` (see [`row_click`]).
+pub fn list_keys_hint(os: super::help::Os) -> String {
+    let cmd = super::help::modifier_names(egui::Modifiers::COMMAND, os);
+    format!(
+        "{cmd}+click adds a row to the selection or takes it out; Shift+click selects every row from the last one you clicked."
+    )
+}
+
+static LIST_KEYS: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| list_keys_hint(super::help::Os::CURRENT));
+
+/// The card of an object row.
+pub const OBJECT_ROW_HINT: &str = "An object on the mat. Click to select it. Double-click to rename. The eye hides it, the scissors skip it when cutting.";
+
 /// The rows of the children of `parent` (the top level for `None`), in
 /// order, with the members of open groups under their group.
 fn tree_rows(
@@ -212,6 +226,93 @@ fn tree_rows(
             object_row(ui, st, snap, o, depth, t, actions);
         }
     }
+}
+
+/// The rows of the list in order (objects and groups), the members of
+/// open groups under their group, as [`tree_rows`] draws them.
+pub fn list_rows(snap: &Snapshot, st: &PrepareState) -> Vec<u64> {
+    fn walk(snap: &Snapshot, st: &PrepareState, parent: Option<u64>, out: &mut Vec<u64>) {
+        for node in snap
+            .tree
+            .children(parent.map(flatcraft_core::document::ObjectId))
+        {
+            let id = node.0;
+            if snap.is_group(id) {
+                out.push(id);
+                if st.open_groups.contains(&(snap.doc_id, id)) {
+                    walk(snap, st, Some(id), out);
+                }
+            } else if snap.object(id).is_some() {
+                out.push(id);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(snap, st, None, &mut out);
+    out
+}
+
+/// A click on the row of `node` (an object or a group), as lists do in
+/// Finder, Explorer and Illustrator's layers: a plain click selects the
+/// row, Cmd+click (Ctrl+click) flips it in or out of the selection, and
+/// Shift+click selects every row from the last plain or Cmd click to this
+/// one. A group row stands for all its objects; a row inside a group is
+/// picked inside it.
+fn row_click(
+    st: &mut PrepareState,
+    snap: &Snapshot,
+    node: u64,
+    mods: egui::Modifiers,
+    actions: &mut Vec<Action>,
+) {
+    use flatcraft_core::document::ObjectId;
+    let doc_id = snap.doc_id;
+    let parent = |id: u64| snap.tree.parent(ObjectId(id)).map(|g| g.0);
+    let rows = list_rows(snap, st);
+    let anchor = st
+        .list_anchor
+        .filter(|(d, a)| *d == doc_id && rows.contains(a))
+        .map(|(_, a)| a);
+    let ids: Vec<u64> = if mods.shift
+        && let Some(anchor) = anchor
+    {
+        let (i, j) = (
+            rows.iter().position(|r| *r == anchor).unwrap_or(0),
+            rows.iter().position(|r| *r == node).unwrap_or(0),
+        );
+        let range = &rows[i.min(j)..=i.max(j)];
+        // Inside a group when every row of the range is in it.
+        let inside = parent(node).filter(|g| range.iter().all(|r| parent(*r) == Some(*g)));
+        st.entered = inside.map(|g| (doc_id, g));
+        let mut ids: Vec<u64> = Vec::new();
+        for r in range {
+            for l in snap.leaves_of(*r) {
+                if !ids.contains(&l) {
+                    ids.push(l);
+                }
+            }
+        }
+        ids
+    } else {
+        st.list_anchor = Some((doc_id, node));
+        st.entered = parent(node).map(|g| (doc_id, g));
+        let leaves = snap.leaves_of(node);
+        if mods.command {
+            let current: Vec<ObjectId> = snap.selection.iter().map(|i| ObjectId(*i)).collect();
+            let unit: Vec<ObjectId> = leaves.into_iter().map(ObjectId).collect();
+            flatcraft_engine::lasso::combine(
+                &current,
+                &[unit],
+                flatcraft_engine::lasso::Mode::Toggle,
+            )
+            .into_iter()
+            .map(|i| i.0)
+            .collect()
+        } else {
+            leaves
+        }
+    };
+    actions.push(Action::run(doc_id, "object.select", json!({ "ids": ids })));
 }
 
 /// What the drop zone under the list says.
@@ -468,25 +569,16 @@ fn group_row(
     {
         actions.push(set_visible_action(doc_id, &[id], !visible));
     }
-    super::groups::card(&row, &name, GROUP_ROW_HINT, None, false);
+    super::groups::card(
+        &row,
+        &name,
+        &format!("{GROUP_ROW_HINT} {}", LIST_KEYS.as_str()),
+        None,
+        false,
+    );
     if row.clicked() && !fold.clicked() {
-        let shift = ui.input(|i| i.modifiers.shift);
-        let mut ids: Vec<u64> = if shift {
-            snap.selection.iter().copied().collect()
-        } else {
-            Vec::new()
-        };
-        for l in &leaves {
-            if !ids.contains(l) {
-                ids.push(*l);
-            }
-        }
-        // A nested group is picked inside its parent group.
-        st.entered = snap
-            .tree
-            .parent(flatcraft_core::document::ObjectId(id))
-            .map(|g| (doc_id, g.0));
-        actions.push(Action::run(doc_id, "object.select", json!({ "ids": ids })));
+        let mods = ui.input(|i| i.modifiers);
+        row_click(st, snap, id, mods, actions);
     }
     if row.double_clicked() {
         st.rename = Some(super::prepare::RenameDialog { doc_id, id, name });
@@ -662,20 +754,16 @@ fn object_row(
         actions.push(set_visible_action(doc_id, &[o.id], !o.visible));
     }
 
+    super::groups::card(
+        &row,
+        &o.name,
+        &format!("{OBJECT_ROW_HINT} {}", LIST_KEYS.as_str()),
+        None,
+        false,
+    );
     if row.clicked() {
-        let shift = ui.input(|i| i.modifiers.shift);
-        let ids: Vec<u64> = if shift {
-            let mut ids: Vec<u64> = snap.selection.iter().copied().collect();
-            if !ids.contains(&o.id) {
-                ids.push(o.id);
-            }
-            ids
-        } else {
-            vec![o.id]
-        };
-        // A member picked in the list is picked inside its group.
-        st.entered = o.parent.map(|g| (doc_id, g));
-        actions.push(Action::run(doc_id, "object.select", json!({ "ids": ids })));
+        let mods = ui.input(|i| i.modifiers);
+        row_click(st, snap, o.id, mods, actions);
     }
     if row.double_clicked() {
         st.rename = Some(super::prepare::RenameDialog {
